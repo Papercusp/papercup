@@ -42,7 +42,7 @@ jobs:
           CI: 'true'
         run: npm run test:slow --workspace @papercusp/orchestrator
 
-      - name: Run benchmarks (libs/papergrid)
+      - name: Run benchmarks (libs/generic/papergrid)
         if: always()
         continue-on-error: true
         env:

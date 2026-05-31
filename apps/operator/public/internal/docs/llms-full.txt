@@ -610,6 +610,98 @@ The other shape that looks like PG-as-transport but isn’t: `pg_notify`. That�
 
 The endpoint system docs at [`/docs/endpoint-system/overview`](/internal/docs/endpoint-system/overview) describe the canonical “function as truth, transports as projections” shape. Use it.
 
+# DBOS durable execution — the eight gotchas that bite on first integration
+
+> Hard-won findings from wiring DBOS Transact into the operator (dbos-durable-jobs-2026-05-31) — boot path, PG connect-probe, version pinning, scheduled-workflow registration, dedup vs concurrency, interrupted-step re-execution, and why the durable pipeline is sequential-only.
+
+DBOS Transact (`@dbos-inc/dbos-sdk`) gives us Postgres-backed durable execution: a workflow checkpoints each step, so a crash resumes mid-flight without re-running completed work. Wiring it into the operator (`dbos-durable-jobs-2026-05-31`) surfaced eight non-obvious traps. Each cost real debugging time; none is in the SDK’s quickstart.
+
+The bootstrap lives at `apps/operator/lib/dbos/bootstrap.ts` (`startDbos()`), gated by `PAPERCUSP_DBOS_ENABLE=1` (default off). Read that file alongside this page — the comments there cross-reference the plan’s decision IDs.
+
+## 1. Boot from the live host path, not the retired instrumentation hook
+
+[Section titled “1. Boot from the live host path, not the retired instrumentation hook”](#1-boot-from-the-live-host-path-not-the-retired-instrumentation-hook)
+
+The instinct is to launch DBOS from `apps/operator/instrumentation-node.ts` — that’s the Next.js instrumentation hook, the “run once at server start” idiom. **It’s retired.** The operator is served by the `operator-vite` + Hono host (`bin/hono-host.ts` → `bin/host-bootstrap.ts`), not by Next any more. A DBOS launch wired into `instrumentation-node.ts` simply never runs in the desktop product.
+
+`startDbos()` must be called from **`bin/host-bootstrap.ts`** (the live boot path). The tell that you got this wrong: the `dbos` schema never appears in the embedded PG even though `PAPERCUSP_DBOS_ENABLE=1`. See also `operator-next-is-retired`.
+
+## 2. Probe the resolved PG — the source label can’t tell dead from live
+
+[Section titled “2. Probe the resolved PG — the source label can’t tell dead from live”](#2-probe-the-resolved-pg--the-source-label-cant-tell-dead-from-live)
+
+`getHarnessAdminUrlWithSource()` returns a `source` label (`native-fallback`, `embedded`, …). The first instinct is to **refuse to launch on `native-fallback`** — on the desktop product `:5432` is the retired `papercusp_legacy` and connecting there is a bug (`embedded-pg-discovery`). But on a **dev box**, `:5432/papercusp` IS the live operator DB, and `source==='native-fallback'` there is correct. A label check blocks DBOS on exactly the box you’re developing on.
+
+The fix is a **connect-probe**, not a label check: open the resolved DSN, run `SELECT 1`, launch if it succeeds, skip cleanly if it doesn’t. Reachability is the real signal; the label is advisory.
+
+```ts
+const probe = postgres(url, { max: 1, connect_timeout: 5, prepare: false });
+try { await probe`SELECT 1`; } catch { /* skip launch */ return; }
+finally { await probe.end({ timeout: 2 }).catch(() => {}); }
+```
+
+## 3. Turn off the admin server — it defaults to :3001 and EADDRINUSE-es
+
+[Section titled “3. Turn off the admin server — it defaults to :3001 and EADDRINUSE-es”](#3-turn-off-the-admin-server--it-defaults-to-3001-and-eaddrinuse-es)
+
+DBOS starts an HTTP admin server on **:3001** by default. This box also runs Restart, whose shop-api binds :3001 — so `DBOS.launch()` dies with `EADDRINUSE` before any workflow runs. We don’t use the admin server. Set `runAdminServer: false` in `DBOS.setConfig`. (Even without a port clash, leave it off unless you’re using it.)
+
+## 4. Pin `applicationVersion` or recovery silently stops across app updates
+
+[Section titled “4. Pin applicationVersion or recovery silently stops across app updates”](#4-pin-applicationversion-or-recovery-silently-stops-across-app-updates)
+
+DBOS tags every workflow with the running `applicationVersion`, and on restart it **only recovers workflows whose version matches the current process.** The default version is content-derived, so any code change bumps it — and after a deploy, every in-flight workflow from the previous version is left `PENDING`, never resumed. For an always-on operator with long-lived scheduled workflows, that’s silent data loss.
+
+Pin it: `applicationVersion: process.env.DBOS__APPVERSION || 'papercusp-jobs-v1'`. Bump the constant deliberately only when you intend to orphan old workflows. This was proven in the Phase-0 gate: an unpinned version change left the prior workflow stuck.
+
+## 5. A scheduled function must ALSO be registered as a workflow
+
+[Section titled “5. A scheduled function must ALSO be registered as a workflow”](#5-a-scheduled-function-must-also-be-registered-as-a-workflow)
+
+`DBOS.registerScheduled(fn, { crontab })` is not enough on its own — the scheduled function has to be a **registered workflow** too, or the scheduler has nothing durable to bind to. Register the workflow first, then schedule it.
+
+Also note the default firing semantics: DBOS **skips missed intervals** by default (if the process was down over a scheduled tick, that tick is dropped). Backfill is opt-in via `ExactlyOncePerInterval` / `automaticBackfill`. For our timers (telemetry flush, scratch GC, …) skip-missed is the right default — don’t add backfill reflexively, or a process that was off for a day will stampede a day’s worth of ticks on boot.
+
+## 6. Single-fire dedup is `deduplicationID`, not `concurrency: 1`
+
+[Section titled “6. Single-fire dedup is deduplicationID, not concurrency: 1”](#6-single-fire-dedup-is-deduplicationid-not-concurrency-1)
+
+To guarantee a feature/slug isn’t double-dispatched, the reach is for a queue with `concurrency: 1`. Wrong tool: concurrency throttles *parallelism*, it doesn’t dedup — two enqueues of the same logical job still both run, just one-at-a-time. The dedup primitive is per-enqueue:
+
+```ts
+await DBOS.startWorkflow(wf, {
+  workflowID,
+  queueName: q.name,
+  enqueueOptions: { deduplicationID: workflowID }, // ← this is the single-fire guard
+})(input);
+```
+
+Combined with a **deterministic `workflowID`** (we use `pipeline:<slug>:<feature>`), a re-dispatch resumes the same workflow instead of starting a second one.
+
+## 7. An *interrupted* step re-executes on resume; a *completed* one does not
+
+[Section titled “7. An interrupted step re-executes on resume; a completed one does not”](#7-an-interrupted-step-re-executes-on-resume-a-completed-one-does-not)
+
+This is the one that looks like a bug. Crash a workflow mid-step and resume: that step runs **again** (we observed the agent spawn count go to 2). That’s correct — DBOS only checkpoints a step’s *result* when it **completes**; an interrupted step has no checkpoint, so resume re-runs it. Completed steps are never re-run (their result is replayed from the checkpoint).
+
+The consequence for agent steps: a crash mid-`worker` re-spawns the worker. We make that safe two ways — (a) DBOS’s own checkpoint prevents re-running *completed* roles, which is the primary resume mechanism; (b) for the interrupted-but-side-effecting case, `invoke()` takes an `idempotencyKey` (the durable pipeline passes `<slug>:<feature>:<role>:t<turn>`) and reuses a prior *completed* run row from `harness_shared.harness_run_output` instead of re-spawning.
+
+Caution
+
+Don’t over-rely on the `harness_run_output` reuse as the resume mechanism — DBOS checkpointing already handles completed steps. The idempotency key is the **belt** for re-dispatch / non-DBOS callers and for a run that finished but crashed before its checkpoint landed. The braces-and-belt is intentional; the checkpoint is primary. Agents also re-read live git state on a fresh spawn (parent D-003), so a re-run worker converges rather than duplicating work.
+
+## 8. Keep workflow code deterministic — and the pipeline sequential-only
+
+[Section titled “8. Keep workflow code deterministic — and the pipeline sequential-only”](#8-keep-workflow-code-deterministic--and-the-pipeline-sequential-only)
+
+DBOS replays a workflow’s orchestration code from the checkpoint log on resume, so **all non-determinism (agent spawns, the LLM decision, clocks, randomness) must live inside steps**, never in the workflow body. Our dispatch loop calls `parseDecision` (a *pure* function — see `pure-decision-functions-pulled-from-daemons`) on a checkpointed step output, so replay is deterministic.
+
+That purity is also why the durable pipeline is **sequential-only**. The moment a decision is a parallel fan-out (`NEXT_WORKER` with `N=k`, branch isolation, the synthesizer), the clean per-feature workflow-ID claim and the linear checkpoint chain stop modelling the work. The durable workflow handles the common sequential pipeline (scoper → worker → validator → …) and **stops** on any parallel/branch verb, leaving that feature to the legacy main loop. Don’t try to model parallel lanes as nested DBOS workflows without first redesigning the ownership/claim model — that’s the live-integration boundary the plan stops at, not a quick extension.
+
+***
+
+**Where this is wired:** `apps/operator/lib/dbos/` — `bootstrap.ts` (launch + probe + flags), `orchestrator-workflow.ts` (the durable pipeline), `orchestrator-runner.ts` (spawns `invoke-once` with the idempotency key), `periodic-workflows.ts` (the timers), `autoloop-workflow.ts` (AutoLoop as scheduled + dedup-keyed). Everything Phase-3 is gated by `PAPERCUSP_DBOS_ORCHESTRATOR=1`, default off, with the legacy main loop as the A/B fallback. Full design + decision log: the plans `dbos-durable-jobs-2026-05-31` and `dbos-orchestrator-durability-2026-05-31`.
+
 # How the papercusp-workspace + papercup-self-registration boot path works
 
 > Two fire-and-forget bootstrap helpers run on every operator boot to make Papercusp dogfood itself — sentinel workspace ensure + papercup repo auto-register. Idempotent + non-disruptive to existing installs.
@@ -1338,6 +1430,62 @@ In each case: the question is “how will future-you/future-agent know this is s
 * `apps/operator/lib/sync-resolver/table-to-query-names.ts` — the bridge that uses this pattern.
 * `apps/operator/lib/sync-resolver/index.ts` — the v2 registry the bridge maps INTO.
 * [Adding a query to the sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — when you migrate a forward-defined name, removing it from `FORWARD_DEFINED` is step 4 of the recipe.
+
+# Generalizing a Papercusp lib into a borrowable one — the host-seam pattern
+
+> How to take a lib that's tied to Papercusp and make it project-agnostic without changing the operator's behavior: the package names no project, the host injects domain values through a configure*()/props seam, and the operator maps its domain onto that seam at the boundary. Includes the soft-coupling checklist (schema/db names, fs paths, env vars, global keys, domain vocab in public types, generated-output banners — the ones grep misses), the cross-repo contract gotcha, and the borrowable-libs catalog + regroup tooling.
+
+When you make a Papercusp lib reusable by any project — or notice domain coupling leaking into one that’s supposed to be generic — follow this pattern. It’s the one used across the 2026-05-31 generalization pass (plan `papercusp-systems-abstraction-2026-05-29`, D-011).
+
+## The pattern, in one line
+
+[Section titled “The pattern, in one line”](#the-pattern-in-one-line)
+
+> **The package names no project. The host injects domain values through a small seam (a `configure*()` call or a React prop). The operator maps its own domain onto that seam at the boundary** — so the live app stays byte-identical while the lib becomes borrowable.
+
+Concretely, three shapes recur:
+
+* **`configure*()` host seam** (server libs). The lib exposes `configureX({ ... })` and reads the injected values at runtime; the operator calls it once in a `lib/<x>/configure.ts` imported for side effect. Examples: `configureMemory({ schema, defaultDbName, localStoreDir })`, `configureDesktopIpc({ forceHttp })`, `configureBackup`, `configureLocks`.
+* **Options on the entry function.** When there’s a natural call site, add options instead of a global: `startEndpointIpcServer({ readyToken, socketPath, upstreamBaseUrl })`. The operator passes its branded values; the lib defaults to neutral ones.
+* **React props + a config Context** (UI libs). Add props with neutral defaults; thread them to memo’d children via a small Context so you don’t prop-drill. Example: LogView’s `appLinks` / `primarySource` / `bookmarkKeyPrefix`.
+
+The operator keeps the brand. e.g. `@papercusp/ipc-endpoint-server` emits a generic `IPC_READY` handshake by default; the operator injects `readyToken: 'PAPERCUSP_IPC_READY'` to satisfy the papercusp-desktop Rust client. The lib names nothing; the host owns the wiring.
+
+## The soft-coupling checklist (what to hunt for)
+
+[Section titled “The soft-coupling checklist (what to hunt for)”](#the-soft-coupling-checklist-what-to-hunt-for)
+
+Compile-time imports of domain packages (`@papercusp/db-org|harness| orchestrator|agent-mcp|zero-harness|papercup-shared`) are the obvious coupling and usually already gone. The **soft** coupling is what hides:
+
+1. **Hardcoded PG schema / db names** in SQL — `harness_shared.*`, default db `papercusp`. → inject a `schema` / `defaultDbName`.
+2. **Filesystem paths** — `~/.papercusp`, `.harness/`, `apps/operator/...`. → inject a dir, default to `os.tmpdir()`.
+3. **Branded env-var names** — `PAPERCUSP_*`, `NEXT_PUBLIC_PAPERCUSP_*`. → a `configure()` field, or a generic-named env fallback.
+4. **Branded global / window keys** — `__restart*__`, `__papercusp*__`. Make them fully neutral (`__sse_channel_registry__`), not just renamed to your own scope. “Self-namespaced by the package” still reads as coupling — go neutral.
+5. **Domain vocab in a PUBLIC type/field** — `harnessSlug`, `harness_slug`, `feature_id`. → rename to neutral (`scope`, `scopeFilter`); the operator maps its column onto it and maps back in its output.
+6. **Generated-output banners / strings.** A tokens/codegen lib that prepends `AUTO-GENERATED by @papercusp/...` brands *the consumer’s* files. → neutral default + an override option.
+
+grep is not enough
+
+Items 4 and 6 are routinely missed by a string grep over imports/paths — a global key looks like any identifier, and a banner is a generated string, not an import. **Read the source.** The 2026-05-31 deep audit (four parallel Explore agents reading source, not grepping) caught the `token-kit` banner, the `sse`/`sync` global keys, and confirmed the rest clean — after a grep-level pass had marked them “clean”.
+
+## Verify the host still behaves identically
+
+[Section titled “Verify the host still behaves identically”](#verify-the-host-still-behaves-identically)
+
+For each generalized lib: run its own test suite + a typecheck, and run the **one operator test that exercises the seam end-to-end** if it exists (e.g. `dev_ipc_echo_e2e.test.ts` confirmed the operator still emits the real `PAPERCUSP_IPC_READY` handshake through the new `readyToken` option). The `npm run test:affected` walker is **not** a usable gate in a bare sandbox — the operator’s integration suite needs Docker/embedded-PG and mass-times-out without it. Verify per-lib instead.
+
+## What stays coupled — and why that’s correct
+
+[Section titled “What stays coupled — and why that’s correct”](#what-stays-coupled--and-why-thats-correct)
+
+Not everything should be generalized. Keep the tie-in when the lib *is* the domain contract: the plugin SDK/loader (`PapercuspContext`, the `papercusp.json` manifest), the flag registry (the keys *are* the product), `host-platform` (the designated host layer). Generalizing those would just recreate a generic shell with none of the value (plan D-008). Some seam’d libs (`locks`, `coordination`, `backup`, `docs-engine`) keep a Papercusp tie-in by decision even though they have a host seam.
+
+## Discoverability + grouping tooling
+
+[Section titled “Discoverability + grouping tooling”](#discoverability--grouping-tooling)
+
+* **Catalog:** `BORROWABLE.md` at the repo root, generated by `scripts/gen-borrowable-catalog.mjs` (`npm run gen:borrowable`, and `:check` as a CI staleness guard). Membership is curated in the script (not a package.json keyword) so adding a submodule never needs a submodule commit. When you make a lib generic, add it there.
+* **Physical grouping** under `libs/generic/`: `scripts/regroup-borrowable-libs.sh` does the atomic move (git mv each submodule + repoint every `node_modules/@papercusp/*` symlink + rewrite workspace globs + regen the catalog). It is **safe because consumers import by package name, not path**. It self-aborts unless the operator is stopped (a live `:3070`/`:3055` process would re-resolve a moved module mid-flight) and every target submodule is clean. Run with `--execute` in a quiet maintenance window.
 
 # Harness tests gate feature approval, and link to plans through the VAL
 
@@ -3779,6 +3927,50 @@ Recent example: a new column on `harness_features` added as `string()` because t
 
 The Zero schema file lives at `libs/zero-harness/src/schema.ts`. The authoritative pitfall list is at [Data Sync → pitfalls](/internal/docs/data-sync/pitfalls) item #2 — this insight is a short pointer.
 
+# tooldef authorization model (gotchas)
+
+> The non-obvious parts of the RFC tooldef-auth layer — the narrow dispatch principal, the audited break-glass, why default-deny is safe to flip for built-ins, and the two distinct "roles" axes.
+
+The full gate stack and error codes live in [Gating](/internal/docs/endpoint-system/gating). This page is just the parts that bit during implementation — read it before touching `packages/tooldef/src/{dispatch-stack,authz,types,tool-projection}.ts`.
+
+## The dispatch-layer principal is NARROW — not the route `Principal`
+
+[Section titled “The dispatch-layer principal is NARROW — not the route Principal”](#the-dispatch-layer-principal-is-narrow--not-the-route-principal)
+
+There are two principal shapes and they are not the same:
+
+* `Principal` (`types.ts`) — the full route-layer identity: `kind`, `slug`, `workspaceId`, `authMethod`, `trust`, `capabilities`, `roles`. Produced by `requirePrincipal()` at the HTTP/MCP edge.
+* `UnifiedToolContext.principal` (`tool-projection.ts`) — the **narrow** thing the dispatcher actually carries: `{ slug, workspaceId, capabilities, roles? }`. No `kind`/`authMethod`/`trust`.
+
+An `authorize` hook and the audit event run at **dispatch**, so they only get the narrow principal. That’s why `AuthAuditEvent.principal` is `{ slug, workspaceId? } | null` (not kind/trust), and why `Authorizer<TInput, TCtx, TPrincipal>` binds `TPrincipal = UnifiedToolContext['principal']` rather than the full `Principal`. If you try to read `ctx.principal.kind` in a dispatch step, tsc will stop you — that’s the bug this split prevents. A host that wants richer identity in the audit enriches it in its own `deps.auditAuth` sink.
+
+## The break-glass bypass MUST be audited (it’s not optional)
+
+[Section titled “The break-glass bypass MUST be audited (it’s not optional)”](#the-break-glass-bypass-must-be-audited-its-not-optional)
+
+`GateBypass.policy` (default off) is the only thing that skips the resource-`authorize` gate, and it is deliberately **not** implied by `GateBypass.role`/`capability`/`quota` — resource ownership is a separate decision a host opts out of explicitly, per call. When it does skip, the dispatcher still emits an `AuthAuditEvent` recording the bypass. That emit is load-bearing: break-glass best practice is “policy-governed **and** mandatorily logged”; a bypass that isn’t logged is the silent super-admin the standard forbids. If you ever “optimize” the bypass path to skip the audit emit, you’ve reintroduced the hole.
+
+## Default-deny is safe to flip for built-ins, risky for plugins
+
+[Section titled “Default-deny is safe to flip for built-ins, risky for plugins”](#default-deny-is-safe-to-flip-for-built-ins-risky-for-plugins)
+
+`deps.defaultDeny` (off by default) denies any tool that declares **no** gate (no capabilities/roles/requireRoles/authorize) and isn’t `public: true`. The key fact: **`defineTool` requires a `capability`**, so every first-party built-in already declares a gate and can never be `ungated`. The only tools at risk are plugin / direct `registerProjectedTool` registrations. Before flipping it on, run `listUngatedProjectedTools()` with the full registry loaded — empty result = safe. Don’t flip it blind; an ungated tool gets a hard `ungated` (403) and the gate is **not** bypassable (it’s a declaration gap, not a caller-authz question).
+
+## Two “roles” axes — do not conflate them
+
+[Section titled “Two “roles” axes — do not conflate them”](#two-roles-axes--do-not-conflate-them)
+
+* **Agent roles** — `tool.roles` (worker/scoper/architect/…), checked against `ctx.role` by the `role-allowlist` gate. This is *orchestration* gating: which agent role may invoke the tool.
+* **RBAC roles** — `principal.roles` (staff/admin/…), checked against `tool.requireRoles` by the `role-requirement` gate. This is *authorization*: the typed replacement for `requireAdminKey`/`requireStaff`.
+
+They live on different objects (`tool` vs `principal`) and answer different questions. The RFC deliberately did **not** rename `tool.roles`→`tool.agentRoles` (a 189-callsite churn) because the new `requireRoles` field doesn’t collide — but the conceptual overload is real, so name your variables carefully.
+
+## packages/tooldef is in-tree here; the shared mirror is peer-owned
+
+[Section titled “packages/tooldef is in-tree here; the shared mirror is peer-owned”](#packagestooldef-is-in-tree-here-the-shared-mirror-is-peer-owned)
+
+In papercup, `packages/tooldef` is an **in-tree** workspace (not a submodule). There is a separate shared repo `Papercusp/tooldef` (consumed by Restart as a submodule). The two have an open in-tree-vs-mirror fork (extraction-plan **P-054**, needs-human). Do **not** push in-tree tooldef changes to the shared mirror yourself — that sync is the tooldef owner’s, and racing it is the exact failure the fork tracking exists to prevent. Commit in-tree, keep the diff clean, and flag the peer.
+
 # Bare `tsc --noEmit` reports hundreds of errors that next build doesn't
 
 > A direct invocation of `tsc --noEmit` against apps/operator reports ~860 pre-existing errors that `next build` handles correctly. Don't chase them; treat the count as a baseline and verify only that touched files are clean.
@@ -5594,6 +5786,29 @@ psu --no-picker --agent=codex --no-plan          # active workspace root, no har
 [Section titled “Resuming”](#resuming)
 
 The agents scope their resumable sessions **by working directory**. A harness launch runs in the harness repo, so resume the agent’s session (e.g. `claude --resume <id>`) **from that repo dir**. A no-harness launch runs in the directory you invoked `psu` from (not an internal dir), so its resume works from that same terminal. `psu` prints the launch `cwd` so you know where to resume from. (Or resume from the `/adv` Sessions tab, which already knows the cwd.)
+
+`psu --resume` is the location-independent path: it lists your recent tracked sessions, `cd`s to each one’s recorded cwd, and resumes the agent there — so you don’t have to be in the launch dir.
+
+## Role sessions — `psu --role`
+
+[Section titled “Role sessions — psu --role”](#role-sessions--psu---role)
+
+By default `psu` launches an **engineer-collaborator (`su`)** session: the full `papercusp-su` catalog + the engineer playbook. With `--role` you instead launch the session **as a pipeline role** (worker, validator, reviewer, debugger, documenter, architect, scoper, …) — the same persona, tools, and feature context the orchestrator gives that role, but **you** drive it interactively. It’s “wear the worker’s hat on F-042 and drive it by hand” — for debugging why a role keeps failing, hand-finishing a feature, or sanity-checking what a role can see.
+
+```bash
+psu --role=worker                 # picker: role → backend → workspace → harness → feature
+psu --role=worker --feature=F-042 --harness=papercup --agent=claude   # scripted
+```
+
+What’s different from a plain `su` session:
+
+* **Role prompt, not the engineer playbook** — `<role>.persona.md` + `<role>.tools.md`, assembled by the same `assembleRolePrompt` the orchestrator and the in-app brains use.
+* **Role-scoped tools** — the session’s MCP config is a *signed, role-scoped* URL (`role=<role>`, not `?superuser=1`), so the dispatch layer enforces exactly that role’s tool allowlist — true parity with an orchestrator-spawned agent.
+* **Feature context** — feature-consuming roles (worker/validator/…) prompt for a feature; the picker knows which roles need one from the role registry’s `consumes` field (`roleConsumes`), the single source for “what context does this role need.”
+
+The session is tracked in `/adv` Sessions like any other, tagged with its role + feature. Backends: `claude` and `omp` today; `codex` interactive role sessions are not yet wired (use `claude`/`omp`).
+
+This is distinct from the orchestrator firing a role **autonomously** (headless, output-parsed, scheduled) — that always routes through `orchestrator.spawn`, never a terminal `psu`.
 
 ## Install
 
@@ -15841,33 +16056,43 @@ For tools that pause execution to ask the user something via the chat sidebar:
 
 # Gating
 
-> Auth, capabilities, roles, quotas. The four checks every tool call goes through, and the order they run in.
+> The ordered gates every tool call runs through — signature, default-deny, roles, capabilities, RBAC, harness, quota, resource authorization, timeout — and the error codes they emit.
 
-## The five checks, in order
+## The gates, in order
 
-[Section titled “The five checks, in order”](#the-five-checks-in-order)
+[Section titled “The gates, in order”](#the-gates-in-order)
 
-Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code.
+Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code. The dispatch-stack gates are defined once in `DEFAULT_DISPATCH_STACK` (`packages/tooldef/src/dispatch-stack.ts`); signature verification runs earlier, in `tryBuildSpawnContext`.
 
 ```plaintext
-┌─────────────────────────────────────────┐
-│ 0. Signature verification (per-spawn)   │  → request_rejected: spawn_sig_<reason>
-├─────────────────────────────────────────┤
-│ 1. Role allowlist (plugin tools)        │  → role_not_allowed (403)
-├─────────────────────────────────────────┤
-│ 2. Capability check (built-in tools)    │  → unauthorized (401) | missing_capability (403)
-├─────────────────────────────────────────┤
-│ 3. Per-window quota                     │  → quota_exceeded (429)
-├─────────────────────────────────────────┤
-│ 4. Per-tool timeout (during execution)  │  → timeout (504)
-└─────────────────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│ 0. Signature verification (per-spawn)           │  → request_rejected: spawn_sig_<reason>
+├────────────────────────────────────────────────┤
+│ 1. Default-deny (opt-in; off by default)        │  → ungated (403)
+├────────────────────────────────────────────────┤
+│ 2. Role allowlist (agent role vs tool.roles)    │  → role_not_allowed (403)
+├────────────────────────────────────────────────┤
+│ 3. Capability check (principal capabilities)    │  → unauthorized (401) | missing_capability (403)
+├────────────────────────────────────────────────┤
+│ 4. RBAC role requirement (tool.requireRoles)    │  → missing_role (403)
+├────────────────────────────────────────────────┤
+│ 5. Harness-required gate                        │  → harness_required (400)
+├────────────────────────────────────────────────┤
+│ 6. Per-window quota                             │  → quota_exceeded (429)
+├────────────────────────────────────────────────┤
+│ 7. Resource authorization (tool.authorize)      │  → authorization_denied (403)
+├────────────────────────────────────────────────┤
+│ 8. Per-tool timeout (during execution)          │  → timeout (504)
+└────────────────────────────────────────────────┘
 ```
 
-If all five pass, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
+If every gate passes, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
 
-## Check 0 — Signature verification
+Gates **1, 4, 7** and the **authorization audit trail** are the [RFC tooldef-auth](/internal/docs/spec/plan-format) layer: a fail-closed default-deny posture, declarative RBAC roles, resource-level “can THIS principal act on THIS resource”, and an audit event for every authz decision. Gates 0, 2, 3, 5, 6, 8 are the original coarse checks. Each is detailed below.
 
-[Section titled “Check 0 — Signature verification”](#check-0--signature-verification)
+## Signature verification (gate 0)
+
+[Section titled “Signature verification (gate 0)”](#signature-verification-gate-0)
 
 Before any other gate fires, the dispatcher verifies the per-spawn URL’s HMAC signature. A worker that rewrites `?role=worker` → `?role=operator` produces an `invalid_signature` and is rejected with `request_rejected: spawn_sig_invalid_signature`. The attempt is persisted to `harness_shared.spawn_sig_verification_failures` for on-call review.
 
@@ -15877,11 +16102,21 @@ The `?superuser=1` door bypasses this check entirely; it has its own loopback + 
 
 Full scheme, reason codes, rotation, and observability live in [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing).
 
-## Check 1 — Role allowlist (plugin tools)
+## Default-deny (gate 1)
 
-[Section titled “Check 1 — Role allowlist (plugin tools)”](#check-1--role-allowlist-plugin-tools)
+[Section titled “Default-deny (gate 1)”](#default-deny-gate-1)
 
-Plugin tools declare `roles[]` in their manifest. The dispatcher rejects calls whose `ctx.role` (from URL spawn param) is not in the list.
+A **fail-closed posture**: when the host sets `deps.defaultDeny`, a tool that declares **no gate at all** — no capabilities, no agent `roles`, no `requireRoles`, no `authorize` hook — is denied as `ungated` (403) unless it is explicitly marked `public: true` (the `[AllowAnonymous]` equivalent).
+
+It is **off by default** (the legacy allow-by-omission posture; no behavior change) and is **not bypassable** by `GateBypass` — an ungated tool is a declaration gap regardless of caller, so the fix is to declare a gate or mark it `public`.
+
+`defineTool` *requires* a `capability`, so every first-party built-in tool already declares a gate and is never `ungated`. The posture exists to catch plugin / direct `registerProjectedTool` registrations that forgot to gate themselves. Before flipping `deps.defaultDeny` on, run `listUngatedProjectedTools()` (with the full registry loaded) — an empty result means the flip is safe; anything it returns must declare a gate or be marked `public` first.
+
+## Role allowlist (gate 2)
+
+[Section titled “Role allowlist (gate 2)”](#role-allowlist-gate-2)
+
+Tools declare `roles[]` — the **agent**-role allowlist (worker / scoper / architect / …), checked against `ctx.role` from the URL spawn param. This is orchestration gating, distinct from the RBAC role requirement below.
 
 ```jsonc
 {
@@ -15900,11 +16135,11 @@ A `validator` calling this tool gets:
 }
 ```
 
-HTTP status: 403. The check only runs when *both* `tool.roles` and `ctx.role` are set. Built-in tools (no `tool.roles`) skip this check; they’re gated by the next one.
+HTTP status: 403. The check only runs when *both* `tool.roles` and `ctx.role` are set, and is skipped when `GateBypass.role` is set. Tools without `tool.roles` skip this check.
 
-## Check 2 — Capability check (built-in tools)
+## Capability check (gate 3)
 
-[Section titled “Check 2 — Capability check (built-in tools)”](#check-2--capability-check-built-in-tools)
+[Section titled “Capability check (gate 3)”](#capability-check-gate-3)
 
 Built-in tools declare a single capability string per tool. When a request arrives with a bearer token, the framework resolves it to a principal with a `Set<string>` of granted capabilities. The dispatcher checks `tool.capabilities[]` ⊆ `principal.capabilities`.
 
@@ -15913,11 +16148,35 @@ Two distinct failure modes:
 * **No principal at all** (no bearer or invalid bearer) → `unauthorized` (401). The wrapper around legacy `defineTool` handlers throws `UnauthorizedToolError`; the dispatcher catches it and maps to 401.
 * **Principal present but missing the required capability** → `missing_capability` (403).
 
-Plugin tools have `capabilities[]` declared too, but they’re descriptive-only today — used by the Intel UI and tooling, not enforced. The principal/auth model that would enforce them on plugins is not yet wired (gated behind the same future HMAC-signing work that would let us bind off-loopback).
+The check is skipped when there is no principal (the agent path gates via the role allowlist instead) or when `GateBypass.capability` is set. Plugin tools have `capabilities[]` declared too, but they’re descriptive-only today — used by the Intel UI and tooling, not enforced.
 
-## Check 3 — Per-window quota
+## RBAC role requirement (gate 4)
 
-[Section titled “Check 3 — Per-window quota”](#check-3--per-window-quota)
+[Section titled “RBAC role requirement (gate 4)”](#rbac-role-requirement-gate-4)
+
+A tool declaring `requireRoles` is callable only by a principal whose **RBAC `roles`** (`principal.roles`) include at least **one** of them (any-of). This is the typed, declarative, audited replacement for ad-hoc `requireAdminKey` / `requireStaff`-style checks.
+
+```jsonc
+{ "requireRoles": ["staff", "admin"] }   // caller must hold staff OR admin
+```
+
+`principal.roles` is a **distinct axis** from `kind` (how the caller authenticated), from `capabilities` (OAuth-scope-like grants), and from the agent `roles` allowlist above (which is checked against `ctx.role`, not the principal).
+
+* **Principal holds a required role** → pass.
+* **Principal lacks every required role, or there is no principal (anonymous)** → `missing_role` (403). The gate is **fail-closed**: a role requirement can’t be satisfied without an identity.
+* Skipped when `GateBypass.role` is set — a superuser passes RBAC role gates as it passes the agent-role allowlist.
+
+Every denial emits an authorization audit event (see below).
+
+## Harness-required gate (gate 5)
+
+[Section titled “Harness-required gate (gate 5)”](#harness-required-gate-gate-5)
+
+A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. This gate **fails closed even for privileged callers** — `GateBypass.harness` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can’t function without a harness; the point is to return the uniform “harness required” hint rather than push the failure into the handler.
+
+## Per-window quota (gate 6)
+
+[Section titled “Per-window quota (gate 6)”](#per-window-quota-gate-6)
 
 A window is a counter scoped by `(workspace, tool, role, window_key)` against `harness_shared.tool_invocations`. The window key depends on role:
 
@@ -15950,7 +16209,7 @@ When a call exceeds, the dispatcher returns:
 }
 ```
 
-HTTP status: 429.
+HTTP status: 429. Skipped when `GateBypass.quota` is set.
 
 ### Quota under concurrency
 
@@ -15966,9 +16225,43 @@ There is a theoretical TOCTOU window: all five readers could see `count=0` befor
 
 Read-only tools (`roles:list`, `snapshots:get`) shouldn’t have a `rolesQuota`. Quotas exist for: external API spend, PG write bursts, subprocess fan-out. Counting every read produces noise without protection.
 
-## Check 4 — Per-tool timeout
+## Resource authorization (gate 7)
 
-[Section titled “Check 4 — Per-tool timeout”](#check-4--per-tool-timeout)
+[Section titled “Resource authorization (gate 7)”](#resource-authorization-gate-7)
+
+The coarse gates above answer “may this *kind* of caller use this tool”. The `authorize` hook answers the **fine-grained** question the others can’t express: “may THIS principal act on THIS *resource*” (ownership / ReBAC / ABAC).
+
+```ts
+defineTool({
+  name: 'orders:get',
+  capability: 'orders:read',
+  authorize: ({ principal, input }) =>
+    input.ownerId === principal?.slug
+      ? { allow: true }
+      : { allow: false, reason: 'not the owner' },
+  // …
+});
+```
+
+It runs **after** the coarse gates and **before** the handler, **fail-closed** (a throw denies → `authorization_denied`), and is **additive** — a tool with no `authorize` skips this gate entirely. Because it runs in-process with the tool’s `ctx`, it can load the resource it needs to decide (“authorize close to the data”) and can return `obligations` (e.g. a row filter) for list endpoints rather than checking each row.
+
+The framework is the **policy-enforcement point**; it ships the contract (`AuthzQuery` / `AuthDecision` / `PolicyDecisionPoint`, plus a trivial `ownerOnly` helper) and **no policy engine** — the decision is the host’s, supplied as an in-process closure or by delegating to an external PDP (OPA / Cedar / OpenFGA / Cerbos / an AuthZEN engine).
+
+### Break-glass: `GateBypass.policy`
+
+[Section titled “Break-glass: GateBypass.policy”](#break-glass-gatebypasspolicy)
+
+Unlike the role/capability/quota bypasses, the resource-`authorize` gate is **not** skipped by them — resource ownership is a separate decision a host opts out of explicitly, per call, via `GateBypass.policy` (default off). And even then **the bypass is audited**: skipping the hook still emits an authz audit event recording the bypass. Break-glass best practice is “policy-governed *and* mandatorily logged” — a bypassed check that isn’t logged is the silent super-admin the standard forbids.
+
+## The authorization audit trail
+
+[Section titled “The authorization audit trail”](#the-authorization-audit-trail)
+
+Gates 4 and 7, and every `GateBypass.policy` bypass, emit an `AuthAuditEvent` through the optional `deps.auditAuth` sink — every allow, deny, and bypass. The Papercusp host persists them to `harness_shared.tool_authz_log` (`apps/operator/lib/tool-authz-audit.ts`), a security-decision stream distinct from the login-scoped `auth_audit_log` and the per-call `tool_invocations` telemetry. It answers “show me every denial / every break-glass bypass / everything this principal was denied”.
+
+## Per-tool timeout (gate 8)
+
+[Section titled “Per-tool timeout (gate 8)”](#per-tool-timeout-gate-8)
 
 Each manifest entry has `timeoutSec` (default 60). The dispatcher creates an `AbortController`, hands `controller.signal` to the function as `ctx.signal`, and aborts after the configured time. Functions doing long work should watch `ctx.signal.aborted` and bail.
 
@@ -15988,17 +16281,21 @@ HTTP status: 504. The `tool_invocations` row records `status='timeout'`.
 
 For HTTP transport, `statusForErrorCode` in `http-projection.ts` maps:
 
-| Error code           | HTTP | Source                                               |
-| -------------------- | ---- | ---------------------------------------------------- |
-| `unauthorized`       | 401  | Built-in tool, no bearer / invalid bearer            |
-| `role_not_allowed`   | 403  | Plugin tool, role not in allowlist                   |
-| `missing_capability` | 403  | Built-in tool, principal missing required capability |
-| `quota_exceeded`     | 429  | Window count ≥ limit                                 |
-| `invalid_input`      | 400  | Function threw a typed input-validation error        |
-| `timeout`            | 504  | AbortController fired before function returned       |
-| `unknown_tool`       | 404  | No projection registered at this path/name           |
-| `method_not_allowed` | 405  | HTTP method not in `expose.http.methods`             |
-| anything else        | 500  | Function threw an unhandled error → `handler_error`  |
+| Error code             | HTTP | Source                                                      |
+| ---------------------- | ---- | ----------------------------------------------------------- |
+| `ungated`              | 403  | Default-deny on; tool declares no gate and isn’t `public`   |
+| `unauthorized`         | 401  | Built-in tool, no bearer / invalid bearer                   |
+| `role_not_allowed`     | 403  | Agent role not in the tool’s allowlist                      |
+| `missing_capability`   | 403  | Principal missing required capability                       |
+| `missing_role`         | 403  | Principal missing a required RBAC role (`requireRoles`)     |
+| `harness_required`     | 400  | `harness:'required'` tool with no harness in scope          |
+| `quota_exceeded`       | 429  | Window count ≥ limit                                        |
+| `authorization_denied` | 403  | The tool’s `authorize` hook denied (or threw → fail-closed) |
+| `invalid_input`        | 400  | Function threw a typed input-validation error               |
+| `timeout`              | 504  | AbortController fired before function returned              |
+| `unknown_tool`         | 404  | No projection registered at this path/name                  |
+| `method_not_allowed`   | 405  | HTTP method not in `expose.http.methods`                    |
+| anything else          | 500  | Function threw an unhandled error → `handler_error`         |
 
 For MCP transport, errors are returned as a normal `tools/call` result with `isError: true` and a `content[].text` describing the error. There’s no JSON-RPC-level rejection — the MCP spec puts tool errors in the result envelope.
 
@@ -16008,24 +16305,23 @@ For MCP transport, errors are returned as a normal `tools/call` result with `isE
 
 Here’s what happens when a `worker` tries to call `firecrawl.scrape` with `chunk=Q1` for the second time:
 
-1. **Role check.** `firecrawl.scrape.roles = [scoper, architect, operator, reviewer, debugger, worker]`. Worker is in. Pass.
-2. **Capability check.** Plugin tool — no principal — skipped.
-3. **Quota check.** Window `chunk:Q1`, role `worker`. Manifest says `worker: { perChunk: 2 }`. Read state: `count=1` (the first call already landed as ok). 1 < 2, pass.
-4. **Timeout.** AbortController set to 60s.
-5. **Execute.** `scrape` runs, completes in 800ms, returns content.
-6. **Record.** Insert `tool_invocations` row: `tool_name='firecrawl.scrape', role='worker', window_key='chunk:Q1', status='ok', duration_ms=800, output_size=...`.
+1. **Default-deny.** Off by default → skip. (Even if on, `firecrawl.scrape` declares a role allowlist, so it’s gated.)
+2. **Role check.** `firecrawl.scrape.roles = [scoper, architect, operator, reviewer, debugger, worker]`. Worker is in. Pass.
+3. **Capability check.** Plugin tool — no principal — skipped.
+4. **RBAC role requirement.** No `requireRoles` → skip.
+5. **Harness gate.** Not `harness:'required'` → skip.
+6. **Quota check.** Window `chunk:Q1`, role `worker`. Manifest says `worker: { perChunk: 2 }`. Read state: `count=1` (the first call already landed as ok). 1 < 2, pass.
+7. **Resource authorization.** No `authorize` hook → skip.
+8. **Timeout.** AbortController set to 60s.
+9. **Execute + record.** `scrape` runs, completes in 800ms; insert `tool_invocations` row with `status='ok', duration_ms=800`.
 
-Same call a third time:
-
-1. Role check — pass.
-2. Capability check — skip.
-3. Quota check. Read state: `count=2`. 2 ≥ 2. **Fail.** Insert quota-exceeded row, return 429.
+Same call a third time: gates 1–5 pass/skip as before, then the quota check reads `count=2`, `2 ≥ 2`, **fails**, inserts a quota-exceeded row, returns 429.
 
 ## Where the dispatcher lives
 
 [Section titled “Where the dispatcher lives”](#where-the-dispatcher-lives)
 
-`packages/tooldef/src/dispatch-projected.ts` is the only place these checks run. If you find yourself wanting to add a custom gate inside a tool function, you’re probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
+`packages/tooldef/src/dispatch-stack.ts` defines `DEFAULT_DISPATCH_STACK` — the one ordered list these checks run in; `dispatch-projected.ts` drives it. If you find yourself wanting to add a custom gate inside a tool function, you’re probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
 
 # Operations
 
@@ -22594,6 +22890,165 @@ grep -rln "FLAGS.SNAPSHOTS" apps/operator
 ```
 
 The gating sites are the documentation.
+
+# Shared harnesses
+
+> The trust and security model for peer-to-peer shared harnesses — how identity, authorization, membership, and revocation work, what we borrow from other P2P systems, and the tradeoffs we accept intentionally.
+
+Proposed design — not yet implemented
+
+This page records the security model for **shared harnesses** (the peer-to-peer, multi-engineer sync substrate), the research it rests on, and the tradeoffs we are choosing **intentionally**. As of 2026-05-31 the substrate’s trust layer is **not built** — the model below is the agreed direction, tracked in the design memo `apps/operator/docs/plans/papercusp-trust-model-2026-05-31.md`. Sections marked **Today** describe the current (insecure) state; **Recommended** describes the target.
+
+## What a shared harness is
+
+[Section titled “What a shared harness is”](#what-a-shared-harness-is)
+
+A shared harness lets several engineers collaborate on one coding project. Shared state — the **feature queue, pull-request status, the contributor list, and feature “claims”** — syncs peer-to-peer over the Holepunch stack and is projected into each peer’s local Postgres:
+
+* **Hyperswarm** — DHT peer discovery. The swarm **topic = `sha256("papercusp-substrate-v1:gh:<github_repository_id>")`**, derived from the *public* GitHub repo id, so it is **discoverable, not a secret**.
+* **Hypercore** — one Ed25519-signed append-only log per device.
+* **Autobase** — merges many device Hypercores into one materialized view (concurrent, eventually-consistent).
+
+Identity is anchored to **GitHub**: each device holds an Ed25519 keypair in the OS keychain, and a **two-channel binding** ties that pubkey to a GitHub login (an OAuth `GET /user` re-check **plus** a GitHub-verified, device-signed commit/gist).
+
+The single most important fact: **the authority for the one thing that truly matters — merging code — is GitHub itself.** PRs merge through the GitHub REST API with a real user token, so GitHub’s write-access and branch-protection rules are enforced regardless of anything that happens on the swarm.
+
+## The trust problem
+
+[Section titled “The trust problem”](#the-trust-problem)
+
+Today: the substrate is wide open
+
+Replicated Autobase ops are **not signed, authenticated, or authorized on receipt** — the only admission check is a schema-version filter. Because the swarm topic is derivable from the public repo id, **any peer who can reach the DHT can join and write forged feature/PR/contributor/claim rows into every other peer’s local database.** The designed defenses (per-op signatures, an `addWriter` admission step, a `revoked_pubkeys` drop-list, gating on the two-channel binding) exist on paper but have **no production callers**.
+
+Keep two threat models separate:
+
+* **Untrustworthy local user** — every local API route is `auth: 'public'` (127.0.0.1 only). It trusts whoever is on the desktop. Fine for a single-user desktop; not a shared-machine model.
+* **Untrustworthy swarm peer** *(the serious one)* — public topic + unsigned ops means a peer can poison every other peer’s local DB/UI. This is what the security layer exists to contain.
+
+A code audit (2026-05-31) confirmed that **GitHub is the only authorization actually enforced today.** Everything Papercusp layers on top — the feature state machine, the PR “trusted authors” gate, the `completion_ref` “shipped ✓” verifier, contributor identity signatures, and substrate op-auth — is currently dead code, unwired, or self-asserted.
+
+## How other systems solve it
+
+[Section titled “How other systems solve it”](#how-other-systems-solve-it)
+
+A three-pass survey of production P2P / local-first / decentralized systems. They converge on a small primitive set: **sign every replicated write and verify it on receipt; gate membership cryptographically; anchor identity to keys or an external authority; and accept that true deletion is impossible in an append-only log.**
+
+| System                              | Identity anchor                                                           | Per-op authorization                                                                                        | Membership / removal                                                                       | Verdict for Papercusp                                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Hypercore**                       | per-device Ed25519 key (our model)                                        | signed merkle tree per log (integrity, single-writer)                                                       | —                                                                                          | **Maps** — proves you authored *your* log, not that you’re allowed                                                                                             |
+| **Autobase**                        | —                                                                         | **none built in**; *“optimistic blocks should self-verify in the apply handler”*                            | `addWriter`/`removeWriter` are app calls inside `apply`                                    | **Maps / confirms the gap** — per-op verification is the app’s job                                                                                             |
+| **Hyperswarm / HyperDHT**           | connecting peer’s Noise key                                               | Noise authenticates the *connection*, not ops                                                               | only `firewall(remotePublicKey)`                                                           | **Maps / confirms threat** — public topic; connection-auth ≠ op-auth                                                                                           |
+| **blind-pairing** (Keet)            | invite secret                                                             | candidate signs with invite key; member verifies                                                            | admit-by-invite; app-evaluated `userData`                                                  | **Partial** — a ready admission handshake; put the GitHub proof in `userData`                                                                                  |
+| **Radicle** *(closest analog)*      | self-sovereign `did:key` (opposite of ours)                               | **signs every write** (`refs/rad/sigref`); **rejects invalid before storing**; signed collaborative objects | delegate threshold/quorum                                                                  | **Mechanism maps, anchor doesn’t** — proves the sign-and-verify-before-store pattern                                                                           |
+| **Radicle COBs**                    | content-addressed                                                         | exposes each change’s author → filter a bad author at view-build                                            | filter at materialization                                                                  | **Maps** — our `revoked_pubkeys` is this *local projection filter*, not network rejection                                                                      |
+| **Kleppmann (BFT-CRDT)**            | —                                                                         | **signatures necessary but NOT sufficient** — a signed *equivocation* breaks version vectors                | a replicated ACL must itself be a BFT CRDT                                                 | **Decisive** — don’t try to make advisory state Byzantine-trustworthy                                                                                          |
+| **Keyhive / BeeKEM** (Ink & Switch) | **deliberately excludes** identity binding                                | capability chains + per-op Ed25519 sig; BeeKEM needs only **causal** order → fits Autobase                  | coordination-free removal with **real post-compromise security**                           | **Authz maps; complements (≠ replaces) the GitHub binding** — see [Keyhive](#does-keyhivebeekem-fit-our-stack)                                                 |
+| **MLS / RFC 9420**                  | —                                                                         | TreeKEM epoch chain                                                                                         | needs **one linear chain of agreed Commits**; concurrent commits fork a DAG it can’t merge | **Does not map** over Autobase’s concurrent merge                                                                                                              |
+| **Keybase** *(two-channel analog)*  | per-user signed **sigchain**; key↔GitHub via a GitHub-hosted signed proof | each link signed, `seqno` + `prev` hash                                                                     | revocation = a **signed revoke link**; sibkeys for device-loss recovery                    | **Maps — improves the binding**: model two-channel as a signed link; revoke-as-signed-statement beats a side-list                                              |
+| **Sigstore / SLSA / in-toto**       | short-lived **OIDC** identity (Fulcio)                                    | keyless sig + **Rekor transparency log**; in-toto/DSSE                                                      | no revocation (short-lived certs); compromise caught by **monitoring**                     | **Partial — provenance pattern**: a signature proves *authenticated-at-a-time*, **not** authorization or “good.” Confirms “shipped” must be **GitHub-derived** |
+| **AT Proto `did:plc`**              | hybrid: self-cert keys + a directory                                      | signed repo commits                                                                                         | **rotation-key priority list + 72h recovery window**                                       | **Partial — recovery lesson**: for us, GitHub *is* the recovery anchor                                                                                         |
+| **Nostr NIP-05**                    | pubkey ↔ `name@domain` via a `.well-known` file                           | per-event Schnorr sig                                                                                       | —                                                                                          | **Partial** — a GitHub-hosted well-known file is a lighter binding variant                                                                                     |
+| **Secure Scuttlebutt**              | per-identity signed append-only feed (≈ Hypercore)                        | every message signed                                                                                        | **invite + follow-graph** bounds replication & Sybils                                      | **Partial — admission analog**: the GitHub collaborator graph is our follow-graph                                                                              |
+
+### The decisive constraints
+
+[Section titled “The decisive constraints”](#the-decisive-constraints)
+
+1. **Autobase will not authenticate ops for us** — per-op signing and `addWriter` gating are *our* code, in the `apply`/projection seam.
+2. **Signatures are necessary but not sufficient** (Kleppmann) — a validly-admitted-then- malicious writer can sign false or *equivocating* rows. Full Byzantine resilience needs a hash-DAG causal layer we are **not** going to build.
+3. **True removal / post-compromise security is impossible in an append-only multi-writer log** — a revoked writer’s signed ops persist and replicate; “removal” means every honest peer drops them at projection time.
+4. **A provenance signature proves authentication-at-a-time, not authorization or quality** (Sigstore) — so the trustworthy “shipped” signal must come from GitHub’s *merge state*, not a self-reported receipt.
+5. **GitHub already enforces the only hard authorization that matters.** This is the escape hatch from the unsolved Byzantine-CRDT access-control problem.
+
+## Does Holepunch provide its own solution?
+
+[Section titled “Does Holepunch provide its own solution?”](#does-holepunch-provide-its-own-solution)
+
+Mostly the **building blocks**, not a turnkey access-control product:
+
+* **Hypercore** signs each log for free.
+* **Autobase** gives a writer set with `addWriter`/`removeWriter`, but **you** write the per-op check and the admission policy in `apply`.
+* **blind-pairing-core** (what Keet actually uses) is a real cryptographic invite/pairing handshake — admit-by-possession-of-invite-secret. This is Holepunch’s native admission answer.
+* **Hyperswarm** gives Noise-encrypted connections + a coarse `firewall(remotePublicKey)` reject hook.
+
+What Holepunch deliberately leaves to the app: fine-grained capabilities (read/write/admin), **identity binding** (always app-layer — our GitHub anchor), and **post-compromise security on removal** (`removeWriter` stops new appends; it is not key-rotation/PCS). Of those, the only one we actually need is identity binding — which no library provides.
+
+**So the plan builds on Holepunch’s native primitives**: per-op signature verification + GitHub-anchored `addWriter` (via blind-pairing, GitHub proof in `userData`) + a `revoked_pubkeys` projection drop-list.
+
+## Does Keyhive/BeeKEM fit our stack?
+
+[Section titled “Does Keyhive/BeeKEM fit our stack?”](#does-keyhivebeekem-fit-our-stack)
+
+Compatible *in principle*, but **not native and arguably overkill**:
+
+* **It fits the ordering model** — BeeKEM needs only a *causal* order, which Autobase provides. It’s the only post-compromise-secure option that works over a concurrent-merge log (MLS does not).
+* **But it’s an Automerge-ecosystem Rust library** (the `beekem` crate), not a Holepunch component. Adopting it means embedding that crate and running its control ops over Autobase — an unsupported combination, and it is **pre-alpha, unaudited, BeeKEM not formally proven**.
+* **It couples authorization with *encryption*** (it’s a continuous group key agreement). Our substrate data is plaintext to swarm members today; BeeKEM means encrypting group state with key rotation — a large shift that *buys* post-compromise security but is more than advisory data needs.
+* **It still doesn’t solve identity** — Keyhive defers human-identity binding to “a future layer above,” i.e. our GitHub anchor regardless.
+
+Verdict on Keyhive
+
+For the recommended model (advisory peer state re-derived from GitHub) we **do not need Keyhive**. Holepunch’s native primitives + the GitHub anchor are sufficient. Keyhive/BeeKEM is a deferred upgrade **only if** a concrete requirement emerges for state that must be *confidential to members and survive a key compromise without GitHub*.
+
+## Recommended model — GitHub is the authority of record
+
+[Section titled “Recommended model — GitHub is the authority of record”](#recommended-model--github-is-the-authority-of-record)
+
+1. **Authority of record = GitHub.** Every *decision-bearing* fact (did it merge, who has write access, real PR status, who is a contributor) is **re-derived from GitHub at the point of action** — never trusted from a peer.
+2. **Peer-synced rows = advisory cache** (fast/offline UI), explicitly untrusted.
+3. **Per-op Ed25519 signing + verify-on-receipt** in the Autobase `apply`/projection path — *defense-in-depth / UX integrity*, not the authority of record. **Sign sequence + freshness, not just content** (Radicle’s 2026 replay-CVE lesson).
+4. **GitHub-anchored writer admission** — `addWriter` gated on the two-channel binding (blind-pairing handshake, GitHub proof in `userData`) + `revoked_pubkeys` as an advisory projection-time drop-list.
+5. **Identity binding = a Keybase-style signed link** — the GitHub-hosted device-signed proof is the cross-check that lets any peer detect a rewritten identity; revocation is a *signed* statement, not just a side list.
+6. **Device-key rotation/recovery is GitHub-rooted** — losing a device means re-running the two-channel binding from the new device; the old key goes on `revoked_pubkeys`. GitHub (the account) plays `did:plc`’s “higher-authority key” recovery role.
+7. **“Shipped”/provenance = GitHub-derived** — read merge state from GitHub; optionally record it as a signed in-toto-style attestation. Do **not** build a Rekor-style transparency log — GitHub already is the authority and stores attestations. (This also means the `completion_ref` “shipped” signal should be GitHub-derived, not a self-reported peer receipt.)
+8. **Sybil/admission = the GitHub collaborator graph** as the allow-list (the SSB follow-graph analog) + the `firewall(remotePublicKey)` hook.
+9. **Do not** adopt MLS or build a Byzantine-CRDT ACL.
+
+### The advisory-vs-trusted boundary
+
+[Section titled “The advisory-vs-trusted boundary”](#the-advisory-vs-trusted-boundary)
+
+The central decision: which synced surfaces are advisory vs must-re-derive-from-GitHub.
+
+| Synced surface           | Advisory (peer-supplied cache)? | Decision-bearing → re-derive from GitHub?                           |
+| ------------------------ | ------------------------------- | ------------------------------------------------------------------- |
+| Feature queue / status   | yes — display & coordination    | a “shipped” decision → GitHub merge state                           |
+| PR status                | yes — display                   | merge / approval authority → GitHub                                 |
+| Contributor list         | yes — display                   | ”is X a real contributor / has write access” → GitHub collaborators |
+| Feature claims           | yes — coordination/UX only      | (advisory by nature; no hard authority needed)                      |
+| Completion / “shipped ✓“ | no                              | **GitHub-derived only**                                             |
+
+Anything in the right column must never be acted on from peer state alone.
+
+## Accepted-insecurity tradeoffs
+
+[Section titled “Accepted-insecurity tradeoffs”](#accepted-insecurity-tradeoffs)
+
+Under this model we **deliberately accept**:
+
+1. **Public, discoverable topic** — swarm spam/DoS is *mitigated* (firewall + admission), not prevented.
+2. **Advisory rows can be transiently forged** in local UI until per-op signing ships — and even after, an admitted-then-malicious writer can inject signed-but-false advisory rows (equivocation). Mitigation: nothing decision-bearing acts on it without GitHub re-derivation.
+3. **No true removal / no post-compromise security** in the append-only log — revocation is best-effort projection filtering; the data persists and replicates.
+4. **Sybil resistance is delegated to GitHub** — identity = GitHub account; only as strong as the two-channel binding + GitHub’s account-creation friction.
+5. **Per-op signatures don’t defeat a signed equivocator** (Kleppmann) — accepted because state is advisory and GitHub-re-derived; we explicitly do not build a BFT-CRDT ACL.
+6. **Identity binding inherits GitHub account integrity** — a compromised GitHub account is a compromised identity (the same trust root as the merge authority, so not a new exposure).
+7. **Local API stays loopback-trusted** — a single-user-desktop model, not a shared machine.
+
+## Phased implementation
+
+[Section titled “Phased implementation”](#phased-implementation)
+
+* **Phase 1 — make peer state advisory + re-derive from GitHub.** Highest value, lowest risk; neutralizes the forgery surface for anything that matters. Resolves `completion_ref` as a GitHub-derived “shipped” signal.
+* **Phase 2 — per-op Ed25519 signing + verify-on-receipt** in the `apply`/projection path (sign seq + content); drop unverifiable ops at projection.
+* **Phase 3 — GitHub-anchored `addWriter` admission** (two-channel proof in blind-pairing `userData`) + `revoked_pubkeys` projection drop-list; model the binding as a signed link.
+* **Phase 4 — only if a threat model demands real PCS** — Keyhive/BeeKEM membership.
+
+## Sources & method
+
+[Section titled “Sources & method”](#sources--method)
+
+Three deep-research passes (web search → fetch primary sources → adversarial verification), \~9M tokens. Passes 1–2 (50 claims verified): Holepunch repos, Radicle (Heartwood + `radicle-cob` + LWN), ForgeFed, Kleppmann (PaPoC’22 + keynote), Ink & Switch Keyhive notebook, RFC 9420/9750 + DMLS drafts. Pass 3 (Keybase, Sigstore/SLSA, `did:plc`, Nostr, SSB): primary-sourced but the workflow’s vote-tally step crashed, so those rows are extracted-not-triple-verified; the two most decision-relevant (Sigstore threat model, `did:plc` recovery) were re-confirmed by direct fetch. Full per-claim detail lives in the design memo `apps/operator/docs/plans/papercusp-trust-model-2026-05-31.md`.
 
 # Sharable infrastructure plan
 

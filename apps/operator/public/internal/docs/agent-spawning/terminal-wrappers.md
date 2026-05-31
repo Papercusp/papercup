@@ -93,6 +93,48 @@ resume works from that same terminal. `psu` prints the launch `cwd` so you
 know where to resume from. (Or resume from the `/adv` Sessions tab, which
 already knows the cwd.)
 
+`psu --resume` is the location-independent path: it lists your recent
+tracked sessions, `cd`s to each one's recorded cwd, and resumes the agent
+there — so you don't have to be in the launch dir.
+
+## Role sessions — `psu --role`
+
+By default `psu` launches an **engineer-collaborator (`su`)** session: the
+full `papercusp-su` catalog + the engineer playbook. With `--role` you
+instead launch the session **as a pipeline role** (worker, validator,
+reviewer, debugger, documenter, architect, scoper, …) — the same persona,
+tools, and feature context the orchestrator gives that role, but **you**
+drive it interactively. It's "wear the worker's hat on F-042 and drive it
+by hand" — for debugging why a role keeps failing, hand-finishing a
+feature, or sanity-checking what a role can see.
+
+```bash
+psu --role=worker                 # picker: role → backend → workspace → harness → feature
+psu --role=worker --feature=F-042 --harness=papercup --agent=claude   # scripted
+```
+
+What's different from a plain `su` session:
+
+* **Role prompt, not the engineer playbook** — `<role>.persona.md` +
+  `<role>.tools.md`, assembled by the same `assembleRolePrompt` the
+  orchestrator and the in-app brains use.
+* **Role-scoped tools** — the session's MCP config is a *signed,
+  role-scoped* URL (`role=<role>`, not `?superuser=1`), so the dispatch
+  layer enforces exactly that role's tool allowlist — true parity with an
+  orchestrator-spawned agent.
+* **Feature context** — feature-consuming roles (worker/validator/…)
+  prompt for a feature; the picker knows which roles need one from the
+  role registry's `consumes` field (`roleConsumes`), the single source for
+  "what context does this role need."
+
+The session is tracked in `/adv` Sessions like any other, tagged with its
+role + feature. Backends: `claude` and `omp` today; `codex` interactive
+role sessions are not yet wired (use `claude`/`omp`).
+
+This is distinct from the orchestrator firing a role **autonomously**
+(headless, output-parsed, scheduled) — that always routes through
+`orchestrator.spawn`, never a terminal `psu`.
+
 ## Install
 
 ```bash

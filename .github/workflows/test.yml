@@ -199,11 +199,11 @@ jobs:
         run: node node_modules/lost-pixel/node_modules/playwright-core/cli.js install chromium
 
       - name: Build Storybook (ui-primitives)
-        working-directory: libs/ui-primitives
+        working-directory: libs/generic/ui-primitives
         run: npm run build-storybook
 
       - name: Lost Pixel comparison (ui-primitives)
-        working-directory: libs/ui-primitives
+        working-directory: libs/generic/ui-primitives
         run: npm run lostpixel
 
       - name: Build Storybook (marketplace-public-ui)
@@ -236,8 +236,8 @@ jobs:
         with:
           name: lost-pixel-diffs
           path: |
-            libs/ui-primitives/lostpixel-current
-            libs/ui-primitives/lostpixel-diff
+            libs/generic/ui-primitives/lostpixel-current
+            libs/generic/ui-primitives/lostpixel-diff
             libs/marketplace-public-ui/lostpixel-current
             libs/marketplace-public-ui/lostpixel-diff
             libs/agent-chat/lostpixel-current

@@ -21,7 +21,7 @@
     "@papercusp/host-platform": "file:../../libs/host-platform",
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-http": "*",
-    "@papercusp/sse": "file:../../libs/sse",
+    "@papercusp/sse": "file:../../libs/generic/sse",
     "postgres": "*",
     "zod": "*",
     "zod-to-json-schema": "*"
