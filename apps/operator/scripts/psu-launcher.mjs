@@ -35,7 +35,7 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null };
+  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
     // `--resume` alone → pick from the recent-session list. `--resume=<id>`
@@ -56,6 +56,9 @@ export function parseArgs(argv) {
     else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
     else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
     else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
+    // P-023: su playbook profile (engineer|power) — assembled per-launch now,
+    // so it's a launch flag, not a per-install choice. Default (server-side) engineer.
+    else if (a.startsWith('--profile=')) out.profile = a.slice('--profile='.length);
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
     else if (!a.startsWith('--') && out.resume && !out.resumeId) out.resumeId = a;
   }
@@ -639,6 +642,9 @@ async function main() {
       workspace: selections.workspace,
       harness_slug: selections.harness,
       plan_slug: selections.plan,
+      // P-023: playbook profile (engineer|power), assembled per-launch.
+      // Omitted → server defaults to engineer.
+      ...(args.profile ? { profile: args.profile } : {}),
       // Our cwd — the server uses it for a no-harness launch (so the
       // agent's cwd-scoped session resume works from the user's terminal,
       // not the internal .papercusp dir). Ignored for harness launches.

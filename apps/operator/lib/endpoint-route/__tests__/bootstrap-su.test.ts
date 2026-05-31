@@ -150,6 +150,7 @@ describe('bootstrap-su', () => {
         kind: 'su',
         agent: 'claude',
         harnessSlug: 'papercup',
+        profile: 'engineer', // P-023 default
         planSlug: 'my-plan',
         planTitle: 'My Plan',
         planNow: { state: 'do X', next: 'then Y' },
@@ -216,6 +217,18 @@ describe('bootstrap-su', () => {
     const res = await callPost({ agent: 'gemini', harness_slug: 'papercup' });
     expect(res.status).toBe(400);
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(buildLaunchSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('P-023: threads --profile=power through to buildLaunchSpec', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', profile: 'power' });
+    expect(res.status).toBe(200);
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ profile: 'power' }));
+  });
+
+  it('P-023: rejects an invalid profile (no silent fallback)', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', profile: 'wizard' });
+    expect(res.status).toBe(400);
     expect(buildLaunchSpecMock).not.toHaveBeenCalled();
   });
 

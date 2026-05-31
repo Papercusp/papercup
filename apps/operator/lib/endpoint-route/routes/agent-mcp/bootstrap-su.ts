@@ -204,6 +204,9 @@ const post = defineTool({
       harness_slug?: string | null;
       plan_slug?: string | null;
       label?: string | null;
+      /** Playbook profile (engineer|power), assembled per-launch (P-023).
+       *  Omitted/invalid → 'engineer'. */
+      profile?: string | null;
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
@@ -229,6 +232,14 @@ const post = defineTool({
     const harnessSlug = body.harness_slug?.trim() || null;
     const planSlug = body.plan_slug?.trim() || null;
     const callerCwd = body.cwd?.trim() || null;
+    // P-023: playbook profile. Only 'engineer' | 'power' are valid base
+    // playbooks (prompts/papercusp-su-<profile>.tools.md); anything else → 400
+    // so a typo doesn't silently fall back. Omitted → engineer.
+    const profileRaw = body.profile?.trim() || null;
+    if (profileRaw && profileRaw !== 'engineer' && profileRaw !== 'power') {
+      return jsonRes({ status: 'error', error: `profile must be engineer|power (got ${profileRaw.slice(0, 24)})` }, 400);
+    }
+    const profile = profileRaw ?? 'engineer';
 
     // Resolve cwd + context env from the existing console envelope builder
     // (shell mode), scoped to the chosen workspace. We use its env + cwd;
@@ -281,6 +292,7 @@ const post = defineTool({
         workspaceId: workspace,
         operatorBaseUrl: new URL(req.url).origin,
         harnessSlug,
+        profile,
         planSlug,
         planTitle,
         planNow,

@@ -29,6 +29,7 @@ describe('psu-launcher arg parsing', () => {
       model: null,
       resumeSession: null,
       launchContext: null,
+      profile: null,
     });
   });
 
@@ -49,6 +50,7 @@ describe('psu-launcher arg parsing', () => {
       model: null,
       resumeSession: null,
       launchContext: null,
+      profile: null,
     });
   });
 
@@ -72,6 +74,11 @@ describe('psu-launcher arg parsing', () => {
 
   it('parses --no-plan', () => {
     expect(parseArgs(['--no-picker', '--agent=omp', '--harness=x', '--no-plan']).noPlan).toBe(true);
+  });
+
+  it('parses --profile (P-023); defaults to null', () => {
+    expect(parseArgs(['--profile=power']).profile).toBe('power');
+    expect(parseArgs(['--agent=claude']).profile).toBeNull();
   });
 
   it('resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)', () => {
