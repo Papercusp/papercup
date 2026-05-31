@@ -42,22 +42,44 @@ and the tokens aren't redefined where edited:
 - **B5** (`f6ded881`) cleanly-isolable stragglers: `adv-dock.css` (sky-300 +
   sky-cool → fully theme-following), `admin-tables.css`, `h-proposals.css`.
 
-**STOP — remainder is a DESIGN frontier, not mechanical** (do NOT blind-convert):
-- **Decorative multi-hue rotations** — `harness.css` tab/log/git accents
-  (`nth-child(1)=#38bdf8`, `(2)=#f59e0b` amber, `(3)=#22d3ee` cyan, …) and
-  `plans.css` status palette (todo=sky, blocked=rose, …). Sky is one hue in an
-  intentional rainbow; treat like the kept status colors — **leave**.
-- **Cinematic HUD gradients** (`globals.css` ~8581+) mixing sky-cool + **sky-200
-  (×109), sky-500 (×19), sky-700 (×12)** which have **no semantic token**. Needs
-  (a) a product call — does black keep the cinematic blue HUD or go monochrome? —
-  and (b) new `--accent-tint-*` tokens for the untokened shades. Converting only
-  the tokened shades would make these multi-stop gradients inconsistent.
-- Low-value / non-themeable: `operator-mock` (demo), Chatwoot `widgetColor`
-  (3rd-party JS), `dev.css` (internal /dev page), `#0ea5e9`/`#57d7ff` (no token),
-  `plans.css` hero-cyan accent mix.
+**B6** (`f4bf08d3`) — accent-tint token scale (`accent-soft`=sky-200,
+`accent-deep`=sky-500, `accent-deeper`=sky-700; frost aliases the primitives,
+black = monochrome greys) + sweep of **184** rgba sky tints (cool/200/500/700)
+across 12 files → `color-mix(in srgb, var(--accent-*))`. Closes the last sky-tint
+leaks (incl. the cinematic HUD's sky shades).
 
-Net: the black theme is monochrome across all primary chrome; residual blue is
-confined to the intentional rainbow accents + the cinematic HUD effects.
+### Tauri-verified (drove the live desktop via the dev bridge + screenshots)
+Bridge `eval` + `import -window` screenshots confirmed, in the running webview:
+- New tints live after reload: `--accent-soft` = `#bae6fd` (frost) / `#d8d8d8` (black).
+- **Content panels sample neutral grey** (`#363738`) under black — accents/tints work.
+- **BUT chrome surfaces (sidebar, header) still read navy** (`#111A24`, blue > red).
+
+### The real remaining gap: SURFACE navy is a re-skin, not a token-swap
+The frost theme's dark base isn't a few `--bg` tokens — it's **~270 distinct
+bespoke dark-navy literals** (`rgb(3,10,20)` ×82, `rgb(7,16,29)`=`#07101d` ×44,
+`rgb(9,19,34)` ×23, the sidebar's `rgb(6,14,24)→rgb(3,8,15)` gradient, the header's
+`rgb(6,13,24)` at ~10 alphas, …) hand-tuned throughout. Because they bypass the
+`--bg` tokens, black keeps a faint navy cast on chrome. Making it pure-black means
+EITHER:
+- (a) **a dark-surface re-skin**: introduce a `--surface-*` scale, route the navy
+  family, frost-exact per shade (≈many tokens) — substantial; OR
+- (b) **normalize** the navy family → the `--bg` family (one token), accepting a
+  *sub-perceptible* frost change (verified: sidebar `#111A25`→`#0F1924`) that
+  flattens some bespoke navy depth — fast, and improves token robustness (req #3).
+
+Also note: live SURFACE verification needs a clean desktop rebuild — the running
+dev shell served stale component CSS on reload (only regenerated token files
+propagated), so surface edits can't be eyeballed without a restart.
+
+**Leave regardless:** decorative multi-hue rotations (`harness.css` tab/log/git
+accents `nth-child(1)=sky,(2)=amber,(3)=cyan…`; `plans.css` status palette) —
+intentional rainbow, like status colors; `operator-mock` (demo); Chatwoot
+`widgetColor` (3rd-party JS); `dev.css` (internal); `#0ea5e9`/`#57d7ff` (no token).
+
+Net: **accents + tints + content are monochrome in black (done, committed);
+chrome surfaces retain the frost theme's bespoke navy** — pure-black there is a
+deliberate surface re-skin (option a or b above), pending a product call + a clean
+desktop rebuild to verify.
 
 ## Goal
 
