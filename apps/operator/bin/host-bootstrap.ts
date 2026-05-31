@@ -19,6 +19,7 @@ import { mountPluginApiRoutes } from '../lib/plugin-api-mount';
 import { startAutoLoopOnce } from '../lib/autoloop';
 import { ensureHarnessFsWatcher } from '../lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '../lib/harness-status-sweep';
+import { ensureWaveAdvanceSweep } from '../lib/harness/wave-advance-sweep-live';
 import { registerAllExpirables } from '../lib/expirable-registrations';
 import { startMobileVoiceWs } from '../lib/device-voice-ws';
 import { startPushCredentialRefresher } from '../lib/device-push-credentials';
@@ -101,6 +102,15 @@ export function runBootstrap(): void {
     ensureHarnessStatusSweep();
   } catch (e) {
     console.warn('[api] harness-status-sweep failed to start:', (e as Error)?.message ?? e);
+  }
+
+  // Wave-advance sweep (promote-policy-and-waves P-009): per started plan with a
+  // `## Promote` policy, auto-promote the next wave when the current one drains.
+  // No-op for plans without a policy. Idempotent.
+  try {
+    ensureWaveAdvanceSweep();
+  } catch (e) {
+    console.warn('[api] wave-advance-sweep failed to start:', (e as Error)?.message ?? e);
   }
 
   // TTL-based row expiry. Replaces ad-hoc lazy-deletes scattered across

@@ -25,14 +25,14 @@ Phase D: **P-008 + the P-009 decision core done** — `lib/harness/waves.ts` now
 `decideWaveAdvance` (cursor null→promote first; un-populated wave→wait [idempotency guard]; blocked→surface;
 in-progress→wait; drained→promote next; complete→none). 22 tests, tsc clean.
 
-P-009 orchestration done: `wave-advance-sweep.ts` — `runWaveAdvanceTick(deps)` (dep-injected, testable):
-per started plan → `decideWaveAdvance` → promote (launch, then cursor — idempotent) / onBlocked / wait;
-no-policy plans skipped; per-plan errors caught. 7 tests, tsc clean.
+**Phase D done** (P-008/009): pure wave helpers + `decideWaveAdvance` + `runWaveAdvanceTick` + the live
+adapter (`wave-advance-sweep-live.ts`) + boot registration. tsc clean; ~60 unit tests across the mechanism.
+⚠️ The live sweep is **unverified at runtime** and has two connection points open (see P-009): `promoteWave`
+→ **Phase F** (the `promote` role), `onBlocked` → **Phase E** (raise a `harness_issues` row).
 
-**Next:** P-009b-ii — the thin real-deps adapter + lifecycle: `listStartedPlans` (harness_plan_status query),
-`getPlanWaves` (readPlanBySlug + parsePromotePolicy), `getPlanFeatures` (consolidated query), `setCursor`
-(UPDATE), `promoteWave` (launch the promote agent — the one uncertain dep), `onBlocked` (→ Phase E issue),
-+ `ensureWaveAdvanceSweep` (mirror `harness-status-sweep`) + startup registration.
+**Next:** **Phase E** (blocked-wave → issue → scanner) + **Phase F** (the `promote` agent persona + how the
+sweep launches it) + the **first real dogfood** — all best done in **one host-running session** so the wired
+sweep can finally be exercised end-to-end against the `restart` universal-schema plan.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -148,9 +148,14 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
   `isWaveBlocked` (`failing>0 && inProgress===0`, or attempts≥threshold on a non-terminal), `waveCounts`
   (per-wave progress), `nextWaveToPromote(waves, cursor)` (null cursor→first, else the next; unknown→null).
   Status vocab matches harness-readers. **15 unit tests**, tsc clean.
-- **P-009** `todo` Wire the drain-advance into the autoloop/director: each tick, for each `started` plan with a
-  `## Promote` policy, if `current_wave` is drained and a next wave exists → promote it (P-006) + bump
-  `current_wave`. Idempotent (cursor guard). Document where it sits relative to the director invoke.
+- **P-009** `done` (wired, ⚠️ unverified-until-host-run) Orchestration `runWaveAdvanceTick(deps)` +
+  decision (`decideWaveAdvance`) + live adapter `wave-advance-sweep-live.ts` (`liveWaveSweepDeps` queries
+  `harness_plan_status` / consolidated, `readPlanBySlug`+`parsePromotePolicy`, `setCursor` UPDATE) +
+  `ensureWaveAdvanceSweep` (mirror `harness-status-sweep`) registered in `bin/host-bootstrap.ts`. tsc clean;
+  29 sweep/waves tests. **Two connection points pending:** `promoteWave` launches a `promote` role that
+  doesn't exist yet (**Phase F**) — until then it 4xx's, the tick logs + doesn't advance (retries);
+  `onBlocked` logs rather than raising a `harness_issues` row (**Phase E**). The sweep is a **no-op for every
+  policy-less plan**, so wiring it is safe. Runtime not yet exercised against a live harness.
 - **P-010** `todo` Tests: drain → advance, failing feature → no advance (hard-block), cursor idempotency,
   generative next-wave triggers expansion.
 
