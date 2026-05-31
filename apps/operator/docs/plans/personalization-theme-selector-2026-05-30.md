@@ -89,6 +89,26 @@ the robust, theme-agnostic behavior. Frost preserved (≤1–2 RGB units/tier).
 transform check, restored from HEAD, redone via a script file — lesson: verify
 syntax, not just counts.)
 
+**RAISED-PANEL TIERS DONE** (`9f8e7d6c`, docs `a1b2c3d4`) — the deep route's
+saturated-navy filter left ~52 *raised-panel* slate-navy literals
+(`rgb(17,34,53)`-band) untokenized: they sit ABOVE every solid tier
+(`--bg-popover` `#0d1829` is darker; `--bg-2/3/4` are translucent white glass,
+not solid panels), so those admin/harness/sidebar panels stayed navy under black
+and any custom theme. Symmetric fix to the deep band: added two **solid raised
+tiers** — `--bg-raised` (frost `#112235` = the bespoke panel mode `rgb(17,34,53)`;
+black `#181818`) and `--bg-raised-high` (frost `#143049`; black `#202020`) — to
+the DTCG source + `THEME_TOKENS`, then routed the 52 genuine literals across 8
+files to the nearest tier by lightness (alpha-preserving `color-mix`). Decorative
+multi-hue left untouched (operator-logo gold/armor, cyan/teal accent bases,
+diff-view, operator-mock). Tauri-verified the SAME panel resolves frost
+`rgb(17,34,53)@0.96` (**byte-identical**) / black `rgb(24,24,24)@0.96` (grey, was
+navy) / custom-purple `rgb(42,10,69)@0.96` purely by swapping `--bg-raised`.
+tokens.test 9/9, theme-tokens 9/9, all routed `.tsx` syntax-verified (Vite
+transform), 0 corruption. **The robustness sweep is now complete — every solid
+surface depth (deep → page → raised) is a theme token; remaining sky/navy is only
+intentional decorative (status hues, multi-hue rotations, accent bases) +
+no-token one-offs + mock.**
+
 Net: **the theme system is now robust across arbitrary themes** — accents, tints,
 AND surfaces all route through semantic tokens; black is truly black, custom themes
 fully recolor. Remaining sky is only intentional decorative palettes (status hues,
