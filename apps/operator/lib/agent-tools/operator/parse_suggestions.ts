@@ -37,7 +37,7 @@ export default defineTool({
     notWhen: `User-facing tools should not call this directly — it's a scanner-internal step.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     text: z.string().min(1),
     preferencesOverride: z.unknown().optional(),

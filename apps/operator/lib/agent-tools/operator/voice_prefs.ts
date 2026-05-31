@@ -19,7 +19,7 @@ export default defineTool({
     notWhen: `For runtime state of an active session, use \`operator:conv_voice\`. voice_prefs is user-set config.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect'],
+  agentRoles: ['operator', 'architect'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

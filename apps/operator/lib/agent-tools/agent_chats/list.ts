@@ -32,7 +32,7 @@ export default defineTool({
     chaining: 'Pair with `agent_chats:get` for detail on one chat, or `ui:dispatch` with `/harness/<slug>?chat=<chatId>` to take the user to it.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1),
     includeArchived: z.boolean().optional(),

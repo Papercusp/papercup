@@ -33,7 +33,7 @@ export default defineTool({
   description: 'Read the plugin host runtime status (loaded plugins, registered actions, mounted api routes).',
   capability: 'plugins:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const status = await pluginHostStatus();

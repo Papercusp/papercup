@@ -35,7 +35,7 @@ export default defineTool({
     notWhen: 'Don\'t use as a fishing expedition. If your playbook covers it, just call the tool. `agent_tools:list` costs a tool call.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     /** Optional substring/regex match on tool name. */
     filter: z.string().optional(),
@@ -99,9 +99,9 @@ export default defineTool({
       let reason: string | null = null;
 
       // Role allowlist (skipped in superuser mode).
-      if (!isSuperuser && tool.roles && role && !tool.roles.includes(role)) {
+      if (!isSuperuser && tool.agentRoles && role && !tool.agentRoles.includes(role)) {
         allowed = false;
-        reason = `role_not_allowed: tool requires one of [${tool.roles.join(', ')}], caller is "${role}"`;
+        reason = `role_not_allowed: tool requires one of [${tool.agentRoles.join(', ')}], caller is "${role}"`;
       }
 
       // Capability gate — only meaningful when a principal is attached
@@ -129,7 +129,7 @@ export default defineTool({
         name,
         description: tool.description,
         capability: tool.capabilities[0] ?? null,
-        roles: tool.roles ?? null,
+        roles: tool.agentRoles ?? null,
         // tier is on the legacy ToolDefinition; ProjectedTool doesn't carry it
         // — leave null for now, callers can grep the manifest if they care.
         tier: null,

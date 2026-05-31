@@ -21,7 +21,7 @@ export default defineTool({
     notWhen: `For one-shot backup creation, use \`backup:snapshot_create\`. settings_set is for the schedule/policy.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'debugger'],
+  agentRoles: ['operator', 'debugger'],
   args: z.object({
     enabled: z.boolean().optional(),
     cadenceMode: z.enum(['event', 'interval', 'both']).optional(),

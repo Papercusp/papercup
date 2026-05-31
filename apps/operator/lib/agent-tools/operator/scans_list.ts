@@ -43,7 +43,7 @@ export default defineTool({
     notWhen: `For ONE scan's full body, use the scans_get tool. For LIVE scanning state, use \`operator:last_scan\` or \`operator:trigger_state\`.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     id: z.number().int().optional(),
     query: z.string().min(1).optional(),

@@ -137,7 +137,7 @@ export default defineTool({
     'Delegate-to-claude streaming chat. Resolves session, builds MCP config, spawns claude with session resume + MCP tools; emits session→deltas→tool_calls→done. Self-contained: writes appendDelegateTurn + generateSessionTitle internally.',
   capability: 'operator:delegate',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a

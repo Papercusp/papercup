@@ -19,7 +19,7 @@ export default defineTool({
     notWhen: `For ONE harness's smoke tests, use harness-specific tools. dev:build_status is the cross-harness dev panel feed.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({}),
   async handler() {
     const result = await buildStatus();

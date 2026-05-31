@@ -28,7 +28,7 @@ export default defineTool({
     notWhen: 'Don\'t delete to "clean up" speculatively — artifacts cost nothing to keep, and other agents may rely on them.',
   },
   requirePrincipal: false,
-  roles: ['architect', 'operator', 'curator'],
+  agentRoles: ['architect', 'operator', 'curator'],
   rolesQuota: {
     architect: { perRun: 20 },
     operator: { perRun: 100 },

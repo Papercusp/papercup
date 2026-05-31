@@ -42,7 +42,7 @@ export default defineTool({
       'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a hit.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 8 }, operator: { perRun: 50 } },
   args: z.object({
     query: z.string().min(1).max(500),

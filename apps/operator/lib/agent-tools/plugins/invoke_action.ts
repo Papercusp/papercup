@@ -22,7 +22,7 @@ export default defineTool({
   description: 'Invoke a plugin action via the in-process registry. Diagnostic — architect/operator only.',
   capability: 'plugins:write',
   requirePrincipal: false,
-  roles: ['architect', 'operator'],
+  agentRoles: ['architect', 'operator'],
   rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 50 } },
   args: z.object({
     plugin: z.string().min(1),

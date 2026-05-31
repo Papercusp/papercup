@@ -37,7 +37,7 @@ export default defineTool({
     notWhen: 'For appending to an existing file, use `artifacts:append` — save fully replaces. For source code, write to the repo via filesystem tools, not artifacts.',
   },
   requirePrincipal: false,
-  roles: [...WRITE_ROLES],
+  agentRoles: [...WRITE_ROLES],
   rolesQuota: {
     worker: { perChunk: 20 },
     architect: { perRun: 50 },

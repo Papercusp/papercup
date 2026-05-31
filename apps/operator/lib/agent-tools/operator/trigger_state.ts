@@ -31,7 +31,7 @@ export default defineTool({
     notWhen: `For LIVE scan results, use \`operator:last_scan\` or \`operator:scans_list\`.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const state = await readTriggerState();

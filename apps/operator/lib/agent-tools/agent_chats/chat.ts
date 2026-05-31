@@ -113,7 +113,7 @@ export const agentChatsChat = defineTool({
     'Single-turn streaming chat against an already-assembled role prompt. Returns final text + token/cost rollup; the caller is expected to persist the assistant turn.',
   args: ArgsSchema,
   events: EVENTS,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   replayBufferSize: 5000,

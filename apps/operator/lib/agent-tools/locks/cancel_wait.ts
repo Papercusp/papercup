@@ -35,7 +35,7 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
-  roles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     ticket_id: z.string().uuid(),
   }),

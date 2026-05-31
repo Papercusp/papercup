@@ -28,7 +28,7 @@ export default defineTool({
   description: 'Fetch one role manifest by id, scoped to a harness slug (or global when slug omitted).',
   capability: 'roles:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     id: z.string().min(1),
     harnessSlug: z.string().optional(),

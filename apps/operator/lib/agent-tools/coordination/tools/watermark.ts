@@ -22,7 +22,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({}),
   async handler(_args, ctx) {
     const identity = resolveAgentIdentity(ctx);

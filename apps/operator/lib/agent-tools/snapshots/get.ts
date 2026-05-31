@@ -33,7 +33,7 @@ export default defineTool({
   description: 'Fetch one snapshot listing by id. Returns null when not in the registry.',
   capability: 'snapshots:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     id: z.string().min(1),
   }),

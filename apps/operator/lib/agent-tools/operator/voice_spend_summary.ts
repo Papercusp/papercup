@@ -87,7 +87,7 @@ export default defineTool({
     notWhen: `For operator daily budget across all surfaces, use \`operator:budget\`. voice_spend_summary is the voice slice.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     scope: z.enum(['el', 'stt', 'tts', 'all']).default('all'),
   }),

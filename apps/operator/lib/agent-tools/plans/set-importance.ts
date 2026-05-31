@@ -105,7 +105,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  roles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

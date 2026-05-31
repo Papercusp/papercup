@@ -37,7 +37,7 @@ export default defineTool({
   },
   capability: 'harness:write',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   args: z.object({
     op: z.enum(['list', 'add', 'remove', 'move']),
     slug: z.string().min(1),

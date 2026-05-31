@@ -90,7 +90,7 @@ export default defineTool({
     'Operator workspace scanner: acquires the per-workspace lock, runs the scanner LLM, parses + emits suggestion blocks, merges plugin-emitted suggestions, persists everything to scan history + idle snapshot, and releases the lock. Self-contained — safe to call from any transport.',
   capability: 'operator:scan',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a

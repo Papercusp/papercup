@@ -25,7 +25,7 @@ export default defineTool({
     notWhen: `For conversation, just speak in your reply. nudge is for non-conversational status only.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect'],
+  agentRoles: ['operator', 'architect'],
   rolesQuota: {
     architect: { perRun: 30 },
     operator: { perRun: 100 },

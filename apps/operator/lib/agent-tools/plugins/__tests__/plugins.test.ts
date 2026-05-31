@@ -109,7 +109,7 @@ describe('plugins:invoke_action', () => {
     }));
     vi.doMock('@/lib/harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
     const { default: tool } = await import('@/lib/agent-tools/plugins/invoke_action');
-    expect(tool.roles).toEqual(['architect', 'operator']);
+    expect(tool.agentRoles).toEqual(['architect', 'operator']);
   });
 });
 

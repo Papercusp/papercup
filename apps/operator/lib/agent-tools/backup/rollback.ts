@@ -23,7 +23,7 @@ export default defineTool({
     notWhen: `For applying a SPECIFIC backup, use \`backup:restore\` with the id.`,
   },
   requirePrincipal: false,
-  roles: [...ROLLBACK_ROLES],
+  agentRoles: [...ROLLBACK_ROLES],
   args: z.object({ brokenPath: z.string().min(1) }),
   async handler(args) {
     const wb = workspaceBackupFor(activeWorkspaceId());

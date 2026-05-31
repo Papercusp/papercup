@@ -20,7 +20,7 @@ export default defineTool({
     notWhen: `For voice PREFS (defaults), use \`operator:voice_prefs\`. conv_voice is runtime, not config.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect'],
+  agentRoles: ['operator', 'architect'],
   rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

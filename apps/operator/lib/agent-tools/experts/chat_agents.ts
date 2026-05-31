@@ -25,7 +25,7 @@ export default defineTool({
   description: 'List chatable agents for a harness (static roles + non-terminal expert instances).',
   capability: 'experts:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({ slug: z.string().min(1) }),
   async handler(args) {
     const result = await listChatAgents(args.slug);

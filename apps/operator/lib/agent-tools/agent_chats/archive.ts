@@ -33,7 +33,7 @@ export default defineTool({
   description: 'Archive (soft-delete) a chat session by id. Resumes the expert lifecycle if applicable.',
   capability: 'agent_chats:write',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 5 }, operator: { perRun: 50 } },
   args: z.object({
     slug: z.string().min(1),

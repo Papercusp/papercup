@@ -28,7 +28,7 @@ export default defineTool({
     notWhen: `For voice preferences, use \`operator:voice_prefs\`. voice_debug is read-only diagnostic.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger', 'reviewer'],
+  agentRoles: ['operator', 'architect', 'debugger', 'reviewer'],
   args: z.discriminatedUnion('op', [
     z.object({
       op: z.literal('append'),

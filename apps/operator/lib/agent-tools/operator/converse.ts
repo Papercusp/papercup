@@ -139,7 +139,7 @@ export default defineTool({
     'Operator brain conversation turn. Self-contained: builds the prompt (role+memory+history+trigger), gates on budget, runs the LLM with agentmcp tools, records spend, post-turn mem0.add, dispatches <spawn> tags. Streams deltas + tool_calls.',
   capability: 'operator:converse',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a

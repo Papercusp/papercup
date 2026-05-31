@@ -30,7 +30,7 @@ export default defineTool({
       'For semantic lookup ("what did I say about X?"), use memory:search instead.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({
     kind: z.enum(KINDS).optional(),

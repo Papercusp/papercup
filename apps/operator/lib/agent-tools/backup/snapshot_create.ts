@@ -29,7 +29,7 @@ export default defineTool({
     notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     reason: z.enum([
       'pre_destructive', 'post_run', 'plugin_install', 'secret_change', 'manual',

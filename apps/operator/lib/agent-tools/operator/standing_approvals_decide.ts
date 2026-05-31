@@ -24,7 +24,7 @@ export default defineTool({
     notWhen: `For ONE-OFF dispatch confirmation, just call \`panel_dispatch_card\` after the user yes/nos verbally. standing_approvals_decide is for the persistent rule.`,
   },
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({
     capability: z.string().min(1),

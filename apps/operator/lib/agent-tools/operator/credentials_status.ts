@@ -43,7 +43,7 @@ export default defineTool({
     notWhen: `For SETTING credentials, use the /settings UI directly — agents shouldn't paste secrets.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const [el, openai, cartesia, deepgram, picovoice, google] = await Promise.all([

@@ -24,7 +24,7 @@ export default defineTool({
   description: 'Fire a free-form plugin event or typed lifecycle hook via the in-process host. Diagnostic — architect/operator only.',
   capability: 'plugins:write',
   requirePrincipal: false,
-  roles: ['architect', 'operator'],
+  agentRoles: ['architect', 'operator'],
   rolesQuota: { architect: { perRun: 30 }, operator: { perRun: 100 } },
   args: z.discriminatedUnion('mode', [
     z.object({

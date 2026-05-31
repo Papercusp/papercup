@@ -23,7 +23,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     workspace: z
       .string()

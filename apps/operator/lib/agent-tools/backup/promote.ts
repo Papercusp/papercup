@@ -24,7 +24,7 @@ export default defineTool({
     notWhen: `For UNDOING to an earlier state, use \`backup:rollback\`. promote moves forward; rollback moves back.`,
   },
   requirePrincipal: false,
-  roles: [...PROMOTE_ROLES],
+  agentRoles: [...PROMOTE_ROLES],
   args: z.object({
     restoredPath: z.string().min(1),
     liveTarget: z.string().min(1).optional(),

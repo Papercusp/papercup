@@ -23,7 +23,7 @@ export default defineTool({
     notWhen: 'For runtime user-facing flag reads, use the /api/flags/bootstrap endpoint from the client.',
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({}),
   async handler() {
     const fakeReq = new Request('http://localhost/agent-tool');

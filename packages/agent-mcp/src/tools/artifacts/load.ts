@@ -43,7 +43,7 @@ export default defineTool({
     chaining: 'Pair with `artifacts:save` to round-trip, `artifacts:append` to add to an existing one.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1).regex(SLUG_RE).optional(),
     rel_path: z.string().min(1),

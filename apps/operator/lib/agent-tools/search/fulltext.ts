@@ -37,7 +37,7 @@ export default defineTool({
       'Pair with `harness:escalation` or `harness:plan_reviews` to fetch the full row of a returned hit. The result `excerpt` is just the first 200 chars for ranking display.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   args: z.object({
     query: z.string().min(1).max(500),

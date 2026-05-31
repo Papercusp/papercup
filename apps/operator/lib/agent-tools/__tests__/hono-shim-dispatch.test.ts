@@ -164,7 +164,7 @@ describe('Hono shim dispatch-loop wire format', () => {
     registerProjectedTool(makeTool({
       events: { delta: z.string(), error: z.string() },
       eventWireKinds: { delta: 'string', error: 'string' },
-      roles: ['architect'], // ctx.role === 'operator' → denied
+      agentRoles: ['architect'], // ctx.role === 'operator' → denied
       fn: async () => ({ content: [{ type: 'text', text: '' }] }),
     }));
     const tool = lookupByMcpName('fix:shim')!;
@@ -277,7 +277,7 @@ describe('Hono shim dispatch-loop wire format', () => {
     registerProjectedTool(makeTool({
       events: { delta: z.string() },
       eventWireKinds: { delta: 'string' },
-      roles: ['architect'], // ctx.role === 'operator' → denied
+      agentRoles: ['architect'], // ctx.role === 'operator' → denied
       fn: async () => ({ content: [{ type: 'text', text: '' }] }),
     }));
     const tool = lookupByMcpName('fix:shim')!;

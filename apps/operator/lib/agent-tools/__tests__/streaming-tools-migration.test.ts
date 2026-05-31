@@ -164,7 +164,7 @@ describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
     // on 'operator'.
     const { default: scan } = await import('@/lib/agent-tools/operator/scan');
     expect(scan.name).toBe('operator:scan');
-    expect(scan.roles).toEqual(['operator']);
+    expect(scan.agentRoles).toEqual(['operator']);
     // New args shape: { requestText, background, userId, superuserToken }
     // (old args 'promptText' / 'scannerSessionId' / 'preferencesJson'
     // are no longer the tool's surface — they're built inside).

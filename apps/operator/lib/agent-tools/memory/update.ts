@@ -26,7 +26,7 @@ export default defineTool({
       'To REMOVE a memory entirely, use memory:forget. To add a NEW memory without replacing one, use memory:remember.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({
     id: z.string().min(1),

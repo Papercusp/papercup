@@ -19,7 +19,7 @@ export default defineTool({
     notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({}),
   async handler() {
     const result = await pgHealth();

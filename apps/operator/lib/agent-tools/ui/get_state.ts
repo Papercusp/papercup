@@ -38,7 +38,7 @@ export default defineTool({
     notWhen: 'Tool calls ARE idempotent — `panel_open` when already open is fine. Don\'t pre-check just to skip a call; the persona rule is "always call". Use `ui:get_state` only when you need to BRANCH on what the user is looking at.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     /** Defaults to ctx.uiClientId. Required if the agent wasn't spawned from a tab. */
     client_id: z.string().optional(),

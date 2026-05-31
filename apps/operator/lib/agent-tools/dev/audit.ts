@@ -18,7 +18,7 @@ export default defineTool({
     notWhen: `For analysis or LLM consumption, use \`audit:list\` directly. dev:audit is a UI-shaped projection.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     hours: z.number().int().positive().max(720).optional(),

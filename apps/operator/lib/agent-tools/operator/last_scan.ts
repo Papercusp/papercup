@@ -36,7 +36,7 @@ export default defineTool({
     notWhen: `For older scans, use \`operator:scans_list\`. For full detail of a specific scan, use the \`scans_get\` tool.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const last = await readLastScan();

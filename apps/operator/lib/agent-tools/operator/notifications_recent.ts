@@ -32,7 +32,7 @@ export default defineTool({
     notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     level: z.enum(['default', 'info', 'success', 'warning', 'error', 'loading', 'all']).optional(),
     limit: z.number().int().positive().max(500).optional(),

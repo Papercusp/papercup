@@ -29,7 +29,7 @@ export default defineTool({
   description: 'Find markdown files that reference [[target]] across the workspace. Returns { target, harness, hits[] }.',
   capability: 'wiki:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     target: z.string().min(1),
     harness: z.string().optional(),

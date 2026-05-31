@@ -18,7 +18,7 @@ export default defineTool({
     'Resolve one Papercusp feature flag to a boolean for this host.',
   capability: 'intel:read',
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({
     key: FlagKeySchema,
   }),

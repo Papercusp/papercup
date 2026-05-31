@@ -45,7 +45,7 @@ export default defineTool({
   description: 'List, search, read, and summarize local OMP session JSONL files.',
   capability: 'omp:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 100 }, debugger: { perRun: 100 } },
   args: z.discriminatedUnion('op', [
     z.object({

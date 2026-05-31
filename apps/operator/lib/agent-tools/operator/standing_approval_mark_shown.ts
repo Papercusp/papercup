@@ -18,7 +18,7 @@ export default defineTool({
     notWhen: `For listing approvals, use \`operator:standing_approvals_list\`. For deciding, \`operator:standing_approvals_decide\`.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect'],
+  agentRoles: ['operator', 'architect'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.object({
     capability: z.string().min(1),

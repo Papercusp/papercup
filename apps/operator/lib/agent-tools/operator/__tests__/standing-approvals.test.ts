@@ -112,7 +112,7 @@ describe('operator:standing_approvals_decide', () => {
       markCandidateShown: vi.fn(),
     }));
     const { default: tool } = await import('@/lib/agent-tools/operator/standing_approvals_decide');
-    expect(tool.roles).toEqual(['operator']);
+    expect(tool.agentRoles).toEqual(['operator']);
   });
 });
 

@@ -32,7 +32,7 @@ export default defineTool({
   description: 'List role manifests (id, source, fires-on, etc.) for a harness, or globally when no harness given.',
   capability: 'roles:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
   }),

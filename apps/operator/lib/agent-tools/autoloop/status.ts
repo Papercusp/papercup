@@ -32,7 +32,7 @@ export default defineTool({
   description: 'Read autoloop_state rows (last_fired_at, last_status, consecutive_errors) for a harness slug.',
   capability: 'autoloop:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
   }),

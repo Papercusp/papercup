@@ -33,7 +33,7 @@ export default defineTool({
   description: 'List projects relevant to a harness (filtered to those with at least one feature in the given slug). Includes feature counts.',
   capability: 'projects:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
   }),

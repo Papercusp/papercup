@@ -33,7 +33,7 @@ export default defineTool({
     notWhen: `For per-harness autoloop pause, use \`autoloop:control\`. paused is operator-global; autoloop is harness-scoped.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const paused = await isPaused();

@@ -18,7 +18,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     root_msg_id: z.string().min(1),
   }),

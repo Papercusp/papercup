@@ -30,7 +30,7 @@ export default defineTool({
     notWhen: 'For ad-hoc testing of UI behavior, prefer the PostHog dashboard so changes are visible to other agents and humans.',
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect'],
+  agentRoles: ['operator', 'architect'],
   args: z.object({
     key: FlagKeySchema,
     enabled: z.boolean(),

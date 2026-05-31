@@ -97,7 +97,7 @@ describe('autoloop:control', () => {
       stopAutoLoop: vi.fn(),
     }));
     const { default: tool } = await import('@/lib/agent-tools/autoloop/control');
-    expect(tool.roles).toEqual(['operator']);
+    expect(tool.agentRoles).toEqual(['operator']);
   });
 });
 
@@ -204,7 +204,7 @@ describe('experts:trigger_for', () => {
       fireEventTriggers: vi.fn(),
     }));
     const { default: tool } = await import('@/lib/agent-tools/experts/trigger_for');
-    expect(tool.roles).toEqual(['architect', 'operator']);
+    expect(tool.agentRoles).toEqual(['architect', 'operator']);
   });
 });
 

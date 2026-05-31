@@ -656,7 +656,7 @@ export async function registerPluginTools(
           description: def.description,
           inputSchema: def.inputSchema,
           capabilities: def.capabilities,
-          roles: def.roles,
+          agentRoles: def.roles,
           rolesQuota: def.rolesQuota,
           timeoutSec: def.timeoutSec,
           expose: {

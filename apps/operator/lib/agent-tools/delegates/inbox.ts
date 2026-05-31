@@ -42,7 +42,7 @@ export default defineTool({
   description: 'Peek, drain, or push to the delegate inbox (Hindsight queue for the EL voice agent).',
   capability: 'delegates:write',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 30 }, architect: { perRun: 100 } },
   // Flat object schema (not discriminatedUnion) because OpenAI's
   // function-calling schema validator rejects discriminator-shaped

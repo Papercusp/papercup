@@ -25,7 +25,7 @@ export default defineTool({
   description: 'Read SPEC.md content for an expert instance.',
   capability: 'experts:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({ slug: z.string().min(1), expertId: z.string().min(1) }),
   async handler(args) {
     const result = await getExpertSpec(args.slug, args.expertId);

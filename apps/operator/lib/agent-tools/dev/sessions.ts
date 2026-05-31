@@ -20,7 +20,7 @@ export default defineTool({
     notWhen: `For application AGENT chat sessions, use \`agent_chats:list\`. dev:sessions is the panel's own concept.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
     /** Filter by transport (which adapter drove dispatch). See

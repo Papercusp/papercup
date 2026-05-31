@@ -31,7 +31,7 @@ export default defineTool({
     chaining: 'Pair with `agent_chats:create` once you\'ve picked the role to dispatch to.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().optional(),
     limit: z.number().int().positive().max(100).optional(),

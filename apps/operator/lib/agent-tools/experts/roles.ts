@@ -25,7 +25,7 @@ export default defineTool({
   description: 'List registered cross-cutting expert roles for a harness.',
   capability: 'experts:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({ slug: z.string().min(1) }),
   async handler(args) {
     const result = await listExpertRoles(args.slug);

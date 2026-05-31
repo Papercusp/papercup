@@ -30,7 +30,7 @@ export default defineTool({
     notWhen: `For voice-specific spend, use \`operator:voice_spend_summary\`. For raising the cap, use /settings/operator.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

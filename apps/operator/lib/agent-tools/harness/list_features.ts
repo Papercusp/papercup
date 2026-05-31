@@ -36,7 +36,7 @@ export default defineTool({
   },
   capability: 'harness:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1),
     status: z.string().optional(),

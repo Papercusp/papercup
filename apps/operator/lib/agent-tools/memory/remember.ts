@@ -63,7 +63,7 @@ export default defineTool({
       'After writing, the persona prompt will surface this entry on the next turn\'s pre-turn injection. No need to call memory:search to verify.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 100 } },
   args: z.object({
     content: z.string().min(1).max(2000),

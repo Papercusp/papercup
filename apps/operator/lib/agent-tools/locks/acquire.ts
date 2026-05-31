@@ -108,7 +108,7 @@ export default defineTool({
   // + unsubscribe + progress-emit work that runs after wait_until.
   timeoutSec: MAX_WAIT_SEC + 30,
   requirePrincipal: false,
-  roles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES],
   args: z.object({
     paths: z.array(z.string().min(1)).min(1).max(50),
     intent: z.string().min(1).max(200),

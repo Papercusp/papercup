@@ -42,7 +42,7 @@ export default defineTool({
     notWhen: `For workspace-wide audit including non-operator actors, use \`audit:list\`. operator:audit is the narrower operator-only stream.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'scoper', 'worker', 'debugger', 'curator'],
+  agentRoles: ['operator', 'architect', 'scoper', 'worker', 'debugger', 'curator'],
   rolesQuota: {
     worker: { perChunk: 20 },
     architect: { perRun: 100 },

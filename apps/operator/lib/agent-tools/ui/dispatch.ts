@@ -45,7 +45,7 @@ export default defineTool({
     notWhen: 'For showing a question + choices in the chat, use `chat:ask_choice` (renders inline buttons). For asking the operator brain to delegate work, use `<spawn>` — `ui:dispatch` is for UI side effects, not work delegation.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     /** Target tab. Defaults to ctx.uiClientId. */
     client_id: z.string().optional(),

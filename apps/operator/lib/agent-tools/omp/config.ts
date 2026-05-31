@@ -36,7 +36,7 @@ export default defineTool({
   description: 'Read or update the local omp CLI config tree (get / set { key, value } / unset { key }).',
   capability: 'omp:write',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),

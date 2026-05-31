@@ -32,7 +32,7 @@ export default defineTool({
   description: 'Static well-known role-id allowlist (kernel set; plugin-registered roles extend this).',
   capability: 'roles:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     // Enrich each known role id with its launch-context needs so the psu

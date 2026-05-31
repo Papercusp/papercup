@@ -26,7 +26,7 @@ export default defineTool({
   description: 'List feedback conversations for an expert instance (id, persona, ended, verdict).',
   capability: 'experts:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({ slug: z.string().min(1), expertId: z.string().min(1) }),
   async handler(args) {
     const result = await listExpertFeedback(args.slug, args.expertId);

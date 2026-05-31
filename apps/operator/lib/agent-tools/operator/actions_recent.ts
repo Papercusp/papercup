@@ -33,7 +33,7 @@ export default defineTool({
     notWhen: `For workspace-wide audit (cross-harness), use \`cross_harness:recent_activity\` or \`audit:list\`.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1),
     limit: z.number().int().positive().max(500).optional(),

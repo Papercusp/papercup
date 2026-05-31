@@ -289,7 +289,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  roles: [...SU_ROLES, 'operator'],
+  agentRoles: [...SU_ROLES, 'operator'],
   args: z.object({
     blockContent: z
       .string()

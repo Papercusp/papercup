@@ -40,7 +40,7 @@ export default defineTool({
     chaining: 'Follow `agent_chats:create` (or `agent_chats:list` if resuming). Then `ui:dispatch` to take the user to the chat.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   args: z.object({
     slug: z.string().min(1),

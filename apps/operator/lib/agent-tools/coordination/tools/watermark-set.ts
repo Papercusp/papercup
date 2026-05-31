@@ -23,7 +23,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     messages_since_ts: z.string().optional(),
     escalations_since_ts: z.string().optional(),

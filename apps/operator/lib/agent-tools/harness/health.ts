@@ -32,7 +32,7 @@ export default defineTool({
     notWhen: 'For LIVE phase + activity (recent audit events), use `harness:status`. For open issues, use `issues:list`.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1),
   }),

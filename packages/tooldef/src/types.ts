@@ -443,7 +443,7 @@ export interface RoleToolDefinition<
   /** Marker — read by the projection wrapper to skip the principal check. */
   requirePrincipal: false;
   /** Allowed agent roles. Empty/undefined means any role. */
-  roles?: AgentRole[];
+  agentRoles?: AgentRole[];
   /** Per-role quota windows. Roles without an entry are unlimited. */
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   /** Per-call wall-clock timeout, default 60s. */
@@ -515,7 +515,7 @@ export interface RoleToolDefinitionInput<
   /** Harness-scope requirement — see `ToolDefinitionInput.harness`. */
   harness?: 'required' | 'optional' | 'none';
   requirePrincipal: false;
-  roles?: AgentRole[];
+  agentRoles?: AgentRole[];
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   timeoutSec?: number;
   /** See RoleToolDefinition.idleTimeoutSec. */

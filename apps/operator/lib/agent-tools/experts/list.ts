@@ -25,7 +25,7 @@ export default defineTool({
   description: 'List expert instances for a harness slug. Returns id, title, status, featureSize, agentCount, roundCount, userEngaged, forkedFrom, createdAt, updatedAt, nextAction.',
   capability: 'experts:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({ slug: z.string().min(1) }),
   async handler(args) {
     const result = await listExperts(args.slug);

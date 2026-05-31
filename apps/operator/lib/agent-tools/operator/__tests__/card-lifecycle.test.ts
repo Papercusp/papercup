@@ -71,10 +71,10 @@ describe('operator:audit', () => {
   it('excludes validator + reviewer from the role allowlist', async () => {
     vi.doMock('@/lib/operator-audit', () => ({ writeOperatorAudit: vi.fn() }));
     const { default: tool } = await import('@/lib/agent-tools/operator/audit');
-    expect(tool.roles).not.toContain('validator');
-    expect(tool.roles).not.toContain('reviewer');
-    expect(tool.roles).toContain('worker');
-    expect(tool.roles).toContain('operator');
+    expect(tool.agentRoles).not.toContain('validator');
+    expect(tool.agentRoles).not.toContain('reviewer');
+    expect(tool.agentRoles).toContain('worker');
+    expect(tool.agentRoles).toContain('operator');
   });
 });
 
@@ -92,7 +92,7 @@ describe('operator:dismissed', () => {
   it('restricts to operator + architect + scoper', async () => {
     vi.doMock('@/lib/operator-dismissed-cache', () => ({ recordDismissed: vi.fn() }));
     const { default: tool } = await import('@/lib/agent-tools/operator/dismissed');
-    expect(tool.roles).toEqual(['operator', 'architect', 'scoper']);
+    expect(tool.agentRoles).toEqual(['operator', 'architect', 'scoper']);
   });
 });
 
@@ -120,6 +120,6 @@ describe('operator:nudge', () => {
   it('exposes only operator + architect role gate', async () => {
     vi.doMock('@/lib/voice-nudges', () => ({ maybeFireNudge: vi.fn() }));
     const { default: tool } = await import('@/lib/agent-tools/operator/nudge');
-    expect(tool.roles).toEqual(['operator', 'architect']);
+    expect(tool.agentRoles).toEqual(['operator', 'architect']);
   });
 });

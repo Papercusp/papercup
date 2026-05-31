@@ -24,7 +24,7 @@ export default defineTool({
     notWhen: `Don't reset speculatively — only when a scan has visibly failed to fire for >1 cycle.`,
   },
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({}),
   async handler() {

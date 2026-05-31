@@ -38,7 +38,7 @@ export default defineTool({
     notWhen: `For LIVE state, use the specific dedicated tool. stats is historical aggregates.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const stats = await readOperatorStats();

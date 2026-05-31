@@ -20,7 +20,7 @@ export default defineTool({
     notWhen: `For TEXT chat history, that lives in operator_turns. voice_utterance_log is voice-only.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'worker'],
+  agentRoles: ['operator', 'architect', 'worker'],
   rolesQuota: {
     worker: { perChunk: 50 },
     architect: { perRun: 200 },

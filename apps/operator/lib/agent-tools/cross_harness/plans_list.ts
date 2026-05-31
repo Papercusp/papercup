@@ -65,7 +65,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  roles: ['operator', 'oracle'],
+  agentRoles: ['operator', 'oracle'],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

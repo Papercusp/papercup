@@ -133,7 +133,7 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },

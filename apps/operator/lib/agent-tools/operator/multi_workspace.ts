@@ -32,7 +32,7 @@ export default defineTool({
     notWhen: `For the CURRENT workspace's harnesses, use \`harness:list\`. multi_workspace is the workspace enumerator.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const snapshot = await readMultiWorkspaceSnapshot(activeWorkspaceId());

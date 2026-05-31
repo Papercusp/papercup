@@ -23,7 +23,7 @@ export default defineTool({
   description: 'Pause or resume the operator-process autoloop ticker (process-local; affects every harness in the workspace).',
   capability: 'autoloop:write',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
     op: z.enum(['pause', 'resume']),

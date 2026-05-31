@@ -25,7 +25,7 @@ export default defineTool({
   description: 'Read one expert instance by id with spec content, spentCents, and nextAction.',
   capability: 'experts:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({ slug: z.string().min(1), expertId: z.string().min(1) }),
   async handler(args) {
     const result = await getExpert(args.slug, args.expertId);

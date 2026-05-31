@@ -37,7 +37,7 @@ export default defineTool({
     notWhen: `For HINDSIGHT (cross-agent memory), use \`hindsight:recall\`. Notes is operator-only, user-editable.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, architect: { perRun: 50 }, operator: { perRun: 200 } },
   args: z.discriminatedUnion('op', [
     z.object({

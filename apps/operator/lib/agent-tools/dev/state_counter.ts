@@ -41,7 +41,7 @@ export default defineTool({
     'Demo state-shaped tool: ticks a counter and publishes each tick via ctx.publishState. Reconnect-resilient by construction.',
   capability: 'tasks:read',
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'scoper', 'documenter', 'curator'],
+  agentRoles: ['operator', 'architect', 'worker', 'validator', 'reviewer', 'debugger', 'scoper', 'documenter', 'curator'],
   timeoutSec: 120,
   state: StateSchema,
   args: ArgsSchema,

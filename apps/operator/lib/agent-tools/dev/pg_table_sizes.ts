@@ -17,7 +17,7 @@ export default defineTool({
     notWhen: `For application data analysis, query the relevant tools directly. pg_table_sizes is an ops view.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'debugger'],
+  agentRoles: ['operator', 'architect', 'debugger'],
   args: z.object({
     schema: z.string().optional(),
     limit: z.number().int().positive().max(500).optional(),

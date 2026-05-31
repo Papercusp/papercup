@@ -26,7 +26,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     pattern: z.string().min(1),
     trigger: z.enum(TRIGGER).optional(),

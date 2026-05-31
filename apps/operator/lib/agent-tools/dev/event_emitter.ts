@@ -34,7 +34,7 @@ export default defineTool({
   description: 'Replay-buffer probe — emits N tick events with serial ids. Dev-only.',
   capability: 'tasks:read',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 60,
   replayBufferSize: 100,
   events: EventsSchema,

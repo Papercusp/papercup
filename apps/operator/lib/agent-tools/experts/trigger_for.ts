@@ -25,7 +25,7 @@ export default defineTool({
   description: 'Fire experts whose alwaysFireOn matches a lifecycle or event. Mode + event + installSlug + ctx; returns per-role dispatch outcomes.',
   capability: 'experts:write',
   requirePrincipal: false,
-  roles: ['architect', 'operator'],
+  agentRoles: ['architect', 'operator'],
   rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 50 } },
   args: z.discriminatedUnion('source', [
     z.object({

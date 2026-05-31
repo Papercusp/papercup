@@ -34,7 +34,7 @@ export default defineTool({
     notWhen: `For action audit (user-action style), use \`actions:recent\` or \`operator:audit\`. decisions is the operator-policy view.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     limit: z.number().int().positive().max(500).optional(),
   }),

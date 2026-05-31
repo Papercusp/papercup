@@ -65,9 +65,9 @@ describe('operator:stats', () => {
     }));
     const { default: tool } = await import('@/lib/agent-tools/operator/stats');
     expect(tool.requirePrincipal).toBe(false);
-    expect(tool.roles).toContain('worker');
-    expect(tool.roles).toContain('architect');
-    expect(tool.roles).toContain('reviewer');
+    expect(tool.agentRoles).toContain('worker');
+    expect(tool.agentRoles).toContain('architect');
+    expect(tool.agentRoles).toContain('reviewer');
   });
 });
 
@@ -209,7 +209,7 @@ describe('operator:scanner_reset', () => {
       isScannerResumeEnabled: vi.fn(() => true),
     }));
     const { default: tool } = await import('@/lib/agent-tools/operator/scanner_reset');
-    expect(tool.roles).toEqual(['operator']);
+    expect(tool.agentRoles).toEqual(['operator']);
     const result = await tool.handler({}, MAKE_CTX({ role: 'operator' }));
     expect(resetScannerSession).toHaveBeenCalled();
     const payload = parsePayload(result as never);

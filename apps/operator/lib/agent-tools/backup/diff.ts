@@ -28,7 +28,7 @@ export default defineTool({
     notWhen: `For applying the diff, use \`backup:restore\`. diff is the dry-run view.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     fromSnapshotId: z.string().min(1),
     toSnapshotId: z.string().min(1),

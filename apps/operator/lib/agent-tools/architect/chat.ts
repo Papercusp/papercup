@@ -177,7 +177,7 @@ export const architectChat = defineTool({
     'Architect-mode chat turn: clarify spec, propose patches. Streams deltas; returns the assembled final text.',
   capability: 'harness:write',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
@@ -196,7 +196,7 @@ export const brainstormChat = defineTool({
     'Brainstorm partner chat turn: expand ideas, suggest analogues, challenge assumptions. Streams deltas; returns the assembled final text.',
   capability: 'harness:write',
   requirePrincipal: false,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — opt into replay buffer. 5000 events is a

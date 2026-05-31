@@ -35,7 +35,7 @@ export default defineTool({
     notWhen: `Production code shouldn't depend on this; it's diagnostic only.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     request: z.string(),
     userId: z.string().optional(),

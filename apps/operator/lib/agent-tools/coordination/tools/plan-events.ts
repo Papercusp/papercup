@@ -24,7 +24,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     since_ts: z.string().optional(),
     plan_slug: z.string().optional(),

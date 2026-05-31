@@ -193,13 +193,13 @@ const roleAllowlistStep: DispatchStep = {
   name: 'role-allowlist',
   async run(exec) {
     const { tool, ctx, toolName } = exec;
-    if (!tool.roles || !ctx.role || ctx.gateBypass?.role) return null;
-    if (tool.roles.includes(ctx.role as AgentRole)) return null;
+    if (!tool.agentRoles || !ctx.role || ctx.gateBypass?.role) return null;
+    if (tool.agentRoles.includes(ctx.role as AgentRole)) return null;
     return {
       ok: false,
       error: {
         code: 'role_not_allowed' as DispatchProjectedErrorCode,
-        message: `Role "${ctx.role}" cannot call tool "${toolName}" (allowed roles: ${tool.roles.join(', ')})`,
+        message: `Role "${ctx.role}" cannot call tool "${toolName}" (allowed roles: ${tool.agentRoles.join(', ')})`,
       },
     };
   },

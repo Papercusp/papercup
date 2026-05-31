@@ -97,7 +97,7 @@ describe('dispatchProjectedTool', () => {
   });
 
   it('rejects role-not-allowed when caller role outside allowlist', async () => {
-    const tool = makeTool({ roles: ['architect'] });
+    const tool = makeTool({ agentRoles: ['architect'] });
     const recorded: string[] = [];
     const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS({
       recordInvocation: vi.fn(async (i) => { recorded.push(i.status); }),
@@ -108,7 +108,7 @@ describe('dispatchProjectedTool', () => {
   });
 
   it('skips role check when ctx.role is unset (HTTP caller without role)', async () => {
-    const tool = makeTool({ roles: ['architect'] });
+    const tool = makeTool({ agentRoles: ['architect'] });
     const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ role: undefined }), MAKE_DEPS());
     expect(r.ok).toBe(true);
   });
@@ -117,7 +117,7 @@ describe('dispatchProjectedTool', () => {
   // The host (papercuspGateBypass) maps superuser/power-user onto it; the engine
   // no longer reads isSuperuser/isPowerUser for gating.
   it('gateBypass.role skips the role-allowlist gate', async () => {
-    const tool = makeTool({ roles: ['architect'] });
+    const tool = makeTool({ agentRoles: ['architect'] });
     const denied = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS());
     expect(denied.error?.code).toBe('role_not_allowed');
     const bypassed = await dispatchProjectedTool(
@@ -447,7 +447,7 @@ describe('dispatchProjectedToolStream', () => {
   });
 
   it('yields role_not_allowed when the calling role is not in the tool roles allowlist', async () => {
-    const tool = makeTool({ roles: ['operator'] });
+    const tool = makeTool({ agentRoles: ['operator'] });
     const ctx = MAKE_CTX({ role: 'worker' });
     const events: DispatchStreamEvent[] = [];
     for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, ctx, MAKE_DEPS())) {
@@ -543,7 +543,7 @@ describe('replay buffer (Phase 4 T2.2)', () => {
   });
 
   it('eventCount = 0 on role-not-allowed gate-failure path', async () => {
-    const tool = makeTool({ roles: ['architect'] });
+    const tool = makeTool({ agentRoles: ['architect'] });
     let recordedEventCount: number | undefined;
     await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS({
       recordInvocation: vi.fn(async (i) => { recordedEventCount = i.eventCount; }),
@@ -913,7 +913,7 @@ describe('default-deny gate (RFC tooldef-auth Phase 3 — opt-in fail-closed pos
   });
 
   it('on: a tool gated only by agent roles is allowed (declares a gate)', async () => {
-    const tool = makeTool({ capabilities: [], roles: ['worker'] });
+    const tool = makeTool({ capabilities: [], agentRoles: ['worker'] });
     const r = await dispatchProjectedTool(
       tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS({ defaultDeny: true }),
     );

@@ -18,7 +18,7 @@ export default defineTool({
     notWhen: `For runtime BACKUP state (last run, next run), check the destinations directly.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const wb = workspaceBackupFor(activeWorkspaceId());

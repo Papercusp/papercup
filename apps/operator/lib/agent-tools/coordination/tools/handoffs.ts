@@ -17,7 +17,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     status: z.enum(['open', 'accepted']).optional(),
   }),

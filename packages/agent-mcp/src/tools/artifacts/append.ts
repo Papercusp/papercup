@@ -36,7 +36,7 @@ export default defineTool({
     notWhen: 'For replacing the whole file, use `artifacts:save`. For ephemeral within-turn notes, just hold them in your reply.',
   },
   requirePrincipal: false,
-  roles: [...WRITE_ROLES],
+  agentRoles: [...WRITE_ROLES],
   rolesQuota: {
     worker: { perChunk: 50 },
     architect: { perRun: 200 },

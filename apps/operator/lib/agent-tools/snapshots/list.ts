@@ -34,7 +34,7 @@ export default defineTool({
   description: 'List every published snapshot known to the workspace registry (id, slug, version, …).',
   capability: 'snapshots:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const enabled = await getFlag(FLAGS.SNAPSHOTS, resolveDistinctId(new Request('http://localhost/')));

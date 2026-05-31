@@ -28,7 +28,7 @@ export default defineTool({
   description: 'Static well-known hook-event allowlist (kernel set; plugin-registered hooks extend this).',
   capability: 'roles:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     return { content: [{ type: 'text', text: JSON.stringify({ hooks: getKnownHooks() }) }] };

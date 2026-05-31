@@ -35,7 +35,7 @@ export default defineTool({
     chaining: 'Pair with `agent_chats:send_message` immediately (step 2 of the dispatch flow), then `ui:dispatch` with `/harness/<slug>?chat=<chatId>` so the user can watch the conversation.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 5 }, operator: { perRun: 50 } },
   args: z.object({
     slug: z.string().min(1),

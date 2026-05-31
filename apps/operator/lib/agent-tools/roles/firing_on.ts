@@ -28,7 +28,7 @@ export default defineTool({
   description: 'Return role manifests whose `firesOn` array includes the given hook event.',
   capability: 'roles:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     event: z.string().min(1),
     harnessSlug: z.string().optional(),

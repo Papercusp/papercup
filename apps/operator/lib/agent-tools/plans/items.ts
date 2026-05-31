@@ -78,7 +78,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

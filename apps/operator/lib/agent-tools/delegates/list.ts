@@ -37,7 +37,7 @@ export default defineTool({
   description: 'List delegate sessions by status, search by ILIKE, or fetch one by id. Same shape as the legacy /api/agent-mcp/delegates GET.',
   capability: 'delegates:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     id: z.string().optional(),
     query: z.string().min(1).optional(),

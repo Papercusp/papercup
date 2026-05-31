@@ -24,7 +24,7 @@ export default defineTool({
     notWhen: `For ROLLING BACK without changing the snapshot list, use \`backup:rollback\`. restore is the full apply.`,
   },
   requirePrincipal: false,
-  roles: [...RESTORE_ROLES],
+  agentRoles: [...RESTORE_ROLES],
   args: z.object({
     kopiaSnapshotId: z.string().min(1),
     source: z.string().min(1).optional(),

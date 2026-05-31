@@ -31,7 +31,7 @@ export default defineTool({
   description: 'Fetch one project spec-revision in full (includes the spec body). Returns null when not found.',
   capability: 'projects:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
     projectId: z.string().min(1),

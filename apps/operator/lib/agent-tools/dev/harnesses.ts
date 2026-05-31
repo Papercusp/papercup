@@ -18,7 +18,7 @@ export default defineTool({
     notWhen: `For ordinary list, use \`harness:list\`. dev:harnesses is the diagnostic projection.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect'],
+  agentRoles: ['operator', 'architect'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
   }),

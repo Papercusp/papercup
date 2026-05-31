@@ -33,7 +33,7 @@ export default defineTool({
   description: 'List spec-revision summaries for a project (newest-first; full spec body lives on projects:spec_revision).',
   capability: 'projects:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
     projectId: z.string().min(1),

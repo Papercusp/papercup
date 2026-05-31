@@ -18,7 +18,7 @@ export default defineTool({
     notWhen: `For HARNESS snapshots (portable artifacts you can publish), use \`snapshots:list\`. backup:snapshot_list is the full-workspace recovery view.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     limit: z.number().int().min(1).max(500).default(50),
   }),

@@ -599,7 +599,7 @@ export interface ProjectedTool {
    * primarily by the MCP transport (agent calls); HTTP callers gate via
    * principal capabilities instead.
    */
-  roles?: AgentRole[];
+  agentRoles?: AgentRole[];
   /** Per-role quota windows. Roles without an entry are unlimited. */
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   /**
@@ -938,11 +938,11 @@ export function listAllProjectedTools(): readonly ProjectedTool[] {
  * so the enforcement and the migration aid can't drift.
  */
 export function toolDeclaresGate(
-  tool: Pick<ProjectedTool, 'capabilities' | 'roles' | 'requireRoles' | 'authorize'>,
+  tool: Pick<ProjectedTool, 'capabilities' | 'agentRoles' | 'requireRoles' | 'authorize'>,
 ): boolean {
   return (
     tool.capabilities.length > 0 ||
-    (tool.roles?.length ?? 0) > 0 ||
+    (tool.agentRoles?.length ?? 0) > 0 ||
     (tool.requireRoles?.length ?? 0) > 0 ||
     !!tool.authorize
   );
@@ -1032,7 +1032,7 @@ export function listMcpProjections(role?: AgentRole, profile?: 'engineer' | 'pow
   const out: McpToolListing[] = [];
   for (const tool of REGISTRY.values()) {
     if (!tool.expose.mcp) continue;
-    if (role && tool.roles && !tool.roles.includes(role)) continue;
+    if (role && tool.agentRoles && !tool.agentRoles.includes(role)) continue;
     // Profile gate: tools tagged `profile: 'engineer'` are hidden from
     // power-profile callers. Untagged tools (undefined / 'all') are visible
     // to everyone — backward-compatible for tools not yet tagged.

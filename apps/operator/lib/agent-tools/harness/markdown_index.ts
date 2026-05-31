@@ -33,7 +33,7 @@ export default defineTool({
   },
   capability: 'harness:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const index = await loadHarnessMarkdownIndex();

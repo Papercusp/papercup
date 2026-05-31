@@ -32,7 +32,7 @@ export default defineTool({
     chaining: 'Follow `agent_chats:list` to find the id.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1),
     chatId: z.string().min(1),

@@ -29,7 +29,7 @@ export default defineTool({
     chaining: 'Pair with `ui:get_state` to see what each tab is on, then `ui:dispatch` to act.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     /** Filter by workspace id. Omit to get all visible clients. */
     workspace: z.string().optional(),

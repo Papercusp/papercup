@@ -113,7 +113,7 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   modality: ['text'],
   args: z.object({
     harness: z

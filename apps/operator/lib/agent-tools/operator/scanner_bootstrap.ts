@@ -34,7 +34,7 @@ export default defineTool({
     notWhen: `For TRIGGERING a scan, the scanner runs on its own cadence — there's no manual trigger here.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     workspaceId: z.string().optional(),
     maxPriorSummaryChars: z.number().int().positive().optional(),

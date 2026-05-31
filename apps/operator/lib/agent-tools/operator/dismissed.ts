@@ -18,7 +18,7 @@ export default defineTool({
     notWhen: `For ACTIVE pending cards, use \`panel_cards\`. dismissed is the soft-archive view.`,
   },
   requirePrincipal: false,
-  roles: ['operator', 'architect', 'scoper'],
+  agentRoles: ['operator', 'architect', 'scoper'],
   rolesQuota: {
     architect: { perRun: 50 },
     operator: { perRun: 200 },

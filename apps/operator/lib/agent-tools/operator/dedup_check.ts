@@ -35,7 +35,7 @@ export default defineTool({
     notWhen: `For listing existing scans, use \`operator:scans_list\`.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     candidate: z.string().min(1),
     existing: z.array(z.object({ id: z.string().min(1), title: z.string().min(1) })),

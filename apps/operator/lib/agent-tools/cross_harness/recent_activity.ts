@@ -30,7 +30,7 @@ export default defineTool({
   },
   capability: 'cross_harness:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     limit: z.number().int().positive().max(200).optional(),
   }),

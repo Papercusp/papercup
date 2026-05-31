@@ -66,7 +66,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  roles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   async handler(args: RunStatusArgs, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };

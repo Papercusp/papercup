@@ -25,7 +25,7 @@ export default defineTool({
       'To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal.',
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({
     id: z.string().min(1),

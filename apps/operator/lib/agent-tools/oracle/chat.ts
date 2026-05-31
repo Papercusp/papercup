@@ -129,7 +129,7 @@ export const oracleChat = defineTool({
   description: 'Single-turn Oracle assistant chat. Streams delta/tool_call/cost events; returns final assistant text.',
   args: ArgsSchema,
   events: EVENTS,
-  roles: ['operator'],
+  agentRoles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
   // Phase 4 T2.2 — same replay budget as architect:chat / operator:scan.

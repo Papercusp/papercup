@@ -35,7 +35,7 @@ export default defineTool({
     notWhen: `For one-off pending reviews, use \`harness:pending_reviews\`. Standing approvals are session-persistent autoaccepts.`,
   },
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
     const candidates = await refreshCandidates().catch(async () => await readCandidates());

@@ -16,7 +16,7 @@ interface SerializedTool {
   // incompatible with the branded source types and the quota map has
   // no string index signature.
   capabilities: ProjectedTool['capabilities'];
-  roles?: ProjectedTool['roles'];
+  roles?: ProjectedTool['agentRoles'];
   rolesQuota?: ProjectedTool['rolesQuota'];
   timeoutSec?: number;
   inputSchema: Record<string, unknown>;
@@ -44,7 +44,7 @@ export default defineTool({
       pluginName: t.pluginName,
       description: t.description,
       capabilities: t.capabilities,
-      roles: t.roles,
+      roles: t.agentRoles,
       rolesQuota: t.rolesQuota,
       timeoutSec: t.timeoutSec,
       inputSchema: t.inputSchema,

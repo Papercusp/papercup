@@ -17,7 +17,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     msg_id: z.string().min(1),
   }),

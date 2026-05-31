@@ -32,7 +32,7 @@ export default defineTool({
   },
   capability: 'harness:read',
   requirePrincipal: false,
-  roles: [...ALL_ROLES],
+  agentRoles: [...ALL_ROLES],
   args: z.object({
     harnessSlug: z.string().optional(),
     phase: z.enum(['staging', 'testing', 'production']),

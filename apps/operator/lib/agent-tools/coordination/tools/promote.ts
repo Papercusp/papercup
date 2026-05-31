@@ -224,7 +224,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     slug: z.string().min(1).describe('Plan slug to promote.'),
     harness_slug: z

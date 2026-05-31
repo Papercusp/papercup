@@ -22,7 +22,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  roles: [...COORD_ROLES],
+  agentRoles: [...COORD_ROLES],
   args: z.object({
     to: z.array(z.string().min(1)).min(1),
     summary: z.string().min(1),
