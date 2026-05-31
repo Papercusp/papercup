@@ -151,4 +151,46 @@ describe('finalizeShare', () => {
     const r = await finalizeShare(INPUT, d);
     expect(r.swarm).toBeUndefined();
   });
+
+  it('calls createBinding(args) after a successful write and surfaces it as binding', async () => {
+    const createBinding = vi.fn(async (_args: unknown) => ({
+      created: true as const,
+      claim_status: 'unclaimed' as const,
+    }));
+    const { d, writeFileUtf8 } = deps({ createBinding });
+    const r = await finalizeShare(INPUT, d);
+    expect(writeFileUtf8).toHaveBeenCalledTimes(1);
+    expect(createBinding).toHaveBeenCalledWith({
+      slug: 'papercup',
+      github_remote: 'git@github.com:Papercusp/papercup.git',
+      harness_topic: TOPIC,
+      privacy: 'shared-private',
+    });
+    expect(r.binding).toEqual({ created: true, claim_status: 'unclaimed' });
+  });
+
+  it('does NOT create a binding when the write is rejected (bad input)', async () => {
+    const createBinding = vi.fn(async () => ({ created: true as const }));
+    const { d } = deps({ createBinding });
+    await expect(finalizeShare({ ...INPUT, topic: 'not-hex' }, d)).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(createBinding).not.toHaveBeenCalled();
+  });
+
+  it('swallows a createBinding throw — finalize still succeeds with binding.created=false', async () => {
+    const createBinding = vi.fn(async () => {
+      throw new Error('no gh token');
+    });
+    const { d } = deps({ createBinding });
+    const r = await finalizeShare(INPUT, d);
+    expect(r.ok).toBe(true);
+    expect(r.binding).toMatchObject({ created: false, error: 'no gh token' });
+  });
+
+  it('omits binding when no createBinding dep is provided', async () => {
+    const { d } = deps();
+    const r = await finalizeShare(INPUT, d);
+    expect(r.binding).toBeUndefined();
+  });
 });

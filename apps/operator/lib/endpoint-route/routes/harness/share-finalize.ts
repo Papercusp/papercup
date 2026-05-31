@@ -47,6 +47,7 @@ import {
   type HarnessSharedConfig,
   type HarnessSharedPrivacy,
 } from '@/lib/harness/harness-shared-config-types';
+import type { BindingClaimStatus } from '@/lib/harness/binding-types';
 
 export interface FinalizeShareInput {
   slug: string;
@@ -67,6 +68,18 @@ export interface FinalizeShareSwarm {
   error?: string;
 }
 
+/** Outcome of the post-write unclaimed-binding creation (claim/dedup system). */
+export interface FinalizeShareBinding {
+  /** True if a new unclaimed binding row was created this finalize. */
+  created: boolean;
+  /** Claim status of the created OR pre-existing binding, when known. */
+  claim_status?: BindingClaimStatus;
+  /** True if a binding already existed for this repo (BINDING_EXISTS). */
+  already_existed?: boolean;
+  /** Error message if creation failed (e.g. no gh-token / GitHub down). */
+  error?: string;
+}
+
 export interface FinalizeShareResult {
   ok: true;
   shared_config: HarnessSharedConfig;
@@ -77,6 +90,12 @@ export interface FinalizeShareResult {
    * (rebooted, state 'booted') or whether a host restart is still needed.
    */
   swarm?: FinalizeShareSwarm;
+  /**
+   * Present when binding-row creation was attempted after the write. Records
+   * whether this engineer became the provisional owner, or a binding already
+   * existed (someone shared this repo first), or creation failed.
+   */
+  binding?: FinalizeShareBinding;
 }
 
 export interface FinalizeShareDeps {
@@ -93,6 +112,19 @@ export interface FinalizeShareDeps {
    * the substrate flag is off, returning `{ rebooted: false }`).
    */
   reboot?: (slug: string) => Promise<FinalizeShareSwarm>;
+  /**
+   * Optional: create the unclaimed binding row (claim/dedup system) for this
+   * repo. Best-effort — a throw is caught and reported as
+   * `{ created: false, error }`; a pre-existing binding (BINDING_EXISTS) is
+   * reported as `{ created: false, already_existed: true }`. Needs gh auth
+   * (hits GitHub). Independent of the substrate flag. Omit to skip.
+   */
+  createBinding?: (args: {
+    slug: string;
+    github_remote: string;
+    harness_topic: string;
+    privacy: HarnessSharedPrivacy;
+  }) => Promise<FinalizeShareBinding>;
 }
 
 /** Raised on bad input / unknown harness; the handler maps it to a 4xx. */
@@ -154,6 +186,23 @@ export async function finalizeShare(
   const absPath = join(projectDir, HARNESS_SHARED_CONFIG_REL_PATH);
   await deps.writeFileUtf8(absPath, JSON.stringify(config, null, 2));
 
+  // Claim-system side effect (best-effort): create the unclaimed binding row so
+  // dedup + provisional ownership work. Never fails the finalize — the file is
+  // the swarm-critical artifact; the binding row is the claim layer on top.
+  let binding: FinalizeShareBinding | undefined;
+  if (deps.createBinding) {
+    try {
+      binding = await deps.createBinding({
+        slug: input.slug,
+        github_remote: input.github_remote,
+        harness_topic: config.topic,
+        privacy,
+      });
+    } catch (e) {
+      binding = { created: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   // Going-online side effect (best-effort): reboot the harness so an already-
   // booted handle re-resolves its swarm binding from the file we just wrote.
   // Never fails the finalize — the file is written and authoritative.
@@ -166,7 +215,13 @@ export async function finalizeShare(
     }
   }
 
-  return { ok: true, shared_config: config, path: absPath, ...(swarm ? { swarm } : {}) };
+  return {
+    ok: true,
+    shared_config: config,
+    path: absPath,
+    ...(swarm ? { swarm } : {}),
+    ...(binding ? { binding } : {}),
+  };
 }
 
 const realDeps: FinalizeShareDeps = {
@@ -190,6 +245,31 @@ const realDeps: FinalizeShareDeps = {
       state: r.boot.state,
       ...(r.boot.error ? { error: r.boot.error } : {}),
     };
+  },
+  // Create the unclaimed binding row (claim/dedup). BINDING_EXISTS (someone
+  // shared this repo first) is reported, not thrown. Hits GitHub via the
+  // binding service; a missing gh-token surfaces as { created: false, error }.
+  createBinding: async ({ slug, github_remote, harness_topic, privacy }) => {
+    try {
+      const { createUnclaimedBinding } = await import('@/lib/harness/binding-service');
+      const rec = await createUnclaimedBinding({
+        githubUrl: github_remote,
+        privacy,
+        harness_topic,
+        harness_slug: slug,
+      });
+      return { created: true, claim_status: rec.claim_status };
+    } catch (e) {
+      const { BindingServiceErrorThrowable } = await import('@/lib/harness/binding-types');
+      if (e instanceof BindingServiceErrorThrowable && e.error.code === 'BINDING_EXISTS') {
+        return {
+          created: false,
+          already_existed: true,
+          claim_status: e.error.binding.claim_status,
+        };
+      }
+      return { created: false, error: e instanceof Error ? e.message : String(e) };
+    }
   },
 };
 
