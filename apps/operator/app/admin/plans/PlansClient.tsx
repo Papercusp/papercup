@@ -655,6 +655,7 @@ export default function PlansClient() {
                 title="Other"
                 subtitle={itemSubtitle}
                 kinds={otherFacets}
+                planFilters={itemPlans}
               />
             ) : null}
             {showPlanItems ? (

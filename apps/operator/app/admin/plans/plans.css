@@ -165,10 +165,21 @@
   color: var(--fg, #e7f7ff);
 }
 .pc-inbox__filter.is-active {
-  background: color-mix(in oklab, var(--pc-view-accent), transparent 60%);
-  border-color: color-mix(in oklab, var(--pc-view-accent), transparent 20%);
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 46%);
+  border-color: var(--pc-view-accent);
   color: var(--fg, #e7f7ff);
-  font-weight: 600;
+  font-weight: 800;
+  /* Loud "selected" treatment: full-accent border + a 2px accent ring so an
+     active facet reads at a glance even on a busy inbox. */
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--pc-view-accent), transparent 55%);
+}
+/* Leading checkmark on the active facet (the "✓" the selection picks up). */
+.pc-inbox__filter.is-active::before {
+  content: "✓";
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--fg, #e7f7ff);
 }
 .pc-inbox__filter-count {
   min-width: 18px;
@@ -786,8 +797,20 @@
 .pc-plan-row.is-active {
   background:
     linear-gradient(180deg, rgba(17, 34, 53, 0.96), rgba(10, 20, 33, 0.98));
-  border-color: var(--pc-plans-border-strong);
-  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.08);
+  /* Loud "selected/filtering" treatment: accent border + a 2px accent ring.
+     (The status-colored left border is preserved by the more-specific
+     .pc-plan-rail__item--<status> rules below.) */
+  border-color: color-mix(in oklab, var(--accent, #38bdf8), transparent 25%);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent, #38bdf8), transparent 42%);
+}
+.pc-plan-row.is-active .pc-plan-row__title {
+  color: #eaffff;
+}
+/* Leading checkmark on the title marks the plan as an active filter. */
+.pc-plan-row.is-active .pc-plan-row__title::before {
+  content: "✓ ";
+  color: var(--accent, #38bdf8);
+  font-weight: 900;
 }
 
 .pc-plan-rail__item--active .pc-plan-row { border-left-color: rgba(34, 197, 94, 0.72); }

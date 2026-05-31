@@ -39,24 +39,40 @@ interface Props {
   subtitle: string;
   /** When non-empty, show only these kinds (the active per-kind facets). */
   kinds?: AttentionKind[];
+  /** When non-empty, the rail's plan selection — narrows the Other list to
+   *  attention items belonging to these plans, so the left sidebar acts as a
+   *  filter here too (harness-level alerts with no plan are dropped). */
+  planFilters?: string[];
 }
 
-/** Keep only the non-plan-item kinds (optionally narrowed to `allow`);
- *  drop groups left empty. */
-function otherOnly(groups: AttentionGroup[], allowKinds: AttentionKind[]): AttentionGroup[] {
+/** Keep only the non-plan-item kinds (optionally narrowed to `allow`), and —
+ *  when a plan filter is active — only items belonging to those plans; drop
+ *  groups left empty. */
+function otherOnly(
+  groups: AttentionGroup[],
+  allowKinds: AttentionKind[],
+  allowPlans: string[],
+): AttentionGroup[] {
   const allow = allowKinds.length ? new Set(allowKinds) : null;
+  const plans = allowPlans.length ? new Set(allowPlans) : null;
   return groups
     .map((g) => ({
       ...g,
-      items: g.items.filter((i) => i.kind !== 'plan-item' && (!allow || allow.has(i.kind))),
+      items: g.items.filter(
+        (i) =>
+          i.kind !== 'plan-item' &&
+          (!allow || allow.has(i.kind)) &&
+          (!plans || (i.planSlug != null && plans.has(i.planSlug))),
+      ),
     }))
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, kinds }: Props) {
+export default function PlanOtherList({ groups, loading, error, refresh, kinds, planFilters }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
 
-  const otherGroups = otherOnly(groups, kinds ?? []);
+  const planList = planFilters ?? [];
+  const otherGroups = otherOnly(groups, kinds ?? [], planList);
   const allItems = otherGroups.flatMap((g) => g.items);
   const selItem = allItems.find((i) => i.id === selected) ?? null;
 
@@ -83,7 +99,11 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds }
   if (!allItems.length) {
     return (
       <div className="pc-items pc-items--mixed">
-        <div className="pc-items__empty">Nothing else needs attention right now.</div>
+        <div className="pc-items__empty">
+          {planList.length
+            ? 'No alerts for the selected plan(s).'
+            : 'Nothing else needs attention right now.'}
+        </div>
       </div>
     );
   }
