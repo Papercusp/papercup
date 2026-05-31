@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { installPapercuspFiles, resolveInstallPaths } from '../papercusp-files';
+import { installPapercuspFiles, resolveInstallPaths, renderSuPlaybook } from '../papercusp-files';
 
 let tmpHome: string;
 let tmpAppRoot: string;
@@ -193,5 +193,58 @@ describe('installPapercuspFiles', () => {
     expect(result.minted.token).toBe(false);
     const token = (await fs.readFile(result.tokenPath, 'utf8')).trim();
     expect(token).toBe('preexisting-token-12345');
+  });
+});
+
+describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
+  const MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
+
+  beforeEach(async () => {
+    // The shared base already exists from the outer beforeEach as
+    // `# Playbook v1`; replace it with a marker-model base + per-agent
+    // overlays so the splice picks the RIGHT client overlay.
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+      `# Engineer base\n\n${MARKER}\n\n## Tail\n`,
+    );
+    await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su.claude.md'), '## CLAUDE tooling');
+    await fs.writeFile(path.join(tmpAppRoot, 'prompts', 'papercusp-su.omp.md'), '## OMP tooling');
+    await fs.writeFile(
+      path.join(tmpAppRoot, 'prompts', 'papercusp-su-power.tools.md'),
+      `# Power base\n\n${MARKER}\n\n## Tail\n`,
+    );
+  });
+
+  it('splices the per-agent overlay (claude ≠ omp) into the base, marker never shipped', async () => {
+    const claude = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot });
+    expect(claude.text).toContain('# Engineer base');
+    expect(claude.text).toContain('## CLAUDE tooling');
+    expect(claude.text).not.toContain('## OMP tooling');
+    expect(claude.text).not.toContain(MARKER);
+    expect(claude.baseSource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'));
+    expect(claude.overlaySource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su.claude.md'));
+
+    const omp = await renderSuPlaybook({ agent: 'omp', operatorAppRoot: tmpAppRoot });
+    expect(omp.text).toContain('## OMP tooling');
+    expect(omp.text).not.toContain('## CLAUDE tooling');
+  });
+
+  it("profile selects the base file (power → papercusp-su-power.tools.md)", async () => {
+    const power = await renderSuPlaybook({ agent: 'claude', profile: 'power', operatorAppRoot: tmpAppRoot });
+    expect(power.text).toContain('# Power base');
+    expect(power.baseSource).toBe(path.join(tmpAppRoot, 'prompts', 'papercusp-su-power.tools.md'));
+  });
+
+  it('agent with no overlay file: marker removed, overlaySource empty', async () => {
+    const codex = await renderSuPlaybook({ agent: 'codex', operatorAppRoot: tmpAppRoot });
+    expect(codex.text).not.toContain(MARKER);
+    expect(codex.text).toContain('# Engineer base');
+    expect(codex.overlaySource).toBe('');
+  });
+
+  it('throws when the base profile file is missing', async () => {
+    await expect(renderSuPlaybook({ agent: 'claude', profile: 'ghost', operatorAppRoot: tmpAppRoot })).rejects.toThrow(
+      /papercusp-su-ghost\.tools\.md/,
+    );
   });
 });

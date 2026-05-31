@@ -10,38 +10,9 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** ACTIVE. **Phase 0 DONE** (P-001/P-002). Retire `claude-su`/`omp-su`/
-`codex-su` so **`psu` is the single launch utility**; `su` = the operator/engineer
-"role" at superuser tier via a generalized `buildLaunchSpec`, playbook assembled
-per-launch. Also shipped independently (advances P-042): **`psu --resume=<id>` /
-`psu --resume <id>`** resumes a session by id, skipping the picker (commit `50f0e0ac6`).
+**State:** Phases 0-1 done.
 
-**Phase 0 findings (de-risk Phases 1–4):**
-- **Reference map.** psu-internal (re-home): `su-agents.ts` `SU_WRAPPER_BIN`,
-  `bootstrap-su.ts:293` (`wrapperBin: SU_WRAPPER_BIN[agent]`), `psu-launcher.mjs`
-  (SU-flow exec + `resumeArgsFor`). Install/boot (P-040): `install-standalone-mcp.sh`
-  §4d/4e/4f, `ensure-omp-su.ts` (+ `host-bootstrap.ts`/`instrumentation-node.ts`
-  callers), `desktop-install/omp-integration.ts`. UI/docs (P-052): `settings/*`,
-  `agent-tools/docs/*`. Plus tests. Comment-only refs in `console-launcher.ts` /
-  `native-console.ts` (post-P-032).
-- **claude is the TRIVIAL case.** `claude-su` = `claude
-  --dangerously-skip-permissions --append-system-prompt-file <playbook.claude.md>
-  [+launch-ctx] "$@"`; its MCP (`papercusp-su` in `~/.claude.json`) AND lock hooks
-  (`~/.claude/settings.json`, PreToolUse×2 + PostToolUse) are **user-level →
-  survive a raw `claude`**. So psu only needs to add the playbook prompt + mint
-  `PAPERCUSP_SID`; no per-session MCP/hook minting for claude.
-- **codex is the GATE.** `codex-su-home` carries its OWN scoped `settings.json`
-  hooks (PreToolUse+PostToolUse) + `config.toml` (superuser MCP + bearer) +
-  AGENTS.md + auth symlink. A per-session CODEX_HOME (P-030) **must re-home those
-  hooks** or per-session codex loses lock enforcement. D-003 confirmed real.
-- **omp** needs the `-e papercusp-coord.ts` extension carried into psu's omp args
-  (P-021). Only `claude-su` is installed on this box (omp-su/codex-su absent).
-
-**Next:** Phase 1 — P-010 generalize `buildRoleLaunchSpec` → `buildLaunchSpec({
-kind:'su'|'role', … })` (su = playbook prompt + superuser MCP), then P-011
-(playbook single-sourced) + P-012 (superuser MCP minting). **Hard gate (D-003)
-stands:** no wrapper deleted until P-031/P-032 prove lock enforcement + coord
-identity on all three agents launched via psu.
+**Next:** P-020: psu su-flow to builder; codex gated.
 
 ## Background
 
@@ -92,9 +63,9 @@ role launches + `writeRoleCodexHome` work). Key code:
 
 ## Phase 1 — buildLaunchSpec (generalize the spec)
 
-- **P-010** `todo` Generalize `buildRoleLaunchSpec` → `buildLaunchSpec({ kind:'su'|'role', agent, workspaceId, harnessSlug?, profile?, role?, featureId?, planContext? })`. `kind:'role'` stays byte-identical (signed role-scoped URL + `prompts/<role>.md`); `kind:'su'` uses prompt=playbook, cwd=harness projectDir or workspace root, MCP=superuser (D-002). blocked-by: P-002
-- **P-011** `todo` Playbook-as-prompt, single-sourced: su's per-launch prompt reuses the SAME renderer the installer/boot path uses (`splice-tooling-overlay`/`papercusp-files`) over `prompts/papercusp-su-${profile}.tools.md` + the per-agent overlay, so the (now-removed) install-baked file and the launch-assembled prompt can't drift; layer the launch-context addendum (harness scope + bound-plan Now) the way `bootstrap-su` does today. blocked-by: P-010
-- **P-012** `todo` Superuser MCP minting for `kind:'su'`: write a per-session `.mcp.json` (claude/omp) / CODEX_HOME `config.toml` (codex) at `?superuser=1&client=<SID>` + the `PAPERCUSP_SU_TOKEN` bearer (D-002) — a sibling branch to the role path's signed-URL minting, one `if` not a parallel module. blocked-by: P-010
+- **P-010** `done` Generalize `buildRoleLaunchSpec` → `buildLaunchSpec({ kind:'su'|'role', agent, workspaceId, harnessSlug?, profile?, role?, featureId?, planContext? })`. `kind:'role'` stays byte-identical (signed role-scoped URL + `prompts/<role>.md`); `kind:'su'` uses prompt=playbook, cwd=harness projectDir or workspace root, MCP=superuser (D-002). blocked-by: P-002 (buildLaunchSpec{kind:'su'|'role'} in role-launch-spec.ts; role delegates byte-identical, su branch new. 5 unit tests.)
+- **P-011** `done` Playbook-as-prompt, single-sourced: su's per-launch prompt reuses the SAME renderer the installer/boot path uses (`splice-tooling-overlay`/`papercusp-files`) over `prompts/papercusp-su-${profile}.tools.md` + the per-agent overlay, so the (now-removed) install-baked file and the launch-assembled prompt can't drift; layer the launch-context addendum (harness scope + bound-plan Now) the way `bootstrap-su` does today. blocked-by: P-010 (su prompt via renderSuPlaybook shared splice over prompts/papercusp-su-<profile>.tools.md + papercusp-su.<agent>.md + composeLaunchContext addendum; install path refactored onto the same overlay reader no drift.)
+- **P-012** `done` Superuser MCP minting for `kind:'su'`: write a per-session `.mcp.json` (claude/omp) / CODEX_HOME `config.toml` (codex) at `?superuser=1&client=<SID>` + the `PAPERCUSP_SU_TOKEN` bearer (D-002) — a sibling branch to the role path's signed-URL minting, one `if` not a parallel module. blocked-by: P-010 (su MCP = loopback ?superuser=1&workspace=<ws> + bearer via shared readSuperuserToken exported from superuser-token.ts; matches console-launcher .mcp.json shape.)
 
 ## Phase 2 — psu SU flow → spec + raw-CLI launch
 

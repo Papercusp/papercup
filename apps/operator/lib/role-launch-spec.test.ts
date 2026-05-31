@@ -22,9 +22,28 @@ vi.mock('@/lib/spawn-signing', () => ({
 vi.mock('@/lib/spawn-config', () => ({
   resolveProjectDir: vi.fn(async (slug: string) => `/registry/${slug}`),
 }));
+// su-branch leaves: the playbook renderer, the token reader, and the
+// workspace-root resolver. Mocked so the su tests assert the COMPOSITION
+// (cwd + launch-context append + superuser MCP shape), not the leaves —
+// renderSuPlaybook's real splice has its own coverage in papercusp-files.test.ts.
+const renderSuPlaybookMock = vi.fn(async (..._args: unknown[]) => ({
+  text: 'SU PLAYBOOK BODY',
+  baseSource: '/prompts/papercusp-su-engineer.tools.md',
+  overlaySource: '/prompts/papercusp-su.claude.md',
+}));
+vi.mock('@/lib/desktop-install/papercusp-files', () => ({
+  renderSuPlaybook: (...args: unknown[]) => renderSuPlaybookMock(...args),
+}));
+vi.mock('@/lib/superuser-token', () => ({
+  readSuperuserToken: vi.fn(() => 'TESTTOKEN'),
+}));
+vi.mock('@/lib/papercusp-root', () => ({
+  papercuspPath: vi.fn(() => '/ws-root'),
+}));
 
-import { buildRoleLaunchSpec } from '@/lib/role-launch-spec';
+import { buildRoleLaunchSpec, buildLaunchSpec } from '@/lib/role-launch-spec';
 import { resolveProjectDir } from '@/lib/spawn-config';
+import { readSuperuserToken } from '@/lib/superuser-token';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -105,5 +124,101 @@ describe('buildRoleLaunchSpec', () => {
       buildRoleLaunchSpec({ role: 'scoper', workspaceId: 'papercusp-workspace', harnessSlug: 'papercup', operatorBaseUrl: 'http://x' }),
     ).rejects.toThrow(/not registered in workspace "papercusp-workspace"/);
     expect(assembleRolePromptMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildLaunchSpec — kind dispatch', () => {
+  it("kind:'role' delegates to buildRoleLaunchSpec + tags kind, role-scoped (no superuser)", async () => {
+    const spec = await buildLaunchSpec({
+      kind: 'role',
+      role: 'worker',
+      workspaceId: 'default',
+      harnessSlug: 'papercup',
+      operatorBaseUrl: 'http://localhost:3070',
+      featureId: 'F-001',
+    });
+    expect(spec.kind).toBe('role');
+    expect(spec.role).toBe('worker');
+    expect(spec.promptText).toBe('WORKER PROMPT BODY');
+    const u = new URL(spec.mcpUrl);
+    expect(u.searchParams.get('role')).toBe('worker');
+    expect(u.searchParams.has('superuser')).toBe(false);
+    // su leaves untouched on the role path.
+    expect(renderSuPlaybookMock).not.toHaveBeenCalled();
+  });
+
+  it("kind:'su' workspace-level: playbook prompt, workspace-root cwd, superuser MCP + bearer", async () => {
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'claude',
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://localhost:3070',
+    });
+    expect(spec.kind).toBe('su');
+    expect(spec.role).toBe('su');
+    expect(spec.featureId).toBeNull();
+    expect(spec.harnessSlug).toBeNull();
+    // workspace-level → papercuspPath() (mocked), no resolveProjectDir.
+    expect(spec.cwd).toBe('/ws-root');
+    expect(resolveProjectDir).not.toHaveBeenCalled();
+    // playbook rendered for the right client; no launch-context (no harness/plan).
+    expect(renderSuPlaybookMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'claude' }));
+    expect(spec.promptText).toBe('SU PLAYBOOK BODY');
+    expect(spec.promptFile).toBe('/prompts/papercusp-su-engineer.tools.md');
+    // superuser MCP door (NOT a signed role URL), workspace baked in, bearer set.
+    const u = new URL(spec.mcpUrl);
+    expect(u.pathname).toBe('/api/mcp');
+    expect(u.searchParams.get('superuser')).toBe('1');
+    expect(u.searchParams.get('workspace')).toBe('default');
+    expect(u.searchParams.has('role')).toBe(false);
+    const mcp = JSON.parse(spec.mcpJsonContents);
+    expect(mcp.mcpServers.papercusp.url).toBe(spec.mcpUrl);
+    expect(mcp.mcpServers.papercusp.headers.Authorization).toBe('Bearer TESTTOKEN');
+  });
+
+  it("kind:'su' harness+plan: cwd from registry, launch-context appended to playbook", async () => {
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'omp',
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://localhost:3070',
+      harnessSlug: 'papercup',
+      planSlug: 'my-plan',
+      planTitle: 'My Plan',
+      planNow: { state: 'doing X', next: 'do Y' },
+    });
+    expect(spec.harnessSlug).toBe('papercup');
+    expect(spec.cwd).toBe('/registry/papercup');
+    expect(renderSuPlaybookMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'omp' }));
+    // base playbook + the composed scope/plan addendum.
+    expect(spec.promptText).toContain('SU PLAYBOOK BODY');
+    expect(spec.promptText).toContain('# This launch');
+    expect(spec.promptText).toContain('papercup');
+    expect(spec.promptText).toContain('my-plan');
+  });
+
+  it("kind:'su' surfaces a harness that isn't registered in the workspace", async () => {
+    vi.mocked(resolveProjectDir).mockResolvedValueOnce(null);
+    await expect(
+      buildLaunchSpec({
+        kind: 'su',
+        agent: 'codex',
+        workspaceId: 'ws9',
+        operatorBaseUrl: 'http://x',
+        harnessSlug: 'ghost',
+      }),
+    ).rejects.toThrow(/not registered in workspace "ws9"/);
+  });
+
+  it("kind:'su' with no installed token emits empty headers (bootstrap pending)", async () => {
+    vi.mocked(readSuperuserToken).mockReturnValueOnce(null);
+    const spec = await buildLaunchSpec({
+      kind: 'su',
+      agent: 'claude',
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://x',
+    });
+    const mcp = JSON.parse(spec.mcpJsonContents);
+    expect(mcp.mcpServers.papercusp.headers).toEqual({});
   });
 });

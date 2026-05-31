@@ -121,10 +121,12 @@ async function copyIfExists(src: string, dst: string): Promise<boolean> {
   }
 }
 
-/** Read the OMP overlay beside the base playbook; missing → '' (the
- *  marker is still removed, never shipped literally). */
-async function readOmpOverlay(baseSrc: string): Promise<string> {
-  const overlayPath = path.join(path.dirname(baseSrc), 'papercusp-su.omp.md');
+/** Read the per-agent tooling overlay (`papercusp-su.<agent>.md`) beside
+ *  the base playbook; missing → '' (the marker is still removed, never
+ *  shipped literally). One reader for every client (omp/claude/codex) so
+ *  the install path and `buildLaunchSpec`'s `su` branch can't drift. */
+async function readAgentOverlay(baseSrc: string, agent: string): Promise<string> {
+  const overlayPath = path.join(path.dirname(baseSrc), `papercusp-su.${agent}.md`);
   try {
     return (await fs.readFile(overlayPath, 'utf8')).replace(/\n+$/, '');
   } catch (e) {
@@ -147,7 +149,7 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw e;
   }
-  const overlay = await readOmpOverlay(baseSrc);
+  const overlay = await readAgentOverlay(baseSrc, 'omp');
   const out = spliceToolingOverlay(base, overlay);
   await fs.writeFile(dst, out, { mode: 0o644 });
   await fs.chmod(dst, 0o644);
@@ -173,14 +175,15 @@ function resolveOperatorAppRoot(): string {
  * also tries process.cwd()-rooted paths to cover the esbuild-bundled
  * Tauri sidecar layout where `__dirname` collapses to `sidecar/`.
  */
-function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
-  const fromRoot = [path.join(operatorAppRoot, 'prompts', 'papercusp-su-engineer.tools.md')];
+function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean, profile = 'engineer'): string[] {
+  const file = `papercusp-su-${profile}.tools.md`;
+  const fromRoot = [path.join(operatorAppRoot, 'prompts', file)];
   if (explicitRoot) return fromRoot;
   const sidecarRoot = process.cwd();
   return [
     ...fromRoot,
-    path.join(sidecarRoot, 'apps', 'operator', 'prompts', 'papercusp-su-engineer.tools.md'),
-    path.join(sidecarRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
+    path.join(sidecarRoot, 'apps', 'operator', 'prompts', file),
+    path.join(sidecarRoot, 'prompts', file),
   ];
 }
 
@@ -252,4 +255,58 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
     playbookSource: playbookWritten && playbookSource ? playbookSource : '',
     extensionSource: extensionWritten && extensionSource ? extensionSource : '',
   };
+}
+
+export interface RenderSuPlaybookInput {
+  /** Which client's tooling overlay to splice in (omp/claude/codex). */
+  agent: string;
+  /** Base-playbook profile: 'engineer' (default) | 'power'. */
+  profile?: string;
+  /** Override the operator app root (tests). Defaults to walking up from here. */
+  operatorAppRoot?: string;
+  /** Override the resolved base path directly (tests / explicit callers). */
+  baseSource?: string;
+}
+
+export interface RenderedSuPlaybook {
+  /** The spliced playbook text (base + per-agent overlay at the marker). */
+  text: string;
+  /** Resolved base-playbook path, '' if none was found. */
+  baseSource: string;
+  /** Resolved overlay path, '' when the agent has no overlay file. */
+  overlaySource: string;
+}
+
+/**
+ * Render an SU playbook IN MEMORY: the `papercusp-su-<profile>.tools.md`
+ * base with the `papercusp-su.<agent>.md` overlay spliced in at the
+ * marker. This is the SAME composition the install path
+ * (`writeSplicedPlaybook`) writes to disk — both go through
+ * `spliceToolingOverlay` + `readAgentOverlay` over the SAME prompts
+ * files, so a `psu` launch and a `~/.papercusp/engineer-collaborator.md`
+ * install can never drift.
+ *
+ * `buildLaunchSpec({ kind: 'su' })` uses this to source the prompt
+ * fresh from the prompts dir rather than depending on install having run.
+ * Throws when the base profile file can't be found (a real misconfig —
+ * surface it; the marker-model base is required).
+ */
+export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<RenderedSuPlaybook> {
+  const profile = input.profile ?? 'engineer';
+  const explicitRoot = !!input.operatorAppRoot;
+  const operatorAppRoot = input.operatorAppRoot ?? resolveOperatorAppRoot();
+  const baseSource =
+    input.baseSource ?? (await firstExisting(playbookCandidates(operatorAppRoot, explicitRoot, profile)));
+  if (!baseSource) {
+    throw new Error(
+      `renderSuPlaybook: base playbook "papercusp-su-${profile}.tools.md" not found ` +
+        `(searched from operatorAppRoot=${operatorAppRoot})`,
+    );
+  }
+  const base = await fs.readFile(baseSource, 'utf8');
+  const overlay = await readAgentOverlay(baseSource, input.agent);
+  const overlaySource = overlay
+    ? path.join(path.dirname(baseSource), `papercusp-su.${input.agent}.md`)
+    : '';
+  return { text: spliceToolingOverlay(base, overlay), baseSource, overlaySource };
 }

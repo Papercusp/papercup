@@ -36,6 +36,10 @@ import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { signSpawnParams } from '@/lib/spawn-signing';
 import { resolveProjectDir } from '@/lib/spawn-config';
 import { getPromptOverride } from '@/lib/harness-prompt-overrides';
+import { renderSuPlaybook } from '@/lib/desktop-install/papercusp-files';
+import { composeLaunchContext } from '@/lib/su-launch-context';
+import { readSuperuserToken } from '@/lib/superuser-token';
+import { papercuspPath } from '@/lib/papercusp-root';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -156,6 +160,157 @@ export async function buildRoleLaunchSpec(
     promptText: assembled.text,
     promptFile: assembled.meta.promptFile,
     mcpUrl,
+    mcpJsonContents,
+  };
+}
+
+/**
+ * `su` launch input — the engineer/collaborator superuser session. NOT a
+ * pipeline role: the prompt is the SU playbook (not a role persona) and
+ * the MCP URL is the loopback `?superuser=1` door (not a signed,
+ * role-scoped URL). See D-001: `su` is `buildLaunchSpec` at the superuser
+ * tier — same builder, prompt = playbook, scope = superuser.
+ */
+export interface BuildSuLaunchSpecInput {
+  kind: 'su';
+  /** Client whose tooling overlay is spliced into the playbook (omp/claude/codex). */
+  agent: string;
+  /** Active workspace id (baked into the superuser MCP URL as a default scope). */
+  workspaceId: string;
+  /** Operator base URL the superuser MCP door points at. */
+  operatorBaseUrl: string;
+  /** Harness scope, or null/omitted for a workspace-level su session. */
+  harnessSlug?: string | null;
+  /** Playbook profile: 'engineer' (default) | 'power'. */
+  profile?: string;
+  /** Plan binding for the launch-context addendum (optional). */
+  planSlug?: string | null;
+  planTitle?: string | null;
+  planNow?: { state: string; next: string } | null;
+  /** Test override forwarded to `renderSuPlaybook`. */
+  operatorAppRoot?: string;
+}
+
+export type BuildLaunchSpecInput =
+  | (BuildRoleLaunchSpecInput & { kind: 'role' })
+  | BuildSuLaunchSpecInput;
+
+/**
+ * The unified launch spec — a superset of `RoleLaunchSpec` that also
+ * carries the `kind` discriminator. `harnessSlug` is nullable here
+ * because an `su` session may be workspace-level (no harness).
+ */
+export interface LaunchSpec {
+  kind: 'su' | 'role';
+  /** Pipeline role for kind:'role'; the literal 'su' for kind:'su'. */
+  role: string;
+  runId: string;
+  spawnId: string;
+  harnessSlug: string | null;
+  featureId: string | null;
+  cwd: string;
+  promptText: string;
+  /** Resolved prompt source path (role `.md`, or the su base playbook). */
+  promptFile: string;
+  mcpUrl: string;
+  mcpJsonContents: string;
+}
+
+/**
+ * THE single entry point that turns a launch request into everything a
+ * launcher needs (prompt, MCP config, cwd). Dispatches on `kind`:
+ *
+ *   - `'role'` → `buildRoleLaunchSpec` verbatim: shared role-prompt
+ *     assembler + signed role-scoped MCP URL (role-allowlist enforced).
+ *   - `'su'`   → the engineer playbook (`renderSuPlaybook`, the SAME
+ *     prompts files the installer writes) + a per-launch scope/plan
+ *     addendum + the loopback `?superuser=1` MCP door with the bearer.
+ *
+ * Two params (prompt source + MCP scope) separate the two — not two
+ * mechanisms. This is the D-001 collapse: `psu` is the only launcher,
+ * `su` is just its superuser tier.
+ */
+export async function buildLaunchSpec(input: BuildLaunchSpecInput): Promise<LaunchSpec> {
+  if (input.kind === 'role') {
+    const spec = await buildRoleLaunchSpec(input);
+    return { kind: 'role', ...spec };
+  }
+  return buildSuLaunchSpec(input);
+}
+
+async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchSpec> {
+  const spawnId = randomUUID();
+  const runId = randomUUID();
+  const harnessSlug = input.harnessSlug?.trim() || null;
+
+  // 1. cwd — the harness project dir if scoped, else the workspace root.
+  //    Matches console-launcher's superuser shell: a *given* slug must
+  //    resolve (a typo shouldn't silently fall back to workspace level).
+  let cwd: string;
+  if (harnessSlug) {
+    const projectDir = await resolveProjectDir(harnessSlug, input.workspaceId);
+    if (!projectDir) {
+      throw new Error(
+        `buildLaunchSpec(su): harness "${harnessSlug}" is not registered in workspace "${input.workspaceId}"`,
+      );
+    }
+    cwd = projectDir;
+  } else {
+    cwd = papercuspPath();
+  }
+
+  // 2. Prompt — the engineer/power playbook (base + per-agent tooling
+  //    overlay), rendered fresh from the SAME prompts files the installer
+  //    splices (renderSuPlaybook → spliceToolingOverlay), plus the
+  //    per-launch scope/plan addendum the wrappers used to compose.
+  const rendered = await renderSuPlaybook({
+    agent: input.agent,
+    profile: input.profile,
+    operatorAppRoot: input.operatorAppRoot,
+  });
+  const launchCtx = composeLaunchContext({
+    harnessSlug,
+    planSlug: input.planSlug ?? null,
+    planTitle: input.planTitle ?? null,
+    planNow: input.planNow ?? null,
+  });
+  const promptText = launchCtx
+    ? rendered.text.replace(/\n+$/, '') + '\n\n' + launchCtx
+    : rendered.text;
+
+  // 3. Superuser MCP — the existing loopback door (NOT a signed,
+  //    role-scoped URL): `?superuser=1&workspace=<ws>` + the bearer from
+  //    ~/.papercusp/superuser-token. Same `.mcp.json` shape
+  //    console-launcher writes for the "+" superuser console.
+  const token = readSuperuserToken();
+  const mcpUrl = new URL(`${input.operatorBaseUrl.replace(/\/$/, '')}/api/mcp`);
+  mcpUrl.searchParams.set('superuser', '1');
+  mcpUrl.searchParams.set('workspace', input.workspaceId);
+  const mcpUrlStr = mcpUrl.toString();
+  const mcpJsonContents = JSON.stringify(
+    {
+      mcpServers: {
+        papercusp: {
+          url: mcpUrlStr,
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        },
+      },
+    },
+    null,
+    2,
+  );
+
+  return {
+    kind: 'su',
+    role: 'su',
+    runId,
+    spawnId,
+    harnessSlug,
+    featureId: null,
+    cwd,
+    promptText,
+    promptFile: rendered.baseSource,
+    mcpUrl: mcpUrlStr,
     mcpJsonContents,
   };
 }

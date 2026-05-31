@@ -39,6 +39,16 @@ function loadToken(): string | null {
   }
 }
 
+/**
+ * Read the on-disk superuser bearer token, or null if not yet installed.
+ * The single shared reader — `console-launcher` and `buildLaunchSpec`'s
+ * `su` branch both use this so the "where's the token" logic (path,
+ * mtime cache, short-token sanity) lives in exactly one place.
+ */
+export function readSuperuserToken(): string | null {
+  return loadToken();
+}
+
 /** Returns true if the bearer matches the on-disk superuser token. */
 export function isValidSuperuserBearer(bearer: string | null | undefined): boolean {
   if (!bearer) return false;
