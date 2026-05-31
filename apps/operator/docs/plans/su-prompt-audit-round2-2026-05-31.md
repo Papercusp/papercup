@@ -10,9 +10,9 @@ related: [su-prompt-audit-fixes-2026-05-30]
 
 ## Now
 
-> **State:** Second audit of the SU playbooks (`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`) complete. Lens 1 (inaccuracy) is nearly empty — the playbooks were heavily audited+fixed in `su-prompt-audit-fixes-2026-05-30` this same session, and a fresh verification pass confirmed tool names / paths / commands / ports / the harness-sentinel + `psu --role` + locking mechanisms are all accurate. The real opportunity is Lens 3: several agent-relevant systems EXIST but have zero (or catalog-only) guidance, so agents don't reach for them or misuse them. Plugin runtime check (`plugins:runtime_status`): repomix / firecrawl / fetch-plus load fine; **gitnexus is loaded but broken** (`spawn gitnexus ENOENT` — binary not on PATH, tools never wired), so the playbooks point agents at non-functional gitnexus tools.
+> **State:** Second audit of the SU playbooks (`apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`) complete. Lens 1 (inaccuracy) is nearly empty — the playbooks were heavily audited+fixed in `su-prompt-audit-fixes-2026-05-30` this same session, and a fresh verification pass confirmed tool names / paths / commands / ports / the harness-sentinel + `psu --role` + locking mechanisms are all accurate. The real opportunity is Lens 3: several agent-relevant systems EXIST but have zero (or catalog-only) guidance, so agents don't reach for them or misuse them. Plugin runtime check (`plugins:runtime_status`, 2026-05-31): **repomix** works (no key/binary); **fetch-plus** works; **firecrawl** is loaded but `FIRECRAWL_API_KEY` is not configured (tools return "not configured"); **gitnexus** is loaded but broken — its binary IS installed (`/home/linuxbrew/.linuxbrew/bin/gitnexus`) but isn't on the `:3070` host's PATH, so it `spawn ENOENT`s and its tools never wired. So two of the four currently point agents at non-working tools (env fixes, see D-002 / P-008).
 >
-> **Next:** Land P-001 (the `features:update` correction — clean + unblocking) first; then the design-phase guidance (P-002/P-003, the biggest gap), then delegates/autoloop/notifications (P-004–P-006). Decisions D-001 (design-phase depth) and D-002 (gitnexus broken — fix binary vs caveat the prompt) want a quick human call before the affected items.
+> **Next:** Land P-001 (the `features:update` correction — clean + unblocking) first; then the design-phase guidance (P-002/P-003, the biggest gap), then delegates/autoloop/notifications (P-004–P-006). Decisions D-001 (design-phase depth) and D-002 (gitnexus broken — fix the host-PATH/env vs caveat the prompt; firecrawl similarly needs its key) want a quick human call before the affected items.
 
 ## Phase 1 — Accuracy fix (Lens 1)
 
@@ -29,7 +29,7 @@ related: [su-prompt-audit-fixes-2026-05-30]
 
 ## Phase 3 — Plugin accuracy + catalog hygiene
 
-- **P-008** `todo` Reconcile the plugin references. repomix / firecrawl / fetch-plus are live → keep. **gitnexus is broken** (`spawn gitnexus ENOENT`); either (a) the `gitnexus` binary gets installed/onto PATH and we keep it, or (b) caveat/remove the gitnexus reference so agents don't hit a dead tool. See D-002. Optionally surface other genuinely-useful loaded plugins (code2prompt, github-repo) — but prefer the `agent_tools:list` discovery pointer over enumerating 21 plugins.
+- **P-008** `todo` Reconcile the plugin references against verified runtime status (2026-05-31): **repomix** ✅ works (npm-wrapped, no key/binary) → keep; **fetch-plus** ✅ → keep; **firecrawl** ⚠️ loaded but `FIRECRAWL_API_KEY` is **not configured** (tools return "FIRECRAWL_API_KEY not configured") → keep the reference but note it needs the key (or gate the mention on the key being set); **gitnexus** ⚠️ broken via host-PATH gap (see D-002) → keep/caveat/remove per D-002. Prefer the `agent_tools:list` discovery pointer over enumerating the 21 loaded plugins; optionally surface a couple of genuinely-useful working ones (code2prompt, github-repo).
 - **P-009** `todo` For the long tail (`projects:*`, `snapshots:*`, `omp:*`, `wiki:backlinks`, `plugins:*`, `pending_events:list`): do NOT enumerate each — strengthen the existing "discover the catalog via `agent_tools:list`" pointer so agents know the catalog is the source of truth. Explicitly do NOT add `hindsight:recall` (deprecated 2026-05-09, no writers).
 
 ## Phase 4 — Ship
@@ -44,9 +44,9 @@ The single biggest "won't-use-as-intended" gap: `design-phase:*` (the entire UI 
 
 Related: P-002, P-003
 
-### D-002 — gitnexus is currently broken; decide fix-binary vs caveat-the-prompt
+### D-002 — gitnexus is broken by a host-PATH gap (not a missing binary); decide fix-env vs caveat-the-prompt
 
-`plugins:runtime_status` shows `@papercupai/gitnexus-bridge` loaded but its tools failed to wire (`getDynamicTools failed: spawn gitnexus ENOENT` — the `gitnexus` CLI isn't on PATH). So any playbook reference to gitnexus tools points agents at a dead surface. Decision needed (human): (a) install/path the `gitnexus` binary so the code-graph tools actually work, then keep the reference; or (b) remove/caveat the gitnexus mention until it's fixed. This is an infra/env question, not a prompt-wording one — flag to the user. P-008 implements whichever way it's decided.
+`plugins:runtime_status` shows `@papercupai/gitnexus-bridge` loaded but its tools failed to wire (`getDynamicTools failed: spawn gitnexus ENOENT`). Corrected diagnosis (2026-05-31): the binary **is** installed — `which gitnexus` → `/home/linuxbrew/.linuxbrew/bin/gitnexus` — but the `:3070` operator process's PATH doesn't include linuxbrew, so the spawn fails. It's an **env fix, not an install**: put linuxbrew on the operator host's PATH (or absolute-path the spawn in the bridge), AND run `npx gitnexus analyze <repo>` once per repo (indexes to `<repo>/.gitnexus/`) before queries work. Decision needed (human): (a) fix the host PATH + run analyze so the code-graph tools work, then keep the reference; or (b) caveat/remove the gitnexus mention until it's fixed. Infra/env question, not prompt wording. P-008 follows the decision.
 
 Related: P-008
 
