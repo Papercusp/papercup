@@ -278,9 +278,24 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
 - **P-015** `todo` **Stream transport (D-001/P-002):** implement the chosen option
   for SSE + voice/Zero WS so live invalidations carry the window's workspace —
   without this the fix is a half-fix.
-- **P-014** `todo` Verify the win on **both** paths: `GET /testing/domains` AND a
+- **P-014** `wip` Verify the win on **both** paths: `GET /testing/domains` AND a
   live SSE subscription resolve papercup **while `reg.current=default`** (the exact
   failure from today). Add the two-windows test (P-060).
+  **Live-verified so far (2026-05-31, running `:3070` host):** middleware is live
+  and D-007 fires — `x-papercusp-workspace: <unknown>` → `400 {"error":
+  "unknown_workspace",...}`; known/missing → 200, no regression. The
+  header→ALS→`activeWorkspaceId()` chain is proven (live 400 + the unit middleware
+  test). **Not yet shown: a data-level per-workspace delta** — the list endpoints
+  probed (`projects/lite`, `testing/domains`) enumerate harnesses **globally**, so
+  they don't reflect the flip. That delta belongs to P-060 against an RLS-scoped
+  table.
+- **P-016** `todo` Confirm the **harness-resolution** half honors the request
+  workspace: `resolveProject`/`resolvePhasedProject` should return `null` for a
+  slug absent from the request workspace. On the dogfood host papercup +
+  dbosroll/dbostest resolved under *every* workspace header — confirm that's
+  because they're registered per-workspace (legit) vs slug→worktree lookup being
+  workspace-blind. The PG-scoping half rides `activeWorkspaceId()` (covered); this
+  is the resolution half. → D-002
 
 ## Phase B — Background- and MCP-context safety
 
@@ -353,6 +368,14 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
   shared home's creds — P-051's audit + a guard are the net.
 - **Auth (D-004)** — header spoofable; RLS prevents leaks (wrong ws → empty) but
   not unauthorized *action*. Gate before any non-loopback exposure.
+- **D-007 hard-400 blast radius (new, 2026-05-31)** — unknown header → 400 on
+  *every* request, which would brick a window. Safe on desktop (`__PAPERCUSP_WS__`
+  is host-injected = always valid). The exposure is a **dev browser** with a stale
+  `?ws=<deleted>` and no injection → a 400-storm. Decision to confirm: keep the
+  loud 400 (the D-007 choice, correctness-first) vs fall back to default + a
+  one-time console warn when the header is unknown. Leaning keep-400 (testing app;
+  a bricked window is a clear "your workspace is gone" signal, fixable by the
+  injected id), but flag it.
 - **ALS context loss** — across async detach points the workspace can silently fall
   back to the global; P-021 assert + P-061 guard are the net (and the chokepoint-
   threading refinement below shrinks the exposure).
