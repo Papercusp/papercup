@@ -17,7 +17,7 @@ import {
   handleHttpToolRequestStreaming,
   type HttpToolHostExtras,
   type HttpToolRequest,
-} from './http-projection';
+} from '@papercusp/tooldef-http';
 import {
   registerProjectedTool,
   _resetProjectionRegistryForTests,

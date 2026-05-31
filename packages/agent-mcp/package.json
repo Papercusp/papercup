@@ -20,6 +20,7 @@
     "@modelcontextprotocol/sdk": "*",
     "@papercusp/host-platform": "file:../../libs/host-platform",
     "@papercusp/tooldef": "*",
+    "@papercusp/tooldef-http": "*",
     "@papercusp/sse": "file:../../libs/sse",
     "postgres": "*",
     "zod": "*",

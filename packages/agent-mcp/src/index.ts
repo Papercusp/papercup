@@ -137,6 +137,8 @@ export { papercuspComputeQuotaWindow } from './quota-policy';
 export { papercuspGateBypass } from './gate-bypass';
 export type { GateBypass } from '@papercusp/tooldef';
 
+// HTTP transport adapter — extracted to @papercusp/tooldef-http (plan P-030).
+// Re-exported here so existing `@papercusp/agent-mcp` consumers are untouched.
 export {
   handleHttpToolRequest,
   handleHttpToolRequestStreaming,
@@ -147,7 +149,7 @@ export {
   type HttpToolResult,
   type HttpToolHostExtras,
   type HttpRequestContextInput,
-} from './http-projection';
+} from '@papercusp/tooldef-http';
 export type {
   Principal,
   PrincipalKind,

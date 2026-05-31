@@ -26,10 +26,10 @@
  * Spec: apps/operator/docs/plugin-mcp-host-design.md.
  */
 
-import type { AgentRole } from '@papercusp/plugin-sdk';
 import type { SseSink } from '@papercusp/sse';
 import {
   dispatchProjectedTool,
+  type AgentRole,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
 } from '@papercusp/tooldef';
@@ -40,7 +40,6 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/tooldef';
 import { readReplayBuffer } from '@papercusp/tooldef';
-import { papercuspGateBypass } from './gate-bypass';
 
 /* ─── Request context derivation ─────────────────────────────────────── */
 
@@ -307,10 +306,11 @@ async function resolveToolAndContext(
     transport: 'http',
     ...spawnCtx,
     isSuperuser,
-    // Neutral gate-bypass signal the dispatcher reads (P-014). HTTP only ever
-    // grants superuser (no power-user tier on this transport), so quota is
-    // bypassed too when isSuperuser.
-    gateBypass: papercuspGateBypass({ isSuperuser }),
+    // Neutral gate-bypass signal the dispatcher reads (P-014). An admitted
+    // superuser bypasses all three gates; this transport has no power-user
+    // tier, so quota is bypassed too. (The host decides *who* is a superuser
+    // via `extras.validateSuperuser`; the bypass consequence is the adapter's.)
+    gateBypass: isSuperuser ? { role: true, capability: true, quota: true } : undefined,
     ...(extras.spawn ? { spawn: extras.spawn } : {}),
     ...(extras.secret ? { secret: extras.secret } : {}),
   };

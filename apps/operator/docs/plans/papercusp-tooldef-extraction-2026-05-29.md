@@ -66,6 +66,31 @@ host adapter, P-040+ — now mostly consolidation; all DI seams exist). **Phase 
 
 ## Progress log
 
+### 2026-05-30 — P-030 shipped + P-032 found-done (Phase 4 begun: HTTP + IPC extracted)
+
+New package **`@papercusp/tooldef-http`** (`packages/tooldef-http`): `http-projection.ts`
+moved out of agent-mcp (`git mv`, history-preserving). The adapter had exactly two host
+couplings: it called `papercuspGateBypass` (agent-mcp) and imported `AgentRole` from
+plugin-sdk — everything else (principal resolution, workspace tx, harness paths,
+superuser admission, quota/telemetry) was *already* injected via `HttpToolHostExtras`.
+Inlined the superuser→gateBypass mapping (`isSuperuser ? {role,capability,quota:true} :
+undefined` — identical to `papercuspGateBypass({isSuperuser})` since HTTP has no
+power-user tier) and repointed `AgentRole` to the core, so the package depends only on
+`@papercusp/tooldef` + `@papercusp/sse`. `agent-mcp/index.ts` re-exports the surface from
+the new package (D-010 style) → operator's 3 consumer sites (all importing from
+`@papercusp/agent-mcp`) are untouched. Recipe: src-as-entry pkg + `node_modules/@papercusp/tooldef-http`
+symlink + top-level `main`/`types` (so it resolves under agent-mcp's classic `moduleResolution: node`).
+
+**P-032 was already satisfied** — the IPC adapter has long been its own package
+(`@papercusp/ipc-endpoint-server`), consuming the engine via `dispatchProjectedToolStream`.
+
+**Verified:** tooldef-http tsc 0 + 3 standalone smoke tests (no agent-mcp deps — proves
+the adapter routes/dispatches with an empty DI surface); agent-mcp tsc 19 = baseline +
+113 tests (the moved adapter's superuser/bearer/quota-429 integration test stays in
+agent-mcp and passes against `@papercusp/tooldef-http`); operator tsc 599 = baseline,
+**0 new** (transparent re-export). **P-031** (the operator-coupled, auth-critical
+mcp-handler bridge) is the remaining Phase-4 item.
+
 ### 2026-05-30 — P-020 shipped (Standard Schema; Phase 3 complete, core not Zod-locked)
 
 Files: `packages/tooldef/src/{standard-schema.ts (new),standard-schema.test.ts (new),
@@ -549,16 +574,30 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 ## Phase 4 — Transport adapters (can run after Phase 1)
 
-- **P-030** `todo` Extract `http-projection.ts` into `@papercusp/tooldef-http` as a
-  Web-standard `Request → Response` core (the route-shaped path already is) with a
-  thin Next.js shim; agent-mcp consumes the shim. **Also lands the formal
-  `SigningProvider` + `contextSchema` seam (absorbs P-013):** the Web-standard adapter
-  needs a pluggable spawn-context verifier (no-op/loopback default; Papercusp's
-  HMAC-over-PG-secret as one impl) — that's the first real core consumer of the
-  interface. blocked-by: P-005 → D-008
-- **P-031** `todo` Extract the `mcp-handler` bridge into `@papercusp/tooldef-mcp`.
+- **P-030** `done` `http-projection.ts` extracted into **`@papercusp/tooldef-http`**
+  (2026-05-30). The adapter's only host couplings were `papercuspGateBypass` (inlined —
+  an admitted superuser bypasses all 3 gates; behavior-identical, HTTP has no power-user
+  tier) and `AgentRole` from plugin-sdk (→ the core's `AgentRole`); everything else was
+  already injected via `HttpToolHostExtras`. So it now depends only on `@papercusp/tooldef`
+  + `@papercusp/sse`. `agent-mcp` re-exports the surface byte-preserved (D-010 style), so
+  all operator consumers are untouched. New package has a standalone smoke test (no
+  agent-mcp deps); the Papercusp-integration test (superuser/bearer/quota-429) stays in
+  agent-mcp. Verified: tooldef-http tsc 0 + 3 tests; agent-mcp tsc 19 = baseline + 113
+  tests; operator tsc 599 = baseline, 0 new. **Deferred refinements:** (a) make the request
+  type literally Web-standard `Request` (today it's a structured `HttpToolRequest`,
+  trivially built from `Request`); (b) the formal `SigningProvider`/`contextSchema` (P-013)
+  — there's no spawn-URL *verification* in the HTTP adapter today (it reads `X-Papercusp-*`
+  + bearer), so the seam belongs where verification actually happens; not blocking.
   blocked-by: P-005 → D-008
-- **P-032** `todo` Extract the IPC adapter into `@papercusp/tooldef-ipc`. blocked-by: P-005
+- **P-031** `todo` Extract the `mcp-handler` bridge into `@papercusp/tooldef-mcp`.
+  Harder than P-030: the bridge (`apps/operator/.../transport/_mcp-handler.ts`) is
+  operator-coupled + auth-critical (BuiltSpawnContext, superuser/power-user synthesis,
+  spawn-context verification). Keeps Vercel's `mcp-handler` (D-008). blocked-by: P-005 → D-008
+- **P-032** `done` The IPC adapter is already its own package —
+  **`@papercusp/ipc-endpoint-server`** (`packages/ipc-endpoint-server`, src-as-entry).
+  It consumes the engine via `dispatchProjectedToolStream`. (A cosmetic rename to
+  `@papercusp/tooldef-ipc` is optional and deferred — not worth the consumer churn.)
+  blocked-by: P-005
 
 ## Phase 5 — Re-home the Papercusp host adapter
 
