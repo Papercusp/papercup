@@ -1,29 +1,39 @@
 # Gating
 URL: /internal/docs/endpoint-system/gating
 
-Auth, capabilities, roles, quotas. The four checks every tool call goes through, and the order they run in.
+The ordered gates every tool call runs through — signature, default-deny, roles, capabilities, RBAC, harness, quota, resource authorization, timeout — and the error codes they emit.
 
-## The five checks, in order
+## The gates, in order
 
-Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code.
+Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code. The dispatch-stack gates are defined once in `DEFAULT_DISPATCH_STACK` (`packages/tooldef/src/dispatch-stack.ts`); signature verification runs earlier, in `tryBuildSpawnContext`.
 
 ```
-┌─────────────────────────────────────────┐
-│ 0. Signature verification (per-spawn)   │  → request_rejected: spawn_sig_<reason>
-├─────────────────────────────────────────┤
-│ 1. Role allowlist (plugin tools)        │  → role_not_allowed (403)
-├─────────────────────────────────────────┤
-│ 2. Capability check (built-in tools)    │  → unauthorized (401) | missing_capability (403)
-├─────────────────────────────────────────┤
-│ 3. Per-window quota                     │  → quota_exceeded (429)
-├─────────────────────────────────────────┤
-│ 4. Per-tool timeout (during execution)  │  → timeout (504)
-└─────────────────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│ 0. Signature verification (per-spawn)           │  → request_rejected: spawn_sig_<reason>
+├────────────────────────────────────────────────┤
+│ 1. Default-deny (opt-in; off by default)        │  → ungated (403)
+├────────────────────────────────────────────────┤
+│ 2. Role allowlist (agent role vs tool.roles)    │  → role_not_allowed (403)
+├────────────────────────────────────────────────┤
+│ 3. Capability check (principal capabilities)    │  → unauthorized (401) | missing_capability (403)
+├────────────────────────────────────────────────┤
+│ 4. RBAC role requirement (tool.requireRoles)    │  → missing_role (403)
+├────────────────────────────────────────────────┤
+│ 5. Harness-required gate                        │  → harness_required (400)
+├────────────────────────────────────────────────┤
+│ 6. Per-window quota                             │  → quota_exceeded (429)
+├────────────────────────────────────────────────┤
+│ 7. Resource authorization (tool.authorize)      │  → authorization_denied (403)
+├────────────────────────────────────────────────┤
+│ 8. Per-tool timeout (during execution)          │  → timeout (504)
+└────────────────────────────────────────────────┘
 ```
 
-If all five pass, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
+If every gate passes, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
 
-## Check 0 — Signature verification
+Gates **1, 4, 7** and the **authorization audit trail** are the [RFC tooldef-auth](/internal/docs/spec/plan-format) layer: a fail-closed default-deny posture, declarative RBAC roles, resource-level "can THIS principal act on THIS resource", and an audit event for every authz decision. Gates 0, 2, 3, 5, 6, 8 are the original coarse checks. Each is detailed below.
+
+## Signature verification (gate 0)
 
 Before any other gate fires, the dispatcher verifies the per-spawn URL's HMAC signature. A worker that rewrites `?role=worker` → `?role=operator` produces an `invalid_signature` and is rejected with `request_rejected: spawn_sig_invalid_signature`. The attempt is persisted to `harness_shared.spawn_sig_verification_failures` for on-call review.
 
@@ -33,9 +43,17 @@ The `?superuser=1` door bypasses this check entirely; it has its own loopback + 
 
 Full scheme, reason codes, rotation, and observability live in [Spawn-URL signing](/internal/docs/endpoint-system/spawn-signing).
 
-## Check 1 — Role allowlist (plugin tools)
+## Default-deny (gate 1)
 
-Plugin tools declare `roles[]` in their manifest. The dispatcher rejects calls whose `ctx.role` (from URL spawn param) is not in the list.
+A **fail-closed posture**: when the host sets `deps.defaultDeny`, a tool that declares **no gate at all** — no capabilities, no agent `roles`, no `requireRoles`, no `authorize` hook — is denied as `ungated` (403) unless it is explicitly marked `public: true` (the `[AllowAnonymous]` equivalent).
+
+It is **off by default** (the legacy allow-by-omission posture; no behavior change) and is **not bypassable** by `GateBypass` — an ungated tool is a declaration gap regardless of caller, so the fix is to declare a gate or mark it `public`.
+
+`defineTool` *requires* a `capability`, so every first-party built-in tool already declares a gate and is never `ungated`. The posture exists to catch plugin / direct `registerProjectedTool` registrations that forgot to gate themselves. Before flipping `deps.defaultDeny` on, run `listUngatedProjectedTools()` (with the full registry loaded) — an empty result means the flip is safe; anything it returns must declare a gate or be marked `public` first.
+
+## Role allowlist (gate 2)
+
+Tools declare `roles[]` — the **agent**-role allowlist (worker / scoper / architect / …), checked against `ctx.role` from the URL spawn param. This is orchestration gating, distinct from the RBAC role requirement below.
 
 ```jsonc
 {
@@ -54,9 +72,9 @@ A `validator` calling this tool gets:
 }
 ```
 
-HTTP status: 403. The check only runs when *both* `tool.roles` and `ctx.role` are set. Built-in tools (no `tool.roles`) skip this check; they're gated by the next one.
+HTTP status: 403. The check only runs when *both* `tool.roles` and `ctx.role` are set, and is skipped when `GateBypass.role` is set. Tools without `tool.roles` skip this check.
 
-## Check 2 — Capability check (built-in tools)
+## Capability check (gate 3)
 
 Built-in tools declare a single capability string per tool. When a request arrives with a bearer token, the framework resolves it to a principal with a `Set<string>` of granted capabilities. The dispatcher checks `tool.capabilities[]` ⊆ `principal.capabilities`.
 
@@ -65,9 +83,29 @@ Two distinct failure modes:
 * **No principal at all** (no bearer or invalid bearer) → `unauthorized` (401). The wrapper around legacy `defineTool` handlers throws `UnauthorizedToolError`; the dispatcher catches it and maps to 401.
 * **Principal present but missing the required capability** → `missing_capability` (403).
 
-Plugin tools have `capabilities[]` declared too, but they're descriptive-only today — used by the Intel UI and tooling, not enforced. The principal/auth model that would enforce them on plugins is not yet wired (gated behind the same future HMAC-signing work that would let us bind off-loopback).
+The check is skipped when there is no principal (the agent path gates via the role allowlist instead) or when `GateBypass.capability` is set. Plugin tools have `capabilities[]` declared too, but they're descriptive-only today — used by the Intel UI and tooling, not enforced.
 
-## Check 3 — Per-window quota
+## RBAC role requirement (gate 4)
+
+A tool declaring `requireRoles` is callable only by a principal whose **RBAC `roles`** (`principal.roles`) include at least **one** of them (any-of). This is the typed, declarative, audited replacement for ad-hoc `requireAdminKey` / `requireStaff`-style checks.
+
+```jsonc
+{ "requireRoles": ["staff", "admin"] }   // caller must hold staff OR admin
+```
+
+`principal.roles` is a **distinct axis** from `kind` (how the caller authenticated), from `capabilities` (OAuth-scope-like grants), and from the agent `roles` allowlist above (which is checked against `ctx.role`, not the principal).
+
+* **Principal holds a required role** → pass.
+* **Principal lacks every required role, or there is no principal (anonymous)** → `missing_role` (403). The gate is **fail-closed**: a role requirement can't be satisfied without an identity.
+* Skipped when `GateBypass.role` is set — a superuser passes RBAC role gates as it passes the agent-role allowlist.
+
+Every denial emits an authorization audit event (see below).
+
+## Harness-required gate (gate 5)
+
+A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. This gate **fails closed even for privileged callers** — `GateBypass.harness` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler.
+
+## Per-window quota (gate 6)
 
 A window is a counter scoped by `(workspace, tool, role, window_key)` against `harness_shared.tool_invocations`. The window key depends on role:
 
@@ -100,7 +138,7 @@ When a call exceeds, the dispatcher returns:
 }
 ```
 
-HTTP status: 429.
+HTTP status: 429. Skipped when `GateBypass.quota` is set.
 
 ### Quota under concurrency
 
@@ -112,7 +150,35 @@ There is a theoretical TOCTOU window: all five readers could see `count=0` befor
 
 Read-only tools (`roles:list`, `snapshots:get`) shouldn't have a `rolesQuota`. Quotas exist for: external API spend, PG write bursts, subprocess fan-out. Counting every read produces noise without protection.
 
-## Check 4 — Per-tool timeout
+## Resource authorization (gate 7)
+
+The coarse gates above answer "may this *kind* of caller use this tool". The `authorize` hook answers the **fine-grained** question the others can't express: "may THIS principal act on THIS *resource*" (ownership / ReBAC / ABAC).
+
+```ts
+defineTool({
+  name: 'orders:get',
+  capability: 'orders:read',
+  authorize: ({ principal, input }) =>
+    input.ownerId === principal?.slug
+      ? { allow: true }
+      : { allow: false, reason: 'not the owner' },
+  // …
+});
+```
+
+It runs **after** the coarse gates and **before** the handler, **fail-closed** (a throw denies → `authorization_denied`), and is **additive** — a tool with no `authorize` skips this gate entirely. Because it runs in-process with the tool's `ctx`, it can load the resource it needs to decide ("authorize close to the data") and can return `obligations` (e.g. a row filter) for list endpoints rather than checking each row.
+
+The framework is the **policy-enforcement point**; it ships the contract (`AuthzQuery` / `AuthDecision` / `PolicyDecisionPoint`, plus a trivial `ownerOnly` helper) and **no policy engine** — the decision is the host's, supplied as an in-process closure or by delegating to an external PDP (OPA / Cedar / OpenFGA / Cerbos / an AuthZEN engine).
+
+### Break-glass: `GateBypass.policy`
+
+Unlike the role/capability/quota bypasses, the resource-`authorize` gate is **not** skipped by them — resource ownership is a separate decision a host opts out of explicitly, per call, via `GateBypass.policy` (default off). And even then **the bypass is audited**: skipping the hook still emits an authz audit event recording the bypass. Break-glass best practice is "policy-governed *and* mandatorily logged" — a bypassed check that isn't logged is the silent super-admin the standard forbids.
+
+## The authorization audit trail
+
+Gates 4 and 7, and every `GateBypass.policy` bypass, emit an `AuthAuditEvent` through the optional `deps.auditAuth` sink — every allow, deny, and bypass. The Papercusp host persists them to `harness_shared.tool_authz_log` (`apps/operator/lib/tool-authz-audit.ts`), a security-decision stream distinct from the login-scoped `auth_audit_log` and the per-call `tool_invocations` telemetry. It answers "show me every denial / every break-glass bypass / everything this principal was denied".
+
+## Per-tool timeout (gate 8)
 
 Each manifest entry has `timeoutSec` (default 60). The dispatcher creates an `AbortController`, hands `controller.signal` to the function as `ctx.signal`, and aborts after the configured time. Functions doing long work should watch `ctx.signal.aborted` and bail.
 
@@ -130,17 +196,21 @@ HTTP status: 504. The `tool_invocations` row records `status='timeout'`.
 
 For HTTP transport, `statusForErrorCode` in `http-projection.ts` maps:
 
-| Error code           | HTTP | Source                                               |
-| -------------------- | ---- | ---------------------------------------------------- |
-| `unauthorized`       | 401  | Built-in tool, no bearer / invalid bearer            |
-| `role_not_allowed`   | 403  | Plugin tool, role not in allowlist                   |
-| `missing_capability` | 403  | Built-in tool, principal missing required capability |
-| `quota_exceeded`     | 429  | Window count ≥ limit                                 |
-| `invalid_input`      | 400  | Function threw a typed input-validation error        |
-| `timeout`            | 504  | AbortController fired before function returned       |
-| `unknown_tool`       | 404  | No projection registered at this path/name           |
-| `method_not_allowed` | 405  | HTTP method not in `expose.http.methods`             |
-| anything else        | 500  | Function threw an unhandled error → `handler_error`  |
+| Error code             | HTTP | Source                                                      |
+| ---------------------- | ---- | ----------------------------------------------------------- |
+| `ungated`              | 403  | Default-deny on; tool declares no gate and isn't `public`   |
+| `unauthorized`         | 401  | Built-in tool, no bearer / invalid bearer                   |
+| `role_not_allowed`     | 403  | Agent role not in the tool's allowlist                      |
+| `missing_capability`   | 403  | Principal missing required capability                       |
+| `missing_role`         | 403  | Principal missing a required RBAC role (`requireRoles`)     |
+| `harness_required`     | 400  | `harness:'required'` tool with no harness in scope          |
+| `quota_exceeded`       | 429  | Window count ≥ limit                                        |
+| `authorization_denied` | 403  | The tool's `authorize` hook denied (or threw → fail-closed) |
+| `invalid_input`        | 400  | Function threw a typed input-validation error               |
+| `timeout`              | 504  | AbortController fired before function returned              |
+| `unknown_tool`         | 404  | No projection registered at this path/name                  |
+| `method_not_allowed`   | 405  | HTTP method not in `expose.http.methods`                    |
+| anything else          | 500  | Function threw an unhandled error → `handler_error`         |
 
 For MCP transport, errors are returned as a normal `tools/call` result with `isError: true` and a `content[].text` describing the error. There's no JSON-RPC-level rejection — the MCP spec puts tool errors in the result envelope.
 
@@ -148,19 +218,18 @@ For MCP transport, errors are returned as a normal `tools/call` result with `isE
 
 Here's what happens when a `worker` tries to call `firecrawl.scrape` with `chunk=Q1` for the second time:
 
-1. **Role check.** `firecrawl.scrape.roles = [scoper, architect, operator, reviewer, debugger, worker]`. Worker is in. Pass.
-2. **Capability check.** Plugin tool — no principal — skipped.
-3. **Quota check.** Window `chunk:Q1`, role `worker`. Manifest says `worker: { perChunk: 2 }`. Read state: `count=1` (the first call already landed as ok). 1 \< 2, pass.
-4. **Timeout.** AbortController set to 60s.
-5. **Execute.** `scrape` runs, completes in 800ms, returns content.
-6. **Record.** Insert `tool_invocations` row: `tool_name='firecrawl.scrape', role='worker', window_key='chunk:Q1', status='ok', duration_ms=800, output_size=...`.
+1. **Default-deny.** Off by default → skip. (Even if on, `firecrawl.scrape` declares a role allowlist, so it's gated.)
+2. **Role check.** `firecrawl.scrape.roles = [scoper, architect, operator, reviewer, debugger, worker]`. Worker is in. Pass.
+3. **Capability check.** Plugin tool — no principal — skipped.
+4. **RBAC role requirement.** No `requireRoles` → skip.
+5. **Harness gate.** Not `harness:'required'` → skip.
+6. **Quota check.** Window `chunk:Q1`, role `worker`. Manifest says `worker: { perChunk: 2 }`. Read state: `count=1` (the first call already landed as ok). 1 \< 2, pass.
+7. **Resource authorization.** No `authorize` hook → skip.
+8. **Timeout.** AbortController set to 60s.
+9. **Execute + record.** `scrape` runs, completes in 800ms; insert `tool_invocations` row with `status='ok', duration_ms=800`.
 
-Same call a third time:
-
-1. Role check — pass.
-2. Capability check — skip.
-3. Quota check. Read state: `count=2`. 2 ≥ 2. **Fail.** Insert quota-exceeded row, return 429.
+Same call a third time: gates 1–5 pass/skip as before, then the quota check reads `count=2`, `2 ≥ 2`, **fails**, inserts a quota-exceeded row, returns 429.
 
 ## Where the dispatcher lives
 
-`packages/tooldef/src/dispatch-projected.ts` is the only place these checks run. If you find yourself wanting to add a custom gate inside a tool function, you're probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
+`packages/tooldef/src/dispatch-stack.ts` defines `DEFAULT_DISPATCH_STACK` — the one ordered list these checks run in; `dispatch-projected.ts` drives it. If you find yourself wanting to add a custom gate inside a tool function, you're probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
