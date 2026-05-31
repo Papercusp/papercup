@@ -69,7 +69,7 @@ role launches + `writeRoleCodexHome` work). Key code:
 
 ## Phase 2 — psu SU flow → spec + raw-CLI launch
 
-- **P-020** `todo` psu: route the plain-SU flow through `buildLaunchSpec({kind:'su'})` + raw-CLI launch args (mirror `roleLaunchArgs`), dropping the `SU_WRAPPER_BIN` exec — claude `--append-system-prompt-file <playbook+ctx> --mcp-config <superuser.json> --dangerously-skip-permissions --permission-mode bypassPermissions` (D-004: maybe NOT `--strict-mcp-config`); omp `--approval-mode yolo --append-system-prompt <file> -e <coord.ts>`; codex CODEX_HOME (AGENTS.md=playbook+ctx, config.toml=superuser MCP, +lock hooks, +auth symlink) `--dangerously-bypass-approvals-and-sandbox`. blocked-by: P-012, P-002
+- **P-020** `wip` psu: route the plain-SU flow through `buildLaunchSpec({kind:'su'})` + raw-CLI launch args (mirror `roleLaunchArgs`), dropping the `SU_WRAPPER_BIN` exec — claude `--append-system-prompt-file <playbook+ctx> --mcp-config <superuser.json> --dangerously-skip-permissions --permission-mode bypassPermissions` (D-004: maybe NOT `--strict-mcp-config`); omp `--approval-mode yolo --append-system-prompt <file> -e <coord.ts>`; codex CODEX_HOME (AGENTS.md=playbook+ctx, config.toml=superuser MCP, +lock hooks, +auth symlink) `--dangerously-bypass-approvals-and-sandbox`. blocked-by: P-012, P-002 (Pure suLaunchArgsbackend,{promptFile,mcpJsonPath,coordExtPath} landed + 5 tests D-005 resolves D-004: no --strict-mcp-config. REMAINS: bootstrap-su returns buildLaunchSpecsu spec, psu execs raw CLI not wrapper, codex CODEX_HOME P-030 gate — these flip the LIVE launch + need P-031/P-032 live verification; held for a supervised session.)
 - **P-021** `todo` Carry the omp coordination extension (`-e ~/.papercusp/papercusp-coord.ts`) into psu's omp launch args for BOTH su and role omp launches (role omp currently lacks it — pre-existing gap this closes). blocked-by: P-020
 - **P-022** `todo` Mint `PAPERCUSP_SID` per psu launch (su + role) and export it in `envelopeEnv` so coord/lock owner identity is per-session (replaces the wrapper's SID minting). blocked-by: P-020
 - **P-023** `todo` `psu --profile=engineer|power` (default = a stored default) now that the playbook is assembled per-launch — replaces the per-install `--profile` choice for su sessions. blocked-by: P-011
@@ -126,3 +126,12 @@ The standalone superuser **shell** console (`console-launch mode:'shell'` →
 `buildConsoleEnvelope`) is a separate feature (a bash shell with a superuser
 `.mcp.json`, not an agent launch) — left untouched. This plan only retires the
 three agent wrappers.
+
+### D-005 — D-004 RESOLVED: su omits --strict-mcp-config (keeps the engineer's full MCP toolkit)
+Date: 2026-05-31
+Resolved while implementing suLaunchArgs (P-020). A pipeline ROLE is tool-scoped: claude gets `--mcp-config <role.json> --strict-mcp-config` so ONLY the role-scoped papercusp server loads (true allowlist enforcement). The engineer/collaborator `su` session is the opposite — a superuser who keeps their full MCP toolkit. So su passes `--mcp-config <superuser.json>` but NOT `--strict-mcp-config`: the per-launch superuser papercusp server is ADDED to whatever the user/project config already provides, rather than replacing it.
+
+This preserves the prior `claude-su` wrapper behavior (it carried no --mcp-config at all and relied on the user-level `~/.claude.json` papercusp-su entry — i.e. all user servers were live), while removing the dependency on a pre-installed user-level entry (the per-launch .mcp.json from buildLaunchSpec now supplies the superuser server directly).
+
+Codified in `suLaunchArgs` in psu-launcher.mjs + a test asserting the args do NOT contain --strict-mcp-config. Revisit only if a superuser session must be hard-isolated to the papercusp server (it currently should not be).
+Related: P-020

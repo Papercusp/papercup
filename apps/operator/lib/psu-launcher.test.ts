@@ -6,6 +6,7 @@ import {
   presetsFromArgs,
   resumeArgsFor,
   roleLaunchArgs,
+  suLaunchArgs,
   agentInvalidForRole,
   suWrapperExtraArgs,
   AGENTS,
@@ -220,6 +221,49 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(agentInvalidForRole('codex')).toBe(false);
     expect(agentInvalidForRole(null)).toBe(true);
     expect(agentInvalidForRole('gemini')).toBe(true);
+  });
+});
+
+describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () => {
+  const files = { promptFile: '/lc/session-9.md', mcpJsonPath: '/proj/.mcp.json', coordExtPath: '/home/u/.papercusp/papercusp-coord.ts' };
+
+  it('claude: playbook prompt + superuser MCP, NO --strict-mcp-config (D-004)', () => {
+    const { bin, args } = suLaunchArgs('claude', files);
+    expect(bin).toBe('claude');
+    expect(args).toEqual([
+      '--dangerously-skip-permissions',
+      '--append-system-prompt-file', '/lc/session-9.md',
+      '--mcp-config', '/proj/.mcp.json',
+      '--permission-mode', 'bypassPermissions',
+    ]);
+    // The defining su≠role difference: superuser keeps the user's servers.
+    expect(args).not.toContain('--strict-mcp-config');
+  });
+
+  it('omp: yolo + playbook prompt + coordination extension (-e, P-021)', () => {
+    const { bin, args } = suLaunchArgs('omp', files);
+    expect(bin).toBe('omp');
+    expect(args).toEqual([
+      '--approval-mode', 'yolo',
+      '--append-system-prompt', '/lc/session-9.md',
+      '-e', '/home/u/.papercusp/papercusp-coord.ts',
+    ]);
+  });
+
+  it('omp: omits -e when no coordExtPath is supplied', () => {
+    const { args } = suLaunchArgs('omp', { promptFile: '/lc/s.md', mcpJsonPath: '/p/.mcp.json' });
+    expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/s.md']);
+    expect(args).not.toContain('-e');
+  });
+
+  it('codex: approvals/sandbox bypass (CODEX_HOME minted server-side, P-030)', () => {
+    const { bin, args } = suLaunchArgs('codex', files);
+    expect(bin).toBe('codex');
+    expect(args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+  });
+
+  it('unknown backend: throws', () => {
+    expect(() => suLaunchArgs('gemini', files)).toThrow();
   });
 });
 

@@ -126,6 +126,55 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
 }
 
 /**
+ * Raw-CLI launch args for a SUPERUSER (`su`) session — the engineer/
+ * collaborator path. Pure — exported for tests. The su counterpart to
+ * `roleLaunchArgs`: same raw backends, but the prompt is the engineer
+ * playbook (`buildLaunchSpec({kind:'su'})`) and the MCP is the loopback
+ * `?superuser=1` door, NOT a signed role-scoped URL.
+ *
+ * D-004 — su does NOT pass `--strict-mcp-config`. A role is tool-scoped
+ * (claude restricted to ONLY its role server); the engineer is a
+ * superuser and KEEPS their full MCP toolkit from user/project config,
+ * with the superuser `papercusp` server ADDED via `--mcp-config`. This
+ * preserves the `claude-su` wrapper's behavior (which relied on the
+ * user-level `~/.claude.json` papercusp-su entry — i.e. all user servers
+ * live), while no longer depending on a pre-installed user-level entry.
+ *
+ * P-021 — omp carries the coordination extension (`-e <coordExtPath>`,
+ * ~/.papercusp/papercusp-coord.ts) so coord/lock hooks fire; this is what
+ * the `omp-su` wrapper baked in. codex has no --mcp-config/-e/-prompt
+ * flags, so (as with role) a per-session CODEX_HOME is minted server-side
+ * (P-030: AGENTS.md = playbook, config.toml = superuser MCP, + lock
+ * hooks) and supplied via `envelopeEnv.CODEX_HOME`; the launcher just
+ * execs `codex` with the approvals/sandbox bypass MCP tool calls need.
+ */
+export function suLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath } = {}) {
+  if (backend === 'claude') {
+    return {
+      bin: 'claude',
+      args: [
+        '--dangerously-skip-permissions',
+        '--append-system-prompt-file', promptFile,
+        '--mcp-config', mcpJsonPath,
+        // NB: no --strict-mcp-config (D-004) — superuser keeps user servers.
+        '--permission-mode', 'bypassPermissions',
+      ],
+    };
+  }
+  if (backend === 'omp') {
+    // omp path-discovers <cwd>/.mcp.json; --append-system-prompt takes a file
+    // path; -e loads the coordination extension (P-021) when one is provided.
+    const args = ['--approval-mode', 'yolo', '--append-system-prompt', promptFile];
+    if (coordExtPath) args.push('-e', coordExtPath);
+    return { bin: 'omp', args };
+  }
+  if (backend === 'codex') {
+    return { bin: 'codex', args: ['--dangerously-bypass-approvals-and-sandbox'] };
+  }
+  throw new Error(`suLaunchArgs: backend '${backend}' has no interactive su launch`);
+}
+
+/**
  * Per-agent resume command. Pure — exported for tests. Returns the
  * `*-su` wrapper to exec + the resume args. Semantics: claude/omp
  * continue the most recent conversation in the session's cwd (omp can
