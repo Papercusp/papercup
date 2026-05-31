@@ -1,4 +1,4 @@
-import { SID_HEARTBEAT_TTL_MS } from './identity';
+import { SID_HEARTBEAT_TTL_MS } from './heartbeat';
 
 /**
  * Pure liveness decision for P-070 crash/restart resume.

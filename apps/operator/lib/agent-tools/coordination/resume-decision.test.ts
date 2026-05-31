@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { decideResume } from './resume-decision';
-import { SID_HEARTBEAT_TTL_MS } from './identity';
+import { SID_HEARTBEAT_TTL_MS } from './heartbeat';
 
 /**
  * Pure decision tests for P-070 liveness-driven resume.
