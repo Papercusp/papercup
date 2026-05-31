@@ -34,8 +34,12 @@ const ACCEPTANCE_DOMAIN: TestDomain = {
 /** The harness Tests tab's domains: Built-in (generalized) + Project (acceptance). */
 export const harnessTestingRegistry: TestDomain[] = [...generalizedRegistry, ACCEPTANCE_DOMAIN];
 
-/** tierId → section heading for the harness Tests tab (TestingShell tierLabels). */
+/**
+ * tierId → section heading for the harness Tests tab (TestingShell tierLabels).
+ * Two tiers: "Universal" = built-ins that apply to ANY harness; "This Harness"
+ * = tests specific to this harness (its own domains + Acceptance).
+ */
 export const HARNESS_TESTING_TIER_LABELS: Record<string, string> = {
-  generalized: 'Built-in',
-  project: 'Project',
+  generalized: 'Universal',
+  project: 'This Harness',
 };

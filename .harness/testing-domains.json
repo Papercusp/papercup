@@ -87,7 +87,7 @@
       "id": "memory",
       "label": "Memory",
       "description": "mem0 pgvector round-trip + memory-core suite + CRUD probe.",
-      "tier": "quick",
+      "tier": "project",
       "sections": [
         {
           "id": "core",
@@ -102,7 +102,7 @@
       "id": "packaged",
       "label": "Packaged build",
       "description": "wdio + tauri-driver against the packaged binary.",
-      "tier": "quick",
+      "tier": "project",
       "sections": [
         {
           "id": "wdio",
@@ -120,7 +120,7 @@
       "id": "llm",
       "label": "LLM",
       "description": "Scenario-driven LLM evaluations (Runs / Scenarios / Targets / Findings).",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "core",
@@ -135,7 +135,7 @@
       "id": "harness",
       "label": "Harness",
       "description": "Harness UI: dock, layouts, fs-watcher, status sweep, branch actions.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "dock",
@@ -180,7 +180,7 @@
       "id": "voice",
       "label": "Voice",
       "description": "Voice stack: runtime/capture, cards, engines, persona, spend.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "runtime",
@@ -252,7 +252,7 @@
       "id": "papercusp-su",
       "label": "Papercusp-SU",
       "description": "Superuser surface: coordination, file locking, identity, tools.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "coordination",
@@ -332,7 +332,7 @@
       "id": "backup",
       "label": "Backup",
       "description": "Kopia backup integration: settings, policy, snapshot, self-exclusion.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "core",
@@ -354,7 +354,7 @@
       "id": "plans",
       "label": "Plans",
       "description": "Plan-tracking surface: authoring, runs, revisions, concurrency, UI.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "authoring",
@@ -424,7 +424,7 @@
       "id": "operator",
       "label": "Operator",
       "description": "Operator brain: converse, scan, suggestions, audit, persona, state.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "brain",
@@ -478,7 +478,7 @@
       "id": "design",
       "label": "Design",
       "description": "Design phase: IR, adapters, spec, tokens, phase flow.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "ir",
@@ -514,7 +514,7 @@
       "id": "plugins",
       "label": "Plugins",
       "description": "Plugin runtime: loader, SDK, WIT, grants, lifecycle, host-shim.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "loader",
@@ -557,7 +557,7 @@
       "id": "transport",
       "label": "Transport",
       "description": "SSE / IPC / adapters / sync-resolver.",
-      "tier": "surface",
+      "tier": "project",
       "sections": [
         {
           "id": "sse",
@@ -586,7 +586,7 @@
       "id": "snapshots",
       "label": "Snapshots",
       "description": "Snapshot shape, locks, fork, export-state, routes.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "shape",
@@ -629,7 +629,7 @@
       "id": "mobile",
       "label": "Mobile",
       "description": "Paired-device flow: pair, JWT, feeds, actions, voice init.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "pair",
@@ -672,7 +672,7 @@
       "id": "provisioning",
       "label": "Provisioning",
       "description": "Workspace provisioning: runner, sandbox, trust-store, templates, network.",
-      "tier": "domain",
+      "tier": "project",
       "sections": [
         {
           "id": "runner",
@@ -715,7 +715,7 @@
       "id": "docs",
       "label": "Docs",
       "description": "Docs engine: outline, search, adapters.",
-      "tier": "surface",
+      "tier": "project",
       "sections": [
         {
           "id": "engine",
@@ -762,10 +762,7 @@
     }
   ],
   "tierLabels": {
-    "generalized": "Built-in",
-    "quick": "Quick runs",
-    "domain": "Domains",
-    "surface": "Surfaces",
-    "project": "Project"
+    "generalized": "Universal",
+    "project": "This Harness"
   }
 }
