@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phases 0 + 1 COMPLETE** + **P-008 done** (Phase-2 timer classification, D-016), all committed on `main`, every mechanism verified against real embedded PG16. Commits: P-001 (0443ccb7), workspace fix (b437af64), P-003/04/05 (5c9bb737), P-006 (958a7a59), P-007 /admin tab (685d4903). The remaining Phase-2 migrations (P-009 scanner / P-010 embeddings / P-011 backups) and the live-service end-to-end boot are **both gated on the in-flight `@restart→@papercusp` rename settling** — the operator tree is at ~606 tsc errors / 28 dirty files mid-rename, and the migrations edit those churning worker files. Landing into a moving tree would sweep rename changes + add tsc-cascade noise.
+**State:** Phases 0 + 1 complete; **Phase 2 in progress** — the 4 simple periodic timers (telemetry-flush, scratch-gc, memory-cleanup, completion-ref-verifier) migrated to DBOS scheduled workflows + verified + committed (53fd89b2, 68533dbd). Correction (D-017): the `@restart→@papercusp` rename is **already done** (0 `@restart` imports, scout-convergence shipped, 0 consumer fallout); the ~598 tsc errors are pre-existing operator baseline (zero-harness/generated.ts/tests/agent-mcp, CI known-red), NOT churn — so nothing was actually blocked. Everything verified against real embedded PG16; tsc clean for all touched files; all on `main` via mine-only pathspecs.
 
-**Next:** Wait for the `@restart→@papercusp` rename to finish (or be reverted) so the operator tree typechecks consistently — that cleanup is not part of this plan. Then: (1) live-boot verify (restart dev API with `PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_AUTOLOOP=1`, open `/admin/dbos`); (2) confirm P-007's 3 tsc cascade errors cleared; (3) Phase 2 migrations per the D-016 table (export each worker's tick fn + stand-down guard → scheduled workflow).
+**Next:** Remaining Phase 2: the complex migrations — P-009 operator scanner (scan-lock mutual exclusion), P-010 embeddings (rate-limited queue), P-011 backups (per-workspace cadence) — each per its subsystem. Then P-012 (prune dead bullmq/ioredis/redis deps) + P-013 (delete old timer paths + flags) once the rename's uncommitted package.json changes are committed. Separately, the live-service boot is unblocked (restart dev API with PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_TIMERS=1 [+AUTOLOOP], open /admin/dbos).
 
 ## Background
 
@@ -219,6 +219,18 @@ Each migration requires exporting the worker's single-run tick function and addi
 
 **Gate:** the migrations (P-009/010/011) edit these worker files — which are currently being churned by the in-flight `@restart→@papercusp` rename (operator tree at ~606 tsc errors, 28 dirty files). Landing edits into them now risks commit-sweeping rename changes + more tsc-cascade noise. So P-009+ and the live-service boot both **wait for the rename to settle (or be finished/reverted)** — that cleanup is not part of this DBOS plan. P-008 (this classification) is complete.
 Related: P-008, P-009, P-010, P-011
+
+
+### D-017 — Phase 2 — 4 simple periodic timers migrated; rename was already done (prior gate was a misdiagnosis)
+Date: 2026-05-31
+**Correction to D-016's gate:** the `@restart→@papercusp` rename is **already complete** — `0` files import `@restart/*`, the `scout-convergence-papercup-2026-05-30` plan is `status: shipped` (P-001–P-006 done + verified), and **0** tsc errors touch the renamed packages (`@papercusp/sse`/`chat-protocol`/`ChatEvent`), so it introduced no consumer fallout. The ~598 tsc errors I'd called "mid-rename churn" are the operator's **pre-existing baseline debt** (76 in `libs/zero-harness` which is on the Zero-retirement path, drizzle `generated.ts`, many test files, 48 in the agent-mcp/orchestrator submodules; CI is known-red). They aren't churn and won't "settle." So Phase 2 was never actually blocked — my deferral was based on a wrong premise.
+
+**Migrated (commits `53fd89b2` + `68533dbd`), the "simple periodic" tier of D-016:**
+- `telemetry-flush` (hourly), `scratch-gc` (daily 03:00), `memory/cleanup-worker` (6h), `completion-ref-verifier` (1min) → DBOS **scheduled workflows** (default skip-missed, D-009) in `lib/dbos/periodic-workflows.ts`, calling the existing tick functions (extracted `runCompletionRefVerifierOnce`; reused `flushTelemetry`/`runScratchGc`/`runMemoryCleanupOnce`), with step retries + `maxRecoveryAttempts` (P-006).
+- Flag-gated by `PAPERCUSP_DBOS_TIMERS=1`; each legacy `start*()` setInterval worker stands down when set (D-011 A/B, instant revert). Verified: the real `bootstrap.ts → periodic-workflows.ts` path registers all 4 schedules + launches clean on embedded PG16 (crontabs parse, all are workflows); tsc clean for touched files.
+
+**Remaining Phase 2:** the **complex** migrations — operator scanner (P-009, scan-lock mutual exclusion), embeddings (P-010, rate-limited queue), backups (P-011, per-workspace cadence) — each needs per-subsystem care. Plus P-012 (prune dead `bullmq`/`ioredis`/`redis` deps) + P-013 (delete old timer paths + flags) — deferred only because they edit `package.json` files that currently carry the rename's *uncommitted* working-tree changes; do them once those are committed. The live-service boot is now genuinely unblocked (needs a dev-API restart).
+Related: P-009, P-010, P-011, P-012
 
 ## Phase 0 — Spike & validation (GATE)
 
