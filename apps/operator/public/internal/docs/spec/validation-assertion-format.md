@@ -34,15 +34,21 @@ indented sub-bullets:
       column order in the UI.
     - **Evidence:** `tests/api/reports.csv.test.ts` — `header row matches`
     - **Status:** `todo`
+  - **[VAL-my-plan-2026-05-26-003]**
+    - **Verify:** The "Export" button copy reads "Download CSV", not "Export".
+    - **Evidence:** Visual — design-spec match, no automated test.
+    - **Status:** `todo`
+    - **RequiresTest:** `false`
 ```
 
 ### Sub-bullet fields
 
-| Field       | Required | Meaning                                                                                                                                                   |
-| ----------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Verify:`   | Yes      | One or two sentences stating the observable behavior to check. Falsifiable — a validator must be able to write a test that fails before and passes after. |
-| `Evidence:` | Yes      | Where the check lives: file path + test name / selector / curl command. Enough for the validator to locate or recreate the check.                         |
-| `Status:`   | Yes      | `todo` / `validating` / `passed` / `failed`. Updated by the validator after each run.                                                                     |
+| Field           | Required | Meaning                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Verify:`       | Yes      | One or two sentences stating the observable behavior to check. Falsifiable — a validator must be able to write a test that fails before and passes after.                                                                                                                                                                                                                                |
+| `Evidence:`     | Yes      | Where the check lives: file path + test name / selector / curl command. Enough for the validator to locate or recreate the check.                                                                                                                                                                                                                                                        |
+| `Status:`       | Yes      | `todo` / `validating` / `passed` / `failed`. Updated by the validator after each run.                                                                                                                                                                                                                                                                                                    |
+| `RequiresTest:` | No       | `false` exempts this VAL from the test gate — non-testable claims (copy, design-spec match, judgement). The staging orchestrator's `NEXT_TESTER` gate and the validator's test gate skip exempt VALs; the validator still verifies them by inspection. Defaults to `true` (a claim needs a passing covering test). Stored on `harness_plan_assertions.requires_test` by `plans:promote`. |
 
 ### Assertion ID scheme
 

@@ -1339,6 +1339,62 @@ In each case: the question is “how will future-you/future-agent know this is s
 * `apps/operator/lib/sync-resolver/index.ts` — the v2 registry the bridge maps INTO.
 * [Adding a query to the sync resolver](/internal/docs/agent-insights/adding-a-sync-query) — when you migrate a forward-defined name, removing it from `FORWARD_DEFINED` is step 4 of the recipe.
 
+# Harness tests gate feature approval, and link to plans through the VAL
+
+> The V2 tester writes one black-box test per VAL; the validator runs them as the approval gate. VALs live in harness_plan_assertions (inline plan bullets via plans:promote) — NOT validation-contract.md or a validation_criteria table. The plan↔test link is a rollup join on the VAL.
+
+How the harness testing system fits together after `harness-tests-tab-and-tester-promotion-2026-05-26` (phases A–E + G). If you’re touching the tester, validator, the harness Tests tab, or anything that reads VAL assertions, start here.
+
+## The VAL is the single join key
+
+[Section titled “The VAL is the single join key”](#the-val-is-the-single-join-key)
+
+A **VAL** (`VAL-{plan-slug}-{NNN}`) is one binding behavioral assertion. It is the only thing that links plans, features, tests, and the validator:
+
+* **Plan item** authors VALs as inline `[VAL-…]` sub-bullets (`Verify:` / `Evidence:` / `Status:` / optional `RequiresTest:`). `plans:promote` parses them (`lib/agent-tools/plans/val-assertions.ts`) and writes them to PG.
+* **Feature** carries them in `claims[]` (set by `plans:promote`).
+* **Test** declares `coversVALs[]` in `.harness/tests.json`.
+* **Validator** resolves them by id to decide pass/fail.
+
+VALs live in harness\_plan\_assertions
+
+Do **not** read `.harness/validation-contract.md` (retired by plans-central-harness-ux-2026-05-26 D-005) and do **not** add a `validation_criteria` table (the original plan proposed one; it was dropped). The canonical store is `harness_shared.harness_plan_assertions`, keyed by `(workspace_id, harness_slug, val_id)`, with `plan_slug` / `item_id` / `verify_text` / `evidence_text` / `status` / `requires_test`. Resolve a VAL via `GET /api/harness/:slug/assertion/:valId`.
+
+## The gate: tester writes, validator runs, approval requires green
+
+[Section titled “The gate: tester writes, validator runs, approval requires green”](#the-gate-tester-writes-validator-runs-approval-requires-green)
+
+The staging loop (`libs/papercusp/.../prompts/staging/`) gates feature approval on tests:
+
+1. A feature is `validating` (worker committed). The orchestrator’s **C0** decision emits `NEXT_TESTER <F> <VAL>` for each claim VAL with no passing covering test. (`NEXT_TESTER` was already wired in the **TS orchestrator** — `packages/orchestrator/src/main-loop.ts` dispatches the `tester` role; bash `run.sh` is retired. The prompt just needed to start emitting it.)
+2. The **tester** (`staging/tester.md`) writes one black-box test per VAL, registers it in `.harness/tests.json` with `coversVALs`, exits.
+3. Once every test-requiring VAL has a passing test, the orchestrator sends the feature to the **validator** (`staging/validator.md` V2), whose primary gate is **running** the VAL-covering tests. An untested required claim is a FAIL.
+
+A VAL with `requires_test: false` (copy, design-spec, judgement) is **exempt** — the gate skips it; the validator verifies it by inspection. Default is `true`.
+
+## The plan↔test link is a rollup, not a new edge
+
+[Section titled “The plan↔test link is a rollup, not a new edge”](#the-plantest-link-is-a-rollup-not-a-new-edge)
+
+There is **no** `test → plan-item` foreign key. The link is computed by joining through the VAL (`lib/harness-test-rollup.ts`, pure + unit-tested):
+
+* `/api/internal/test-snapshot` drives `harness_plan_assertions.status` from covering-test outcomes (`deriveAssertionStatus`) and stamps `plan_slug` / `item_ids` onto each test row.
+* `GET /api/harness/:slug/plan-items-test-status` and `plans:get`’s `planItemTests` both call `computePlanItemTestStatus` → per-plan-item `{ valsTotal, valsRequiringTest, valsCovered, valsPassing }`.
+* The Plans UI badge (`decoratePlanItemTestBadges`) and the harness Tests tab’s Acceptance view render from that.
+
+No-VAL tests stay harness-level
+
+Built-in/generalized tests (lint, typecheck, smoke — `generalizedRegistry` in `@papercusp/testing-shell`) have no `coversVALs`, so they match no assertion and contribute to no plan item. Only behavioral/Project tests link to plans.
+
+## Where things live
+
+[Section titled “Where things live”](#where-things-live)
+
+* **`@papercusp/testing-shell`** — `TestingShell` (left-rail + panel host), `DomainTestPanel`, the `generalizedRegistry` (Built-in domains, pure data), and the `TestingDataSource` interface. The lib↔operator boundary *is* the generalized↔Papercusp boundary.
+* **operator** — `lib/testing-domains-registry.ts` (16 Papercusp domains + registers the lib’s generalized 5), the harness `/testing/*` routes, and the `/adv` `AdvTestsPanel` + `AcceptancePanel`.
+
+The harness Tests tab is an `/adv` dock panel (`adv:tests`), not a `HarnessDashboard` tab — that monolith was deleted by the `/adv` migration.
+
 # The 5-rule harness-tree classifier
 
 > When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir. Used by the harness-creation flow to decide what becomes a sub-harness.
@@ -1876,6 +1932,83 @@ Ruled out — a red herring: the `x-anthropic-billing-header` `cch=` hash in `sy
 2. **Defer tools.** The Claude Agent SDK supports `ENABLE_TOOL_SEARCH=true` (only names inline, schemas fetched on demand) — measured **67.8k → 24.8k tok/request (−63%)**. Note: Meridian hardcodes this to `"false"` on the non-passthrough path, *suppressing* the SDK’s own deferral.
 3. **Pin the `tools/list` manifest** (commit `955ce391`): `packages/agent-mcp/src/tool-manifest.ts` freezes the exposed surface so a reconnect returns byte-identical bytes — adding tools during dev no longer busts a live session. Regenerate deliberately with `packages/agent-mcp/snapshot-tools.sh`, then restart the operator. Set `$AGENT_MCP_TOOL_MANIFEST` or `~/.papercusp/tool-manifest.json`; absent ⇒ expose all (no-op). Hand-edit the manifest down to curate the surface and shrink the base further.
 
+# `mem0_unavailable` can be a swallowed bug, not just an outage
+
+> The memory:* tools return { ok:false, reason:'mem0_unavailable' } whenever getMemoryClient() returns null — which happens for env gaps (no LLM key / no embedder / unreachable PG) AND when the mem0 Memory constructor throws and is caught. Don't read it as "not a regression"; check the warning, or round-trip the store.
+
+## The symptom
+
+[Section titled “The symptom”](#the-symptom)
+
+Every `memory:*` tool (`remember` / `search` / `list` / `forget` / `update`) can return:
+
+```json
+{ "ok": false, "reason": "mem0_unavailable" }
+```
+
+It is tempting to treat this as a benign environmental outage. **Do not.** It means exactly one thing — `getMemoryClient()` returned `null` — and one of the ways that happens is a **real bug that got swallowed**.
+
+Danger
+
+A real defect (a mem0ai version incompatibility) made the memory subsystem **100% non-functional** while showing only this same clean `mem0_unavailable`. The fix is commit `879fc733`. An earlier version of this very insight wrongly claimed the symptom is “almost always an outage, not a regression.” It isn’t. Treat `mem0_unavailable` as unknown until you’ve read the reason.
+
+## What actually produces it
+
+[Section titled “What actually produces it”](#what-actually-produces-it)
+
+The verb wrappers (`lib/agent-tools/memory/*.ts`) are simple:
+
+```ts
+const client = await getMemoryClient();
+if (!client) return { /* reason: 'mem0_unavailable' */ };
+```
+
+So the real question is **why `getMemoryClient()` (→ `tryLoad()` in `packages/memory/src/mem0-client.ts`) returns `null`.** Four causes, and only the first three are “outages”:
+
+| # | Cause                                                                                                                                        | Outage or bug? |
+| - | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| 1 | `resolveEmbedder()` → `{ mode:'disabled' }` (user disabled, or `auto` found no OpenAI key and `@huggingface/transformers` absent)            | outage         |
+| 2 | `pgFields()` throws — admin URL unreachable/unparseable                                                                                      | outage         |
+| 3 | No Anthropic **and** no OpenAI key (mem0 needs an LLM for `add()` fact-extraction; creds are encrypted in `operator_credentials.payload_ct`) | outage         |
+| 4 | **`new Memory(...)` THREW and was caught** (`tryLoad`’s try/catch) — a mem0ai API/version mismatch, a bad config, a missing patch            | **bug**        |
+
+Cause 4 is the trap: a genuine construction failure is caught and folded into the *same* `null` → `mem0_unavailable` as the benign cases. **The symptom alone cannot tell an outage from a regression.**
+
+## The decisive diagnostic: read the warning
+
+[Section titled “The decisive diagnostic: read the warning”](#the-decisive-diagnostic-read-the-warning)
+
+`tryLoad()` calls `warnOnce(<reason>)` before every `null`. That string is the diagnosis:
+
+* `embedder unavailable: …` / `no Anthropic or OpenAI API key …` / `couldn't resolve PG connection: …` → **outage** (cause 1–3).
+* `Unsupported embedder provider: custom`, `fn is not a function`, `require is not defined`, or any other constructor error → **bug** (cause 4). Investigate, don’t shrug.
+
+A thrown **MCP error** (not a structured `mem0_unavailable`) — e.g. `@papercusp/memory is not configured…` — is a *third* category: broken seam wiring (`configureMemory()` never ran / a bad import). That one is unambiguously a regression.
+
+## The mem0ai 3.x bug this insight was born from
+
+[Section titled “The mem0ai 3.x bug this insight was born from”](#the-mem0ai-3x-bug-this-insight-was-born-from)
+
+Two defects, both hidden behind `mem0_unavailable` (fixed in `879fc733`):
+
+1. **Custom embedder unsupported.** The store builds mem0 with `embedder: { provider: 'custom', config: { embed } }`, but mem0ai 3.0.3’s `EmbedderFactory` only knows openai/ollama/lmstudio/google/ azure\_openai/langchain — it throws `Unsupported embedder provider: custom`. We patched `VectorStoreFactory` (for the `canonical` store) but never `EmbedderFactory`. Both are exported from `mem0ai/oss`, so patch both. **Gotcha:** the `custom` embedder must read a module-level fn, **not** `config.embed` — mem0’s `ConfigManager.mergeConfig` strips function-valued config fields during Zod validation (you’ll see `fn is not a function` at dimension auto-detect).
+2. **`require('pg')` under ESM.** `@papercusp/memory` runs as ESM (not in Next’s `transpilePackages`), where `require` is undefined — the pgvector probe threw `require is not defined`, silently downgrading the store to mem0’s **volatile in-process** provider. Use `await import('pg')`.
+
+## Prove the full path actually works
+
+[Section titled “Prove the full path actually works”](#prove-the-full-path-actually-works)
+
+Don’t trust a passing tsc or a mocked unit test — round-trip the real store. Decrypt the OpenAI key from `operator_credentials` via pgcrypto (`pgp_sym_decrypt(payload_ct, <~/.papercusp/db-encryption-key>)`), `configureMemory()` with `getAdminUrl`/`getCredentials`/`resolveEmbedder`, then `getMemoryClient()` → `add()` → `search()` → `getAll()` → `delete()`. A real OpenAI-backed round-trip against the canonical pgvector store takes seconds and is the only thing that proves cause 4 is clear.
+
+To exercise just the storage layer **without** an LLM, drive `CanonicalVectorStore` directly (it needs only PG + a pre-computed 384-dim vector) — see [`embedded-pg-discovery`](/internal/docs/agent-insights/embedded-pg-discovery/) for how `getHarnessAdminUrl()` resolves (the native fallback PG may be fully provisioned even with the desktop down). `memory_canonical.id` is a UUID column — use a valid UUID, scope to a throwaway `user_id`, delete after.
+
+## See also
+
+[Section titled “See also”](#see-also)
+
+* [`live-pg-regression-sentinel`](/internal/docs/agent-insights/live-pg-regression-sentinel/) — the broader “verify against live PG, not just unit tests” pattern.
+* [`embedded-pg-discovery`](/internal/docs/agent-insights/embedded-pg-discovery/) — PG URL resolution + the native fallback.
+
 # Mobile endpoints are a defineRoute flag, not a separate router
 
 > The mobile API moved off the bespoke _hono/mobile.ts router onto defineRoute + a `mobile: true` flag. Device JWTs resolve through requirePrincipal; isRevoked treats unknown devices as revoked, which bites synthetic test JWTs.
@@ -2032,6 +2165,39 @@ The test you write to verify the wiring will be the thing that catches this. A u
 * `apps/operator/lib/identity/gh-token.ts` — the token cache the Octokit wrapper consumes (see also [`forward-defined-registry-entries`](/internal/docs/agent-insights/forward-defined-registry-entries/) for the pattern of placing helpers ahead of their primary consumer).
 * [Octokit migration guide v6→v7](https://github.com/octokit/octokit.js/blob/main/CHANGELOG.md) — the upstream changelog.
 
+# The :3070 operator host has no hot-reload — restart to pick up lib/** edits
+
+> The Hono host on :3070 (MCP tools + endpoint-route handlers + the lib/** they import) runs under tsx with no file-watch. Server-side edits don't go live until it restarts; probe where a write lands to tell if you're on stale code.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+You edit `apps/operator/lib/**` (an MCP tool, an endpoint-route handler, a `coordLog`/store seam), reload the operator UI, exercise the tool — and it behaves like your change isn’t there. It isn’t: the **`:3070` Hono host** (`apps/operator/bin/hono-host.ts`) runs under `tsx` with **no file-watch**. It loaded the old module graph (including module-level singletons like `coordLog`) at startup and won’t pick up `lib/**` edits until the process restarts.
+
+The `:3055` Next layer *does* hot-reload its own routes/components — so a frontend change goes live while an identical-feeling server-side change silently does not. That asymmetry is what makes this confusing.
+
+## Restart it
+
+[Section titled “Restart it”](#restart-it)
+
+* **Tauri dev shell:** reload the desktop window (it respawns the host), or
+* **On the standing systemd dev box:** `systemctl --user restart papercup-dev-api.service` (that unit runs `npx tsx bin/hono-host.ts` on :3070).
+
+The unit name is this dev box’s local supervision — not a repo invariant. Other setups have the Tauri shell spawn the host; restart it however it’s supervised there.
+
+## The tell: probe where the write lands
+
+[Section titled “The tell: probe where the write lands”](#the-tell-probe-where-the-write-lands)
+
+A passing typecheck proves nothing about whether the *running* host has your code. Before trusting a live result, **probe where a write actually lands**:
+
+Note
+
+During the coord FS→PG cutover, a real `coord:send` kept writing `coord/messages/*.jsonl` (the old `FsCoordLog`) instead of `harness_shared.coord_event_log` — because the host hadn’t been restarted onto the new `PgCoordLog`. The nonce was on disk, not in PG. That one check distinguished “my code is wrong” from “the host is stale.” Restart, then re-probe before drawing any conclusion.
+
+See also the user-level memory note `verify-server-pid-before-measuring` and the engineer playbook’s CLAUDE.md pointer.
+
 # Operator Next app is retired — ship UI in operator-vite only
 
 > The Next.js operator app at `apps/operator/app/**` no longer serves the live Tauri shell. Routes there are dead code. All new UI ships in `apps/operator-vite/src/routes/**` as TanStack-Router file routes. API routes still live in apps/operator/lib/endpoint-route/ and are mounted by bin/hono-host.ts.
@@ -2093,6 +2259,57 @@ Several `page.tsx` files still exist under `apps/operator/app/` from the pre-ret
 [Section titled “Why this isn’t auto-detected”](#why-this-isnt-auto-detected)
 
 Type-check + tests both pass on a dead `page.tsx` — the file imports real modules, exports a valid component, and the tests render it in jsdom. The only place it fails is at the route layer in a running shell, where nothing imports it. Stay in the habit of verifying via the running Tauri shell + `tauri-agent-tools` per the testing playbook.
+
+# Can't find variable: Buffer — Vite drops the Node globals Next polyfilled
+
+> The operator-vite SPA is bundled by Vite, which (unlike Next's webpack) does not polyfill Node globals like Buffer/process/global. Bundled deps that touch them throw a Buffer ReferenceError in the Tauri WebKit renderer. Fix is a global polyfill at the top of main.tsx. Also: the desktop serves built dist, not live src — a broken build silently freezes it on stale dist.
+
+If you see **`ReferenceError: Can't find variable: Buffer`** (or `process is not defined`, `global is not defined`) in the desktop app, this is the cause.
+
+## Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The desktop content layer migrated from `next dev` to **`apps/operator-vite`** (a Vite SPA — see `operator-vite-migration-2026-05-20`). Next’s webpack **auto-provided a browser `Buffer`** (and shimmed other Node globals) for the client bundle. **Vite does not** polyfill Node globals, and the operator-vite `vite.config.ts` has no `define`/`vite-plugin-node-polyfills`. So any code bundled into the renderer that references `Buffer` — most often a *dependency* (e.g. the OpenAI Realtime voice SDK), not app code — throws at eval/call time.
+
+The error wording is WebKit-specific: WebKitGTK (Tauri on Linux) says **“Can’t find variable: Buffer”** where Chrome would say “Buffer is not defined”. Both mean the same thing: a free identifier that doesn’t exist.
+
+\`?.\` does not save you
+
+`Buffer.byteLength?.(s, 'utf8')` still throws — the `?.` only guards `.byteLength` being nullish, not the bare `Buffer` reference itself. In app code, use the Web equivalent: `new TextEncoder().encode(s).length`.
+
+## The fix
+
+[Section titled “The fix”](#the-fix)
+
+App-code accidents → rewrite to a Web API (`TextEncoder`, `crypto.subtle`, `atob`/`btoa`). But dependencies you can’t rewrite need the global restored. `apps/operator-vite/src/buffer-polyfill.ts` exposes the `buffer` package as the global, imported as the **first** line of `main.tsx` so it runs before any route module or dependency body evaluates:
+
+```ts
+// main.tsx — FIRST import
+import './buffer-polyfill';
+```
+
+buffer-polyfill.ts
+
+```ts
+import { Buffer as BufferPolyfill } from 'buffer';
+if (typeof globalThis.Buffer === 'undefined') globalThis.Buffer = BufferPolyfill;
+```
+
+If a future dep needs `process`/`global`, add them the same way (or adopt `vite-plugin-node-polyfills`).
+
+## The trap that hides it: the desktop serves built `dist`, not live src
+
+[Section titled “The trap that hides it: the desktop serves built dist, not live src”](#the-trap-that-hides-it-the-desktop-serves-built-dist-not-live-src)
+
+`dev:operator` → `dev:nohmr` → **`vite build --watch`**, and the desktop loads the **`dist/` output** (HMR is off by default). Consequences:
+
+* Editing src does nothing until the watch-build emits a fresh `dist` **and** you reload the Tauri window (Ctrl+R).
+* A **broken build silently freezes `dist`** at its last good output. The desktop keeps running stale code and *no* source change reaches it. Check `ls -lt apps/operator-vite/dist/assets/*.js` — if the newest file is old, the watch build is failing. Run `npm run build:operator` to see the real error.
+
+grep skips corrupted/binary files
+
+A stray NUL byte in a `.tsx` (e.g. a literal control char used as a map-key delimiter) makes `rg`/`grep` treat the file as **binary and skip it** — so a “0 stragglers” import scan can be a lie. Force text with `grep -ra` / `grep --binary-files=text` when a build cites an import in a file your scan claims is clean.
 
 # Paperclip background runner stomps apps/operator/app/harness/*
 
@@ -5282,6 +5499,99 @@ When a spawn fires, the orchestrator’s `spawn-mcp.ts` writes a per-child `.mcp
 The agent process loads this `.mcp.json` and every MCP request it makes thereafter carries those params. The framework reads them in `buildHttpSpawnContext` (HTTP) / equivalent (MCP), populates `ctx.parentSpawnId`, and the dispatcher records it as `parent_spawn_id` on every `tool_invocations` row.
 
 That’s the entire mechanism. No agent code needs to know about spawning; the URL params do all the work.
+
+# Terminal wrappers + psu
+
+> The *-su engineer-collaborator wrappers and the psu plan-tracked launcher.
+
+Papercusp installs two kinds of terminal entry point for launching a CLI agent in **engineer-collaborator mode** (the full `papercusp-su` tool catalog + playbook): the per-agent **`*-su` wrappers** (direct), and the **`psu`** command (a picker that records a tracked `/adv` session).
+
+Both are installed by `apps/operator/scripts/install-standalone-mcp.sh` (or the desktop’s per-harness install). Plain `omp` / `claude` / `codex` stay vanilla — engineer mode is opt-in.
+
+## The `*-su` wrappers — direct
+
+[Section titled “The \*-su wrappers — direct”](#the--su-wrappers--direct)
+
+| Wrapper     | Launches | Playbook injection                                       | Skip-permissions                             |
+| ----------- | -------- | -------------------------------------------------------- | -------------------------------------------- |
+| `omp-su`    | `omp`    | `--append-system-prompt` + `-e` coord extension          | `--approval-mode yolo`                       |
+| `claude-su` | `claude` | `--append-system-prompt-file`                            | `--dangerously-skip-permissions`             |
+| `codex-su`  | `codex`  | dedicated `CODEX_HOME` whose `AGENTS.md` is the playbook | `--dangerously-bypass-approvals-and-sandbox` |
+
+Each opts into the engineer playbook + the `papercusp-su` MCP server and pre-bypasses tool approvals. They run wherever you launch them and are **not** tracked — use them for a quick ad-hoc SU shell.
+
+Codex is the odd one out: it has no `--append-system-prompt` flag, so `codex-su` runs Codex in a dedicated `CODEX_HOME` (`~/.papercusp/codex-su-home`) whose `AGENTS.md` is the playbook and whose `config.toml` scopes the `papercusp-su` MCP server to that home (bearer read from `PAPERCUSP_SU_TOKEN` at launch). Plain `codex` (`CODEX_HOME=~/.codex`) is unaffected.
+
+## `psu` — the plan-tracked launcher
+
+[Section titled “psu — the plan-tracked launcher”](#psu--the-plan-tracked-launcher)
+
+`psu` is one command that **picks an agent + workspace + harness + plan**, records a tracked session row, then `exec`s the matching `*-su` wrapper. The session shows up in the **`/adv` Sessions** tab — under its plan, or under the **“No plan”** group for ad-hoc sessions — labelled with its agent kind and resumable like any other session.
+
+```bash
+psu          # interactive: pick agent → workspace → harness → plan (or "NO PLAN")
+```
+
+Harnesses are **workspace-scoped**, so the picker asks for the workspace before the harness. When there’s only one workspace it’s chosen automatically (no prompt).
+
+### Preselecting with flags
+
+[Section titled “Preselecting with flags”](#preselecting-with-flags)
+
+You can preselect any of agent / workspace / harness / plan on the command line and the picker will **only prompt for what you omit**:
+
+```bash
+psu --agent=claude                      # preset the backend; pick workspace/harness/plan
+psu --agent=omp --workspace=my-ws       # preset both; pick harness/plan
+psu --agent=codex --harness=papercup --no-plan   # everything preset → no prompts
+```
+
+Flags: `--agent=<claude|omp|codex>`, `--workspace=<id>`, `--harness=<slug>`, `--plan=<slug>`, `--no-plan`. Whatever you leave off is still picked interactively.
+
+Under the hood `psu` calls `POST /api/agent-mcp/console/bootstrap-su`, which creates the `adv_sessions` row (with `agent` + `plan_slug`, or a null `plan_slug` for “No plan”) and returns the cwd + tracking env; `psu` then `exec`s the chosen `*-su` wrapper in the harness directory. The wrapper still supplies the playbook + skip-permissions + MCP — `psu` only adds the picker and the tracking.
+
+### Scripting escape
+
+[Section titled “Scripting escape”](#scripting-escape)
+
+Skip the prompts for shell scripts / CI:
+
+```bash
+psu --no-picker --agent=claude --harness=papercup --plan=my-plan-slug
+psu --no-picker --agent=omp --workspace=my-ws --harness=papercup --no-plan
+psu --no-picker --agent=codex --no-plan          # active workspace root, no harness
+```
+
+`--agent` is required (`claude` | `omp` | `codex`); `--workspace` defaults to the active workspace; `--harness` defaults to the workspace root if omitted; pass `--no-plan` for an ad-hoc session or `--plan=<slug>` to bind one.
+
+### Resuming
+
+[Section titled “Resuming”](#resuming)
+
+The agents scope their resumable sessions **by working directory**. A harness launch runs in the harness repo, so resume the agent’s session (e.g. `claude --resume <id>`) **from that repo dir**. A no-harness launch runs in the directory you invoked `psu` from (not an internal dir), so its resume works from that same terminal. `psu` prints the launch `cwd` so you know where to resume from. (Or resume from the `/adv` Sessions tab, which already knows the cwd.)
+
+## Install
+
+[Section titled “Install”](#install)
+
+```bash
+bash apps/operator/scripts/install-standalone-mcp.sh
+```
+
+This mints the superuser token, merges `papercusp-su` into each client’s MCP config, writes the playbook + the three `*-su` wrappers, and installs `psu` (a shim that `exec`s the in-repo launcher so it resolves `@inquirer/prompts` from the operator’s `node_modules`). Re-run to refresh; to revoke, delete the listed files (the installer prints them).
+
+## How tracking flows
+
+[Section titled “How tracking flows”](#how-tracking-flows)
+
+```plaintext
+psu  ──pick──▶  bootstrap-su  ──records──▶  adv_sessions row (agent, plan_slug|null)
+  │                                              │
+  └──exec──▶  <agent>-su wrapper                 └──▶ /adv Sessions (live, ~3s refresh)
+                (playbook + MCP + skip-perms)          under plan / "No plan" group
+```
+
+The `*-su` wrappers used directly are **not** tracked (no row); only `psu` launches appear in `/adv`.
 
 # Agents — overview
 
@@ -15432,7 +15742,7 @@ A new caller — UI, agent over MCP, or another module — gets the function wit
 
 Before this design we had \~50 hand-written `app/api/agent-mcp/*/route.ts` files. Each one re-implemented its own auth check, its own JSON parse, its own try-catch, its own logging, its own error mapping. They drifted: some returned 500 where they should have returned 401; some forgot RLS scoping; some accepted GET when only POST made sense; some had quotas, most didn’t.
 
-The function-as-truth approach replaces all that with a single dispatcher (`packages/agent-mcp/src/dispatch-projected.ts`). A new tool inherits correct behavior because there’s only one place that behavior is defined.
+The function-as-truth approach replaces all that with a single dispatcher (`packages/tooldef/src/dispatch-projected.ts`). A new tool inherits correct behavior because there’s only one place that behavior is defined.
 
 ## Why we didn’t just generate routes from the manifest at build time
 
@@ -15690,7 +16000,7 @@ Same call a third time:
 
 [Section titled “Where the dispatcher lives”](#where-the-dispatcher-lives)
 
-`packages/agent-mcp/src/dispatch-projected.ts` is the only place these checks run. If you find yourself wanting to add a custom gate inside a tool function, you’re probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
+`packages/tooldef/src/dispatch-projected.ts` is the only place these checks run. If you find yourself wanting to add a custom gate inside a tool function, you’re probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
 
 # Operations
 
@@ -15728,7 +16038,7 @@ The endpoint returns the host status:
 
 [Section titled “Where the registry lives”](#where-the-registry-lives)
 
-Three module-level Maps in `packages/agent-mcp/src/tool-projection.ts`:
+Three module-level Maps in `packages/tooldef/src/tool-projection.ts`:
 
 * `REGISTRY` — keyed by `mcp:<name>` or `http:<path>`, value is the full `ProjectedTool`
 * `BY_MCP_NAME` — `Map<string, ProjectedTool>` for `tools/call` lookups
@@ -16015,6 +16325,34 @@ A tool handler has two outbound channels available, projected uniformly across t
 
 Cards (`ctx.askUser`) and tool state (`ctx.publishState`) live on the state channel because they’re not append-only — a reconnecting client wants the latest answered/unanswered card state, not history of every snapshot. The framework auto-installs `askUser` / `publishState` on the ctx when the call has a `workspaceId + runId` (always present for HTTP-projected calls). See [ctx.askUser](/internal/docs/endpoint-system/ask-user) and [state-shaped tools](/internal/docs/endpoint-system/state-tools).
 
+## How it’s packaged
+
+[Section titled “How it’s packaged”](#how-its-packaged)
+
+The endpoint system started life inside `@papercusp/agent-mcp`. It has since been **carved into a host-agnostic engine plus thin adapters** (plan `papercusp-tooldef-extraction-2026-05-29`), so the same dispatcher can be used outside Papercusp:
+
+| Package                              | Role                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`@papercusp/tooldef`**             | The engine — `defineTool`, the registry, the dispatch pipeline, the state/card/replay channels, OpenAPI assembly, core types. **Zero** Papercusp / PG / Next / `@restart` deps. Validator-agnostic ([Standard Schema](https://standardschema.dev)); every host-specific rule is injected (table below).                                                                                                           |
+| **`@papercusp/tooldef-http`**        | The HTTP transport adapter (`handleHttpToolRequest` / `…Streaming`). Resolves a request → tool, builds the ctx from `X-Papercusp-*` headers, dispatches. Depends only on the engine + `@papercusp/sse`.                                                                                                                                                                                                           |
+| **`@papercusp/ipc-endpoint-server`** | The IPC (unix-socket) transport adapter.                                                                                                                                                                                                                                                                                                                                                                          |
+| **`@papercusp/agent-mcp`**           | The **Papercusp host adapter** — supplies the injected deps (PG-backed quota/telemetry, the role config, quota-window policy, capability→tier table, gate-bypass mapping, HMAC spawn verification) and re-exports the engine + HTTP surface so existing import sites are untouched. The **MCP bridge** (Vercel `mcp-handler` glue + spawn-context auth) currently still lives here / in the operator route layer. |
+
+Everything Papercusp-specific is a **host-injected seam** with a generic engine default:
+
+| Concern                          | Seam                                                                              | Engine default                |
+| -------------------------------- | --------------------------------------------------------------------------------- | ----------------------------- |
+| Roles                            | augment the `RoleRegistry` interface → shapes `AgentRole`                         | `string` (any role)           |
+| Quota window + ceiling           | `DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)`                        | run-scoped / `perRun`         |
+| Capability → tier                | `setCapabilityTierResolver` (read via `tierFor`)                                  | `'low'`                       |
+| Gate bypass (privileged callers) | `ctx.gateBypass { role?, capability?, quota? }`                                   | absent ⇒ all gates enforce    |
+| Schema validation                | `args` / `state` / card `dataSchema` typed `StandardSchemaV1`; `standardValidate` | any Standard Schema validator |
+| Schema → JSON Schema             | `setJsonSchemaAdapter` (read via `toJsonSchema`)                                  | Zod 4 `toJSONSchema`          |
+| Quota / telemetry I/O            | `DispatchProjectedDeps.readQuotaState` / `recordInvocation`                       | no-ops                        |
+| Transaction handle               | `ToolContext<Tx = any>`                                                           | `any`                         |
+
+The engine is provably standalone — see `packages/tooldef/examples/standalone-inprocess.ts` (registers + dispatches a tool importing **only** `@papercusp/tooldef`). It is also mirrored to a standalone `Papercusp/tooldef` repo for external consumers.
+
 ## Where to read next
 
 [Section titled “Where to read next”](#where-to-read-next)
@@ -16090,7 +16428,7 @@ Cards (`ctx.askUser`) and tool state (`ctx.publishState`) live on the state chan
 
 If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one.
 
-Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `packages/agent-mcp/src/types.ts`.
+Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `packages/tooldef/src/types.ts`.
 
 ## Error codes
 
@@ -16151,10 +16489,11 @@ The framework doesn’t care if you invent a new role — `tool.roles[]` is a st
 
 [Section titled “Window keys”](#window-keys)
 
-`window_key` in `tool_invocations` is computed by `computeProjectedQuotaWindowKey(ctx)` in `dispatch-projected.ts`:
+`window_key` (and the quota ceiling) in `tool_invocations` is computed by the host-injected `DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)` (plan P-011). The engine default (`defaultComputeQuotaWindow` in `packages/tooldef/src/dispatch-types.ts`) is run-scoped / `perRun`; Papercusp’s policy (`papercuspComputeQuotaWindow` in `packages/agent-mcp/src/quota-policy.ts`, wired via `PROJECTED_DEPS`) is:
 
-* `worker` → `chunk:<chunkId>` if `ctx.chunkId` set, else null (no window, no quota)
-* Anyone else → `run:<runId>` if `ctx.runId` set, else null
+* `worker` → `chunk:<chunkId>` (cap `perChunk`) if `ctx.chunkId` set, else null (no window, no quota)
+* power-user session → `power-user:<uiClientId>` (cap `perRun`) — keyed on the stable auth session, not the per-request run
+* anyone else → `run:<runId>` (cap `perRun`) if `ctx.runId` set, else null
 
 Null window means no quota check (and no telemetry insert path that requires the key). In practice every real call has both `?run=` and either a worker chunk or a run-scoped role, so windows are always set.
 
@@ -16162,27 +16501,30 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 [Section titled “File map”](#file-map)
 
+> The engine was extracted into **`@papercusp/tooldef`** (plan `papercusp-tooldef-extraction-2026-05-29`); the HTTP adapter into **`@papercusp/tooldef-http`**; IPC is **`@papercusp/ipc-endpoint-server`**. `@papercusp/agent-mcp` is the Papercusp host adapter (supplies the injected deps + re-exports the engine surface). Paths below reflect that split.
+
 ### Dispatcher / projection / transports
 
 [Section titled “Dispatcher / projection / transports”](#dispatcher--projection--transports)
 
-| Concern                                              | Module                                                                       |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Projection registry (3 Maps)                         | `packages/agent-mcp/src/tool-projection.ts`                                  |
-| Built-in `defineTool` + auto-projection              | `packages/agent-mcp/src/define-tool.ts`                                      |
-| Plugin loader + `registerPluginTools`                | `packages/plugin-loader/src/index.ts`                                        |
-| Plugin host + lifecycle                              | `apps/operator/lib/plugin-host-runtime.ts`                                   |
-| HTTP catch-all (plugins)                             | `apps/operator/app/api/plugins/[...path]/route.ts`                           |
-| HTTP catch-all (built-ins)                           | `apps/operator/app/api/agent-tools/[...path]/route.ts`                       |
-| MCP transport (both pipelines)                       | `apps/operator/app/api/[transport]/route.ts`                                 |
-| Dispatcher (gates + record)                          | `packages/agent-mcp/src/dispatch-projected.ts`                               |
-| HTTP request → context builder                       | `packages/agent-mcp/src/http-projection.ts`                                  |
-| Replay buffer (Last-Event-ID resume)                 | `packages/agent-mcp/src/replay-buffer.ts`                                    |
-| Spawn-mcp `.mcp.json` writer                         | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`                      |
-| Per-spawn URL → ctx parser                           | `packages/agent-mcp/src/spawn-context.ts`                                    |
-| Shared subprocess + secret impls                     | `apps/operator/lib/plugin-spawn-impl.ts`                                     |
-| Harness path resolver (PG-backed)                    | `apps/operator/lib/resolve-harness-paths.ts`                                 |
-| Desktop Tauri IPC sidecar (Unix socket / named pipe) | `apps/operator/lib/endpoint-ipc/` (`server.ts`, `framing.ts`, `PROTOCOL.md`) |
+| Concern                                  | Module                                                                                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Projection registry (3 Maps)             | `packages/tooldef/src/tool-projection.ts`                                                                                                  |
+| Built-in `defineTool` + auto-projection  | `packages/tooldef/src/define-tool.ts`                                                                                                      |
+| Plugin loader + `registerPluginTools`    | `packages/plugin-loader/src/index.ts`                                                                                                      |
+| Plugin host + lifecycle                  | `apps/operator/lib/plugin-host-runtime.ts`                                                                                                 |
+| HTTP catch-all (plugins)                 | `apps/operator/app/api/plugins/[...path]/route.ts`                                                                                         |
+| HTTP catch-all (built-ins)               | `apps/operator/app/api/agent-tools/[...path]/route.ts`                                                                                     |
+| MCP transport (both pipelines)           | `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts`                                                                        |
+| Dispatcher (gates + record)              | `packages/tooldef/src/dispatch-projected.ts` (+ `dispatch-stack.ts`)                                                                       |
+| HTTP request → context builder           | `packages/tooldef-http/src/http-projection.ts`                                                                                             |
+| Replay buffer (Last-Event-ID resume)     | `packages/tooldef/src/replay-buffer.ts`                                                                                                    |
+| Spawn-mcp `.mcp.json` writer             | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`                                                                                    |
+| Per-spawn URL → ctx parser               | `packages/agent-mcp/src/spawn-context.ts`                                                                                                  |
+| Host deps (PG quota/telemetry, policies) | `apps/operator/lib/projected-tool-deps.ts` + `packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts` |
+| Shared subprocess + secret impls         | `apps/operator/lib/plugin-spawn-impl.ts`                                                                                                   |
+| Harness path resolver (PG-backed)        | `apps/operator/lib/resolve-harness-paths.ts`                                                                                               |
+| IPC adapter (Unix socket / named pipe)   | `packages/ipc-endpoint-server/` + `apps/operator/lib/endpoint-ipc/`                                                                        |
 
 ### Cards + state channel (bespoke-card-improvements arc)
 
@@ -16190,10 +16532,10 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 | Concern                                                      | Module                                                                                           |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| State channel (per-run snapshot map + subscribers)           | `packages/agent-mcp/src/state-channel.ts`                                                        |
-| Card correlator (PENDING map + deferred lifecycle)           | `packages/agent-mcp/src/card-correlator.ts`                                                      |
-| `ctx.askUser` install + abort race                           | `packages/agent-mcp/src/ask-user.ts` (+ install site in `dispatch-projected.ts`)                 |
-| Workspace-switch lifecycle hook                              | `packages/agent-mcp/src/workspace-lifecycle.ts`                                                  |
+| State channel (per-run snapshot map + subscribers)           | `packages/tooldef/src/state-channel.ts`                                                          |
+| Card correlator (PENDING map + deferred lifecycle)           | `packages/tooldef/src/card-correlator.ts`                                                        |
+| `ctx.askUser` install + abort race                           | `packages/tooldef/src/ask-user.ts` (+ install site in `dispatch-projected.ts`)                   |
+| Workspace-switch lifecycle hook                              | `packages/tooldef/src/workspace-lifecycle.ts`                                                    |
 | State-snapshot SSE route                                     | `apps/operator/app/api/operator/state-snapshot/route.ts`                                         |
 | Card-response endpoint                                       | `apps/operator/app/api/operator/conversations/[id]/card-response/route.ts`                       |
 | Run-cancel endpoint                                          | `apps/operator/app/api/operator/conversations/[id]/run-cancel/route.ts`                          |
@@ -16685,7 +17027,7 @@ For a tool that mixes a state-shaped result (`results`) with an append-only side
 
 # Superuser mode
 
-> Give an OMP shell launched outside Papercusp full access to MCP tools across every workspace and harness, with a single token.
+> Give an agent shell launched outside Papercusp full access to MCP tools across every workspace and harness, with a single token.
 
 ## What this is
 
@@ -17024,7 +17366,7 @@ The `app.workspace_id` GUC is set before every insert via `SELECT set_config('ap
 * Quota read + insert: `apps/operator/app/api/plugins/[...path]/route.ts:HOST_EXTRAS.deps`
 * Same for built-in catch-all: `apps/operator/app/api/agent-tools/[...path]/route.ts:HOST_EXTRAS.deps`
 * Same for MCP transport: `apps/operator/app/api/[transport]/route.ts:PLUGIN_DEPS`
-* Window-key computation: `packages/agent-mcp/src/dispatch-projected.ts:computeProjectedQuotaWindowKey`
+* Window-key + ceiling computation: host-injected `computeQuotaWindow` (engine default `packages/tooldef/src/dispatch-types.ts:defaultComputeQuotaWindow`; Papercusp policy `packages/agent-mcp/src/quota-policy.ts:papercuspComputeQuotaWindow`)
 
 ## Future Intel-tab queries
 
@@ -17347,7 +17689,7 @@ Or pretty-printed in the dashboard at `/settings/plugins/tools`.
 | **MCP**             | Spawned agents over `mcp-handler` SSE/streamable-http | `POST /api/mcp` and `POST /api/sse`                          |
 | **In-process**      | Direct TS imports, server actions                     | `import { lookupByMcpName }` then call `tool.fn(input, ctx)` |
 
-All four go through the same `dispatchProjectedTool` in `packages/agent-mcp/src/dispatch-projected.ts`. The same role/capability/quota/timeout/telemetry behavior applies.
+All four go through the same `dispatchProjectedTool` in `packages/tooldef/src/dispatch-projected.ts`. The same role/capability/quota/timeout/telemetry behavior applies.
 
 ## How HTTP requests reach a function
 
@@ -17630,9 +17972,9 @@ const r = await ctx.askUser({
 
 The user’s click `POST`s to `/api/operator/conversations/:id/card-response`; the card-correlator resolves the deferred and the handler returns the response value to its caller. Tools no longer echo their args back to the client — the response value IS the user’s pick.
 
-The wire-level event name `'card'` is reserved at `registerProjectedTool` (`packages/agent-mcp/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
+The wire-level event name `'card'` is reserved at `registerProjectedTool` (`packages/tooldef/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
 
-Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `packages/agent-mcp/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
+Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `packages/tooldef/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
 
 ## The three context types
 
@@ -17640,11 +17982,11 @@ Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `packages/a
 
 The codebase has three context types floating around — same field set, different supersets. Knowing which is which helps when tracing types through the dispatcher and transport adapters.
 
-| Type                             | Lives at                                    | Used by                                                                       | Streaming?                                                   |
-| -------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `UnifiedToolContext`             | `packages/agent-mcp/src/tool-projection.ts` | The dispatcher canonical context. All transport adapters build one.           | Yes — `emit`, `progress`.                                    |
-| `ToolContext` (plugin-sdk)       | `packages/plugin-sdk/src/index.ts`          | Plugin tool handlers (`PluginToolMap`).                                       | Yes — `emit`, `progress` (mirrored from UnifiedToolContext). |
-| `ToolContext` (legacy agent-mcp) | `packages/agent-mcp/src/types.ts`           | Legacy principal-gated `defineTool` handlers — `{ principal, tx, log }` only. | No — these don’t stream.                                     |
+| Type                           | Lives at                                  | Used by                                                                       | Streaming?                                                   |
+| ------------------------------ | ----------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `UnifiedToolContext`           | `packages/tooldef/src/tool-projection.ts` | The dispatcher canonical context. All transport adapters build one.           | Yes — `emit`, `progress`.                                    |
+| `ToolContext` (plugin-sdk)     | `packages/plugin-sdk/src/index.ts`        | Plugin tool handlers (`PluginToolMap`).                                       | Yes — `emit`, `progress` (mirrored from UnifiedToolContext). |
+| `ToolContext` (legacy, engine) | `packages/tooldef/src/types.ts`           | Legacy principal-gated `defineTool` handlers — `{ principal, tx, log }` only. | No — these don’t stream.                                     |
 
 When `defineTool({ requirePrincipal: false, … })` is called (role-gated), the handler receives `UnifiedToolContext` directly. When `defineTool({ … })` is used with default `requirePrincipal: true`, the wrapper synthesizes the legacy `ToolContext` from the unified one — `emit`/`progress` are dropped because legacy built-ins don’t stream.
 
@@ -26980,6 +27322,7 @@ Canonical ASCII form:
 - **P-009** `todo` Implement plans:lint. blocked-by: P-008
 - **P-010** `needs-human` Decide archive listing default. → D-003
 - **P-011** `done` Verify parser handles legacy files.
+- **P-012** `needs-human` Human sign-off before production ship. importance: urgent
 ```
 
 ### Rules
@@ -26990,9 +27333,36 @@ Canonical ASCII form:
 * **Status token** — one of six, lowercase, backticked. See [Status vocabulary](#status-vocabulary).
 * **`blocked-by:`** — keyword. Parser reads it independent of any separator glyph. Comma-separated IDs: `blocked-by: P-003, P-005`. *Not* a status — see “Computed-blocked” below.
 * **Decision refs** — `D-NNN` tokens anywhere in the line; parser picks them up by pattern, glyph-agnostic. The `→` arrow is cosmetic.
+* **`importance:`** — keyword, glyph-agnostic like `blocked-by:`. Values `urgent | high | normal | low`; omit it for the `normal` default. A 4th axis orthogonal to status — see [Importance](#importance).
 * **Separators are display-only.** Examples may use `·` or `→` for human readability; the parser never depends on them. If you type `,` / `-` / `->` instead, it still parses.
 
 Items not under a `## Phase N` heading are still parsed but flagged by lint as “unphased”.
+
+### Importance
+
+[Section titled “Importance”](#importance)
+
+Every item carries an **importance** — a fourth axis, orthogonal to [status](#status-vocabulary). Status says *where the item is in its lifecycle*; importance says *how much it matters*. It is written as an `importance:` keyword on the item line and parsed glyph-agnostically, exactly like `blocked-by:`:
+
+```markdown
+- **P-030** `needs-human` Sign off before the production ship. importance: urgent
+- **P-031** `todo` Tidy the dead feature flag. importance: low
+- **P-032** `todo` Wire the new endpoint.
+```
+
+| Level    | Meaning                                                                                                                                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `urgent` | Progress is fully blocked, **or** acting without a human risks harm (repeated failures, an irreversible / production-affecting approval, a security or data-loss risk, a release gate). Interrupt the human now. |
+| `high`   | A real decision is needed and this thread is paused until it’s answered, but other work proceeds and nothing is at risk. Should be seen today.                                                                   |
+| `normal` | **Default.** A decision/approval or task is needed; nothing is stuck and it fits the normal cadence.                                                                                                             |
+| `low`    | Informational, or there is a safe default and the agent will proceed with it if unanswered.                                                                                                                      |
+
+Rules:
+
+* **Default is `normal`** — omit the keyword for a normal item. The parser degrades any unrecognised value to `normal`; `plans:lint` emits a soft `unknown_importance` *warning* (never an error, so a typo can’t fail CI).
+* **One read, two uses.** For a `todo` it answers *which to pick up next*; for a `needs-human` item it answers *how urgently a human should act*. `plans:items` sorts by importance (urgent → low).
+* **Distinct from the operator capability `tier`** (low/med/high), which measures *risk of the action*, not importance.
+* **Always set deliberately.** When you create a `needs-human` or `todo` item, choose the level from the importance rubric rather than defaulting by reflex — see the agent prompts (and the rubric in `planning-attention-importance-2026-05-31`).
 
 ## Status vocabulary
 
@@ -27034,10 +27404,8 @@ Use `needs-human` items to insert mandatory approval gates between phases. The o
 ## Phase 3 — Ship
 
 
-- [needs-human] P-030: Human sign-off before shipping to production
-  — review the Phase 2 results, confirm validation-contract.md is
-  final, and mark this done to unblock the release.
-- [ ] P-031: Tag v1.0.0 release commit. blocked-by: P-030
+- **P-030** `needs-human` Human sign-off before shipping to production — review the Phase 2 results, confirm validation-contract.md is final, and mark this done to unblock the release. importance: urgent
+- **P-031** `todo` Tag v1.0.0 release commit. blocked-by: P-030
 ```
 
 When the user is satisfied with Phase 2 output they flip P-030 to `done` (via the plan editor or `plans:set-status`). The orchestrator picks up P-031 on its next tick.
@@ -32117,17 +32485,23 @@ An assertion is a **nested bullet block** appended to a plan item line. The item
       column order in the UI.
     - **Evidence:** `tests/api/reports.csv.test.ts` — `header row matches`
     - **Status:** `todo`
+  - **[VAL-my-plan-2026-05-26-003]**
+    - **Verify:** The "Export" button copy reads "Download CSV", not "Export".
+    - **Evidence:** Visual — design-spec match, no automated test.
+    - **Status:** `todo`
+    - **RequiresTest:** `false`
 ```
 
 ### Sub-bullet fields
 
 [Section titled “Sub-bullet fields”](#sub-bullet-fields)
 
-| Field       | Required | Meaning                                                                                                                                                   |
-| ----------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Verify:`   | Yes      | One or two sentences stating the observable behavior to check. Falsifiable — a validator must be able to write a test that fails before and passes after. |
-| `Evidence:` | Yes      | Where the check lives: file path + test name / selector / curl command. Enough for the validator to locate or recreate the check.                         |
-| `Status:`   | Yes      | `todo` / `validating` / `passed` / `failed`. Updated by the validator after each run.                                                                     |
+| Field           | Required | Meaning                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Verify:`       | Yes      | One or two sentences stating the observable behavior to check. Falsifiable — a validator must be able to write a test that fails before and passes after.                                                                                                                                                                                                                                |
+| `Evidence:`     | Yes      | Where the check lives: file path + test name / selector / curl command. Enough for the validator to locate or recreate the check.                                                                                                                                                                                                                                                        |
+| `Status:`       | Yes      | `todo` / `validating` / `passed` / `failed`. Updated by the validator after each run.                                                                                                                                                                                                                                                                                                    |
+| `RequiresTest:` | No       | `false` exempts this VAL from the test gate — non-testable claims (copy, design-spec match, judgement). The staging orchestrator’s `NEXT_TESTER` gate and the validator’s test gate skip exempt VALs; the validator still verifies them by inspection. Defaults to `true` (a claim needs a passing covering test). Stored on `harness_plan_assertions.requires_test` by `plans:promote`. |
 
 ### Assertion ID scheme
 

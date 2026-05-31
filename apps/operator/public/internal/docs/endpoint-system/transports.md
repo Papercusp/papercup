@@ -12,7 +12,7 @@ How HTTP, MCP, and in-process callers all reach the same function. The dispatche
 | **MCP**             | Spawned agents over `mcp-handler` SSE/streamable-http | `POST /api/mcp` and `POST /api/sse`                          |
 | **In-process**      | Direct TS imports, server actions                     | `import { lookupByMcpName }` then call `tool.fn(input, ctx)` |
 
-All four go through the same `dispatchProjectedTool` in `packages/agent-mcp/src/dispatch-projected.ts`. The same role/capability/quota/timeout/telemetry behavior applies.
+All four go through the same `dispatchProjectedTool` in `packages/tooldef/src/dispatch-projected.ts`. The same role/capability/quota/timeout/telemetry behavior applies.
 
 ## How HTTP requests reach a function
 
@@ -264,19 +264,19 @@ const r = await ctx.askUser({
 
 The user's click `POST`s to `/api/operator/conversations/:id/card-response`; the card-correlator resolves the deferred and the handler returns the response value to its caller. Tools no longer echo their args back to the client — the response value IS the user's pick.
 
-The wire-level event name `'card'` is reserved at `registerProjectedTool` (`packages/agent-mcp/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
+The wire-level event name `'card'` is reserved at `registerProjectedTool` (`packages/tooldef/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
 
-Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `packages/agent-mcp/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
+Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `packages/tooldef/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
 
 ## The three context types
 
 The codebase has three context types floating around — same field set, different supersets. Knowing which is which helps when tracing types through the dispatcher and transport adapters.
 
-| Type                             | Lives at                                    | Used by                                                                       | Streaming?                                                   |
-| -------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `UnifiedToolContext`             | `packages/agent-mcp/src/tool-projection.ts` | The dispatcher canonical context. All transport adapters build one.           | Yes — `emit`, `progress`.                                    |
-| `ToolContext` (plugin-sdk)       | `packages/plugin-sdk/src/index.ts`          | Plugin tool handlers (`PluginToolMap`).                                       | Yes — `emit`, `progress` (mirrored from UnifiedToolContext). |
-| `ToolContext` (legacy agent-mcp) | `packages/agent-mcp/src/types.ts`           | Legacy principal-gated `defineTool` handlers — `{ principal, tx, log }` only. | No — these don't stream.                                     |
+| Type                           | Lives at                                  | Used by                                                                       | Streaming?                                                   |
+| ------------------------------ | ----------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `UnifiedToolContext`           | `packages/tooldef/src/tool-projection.ts` | The dispatcher canonical context. All transport adapters build one.           | Yes — `emit`, `progress`.                                    |
+| `ToolContext` (plugin-sdk)     | `packages/plugin-sdk/src/index.ts`        | Plugin tool handlers (`PluginToolMap`).                                       | Yes — `emit`, `progress` (mirrored from UnifiedToolContext). |
+| `ToolContext` (legacy, engine) | `packages/tooldef/src/types.ts`           | Legacy principal-gated `defineTool` handlers — `{ principal, tx, log }` only. | No — these don't stream.                                     |
 
 When `defineTool({ requirePrincipal: false, … })` is called (role-gated), the handler receives `UnifiedToolContext` directly. When `defineTool({ … })` is used with default `requirePrincipal: true`, the wrapper synthesizes the legacy `ToolContext` from the unified one — `emit`/`progress` are dropped because legacy built-ins don't stream.
 

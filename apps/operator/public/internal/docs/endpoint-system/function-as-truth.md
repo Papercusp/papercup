@@ -50,7 +50,7 @@ A new caller — UI, agent over MCP, or another module — gets the function wit
 
 Before this design we had \~50 hand-written `app/api/agent-mcp/*/route.ts` files. Each one re-implemented its own auth check, its own JSON parse, its own try-catch, its own logging, its own error mapping. They drifted: some returned 500 where they should have returned 401; some forgot RLS scoping; some accepted GET when only POST made sense; some had quotas, most didn't.
 
-The function-as-truth approach replaces all that with a single dispatcher (`packages/agent-mcp/src/dispatch-projected.ts`). A new tool inherits correct behavior because there's only one place that behavior is defined.
+The function-as-truth approach replaces all that with a single dispatcher (`packages/tooldef/src/dispatch-projected.ts`). A new tool inherits correct behavior because there's only one place that behavior is defined.
 
 ## Why we didn't just generate routes from the manifest at build time
 

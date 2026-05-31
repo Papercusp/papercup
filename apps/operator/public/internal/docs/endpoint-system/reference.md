@@ -50,7 +50,7 @@ Manifest schema, error codes, file map, capability conventions. Lookup material.
 
 If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one.
 
-Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `packages/agent-mcp/src/types.ts`.
+Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `packages/tooldef/src/types.ts`.
 
 ## Error codes
 
@@ -103,43 +103,55 @@ The framework doesn't care if you invent a new role — `tool.roles[]` is a stri
 
 ## Window keys
 
-`window_key` in `tool_invocations` is computed by `computeProjectedQuotaWindowKey(ctx)` in `dispatch-projected.ts`:
+`window_key` (and the quota ceiling) in `tool_invocations` is computed by the
+host-injected `DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)` (plan P-011).
+The engine default (`defaultComputeQuotaWindow` in `packages/tooldef/src/dispatch-types.ts`)
+is run-scoped / `perRun`; Papercusp's policy (`papercuspComputeQuotaWindow` in
+`packages/agent-mcp/src/quota-policy.ts`, wired via `PROJECTED_DEPS`) is:
 
-* `worker` → `chunk:<chunkId>` if `ctx.chunkId` set, else null (no window, no quota)
-* Anyone else → `run:<runId>` if `ctx.runId` set, else null
+* `worker` → `chunk:<chunkId>` (cap `perChunk`) if `ctx.chunkId` set, else null (no window, no quota)
+* power-user session → `power-user:<uiClientId>` (cap `perRun`) — keyed on the stable auth session, not the per-request run
+* anyone else → `run:<runId>` (cap `perRun`) if `ctx.runId` set, else null
 
 Null window means no quota check (and no telemetry insert path that requires the key). In practice every real call has both `?run=` and either a worker chunk or a run-scoped role, so windows are always set.
 
 ## File map
 
+> The engine was extracted into **`@papercusp/tooldef`** (plan
+> `papercusp-tooldef-extraction-2026-05-29`); the HTTP adapter into
+> **`@papercusp/tooldef-http`**; IPC is **`@papercusp/ipc-endpoint-server`**.
+> `@papercusp/agent-mcp` is the Papercusp host adapter (supplies the injected
+> deps + re-exports the engine surface). Paths below reflect that split.
+
 ### Dispatcher / projection / transports
 
-| Concern                                              | Module                                                                       |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Projection registry (3 Maps)                         | `packages/agent-mcp/src/tool-projection.ts`                                  |
-| Built-in `defineTool` + auto-projection              | `packages/agent-mcp/src/define-tool.ts`                                      |
-| Plugin loader + `registerPluginTools`                | `packages/plugin-loader/src/index.ts`                                        |
-| Plugin host + lifecycle                              | `apps/operator/lib/plugin-host-runtime.ts`                                   |
-| HTTP catch-all (plugins)                             | `apps/operator/app/api/plugins/[...path]/route.ts`                           |
-| HTTP catch-all (built-ins)                           | `apps/operator/app/api/agent-tools/[...path]/route.ts`                       |
-| MCP transport (both pipelines)                       | `apps/operator/app/api/[transport]/route.ts`                                 |
-| Dispatcher (gates + record)                          | `packages/agent-mcp/src/dispatch-projected.ts`                               |
-| HTTP request → context builder                       | `packages/agent-mcp/src/http-projection.ts`                                  |
-| Replay buffer (Last-Event-ID resume)                 | `packages/agent-mcp/src/replay-buffer.ts`                                    |
-| Spawn-mcp `.mcp.json` writer                         | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`                      |
-| Per-spawn URL → ctx parser                           | `packages/agent-mcp/src/spawn-context.ts`                                    |
-| Shared subprocess + secret impls                     | `apps/operator/lib/plugin-spawn-impl.ts`                                     |
-| Harness path resolver (PG-backed)                    | `apps/operator/lib/resolve-harness-paths.ts`                                 |
-| Desktop Tauri IPC sidecar (Unix socket / named pipe) | `apps/operator/lib/endpoint-ipc/` (`server.ts`, `framing.ts`, `PROTOCOL.md`) |
+| Concern                                  | Module                                                                                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Projection registry (3 Maps)             | `packages/tooldef/src/tool-projection.ts`                                                                                                  |
+| Built-in `defineTool` + auto-projection  | `packages/tooldef/src/define-tool.ts`                                                                                                      |
+| Plugin loader + `registerPluginTools`    | `packages/plugin-loader/src/index.ts`                                                                                                      |
+| Plugin host + lifecycle                  | `apps/operator/lib/plugin-host-runtime.ts`                                                                                                 |
+| HTTP catch-all (plugins)                 | `apps/operator/app/api/plugins/[...path]/route.ts`                                                                                         |
+| HTTP catch-all (built-ins)               | `apps/operator/app/api/agent-tools/[...path]/route.ts`                                                                                     |
+| MCP transport (both pipelines)           | `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts`                                                                        |
+| Dispatcher (gates + record)              | `packages/tooldef/src/dispatch-projected.ts` (+ `dispatch-stack.ts`)                                                                       |
+| HTTP request → context builder           | `packages/tooldef-http/src/http-projection.ts`                                                                                             |
+| Replay buffer (Last-Event-ID resume)     | `packages/tooldef/src/replay-buffer.ts`                                                                                                    |
+| Spawn-mcp `.mcp.json` writer             | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`                                                                                    |
+| Per-spawn URL → ctx parser               | `packages/agent-mcp/src/spawn-context.ts`                                                                                                  |
+| Host deps (PG quota/telemetry, policies) | `apps/operator/lib/projected-tool-deps.ts` + `packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts` |
+| Shared subprocess + secret impls         | `apps/operator/lib/plugin-spawn-impl.ts`                                                                                                   |
+| Harness path resolver (PG-backed)        | `apps/operator/lib/resolve-harness-paths.ts`                                                                                               |
+| IPC adapter (Unix socket / named pipe)   | `packages/ipc-endpoint-server/` + `apps/operator/lib/endpoint-ipc/`                                                                        |
 
 ### Cards + state channel (bespoke-card-improvements arc)
 
 | Concern                                                      | Module                                                                                           |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| State channel (per-run snapshot map + subscribers)           | `packages/agent-mcp/src/state-channel.ts`                                                        |
-| Card correlator (PENDING map + deferred lifecycle)           | `packages/agent-mcp/src/card-correlator.ts`                                                      |
-| `ctx.askUser` install + abort race                           | `packages/agent-mcp/src/ask-user.ts` (+ install site in `dispatch-projected.ts`)                 |
-| Workspace-switch lifecycle hook                              | `packages/agent-mcp/src/workspace-lifecycle.ts`                                                  |
+| State channel (per-run snapshot map + subscribers)           | `packages/tooldef/src/state-channel.ts`                                                          |
+| Card correlator (PENDING map + deferred lifecycle)           | `packages/tooldef/src/card-correlator.ts`                                                        |
+| `ctx.askUser` install + abort race                           | `packages/tooldef/src/ask-user.ts` (+ install site in `dispatch-projected.ts`)                   |
+| Workspace-switch lifecycle hook                              | `packages/tooldef/src/workspace-lifecycle.ts`                                                    |
 | State-snapshot SSE route                                     | `apps/operator/app/api/operator/state-snapshot/route.ts`                                         |
 | Card-response endpoint                                       | `apps/operator/app/api/operator/conversations/[id]/card-response/route.ts`                       |
 | Run-cancel endpoint                                          | `apps/operator/app/api/operator/conversations/[id]/run-cancel/route.ts`                          |

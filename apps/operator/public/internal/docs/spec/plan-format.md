@@ -109,6 +109,7 @@ Canonical ASCII form:
 - **P-009** `todo` Implement plans:lint. blocked-by: P-008
 - **P-010** `needs-human` Decide archive listing default. → D-003
 - **P-011** `done` Verify parser handles legacy files.
+- **P-012** `needs-human` Human sign-off before production ship. importance: urgent
 ```
 
 ### Rules
@@ -125,12 +126,53 @@ Canonical ASCII form:
 * **Decision refs** — `D-NNN` tokens anywhere in the line; parser
   picks them up by pattern, glyph-agnostic. The `→` arrow is
   cosmetic.
+* **`importance:`** — keyword, glyph-agnostic like `blocked-by:`.
+  Values `urgent | high | normal | low`; omit it for the `normal`
+  default. A 4th axis orthogonal to status — see
+  [Importance](#importance).
 * **Separators are display-only.** Examples may use `·` or `→` for
   human readability; the parser never depends on them. If you type
   `,` / `-` / `->` instead, it still parses.
 
 Items not under a `## Phase N` heading are still parsed but flagged
 by lint as "unphased".
+
+### Importance
+
+Every item carries an **importance** — a fourth axis, orthogonal to
+[status](#status-vocabulary). Status says *where the item is in its
+lifecycle*; importance says *how much it matters*. It is written as an
+`importance:` keyword on the item line and parsed glyph-agnostically,
+exactly like `blocked-by:`:
+
+```markdown
+- **P-030** `needs-human` Sign off before the production ship. importance: urgent
+- **P-031** `todo` Tidy the dead feature flag. importance: low
+- **P-032** `todo` Wire the new endpoint.
+```
+
+| Level    | Meaning                                                                                                                                                                                                          |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `urgent` | Progress is fully blocked, **or** acting without a human risks harm (repeated failures, an irreversible / production-affecting approval, a security or data-loss risk, a release gate). Interrupt the human now. |
+| `high`   | A real decision is needed and this thread is paused until it's answered, but other work proceeds and nothing is at risk. Should be seen today.                                                                   |
+| `normal` | **Default.** A decision/approval or task is needed; nothing is stuck and it fits the normal cadence.                                                                                                             |
+| `low`    | Informational, or there is a safe default and the agent will proceed with it if unanswered.                                                                                                                      |
+
+Rules:
+
+* **Default is `normal`** — omit the keyword for a normal item. The
+  parser degrades any unrecognised value to `normal`; `plans:lint`
+  emits a soft `unknown_importance` *warning* (never an error, so a
+  typo can't fail CI).
+* **One read, two uses.** For a `todo` it answers *which to pick up
+  next*; for a `needs-human` item it answers *how urgently a human
+  should act*. `plans:items` sorts by importance (urgent → low).
+* **Distinct from the operator capability `tier`** (low/med/high),
+  which measures *risk of the action*, not importance.
+* **Always set deliberately.** When you create a `needs-human` or
+  `todo` item, choose the level from the importance rubric rather than
+  defaulting by reflex — see the agent prompts (and the rubric in
+  `planning-attention-importance-2026-05-31`).
 
 ## Status vocabulary
 
@@ -181,10 +223,8 @@ progress until the user acts.
 ```markdown
 ## Phase 3 — Ship
 
-- [needs-human] P-030: Human sign-off before shipping to production
-  — review the Phase 2 results, confirm validation-contract.md is
-  final, and mark this done to unblock the release.
-- [ ] P-031: Tag v1.0.0 release commit. blocked-by: P-030
+- **P-030** `needs-human` Human sign-off before shipping to production — review the Phase 2 results, confirm validation-contract.md is final, and mark this done to unblock the release. importance: urgent
+- **P-031** `todo` Tag v1.0.0 release commit. blocked-by: P-030
 ```
 
 When the user is satisfied with Phase 2 output they flip P-030 to

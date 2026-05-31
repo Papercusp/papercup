@@ -96,6 +96,37 @@ A tool handler has two outbound channels available, projected uniformly across t
 
 Cards (`ctx.askUser`) and tool state (`ctx.publishState`) live on the state channel because they're not append-only — a reconnecting client wants the latest answered/unanswered card state, not history of every snapshot. The framework auto-installs `askUser` / `publishState` on the ctx when the call has a `workspaceId + runId` (always present for HTTP-projected calls). See [ctx.askUser](/internal/docs/endpoint-system/ask-user) and [state-shaped tools](/internal/docs/endpoint-system/state-tools).
 
+## How it's packaged
+
+The endpoint system started life inside `@papercusp/agent-mcp`. It has since been
+**carved into a host-agnostic engine plus thin adapters** (plan
+`papercusp-tooldef-extraction-2026-05-29`), so the same dispatcher can be used outside
+Papercusp:
+
+| Package                              | Role                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`@papercusp/tooldef`**             | The engine — `defineTool`, the registry, the dispatch pipeline, the state/card/replay channels, OpenAPI assembly, core types. **Zero** Papercusp / PG / Next / `@restart` deps. Validator-agnostic ([Standard Schema](https://standardschema.dev)); every host-specific rule is injected (table below).                                                                                                           |
+| **`@papercusp/tooldef-http`**        | The HTTP transport adapter (`handleHttpToolRequest` / `…Streaming`). Resolves a request → tool, builds the ctx from `X-Papercusp-*` headers, dispatches. Depends only on the engine + `@papercusp/sse`.                                                                                                                                                                                                           |
+| **`@papercusp/ipc-endpoint-server`** | The IPC (unix-socket) transport adapter.                                                                                                                                                                                                                                                                                                                                                                          |
+| **`@papercusp/agent-mcp`**           | The **Papercusp host adapter** — supplies the injected deps (PG-backed quota/telemetry, the role config, quota-window policy, capability→tier table, gate-bypass mapping, HMAC spawn verification) and re-exports the engine + HTTP surface so existing import sites are untouched. The **MCP bridge** (Vercel `mcp-handler` glue + spawn-context auth) currently still lives here / in the operator route layer. |
+
+Everything Papercusp-specific is a **host-injected seam** with a generic engine default:
+
+| Concern                          | Seam                                                                              | Engine default                |
+| -------------------------------- | --------------------------------------------------------------------------------- | ----------------------------- |
+| Roles                            | augment the `RoleRegistry` interface → shapes `AgentRole`                         | `string` (any role)           |
+| Quota window + ceiling           | `DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)`                        | run-scoped / `perRun`         |
+| Capability → tier                | `setCapabilityTierResolver` (read via `tierFor`)                                  | `'low'`                       |
+| Gate bypass (privileged callers) | `ctx.gateBypass { role?, capability?, quota? }`                                   | absent ⇒ all gates enforce    |
+| Schema validation                | `args` / `state` / card `dataSchema` typed `StandardSchemaV1`; `standardValidate` | any Standard Schema validator |
+| Schema → JSON Schema             | `setJsonSchemaAdapter` (read via `toJsonSchema`)                                  | Zod 4 `toJSONSchema`          |
+| Quota / telemetry I/O            | `DispatchProjectedDeps.readQuotaState` / `recordInvocation`                       | no-ops                        |
+| Transaction handle               | `ToolContext<Tx = any>`                                                           | `any`                         |
+
+The engine is provably standalone — see `packages/tooldef/examples/standalone-inprocess.ts`
+(registers + dispatches a tool importing **only** `@papercusp/tooldef`). It is also
+mirrored to a standalone `Papercusp/tooldef` repo for external consumers.
+
 ## Where to read next
 
 * [Function-as-truth](/internal/docs/endpoint-system/function-as-truth) — the architectural spine: why the function comes first
