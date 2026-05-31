@@ -11,17 +11,13 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** PLAN COMPLETE — all items done (P-028 dropped per D-008). User green-lit P-020/P-021/D-007 on 2026-05-31 ("push through them all"); shipped this session:
+**State:** PLAN COMPLETE + fully compile-verified — all 26 items done (P-028 dropped). Importance axis, unified attention inbox + dispatch (P-017 chat/Resolve/Ack), operator importance-weighting (P-018), orchestrator urgent-halt (P-019), and event-driven push (P-020/P-021/D-007) all shipped.
 
-P-021 — retired the device-intervention-watcher 60s poll (file deleted, host-bootstrap start removed). A new notifyAttention() helper (lib/attention-notify.ts) fans out to two fail-safe channels and is called at the producer chokepoints: escalation-event (real escalation only), smoke-test-event (transition INTO failing, reads prior status), plan-review-event (per completed review), and plans:set-status (needs-human>=high). Net push set = exactly the >=high attention items.
+D-007 Rust is now CARGO-VERIFIED: cargo check on papercusp-desktop compiled tauri-plugin-notification v2.3.3 + the show_attention_notification command cleanly (53.88s, 0 errors; the 7 warnings are all pre-existing dead-code, none touching this work). The earlier "couldn't compile-verify the Rust" caveat is closed.
 
-P-020 — event-driven, importance-gated push (the above), replacing the timer.
+Verification status: operator tsc clean on all touched files; attention-notify (5) + set-status (10) + attention adapters/group/sources unit tests green; desktop cargo check green. Remaining is purely RUNTIME verification only the user can do: launch the desktop (npm run dev — rebuilds + picks up the new command) and confirm a needs-human urgent flip / escalation / smoke-fail / plan-review produces an in-app toast + a native OS notification (+ mobile push if a device is paired).
 
-D-007 — desktop-native channel. notifyAttention emits an attention.notify SSE event; DesktopAttentionNotifier (mounted at root, app-level so @papercusp/sync stays domain-free) shows an in-app sonner toast always + invokes the new show_attention_notification Rust command for a native OS notification in the Tauri shell. Added tauri-plugin-notification + the command to papercusp-desktop (commit 4b9b408). Driven from Rust, so no JS-facing notification capability needed.
-
-Verification: operator tsc clean on all touched files; attention-notify (5) + set-status (10) + attention adapters/group/sources tests green. NEEDS a desktop cargo rebuild for the native OS notification (show_attention_notification command); the toast + mobile push work without it. Couldn't compile-verify the Rust here — a wrong API would surface as a loud cargo error on rebuild.
-
-**Next:** Rebuild the Tauri desktop (cargo) to activate the native OS notification, then verify end-to-end: flip a plan item to needs-human urgent (toast + native ping), and trigger an escalation/smoke-fail/plan-review. Plan is otherwise complete.
+**Next:** Nothing left to build. User: launch the Tauri desktop and runtime-verify the notifications + the Planning-tab Chat/Resolve/Ack dispatch. Plan is complete.
 
 ## Background
 
