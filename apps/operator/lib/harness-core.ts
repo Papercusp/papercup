@@ -200,8 +200,14 @@ export function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggre
  * Project lookups
  * ───────────────────────────────────────────────────────────────────── */
 
-export async function resolveProject(slug: string): Promise<ProjectEntry | null> {
-  const reg = await loadHarnessRegistry();
+export async function resolveProject(
+  slug: string,
+  workspaceId?: string,
+): Promise<ProjectEntry | null> {
+  // Pass workspaceId so callers (e.g. a durable pipeline) can resolve in a FIXED
+  // workspace rather than the volatile active one — the active workspace can
+  // switch mid-flight (desktop UI), which would otherwise break in-flight runs.
+  const reg = await loadHarnessRegistry(workspaceId);
   return reg.projects.find((p) => p.slug === slug) ?? null;
 }
 

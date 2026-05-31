@@ -33,8 +33,11 @@ export function extractAgentOutput(stdout: string): string {
     .trim();
 }
 
-const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, idempotencyKey) => {
-  const project = await resolveProject(harnessSlug);
+const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, idempotencyKey, workspaceId) => {
+  // Resolve in the pipeline's CAPTURED workspace, not the volatile active one
+  // (which can switch mid-pipeline and make `resolveProject` return null →
+  // empty output → a spurious ERROR on a later turn).
+  const project = await resolveProject(harnessSlug, workspaceId);
   if (!project) {
     // Unknown harness → empty output (the workflow parses '' → terminal → stops).
     return { output: '', exitCode: 1 };
@@ -45,7 +48,12 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, featureId, id
     harnessDir: harnessPackageDir(),
     role,
     extras: featureId ? [`FEATURE_ID=${featureId}`] : [],
-    extraEnv: { IDEMPOTENCY_KEY: idempotencyKey },
+    // Pin the agent's workspace too (orchestrator activeWorkspaceId() reads this
+    // env first), so its feature reads stay in the pipeline's workspace.
+    extraEnv: {
+      IDEMPOTENCY_KEY: idempotencyKey,
+      ...(workspaceId ? { PAPERCUSP_WORKSPACE_ID: workspaceId } : {}),
+    },
   });
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: project.path, env });

@@ -39,19 +39,29 @@ export interface PipelineInput {
    * feature-ownership decision. Defaults to 0.
    */
   epoch?: number;
+  /**
+   * The workspace this pipeline runs in, CAPTURED at start time. The runner
+   * resolves the harness in THIS workspace (not the volatile active one, which
+   * can switch mid-pipeline via the desktop UI and break in-flight invokes —
+   * observed ERRORing a real auto-dispatched run). Defaults to the active
+   * workspace when unset (legacy callers).
+   */
+  workspaceId?: string;
 }
 
 /**
  * One agent run. Returns the agent's final text + exit code. The operator wires
  * the real runner (it builds the InvokeContext + calls `invoke()` with
  * `options.idempotencyKey = key`, so a re-run of a completed agent is reused, not
- * re-spawned — P-015); tests inject a stub.
+ * re-spawned — P-015); tests inject a stub. `workspaceId` pins the resolution
+ * workspace for the whole pipeline.
  */
 export type PipelineInvokeRunner = (
   harnessSlug: string,
   role: string,
   featureId: string,
   idempotencyKey: string,
+  workspaceId?: string,
 ) => Promise<{ output: string; exitCode: number }>;
 
 let _runner: PipelineInvokeRunner | null = null;
@@ -100,6 +110,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
           orchestratorRole,
           input.featureId,
           key(input.harnessSlug, input.featureId, orchestratorRole, turn),
+          input.workspaceId,
         );
         if (r.exitCode !== 0 || !r.output.trim()) {
           throw new Error(`decide invoke failed (exit=${r.exitCode}, empty=${!r.output.trim()})`);
@@ -123,7 +134,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     const feature = parsed.arg ?? input.featureId;
     // Step: run the dispatched role as an idempotent agent run (checkpointed).
     await DBOS.runStep(
-      () => runner()(input.harnessSlug, role, feature, key(input.harnessSlug, feature, role, turn)),
+      () => runner()(input.harnessSlug, role, feature, key(input.harnessSlug, feature, role, turn), input.workspaceId),
       { name: `invoke-${role}-${turn}` },
     );
     lastVerb = parsed.verb;

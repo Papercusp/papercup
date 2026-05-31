@@ -12,6 +12,7 @@
  * `startFeaturePipeline` has nothing to enqueue on.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { startFeaturePipeline } from './orchestrator-workflow';
 
 /** DBOS statuses that mean a pipeline still OWNS its feature (in-flight). */
@@ -80,7 +81,14 @@ export async function ensureFeaturePipeline(
     featureId,
   );
   if (decision.action === 'start') {
-    await startFeaturePipeline({ harnessSlug, featureId, epoch: decision.epoch });
+    // Capture the workspace NOW so the whole pipeline resolves in it, immune to a
+    // later active-workspace switch (which would otherwise null `resolveProject`).
+    await startFeaturePipeline({
+      harnessSlug,
+      featureId,
+      epoch: decision.epoch,
+      workspaceId: activeWorkspaceId(),
+    });
   }
   return { ...decision, started: decision.action === 'start' };
 }
