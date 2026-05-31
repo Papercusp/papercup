@@ -18,7 +18,7 @@ const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' :
 
 const escalations: SearchSource = {
   name: 'escalations',
-  async bm25({ sql, query, workspaceId, harnessFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
              ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -29,7 +29,7 @@ const escalations: SearchSource = {
              ) AS highlight
         FROM harness_shared.harness_escalations
        WHERE workspace_id = ${workspaceId}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND body_tsv @@ plainto_tsquery('english', ${query})
     ORDER BY rank DESC LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; phase: string; escalation: string | null; supervisor_notes: string | null; rank: number; highlight: string }>;
@@ -41,7 +41,7 @@ const escalations: SearchSource = {
         row: {
           source: 'escalations',
           source_id: `${r.harness_slug}:${r.phase}`,
-          harness_slug: r.harness_slug,
+          scope: r.harness_slug,
           excerpt: trunc(body),
           highlight: r.highlight,
           score: r.rank,
@@ -50,7 +50,7 @@ const escalations: SearchSource = {
       };
     });
   },
-  async embedding({ sql, query, workspaceId, harnessFilter, limit, qVec }): Promise<Listing> {
+  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, phase, escalation, supervisor_notes,
              1 - (body_embedding <=> ${qVec}::vector) AS sim,
@@ -60,7 +60,7 @@ const escalations: SearchSource = {
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_escalations
        WHERE workspace_id = ${workspaceId}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND body_embedding IS NOT NULL
     ORDER BY body_embedding <=> ${qVec}::vector
        LIMIT ${limit}
@@ -73,7 +73,7 @@ const escalations: SearchSource = {
         row: {
           source: 'escalations',
           source_id: `${r.harness_slug}:${r.phase}`,
-          harness_slug: r.harness_slug,
+          scope: r.harness_slug,
           excerpt: trunc(body),
           highlight: r.highlight,
           score: r.sim,
@@ -86,7 +86,7 @@ const escalations: SearchSource = {
 
 const brainstorm: SearchSource = {
   name: 'brainstorm',
-  async bm25({ sql, query, workspaceId, harnessFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, phase, content,
              ts_rank_cd(content_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -95,7 +95,7 @@ const brainstorm: SearchSource = {
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_brainstorm
        WHERE workspace_id = ${workspaceId}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND content_tsv @@ plainto_tsquery('english', ${query})
     ORDER BY rank DESC LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; phase: string; content: string; rank: number; highlight: string }>;
@@ -105,7 +105,7 @@ const brainstorm: SearchSource = {
       row: {
         source: 'brainstorm',
         source_id: `${r.harness_slug}:${r.phase}`,
-        harness_slug: r.harness_slug,
+        scope: r.harness_slug,
         excerpt: trunc(r.content),
         highlight: r.highlight,
         score: r.rank,
@@ -113,7 +113,7 @@ const brainstorm: SearchSource = {
       },
     }));
   },
-  async embedding({ sql, query, workspaceId, harnessFilter, limit, qVec }): Promise<Listing> {
+  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, phase, content,
              1 - (content_embedding <=> ${qVec}::vector) AS sim,
@@ -122,7 +122,7 @@ const brainstorm: SearchSource = {
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_brainstorm
        WHERE workspace_id = ${workspaceId}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND content_embedding IS NOT NULL
     ORDER BY content_embedding <=> ${qVec}::vector
        LIMIT ${limit}
@@ -133,7 +133,7 @@ const brainstorm: SearchSource = {
       row: {
         source: 'brainstorm',
         source_id: `${r.harness_slug}:${r.phase}`,
-        harness_slug: r.harness_slug,
+        scope: r.harness_slug,
         excerpt: trunc(r.content),
         highlight: r.highlight,
         score: r.sim,
@@ -204,7 +204,7 @@ const turns: SearchSource = {
 
 const decisions: SearchSource = {
   name: 'decisions',
-  async bm25({ sql, query, workspaceId, harnessFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, line_hash, verb, args, iso,
              ts_rank_cd(body_tsv, plainto_tsquery('english', ${query})) AS rank,
@@ -214,7 +214,7 @@ const decisions: SearchSource = {
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_decisions
        WHERE workspace_id = ${workspaceId}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND body_tsv @@ plainto_tsquery('english', ${query})
     ORDER BY rank DESC LIMIT ${limit}
     `) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; rank: number; highlight: string }>;
@@ -226,7 +226,7 @@ const decisions: SearchSource = {
         row: {
           source: 'decisions',
           source_id: `${r.harness_slug}:${r.line_hash}`,
-          harness_slug: r.harness_slug,
+          scope: r.harness_slug,
           excerpt: `[${r.iso}] ${trunc(body)}`,
           highlight: r.highlight,
           score: r.rank,
@@ -235,7 +235,7 @@ const decisions: SearchSource = {
       };
     });
   },
-  async embedding({ sql, query, workspaceId, harnessFilter, limit, qVec }): Promise<Listing> {
+  async embedding({ sql, query, workspaceId, scopeFilter, limit, qVec }): Promise<Listing> {
     const rows = (await sql`
       SELECT harness_slug, line_hash, verb, args, iso,
              1 - (body_embedding <=> ${qVec}::vector) AS sim,
@@ -245,7 +245,7 @@ const decisions: SearchSource = {
                ${HEADLINE_OPTS}) AS highlight
         FROM harness_shared.harness_decisions
        WHERE workspace_id = ${workspaceId}
-         AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+         AND (${scopeFilter}::text IS NULL OR harness_slug = ${scopeFilter})
          AND body_embedding IS NOT NULL
     ORDER BY body_embedding <=> ${qVec}::vector
        LIMIT ${limit}
@@ -258,7 +258,7 @@ const decisions: SearchSource = {
         row: {
           source: 'decisions',
           source_id: `${r.harness_slug}:${r.line_hash}`,
-          harness_slug: r.harness_slug,
+          scope: r.harness_slug,
           excerpt: `[${r.iso}] ${trunc(body)}`,
           highlight: r.highlight,
           score: r.sim,

@@ -65,7 +65,7 @@ export default defineTool({
       sql: ctx.tx,
       query: args.query,
       workspaceId: ctx.workspaceId ?? '',
-      harnessFilter: args.harness_slug ?? null,
+      scopeFilter: args.harness_slug ?? null,
       limit,
       mode,
       embedder,
@@ -85,7 +85,11 @@ export default defineTool({
           embedder_available: embedderAvailable,
           scope,
           total_hits: totalHits,
-          results: reranked,
+          // Map @papercusp/search's generic `scope` hit field back to the
+          // operator's domain `harness_slug` for the agent-facing output.
+          results: reranked.map(({ scope: hitScope, ...rest }) =>
+            hitScope ? { ...rest, harness_slug: hitScope } : rest,
+          ),
         }),
       }],
     };

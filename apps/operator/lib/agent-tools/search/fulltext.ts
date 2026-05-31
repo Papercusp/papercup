@@ -57,7 +57,7 @@ export default defineTool({
       sql: ctx.tx,
       query: args.query,
       workspaceId: ctx.workspaceId ?? '',
-      harnessFilter: args.harness_slug ?? null,
+      scopeFilter: args.harness_slug ?? null,
       limit,
       log: ctx.log,
     });
@@ -70,7 +70,7 @@ export default defineTool({
     const top = reranked.map((r) => ({
       source: r.source,
       source_id: r.source_id,
-      ...(r.harness_slug ? { harness_slug: r.harness_slug } : {}),
+      ...(r.scope ? { harness_slug: r.scope } : {}),
       excerpt: r.excerpt,
       highlight: r.highlight,
       rank: r.score,
