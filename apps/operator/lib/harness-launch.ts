@@ -1,11 +1,13 @@
 /**
  * launchRun — spawn the TS orchestrator entry for a project, detached.
  *
- * The canonical path. The bash `run.sh` remains on disk as a function
- * library for legacy sourcing call sites (`invokeScoperBackground`
- * etc.) but is no longer the iteration driver. The previous
- * `bash run.sh` invocation is preserved under
- * `PAPERCUSP_USE_TS_ORCHESTRATOR=0` for emergency rollback only.
+ * The canonical and only path. The bash `run.sh` has been retired
+ * entirely (deleted 2026-05-30): its iteration-driver role ended
+ * 2026-05-08 when the TS orchestrator became the sole loop, and its
+ * remaining function-library call sites (`invokeScoperBackground`,
+ * expert-dispatcher, `/harness/:slug/invoke`) were ported onto the
+ * orchestrator's `invoke-once.ts`. `PAPERCUSP_USE_TS_ORCHESTRATOR=0` is
+ * no longer honored — there is no bash fallback to roll back to.
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 40 — Na carve-out unblocks the spawn cluster).
