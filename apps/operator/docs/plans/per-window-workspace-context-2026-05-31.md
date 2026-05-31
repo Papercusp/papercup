@@ -1,7 +1,7 @@
 ---
 title: Per-window workspace context — resolve workspace per request, not per process
 slug: per-window-workspace-context-2026-05-31
-status: draft
+status: active
 created: 2026-05-31
 updated: 2026-05-31
 owner: aviynw3@gmail.com
@@ -25,28 +25,27 @@ papercup → the Tests tab fell back to the generic 6-domain set (and on reload
 the `/adv` window flipped to `default`'s `sheets` harness). The window's URL said
 `?ws=papercusp-workspace`, but the backend ignored it.
 
-**Next action:** **Phase 0 research is done (P-003) and it reshapes the plan —
-a single human decision is now the only blocker (P-004, `needs-human`).** The
-D-006 feasibility research (2026-05-31) found the gate **splits by deployment
-mode**:
+**Next action:** **DECIDED by the owner (2026-05-31) — D-006 is settled (→ D-008);
+Phase A is in progress.** The architecture is fully determined:
 
-- **Dev mode is already one shared embedded-PG with RLS** (`HOME=~`, a single
-  `~/.papercusp/embedded-pg.json`; workspaces isolated only by the
-  `app.workspace_id` GUC). So the dev flapping is a *pure resolution-layer* bug —
-  **Phase A's ALS+header core fixes the exact symptom above with NO dependency on
-  D-006.** It is no longer gated.
-- **Packaged is process-per-workspace** (`workspaces_switch` → `kill_sidecar()` +
-  `app.restart()`; per-`HOME` → per-workspace PG). It already can't hold two
-  workspaces open at once. So D-006 is **packaged-only**, and narrower than first
-  written: *should packaged move to one shared embedded-PG (RLS) to gain
-  concurrent multi-workspace windows, or keep hard per-`HOME` process isolation?*
+- **One shared operator process + one shared embedded-PG** for *all* workspaces
+  (the locked "shared results" model from `harnesses-across-workspaces`). **No
+  per-workspace standing memory** — same footprint as today regardless of how many
+  windows/workspaces are open (vs the naive "N sidecars + N PGs" that the owner
+  explicitly ruled out).
+- **Credential isolation is preserved via per-spawn `HOME`, not per-process
+  `HOME`** (D-008): the operator stamps each child it spawns (`claude`/`git`/pty)
+  with `HOME=~/.papercusp-workspaces/<ws>/`, so workspace creds stay isolated on
+  the per-task children you already pay for — zero extra heap.
+- **Each window/request carries its workspace** (`x-papercusp-workspace` header →
+  ALS) so harness resolution + PG scoping become per-request.
 
-So the human decision (P-004) is: ratify **D-001** (stream transport) + the
-**packaged-only D-006 fork** (recommendation: **Go** — the schema already targets
-shared-DB-RLS; honest cost is credential isolation, see D-006) + **D-004** authz
-(low-risk for loopback). **Phase A (the dev win) can start now; only the packaged
-Phase E waits on D-006.** The remaining Phase 0 audit (P-001) + stream spec
-(P-002) proceed in parallel.
+Building **Phase A** now — the dev-mode resolution core that fixes the symptom
+above: workspace ALS (P-010) + inner-Hono middleware (P-011) + `activeWorkspaceId()`
+flip (P-012) + frontend header (P-013). Settled sub-decisions: D-001 stream
+transport = extend `IpcEventSource` with a `headers` option; D-004 authz =
+loopback-fine for now; D-007 = hard-error on an unknown header. The packaged
+child-`HOME` migration is Phase E.
 
 ## Background
 
@@ -191,7 +190,12 @@ to prevent *acting* in a workspace you shouldn't.) Low-risk for loopback desktop
 Keep it as the default a *new* window opens into and the workspace background jobs
 use when not told otherwise. Stop making it authoritative for request resolution.
 
-### D-006 — Sidecar/PG model: shared one-embedded-PG vs per-`HOME` per-workspace DB (go/no-go) `[needs-human]`
+### D-006 — Sidecar/PG model: shared one-embedded-PG vs per-`HOME` per-workspace DB (go/no-go) `[decided: Go]`
+
+**RESOLVED by the owner 2026-05-31 → Go (one shared operator + one shared
+embedded-PG). The credential-isolation cost is fully addressed by D-008
+(per-spawn `HOME`), and standing memory does NOT multiply per workspace — see
+D-008.** Original framing kept below for the record.
 
 **This gates the whole plan and must be answered first.** The schema is already
 shared-DB + RLS (one DB, many workspaces) — which *enables* the goal. But packaged
@@ -231,6 +235,33 @@ never silently fall back. Present-but-unknown is exactly the silent-corruption m
 this plan exists to kill (and is likely under packaged per-`HOME`, where a sidecar
 only knows its own workspace).
 
+### D-008 — One shared operator + PG; isolate creds via per-spawn `HOME`, not per-process `HOME` `[decided]`
+Date: 2026-05-31
+
+**The owner's decision that settles D-006.** Run **one** shared operator process
+and **one** shared embedded-PG for all workspaces — never N. The thing whose
+memory must not multiply is the operator heap + its PG; that stays single-instance,
+so standing memory is the same as today no matter how many windows/workspaces are
+open (the owner explicitly rejected the "N sidecars + N PGs" shape).
+
+Filesystem **credential isolation** (`~/.claude`, `~/.gitconfig`, `~/.papercusp`)
+is *kept*, but it moves from the operator's process-wide `HOME` to **each child the
+operator spawns**: when the operator launches `claude`/`git`/a pty for workspace
+`X`'s work, it sets *that child's* `HOME = ~/.papercusp-workspaces/X/` (the path is
+`workspaces.rs::workspace_dir(id)`; the operator already has
+`PAPERCUSP_WORKSPACES_ROOT`). The children are short-lived per-task processes you
+spawn anyway, so isolation costs **zero extra heap**. Rationale: isolation was only
+ever an env var on a process tree (`main.rs:645` — children inherit the sidecar's
+`HOME`), not a property of the operator being a separate heap.
+
+Consequences (Phase E): (1) spawn paths set the child `HOME` from the job's
+workspace rather than inheriting the process `HOME`; (2) the operator's own direct
+`~/.claude` / `~/.papercusp` reads become **workspace-scoped** (compute the path,
+or read from workspace-scoped PG — the direction the locked "config is
+workspace-owned, in PG" decision already set); (3) embedded-PG discovery resolves
+the **one** shared instance. Memory footprint vs alternatives is the table in the
+owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**.
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `todo` Enumerate every `activeWorkspaceId()` reader (492 sites) +
@@ -254,7 +285,7 @@ only knows its own workspace).
   packaged is process-per-workspace (switch = `kill_sidecar()` + `app.restart()`).
   Finding + recommendation (**Go** for packaged) folded into D-006; the go/no-go
   *decision* is the human's, tracked as P-004. → D-006
-- **P-004** `needs-human` Ratify the open decisions with the owner before any packaged work: stream transport (extend IpcEventSource vs ?ws= on connect), the packaged go/no-go (recommendation Go — one shared embedded-PG; honest cost is credential isolation), authz posture, and unknown-header error semantics. Phase A's dev win is NOT blocked on this. → D-001 D-004 D-006 D-007 importance: high
+- **P-004** `done` Owner ratified the open decisions (2026-05-31): D-006 = Go (one shared operator+PG) with creds isolated via per-spawn HOME (D-008); D-001 = extend IpcEventSource with a headers option; D-004 = loopback-fine for now; D-007 = hard-error on unknown header. → D-001 D-004 D-006 D-007 D-008
 
 ## Phase A — Request-scoped workspace context + stream transport (the core)
 
@@ -312,13 +343,26 @@ only knows its own workspace).
   that bypass `withWorkspace` for missing scoping now the workspace varies
   per-request.
 
-## Phase E — Implement the D-006 decision (packaged data model)
+## Phase E — Packaged: one shared operator+PG + per-spawn `HOME` (D-006=Go / D-008)
 
-- **P-050** `todo` Implement the D-006 outcome. If **Go**: make packaged use one
-  shared embedded-PG with RLS and stop per-`HOME` PG isolation (one source of
-  truth; enables multiple workspaces open at once; aligns with
-  `harnesses-across-workspaces`). If **No-go**: revise the plan's goal/mechanism.
-  (This is implementation of a Phase-0 decision, not a deferred reconciliation.)
+- **P-050** `todo` Packaged uses **one** shared embedded-PG with RLS; stop the
+  per-`HOME` per-workspace PG split and the switch=restart model
+  (`main.rs:1016`). One source of truth; multiple workspaces open at once; aligns
+  with `harnesses-across-workspaces`. blocked-by: P-051
+- **P-051** `todo` **Per-spawn `HOME` (D-008):** every operator-spawned child
+  (`claude`/`codex`/`git`/pty/orchestrator agent spawns) gets
+  `HOME = workspace_dir(jobWorkspace)` from the job/request workspace, not the
+  inherited process `HOME`. Touchpoints: orchestrator spawn-env, `harness-launch`,
+  `pty.rs`, the Rust spawn paths in `main.rs`. This is what preserves credential
+  isolation under one shared process.
+- **P-052** `todo` Audit the operator's own direct `os.homedir()` / `~/.claude` /
+  `~/.papercusp` reads (non-spawn, request-path) → make them workspace-scoped
+  (compute `workspace_dir(ws)` or read workspace-scoped PG), so the shared process
+  resolves the right workspace's creds/config. Pairs with the locked
+  "config-in-PG" decision.
+- **P-053** `todo` Multi-window: the desktop shell can open >1 webview window,
+  each pinned to a workspace (the single-window assumption in `papercusp-desktop`
+  is replaced). Switching a window's workspace restarts nothing.
 
 ## Phase F — Tests + regression guard
 
@@ -334,8 +378,11 @@ only knows its own workspace).
 - **Stream transport (D-001)** — the must-fix; `EventSource`/`IpcEventSource` can't
   carry headers, so SSE/WS need the extend-or-`?ws=` channel or the symptom
   persists on the primary sync path.
-- **Sidecar/PG fork (D-006)** — the feasibility gate; shared-DB-RLS enables the
-  goal, per-`HOME` PG blocks it. Resolve first.
+- **Sidecar/PG fork (D-006)** — RESOLVED → Go (one shared operator+PG; D-008).
+  Credential isolation kept via per-spawn `HOME` (no per-workspace standing
+  memory). Residual risk is purely execution: every spawn path (incl. `pty.rs`
+  + the Rust spawns) must set the child `HOME`, or a child silently reads the
+  shared home's creds — P-051's audit + a guard are the net.
 - **Auth (D-004)** — header spoofable; RLS prevents leaks (wrong ws → empty) but
   not unauthorized *action*. Gate before any non-loopback exposure.
 - **ALS context loss** — across async detach points the workspace can silently fall
