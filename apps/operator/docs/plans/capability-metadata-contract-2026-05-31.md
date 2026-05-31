@@ -1,7 +1,7 @@
 ---
 title: One capability-metadata contract — unify palette/voice/shortcut commands with the agent (MCP) tool catalog
 slug: capability-metadata-contract-2026-05-31
-status: draft
+status: active
 created: 2026-05-31
 updated: 2026-05-31
 owner: avi@storewolf.com
@@ -12,9 +12,9 @@ related: [agent-action-registry-plan-2026-05-03, tooldef-auth-rfc-2026-05-31, pa
 
 ## Now
 
-**State:** DRAFT for human review. Proposes a single declarative **`Capability`** descriptor that the command palette, voice, keyboard shortcuts **and** the agent/MCP catalog all project from — unifying at the **metadata + projection** layer, *not* by merging the two definition systems (a hard merge would re-couple the host-agnostic `@papercusp/tooldef` to the browser/DOM, the opposite of where the shared-repo extraction `papercusp-tooldef-extraction-2026-05-29` is heading). Grounded in current code: two separate registries exist today — the **Action Registry** (`apps/operator/lib/commands/`, 41 commands/queries, only 6 in the palette) and the **tooldef/endpoint system** (`packages/tooldef` + `apps/operator/lib/agent-tools/`, ~96 MCP tools). They share no definition substrate; the only seam is the single `/api/agent-mcp/run-command` bridge endpoint.
+**State:** ACTIVE — rev 2, folding in an independent review (verified against code). The thesis holds and is affirmed: unify the **descriptor + projection**, keep **two execution providers** discriminated by `runsIn`, and never merge browser concerns into the now-extracted host-agnostic `@papercusp/tooldef`. Rev 2 fixes a real bug the review caught — §4 had conflated the **persona/surface** axis (`agents`) with principal **RBAC** (`auth.roles`), the exact conflation D-003's cited RFC decision D-E forbids — and replaces P-004's "browser-safe subset" hand-wave with an explicit palette-execution safety filter (must-fix #1/#3). Direction ratified by avi; implementation started.
 
-**Next:** human ratifies the direction (P-001 gate) — specifically OQ-1 (final end-state: conform-to-shared-contract vs. full merge vs. leave-separate) and the gating-reconciliation call (OQ-2). Resolving P-001 unblocks Phase 1, whose headline payoff (P-004: the palette surfaces the whole agent tool catalog) is achievable read-only without touching either registry's definitions.
+**Next:** an agent (in flight) lands P-002 (the `Capability` type, operator-host first) → P-011 (safety filter) → P-003 (read-only adapter) → P-004 (palette surfaces the catalog) → P-005 (verify). The only `needs-human` left is P-009 (Phase-3 end-state / OQ-1) — deliberately deferred; Phase 1 does not depend on it.
 
 ## 1. Problem (grounded in code)
 
@@ -22,11 +22,11 @@ Two parallel "invokable capability" registries have drifted apart:
 
 | | **Action Registry** (`lib/commands/`) | **tooldef / endpoint** (`defineTool`) |
 |---|---|---|
-| Shape | `CommandDef { id, kind, description, schema (zod), agents: AgentId[], browser: required\|optional\|none, concurrent, tier: reflexive\|delegation, paletteEntry?, handler }` (`lib/commands/types.ts`) | `defineTool({ capability, args (Standard Schema), guidance, handler })` → `ProjectedTool` (`packages/tooldef/src/define-tool.ts`) |
+| Shape | `CommandDef { id, kind, description, promptDescription?, schema (zod), agents: AgentId[], browser: required\|optional\|none, concurrent, tier, paletteEntry?, handler }` (`lib/commands/types.ts`) | `defineTool({ capability, args (Standard Schema), guidance, handler })` → `ProjectedTool` (`packages/tooldef/src/define-tool.ts`) |
 | Runs | **client-side** in the tab (mutates DOM / URL / nuqs; `browser:'required'`) | **server-side** (PG, gated, audited) |
-| Gating | `agents: AgentId[]` allowlist + `browser` gate | 8-gate dispatch stack: signature → default-deny → role-allowlist → capability → role-requirement → harness → quota → authorize → timeout (`dispatch-stack.ts`; see `tooldef-auth-rfc-2026-05-31`) |
+| Gating | `agents: AgentId[]` (surface/persona) allowlist + `browser` gate | 7-gate dispatch stack `default-deny → role-allowlist → capability → role-requirement → harness → quota → authorize`, then decorators `timeout / idle-watchdog / replay-buffer / ctx-bindings` → `invoke` (`dispatch-stack.ts`; RFC `tooldef-auth-rfc-2026-05-31`) |
 | Surfaces | ⌘K palette, keyboard shortcuts, voice (eleven/openai), mobile webhook | MCP (`papercusp-su` + in-app conversational agents) + HTTP routes |
-| Count | 41 registered; **6** carry `paletteEntry` | ~96 MCP tools (~190 `defineTool` call sites incl. routes) |
+| Count | 41 registered; **6** carry `paletteEntry` | ~96 MCP-exposed tools; ~190 `defineTool` tool files in `lib/agent-tools/` (HTTP route endpoints are a *separate* ~354 files) |
 | Discovery | `list({ kind:'command', agent:'palette' })` → `buildRegistryPaletteItems` | catalog built by importing `tools/**`; `tools/list` generated at startup |
 
 **The one existing seam:** `lib/endpoint-route/routes/agent-mcp/run-command.ts` is *itself* a `defineTool` endpoint that calls `runCommand()` and routes a command id to a live browser tab (`session-registry.deliver`). So an agent can reach Action-Registry commands only through that one generic bridge — never as first-class MCP tools. Conversely, the palette cannot see any of the ~96 tooldef tools.
@@ -35,105 +35,141 @@ Two parallel "invokable capability" registries have drifted apart:
 
 ## 2. The contract — `Capability`
 
-A single declarative descriptor. Identity, docs, schema, gating, and a **`runsIn` execution discriminator** that lets one record feed every surface without pretending a browser command can run server-side:
+A single declarative descriptor, split per D-002 into a **browser-free core** (lands in `@papercusp/tooldef`) and an **operator-host surface annotation** (`apps/operator/`). Identity, schema, gating, and a **`runsIn` execution discriminator** that lets one record feed every surface without pretending a browser command runs server-side. The review's fixes are folded in: two description fields (human vs model), `runsIn` 3-valued (no lossy binary), `concurrent`/`promptDescription` preserved, `destructive` + `tier` for the safety filter, and the two gating axes named per RFC D-E (`agentRoles` vs `auth.roles`).
 
 ```ts
-interface Capability {
-  id: string;                       // stable, namespaced: 'group:verb' (e.g. 'nav:settings', 'features:get')
-  title: string;                    // human label (palette / voice)
-  description: string;              // model-facing + palette subtitle (today: guidance.when on tooldef side)
-  keywords?: string;                // palette fuzzy-search hints
-  args: StandardSchemaV1;           // arg schema — Zod is a Standard Schema, so both sides reconcile (OQ-3)
+// ── Host-agnostic CORE (lands in @papercusp/tooldef; browser-free, D-002) ──
+interface CapabilityCore {
+  id: string;                  // 'group:verb' — 'features:get', 'nav:settings'
+  title: string;              // SHORT human label (palette row / voice)
+  description: string;        // SHORT human noun-phrase (palette subtitle)
+  agentDescription?: string;  // LONG model-facing/imperative (tooldef guidance.when; CommandDef.promptDescription)
+  args: StandardSchemaV1;     // Zod IS a Standard Schema — both sides already conform (OQ-3)
 
-  runsIn: 'server' | 'browser';     // THE discriminator. browser = reflexive UI (DOM/nuqs/session-bound);
-                                    // server = dispatch-stack handler. Generalizes today's `browser` field.
+  // 3-valued, mirrors CommandDef.browser exactly (the review's #4 — no lossy binary):
+  runsIn: 'server' | 'browser' | 'hybrid';
+  //   server  = dispatch-stack handler, no live tab (browser:'none')
+  //   browser = reflexive UI; needs a live tab; mutates DOM/nuqs (browser:'required')
+  //   hybrid  = server-canonical effect, updates a tab if present (browser:'optional', e.g. chat.dispatch)
 
-  // Which surfaces this capability appears on. Defaults derived from runsIn
-  // (server → mcp; browser → palette+voice+shortcut) but explicit-overridable.
-  surfaces?: {
-    palette?: { section: string; icon?: string };
-    voice?: boolean;
-    shortcut?: string;              // registry shortcut id (lib/shortcut-registry.ts)
-    mcp?: boolean;                  // exposed to agents as a first-class tool
-  };
+  concurrent?: 'allow' | 'queue' | 'deny';  // preserved from CommandDef; the provider honors it
+  destructive?: boolean;                      // irreversible / outward-facing (delete, kill, promote, send)
+  tier: 'low' | 'med' | 'high';              // RISK (capability-tiers.ts) — distinct from plan-item importance
 
-  gating: CapabilityGate;           // ONE gate model — see §4 (reuses the tooldef Principal/roles/auth)
-  tier: 'low' | 'med' | 'high';     // RISK tier (capability-tiers.ts), distinct from plan-item importance
+  gating: CapabilityGate;     // §4
+}
+
+interface CapabilityGate {
+  // PERSONA / SURFACE axis (today: CommandDef.agents + tooldef tool.roles). NEVER principal RBAC.
+  agentRoles?: string[];
+  // PRINCIPAL RBAC axis — RFC D-E disambiguated names, adopted from day one:
+  auth?: { roles?: string[]; capabilities?: string[]; trust?: TrustLevel };
+  // resource-level / ownership → the tooldef `authorize` PDP hook (unchanged).
+}
+
+// ── Operator-host EXTENSION (apps/operator; browser-only surface annotations, never in tooldef, D-002) ──
+interface CapabilitySurfaces {
+  palette?: { section: string; icon?: string; keywords?: string; confirm?: boolean };  // keywords lives HERE, not core
+  voice?: boolean;
+  shortcut?: string;          // registry shortcut id (lib/shortcut-registry.ts)
+  mcp?: boolean;              // first-class agent tool (default: runsIn !== 'browser')
 }
 ```
 
-Handlers are **not** unified — they're execution-context-specific and bound by the providing layer:
+Handlers are **not** unified — they're execution-context-specific, bound by the providing layer:
 - `runsIn:'server'` → a tooldef dispatch handler (existing `defineTool` handler).
-- `runsIn:'browser'` → an in-tab handler (existing Action-Registry `handler`), OR for a server capability surfaced in the palette, a thin "dispatch + toast result" shim.
+- `runsIn:'browser'` → an in-tab handler (existing Action-Registry `handler`).
+- `runsIn:'hybrid'` → both: server handler is canonical, a tab updates if present.
+- A *server* capability surfaced in the palette runs via a thin "dispatch + toast result" shim — **only** when it passes the §3 safety filter.
 
-This is the crux: **unify the descriptor + the projection; keep two execution providers.** The descriptor is the contract; `runsIn` says who can execute it and via which path.
+The crux: **unify the descriptor + projection; keep two execution providers.** The descriptor is the contract; `runsIn` says who executes it and via which path.
 
-## 3. Projection model (surface-aware)
+## 3. Projection model (surface-aware) + the palette safety filter
 
-One catalog of `Capability` records; each surface selects + binds its own subset:
+One catalog of `Capability` records; each surface selects + binds its own subset, gated **at projection time** (a capability the principal can't invoke never appears) **and** again at dispatch (defense in depth).
 
-- **MCP / agents** — select `surfaces.mcp` (default: all `runsIn:'server'`, plus `runsIn:'browser'` ones explicitly opted-in, which dispatch via the existing `run-command` tab bridge). Gated by the dispatch stack. *No change to how agents see server tools today — this is the same projection, just reading the unified descriptor.*
-- **Command palette** — select `surfaces.palette`. **Both** `runsIn` kinds appear: browser ones run their in-tab handler; server ones run via a `dispatch + toast` shim (reusing the agent dispatch path). This is the headline win — Ctrl+P becomes a real command surface over *everything* the current principal may invoke, Linear/Raycast/VS-Code-style, instead of 6 nav entries.
-- **Voice / shortcuts** — select `surfaces.voice` / `surfaces.shortcut`; unchanged execution, now reading the same descriptor.
+- **MCP / agents** — select `surfaces.mcp` (default: `runsIn !== 'browser'`; a `browser` cap opts in explicitly and dispatches via the existing `run-command` tab bridge). *No change to how agents see server tools today — same projection, reading the unified descriptor.*
+- **Voice / shortcuts** — select `surfaces.voice` / `surfaces.shortcut`; unchanged execution.
+- **Command palette** — select `surfaces.palette`. Browser caps run their in-tab handler. **Server caps are admitted only through an explicit safety filter** (the review's must-fix #1 + #3 — "principal-allowed + simple-arg" is *not* "safe to fire one keystroke away with a toast"):
 
-Gating is enforced **per surface at projection time** (a tool the principal can't invoke never appears in their palette), and again at dispatch (defense in depth).
+  A server capability is **palette-executable as fire-and-toast** iff:
+  `principal passes gating` ∧ `surfaces.palette set` ∧ `¬destructive` ∧ `tier ≤ med` ∧ `¬streaming` ∧ `¬interactive(askUser)` ∧ `simple-arg` (zero args, or scalar args with defaults).
+  - A cap that fails **only** on `destructive`/`tier:high` is **shown but requires a confirm step** (`surfaces.palette.confirm`) — never fire-and-toast.
+  - **Streaming** and **interactive (`askUser`)** caps are **excluded from the palette in Phase 1** — the dispatch+toast shim can't host the `ctx` decorators (`replay-buffer`, the `askUser` card seam) those tools rely on. (Hosting them is a Phase-2+ possibility, not a Phase-1 promise.)
+  - **Complex-arg** caps (object/array args) are excluded until the palette grows an arg-prompt step (Phase 2+).
 
-## 4. Gating reconciliation
+## 4. Gating reconciliation (axis-correct)
 
-The two systems gate differently; the contract must pick one model. Recommendation: **reuse the tooldef auth model** just shipped in `tooldef-auth-rfc-2026-05-31` (Principal + `roles` (RBAC) + `capabilities` + `trust` + the `authorize` PDP hook), and express the Action Registry's `agents: AgentId[]` allowlist as a `roles`/`capabilities` requirement. That RFC already flagged the exact reconciliation needed here (its decision D-E: principal RBAC `roles` vs. the agent-persona `tool.roles` axis are distinct and must stay distinct). `CapabilityGate` = the tooldef requirement shape; the browser-execution provider enforces the same gate before running an in-tab handler. Open: OQ-2 below.
+One gate model: the **shipped** tooldef auth model (`tooldef-auth-rfc-2026-05-31`, status `shipped` — `Principal` with roles/capabilities/trust, the `authorize` PDP hook, `tool_authz_log`). Two axes, kept distinct per that RFC's decision D-E:
+
+- **Persona/surface axis** — `gating.agentRoles` (+ the `surfaces` annotation). The Action Registry's `agents: AgentId[]` maps **here**: its UI members (`palette`/`voice`/`shortcut`) → `surfaces.*`; its conversational members (`oracle`/`operator`/`pi`) → those agents' tool allowlists. **This is NOT principal RBAC.** (Rev 1's §4 said "express `agents` as principal roles/capabilities" — wrong; that committed the exact D-E conflation. Fixed.)
+- **Principal RBAC axis** — `gating.auth.{roles,capabilities,trust}`, matched against the invoking `Principal`. This is where "who is allowed" lives.
+- **Resource/ownership** — the existing `authorize` hook, unchanged.
+
+What `Principal` is a human pressing Ctrl+P? See **D-004** — it's the real Phase-1 gate (OQ-2), resolved below; OQ-1 (end-state) is deferred.
 
 ## 5. Phasing (strictly additive)
 
-Nothing is ripped out on day one. Each phase is independently shippable and reversible.
+Nothing is ripped out on day one; each phase is independently shippable and reversible. Phase 1 lives entirely in the operator host — the `Capability` type and adapter land in `apps/operator/lib/capabilities/` first; lifting the host-agnostic core into `@papercusp/tooldef` (D-002) is a later, coordinated step (the tooldef drift-sync discipline: any `packages/tooldef` edit must propagate to `Papercusp/tooldef` + bump Restart's pin).
 
 ## Phase 1 — Read-only projection unification (high value, low risk)
 
-- **P-001** `needs-human` Ratify direction before building: approve §2 contract shape + the "unify projection, keep two execution providers" stance, and pick OQ-1's end-state. importance: high
-- **P-002** `todo` Define the `Capability` descriptor type. Host-agnostic core in `@papercusp/tooldef` (id/title/description/keywords/args/runsIn/gating/tier); browser-only surface annotations (`surfaces.palette/voice/shortcut`) as an operator-host extension type. blocked-by: P-001 → D-002
-- **P-003** `todo` Build a read-only adapter that projects BOTH existing registries into `Capability[]`: tooldef catalog → `runsIn:'server'`; `lib/commands` defs → `runsIn:'browser'` (map `paletteEntry`→`surfaces.palette`, `browser`→`runsIn`). No definitions move. blocked-by: P-002
-- **P-004** `todo` Palette surfaces the agent tool catalog: extend `GlobalCommandPalette`/`buildRegistryPaletteItems` to read the unified `Capability[]`, list the principal-gated, browser-safe (no-arg / simple-arg) subset of tooldef tools, execute via the agent dispatch path + toast the result. blocked-by: P-003
-- **P-005** `todo` Verify: gating is honored at projection (a tool the principal can't invoke is absent from the palette); no regression to the existing 6 palette commands, voice, or shortcuts. blocked-by: P-004
+- **P-001** `done` Ratify direction + resolve the palette Principal. Direction ratified by avi ("fold it in, start proceeding"); the persona-vs-RBAC axis mapping + palette Principal are settled in D-004. (OQ-1 end-state intentionally deferred to P-009.) importance: high → D-004
+- **P-002** `wip` Define the `Capability` type — `CapabilityCore` + `CapabilityGate` + `CapabilitySurfaces` — in `apps/operator/lib/capabilities/types.ts` (operator-host first; core lifts into `@papercusp/tooldef` later, coordinated). → D-002
+- **P-011** `todo` Implement the palette-execution safety filter from §3 (`destructive`/`tier`/streaming/interactive/arg-shape) + `getPalettePrincipal()` per D-004, with unit tests. blocked-by: P-002 → D-004
+- **P-003** `todo` Read-only adapter projecting BOTH registries into `Capability[]`: tooldef catalog → `runsIn:'server'`; `lib/commands` defs → `runsIn` from `browser` (`required`→browser, `none`→server, `optional`→hybrid), `paletteEntry`→`surfaces.palette`, `agents`→`agentRoles`/`surfaces`, `promptDescription`→`agentDescription`. No definitions move. blocked-by: P-002
+- **P-004** `todo` Palette surfaces the agent tool catalog: `GlobalCommandPalette` reads the unified `Capability[]`, lists the §3-eligible, principal-gated server caps (confirm-gated for destructive/tier:high), executes via the dispatch+toast shim. blocked-by: P-003, P-011
+- **P-005** `todo` Verify: gated/destructive/streaming/interactive tools behave per §3 (absent, or confirm-gated, never fire-and-toast); existing 6 palette commands + voice + shortcuts unaffected; human invocations audit as the human Principal and consume no agent quota (D-004). blocked-by: P-004
 
 ## Phase 2 — Authoring convergence (opt-in annotations)
 
-- **P-006** `todo` Add optional `surfaces` annotations to `defineTool` (so a server tool opts into the palette/voice in its own definition, replacing the read-only mapping for migrated tools). blocked-by: P-001
-- **P-007** `todo` Add `runsIn` + a `gating` field expressible in tooldef terms to Action-Registry `CommandDef` (reconcile `agents: AgentId[]` → roles/capabilities per §4). blocked-by: P-001 → D-003
-- **P-008** `todo` Collapse the parallel description/keyword metadata (`paletteEntry` vs `guidance`) onto the single descriptor's fields. blocked-by: P-006, P-007
+- **P-006** `todo` Add optional `surfaces` annotations to `defineTool` (a server tool opts into palette/voice in its own definition, replacing the read-only mapping for migrated tools). blocked-by: P-001
+- **P-007** `todo` Add `runsIn` + `CapabilityGate` to Action-Registry `CommandDef`; complete the `agents`→`agentRoles`/`surfaces` reconciliation per §4 (resolve OQ-2's remaining mechanics for the conversational members). blocked-by: P-001 → D-003, D-004
+- **P-008** `todo` Collapse parallel metadata onto the descriptor — keep **two** description fields (`description` human, `agentDescription` model); do NOT fold `guidance.when` into the human subtitle (the review's #5). blocked-by: P-006, P-007
+- **P-012** `todo` Palette arg-prompt + streaming/`askUser` hosting so complex-arg / interactive / streaming caps become palette-eligible (lifts the Phase-1 §3 exclusions). blocked-by: P-004
 
 ## Phase 3 — One substrate (decision-gated)
 
-- **P-009** `needs-human` Decide the end-state for browser-reflexive commands: (a) keep `lib/commands` as a registered **browser-execution provider** that conforms to the shared `Capability` contract, or (b) fold them into a single registry in the operator host. importance: high → D-001, OQ-1
-- **P-010** `todo` Execute the chosen end-state; delete the now-redundant path (the `run-command` bridge may generalize or retire — OQ-4). blocked-by: P-009
+- **P-009** `needs-human` Decide the end-state for browser-reflexive commands: (a) keep `lib/commands` as a registered **browser-execution provider** conforming to the shared `Capability` contract, or (b) fold them into one operator-host registry. importance: high → D-001, OQ-1
+- **P-010** `todo` Execute the chosen end-state; retire the now-redundant path (the `run-command` bridge may generalize or retire — OQ-4). blocked-by: P-009
 
 ## Decisions
 
 ### D-001 — Unify at the projection layer, not by merging registries
 Date: 2026-05-31
-The two systems model genuinely different execution contexts: Action-Registry commands run in the browser tab (touch `window`/nuqs/DOM, need a live session); tooldef tools run server-side, gated and audited. A hard merge into one registry+handler is rejected because it would force browser concerns into `@papercusp/tooldef`, which is being deliberately extracted to a **host-agnostic shared repo** (`papercusp-tooldef-extraction-2026-05-29`, `BRIEF-tooldef-shared-repo-2026-05-30`) and consumed by Restart. Unify the *descriptor + projection*; keep two execution providers discriminated by `runsIn`. (Recommendation pending P-001 ratification.)
+The two systems model genuinely different execution contexts: Action-Registry commands run in the browser tab (touch `window`/nuqs/DOM, need a live session); tooldef tools run server-side, gated and audited. A hard merge into one registry+handler is rejected because it would force browser concerns into `@papercusp/tooldef`, which is extracted to a **host-agnostic shared repo** (`papercusp-tooldef-extraction-2026-05-29`, `BRIEF-tooldef-shared-repo-2026-05-30`) and consumed by Restart. Unify the *descriptor + projection*; keep two execution providers discriminated by `runsIn`. (Ratified by avi, rev 2.)
 
 ### D-002 — Contract core is host-agnostic; browser specifics are operator-host annotations
 Date: 2026-05-31
-The `Capability` core (id/title/description/keywords/args/runsIn/gating/tier) lives in `@papercusp/tooldef` so both hosts share it. Browser-only surface annotations (`surfaces.palette/voice/shortcut`) and the in-tab execution provider live in the operator host (`apps/operator/`), never in the shared package. This preserves the extraction goal: tooldef stays browser-free.
+The `CapabilityCore` (id/title/description/agentDescription/args/runsIn/concurrent/destructive/tier/gating) lives in `@papercusp/tooldef` so both hosts share it. Browser-only surface annotations (`CapabilitySurfaces` — palette/voice/shortcut, incl. `keywords`) and the in-tab execution provider live in the operator host, never in the shared package — preserving the extraction goal (tooldef stays browser-free). Phase 1 lands the type in `apps/operator` first; the core lifts into tooldef later under the drift-sync discipline.
 
 ### D-003 — Reuse the shipped tooldef auth model as the single gate
 Date: 2026-05-31
-Rather than invent a third gating model, `CapabilityGate` = the tooldef Principal/roles/capabilities/trust + `authorize` hook from `tooldef-auth-rfc-2026-05-31`. The Action Registry's `agents: AgentId[]` allowlist is re-expressed as roles/capabilities. Honors that RFC's D-E (principal RBAC `roles` ≠ agent-persona `tool.roles` — keep both axes distinct). (Mechanics pending OQ-2.)
+`CapabilityGate` = the tooldef `Principal` (roles/capabilities/trust) + `authorize` PDP hook from `tooldef-auth-rfc-2026-05-31` (status **shipped** — not vapor; live in `packages/tooldef/src/{types,authz,dispatch-stack}.ts`, 218 tests green). No third gating model is invented. Honors that RFC's D-E: the persona/surface axis (`agentRoles`) and principal RBAC (`auth.roles`) stay distinct — see D-004.
+
+### D-004 — The palette Principal, the axis mapping, and execution semantics
+Date: 2026-05-31
+Resolves OQ-2 — the actual Phase-1 gate (the review correctly re-ranked this ahead of OQ-1).
+1. **Palette Principal:** a human pressing Ctrl+P is a `Principal { kind:'user', trust: high (local, authenticated desktop session), auth.roles: <workspace-owner set> }`, produced once by `getPalettePrincipal()` (analogous to the shortcut-shim's `getBrowserCtx`, but yielding a real tooldef `Principal`).
+2. **Axis mapping (the bug fix):** `CommandDef.agents` / the `'palette'` `AgentId` is the **persona/surface** axis → maps to `gating.agentRoles` + `surfaces`, **never** to principal `auth.roles`. Rev-1 §4 conflated them; this forbids that.
+3. **Execution semantics:** human palette invocations **audit as the human Principal** in `tool_authz_log` and **consume no agent quota** (human-initiated; a separate human budget is optional, deferred). The dispatch+toast shim handles only non-streaming, non-interactive results; streaming/`askUser` caps are Phase-1-excluded (§3, P-011).
 
 ## Open questions
 
-- **OQ-1 — End-state (the headline call).** Conform-to-shared-contract (keep two registries, both implement `Capability`) vs. full merge into one operator-host registry vs. leave separate and only do the read-only palette projection (Phase 1 only). Recommendation: ship Phase 1, then choose between conform (b) and merge after seeing the adapter. → P-001, P-009
-- **OQ-2 — Gating reconciliation mechanics.** How exactly does `agents: ['palette','operator',…]` map onto principal `roles`/`capabilities`? Is there a default-allow for `runsIn:'browser'` palette commands (they're already user-initiated in the user's own tab) or must each carry an explicit gate? → §4, P-007
-- **OQ-3 — Schema unification.** tooldef uses Standard Schema; Action Registry uses raw Zod. Zod *is* a Standard Schema, so adoption is low-friction — but confirm the palette/voice arg-prompting paths don't depend on Zod-specific introspection. → P-002
-- **OQ-4 — Keep or generalize the `run-command` bridge.** Once server capabilities are palette-visible and browser capabilities are (optionally) MCP-visible, is the single `run-command` tab bridge still the right mechanism, or does it generalize into the projection layer? → P-010
+- **OQ-1 — End-state (deferred, NOT a Phase-1 gate).** Conform-to-shared-contract (both registries implement `Capability`) vs. full merge into one operator-host registry vs. stop after the read-only palette projection. Decide after Phase 1's adapter exists. → P-009
+- **OQ-2 — Gating mechanics (RESOLVED for Phase 1 by D-004).** Remaining for Phase 2: the precise mapping of the *conversational* `agents` members (`oracle`/`operator`/`pi`) onto agent tool-allowlists, and whether `runsIn:'browser'` palette caps default-allow (user-initiated in their own tab) or each carries an explicit `auth` gate. → P-007
+- **OQ-3 — Schema unification.** tooldef uses Standard Schema; Action Registry uses raw Zod. Zod *is* a Standard Schema, so adoption is low-friction — confirm the palette/voice arg paths don't depend on Zod-specific introspection. → P-002
+- **OQ-4 — Keep or generalize the `run-command` bridge.** Once server caps are palette-visible and browser caps are (optionally) MCP-visible, is the single tab bridge still right, or does it generalize into the projection layer? → P-010
 
 ## Scope / non-goals
 
-- **Non-goal:** changing how any agent currently invokes server tools — Phase 1 is a *read-side* re-projection; the MCP `tools/list` output is unchanged.
+- **Non-goal:** changing how any agent currently invokes server tools — Phase 1 is a *read-side* re-projection; MCP `tools/list` output is unchanged.
 - **Non-goal:** putting browser/DOM code into `@papercusp/tooldef`.
 - **Non-goal:** a new policy engine — gating reuses the existing tooldef PDP seam (D-003).
-- **In scope:** one descriptor, surface-aware projection, and the palette gaining the agent catalog.
+- **Non-goal (Phase 1):** one-keystroke execution of destructive / streaming / interactive / complex-arg server tools (§3 filter).
+- **In scope:** one descriptor, surface-aware projection with a safety filter, and the palette gaining the (safe subset of the) agent catalog.
 
 ## Verification
 
-- Phase 1: the palette lists principal-gated tooldef tools and executes them (result toasted); the existing 6 commands + voice + shortcuts unaffected; a tool the principal can't invoke is absent from the palette (projection-time gate) and rejected at dispatch (defense in depth). Unit tests for the adapter (both registries → `Capability[]`); a palette component test asserting a gated tool is hidden.
-- Phase 2/3: `tsc` clean; `npm run test:affected`; no duplicate metadata source remains for a migrated capability.
+- Phase 1: the palette lists §3-eligible, principal-gated tooldef tools and executes them (result toasted); a destructive/`tier:high` tool is confirm-gated (never fire-and-toast); a streaming/`askUser`/complex-arg tool is absent; a tool the principal can't invoke is absent (projection gate) and rejected at dispatch (defense in depth); the existing 6 palette commands + voice + shortcuts are unaffected; human invocations audit as the human Principal with no agent-quota consumption. Unit tests for the adapter (both registries → `Capability[]`) and the safety filter; a palette component test asserting a gated/destructive tool is hidden-or-confirm-gated.
+- Phase 2/3: `tsc` clean; `npm run test:affected`; no duplicate metadata source remains for a migrated capability; two description fields preserved end-to-end.
