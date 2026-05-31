@@ -1593,6 +1593,32 @@
   scrollbar-width: thin;
 }
 
+/* Inline agent chat (PlanChat) — opened from a card's 💬 Chat option, lives
+   inside the detail pane beneath the card (inbox-cards-unification D-006).
+   Bounded height so the ChatPanel (height:100%) renders its own scrolling
+   transcript instead of collapsing. */
+.pc-plan-chat-inline {
+  margin-top: 12px;
+  height: 360px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0a0a0a;
+}
+.pc-plan-chat-inline > .chat-panel {
+  flex: 1;
+  min-height: 0;
+}
+.pc-plan-chat-inline__note {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+
 /* Group is a plain wrapper (head card + rows below), matching the
    Sessions tab's group / group-content structure. */
 .pc-items__group {

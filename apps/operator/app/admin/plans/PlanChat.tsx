@@ -64,24 +64,20 @@ export default function PlanChat({ harnessSlug, label }: Props) {
 
   if (!harnessSlug) {
     return (
-      <div className="pc-plan-chat-inline pc-plans__placeholder">
+      <div className="pc-plan-chat-inline__note pc-plans__placeholder">
         This isn’t attached to a harness, so an agent chat can’t be opened here.
       </div>
     );
   }
   if (error) {
     return (
-      <div className="pc-plan-chat-inline pc-plans__placeholder pc-plans__placeholder--error">
+      <div className="pc-plan-chat-inline__note pc-plans__placeholder pc-plans__placeholder--error">
         Couldn’t start the chat: <code>{error}</code>
       </div>
     );
   }
   if (!chatId) {
-    return (
-      <div className="pc-plan-chat-inline pc-plans__placeholder">
-        {creating ? 'Starting chat…' : 'Starting chat…'}
-      </div>
-    );
+    return <div className="pc-plan-chat-inline__note pc-plans__placeholder">Starting chat…</div>;
   }
   return (
     <div className="pc-plan-chat-inline">
