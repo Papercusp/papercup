@@ -1,7 +1,7 @@
 ---
 title: Abstract Papercusp's reusable systems into standalone libraries — per-subsystem seams and the extraction backlog
 slug: papercusp-systems-abstraction-2026-05-29
-status: ready
+status: shipped
 created: 2026-05-29
 updated: 2026-05-30
 owner: avi@storewolf.com
@@ -19,28 +19,32 @@ and the order to do it in.
 
 ## Now
 
-**State:** Draft, **code-verified**. After the first draft, every Population-B
-component was re-audited against the actual source (one adversarial reader per
-component, hunting for the same mistake that bit the coord section). The audit
-**refuted this plan's original keystone** (old D-003: "they all reach PG via
-`withWorkspace()`/`inWorkspaceTxn()`, so one `WorkspaceStore` seam unlocks the
-cluster"). That is false. The code uses **five different DB-access mechanisms**
-across these subsystems (D-010), and two of them (locks, memory) cannot accept a
-shared transaction handle at all. What *did* survive: the subsystems are **not
-domain-coupled** — harness/feature/role nouns barely appear in their core logic,
-so they are still extractable; just each behind its **own** injection seam, not
-one shared one. Out of scope (other teams): endpoint/`defineTool`
-([[papercusp-tooldef-extraction-2026-05-29]]) and the chat system
-(`@restart/agent-chat` + `libs/papercup-shared/src/agent/chat-stream.ts`).
+**State:** **SHIPPED — code-verified 2026-05-30.** All 17 items (P-000…P-051)
+are done and were re-verified directly against the code (not docs/coord/memory):
+every claimed `@papercusp/*` package exists in `packages/`, is `private:true`, is
+symlinked into `node_modules`, and its operator consumers are rewired. All 12
+extracted-package test suites pass **with no live PG/desktop** (203 tests total:
+rrf 7, embedded-pg-discovery 6, plan-parser 13, rate-limit 8, ipc-framing 16,
+desktop-ipc 44, ipc-endpoint-server 22, search 9, coordination 46, locks 15,
+memory 6, backup 11) — confirming the in-memory conformance doubles (the P-050
+swappability gate) genuinely work detached. The original keystone correction still
+holds: no single `WorkspaceStore` seam (D-003 refuted) → five DB-access mechanisms
+→ each subsystem behind its **own** injection seam (D-010). Out of scope (other
+teams): endpoint/`defineTool` ([[papercusp-tooldef-extraction-2026-05-29]]) and
+the chat system (`@restart/agent-chat` + `chat-stream.ts`).
 
-**Next:** Phase 1 is **shipped** (P-002/P-003/P-022 — see Addendum) and P-001
-(the per-subsystem seam map) is **written** (final section). Phase 2 *code* work
-is now fully spec'd but gated on two things outside this plan: (1) the canonical
-checkout returning to `main` (it drifted onto `feat/psu-wrappers` during Phase 1),
-and (2) paperclip pausing, since the heavy moves (locks ~2.4K LOC, coordination
-~4.5K LOC) need a quiet checkout. Lowest-risk-first order once unblocked:
-`rate-limit` → `backup` → `ipc-framing`/`desktop-ipc` → `locks`/`coordination`/
-`search`/`memory`. P-000 (bundling) still needs a human but doesn't block.
+**Next:** Nothing blocking — the extraction plan is complete. Two optional,
+non-item follow-ups remain: (1) **P-023b** — delete the three `plans/{parser,
+effective-status,content-hash}.ts` re-export shims and point the ~10 operator
+importers at `@papercusp/plan-parser` directly (deferred during the paperclip
+window; the shims work, so this is cosmetic); (2) the opaque-session `auth.ts`
+follow-on noted under P-031 (lower priority). **Separately** (NOT part of this
+plan — see the new "Out of plan: @restart → @papercusp scope migration" note):
+many libs Papercusp consumes are still npm-scoped `@restart/*` (`@restart/db-org`
+×431, papergrid trio, `@restart/sync`, `@restart/ui-primitives`,
+`@restart/git-graph`, etc.) even though their submodule repos already live under
+`github.com/Papercusp/`. P-040 was packaging-only and deliberately did not rename
+scopes; the scope migration is its own initiative.
 
 ## Background
 
@@ -345,7 +349,7 @@ two SEPARATE storage components**, not one dual-backend interface:
   (i) **`@papercusp/ipc-framing` — DONE** (`775fb24e`): `framing.ts` (145 LOC, zero
   imports) → `packages/ipc-framing`, 16 tests, `endpoint-ipc/framing.ts` is a
   re-export shim (6 consumers unchanged). (ii) **`@papercusp/desktop-ipc` — DONE**
-  (`e8f2a1c7`): extracted the **whole** `lib/transport-adapters/` dir (13 files:
+  (`e6055e94`): extracted the **whole** `lib/transport-adapters/` dir (13 files:
   ipc-stream/ipc-fetch/ipc-event-source/desktop-bootstrap + http-stream +
   sse-parser + types + index picker), **74 tests** passing incl. jsdom-env ones.
   Corrected the earlier "extract only the 4 IPC files" note — that's NOT a clean
@@ -877,3 +881,41 @@ Addendum), and (2) paperclip is paused, since locks (~2.4K LOC) and coordination
 otherwise fragment. Lowest-risk first once unblocked: `rate-limit` → `backup` →
 the `ipc-framing`/`desktop-ipc` pair (all near-zero coupling), then the heavier
 `locks` / `coordination` / `search` / `memory`.
+
+## Out of plan — `@restart/*` → `@papercusp/*` npm-scope migration (separate initiative)
+
+**This plan does NOT migrate the `@restart/*`-scoped libraries to `@papercusp/*`.**
+Recorded here because it was asked (2026-05-30) and is a real, separate piece of
+work. Every shared-lib **submodule repo already lives under
+`github.com/Papercusp/`** (see `.gitmodules`) — so Papercusp already *owns the
+repos*. What is still split is the **npm package `name:` scope**: some libs were
+renamed to `@papercusp/*` (e.g. `@papercusp/sse`, commit `08cbdabd`; token-kit,
+host-platform, flags, docs-engine, file-claim) while a cluster remains `@restart/*`
+or unscoped. P-040 was explicitly *packaging-only* (private/README/version/desc)
+and never renamed scopes.
+
+Still `@restart/*` / unscoped (code-verified inventory, reference counts across the
+tree excl. node_modules):
+
+| Package | Location | Refs | Notes |
+|---|---|---|---|
+| `@restart/db-org` | `libs/papercusp/libs/db` | 431 | core org/PG layer — the big one |
+| `@restart/grid-core` / `grid` / `bloom-grid` | `libs/papergrid/*` | 52 / 8 / 3 | papergrid trio; root pkg is bare `papergrid` |
+| `@restart/papercup-shared` | `libs/papercup-shared` | 36 | shop-domain; `private:false` |
+| `@restart/sync` | `libs/sync` | 30 | sync transports |
+| `@restart/zero-harness` | `libs/zero-harness` | 23 | **on the Zero-retirement path — likely skip** |
+| `@restart/ui-primitives` | `libs/ui-primitives` | 18 | React primitives |
+| `@restart/git-graph` | `libs/git-graph` | 16 | git graph UI |
+| `@restart/agent-chat` | `libs/agent-chat` | 13 | **chat — owned by another team (D-001); `private:false`** |
+| `@restart/papercup-db` | `libs/papercup-db` | 9 | demo schema — **deletion candidate, skip** |
+| `@restart/embedded-postgres-server` / `pglite-server` / `zero-cache-server` | `libs/papercusp/packages/*` | 6 / 3 / 1 | embedded-pg infra |
+| `@restart/design-tokens` | (design-token spine) | 2 | |
+
+A scope rename is a per-submodule commit (rename `name`, bump internal deps) +
+every importer in the superproject + the `node_modules/@restart/*` symlinks + a
+superproject pointer bump per submodule — and submodule pushes need explicit
+sign-off (pins are local-only). Decisions needed before doing it: whether to
+include retirement-path (`zero-harness`) / deletion-candidate (`papercup-db`) /
+other-team (`agent-chat`) / shop-domain (`papercup-shared`) libs, or only the
+Papercusp-infra ones (`db-org`, papergrid, `sync`, `ui-primitives`, `git-graph`,
+embedded-pg infra). Tracked separately; not gating this (shipped) plan.
