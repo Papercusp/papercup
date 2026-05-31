@@ -54,22 +54,47 @@ type PlanDetailTab = 'editor' | 'revisions' | 'agents';
 
 // Additive filter model: item-status facet (OR within) AND plan-status
 // bucket facet (OR within). Each item maps to one item-status category.
-type ItemStatusFilter = 'needs-human' | 'todo' | 'blocked' | 'other';
-const ITEM_STATUS_IDS = ['needs-human', 'todo', 'blocked', 'other'] as const;
+type ItemStatusFilter =
+  | 'needs-human'
+  | 'todo'
+  | 'blocked'
+  | 'coord-escalation'
+  | 'coord-message'
+  | 'smoke-fail'
+  | 'plan-review';
+const ITEM_STATUS_IDS = [
+  'needs-human',
+  'todo',
+  'blocked',
+  'coord-escalation',
+  'coord-message',
+  'smoke-fail',
+  'plan-review',
+] as const;
+// The non-plan-item facets — each maps 1:1 to an AttentionItem kind from
+// the plans:attention reader (the "Other" surfaces, now split out).
+const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'plan-review'] as const;
+type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 /** Item-status filter toggles — the "Items" group. */
 const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
   { id: 'needs-human', label: 'Needs Human', hint: 'Items waiting on a human decision.' },
   { id: 'todo', label: 'ToDos', hint: 'Agent-actionable work — effective todo, all blockers cleared. Sorted by importance.' },
   { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
-  { id: 'other', label: 'Other', hint: 'Other surfaces needing attention — coord escalations, smoke-test failures, plans awaiting review, messages — that aren\'t plan items.' },
+  { id: 'coord-escalation', label: 'Escalations', hint: 'Agent escalations from the coord log — a decision is blocking progress.' },
+  { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
+  { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
+  { id: 'plan-review', label: 'Reviews', hint: 'Plans awaiting your review.' },
 ];
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'needs-human': 'Needs Human',
   todo: 'ToDos',
   blocked: 'Blocked',
-  other: 'Other',
+  'coord-escalation': 'Escalations',
+  'coord-message': 'Messages',
+  'smoke-fail': 'Smoke',
+  'plan-review': 'Reviews',
 };
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -216,11 +241,18 @@ export default function PlansClient() {
     () => (attention.data?.groups ?? []).flatMap((g) => g.items).filter((i) => i.kind !== 'plan-item'),
     [attention.data],
   );
-  // Show the Other section when its facet is active (or no item-status
-  // facet is selected = "all"). `onlyOther` hides the plan-item list so a
-  // bare "Other" selection isn't paired with an empty plan-item list.
-  const showOther = istatus.length === 0 || istatus.includes('other');
-  const onlyOther = istatus.length === 1 && istatus[0] === 'other';
+  // Split the active item-status facet into plan-item categories and the
+  // non-plan-item ("Other") kinds. Empty selection = show everything.
+  const otherFacets = useMemo(
+    () => istatus.filter((s): s is OtherKind => (OTHER_KIND_IDS as readonly string[]).includes(s)),
+    [istatus],
+  );
+  const planItemFacetCount = istatus.length - otherFacets.length;
+  // Show the Other section when no facet is selected, or an Other-kind facet
+  // is. Show the plan-item list when no facet is selected, or a plan-item
+  // facet is. (So a bare "Escalations" selection shows only Other items.)
+  const showOther = istatus.length === 0 || otherFacets.length > 0;
+  const showPlanItems = istatus.length === 0 || planItemFacetCount > 0;
 
   const istatusKey = istatus.join('|');
   const pBucketsKey = pBuckets.join('|');
@@ -243,15 +275,31 @@ export default function PlansClient() {
   // chip shows what selecting it would surface). Shrinks as you narrow
   // the plan buckets.
   const itemStatusCounts = useMemo(() => {
-    const acc: Record<ItemStatusFilter, number> = { 'needs-human': 0, todo: 0, blocked: 0, other: 0 };
+    const acc: Record<ItemStatusFilter, number> = {
+      'needs-human': 0,
+      todo: 0,
+      blocked: 0,
+      'coord-escalation': 0,
+      'coord-message': 0,
+      'smoke-fail': 0,
+      'plan-review': 0,
+    };
     for (const e of taggedItems) {
       if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
       acc[e.category] += 1;
     }
-    acc.other = otherItems.length;
+    for (const it of otherItems) {
+      if (it.kind in acc) acc[it.kind as ItemStatusFilter] += 1;
+    }
     return acc;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taggedItems, pBucketsKey, planBucketBySlug, otherItems]);
+
+  // Total across every facet — the Inbox button's badge.
+  const inboxTotal = useMemo(
+    () => Object.values(itemStatusCounts).reduce((a, b) => a + b, 0),
+    [itemStatusCounts],
+  );
 
   // The rail lists the plans that have matching items — a navigator +
   // per-plan filter (itemPlan) for the item list.
@@ -351,6 +399,18 @@ export default function PlansClient() {
     [leaveGuard, setSlug, istatus, setIstatus],
   );
 
+  // "Inbox" — jump to the items view with item-status filters cleared
+  // (active plan-status / harness filters stay). Closes any open plan +
+  // search + per-plan rail selection so the full cross-plan inbox shows.
+  const goInbox = useCallback(() => {
+    if (!leaveGuard()) return;
+    setPane('read');
+    setSlug(null);
+    void setQ(null);
+    void setIstatus([]);
+    void setItemPlan(null);
+  }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlan]);
+
   usePlanShortcuts({ navSlug, setQ, rail: railRef, search: searchRef });
 
   // P-007: dual-homed (/admin/plans + /adv?tab=plans). Fall back to the
@@ -393,6 +453,15 @@ export default function PlansClient() {
     <div className="pc-plans">
       <aside className="pc-plans__rail">
         <div className="pc-plans__rail-actions">
+          <button
+            type="button"
+            className="pc-plans__inbox-btn"
+            onClick={goInbox}
+            title="Open the Inbox — every item & attention surface across plans, with item filters cleared (plan filters stay)."
+          >
+            <span className="pc-plans__inbox-btn-label">Inbox</span>
+            {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
+          </button>
           <button
             type="button"
             className="pc-plans__new-plan"
@@ -444,34 +513,6 @@ export default function PlansClient() {
           <PlanBucketTabs plans={visiblePlans} query={q} searchHitSlugs={searchHitSlugs} />
         </div>
 
-        {/* ── ITEMS group — item-status filters (which item statuses show). ── */}
-        <div className="pc-plans__group">
-          <span
-            className="pc-plans__group-label"
-            title="Item-status filters — combine these (and the plan-status chips above) to narrow the item list."
-          >
-            Items
-          </span>
-          <nav className="pc-plans__views" aria-label="Item status filters">
-            {ITEM_FILTERS.map((f) => {
-              const active = istatus.includes(f.id);
-              return (
-                <button
-                  key={f.id}
-                  type="button"
-                  className={`pc-plans__view pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
-                  aria-pressed={active}
-                  onClick={() => toggleItemStatus(f.id)}
-                  title={f.hint}
-                >
-                  <span className="pc-plans__view-label">{f.label}</span>
-                  <span className="pc-plans__view-count">{itemsLoading ? '…' : itemStatusCounts[f.id]}</span>
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-
         <div className="pc-plans__list" aria-label="Plans with matching items">
           <PlanRail
             ref={railRef}
@@ -517,7 +558,28 @@ export default function PlansClient() {
             needsDecisionPlans={needsDecisionPlans}
           />
         ) : (
-          <>
+          <div className="pc-inbox">
+            {/* Item filters live here on the Inbox page (moved off the rail). */}
+            <nav className="pc-inbox__filters" aria-label="Inbox item filters">
+              {ITEM_FILTERS.map((f) => {
+                const active = istatus.includes(f.id);
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className={`pc-inbox__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
+                    aria-pressed={active}
+                    onClick={() => toggleItemStatus(f.id)}
+                    title={f.hint}
+                  >
+                    <span className="pc-inbox__filter-label">{f.label}</span>
+                    <span className="pc-inbox__filter-count">
+                      {itemsLoading ? '…' : itemStatusCounts[f.id]}
+                    </span>
+                  </button>
+                );
+              })}
+            </nav>
             {showOther ? (
               <PlanOtherList
                 groups={attention.data?.groups ?? []}
@@ -526,9 +588,10 @@ export default function PlansClient() {
                 refresh={attention.refresh}
                 title="Other"
                 subtitle={itemSubtitle}
+                kinds={otherFacets}
               />
             ) : null}
-            {!onlyOther ? (
+            {showPlanItems ? (
               <PlanItemsList
                 items={filteredItems}
                 loading={itemsLoading}
@@ -541,7 +604,7 @@ export default function PlansClient() {
                 subtitle={itemSubtitle}
               />
             ) : null}
-          </>
+          </div>
         )}
       </main>
     </div>

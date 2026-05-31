@@ -35,19 +35,26 @@ interface Props {
   refresh: () => void;
   title: string;
   subtitle: string;
+  /** When non-empty, show only these kinds (the active per-kind facets). */
+  kinds?: AttentionKind[];
 }
 
-/** Keep only the non-plan-item kinds; drop groups left empty. */
-function otherOnly(groups: AttentionGroup[]): AttentionGroup[] {
+/** Keep only the non-plan-item kinds (optionally narrowed to `allow`);
+ *  drop groups left empty. */
+function otherOnly(groups: AttentionGroup[], allowKinds: AttentionKind[]): AttentionGroup[] {
+  const allow = allowKinds.length ? new Set(allowKinds) : null;
   return groups
-    .map((g) => ({ ...g, items: g.items.filter((i) => i.kind !== 'plan-item') }))
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((i) => i.kind !== 'plan-item' && (!allow || allow.has(i.kind))),
+    }))
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, title, subtitle }: Props) {
+export default function PlanOtherList({ groups, loading, error, refresh, title, subtitle, kinds }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
 
-  const otherGroups = otherOnly(groups);
+  const otherGroups = otherOnly(groups, kinds ?? []);
   const allItems = otherGroups.flatMap((g) => g.items);
   const selItem = allItems.find((i) => i.id === selected) ?? null;
 
