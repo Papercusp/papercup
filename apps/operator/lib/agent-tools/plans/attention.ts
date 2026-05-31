@@ -27,14 +27,13 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
-import { resolveEffectiveStatus } from './effective-status';
 import {
-  planItemToAttention,
   coordEscalationToAttention,
   coordMessageToAttention,
   smokeFailToAttention,
   planReviewToAttention,
 } from '../../attention/adapters';
+import { planItemsToAttention } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
 import type { AttentionItem } from '../../attention/types';
 
@@ -84,26 +83,7 @@ export default defineTool({
     // 1. Plan items — non-terminal (todo/wip/blocked/needs-human).
     try {
       const plans = await readAllPlans({ includeArchived, ...opts });
-      for (const { parsed } of plans) {
-        if (parsed.isLegacy) continue;
-        const slug = parsed.frontmatter.slug ?? parsed.slug;
-        const resolved = resolveEffectiveStatus(parsed);
-        for (const it of resolved.items) {
-          if (it.storedStatus === 'done' || it.storedStatus === 'dropped') continue;
-          if (it.effectiveStatus === 'done' || it.effectiveStatus === 'dropped') continue;
-          items.push(
-            planItemToAttention({
-              slug,
-              harnessSlug: harnessFilter,
-              id: it.id,
-              text: it.text,
-              storedStatus: it.storedStatus,
-              effectiveStatus: it.effectiveStatus,
-              importance: it.importance,
-            }),
-          );
-        }
-      }
+      items.push(...planItemsToAttention(plans, harnessFilter));
     } catch {
       /* best-effort */
     }
