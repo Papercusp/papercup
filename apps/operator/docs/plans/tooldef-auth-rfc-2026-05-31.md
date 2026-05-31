@@ -23,6 +23,15 @@ external survey (§2) stands; the corrections are about *current state* and *seq
 and implement it, coordinated with the agent developing tooldef. Phases 2–3 are gated on
 the open decisions (§7). Not committed into `Papercusp/tooldef` — coordinated via the peer.
 
+**Progress (2026-05-31):** Phase 1 **contract shipped** — `packages/tooldef/src/authz.ts`
+(`AuthzQuery`/`AuthDecision`/`PolicyDecisionPoint`/`AuthAuditEvent` + the `ownerOnly()`
+in-proc PDP helper), exported from index. Additive, uses the *current* `Principal`, touches
+no dispatch/Principal code. tsc 0 new errors; tooldef 202/202 green. **Phase 1b** (the
+dispatch-stack enforcement `DispatchStep` that runs a tool's `authorize` after the existing
+gates + the `GateBypass.policy` composition) is **gated on D-F + the tooldef owner's review
+of where the step sits in the stack** — not yet wired, so no tool's `authorize` runs yet.
+**Sync to `Papercusp/tooldef` owed** (the peer owns that sync; not pushed by me).
+
 ## 1. Framing (honest)
 
 **This is "make tooldef's authZ general enough to serve multiple hosts (incl. Restart)
