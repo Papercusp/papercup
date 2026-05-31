@@ -20,13 +20,18 @@ and is the config/settings boundary; **results are shared** by slug. This
 collapses the hardest migration (no per-harness data fork) and makes "different
 prompts per workspace on the same harness" fall out of the workspace-owned config.
 
-**Next:** ALL decisions locked — D-1 (shared results), D-4 (shared-PG; retire
-per-workspace-PG + pglite), D-6 (seed-from-repo + reset-to-default UX), D-7
-(workspace-owned config). Ready to scope/build per §6. Net shape: one
-embedded-pg per install, RLS-scoped by workspace; a harness = a linked folder
-that can belong to N workspaces; each workspace owns config (3-tier) + settings;
-run data is shared by slug. The big new work item D-4 adds: the desktop
-PG-consolidation (one embedded-pg + RLS-per-request instead of restart-per-switch).
+**Next:** ALL decisions locked. Implementation underway (autonomous loop,
+commit-frequent, additive-first):
+- ✅ Phase 1 migration 091 (slug uniqueness → composite); applies on next boot.
+- ✅ Phase 3 membership: `lib/harness-membership.ts` (add/remove/move, 12/12 tests)
+  + HTTP endpoints (`GET /harness/:slug/workspaces`, `POST /harness/:slug/membership`).
+- ✅ Phase 1b store: `lib/harness-prompt-overrides.ts` (PG store + CRUD, live-verified).
+- TODO next: Phase 1b resolver (3-tier) + D-6 seed/reset + orchestrator read-repoint;
+  Phase 1 `project_id`; Phase 2 `(workspace,slug)` addressing; Phase 2b desktop
+  PG-consolidation (needs user verification); Phase 4 UX.
+Net shape: one embedded-pg per install, RLS-scoped by workspace; a harness = a
+linked folder in N workspaces; each workspace owns config (3-tier) + settings;
+run data shared by slug.
 
 ---
 
