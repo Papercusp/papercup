@@ -83,7 +83,11 @@ describe('pluginSpawnImpl — happy path', () => {
     vi.stubEnv('BASE_VAR', 'base');
     const p = pluginSpawnImpl('repomix', ['--x', 'y'], { cwd: '/work', env: { EXTRA: '1' } });
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    const [bin, args, opts] = spawnMock.mock.calls[0] as [string, string[], Record<string, unknown>];
+    const [bin, args, opts] = spawnMock.mock.calls[0] as unknown as [
+      string,
+      string[],
+      Record<string, unknown>,
+    ];
     expect(bin).toBe('repomix');
     expect(args).toEqual(['--x', 'y']);
     expect(opts.cwd).toBe('/work');
