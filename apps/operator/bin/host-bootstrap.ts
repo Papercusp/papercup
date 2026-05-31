@@ -23,7 +23,6 @@ import { ensureWaveAdvanceSweep } from '../lib/harness/wave-advance-sweep-live';
 import { registerAllExpirables } from '../lib/expirable-registrations';
 import { startMobileVoiceWs } from '../lib/device-voice-ws';
 import { startPushCredentialRefresher } from '../lib/device-push-credentials';
-import { startMobileInterventionWatcher } from '../lib/device-intervention-watcher';
 import { ensureMobileDevicesTable } from '../lib/ensure-schema';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
@@ -72,7 +71,9 @@ export function runBootstrap(): void {
   startAutoLoopOnce();
   startMobileVoiceWs();
   startPushCredentialRefresher();
-  startMobileInterventionWatcher();
+  // device-intervention-watcher (60s poll) retired (P-021) — escalation /
+  // smoke-fail / plan-review now push at the source via notifyAttention from
+  // their /api/internal/*-event producers; needs-human≥high from set-status.
 
   // Mobile DDL at host startup (Phase E3, endpoint-unification-2026-05-21).
   // Previously ran lazily on the first `/api/device/*` request inside the
@@ -170,10 +171,19 @@ export function runBootstrap(): void {
   if (process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1') {
     void (async () => {
       try {
-        // host-bootstrap.ts doesn't run a separate migrations / schema-
-        // ensure phase the way the retired Next instrumentation did.
-        // The dogfood projection writers handle their own ensure on
-        // first write, so mark the gate complete here and proceed.
+        // Ensure the dogfood PG schema + reactivity triggers BEFORE the gate
+        // opens. The projection writers do NOT self-ensure (verified: a missing
+        // harness_shared.* table 500s the first reader — e.g. the
+        // shared_repo_binding_cache hit by /api/harness/binding/resolve), so the
+        // prior "writers ensure on first write" assumption was false and the
+        // dogfood schema was never created at host boot. wireDogfoodTriggers()
+        // is idempotent (guarded) and ensures every dogfood table first (it
+        // calls ensureAllDogfoodTables) then attaches the change-notify
+        // triggers. A failure here keeps the gate closed (the catch logs
+        // non-fatally and the substrate simply retries next boot) rather than
+        // opening it over a missing schema.
+        const { wireDogfoodTriggers } = await import('../lib/ensure-schema-dogfood');
+        await wireDogfoodTriggers();
         const { markSqlMigrationsComplete, markRuntimeEnsureComplete } =
           await import('../lib/sync/hyperbee/boot-gate');
         markSqlMigrationsComplete();
