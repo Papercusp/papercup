@@ -9,7 +9,8 @@
     "build": "astro build && bash scripts/postbuild-copy.sh",
     "preview": "astro preview",
     "astro": "astro",
-    "check": "astro check"
+    "check": "astro check",
+    "test": "astro check"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",
