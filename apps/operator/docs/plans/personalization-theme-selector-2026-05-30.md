@@ -76,10 +76,24 @@ accents `nth-child(1)=sky,(2)=amber,(3)=cyan…`; `plans.css` status palette) �
 intentional rainbow, like status colors; `operator-mock` (demo); Chatwoot
 `widgetColor` (3rd-party JS); `dev.css` (internal); `#0ea5e9`/`#57d7ff` (no token).
 
-Net: **accents + tints + content are monochrome in black (done, committed);
-chrome surfaces retain the frost theme's bespoke navy** — pure-black there is a
-deliberate surface re-skin (option a or b above), pending a product call + a clean
-desktop rebuild to verify.
+**SURFACE TOKENIZATION DONE** (`9cb32fb5`) — reframed after feedback: the goal is a
+robust token system for *any* theme, not a frost/black retrofit. The ~1100 bespoke
+navy surface literals were the un-tokenized debt that broke *every* theme. Fixed by
+adding a **surface depth scale** (`--bg-deepest`/`-deeper`/`-deep`, frost =
+data-derived navy reps, black = `#000`) + routing all 1004 rgba/rgb + 100 hex navy
+literals to the nearest tier (`color-mix(in srgb, var(--tier), …)`). Added to
+`THEME_TOKENS`. Tauri-verified the SAME surfaces resolve navy (frost) / `#000`
+(black) / `#250a45` (an injected test **purple** theme) purely by swapping tokens —
+the robust, theme-agnostic behavior. Frost preserved (≤1–2 RGB units/tier).
+(A perl `/x`-flag bug corrupted the 21 files mid-route; caught via a Vite
+transform check, restored from HEAD, redone via a script file — lesson: verify
+syntax, not just counts.)
+
+Net: **the theme system is now robust across arbitrary themes** — accents, tints,
+AND surfaces all route through semantic tokens; black is truly black, custom themes
+fully recolor. Remaining sky is only intentional decorative palettes (status hues,
+multi-hue rotations) + no-token one-offs (sky-hero/cyan) + 3rd-party/mock. Standard
+documented in `design/tokens.mdx`.
 
 ## Goal
 
