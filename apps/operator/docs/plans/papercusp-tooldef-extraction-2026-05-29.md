@@ -79,8 +79,11 @@ to the extraction (all touched packages green; 0 tooldef resolution/export error
 red suite is headless-env timeouts + a peer's `@papercusp/db-org` rename + today's
 `libs/generic` submodule regroup).
 
-**Remaining (not in my domain / intentionally open):** **P-054** `needs-human` — the
-in-tree-vs-mirror + public-promotion decision, owned by the user (handled separately).
+**Remaining:** **P-054** `decided 2026-05-31` — the user chose **Option B: mirror
+`tooldef` (+`tooldef-http`) to a `libs/generic/*` standalone submodule** (the borrowable-lib
+pattern; see D-011 + the 2026-05-31 Progress entry). Execution is a focused follow-up gated on
+two preconditions (shared `Papercusp/tooldef` synced to in-tree HEAD; run when no peer is
+mid-edit in `packages/tooldef`) — not yet performed.
 **P-015** `deferred` — a persistence seam for card-correlator/state-channel/replay-buffer;
 YAGNI (no consumer; in-memory defaults already make the core standalone-usable), revisit
 when a host needs durable cards/state. **The extraction itself is complete.**
@@ -102,6 +105,29 @@ that wants typed storage can already re-export `ToolContext<MyClient>`.
 > (`f41566f5`). tooldef tsc is back to 0 baseline errors.
 
 ## Progress log
+
+### 2026-05-31 — P-054 decided (Option B / mirror) + tooldef-mcp test regression fixed
+
+Resuming the extraction arc (session 2d4d8d29). Two things:
+
+1. **Re-verified the extraction green at current HEAD** and caught a regression a
+   concurrent peer's work introduced. The **`tool.roles` → `tool.agentRoles` rename**
+   (auth-RFC, commit `a67bc5cdc`, 205 files) missed `packages/tooldef-mcp/src/index.test.ts`:
+   the gate-denial test passed a stale `roles: ['architect']` key the role-allowlist gate no
+   longer reads, so no denial fired (`isError` undefined → test failure) and `tsc` flagged the
+   excess property. Fixed the test to `agentRoles` (commit `79b40a836`). **Now green with the
+   *real* typecheck** (`tsc --noEmit -p tsconfig.build.json`, not the non-existent `typecheck`
+   script): tooldef **tsc 0 / 219 tests**, tooldef-http **tsc 0 / 3**, tooldef-mcp **tsc 0 / 5**.
+
+2. **P-054 decided by the user: Option B — mirror `tooldef` (+`tooldef-http`) to a standalone
+   `libs/generic/*` submodule** consuming `github.com/Papercusp/tooldef` (the borrowable-lib
+   convention already applied to ~18 libs incl. the sibling `ipc-endpoint-server`). NOT npm-publish
+   (Option C deferred). `tooldef-mcp` stays papercup-internal (P-031); `agent-mcp` stays in-tree
+   (D-010). See **D-011** for the execution plan + preconditions. **Not yet executed** — gated on
+   the shared repo being synced to in-tree HEAD (it has diverged: the auth-RFC Phase 1-3 + the
+   `agentRoles` rename are in-tree but not yet pushed to `Papercusp/tooldef`) and on a tree-quiet
+   focused pass coordinated with the active tooldef dev (per the repeated coord warnings against a
+   unilateral conversion).
 
 ### 2026-05-31 — Live host verification (both extracted transports, real runtime)
 
@@ -758,8 +784,13 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   export is defined on the '@papercusp/db-org' mock"); (3) today's `libs/generic/*` submodule
   regroup (the `classify-tree` "9 submodules + 8 plain" count test). None touch the
   dispatch/projection/transport surface. blocked-by: P-050
-- **P-054** `needs-human` Decide whether to promote `@papercusp/tooldef` to a separate
-  public repo + neutral npm scope. Out of scope for this arc; gate here. blocked-by: P-051 → D-001
+- **P-054** `decided→execute` **User chose Option B (2026-05-31): mirror `@papercusp/tooldef`
+  (+`tooldef-http`) to a standalone `libs/generic/*` submodule** consuming the existing
+  `github.com/Papercusp/tooldef` shared repo (the borrowable-lib convention; `tooldef-mcp`
+  stays papercup-internal, `agent-mcp` stays in-tree). Not npm-published (Option C deferred).
+  Execution steps + preconditions in D-011 + the BRIEF. Gated on: (1) shared repo synced to
+  in-tree HEAD (currently diverged — auth-RFC Phase 1-3 + `agentRoles` rename owed); (2) a
+  tree-quiet focused pass coordinated with the active tooldef dev. blocked-by: P-051 → D-001 D-011
 
 ## Open questions
 
@@ -894,6 +925,36 @@ deprecation alias — so it doesn't conflict with D-003's no-shim rule. Phase 5
 (P-042) *may* repoint consumers directly at `@papercusp/tooldef`, but the re-export
 is a fine permanent arrangement for the bundle either way. The only true shims
 removed were plugin-sdk's duplicate wire-type definitions (D-004).
+
+### D-011 — Distribution: mirror to a `libs/generic` submodule (Option B)
+Date: 2026-05-31 (user decision — resolves P-054 / Q-4)
+**Chosen: Option B — papercup consumes `@papercusp/tooldef` (+`tooldef-http`) as a
+standalone `libs/generic/*` git submodule** (`github.com/Papercusp/tooldef`), matching the
+borrowable-lib convention used for ~18 other domain-free libs (incl. the sibling
+`@papercusp/ipc-endpoint-server` = the IPC transport). **Not** npm-publish (Option C deferred
+until a third consumer appears) and **not** status-quo manual mirror (Option A — guaranteed
+drift). `tooldef-mcp` stays papercup-internal (P-031, not borrowable); `agent-mcp` stays in-tree
+and keeps re-exporting the engine by name (D-010), so the ~42 direct + ~607 re-export import
+specifiers are unchanged — only tooldef's on-disk location + build wiring move.
+
+**Execution (precise steps; from the BRIEF, not yet run):**
+1. **Sync first** — push in-tree `packages/tooldef` HEAD to `Papercusp/tooldef` main so they're
+   identical. *Currently diverged*: the shared repo lacks the auth-RFC Phase 1-3 + the `agentRoles`
+   rename + the `tooldef-mcp` test fix. This sync is owned by the active tooldef dev (coord-entangled).
+2. `git rm -r packages/tooldef` (tag a restore point first), `git submodule add … libs/generic/tooldef`.
+3. Rewire build: root `tsconfig*.json` paths `@papercusp/tooldef` → `libs/generic/tooldef/src`;
+   `node_modules/@papercusp/tooldef` symlink; vitest aliases; CI `submodule update --init`.
+4. Decide `tooldef-http`: own repo vs. a `tooldef-http` subpath of the shared repo (lean: own repo,
+   matching the one-lib-one-repo pattern).
+5. Verify: `npm run test:affected` + tooldef/agent-mcp/operator typechecks + the P-051 standalone
+   examples + a live `:3070` boot.
+6. Update `BORROWABLE.md` + `scripts/gen-borrowable-catalog.mjs`; advance Restart's `libs/tooldef` pin.
+
+**Preconditions (why not done in this turn):** the conversion is high-blast-radius — it pushes to a
+shared GitHub repo Restart depends on (outward-facing) and `git rm`s a package every peer's working
+tree resolves (shared-checkout-disrupting). The BRIEF + coord both require it run *after the API is
+stable* (it now is) and *when no peer is mid-edit in `packages/tooldef`* — which is not the case
+right now (auth-RFC work landed within hours). So it's gated on a tree-quiet, coordinated pass.
 
 ## Verification
 
