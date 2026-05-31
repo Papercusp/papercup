@@ -20,10 +20,10 @@ and is the config/settings boundary; **results are shared** by slug. This
 collapses the hardest migration (no per-harness data fork) and makes "different
 prompts per workspace on the same harness" fall out of the workspace-owned config.
 
-**Next:** Confirm the one remaining sub-decision (D-6: seed-from-repo vs pure
-workspace state for per-harness prompt overrides), then build per §6. The
-slug-identity blockers (§3.1) + workspace addressing (§3.4) are still required
-regardless.
+**Next:** All decisions locked (D-1 shared, D-6 seed-from-repo + reset-to-default
+UX, D-7 workspace-owned config); D-4 topology is the only thing still to call but
+it doesn't gate Phase 1. Ready to scope/build per §6. The slug-identity blockers
+(§3.1) + workspace addressing (§3.4) are required regardless.
 
 ---
 
@@ -154,18 +154,26 @@ runtime can't address a harness except via the one active workspace.**
   same harness in two workspaces gets independent overrides; linking a folder into
   N workspaces no longer shares its prompt tuning.
 
-- **D-6 — Per-harness prompt overrides: seed-from-repo or pure workspace state?
-  (OPEN — last sub-decision.)** When D-7 moves live config to workspace PG, what
-  happens to a harness that *ships* `.harness/prompts/<role>.md` in its repo?
-  - **Recommendation: seed-from-repo.** Treat repo `.harness/prompts/` +
-    `config.json promptOverrides` as **default seeds**: on install/link into a
-    workspace, import them into that workspace's `(workspace,harness,role)` store;
-    thereafter the workspace owns the live config (edits are per-workspace, never
-    touch the repo). Preserves "a harness can ship recommended prompts" while
-    keeping live tuning workspace-scoped. Matters for the publish plan: a published
-    harness carries seed defaults, not the publisher's workspace tuning.
-  - *Counter-option:* pure workspace state — prompts never travel with a harness;
-    `.harness/prompts/` is ignored/removed. Simpler, but loses shippable defaults.
+- **D-6 — Per-harness prompt overrides: seed-from-repo → LOCKED (2026-05-31).**
+  Treat repo `.harness/prompts/` + `config.json promptOverrides` as **default
+  seeds**: on install/link into a workspace, import them into that workspace's
+  `(workspace,harness,role)` store; thereafter the workspace owns the live config
+  (edits are per-workspace, never touch the repo). Preserves "a harness can ship
+  recommended prompts" while keeping live tuning workspace-scoped. For the publish
+  plan: a published harness carries its seed defaults, not the publisher's
+  workspace tuning.
+  - **Re-seed UX (locked).** Because the workspace owns the config after seeding,
+    a repo-default update won't auto-apply — so surface explicit reset controls:
+    1. **Per-prompt "Reset to default"** button on each prompt that was seeded
+       (and only when it differs from / has a repo default to restore) — re-imports
+       that one role's repo seed into `(workspace, harness, role)`, discarding the
+       workspace edit.
+    2. **"Reset all to default"** button on each role-group view (e.g. the
+       PromptsTab header / the per-harness settings page) — applies the per-prompt
+       reset to **every role shown in that view** in one action. Confirm before
+       overwriting edited prompts.
+    Both read the live repo `.harness/` seed at click time, so they double as
+    "pull the latest repo default."
 
 - **D-2 — Identity key.** Make `projects` unique on `(workspace_id, slug)` (drop
   the global `projects_slug_idx`), and `token_index` unique on
@@ -252,6 +260,11 @@ longer gates Phase 1 the way forked-data would have.
   "this folder stays at <path>; removing the harness won't delete it."
 - Show which workspaces a Project is in; a "members" affordance on the harness.
 - Move/copy actions in the harness menu + WorkspaceSwitcher.
+- **Reset-to-default (D-6):** per-prompt "Reset to default" button on each seeded
+  prompt (shown when a repo default exists / the workspace copy diverges);
+  "Reset all to default" button on each role-group view (PromptsTab / per-harness
+  settings) that resets every role in that view, with a confirm step. Both
+  re-import from the repo `.harness/` seed (= "pull latest default").
 
 **Phase 5 — Verification.** Move `restart` default→papercusp-workspace cleanly;
 have the same Project live in two workspaces with independent runs; confirm
