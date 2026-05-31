@@ -81,10 +81,15 @@ export async function invokeServerCapability(opts: {
 
   const workspaceId = activeWorkspaceId();
   const body = await withWorkspace(workspaceId, async (tx) => {
-    // A plain operator-role loopback ctx — NO gateBypass. The dispatch stack
-    // (role/capability/authorize/quota) and audit all apply, exactly as for
-    // any other caller. Mirrors the minimal principal shape the MCP handler
-    // synthesizes for superuser calls, minus the bypass.
+    // The desktop loopback caller IS the operator (same trust the MCP
+    // operator-tier path grants on loopback). The dispatch capability gate is
+    // a literal `has(cap)` and does NOT honor the loopback principal's `'*'`,
+    // so bypass it — but KEEP the role gate enforced (`role: 'operator'`), which
+    // aligns invoke exactly with the role-filtered /capabilities listing. Quota
+    // is bypassed too: palette actions are human-initiated, not agent budget
+    // (D-004). `authorize` (resource PDP) and the §3 guard above still apply,
+    // and every call is audited via PROJECTED_DEPS. Security posture: loopback
+    // origin + §3 + confirm-for-destructive + audit (see D-007).
     const ctx: UnifiedToolContext = {
       workspaceId,
       harnessSlug: '*',
@@ -96,7 +101,7 @@ export async function invokeServerCapability(opts: {
       parentSpawnId: null,
       uiClientId: null,
       isSuperuser: false,
-      gateBypass: undefined,
+      gateBypass: { capability: true, quota: true },
       profile: 'engineer',
       transport: 'http',
       log: () => {},
