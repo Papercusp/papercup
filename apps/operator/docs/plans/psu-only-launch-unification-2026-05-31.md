@@ -184,3 +184,16 @@ Avenues NOT yet exhausted:
 
 Recommendation: try the cheap manual interactive test first; if hooks don't fire there either, accept soft coordination for codex (D-008 option B) rather than build a FUSE/shim. NEEDS HUMAN.</body>
 Related: P-053
+
+### D-010 — D-010: codex locks ARE fixable — root cause is 3 stacked bugs (hook file, bypass flag, AppArmor userns), not a codex limitation
+Date: 2026-05-31
+Web research + diagnosis overturned D-007/D-008/D-009's "fundamentally unhookable" conclusion. codex hooks ARE designed to enforce edits (apply_patch hook support landed in openai/codex PR #18391, Apr 2026, in 0.135). Why ours never fired = THREE stacked, all-fixable bugs:
+
+1. HOOK CONFIG FILE (our bug): codex reads hooks from `$CODEX_HOME/hooks.json` or `config.toml [[hooks.PreToolUse]]` — NOT `settings.json`. install-standalone-mcp.sh §4f AND writeCodexLockHooks both wrote settings.json → codex never loaded them. Fix: write hooks.json.
+2. LAUNCH FLAG (our bug): `--dangerously-bypass-approvals-and-sandbox` (used by psu suLaunchArgs/roleLaunchArgs codex AND static codex-su) DISABLES hooks entirely (per developers.openai.com/codex/hooks + agenticcontrolplane reference). Fix: launch with `--sandbox workspace-write` (deprecated alias was --full-auto) so hooks run unattended.
+3. ENV BLOCKER (this box): codex's sandbox is bubblewrap; Ubuntu's `kernel.apparmor_restrict_unprivileged_userns=1` blocks bwrap's userns (bwrap: "setting up uid map: Permission denied" / "loopback: Failed RTM_NEWADDR"). So sandbox modes FAIL here → only the bypass works → hooks off. Fix (root): `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persist in /etc/sysctl.d/). A known Ubuntu 24.04 issue affecting all bwrap/electron sandboxes.
+
+Caveat: even fixed, apply_patch hook coverage is flaky upstream (#16732/#20204); Bash/shell PreToolUse fires reliably, so the robust path may route codex edits via shell until upstream stabilizes.
+
+Plan: (a) code-fix hooks.json + flag (correct regardless), (b) user runs the sysctl, (c) re-verify the lock-block gate end-to-end. Supersedes the soft-coord-only recommendation.</body>
+Related: P-053, P-030
