@@ -3,6 +3,15 @@ URL: /internal/docs/data-sync/index
 
 How harness UI panels read from Postgres in real time via Zero + RichGrid.
 
+:::danger\[Zero is being retired — historical reference]
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
+path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
+host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
+**not run** on desktop. Treat this page as historical reference. Source of
+truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+doc-comment) + the root `CLAUDE.md` deployment-model section.
+:::
+
 import { Aside } from '@astrojs/starlight/components';
 
 **For any new component that reads server state, default to

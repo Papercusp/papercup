@@ -3,6 +3,15 @@ URL: /internal/docs/build-system/index
 
 Where each piece is built, what produces what, and the one URL that runs all of it.
 
+:::caution\[Partly stale — the operator is Vite now, not Next.js]
+The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`,
+a TanStack-Router SPA). Read any "Next.js app / Next standalone / `next dev` /
+`next start`" wording below as the **Vite** SPA (`:3055` dev) served by the
+`:3070` **Hono host** (`bin/hono-host.ts`). `next dev`/`next start` are blocked
+by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the
+`operator-next-is-retired` insight.
+:::
+
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
 
 ## What "the build system" means here

@@ -2672,7 +2672,7 @@ The test you write to verify the wiring will be the thing that catches this. A u
 
 You edit `apps/operator/lib/**` (an MCP tool, an endpoint-route handler, a `coordLog`/store seam), reload the operator UI, exercise the tool — and it behaves like your change isn’t there. It isn’t: the **`:3070` Hono host** (`apps/operator/bin/hono-host.ts`) runs under `tsx` with **no file-watch**. It loaded the old module graph (including module-level singletons like `coordLog`) at startup and won’t pick up `lib/**` edits until the process restarts.
 
-The `:3055` Next layer *does* hot-reload its own routes/components — so a frontend change goes live while an identical-feeling server-side change silently does not. That asymmetry is what makes this confusing.
+The `:3055` Vite dev server (`@papercusp/operator-vite`) *does* hot-reload its own routes/components — so a frontend change goes live while an identical-feeling server-side change silently does not. That asymmetry is what makes this confusing. (Next.js is retired for the operator; `:3055` is the Vite SPA, not a Next dev server.)
 
 ## Restart it
 
@@ -8600,6 +8600,10 @@ Don’t forget to also update:
 
 > Where each piece is built, what produces what, and the one URL that runs all of it.
 
+Partly stale — the operator is Vite now, not Next.js
+
+The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`, a TanStack-Router SPA). Read any “Next.js app / Next standalone / `next dev` / `next start`” wording below as the **Vite** SPA (`:3055` dev) served by the `:3070` **Hono host** (`bin/hono-host.ts`). `next dev`/`next start` are blocked by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the `operator-next-is-retired` insight.
+
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
 
 ## What “the build system” means here
@@ -8646,6 +8650,10 @@ The button source-of-truth allow-list lives in `apps/operator/lib/admin-commands
 # /admin command reference
 
 > Every command wired into the /admin ops dashboard — what it runs, what it depends on, what it produces.
+
+Partly stale — the operator is Vite now, not Next.js
+
+The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`, a TanStack-Router SPA). Read any “Next.js app / Next standalone / `next dev` / `next start`” wording below as the **Vite** SPA (`:3055` dev) served by the `:3070` **Hono host** (`bin/hono-host.ts`). `next dev`/`next start` are blocked by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the `operator-next-is-retired` insight.
 
 ## How the page works
 
@@ -8856,6 +8864,10 @@ Anything under `apps/operator/app/admin/` and `apps/operator/lib/admin-commands.
 # Architecture
 
 > How a production Papercusp binary is laid out, what it spawns at startup, and how the browser webview finds the operator server.
+
+Partly stale — the operator is Vite now, not Next.js
+
+The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`, a TanStack-Router SPA). Read any “Next.js app / Next standalone / `next dev` / `next start`” wording below as the **Vite** SPA (`:3055` dev) served by the `:3070` **Hono host** (`bin/hono-host.ts`). `next dev`/`next start` are blocked by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the `operator-next-is-retired` insight.
 
 ## Two repos, two stages
 
@@ -9751,6 +9763,10 @@ The `/admin` build commands run via `bash -lic`. Closing the SSE stream (Stop bu
 
 > How harness UI panels read from Postgres in real time via Zero + RichGrid.
 
+Zero is being retired — historical reference
+
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
+
 Default to the data-sync library, not a fresh poll
 
 **For any new component that reads server state, default to `useSyncQuery({queryName, args})` from `@restart/sync`.** Don’t roll a new `fetch + setInterval` poll. Don’t open a raw `EventSource` for query data.
@@ -9841,6 +9857,10 @@ When the docs and the code disagree, the code wins. The docs are kept in sync be
 # Cookbook
 
 > Copy-paste recipes for the most common panel-building tasks.
+
+Zero is being retired — historical reference
+
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
 
 ## Recipe 1: New panel reading from an existing Zero table
 
@@ -10226,6 +10246,10 @@ When in doubt, copy the structure from one of these — they exercise the full s
 
 > The shared catalog of queries every panel reads from.
 
+Zero is being retired — historical reference
+
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
+
 ## Why named queries
 
 [Section titled “Why named queries”](#why-named-queries)
@@ -10510,6 +10534,10 @@ If `postgres_app` is the holder, restart it.
 
 > Column-driven grid renderer; the only tabular UI primitive in the harness.
 
+Zero is being retired — historical reference
+
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
+
 ## When to reach for RichGrid
 
 [Section titled “When to reach for RichGrid”](#when-to-reach-for-richgrid)
@@ -10698,6 +10726,10 @@ After migrating from a hand-rolled list:
 
 > Per-harness Postgres schemas, shared schemas, publications, scaffolding.
 
+Zero is being retired — historical reference
+
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
+
 ## Database
 
 [Section titled “Database”](#database)
@@ -10831,6 +10863,10 @@ Slug is unique, stable, and the only field both stores agreed on. New mutations 
 # Zero (sync layer)
 
 > How a Postgres row becomes a row in your React component, in real time.
+
+Zero is being retired — historical reference
+
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is **not run** on desktop. Treat this page as historical reference. Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection doc-comment) + the root `CLAUDE.md` deployment-model section.
 
 ## The pipeline end-to-end
 

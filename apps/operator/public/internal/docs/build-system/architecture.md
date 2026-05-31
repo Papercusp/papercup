@@ -3,6 +3,15 @@ URL: /internal/docs/build-system/architecture
 
 How a production Papercusp binary is laid out, what it spawns at startup, and how the browser webview finds the operator server.
 
+:::caution\[Partly stale — the operator is Vite now, not Next.js]
+The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`,
+a TanStack-Router SPA). Read any "Next.js app / Next standalone / `next dev` /
+`next start`" wording below as the **Vite** SPA (`:3055` dev) served by the
+`:3070` **Hono host** (`bin/hono-host.ts`). `next dev`/`next start` are blocked
+by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the
+`operator-next-is-retired` insight.
+:::
+
 ## Two repos, two stages
 
 ```

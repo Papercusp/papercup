@@ -3,6 +3,15 @@ URL: /internal/docs/data-sync/richgrid
 
 Column-driven grid renderer; the only tabular UI primitive in the harness.
 
+:::danger\[Zero is being retired — historical reference]
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
+path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
+host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
+**not run** on desktop. Treat this page as historical reference. Source of
+truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+doc-comment) + the root `CLAUDE.md` deployment-model section.
+:::
+
 ## When to reach for RichGrid
 
 Use RichGrid for any panel that renders a list of rows where each row has

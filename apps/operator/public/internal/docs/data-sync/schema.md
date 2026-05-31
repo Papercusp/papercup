@@ -3,6 +3,15 @@ URL: /internal/docs/data-sync/schema
 
 Per-harness Postgres schemas, shared schemas, publications, scaffolding.
 
+:::danger\[Zero is being retired — historical reference]
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
+path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
+host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
+**not run** on desktop. Treat this page as historical reference. Source of
+truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+doc-comment) + the root `CLAUDE.md` deployment-model section.
+:::
+
 ## Database
 
 The harness DB is `papercusp` on `localhost:5432`. (It was renamed from

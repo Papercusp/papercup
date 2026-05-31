@@ -3,6 +3,15 @@ URL: /internal/docs/data-sync/named-queries
 
 The shared catalog of queries every panel reads from.
 
+:::danger\[Zero is being retired — historical reference]
+Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
+path**. The shipping desktop app uses **SSE-primary** sync (the `:3070` Hono
+host pushes invalidate/update over Postgres `LISTEN/NOTIFY`); zero-cache is
+**not run** on desktop. Treat this page as historical reference. Source of
+truth: `apps/operator/providers/HarnessZeroProvider.tsx` (transport-selection
+doc-comment) + the root `CLAUDE.md` deployment-model section.
+:::
+
 ## Why named queries
 
 Every Zero query the harness UI runs is registered in
