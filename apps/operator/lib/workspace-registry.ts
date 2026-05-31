@@ -75,6 +75,11 @@ import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 export { DEFAULT_WORKSPACE_ID };
 
 export function activeWorkspaceId(): string {
+  // Env override wins — mirrors the orchestrator's `activeWorkspaceId()` so a
+  // server process can PIN its workspace (e.g. for a durable-pipeline dispatcher
+  // that must not follow the desktop UI's volatile workspace switches).
+  const env = process.env.PAPERCUSP_WORKSPACE_ID;
+  if (env && env.trim()) return env.trim();
   const reg = readRegistry();
   return reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
 }
