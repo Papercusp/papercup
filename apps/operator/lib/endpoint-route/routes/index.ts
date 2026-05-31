@@ -71,6 +71,7 @@ import harnessWorkingSet from './harness/working-set';
 import usersByGithubId from './users/by-github-id';
 import usersByLogin from './users/by-login';
 import harnessPrs from './harness/prs';
+import harnessProjectDocs from './harness/project-docs';
 import harnessSync from './harness/sync';
 import cupboard from './cupboard';
 import harnessSpec from './harness/spec';
@@ -494,6 +495,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(usersByGithubId as AnyRoute[]),
   ...flatten(usersByLogin as AnyRoute[]),
   ...flatten(harnessPrs as AnyRoute[]),
+  ...flatten(harnessProjectDocs as AnyRoute[]),
   ...flatten(harnessSync as AnyRoute[]),
   ...flatten(cupboard as AnyRoute[]),
   ...flatten(harnessSpec as AnyRoute[]),
