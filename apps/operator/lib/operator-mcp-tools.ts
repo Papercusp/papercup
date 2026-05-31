@@ -29,6 +29,14 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__issues:list',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
+  // Plans read surface — the needs-human inbox + importance the scanner
+  // weights recommendations by (planning-attention-importance P-018).
+  // plans:items { needsHuman: true } and plans:attention are already
+  // importance-sorted; list/get give surrounding plan context. Read-only.
+  'mcp__agentmcp__plans:list',
+  'mcp__agentmcp__plans:get',
+  'mcp__agentmcp__plans:items',
+  'mcp__agentmcp__plans:attention',
   'mcp__agentmcp__messages:inbox',
   'mcp__agentmcp__messages:outbox',
   'mcp__agentmcp__messages:send',
