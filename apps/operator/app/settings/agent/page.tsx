@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
-import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@/lib/agent-config';
+import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@/lib/agent-config-constants';
 
 /** Local select value: a concrete backend, or 'inherit' = omit from the map. */
 type SurfaceChoice = 'inherit' | AgentBackend;
