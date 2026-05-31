@@ -111,6 +111,30 @@ Restarted `papercup-dev-api.service` (user-approved) so :3070 loaded the codex
 - codex path does NOT write `.mcp.json` into the harness cwd (uses CODEX_HOME) —
   cleaner than claude/omp; no shared-checkout pollution.
 
+### Session 2d (2026-05-31) — real bug caught by running it for real: role launch was workspace-blind
+
+The user ran `psu --role=scoper --agent=codex --workspace=papercusp-workspace
+--harness=papercup` and got `assembleRolePrompt: harness "papercup" not
+registered`. Root cause: `assembleRolePrompt`'s `lookupProjectDir` is
+workspace-BLIND — it resolves via `curl :3055/api/harness/projects` then legacy
+`~/.restart-harness-projects.json`. Two failures stacked: (1) `papercup`
+(active `papercusp-workspace`) isn't in the legacy file; (2) the :3070 host doing
+a *synchronous `execFileSync('curl')` to :3055 (itself)* mid-request fails, so it
+fell back to legacy. My earlier Phase-3 "verified" used `papercup-org` which
+happens to be in the legacy file — so isolated-harness testing masked this; only
+running the real active-workspace harness exposed it.
+
+**Fix (commits: orchestrator `f888638`, superproject `f67fe4494`):**
+`assembleRolePrompt` now takes an optional `projectDir`; `buildRoleLaunchSpec`
+resolves it in-process via the workspace-aware `resolveProjectDir(slug,
+workspaceId)` and passes it, bypassing the blind lookup entirely (and the
+self-curl). Throws a clear "not registered in workspace X" when absent.
+**Verified live:** the exact failing call now → `200` + CODEX_HOME with a
+`workspace=papercusp-workspace&role=scoper` signed url that `codex mcp get`
+accepts. Fixes claude/omp role sessions in non-default workspaces too (same code
+path). **Lesson: verify role/launch paths against a harness in the ACTIVE
+non-default workspace, not just an isolated/legacy-registered one.**
+
 **Truly remaining: ONLY the codex interactive TUI human-at-keyboard step** — a
 person runs `psu --role=<role> --agent=codex` in a real terminal and types. Every
 mechanical layer beneath it (HTTP round-trip, CODEX_HOME on disk, codex
