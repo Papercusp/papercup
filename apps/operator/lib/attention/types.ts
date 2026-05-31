@@ -33,6 +33,8 @@ export type AttentionActionId =
   | 'chat'
   | 'resolve'
   | 'mark-done'
+  | 'answer'
+  | 'drop'
   | 'view-log'
   | 'open'
   | 'ack';

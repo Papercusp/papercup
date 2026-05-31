@@ -120,7 +120,15 @@ export type AttentionKind =
   | 'smoke-fail'
   | 'plan-review';
 
-export type AttentionActionId = 'chat' | 'resolve' | 'mark-done' | 'view-log' | 'open' | 'ack';
+export type AttentionActionId =
+  | 'chat'
+  | 'resolve'
+  | 'mark-done'
+  | 'answer'
+  | 'drop'
+  | 'view-log'
+  | 'open'
+  | 'ack';
 
 export interface AttentionAction {
   id: AttentionActionId;

@@ -48,14 +48,17 @@ describe('planItemToAttention', () => {
     importance: 'urgent' as const,
   };
 
-  it('maps a needs-human item with a Resolve (mark-done) action', () => {
+  it('maps a needs-human item with the full Answer/Resolve/Drop/Chat toolkit', () => {
     const a = planItemToAttention(base);
     expect(a.kind).toBe('plan-item');
     expect(a.planSlug).toBe('p-2026-05-31');
     expect(a.itemRef).toBe('P-007');
     expect(a.needsHuman).toBe(true);
     expect(a.importance).toBe('urgent');
-    expect(a.actions.map((x) => x.id)).toEqual(['mark-done', 'chat']);
+    // P-009: actions[] is the single source of truth for the card mapper, so
+    // Answer + Drop must be present (they used to be hard-coded in the UI).
+    expect(a.actions.map((x) => x.id)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
+    expect(a.actions.find((x) => x.id === 'mark-done')?.primary).toBe(true);
     expect(a.ref).toEqual({ kind: 'plan-item', slug: 'p-2026-05-31', itemId: 'P-007' });
   });
 

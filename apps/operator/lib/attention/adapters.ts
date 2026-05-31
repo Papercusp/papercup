@@ -35,8 +35,18 @@ export interface PlanItemInput {
 
 export function planItemToAttention(it: PlanItemInput): AttentionItem {
   const needsHuman = it.storedStatus === 'needs-human';
+  // The full needs-human toolkit lives in `actions[]` (the single source the
+  // card mapper reads — inbox-cards-unification P-009): Answer (free-text
+  // decision, navigate → inline InputCard), Resolve (quick done), Drop
+  // (won't-do), Chat. Non-needs-human plan items are agent-actionable, so the
+  // human only gets Chat.
   const actions: AttentionAction[] = needsHuman
-    ? [{ id: 'mark-done', label: 'Resolve', primary: true }, CHAT]
+    ? [
+        { id: 'answer', label: 'Answer' },
+        { id: 'mark-done', label: 'Resolve', primary: true },
+        { id: 'drop', label: 'Drop' },
+        CHAT,
+      ]
     : [CHAT];
   return {
     id: `plan-item:${it.slug}:${it.id}`,
