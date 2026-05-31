@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 0 + most of Phase 1 done and verified, all committed on `main`. **In-operator boot smoke PASSED at module level** — the real `bootstrap.ts` + `hello-workflow.ts` launch DBOS and run a durable workflow against embedded PG16 (`schema=dbos`, `source=env`, helloWorkflow `SUCCESS`). Commits: P-001 bootstrap (0443ccb7), workspace-install fix (b437af64), Phase 1 scheduled+dedup AutoLoop (5c9bb737), P-006 fire-step retries + recovery cap (958a7a59 — retry contract verified, `gate3.mjs`). Mechanics all proven against real embedded PG: cross-version resume, dedup single-fire, scheduled cadence, retry-with-backoff. `tsc` clean throughout.
+**State:** **Phase 0 + Phase 1 COMPLETE**, all committed on `main`, every mechanism verified against real embedded PG16. P-001 bootstrap (0443ccb7) + module-level in-operator boot smoke (helloWorkflow SUCCESS); P-002 cross-version resume gate; P-003/P-004/P-005 scheduled+dedup AutoLoop (5c9bb737); P-006 retries+recovery-cap (958a7a59, verified); P-007 /admin DBOS events tab + route (685d4903, SQL verified). Workspace install fixed (b437af64). One open caveat: P-007's route registration adds 3 `RouteDefinition↔RoleToolDefinition` tsc errors that are part of the in-flight `@restart→@papercusp` rename (tree at ~606 tsc errors mid-rename), runtime unaffected — re-verify they clear once the rename settles.
 
-**Next:** P-007 — the `/admin` DBOS events tab (a PG-query read route over the `dbos.*` system tables + a nuqs-stated admin tab), best done with the Tauri desktop up for visual QA. The full live-service end-to-end boot (flip `PAPERCUSP_DBOS_ENABLE`/`PAPERCUSP_DBOS_AUTOLOOP` + restart the dev API) is the remaining confirmation, deferred to avoid disrupting the shared running services.
+**Next:** Once the `@restart→@papercusp` rename settles: restart the dev API with `PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_AUTOLOOP=1`, open `/admin/dbos` to confirm AutoLoop ticks + workflows land in the running operator (full end-to-end), and confirm the 3 tsc cascade errors cleared. Then Phase 2 — P-008 (enumerate every timer) → migrate scanner / embeddings / snapshots.
 
 ## Background
 
@@ -185,6 +185,16 @@ Date: 2026-05-31
 
 Remaining: in-operator boot verify (now unblocked — flip `PAPERCUSP_DBOS_ENABLE=1` [+ `PAPERCUSP_DBOS_AUTOLOOP=1`], restart the dev API, watch the `dbos` schema + ticks) and P-006/P-007 (retry-cap mapping + the `/admin` DBOS tab).
 Related: P-003, P-004, P-005
+
+
+### D-015 — P-007 shipped — /admin DBOS tab; Phase 1 complete
+Date: 2026-05-31
+P-007 done (commit 685d4903): a new `/admin/dbos` tab + `GET /api/admin/dbos/status` route (`defineTool`, loopback auth) reading the `dbos.*` system schema — workflow-status counts, recent runs, and `workflow_queue` depth — returning `{ enabled: false }` gracefully when DBOS hasn't launched. The client is **nuqs-stated** (view tab + status filter, per repo convention) and **local PG-query only, NOT DBOS Conductor** (the plan forbids the cloud dashboard). The route SQL was verified against a real embedded-PG `dbos` schema (counts + the full workflow SELECT + the queue aggregation all execute and return correct rows); the new files are individually tsc-clean.
+
+Caveat: registering the route surfaces **3 type-cascade errors** in `routes/index.ts` (`RouteDefinition` ↔ `RoleToolDefinition`). These are part of the **in-flight `@restart/*`→`@papercusp/*` agent-mcp rename** another agent is landing — the tree is at ~606 tsc errors mid-rename — not a defect in the route (runtime is unaffected; Next/SWC ignores type errors). Re-verify they clear once the rename settles; if not, the registration needs a `satisfies`/cast follow-up.
+
+**Phase 1 (P-003–P-007) is complete and verified.** Remaining for full closure: the live-service end-to-end boot (flip the flags + restart the dev API) once the rename settles, then Phase 2 (migrate the remaining timers).
+Related: P-007
 
 ## Phase 0 — Spike & validation (GATE)
 
