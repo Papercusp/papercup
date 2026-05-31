@@ -12,25 +12,9 @@ related: [papercusp-tooldef-extraction-2026-05-29, BRIEF-tooldef-shared-repo-202
 
 ## Now
 
-**State:** Draft, `needs-human` ratification — **rev 2**, corrected after a code-grounded
-review (verified against `dispatch-stack.ts`, `route-stack.ts`, `tool-projection.ts`
-`GateBypass`). Rev 1 mischaracterized what tooldef already enforces and mislabeled the
-consumer surface; this revision fixes the "today" picture, **splits the work into three
-phases**, and reconciles with the existing `GateBypass` signal + agent-role axis. The
-external survey (§2) stands; the corrections are about *current state* and *sequencing*.
+**State:** §8 audit done (design vs the field — aligned on every major axis; 2 conditional divergences D1/D2 + 1 gap G1, all with verdicts). Phase 1a contract + Phase 1b enforcement BOTH shipped (commit a96bcd55): the `authorize` dispatch gate runs fail-closed after the coarse gates; `GateBypass.policy` (default off, not implied by the other bypasses) is the only skip and it is audited. tsc 0 new errors, 208/208.
 
-**Next:** ratify **Phase 1** (additive, zero-breakage — the resource-authz seam + audit)
-and implement it, coordinated with the agent developing tooldef. Phases 2–3 are gated on
-the open decisions (§7). Not committed into `Papercusp/tooldef` — coordinated via the peer.
-
-**Progress (2026-05-31):** Phase 1 **contract shipped** — `packages/tooldef/src/authz.ts`
-(`AuthzQuery`/`AuthDecision`/`PolicyDecisionPoint`/`AuthAuditEvent` + the `ownerOnly()`
-in-proc PDP helper), exported from index. Additive, uses the *current* `Principal`, touches
-no dispatch/Principal code. tsc 0 new errors; tooldef 202/202 green. **Phase 1b** (the
-dispatch-stack enforcement `DispatchStep` that runs a tool's `authorize` after the existing
-gates + the `GateBypass.policy` composition) is **gated on D-F + the tooldef owner's review
-of where the step sits in the stack** — not yet wired, so no tool's `authorize` runs yet.
-**Sync to `Papercusp/tooldef` owed** (the peer owns that sync; not pushed by me).
+**Next:** (1) Peer syncs authz.ts + the `authorizeStep`/`GateBypass.policy` changes to the shared `Papercusp/tooldef` repo (peer owns that sync). (2) Host wiring: route `deps.auditAuth` → `apps/operator/lib/auth-audit.ts` `recordAuthEvent`. (3) Phase 2: generic `Principal<TKind>` + reconcile principal RBAC roles ↔ agent `tool.roles` (D-E rename). (4) Phase 3 (per §8 D1): committed default-deny migration — audit every capability-only tool → `auth`/`'public'` + telemetry for unguarded tools.
 
 ## 1. Framing (honest)
 
@@ -282,3 +266,9 @@ Authorization + Middlewares · gRPC Authentication + Interceptors · graphql.org
 Oso "Authorization Patterns in GraphQL" · Permit.io "OPA vs OpenFGA vs Cedar" · Auth0
 "ReBAC/ABAC via OpenFGA & Cedar" · CIAM Compass "RBAC vs ABAC vs ReBAC" · Storj
 "Capability-based access control" · Cerbos "AuthZEN" · OpenID AuthZEN specifications.
+
+## Decisions
+
+### D-001 — D-F resolved + shipped (Phase 1b): authorize is a separate, audited decision
+Date: 2026-05-31
+The resource-`authorize` gate is NOT implied by the role/capability/quota `GateBypass`es. A new `GateBypass.policy` (default OFF) is the only thing that skips it, and even then the skip emits an `AuthAuditEvent` (gate:'authorize', decision:'allow', reason:'gateBypass.policy'). Rationale: the §8 audit against break-glass best practice — a privileged bypass must be policy-governed AND mandatorily logged; a bypassed check that isn't logged is the "silent super-admin" the standard forbids. The framework EMITS the event via the optional `deps.auditAuth` sink; the host wires persistence (papercup → `apps/operator/lib/auth-audit.ts` `recordAuthEvent`). Shipped in packages/tooldef commit a96bcd55; tsc 0 new errors, 208/208 tests.
