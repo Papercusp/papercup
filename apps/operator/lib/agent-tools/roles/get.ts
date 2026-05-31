@@ -4,7 +4,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getRole } from '@/lib/role-registry';
+import { getRole, roleConsumes } from '@/lib/role-registry';
 
 const ALL_ROLES = [
   'scoper',
@@ -36,8 +36,12 @@ export default defineTool({
   async handler(args, ctx) {
     const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
     const role = getRole(args.id, slug);
+    // `consumes` is resolved for ANY role id (kernel roles aren't
+    // manifests but still have launch-context needs) so callers — esp.
+    // the psu role picker — get it uniformly.
+    const consumes = roleConsumes(args.id, slug);
     return {
-      content: [{ type: 'text', text: JSON.stringify({ id: args.id, harnessSlug: slug || null, found: role !== null, role }) }],
+      content: [{ type: 'text', text: JSON.stringify({ id: args.id, harnessSlug: slug || null, found: role !== null, role, consumes }) }],
     };
   },
 });

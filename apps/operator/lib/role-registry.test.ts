@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { listRoles, getRole, rolesFiringOn, isValidRoleId, __clearRoleRegistryCache } from './role-registry';
+import { listRoles, getRole, rolesFiringOn, isValidRoleId, roleConsumes, KERNEL_ROLE_CONSUMES, __clearRoleRegistryCache } from './role-registry';
 
 let harnessRoot: string;
 let promptsDir: string;
@@ -366,5 +366,49 @@ describe('plugin-contributed roles', () => {
     } finally {
       await rm(realDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('roleConsumes', () => {
+  it('feature-consuming kernel roles require a feature', () => {
+    expect(roleConsumes('worker').feature).toBe('required');
+    expect(roleConsumes('validator').feature).toBe('required');
+    expect(roleConsumes('debugger').feature).toBe('required');
+    expect(roleConsumes('architect').feature).toBe('required');
+  });
+
+  it('scoper works at plan scope; curator/operator/oracle need nothing', () => {
+    expect(roleConsumes('scoper')).toEqual({ feature: 'none', plan: 'optional' });
+    expect(roleConsumes('curator')).toEqual({ feature: 'none', plan: 'none' });
+    expect(roleConsumes('operator')).toEqual({ feature: 'none', plan: 'none' });
+    expect(roleConsumes('oracle')).toEqual({ feature: 'none', plan: 'none' });
+  });
+
+  it('documenter/reviewer take a feature optionally', () => {
+    expect(roleConsumes('documenter').feature).toBe('optional');
+    expect(roleConsumes('reviewer').feature).toBe('optional');
+  });
+
+  it('an unknown role falls back to none/none', () => {
+    expect(roleConsumes('nonexistent-role')).toEqual({ feature: 'none', plan: 'none' });
+  });
+
+  it('the kernel map covers the roles psu offers', () => {
+    for (const id of ['worker', 'validator', 'debugger', 'architect', 'documenter', 'reviewer', 'scoper', 'curator']) {
+      expect(KERNEL_ROLE_CONSUMES[id]).toBeDefined();
+    }
+  });
+
+  it('an expert manifest consumes overrides the kernel default', async () => {
+    // security-reviewer-style expert with an explicit consumes block.
+    writeFileSync(join(promptsDir, 'feat-checker.role.json'), JSON.stringify({
+      id: 'feat-checker',
+      whenUseful: 'checks a feature',
+      output: { kind: 'features', featureKind: 'feat-checker' },
+      consumes: { feature: 'required', plan: 'none' },
+    }), 'utf8');
+    writeFileSync(join(promptsDir, 'feat-checker.md'), '# checker', 'utf8');
+    __clearRoleRegistryCache();
+    expect(roleConsumes('feat-checker').feature).toBe('required');
   });
 });

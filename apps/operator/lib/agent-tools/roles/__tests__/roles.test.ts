@@ -73,25 +73,29 @@ describe('roles:get', () => {
       listRoles: vi.fn(),
       getRole: vi.fn(() => null),
       rolesFiringOn: vi.fn(),
+      roleConsumes: vi.fn(() => ({ feature: 'none', plan: 'none' })),
     }));
     const { default: tool } = await import('@/lib/agent-tools/roles/get');
     const result = await tool.handler({ id: 'unknown', harnessSlug: 'sheets' }, MAKE_CTX());
     const payload = parseTextPayload(result as never);
     expect(payload.found).toBe(false);
     expect(payload.role).toBeNull();
+    expect(payload.consumes).toEqual({ feature: 'none', plan: 'none' });
   });
 
-  it('returns found:true when getRole hits', async () => {
+  it('returns found:true when getRole hits + surfaces consumes', async () => {
     vi.doMock('@/lib/role-registry', () => ({
       listRoles: vi.fn(),
       getRole: vi.fn((id: string) => ({ id, whenUseful: 'fixture' })),
       rolesFiringOn: vi.fn(),
+      roleConsumes: vi.fn(() => ({ feature: 'required', plan: 'none' })),
     }));
     const { default: tool } = await import('@/lib/agent-tools/roles/get');
     const result = await tool.handler({ id: 'architect', harnessSlug: 'sheets' }, MAKE_CTX());
     const payload = parseTextPayload(result as never);
     expect(payload.found).toBe(true);
     expect((payload.role as { id: string }).id).toBe('architect');
+    expect(payload.consumes).toEqual({ feature: 'required', plan: 'none' });
   });
 });
 

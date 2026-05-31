@@ -88,8 +88,71 @@ export interface RoleManifest {
   budgetCents?: number;
   /** Size hint for the dispatcher / UI. */
   featureSize?: 'small' | 'standard' | 'large';
+  /**
+   * What launch-time CONTEXT this role needs — the single source for
+   * "does picking this role require a feature / plan?" Read by the `psu`
+   * role picker, the /adv launch UIs, and `roles:get`/`roles:list`.
+   * (`output` above says what a role PRODUCES; `consumes` says what it
+   * needs to start.) Omitted on an expert manifest → falls back to the
+   * kernel default in `KERNEL_ROLE_CONSUMES` / `roleConsumes()`. */
+  consumes?: RoleConsumes;
   /** Where this role came from. Built-in unless surfaced from a plugin manifest. */
   source: RoleSource;
+}
+
+/** Launch-time context a role needs. `required` → the picker must
+ *  collect it; `optional` → offer it; `none` → don't ask. */
+export interface RoleConsumes {
+  feature: 'required' | 'optional' | 'none';
+  plan: 'optional' | 'none';
+}
+
+const DEFAULT_CONSUMES: RoleConsumes = { feature: 'none', plan: 'none' };
+
+/** Validate + normalize a manifest's `consumes`. Returns undefined for
+ *  absent/malformed input (the resolver then falls back to the kernel
+ *  map / default), so a bad value never yields an invalid manifest. */
+function parseConsumes(raw: unknown): RoleConsumes | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const feature = r.feature;
+  const plan = r.plan;
+  if (feature !== 'required' && feature !== 'optional' && feature !== 'none') return undefined;
+  if (plan !== 'optional' && plan !== 'none') return undefined;
+  return { feature, plan };
+}
+
+/**
+ * Kernel (built-in pipeline) roles' context needs. Derived from which
+ * `invoke(ctx, role, [...])` call-sites pass `FEATURE_ID` in
+ * `orchestrator/main-loop.ts` (verified 2026-05-30): worker / validator /
+ * debugger / architect get a feature; documenter / reviewer optionally;
+ * scoper works at plan/spec scope; curator / operator / oracle need
+ * neither. Expert + plugin roles declare their own `consumes` on the
+ * manifest (falls back here, then to DEFAULT_CONSUMES).
+ */
+export const KERNEL_ROLE_CONSUMES: Record<string, RoleConsumes> = {
+  worker: { feature: 'required', plan: 'none' },
+  validator: { feature: 'required', plan: 'none' },
+  debugger: { feature: 'required', plan: 'none' },
+  architect: { feature: 'required', plan: 'none' },
+  documenter: { feature: 'optional', plan: 'none' },
+  reviewer: { feature: 'optional', plan: 'optional' },
+  scoper: { feature: 'none', plan: 'optional' },
+  curator: { feature: 'none', plan: 'none' },
+  operator: { feature: 'none', plan: 'none' },
+  oracle: { feature: 'none', plan: 'none' },
+};
+
+/**
+ * Resolve a role's launch-time context needs: an expert/plugin
+ * manifest's own `consumes` wins, else the kernel map, else the
+ * none/none default. The single source `psu` + UIs read.
+ */
+export function roleConsumes(id: string, harnessSlug = ''): RoleConsumes {
+  const manifest = getRole(id, harnessSlug);
+  if (manifest?.consumes) return manifest.consumes;
+  return KERNEL_ROLE_CONSUMES[id] ?? DEFAULT_CONSUMES;
 }
 
 const ROLE_ID_RE = /^[a-z][a-z0-9-]*$/;
@@ -134,7 +197,7 @@ function readBuiltinRoles(promptsDir: string): RoleManifest[] {
         continue; // unrecognised output shape
       }
       if (!existsSync(join(promptsDir, `${id}.md`))) continue;
-      out.push({ ...parsed, source: { kind: 'builtin' } });
+      out.push({ ...parsed, consumes: parseConsumes(parsed.consumes), source: { kind: 'builtin' } });
     } catch { /* skip silently */ }
   }
   return out;
@@ -172,6 +235,7 @@ function readPluginRolesFromDir(pluginDir: string, pluginName: string): RoleMani
       alwaysFireOn: decl.alwaysFireOn,
       budgetCents: decl.budgetCents,
       featureSize: decl.featureSize,
+      consumes: parseConsumes((decl as { consumes?: unknown }).consumes),
       source: { kind: 'plugin', plugin: pluginName, promptPath: decl.promptPath, dir: pluginDir },
     });
   }

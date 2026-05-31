@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getKnownRoles } from '@/lib/known-roles';
+import { roleConsumes } from '@/lib/role-registry';
 
 const ALL_ROLES = [
   'scoper',
@@ -34,6 +35,10 @@ export default defineTool({
   roles: [...ALL_ROLES],
   args: z.object({}),
   async handler() {
-    return { content: [{ type: 'text', text: JSON.stringify({ roles: getKnownRoles() }) }] };
+    // Enrich each known role id with its launch-context needs so the psu
+    // role picker (and any UI) gets role+consumes in one call.
+    const roles = getKnownRoles();
+    const consumes = Object.fromEntries(roles.map((id) => [id, roleConsumes(id)]));
+    return { content: [{ type: 'text', text: JSON.stringify({ roles, consumes }) }] };
   },
 });
