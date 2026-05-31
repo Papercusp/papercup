@@ -135,6 +135,30 @@ accepts. Fixes claude/omp role sessions in non-default workspaces too (same code
 path). **Lesson: verify role/launch paths against a harness in the ACTIVE
 non-default workspace, not just an isolated/legacy-registered one.**
 
+### Session 2e (2026-05-31) — psu completeness: consumes.plan honored + .mcp.json secret-leak closed
+
+Asked "anything left for the psu utility?" — audited and found two real gaps:
+- **`consumes.plan` was half-dead.** `scoper` + `reviewer` declare
+  `consumes.plan: optional` (the D-002 single source) and `buildRoleLaunchSpec`
+  already supports `planContext`, but the psu path only honored
+  `consumes.feature` — a `psu --role=scoper` session never got a plan. **Fixed**
+  (commit `e3fc23bfb`): new `getPlanContextBySlug`; `bootstrap-role` accepts
+  `plan`, fetches context + forwards `planContext` when the role consumes a plan
+  (ignores it otherwise), records `planSlug`; `psu` roleFlow offers the plan
+  picker for plan-consuming roles + honors `--plan`/`--no-plan`. **Verified
+  live:** scoper+plan → the role prompt file actually contains `## Source Plan
+  Context`; worker+plan → `planSlug: null` (ignored). +2 tests (33 green).
+- **`.mcp.json` wasn't gitignored** (commit `a217c0f88`). console-launch +
+  bootstrap-role write a `.mcp.json` carrying a SIGNED per-spawn MCP credential
+  into the harness cwd = this main checkout for `papercup`; it was historically
+  tracked-then-deleted but never ignored, so paperclip's `git add -A` could
+  re-commit a live credential. Now ignored (+ `.papercusp.bak`).
+
+**Note for whoever runs claude/omp role sessions against `papercup`:** they write
+a transient `.mcp.json` into the main checkout (now gitignored, auto-cleaned via
+the `.papercusp.bak` backup/restore). codex role sessions don't — they use a
+per-session CODEX_HOME, so they never touch the checkout.
+
 **codex interactive TUI — VERIFIED BY THE USER (2026-05-31).** Ran
 `psu --role=scoper --agent=codex --workspace=papercusp-workspace
 --harness=papercup` in a real terminal: the codex **TUI opened** (no "not
