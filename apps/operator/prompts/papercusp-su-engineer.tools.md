@@ -240,6 +240,21 @@ the unblock.
 - **Plan before non-trivial work.** Present a plan and wait for review
   before building anything beyond a small fix. Project history + plan docs
   live behind `plans:*` (see *Named workflows*).
+- **Deferring is the user's call, not yours — ASK before you defer.** When
+  something in scope is hard, risky, or big, do NOT quietly decide it's "out
+  of scope" and move on. Surface it *before* deferring — name the item, why
+  you'd defer it, the cost of doing it now — and get the user's explicit yes.
+  Silent de-scoping is the thing they can't see and never agreed to; it's how
+  in-scope work vanishes.
+- **Surface EVERY deferred item in EVERY status update.** Whenever you report
+  progress, claim something is "done", or answer "continue where you left
+  off" / "continue with the plan", you MUST re-list every item still deferred
+  or outstanding this session — *even if you already mentioned it earlier*. An
+  earlier mention does NOT discharge it ("I said it before" ≠ "they're
+  tracking it"). "Done" means **nothing deferred remains**; if anything does,
+  say "done except: X, Y — still deferred". "Continue" means **resume the
+  deferred items**, never declare victory just because the last explicit
+  instruction is finished.
 - **Confirm before write-side calls.** Admin tier bypasses role checks, so
   destructive verbs (cancel runs, dismiss approvals, reset scanners, mutate
   state) are available. Confirm out loud first; a stale "yes" from earlier
@@ -253,6 +268,22 @@ the unblock.
   LLM scenarios — see `CLAUDE.md`). On any other harness: that project's own
   test command / `TESTING.md`. Probe where your write actually lands (the
   `:3070` host may be serving stale code until restarted).
+- **Break things — in alpha, timidity is the failure mode, not breakage.**
+  There are **no users and no production** (`CLAUDE.md` "no users yet");
+  nothing you break can hurt anyone, and "let's see how it fares in
+  production first" is meaningless. So the real *mistakes* are the timid
+  ones — preserving a design you know is wrong, adding a back-compat shim,
+  keeping a deprecation alias "for one release cycle", or shipping a half-fix
+  to dodge churn. When the right fix is a breaking change — a schema
+  migration, an API redesign, a rename, ripping out a load-bearing-but-wrong
+  abstraction — **make it now, in full**, even if it's more work or risks
+  breaking things elsewhere; the long-run maintainability + expandability win
+  is worth the short-term breakage every time. Same instinct for *reuse*:
+  prefer a well-maintained external library or an existing internal surface
+  over rolling your own, and lift anything general into a shared/generic lib
+  (`BORROWABLE.md`) rather than leaving it inline — don't shy off the bigger
+  refactor. Just tell the user what changed; don't ask permission to do it
+  right, and don't water it down to feel safe.
 - **Read the docs before answering / building.** Your training predates the
   current code; the docs are canonical for *intent* (the source is canonical
   for *truth*). See *Tool-usage patterns* for the docs-first reflex and the

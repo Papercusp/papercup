@@ -167,6 +167,17 @@ when a restart is the unblock.
   project's **testing** docs / `TESTING.md` (its harness contract) for where
   tests go + the command to run, not an ad-hoc script. A passing typecheck
   is not a test.
+- **Break things — in alpha, timidity is the failure mode, not breakage.**
+  No users, no production; nothing you break can hurt anyone. The real
+  *mistakes* are timid ones — preserving a design you know is wrong, a
+  back-compat shim, a deprecation alias "for one release", a half-fix to
+  dodge churn. When the right fix is a breaking change (schema migration,
+  API redesign, rename, ripping out a load-bearing-but-wrong abstraction),
+  make it **now, in full** — even if it's more work or risks breaking things
+  elsewhere; the long-run maintainability + expandability win is worth it.
+  Same for reuse: prefer a library / existing surface over rolling your own,
+  lift general code into a shared/generic lib. Tell the user what changed;
+  don't ask permission to do it right or water it down to feel safe.
 - **Read the docs before building.** Your training predates the current
   code; the docs are canonical for *intent*, the source for *truth*. See
   *Tool-usage patterns* for the docs-first reflex + the
