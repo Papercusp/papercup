@@ -96,11 +96,27 @@ Xvfb instance); (c) P-032 (see below).
   combined with P-013 (codex connecting + tool_call + result) the codex role
   path is verified end-to-end at the config + connection level.
 
-**Truly remaining:** (a) the codex interactive **TUI** human-at-keyboard
-interaction (inherent); (b) the **live HTTP** `psu --role --agent=codex`
-round-trip — gated ONLY on restarting `papercup-dev-api.service` so the :3070
-host loads the codex `bootstrap-role` change (Hono host has no hot-reload). The
-deterministic HTTP path is unit-tested; the restart just confirms it live.
+### Session 2c (2026-05-31) — codex role LIVE HTTP round-trip VERIFIED
+
+Restarted `papercup-dev-api.service` (user-approved) so :3070 loaded the codex
+`bootstrap-role` change, then ran it live:
+- `POST bootstrap-role {agent:"codex", role:"scoper", harness:"papercup-org"}` →
+  **200** (was the old `400 codex_role_unsupported`) with
+  `codexHome: ~/.papercusp/role-codex-homes/session-67` + `envelopeEnv.CODEX_HOME`.
+- The **live server's** `writeRoleCodexHome` wrote a correct CODEX_HOME on disk:
+  AGENTS.md = 35KB scoper role prompt, config.toml = `[mcp_servers.papercusp]`
+  with the signed `role=scoper` url, auth.json symlinked to the real
+  `~/.codex/auth.json`. `codex mcp get papercusp` against it → enabled,
+  streamable_http. codex auth verified intact afterward (symlink, not copy).
+- codex path does NOT write `.mcp.json` into the harness cwd (uses CODEX_HOME) —
+  cleaner than claude/omp; no shared-checkout pollution.
+
+**Truly remaining: ONLY the codex interactive TUI human-at-keyboard step** — a
+person runs `psu --role=<role> --agent=codex` in a real terminal and types. Every
+mechanical layer beneath it (HTTP round-trip, CODEX_HOME on disk, codex
+acceptance, MCP connect + tool_call via P-013, the `codex
+--dangerously-bypass-approvals-and-sandbox` exec) is proven. Nothing for an agent
+left to verify here. (Plus P-032 — correctly deferred, see below.)
 
 ---
 

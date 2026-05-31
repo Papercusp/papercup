@@ -10,15 +10,17 @@ owner: aviynw3@gmail.com
 ## Now
 
 **State: ALL FIVE PHASES CODE-COMPLETE + LIVE-VERIFIED (2026-05-31). codex
-interactive role sessions now also SHIPPED. Only deferral left is P-032 (omp→psu
-convergence), which has confirmed-unmet preconditions — see its entry.** The
-verification debt from session 1 is essentially burned down: Phase 3 launch
-plumbing, P-013 codex worker, P-041 settings UI, and D-001 tool-scoping are all
-live-verified (details in the e2e handoff brief). Remaining truly-open slivers:
-the codex interactive **TUI** launch (inherent human step) and the Phase-4
-launch-button render/click **in-webview** (needs a fresh Xvfb Tauri instance —
-don't drive the user's live window). Unified the agent-backend refactor handoff
-+ psu role sessions:
+interactive role sessions SHIPPED + live-verified. The ONLY remaining open item
+is P-032 (omp→psu convergence) — correctly deferred with confirmed-unmet
+preconditions (see its entry).** Everything verifiable by an agent is verified
+live: Phase 3 launch plumbing, P-013 codex worker, P-041 settings UI, D-001
+tool-scoping, the Phase-4 launch button (in-webview via a fresh Xvfb instance →
+`launch-su`), and the codex role HTTP round-trip (`bootstrap-role agent=codex` →
+200 + a correct on-disk CODEX_HOME; `codex mcp get` accepts it). The single
+truly-open sliver is a human typing in the codex **TUI** (inherent — every
+mechanical layer beneath it is proven). Details in the e2e handoff brief
+(sessions 2 / 2b / 2c). Unified the agent-backend refactor handoff + psu role
+sessions:
 - **Phase 1** (shared spine): P-001 unify `AGENT_BACKENDS` + drift guard;
   P-002 `consumes` single-source; P-003 `buildRoleLaunchSpec`.
 - **Phase 2** (codex orchestrator pipeline): P-010/P-011/P-012 — codex spawn
