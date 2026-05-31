@@ -50,21 +50,34 @@ run data shared by slug.
   live-verified) + `lib/harness-prompt-resolve.ts` (3-tier resolver w/ on-disk
   fallback + D-6 seed/reset, 11/11). Additive — changes no live behavior yet.
 
+**LIVE-VERIFIED 2026-05-31 (after a `papercup-dev-api.service` restart loaded the
+new code):** membership works end-to-end against `:3070` — `GET
+/harness/restart/workspaces` → `[default]`; a net-zero round-trip put `restart`
+in `[default, scratch]` then back (add/remove both `changed:true`, bad-input
+rejected). Confirms multi-workspace membership works **without 091** (it edits
+the `harness_registry` JSONB, no unique-constraint involved). The user's primary
+goal is shipped + verified.
+
 **VERIFICATION-GATED remainder (NOT done — each needs the user / live verify;
 deliberately not attempted autonomously to avoid risking the running system):**
 1. **Apply migration 091 live** — reboot the desktop (boot migration-runner
    applies it as `postgres_app`), then the operator principal can be provisioned
    in any workspace. *Next step: reboot + re-run a `harness:membership` move.*
-2. **Orchestrator prompt-build cutover** — make harness pipeline agents read the
-   per-(workspace,harness,role) override from the PG store via the resolver
-   (with the on-disk fallback = no regression). Gated because: it touches the
-   `@papercusp/orchestrator` submodule + needs the spawn-path investigated
-   (resolve in apps/operator and pass into `buildPrompt`, vs orchestrator-side
-   PG read) + can only be verified by spawning a real harness agent. *Next step:
-   trace where `buildPrompt`/`promptOverrides` is read on the live spawn path.*
-3. **PromptsTab write cutover** — point `/api/harness/:slug/prompts` writes at the
-   store; couple with #2 (write+read must move together or overrides stop
-   reaching agents). Add reset endpoints for the D-6 buttons.
+2. **Cutover = coupled read+write (investigated 2026-05-31).** The seam is
+   `resolvePromptOverride(cfg, stateDir, role)` in `orchestrator/invoke.ts:144`
+   (sync; reads `config.json promptOverrides[role]`); the orchestrator has
+   `ctx.client` (PG) + `ctx.workspaceId` + slug, so an async store-aware variant
+   (PG → config.json fallback, try/catch so a PG hiccup never breaks a spawn) is
+   feasible **in the orchestrator submodule** (can't import apps/operator). BUT:
+   - read-side alone is **inert** (store empty → always falls back);
+   - write-side alone (PromptsTab → PG only) **regresses** (orchestrator still
+     reads the file);
+   - so read (orchestrator) + write (`/api/harness/:slug/prompts` → store, +
+     seed-on-install) must land together, and the only true verification is a
+     **live harness run** (spawn an agent, confirm it gets the PG override).
+   *Not done autonomously: coupled live-path change needing an e2e harness-run
+   verify I won't trigger asleep-user. Resolver + store + seed/reset are built +
+   unit-tested and ready to wire.* Add the D-6 reset endpoints alongside.
 4. **Phase 2 · `(workspace,slug)` addressing** — ~30 `activeWorkspaceId()` sites;
    behavior change across harness routes; needs live verification.
 5. **Phase 2b · desktop PG consolidation (Rust)** — `workspaces.rs`/`main.rs`;
