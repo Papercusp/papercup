@@ -261,7 +261,7 @@ const projectDocsCss = `
   }
   .project-docs-nav-link.active {
     font-weight: 600;
-    box-shadow: inset 1px 0 0 rgba(215, 243, 255, 0.16);
+    box-shadow: inset 1px 0 0 color-mix(in srgb, var(--accent-cool), transparent 84%);
   }
   .project-docs-nav-link:hover,
   .project-docs-nav-link:focus-visible {

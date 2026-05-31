@@ -70,7 +70,7 @@ export default function AdminShell({
           min-width: 0;
         }
         .pc-adminshell__kicker {
-          color: rgba(186, 230, 253, 0.64);
+          color: color-mix(in srgb, var(--accent-soft), transparent 36%);
           font-size: 10px;
           font-weight: 760;
           letter-spacing: 0.11em;
@@ -138,7 +138,7 @@ export default function AdminShell({
           border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
           border-radius: 999px;
           background: rgba(255, 255, 255, 0.025);
-          color: rgba(186, 230, 253, 0.68);
+          color: color-mix(in srgb, var(--accent-soft), transparent 32%);
           font-size: 11px;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }

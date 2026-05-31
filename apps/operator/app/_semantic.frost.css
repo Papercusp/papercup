@@ -17,6 +17,9 @@
   --accent: #38bdf8;
   --accent-strong: #7dd3fc;
   --accent-cool: #d7f3ff;
+  --accent-soft: #bae6fd; /** Light accent tint — glows/highlights (frost: sky-200) */
+  --accent-deep: #0ea5e9; /** Deeper accent tint (frost: sky-500) */
+  --accent-deeper: #0369a1; /** Deepest accent tint (frost: sky-700) */
   --accent-ink: #051827; /** Text color on accent backgrounds */
   --good: #34d399;
   --warn: #fbbf24;

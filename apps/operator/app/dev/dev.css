@@ -1604,7 +1604,7 @@
 }
 
 .pc-dev-tab.is-active .pc-dev-tab-hint {
-  color: rgba(186, 230, 253, 0.86);
+  color: color-mix(in srgb, var(--accent-soft), transparent 14%);
 }
 
 .pc-dev-rail-toggle {
@@ -1721,7 +1721,7 @@
 .pc-studio-start-btn,
 .pc-tables-composer-apply {
   background: var(--pc-dev-accent);
-  border: 1px solid rgba(186, 230, 253, 0.18);
+  border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 82%);
   color: #031018;
   font-weight: 750;
   box-shadow: none;

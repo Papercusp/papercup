@@ -29,6 +29,9 @@
   --accent: var(--sky-400);
   --accent-strong: var(--sky-300);
   --accent-cool: var(--sky-cool);
+  --accent-soft: var(--sky-200); /** Light accent tint — glows/highlights (frost: sky-200) */
+  --accent-deep: var(--sky-500); /** Deeper accent tint (frost: sky-500) */
+  --accent-deeper: var(--sky-700); /** Deepest accent tint (frost: sky-700) */
   --good: var(--emerald-400);
   --warn: var(--amber-400);
   --bad: var(--rose-400);

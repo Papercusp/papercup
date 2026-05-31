@@ -150,7 +150,7 @@ html, body {
   background:
     radial-gradient(circle at 50% -12%, rgb(from var(--accent) r g b / 0.24), transparent 34%),
     radial-gradient(circle at 92% 8%, rgb(from var(--accent-strong) r g b / 0.13), transparent 28%),
-    radial-gradient(circle at 12% 36%, rgba(14, 165, 233, 0.10), transparent 30%),
+    radial-gradient(circle at 12% 36%, color-mix(in srgb, var(--accent-deep), transparent 90%), transparent 30%),
     linear-gradient(180deg, #0b1220 0%, #081523 45%, #050b13 100%);
   background-attachment: fixed;
   color: var(--fg);
@@ -166,7 +166,7 @@ body::before {
   pointer-events: none;
   background:
     linear-gradient(120deg, rgba(255,255,255,0.035), transparent 24%, rgb(from var(--accent-strong) r g b / 0.035) 52%, transparent 70%),
-    radial-gradient(circle at 18% 92%, rgba(186, 230, 253, 0.055), transparent 30%);
+    radial-gradient(circle at 18% 92%, color-mix(in srgb, var(--accent-soft), transparent 94.5%), transparent 30%);
   mask-image: linear-gradient(to bottom, black, transparent 82%);
   z-index: 0;
 }
@@ -795,11 +795,11 @@ html[data-route-pending="true"] .pc-header::after {
     linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.14) 42%, rgba(255, 255, 255, 0.02) 100%),
     linear-gradient(135deg, #ecfeff 0%, #a5f3fc 30%, var(--accent) 66%, #2dd4bf 100%);
   box-shadow:
-    0 14px 34px rgba(14, 165, 233, 0.32),
+    0 14px 34px color-mix(in srgb, var(--accent-deep), transparent 68%),
     0 0 0 1px rgb(from var(--accent) r g b / 0.14),
     0 2px 10px rgba(45, 212, 191, 0.20),
     inset 0 1px 0 rgba(255, 255, 255, 0.82),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.34);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 66%);
   backdrop-filter: blur(14px) saturate(145%);
   -webkit-backdrop-filter: blur(14px) saturate(145%);
   transition:
@@ -835,7 +835,7 @@ html[data-route-pending="true"] .pc-header::after {
   border: 1px solid rgba(255, 255, 255, 0.42);
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.08),
-    inset 0 -10px 18px rgba(3, 105, 161, 0.16);
+    inset 0 -10px 18px color-mix(in srgb, var(--accent-deeper), transparent 84%);
 }
 
 .pc-header-cta-icon,
@@ -891,11 +891,11 @@ html[data-route-pending="true"] .pc-header::after {
     linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0.17) 42%, rgba(255, 255, 255, 0.03) 100%),
     linear-gradient(135deg, #f0fdff 0%, #bef2ff 32%, #56ccf2 66%, #5eead4 100%);
   box-shadow:
-    0 18px 42px rgba(14, 165, 233, 0.40),
-    0 0 0 1px rgba(186, 230, 253, 0.24),
+    0 18px 42px color-mix(in srgb, var(--accent-deep), transparent 60%),
+    0 0 0 1px color-mix(in srgb, var(--accent-soft), transparent 76%),
     0 4px 16px rgba(45, 212, 191, 0.26),
     inset 0 1px 0 rgba(255, 255, 255, 0.88),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.30);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 70%);
 }
 
 .pc-header-cta:hover::before {
@@ -916,9 +916,9 @@ html[data-route-pending="true"] .pc-header::after {
 .pc-header-cta:active {
   transform: translateY(0);
   box-shadow:
-    0 8px 22px rgba(14, 165, 233, 0.28),
+    0 8px 22px color-mix(in srgb, var(--accent-deep), transparent 72%),
     inset 0 1px 0 rgba(255, 255, 255, 0.58),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.34);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 66%);
 }
 
 @keyframes pc-header-cta-pulse {
@@ -1050,9 +1050,9 @@ p {
 
 .pc-button.primary {
   background: linear-gradient(135deg, #b9edff, var(--accent) 55%, #0ea5e9);
-  border-color: rgba(186, 230, 253, 0.55);
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 45%);
   color: #04131f;
-  box-shadow: 0 16px 34px rgba(14, 165, 233, 0.32);
+  box-shadow: 0 16px 34px color-mix(in srgb, var(--accent-deep), transparent 68%);
 }
 
 .pc-button.primary:hover {
@@ -1255,7 +1255,7 @@ p {
   border-radius: 32px;
   background:
     radial-gradient(circle at 70% 0%, rgb(from var(--accent-strong) r g b / 0.20), transparent 34%),
-    radial-gradient(circle at 20% 80%, rgba(14, 165, 233, 0.10), transparent 30%),
+    radial-gradient(circle at 20% 80%, color-mix(in srgb, var(--accent-deep), transparent 90%), transparent 30%),
     linear-gradient(180deg, rgba(9, 19, 34, 0.88), rgba(5, 11, 19, 0.92));
   box-shadow: var(--card-shadow), inset 0 1px 0 rgba(255,255,255,0.06);
 }
@@ -1625,7 +1625,7 @@ p {
   color: var(--accent-cool);
   font-size: 12px;
   font-weight: 850;
-  box-shadow: 0 12px 26px rgba(14, 165, 233, 0.12);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 88%);
 }
 
 .pc-status-inline {
@@ -4710,7 +4710,7 @@ body.h-harness-top-collapsed .pc-header {
   line-height: 1;
   background:
     radial-gradient(circle at 38% 32%, #f8feff 0 9%, var(--accent-strong) 10% 24%, #0f172a 25% 62%, #020617 63% 100%);
-  border: 1px solid rgba(186, 230, 253, 0.58);
+  border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 42%);
   box-shadow:
     0 0 0 2px rgba(2, 6, 12, 0.72),
     0 0 14px rgb(from var(--accent-strong) r g b / 0.40),
@@ -5355,7 +5355,7 @@ body.h-harness-top-collapsed .pc-header {
     radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.75), transparent 58%),
     linear-gradient(90deg, rgba(var(--operator-gold), 0.46), transparent 20% 80%, rgba(var(--operator-gold), 0.32)),
     linear-gradient(180deg, rgba(236, 253, 255, 0.96), rgba(var(--operator-arc), 0.86) 48%, rgba(17, 164, 224, 0.90));
-  box-shadow: 0 0 24px rgba(var(--operator-arc), 0.26), 0 0 10px rgba(var(--operator-gold), 0.16), inset 0 1px 0 rgba(255,255,255,0.62), inset 0 -1px 0 rgba(3, 105, 161, 0.32);
+  box-shadow: 0 0 24px rgba(var(--operator-arc), 0.26), 0 0 10px rgba(var(--operator-gold), 0.16), inset 0 1px 0 rgba(255,255,255,0.62), inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 68%);
 }
 
 .operator-btn--ghost {
@@ -5638,7 +5638,7 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-entry:focus-visible {
-  outline: 1px solid rgba(186, 230, 253, 0.72);
+  outline: 1px solid color-mix(in srgb, var(--accent-soft), transparent 28%);
   outline-offset: 2px;
 }
 
@@ -6484,7 +6484,7 @@ body.h-harness-top-collapsed .pc-header {
 
 .pc-voice-btn:hover,
 .pc-voice-btn:focus-visible {
-  border-color: rgba(186, 230, 253, 0.72);
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   box-shadow:
     0 0 0 1px rgba(2, 6, 12, 0.86),
     0 14px 28px rgba(0, 0, 0, 0.42),
@@ -6521,7 +6521,7 @@ body.h-harness-top-collapsed .pc-header {
   justify-content: center;
   flex: 0 0 auto;
   border-radius: 999px;
-  border: 1px solid rgba(186, 230, 253, 0.56);
+  border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 44%);
   background:
     radial-gradient(circle at 50% 42%, color-mix(in oklab, var(--pc-voice-icon-fill), white 8%) 0 34%, color-mix(in oklab, var(--pc-voice-icon-fill), black 62%) 58%, rgba(2, 6, 12, 0.98) 100%);
   box-shadow:
@@ -7476,7 +7476,7 @@ body.h-harness-top-collapsed .pc-header {
     0 0 28px rgba(var(--operator-arc), 0.32),
     0 0 14px rgba(var(--operator-gold), 0.22),
     inset 0 1px 0 rgba(255,255,255,0.72),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.34);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 66%);
 }
 
 .operator-feed-pills button {
@@ -8578,7 +8578,7 @@ body.h-harness-top-collapsed .pc-header {
   --operator-cut: 44px;
   color: var(--fg);
   background:
-    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.18), rgb(from var(--accent) r g b / 0.17) 5rem, transparent 24rem),
+    radial-gradient(ellipse at 50% -6%, color-mix(in srgb, var(--accent-cool), transparent 82%), rgb(from var(--accent) r g b / 0.17) 5rem, transparent 24rem),
     radial-gradient(circle at 50% 40%, rgb(from var(--accent-strong) r g b / 0.10), rgb(from var(--accent) r g b / 0.070) 8rem, transparent 23rem),
     radial-gradient(circle at 8% 54%, rgb(from var(--accent-strong) r g b / 0.050), transparent 14rem),
     radial-gradient(circle at 92% 54%, rgb(from var(--accent-strong) r g b / 0.050), transparent 14rem),
@@ -8596,16 +8596,16 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-panel::before {
   background:
-    linear-gradient(90deg, transparent 4%, rgb(from var(--accent-strong) r g b / 0.72) 4% 18%, transparent 18% 42%, rgba(215, 243, 255, 0.42) 45% 55%, transparent 58% 82%, rgb(from var(--accent-strong) r g b / 0.72) 82% 96%, transparent 96%) top 12px left 0 / 100% 1px no-repeat,
-    linear-gradient(90deg, transparent 8%, rgba(215, 243, 255, 0.20) 8% 20%, transparent 20% 43%, rgb(from var(--accent) r g b / 0.32) 45% 55%, transparent 57% 80%, rgba(215, 243, 255, 0.20) 80% 92%, transparent 92%) bottom 13px left 0 / 100% 1px no-repeat,
-    linear-gradient(180deg, transparent 9%, rgb(from var(--accent-strong) r g b / 0.34) 9% 32%, transparent 32% 68%, rgba(215, 243, 255, 0.16) 68% 91%, transparent 91%) left 12px center / 1px 100% no-repeat,
-    linear-gradient(180deg, transparent 9%, rgba(215, 243, 255, 0.16) 9% 32%, transparent 32% 68%, rgb(from var(--accent-strong) r g b / 0.34) 68% 91%, transparent 91%) right 12px center / 1px 100% no-repeat,
+    linear-gradient(90deg, transparent 4%, rgb(from var(--accent-strong) r g b / 0.72) 4% 18%, transparent 18% 42%, color-mix(in srgb, var(--accent-cool), transparent 58%) 45% 55%, transparent 58% 82%, rgb(from var(--accent-strong) r g b / 0.72) 82% 96%, transparent 96%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 8%, color-mix(in srgb, var(--accent-cool), transparent 80%) 8% 20%, transparent 20% 43%, rgb(from var(--accent) r g b / 0.32) 45% 55%, transparent 57% 80%, color-mix(in srgb, var(--accent-cool), transparent 80%) 80% 92%, transparent 92%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 9%, rgb(from var(--accent-strong) r g b / 0.34) 9% 32%, transparent 32% 68%, color-mix(in srgb, var(--accent-cool), transparent 84%) 68% 91%, transparent 91%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 9%, color-mix(in srgb, var(--accent-cool), transparent 84%) 9% 32%, transparent 32% 68%, rgb(from var(--accent-strong) r g b / 0.34) 68% 91%, transparent 91%) right 12px center / 1px 100% no-repeat,
     linear-gradient(135deg, rgb(from var(--accent-strong) r g b / 0.48) 0 1px, transparent 1px) top 18px left 44px / 126px 126px no-repeat,
     linear-gradient(225deg, rgb(from var(--accent-strong) r g b / 0.48) 0 1px, transparent 1px) top 18px right 44px / 126px 126px no-repeat,
-    linear-gradient(315deg, rgba(215, 243, 255, 0.22) 0 1px, transparent 1px) bottom 18px left 44px / 126px 126px no-repeat,
-    linear-gradient(45deg, rgba(215, 243, 255, 0.22) 0 1px, transparent 1px) bottom 18px right 44px / 126px 126px no-repeat,
+    linear-gradient(315deg, color-mix(in srgb, var(--accent-cool), transparent 78%) 0 1px, transparent 1px) bottom 18px left 44px / 126px 126px no-repeat,
+    linear-gradient(45deg, color-mix(in srgb, var(--accent-cool), transparent 78%) 0 1px, transparent 1px) bottom 18px right 44px / 126px 126px no-repeat,
     repeating-linear-gradient(135deg, rgb(from var(--accent-strong) r g b / 0.26) 0 1px, transparent 1px 6px) top 20px right 126px / 108px 8px no-repeat,
-    repeating-linear-gradient(135deg, rgba(215, 243, 255, 0.16) 0 1px, transparent 1px 6px) bottom 22px left 126px / 108px 8px no-repeat,
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--accent-cool), transparent 84%) 0 1px, transparent 1px 6px) bottom 22px left 126px / 108px 8px no-repeat,
     linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.10), rgba(7, 16, 29, 0.030));
   opacity: 0.70;
   filter: drop-shadow(0 0 10px rgb(from var(--accent) r g b / 0.14));
@@ -8613,11 +8613,11 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-panel::after {
   background:
-    linear-gradient(90deg, transparent 7%, rgb(from var(--accent-strong) r g b / 0.46) 7% 18%, transparent 18% 42%, rgba(215, 243, 255, 0.26) 45% 55%, transparent 58% 82%, rgb(from var(--accent-strong) r g b / 0.46) 82% 93%, transparent 93%) top 0 left 0 / 100% 1px no-repeat,
-    linear-gradient(90deg, transparent 10%, rgba(215, 243, 255, 0.14) 10% 20%, transparent 20% 43%, rgb(from var(--accent) r g b / 0.22) 45% 55%, transparent 57% 80%, rgba(215, 243, 255, 0.14) 80% 90%, transparent 90%) bottom 0 left 0 / 100% 1px no-repeat,
-    linear-gradient(180deg, transparent 11%, rgb(from var(--accent-strong) r g b / 0.24) 11% 31%, transparent 31% 69%, rgba(215, 243, 255, 0.12) 69% 89%, transparent 89%) left 0 center / 1px 100% no-repeat,
-    linear-gradient(180deg, transparent 11%, rgba(215, 243, 255, 0.12) 11% 31%, transparent 31% 69%, rgb(from var(--accent-strong) r g b / 0.24) 69% 89%, transparent 89%) right 0 center / 1px 100% no-repeat,
-    linear-gradient(180deg, rgba(215, 243, 255, 0.050), rgba(7, 16, 29, 0.12));
+    linear-gradient(90deg, transparent 7%, rgb(from var(--accent-strong) r g b / 0.46) 7% 18%, transparent 18% 42%, color-mix(in srgb, var(--accent-cool), transparent 74%) 45% 55%, transparent 58% 82%, rgb(from var(--accent-strong) r g b / 0.46) 82% 93%, transparent 93%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 10%, color-mix(in srgb, var(--accent-cool), transparent 86%) 10% 20%, transparent 20% 43%, rgb(from var(--accent) r g b / 0.22) 45% 55%, transparent 57% 80%, color-mix(in srgb, var(--accent-cool), transparent 86%) 80% 90%, transparent 90%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 11%, rgb(from var(--accent-strong) r g b / 0.24) 11% 31%, transparent 31% 69%, color-mix(in srgb, var(--accent-cool), transparent 88%) 69% 89%, transparent 89%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 11%, color-mix(in srgb, var(--accent-cool), transparent 88%) 11% 31%, transparent 31% 69%, rgb(from var(--accent-strong) r g b / 0.24) 69% 89%, transparent 89%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 95%), rgba(7, 16, 29, 0.12));
   box-shadow:
     0 0 14px rgb(from var(--accent) r g b / 0.11),
     inset 0 0 0 1px rgb(from var(--accent-strong) r g b / 0.11);
@@ -8628,7 +8628,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-panel__rail {
   border-color: rgb(from var(--accent-strong) r g b / 0.16);
   background:
-    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.085), transparent 68%),
+    radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent-cool), transparent 91.5%), transparent 68%),
     var(--frost),
     rgba(9, 19, 34, 0.62);
   box-shadow:
@@ -8645,9 +8645,9 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-panel__body {
   background:
-    radial-gradient(circle at 50% 34%, rgba(215, 243, 255, 0.055), rgb(from var(--accent) r g b / 0.055) 8rem, transparent 22rem),
+    radial-gradient(circle at 50% 34%, color-mix(in srgb, var(--accent-cool), transparent 94.5%), rgb(from var(--accent) r g b / 0.055) 8rem, transparent 22rem),
     repeating-linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.018) 0 1px, transparent 1px 64px),
-    repeating-linear-gradient(180deg, rgba(215, 243, 255, 0.010) 0 1px, transparent 1px 52px),
+    repeating-linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 99%) 0 1px, transparent 1px 52px),
     linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.030), transparent 17% 83%, rgb(from var(--accent-strong) r g b / 0.026)),
     linear-gradient(180deg, rgba(7, 16, 29, 0.82), rgba(3, 8, 17, 0.92));
 }
@@ -8671,7 +8671,7 @@ body.h-harness-top-collapsed .pc-header {
   border-color: rgb(from var(--accent-strong) r g b / 0.16);
   background:
     radial-gradient(ellipse at 18% 0%, rgba(255,255,255,0.050), transparent 55%),
-    linear-gradient(135deg, rgb(from var(--accent-strong) r g b / 0.040), transparent 26% 78%, rgba(215, 243, 255, 0.030)),
+    linear-gradient(135deg, rgb(from var(--accent-strong) r g b / 0.040), transparent 26% 78%, color-mix(in srgb, var(--accent-cool), transparent 97%)),
     var(--frost),
     rgba(9, 19, 34, 0.68);
   box-shadow:
@@ -8735,7 +8735,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-panel__metrics span {
   border-radius: 15px;
   background:
-    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.080), transparent 65%),
+    radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent-cool), transparent 92%), transparent 65%),
     var(--frost),
     rgba(9, 19, 34, 0.70);
   box-shadow:
@@ -8748,11 +8748,11 @@ body.h-harness-top-collapsed .pc-header {
   color: var(--accent-ink);
   background:
     radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.78), transparent 58%),
-    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgb(from var(--accent-strong) r g b / 0.96) 48%, rgb(from var(--accent) r g b / 0.88));
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.96) 48%, rgb(from var(--accent) r g b / 0.88));
   box-shadow:
-    0 16px 32px rgba(14, 165, 233, 0.22),
+    0 16px 32px color-mix(in srgb, var(--accent-deep), transparent 78%),
     inset 0 1px 0 rgba(255,255,255,0.66),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
 }
 
 .operator-feed-pills button.is-active {
@@ -8760,7 +8760,7 @@ body.h-harness-top-collapsed .pc-header {
   background:
     linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.14), rgb(from var(--accent) r g b / 0.070)),
     rgba(9, 19, 34, 0.70);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 12px 26px rgba(14, 165, 233, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 90%);
 }
 
 .operator-tier--high,
@@ -8796,7 +8796,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-panel {
   --operator-cut: 32px;
   background:
-    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.16), rgb(from var(--accent) r g b / 0.14) 5rem, transparent 24rem),
+    radial-gradient(ellipse at 50% -6%, color-mix(in srgb, var(--accent-cool), transparent 84%), rgb(from var(--accent) r g b / 0.14) 5rem, transparent 24rem),
     radial-gradient(circle at 50% 40%, rgb(from var(--accent-strong) r g b / 0.085), rgb(from var(--accent) r g b / 0.055) 8rem, transparent 23rem),
     radial-gradient(circle at 8% 54%, rgb(from var(--accent-strong) r g b / 0.035), transparent 14rem),
     radial-gradient(circle at 92% 54%, rgb(from var(--accent-strong) r g b / 0.035), transparent 14rem),
@@ -8855,7 +8855,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-entry--rejected .operator-entry__rail,
 .operator-entry--escalated .operator-entry__rail {
   background:
-    radial-gradient(circle at 50% 24px, rgba(215, 243, 255, 0.048), rgb(from var(--rose-400) r g b / 0.075) 0 22px, transparent 46px),
+    radial-gradient(circle at 50% 24px, color-mix(in srgb, var(--accent-cool), transparent 95.2%), rgb(from var(--rose-400) r g b / 0.075) 0 22px, transparent 46px),
     linear-gradient(180deg, rgb(from var(--rose-400) r g b / 0.060), rgb(from var(--accent-strong) r g b / 0.032) 46%, transparent);
   border-right-color: rgb(from var(--rose-400) r g b / 0.11);
 }
@@ -9344,13 +9344,13 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   opacity: 0;
   clip-path: polygon(var(--operator-inner-cut) 0, calc(100% - var(--operator-inner-cut)) 0, 100% var(--operator-inner-cut), 100% calc(100% - var(--operator-inner-cut)), calc(100% - var(--operator-inner-cut)) 100%, var(--operator-inner-cut) 100%, 0 calc(100% - var(--operator-inner-cut)), 0 var(--operator-inner-cut));
   background:
-    linear-gradient(90deg, transparent 4%, rgba(215, 243, 255, 0.96) 4% 18%, transparent 18% 82%, rgba(215, 243, 255, 0.96) 82% 96%, transparent 96%) top 0 left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 4%, color-mix(in srgb, var(--accent-cool), transparent 4%) 4% 18%, transparent 18% 82%, color-mix(in srgb, var(--accent-cool), transparent 4%) 82% 96%, transparent 96%) top 0 left / 100% 2px no-repeat,
     linear-gradient(90deg, transparent 8%, rgb(from var(--accent) r g b / 0.88) 8% 24%, transparent 24% 76%, rgb(from var(--accent) r g b / 0.88) 76% 92%, transparent 92%) bottom 0 left / 100% 2px no-repeat,
-    linear-gradient(180deg, transparent 8%, rgba(215, 243, 255, 0.92) 8% 24%, transparent 24% 76%, rgb(from var(--accent) r g b / 0.82) 76% 92%, transparent 92%) left 0 top / 2px 100% no-repeat,
-    linear-gradient(180deg, transparent 8%, rgb(from var(--accent) r g b / 0.82) 8% 24%, transparent 24% 76%, rgba(215, 243, 255, 0.92) 76% 92%, transparent 92%) right 0 top / 2px 100% no-repeat,
-    radial-gradient(circle at 50% 50%, rgba(215, 243, 255, 0.32), rgb(from var(--accent) r g b / 0.16) 18%, transparent 42%);
+    linear-gradient(180deg, transparent 8%, color-mix(in srgb, var(--accent-cool), transparent 8%) 8% 24%, transparent 24% 76%, rgb(from var(--accent) r g b / 0.82) 76% 92%, transparent 92%) left 0 top / 2px 100% no-repeat,
+    linear-gradient(180deg, transparent 8%, rgb(from var(--accent) r g b / 0.82) 8% 24%, transparent 24% 76%, color-mix(in srgb, var(--accent-cool), transparent 8%) 76% 92%, transparent 92%) right 0 top / 2px 100% no-repeat,
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-cool), transparent 68%), rgb(from var(--accent) r g b / 0.16) 18%, transparent 42%);
   box-shadow:
-    0 0 0 1px rgba(215, 243, 255, 0.62) inset,
+    0 0 0 1px color-mix(in srgb, var(--accent-cool), transparent 38%) inset,
     0 0 38px rgb(from var(--accent) r g b / 0.42),
     0 0 92px rgb(from var(--accent) r g b / 0.18);
   transform: scale(0.985);
@@ -9644,7 +9644,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
     rgba(9, 19, 34, 0.72);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.065),
-    0 12px 28px rgba(14, 165, 233, 0.12);
+    0 12px 28px color-mix(in srgb, var(--accent-deep), transparent 88%);
 }
 
 .operator-panel .operator-btn--primary,
@@ -9652,11 +9652,11 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   background:
     radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.78), transparent 58%),
-    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
   box-shadow:
-    0 15px 30px rgba(14, 165, 233, 0.22),
+    0 15px 30px color-mix(in srgb, var(--accent-deep), transparent 78%),
     inset 0 1px 0 rgba(255,255,255,0.66),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
 }
 
 .operator-panel .operator-btn--close {
@@ -9680,7 +9680,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel {
   --operator-cut: 28px;
   background:
-    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.13), rgb(from var(--accent) r g b / 0.105) 5rem, transparent 24rem),
+    radial-gradient(ellipse at 50% -6%, color-mix(in srgb, var(--accent-cool), transparent 87%), rgb(from var(--accent) r g b / 0.105) 5rem, transparent 24rem),
     radial-gradient(circle at 50% 40%, rgb(from var(--accent-strong) r g b / 0.060), rgb(from var(--accent) r g b / 0.040) 8rem, transparent 23rem),
     var(--frost),
     linear-gradient(180deg, rgba(7, 16, 29, 0.990), rgba(8, 19, 34, 0.970) 58%, rgba(3, 8, 17, 0.992));
@@ -9715,7 +9715,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel__feed,
 .operator-panel__rail {
   background:
-    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.060), transparent 70%),
+    radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent-cool), transparent 94%), transparent 70%),
     var(--frost),
     rgba(9, 19, 34, 0.70);
   box-shadow:
@@ -9794,7 +9794,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   background:
     linear-gradient(180deg, rgb(from var(--accent-strong) r g b / 0.100), rgba(255,255,255,0.026)),
     rgba(9, 19, 34, 0.74);
-  box-shadow: 0 10px 24px rgba(14, 165, 233, 0.09), inset 0 1px 0 rgba(255,255,255,0.055);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-deep), transparent 91%), inset 0 1px 0 rgba(255,255,255,0.055);
 }
 
 .operator-panel .operator-btn:focus-visible,
@@ -9806,7 +9806,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   box-shadow:
     0 0 0 3px rgb(from var(--accent-strong) r g b / 0.18),
-    0 10px 24px rgba(14, 165, 233, 0.10),
+    0 10px 24px color-mix(in srgb, var(--accent-deep), transparent 90%),
     inset 0 1px 0 rgba(255,255,255,0.060);
 }
 
@@ -9814,7 +9814,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary {
   border-color: rgb(from var(--accent-strong) r g b / 0.34);
   box-shadow:
-    0 12px 26px rgba(14, 165, 233, 0.18),
+    0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 82%),
     inset 0 1px 0 rgba(255,255,255,0.62);
 }
 
@@ -9859,11 +9859,11 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   background:
     radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.76), transparent 58%),
-    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
   box-shadow:
-    0 12px 26px rgba(14, 165, 233, 0.20),
+    0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 80%),
     inset 0 1px 0 rgba(255,255,255,0.62),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
 }
 
 .operator-panel .operator-btn--primary:hover,
@@ -9871,21 +9871,21 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary:hover,
 .operator-panel .operator-mini-btn--primary:focus-visible {
   color: var(--accent-ink);
-  border-color: rgba(215, 243, 255, 0.58);
+  border-color: color-mix(in srgb, var(--accent-cool), transparent 42%);
   background:
     radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.84), transparent 58%),
     linear-gradient(180deg, rgba(231, 247, 255, 1), rgb(from var(--accent-strong) r g b / 0.98) 52%, rgb(from var(--accent) r g b / 0.92));
   box-shadow:
-    0 14px 30px rgba(14, 165, 233, 0.26),
+    0 14px 30px color-mix(in srgb, var(--accent-deep), transparent 74%),
     inset 0 1px 0 rgba(255,255,255,0.68),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.24);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 76%);
 }
 
 /* Operator usability polish: reduce decoration, improve scanability, keep action clarity. */
 .operator-panel {
   --operator-cut: 24px;
   background:
-    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.105), rgb(from var(--accent) r g b / 0.075) 5rem, transparent 24rem),
+    radial-gradient(ellipse at 50% -6%, color-mix(in srgb, var(--accent-cool), transparent 89.5%), rgb(from var(--accent) r g b / 0.075) 5rem, transparent 24rem),
     var(--frost),
     linear-gradient(180deg, rgba(7, 16, 29, 0.992), rgba(8, 19, 34, 0.974) 58%, rgba(3, 8, 17, 0.994));
   box-shadow:
@@ -10037,11 +10037,11 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   border-color: rgb(from var(--accent-strong) r g b / 0.42);
   background:
     radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.76), transparent 58%),
-    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-cool), transparent 2%), rgb(from var(--accent-strong) r g b / 0.94) 52%, rgb(from var(--accent) r g b / 0.86));
   box-shadow:
-    0 12px 26px rgba(14, 165, 233, 0.20),
+    0 12px 26px color-mix(in srgb, var(--accent-deep), transparent 80%),
     inset 0 1px 0 rgba(255,255,255,0.62),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 78%);
 }
 
 .operator-panel .operator-btn--primary:hover,
@@ -10049,14 +10049,14 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .operator-panel .operator-mini-btn--primary:hover,
 .operator-panel .operator-mini-btn--primary:focus-visible {
   color: var(--accent-ink);
-  border-color: rgba(215, 243, 255, 0.58);
+  border-color: color-mix(in srgb, var(--accent-cool), transparent 42%);
   background:
     radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.84), transparent 58%),
     linear-gradient(180deg, rgba(231, 247, 255, 1), rgb(from var(--accent-strong) r g b / 0.98) 52%, rgb(from var(--accent) r g b / 0.92));
   box-shadow:
-    0 14px 30px rgba(14, 165, 233, 0.26),
+    0 14px 30px color-mix(in srgb, var(--accent-deep), transparent 74%),
     inset 0 1px 0 rgba(255,255,255,0.68),
-    inset 0 -1px 0 rgba(3, 105, 161, 0.24);
+    inset 0 -1px 0 color-mix(in srgb, var(--accent-deeper), transparent 76%);
 }
 
 .pc-route-loading-shell {
@@ -10114,7 +10114,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   right: -18%;
   bottom: 28px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(215, 243, 255, 0.86), rgba(87, 215, 255, 0.82), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-cool), transparent 14%), rgba(87, 215, 255, 0.82), transparent);
   opacity: 0.82;
   pointer-events: none;
   animation: pc-route-loading-sweep 2.8s linear infinite;
@@ -10170,7 +10170,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   flex: 1 1 0;
   height: 4px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(87, 215, 255, 0.18), rgba(215, 243, 255, 0.92), rgba(87, 215, 255, 0.18));
+  background: linear-gradient(90deg, rgba(87, 215, 255, 0.18), color-mix(in srgb, var(--accent-cool), transparent 8%), rgba(87, 215, 255, 0.18));
   box-shadow: 0 0 16px rgba(87, 215, 255, 0.24);
   transform-origin: left center;
   animation: pc-route-loading-meter 1.6s var(--ease-out) infinite both;
@@ -10225,7 +10225,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: rgba(215, 243, 255, 0.68);
+  background: color-mix(in srgb, var(--accent-cool), transparent 32%);
   box-shadow: 0 0 12px rgba(87, 215, 255, 0.24);
   animation: pc-route-loading-dot 1.8s var(--ease-mid) infinite;
 }
@@ -10247,7 +10247,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
   display: block;
   height: 10px;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.14), rgba(215, 243, 255, 0.76), rgb(from var(--accent-strong) r g b / 0.14));
+  background: linear-gradient(90deg, rgb(from var(--accent-strong) r g b / 0.14), color-mix(in srgb, var(--accent-cool), transparent 24%), rgb(from var(--accent-strong) r g b / 0.14));
   background-size: 200% 100%;
   animation: pc-route-loading-line 1.5s linear infinite;
 }
@@ -10397,7 +10397,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 /* Operator panel metallic command deck pass.
    Visual-only: clearer hierarchy and calmer surfaces without changing copy/layout. */
 .pc-header .pc-header-cta--operator {
-  border-color: rgba(186, 230, 253, 0.34) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 66%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.020)),
     linear-gradient(90deg, rgba(248, 113, 113, 0.14), rgba(15, 23, 42, 0.92) 38%, rgb(from var(--accent-strong) r g b / 0.13)) !important;
@@ -10412,7 +10412,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 .pc-header .pc-header-cta--operator .pc-header-cta-orb {
   background:
     radial-gradient(circle at 36% 30%, #fff7ed 0 10%, #fb7185 11% 24%, #111827 25% 58%, #020617 59% 100%) !important;
-  border-color: rgba(186, 230, 253, 0.46) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 54%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.48),
     0 0 14px rgb(from var(--rose-400) r g b / 0.30),
@@ -10421,7 +10421,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 
 .pc-header .pc-header-cta--operator:hover,
 .pc-header .pc-header-cta--operator:focus-visible {
-  border-color: rgba(186, 230, 253, 0.62) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 38%) !important;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.130), rgba(255, 255, 255, 0.026)),
     linear-gradient(90deg, rgba(248, 113, 113, 0.17), rgba(15, 23, 42, 0.92) 38%, rgb(from var(--accent-strong) r g b / 0.18)) !important;
@@ -10818,8 +10818,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 }
 
 .operator-panel__actions .operator-btn--ghost {
-  --operator-action-accent: rgba(186, 230, 253, 0.58);
-  --operator-action-fill: rgba(186, 230, 253, 0.085);
+  --operator-action-accent: color-mix(in srgb, var(--accent-soft), transparent 42%);
+  --operator-action-fill: color-mix(in srgb, var(--accent-soft), transparent 91.5%);
   --operator-action-glow: rgb(from var(--accent-strong) r g b / 0.12);
 }
 
@@ -10925,7 +10925,7 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 }
 
 .operator-life--superseded {
-  --operator-life-accent: rgba(186, 230, 253, 0.56);
+  --operator-life-accent: color-mix(in srgb, var(--accent-soft), transparent 44%);
 }
 
 .operator-life--superseded::before {
@@ -10978,8 +10978,8 @@ body.has-op-chat:not(.op-chat-collapsed) .pc-user-caret {
 }
 
 .operator-entry__buttons .operator-mini-btn--ghost {
-  --operator-mini-accent: rgba(186, 230, 253, 0.48);
-  --operator-mini-fill: rgba(186, 230, 253, 0.050);
+  --operator-mini-accent: color-mix(in srgb, var(--accent-soft), transparent 52%);
+  --operator-mini-fill: color-mix(in srgb, var(--accent-soft), transparent 95%);
 }
 
 .operator-stream {
@@ -12868,7 +12868,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
   left: clamp(20px, 4vw, 60px);
   right: clamp(20px, 4vw, 60px);
   bottom: clamp(72px, 12vh, 112px);
-  color: rgba(186, 230, 253, 0.64);
+  color: color-mix(in srgb, var(--accent-soft), transparent 36%);
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
   font-size: 10px;
   font-weight: 800;
@@ -13049,7 +13049,7 @@ html[data-visual-effects='minimal'] .pc-header-quote--hud::after {
 .pc-route-transition__core::after {
   z-index: -2;
   inset: -34%;
-  border: 1px solid rgba(186, 230, 253, 0.16);
+  border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 84%);
   background:
     radial-gradient(circle, transparent 0 36%, rgba(103, 232, 249, 0.13) 37% 37.6%, transparent 38% 100%),
     radial-gradient(circle, rgb(from var(--emerald-400) r g b / 0.10), transparent 62%);
@@ -13637,7 +13637,7 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
 
 .operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost {
   opacity: 0.74;
-  border-color: rgba(186, 230, 253, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 82%) !important;
   background: rgba(255,255,255,0.018) !important;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.045),
@@ -13647,7 +13647,7 @@ body:has(.operator-panel) .oracle-dock--maximal-hud {
 .operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:hover,
 .operator-entry__buttons:has(.operator-mini-btn--danger) .operator-mini-btn--ghost:focus-visible {
   opacity: 1;
-  border-color: rgba(186, 230, 253, 0.32) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 68%) !important;
 }
 
 .operator-panel__footer {
@@ -16493,7 +16493,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   position: absolute;
   top: -13px;
   right: 10px;
-  color: rgba(186, 230, 253, 0.72);
+  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
@@ -18275,7 +18275,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 
 .operator-panel[data-scan-status="complete"] .operator-panel__actions .operator-btn--primary::after {
   content: "Re-scan";
-  color: rgba(186, 230, 253, 0.96);
+  color: color-mix(in srgb, var(--accent-soft), transparent 4%);
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.24);
   background: rgba(4, 12, 22, 0.92);
   box-shadow: 0 0 12px rgb(from var(--accent-strong) r g b / 0.14);
@@ -18964,7 +18964,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
   position: absolute;
   top: -13px;
   left: 10px;
-  color: rgba(186, 230, 253, 0.68);
+  color: color-mix(in srgb, var(--accent-soft), transparent 32%);
   font-size: 8px;
   font-weight: 860;
   line-height: 1;
@@ -19202,7 +19202,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 }
 
 .operator-stream:not(.operator-stream--error):not(.operator-stream--muted) .operator-section__head em {
-  color: rgba(186, 230, 253, 0.90) !important;
+  color: color-mix(in srgb, var(--accent-soft), transparent 10%) !important;
 }
 
 /* Marketplace clarity pass v3: clearer state lanes and action affordances. */
@@ -19357,7 +19357,7 @@ body:has(.pc-settings-nav-link[href="/settings/shortcuts"][aria-current="page"])
 .operator-panel__metrics::before {
   content: "Filters";
   left: 8px;
-  color: rgba(186, 230, 253, 0.68);
+  color: color-mix(in srgb, var(--accent-soft), transparent 32%);
 }
 
 .operator-panel__metrics:has(.operator-panel__metric-card[aria-pressed="true"])::after {
@@ -19540,7 +19540,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 .oracle-dock--maximal-hud .oracle-tab-add:hover,
 .oracle-dock--maximal-hud .oracle-tab-add.is-open {
   color: #ffffff !important;
-  border-color: rgba(186, 230, 253, 0.94) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 6%) !important;
   background:
     radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.34), transparent 50%),
     linear-gradient(180deg, rgb(from var(--accent) r g b / 0.34), rgba(14, 25, 43, 0.98)) !important;
@@ -20387,7 +20387,7 @@ body:has(.operator-panel) {
 }
 
 .operator-entry__buttons .operator-mini-btn--ghost {
-  border-color: rgba(186, 230, 253, 0.18) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 82%) !important;
   background: rgba(255,255,255,0.014) !important;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.035) !important;
 }
@@ -20518,7 +20518,7 @@ body:has(.operator-panel) {
 .operator-panel__metrics {
   border-radius: 18px;
   background:
-    radial-gradient(circle at 18% 0%, rgba(215, 243, 255, 0.075), transparent 44%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-cool), transparent 92.5%), transparent 44%),
     linear-gradient(180deg, rgba(255,255,255,0.036), rgba(255,255,255,0.010)),
     rgba(4, 12, 22, 0.42);
   box-shadow:
@@ -20643,7 +20643,7 @@ body:has(.operator-panel) {
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.080),
     0 0 0 1px rgb(from var(--accent-strong) r g b / 0.16),
-    0 8px 16px rgba(14, 165, 233, 0.10);
+    0 8px 16px color-mix(in srgb, var(--accent-deep), transparent 90%);
 }
 
 .operator-feed-tools {
@@ -21925,7 +21925,7 @@ body:has(.operator-panel) {
 }
 
 .operator-target {
-  color: rgba(186, 230, 253, 0.90) !important;
+  color: color-mix(in srgb, var(--accent-soft), transparent 10%) !important;
   border-style: dashed !important;
   background: rgb(from var(--accent-strong) r g b / 0.055) !important;
 }
@@ -21965,7 +21965,7 @@ body:has(.operator-panel) {
   width: fit-content;
   margin: 7px 0 0;
   padding: 5px 8px;
-  color: rgba(186, 230, 253, 0.82);
+  color: color-mix(in srgb, var(--accent-soft), transparent 18%);
   font-size: 10.5px;
   font-weight: 720;
   letter-spacing: 0.02em;
@@ -22825,7 +22825,7 @@ body:has(.operator-panel) {
 }
 
 .operator-panel__action-strip .operator-btn--ghost {
-  --operator-action-ring: rgba(186, 230, 253, 0.24);
+  --operator-action-ring: color-mix(in srgb, var(--accent-soft), transparent 76%);
 }
 
 .operator-panel__action-strip .operator-btn:hover,
@@ -24364,7 +24364,7 @@ body:has(.operator-panel) {
 
 .pc-console-btn:hover,
 .pc-console-btn:focus-visible {
-  border-color: rgba(186, 230, 253, 0.72);
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   box-shadow:
     0 0 0 1px rgba(2, 6, 12, 0.86),
     0 14px 28px rgba(0, 0, 0, 0.42),
@@ -24450,7 +24450,7 @@ body:has(.operator-panel) {
 
 .ask-choice-picked {
   margin: 0;
-  color: rgba(186, 230, 253, 0.74);
+  color: color-mix(in srgb, var(--accent-soft), transparent 26%);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.11em;
@@ -24699,7 +24699,7 @@ body:has(.operator-panel) {
 
 .op-chat-empty-panel-label {
   margin-bottom: 9px;
-  color: rgba(186, 230, 253, 0.72);
+  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -25034,7 +25034,7 @@ body:has(.operator-panel) {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.12);
   border-radius: 999px;
   background: rgb(from var(--accent-strong) r g b / 0.06);
-  color: rgba(186, 230, 253, 0.70);
+  color: color-mix(in srgb, var(--accent-soft), transparent 30%);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -25044,7 +25044,7 @@ body:has(.operator-panel) {
 
 .oracle-input-shell:focus-within .oracle-input-meta {
   border-color: rgb(from var(--accent-strong) r g b / 0.24);
-  color: rgba(186, 230, 253, 0.9);
+  color: color-mix(in srgb, var(--accent-soft), transparent 10%);
   background: rgb(from var(--accent-strong) r g b / 0.10);
 }
 
@@ -25094,7 +25094,7 @@ body:has(.operator-panel) {
   background:
     radial-gradient(circle at 34% 26%, rgba(255,255,255,0.34), transparent 24%),
     linear-gradient(180deg, rgba(27, 50, 74, 0.98), rgba(7, 16, 29, 1)) !important;
-  border-color: rgba(186, 230, 253, 0.50) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 50%) !important;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.26),
     0 0 12px rgb(from var(--accent-strong) r g b / 0.22),
@@ -25217,7 +25217,7 @@ body:has(.operator-panel) {
 }
 
 .operator-wordmark__subtitle {
-  color: rgba(186, 230, 253, 0.62);
+  color: color-mix(in srgb, var(--accent-soft), transparent 38%);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -26085,7 +26085,7 @@ body:has(.operator-panel) {
   gap: 4px;
   align-items: baseline;
   margin-top: 1px;
-  color: rgba(186, 230, 253, 0.72);
+  color: color-mix(in srgb, var(--accent-soft), transparent 28%);
   font-size: 9px;
   letter-spacing: 0.06em;
 }
@@ -26135,7 +26135,7 @@ body:has(.operator-panel) {
   flex-basis: 24px !important;
   border-radius: 8px !important;
   background: rgba(255,255,255,0.025) !important;
-  color: rgba(186, 230, 253, 0.86);
+  color: color-mix(in srgb, var(--accent-soft), transparent 14%);
   box-shadow: none !important;
 }
 

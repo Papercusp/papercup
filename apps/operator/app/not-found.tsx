@@ -65,7 +65,7 @@ export default function NotFound() {
                   inset: '8%',
                   borderRadius: '50%',
                   background:
-                    'radial-gradient(circle, rgba(186,230,253,0.38), color-mix(in srgb, var(--accent), transparent 90%) 48%, transparent 70%)',
+                    'radial-gradient(circle, color-mix(in srgb, var(--accent-soft), transparent 62%), color-mix(in srgb, var(--accent), transparent 90%) 48%, transparent 70%)',
                   filter: 'blur(6px)',
                 }}
               />

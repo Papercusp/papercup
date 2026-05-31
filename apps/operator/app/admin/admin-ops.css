@@ -171,7 +171,7 @@
 .pc-ops-btn-mini { padding: 3px 8px; font-size: 11px; }
 
 .pc-ops-meta {
-  color: rgba(186, 230, 253, 0.66);
+  color: color-mix(in srgb, var(--accent-soft), transparent 34%);
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

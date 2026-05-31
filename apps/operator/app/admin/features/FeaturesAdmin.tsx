@@ -331,7 +331,7 @@ export default function FeaturesAdmin() {
         .fa-preset-emoji { font-size: 20px; }
         .fa-preset-title { font-size: 16px; font-weight: 700; }
         .fa-preset-blurb { font-size: 12px; color: rgba(205, 226, 240, 0.76); line-height: 1.5; }
-        .fa-preset-busy { font-size: 11px; color: rgba(186, 230, 253, 0.64); }
+        .fa-preset-busy { font-size: 11px; color: color-mix(in srgb, var(--accent-soft), transparent 36%); }
         .fa-master,
         .fa-flag {
           display: flex;

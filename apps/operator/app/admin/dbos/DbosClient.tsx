@@ -138,7 +138,7 @@ const pill = (on: boolean): CSSProperties => ({
 const tbl: CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 12 };
 const th: CSSProperties = {
   textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid rgba(103,232,249,0.18)',
-  color: 'rgba(186,230,253,0.7)', fontWeight: 650, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.06em',
+  color: 'color-mix(in srgb, var(--accent-soft), transparent 30%)', fontWeight: 650, textTransform: 'uppercase', fontSize: 10, letterSpacing: '0.06em',
 };
 const td: CSSProperties = { padding: '5px 8px', borderBottom: '1px solid rgba(255,255,255,0.04)', verticalAlign: 'top' };
 const tdMono: CSSProperties = { ...td, fontFamily: 'ui-monospace, Menlo, monospace' };

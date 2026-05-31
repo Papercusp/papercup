@@ -7700,7 +7700,7 @@ body:has(.h-top-collapse-inline) main {
 
 .h-top-collapse-btn:hover {
   color: #f2fbff !important;
-  border-color: rgba(186, 230, 253, 0.58) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 42%) !important;
   background:
     radial-gradient(circle at 18% 0%, rgba(224, 247, 255, 0.24), transparent 36%),
     linear-gradient(180deg, rgba(20, 47, 72, 0.96), rgba(7, 19, 34, 0.98)) !important;
@@ -10788,7 +10788,7 @@ body:has(.h-top-collapse-inline) main {
 .h-phase-plan-row button:focus-visible,
 .h-quick-action-btn:focus-visible,
 .h-main-tabs .h-tab:focus-visible {
-  outline: 1px solid rgba(186, 230, 253, 0.72) !important;
+  outline: 1px solid color-mix(in srgb, var(--accent-soft), transparent 28%) !important;
   outline-offset: -2px !important;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong), transparent 90%), inset 0 1px 0 rgba(255, 255, 255, 0.065) !important;
 }
@@ -12764,7 +12764,7 @@ body:has(.h-top-collapse-inline) main {
   bottom: 0;
   left: -18%;
   width: 38%;
-  background: linear-gradient(90deg, transparent, rgba(186, 230, 253, 0.22), rgba(34, 211, 238, 0.18), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-soft), transparent 78%), rgba(34, 211, 238, 0.18), transparent);
   animation: h-hud-scanline 3.4s ease-in-out infinite;
   mix-blend-mode: screen;
 }
@@ -12802,7 +12802,7 @@ body:has(.h-top-collapse-inline) main {
 .h-hud-node .hud-reticle-glyph__frame,
 .h-hud-node .hud-reticle-glyph__halo,
 .h-hud-node .hud-reticle-glyph__axis {
-  stroke: rgba(186, 230, 253, 0.62);
+  stroke: color-mix(in srgb, var(--accent-soft), transparent 38%);
 }
 
 .h-hud-dial {
@@ -12928,7 +12928,7 @@ body:has(.h-top-collapse-inline) main {
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(186, 230, 253, 0.16), transparent);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent-soft), transparent 84%), transparent);
   opacity: 0.2;
   pointer-events: none;
   animation: h-hud-log-flicker 2.2s linear infinite;
@@ -14093,7 +14093,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
     radial-gradient(circle at 18% 0%, rgba(240, 249, 255, 0.28), transparent 48%),
     linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 54%), rgba(6, 24, 42, 0.99)) !important;
   box-shadow:
-    inset 3px 0 0 rgba(186, 230, 253, 0.70),
+    inset 3px 0 0 color-mix(in srgb, var(--accent-soft), transparent 30%),
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 rgba(0, 0, 0, 0.30),
     0 0 0 1px color-mix(in srgb, var(--accent), transparent 76%),
@@ -15987,7 +15987,7 @@ html body .h-root.h-root :is(
   color: color-mix(in oklab, #7dd3fc, white 8%) !important;
   border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
   background:
-    radial-gradient(circle at 18% 12%, rgba(186, 230, 253, 0.12), transparent 34%),
+    radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent-soft), transparent 88%), transparent 34%),
     linear-gradient(180deg, rgba(10, 36, 56, 0.94), rgba(3, 10, 20, 0.98)) !important;
 }
 
@@ -17262,7 +17262,7 @@ html body .h-root.h-root :is(
   font-weight: 760 !important;
   letter-spacing: 0.055em !important;
   text-transform: uppercase !important;
-  border: 1px solid rgba(186, 230, 253, 0.42) !important;
+  border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 58%) !important;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.18), rgba(255,255,255,0.04) 43%, rgba(0,0,0,0.22)),
     radial-gradient(circle at 50% 0%, rgba(103, 232, 249, 0.22), transparent 62%),
@@ -17300,9 +17300,9 @@ html body .h-root.h-root :is(
 .h-top-collapse-btn.h-top-collapse-inline:hover,
 .h-top-collapse-btn.h-top-collapse-inline:focus-visible {
   transform: translateX(-50%) !important;
-  border-color: rgba(186, 230, 253, 0.46) !important;
+  border-color: color-mix(in srgb, var(--accent-soft), transparent 54%) !important;
   background:
-    linear-gradient(180deg, rgba(186, 230, 253, 0.18), rgba(255, 255, 255, 0.025) 42%, rgba(0,0,0,0.20)),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft), transparent 82%), rgba(255, 255, 255, 0.025) 42%, rgba(0,0,0,0.20)),
     linear-gradient(180deg, rgba(12, 24, 40, 0.98), rgba(7, 14, 25, 0.99)) !important;
   box-shadow:
     0 12px 28px rgba(0, 0, 0, 0.34),
@@ -17350,7 +17350,7 @@ html body .h-root.h-root :is(
   font-weight: 850;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  border: 1px solid rgba(186, 230, 253, 0.30);
+  border: 1px solid color-mix(in srgb, var(--accent-soft), transparent 70%);
   background: rgba(255, 255, 255, 0.07);
 }
 

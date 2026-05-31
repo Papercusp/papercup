@@ -636,7 +636,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar::before {
-  border-right: 1px solid rgba(186, 230, 253, 0.10);
+  border-right: 1px solid color-mix(in srgb, var(--accent-soft), transparent 90%);
   background:
     linear-gradient(180deg, rgba(255,255,255,0.04), transparent 12%, transparent 88%, rgba(255,255,255,0.03));
   opacity: 0.8;
@@ -1035,7 +1035,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .oracle-input-shell input::placeholder {
-  color: rgba(186, 230, 253, 0.56) !important;
+  color: color-mix(in srgb, var(--accent-soft), transparent 44%) !important;
 }
 
 .op-chat-sidebar .oracle-send-button {
@@ -1128,7 +1128,7 @@ body.has-op-chat .pc-header {
 }
 
 .op-chat-sidebar .oracle-input-icon {
-  color: rgba(186, 230, 253, 0.76) !important;
+  color: color-mix(in srgb, var(--accent-soft), transparent 24%) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell input::placeholder {
