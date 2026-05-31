@@ -26,7 +26,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 /** The borrowable set — genuinely generic, zero retained domain tie-in. */
 const BORROWABLE = [
   // path (repo-relative)                  category                fallback description (only if package.json lacks one)
-  ['packages/rrf',                        'Pure utilities & infra'],
+  ['libs/generic/rrf',                        'Pure utilities & infra'],
   ['packages/embedded-pg-discovery',      'Pure utilities & infra'],
   ['packages/plan-parser',                'Pure utilities & infra'],
   ['packages/rate-limit',                 'Pure utilities & infra'],

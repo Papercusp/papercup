@@ -22,7 +22,7 @@ their own repo when needed.
 | `@papercusp/file-claim` | Shared FileClaimCoordinator vocabulary + conformance suite. Both backends (in-process FileLockQueue + PG-backed SU-locks) satisfy this interface via thin adapters. Vocabulary-aligning, not implementation-sharing — the backends correctly remain separate (Map vs PG). file-locking-improvements #11. | `libs/papercusp/packages/file-claim` · [Papercusp/papercusp](https://github.com/Papercusp/papercusp.git) |
 | `@papercusp/plan-parser` | Pure plan-document parser: frontmatter + item/decision algebra + effective-status (blocked-by graph) + canonical content hash. Zero I/O, zero domain coupling. | in-repo · `packages/plan-parser` |
 | `@papercusp/rate-limit` | Generic two-bucket rate limiter (soft refundable + hard lockout) over an injected BucketStore. Pure algorithm, zero domain coupling, zero runtime deps. | in-repo · `packages/rate-limit` |
-| `@papercusp/rrf` | Reciprocal Rank Fusion — combine multiple ranked result lists into one. Pure, zero-dependency. Canonical use is fusing a BM25 ranking with a vector-similarity ranking, but it is domain-agnostic. | in-repo · `packages/rrf` |
+| `@papercusp/rrf` | Reciprocal Rank Fusion — combine multiple ranked result lists into one. Pure, zero-dependency. Canonical use is fusing a BM25 ranking with a vector-similarity ranking, but it is domain-agnostic. | [Papercusp/rrf](https://github.com/Papercusp/rrf.git) |
 | `@papercusp/token-kit` | Generic DTCG → multi-format tooling for Style Dictionary: OKLCH/hex/rgba colour transforms, a Tailwind v4 @theme emitter, a typed-TS emitter, and source preflight guards. Brand-value-free; shared across projects. | [Papercusp/token-kit](https://github.com/Papercusp/token-kit.git) |
 
 ## Search & retrieval

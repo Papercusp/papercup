@@ -29,7 +29,8 @@
     "libs/papercusp/packages/orchestrator",
     "libs/papercusp/packages/embedded-postgres-server",
     "libs/test-config",
-    "libs/generic/papergrid/bloom-grid"
+    "libs/generic/papergrid/bloom-grid",
+    "libs/generic/rrf"
   ],
   "scripts": {
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",

@@ -40,3 +40,6 @@
 [submodule "libs/chat-protocol"]
 	path = libs/generic/chat-protocol
 	url = https://github.com/Papercusp/chat-protocol.git
+[submodule "libs/generic/rrf"]
+	path = libs/generic/rrf
+	url = https://github.com/Papercusp/rrf.git

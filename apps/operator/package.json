@@ -101,7 +101,7 @@
     "@papercusp/publish-auth": "file:../../libs/papercusp-publish-auth",
     "@papercusp/rate-limit": "file:../../packages/rate-limit",
     "@papercusp/rerank": "file:../../libs/generic/rerank",
-    "@papercusp/rrf": "file:../../packages/rrf",
+    "@papercusp/rrf": "file:../../libs/generic/rrf",
     "@papercusp/search": "file:../../packages/search",
     "@papercusp/search-core": "file:../../libs/generic/search-core",
     "@picovoice/koala-web": "^3.0.0",
