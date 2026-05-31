@@ -311,3 +311,13 @@ Two remaining IN-PLAN items stay deliberate judgment-defers, NOT gaps:
 - D-E rename (tool.roles→tool.agentRoles, 189 sites): declined — cosmetic, conflict-prone, not required (requireRoles doesn't collide; documented).
 
 Restart adoption is a SEPARATE plan (tooldef-adoption-restart), different repo, NOT a drop-in: shop-api is NestJS with two axes — requireStaff (session role, 2 sites, already role-based) + requireAdminKey (machine API-key vs ADMIN_SECRET, 10 sites, a legitimately separate service-auth mechanism). Real adoption = project shop-api through tooldef + decide how machine-auth becomes a service principal with roles — a user scope decision, not a unilateral autonomous refactor of another repo's security code. Restart's libs/tooldef pin is still 0b3056ea (pre-requireRoles); bumping it is step one.
+
+### D-005 — Post-ship: agentRoles rename + default-deny flipped ON; in-tree tooldef re-diverged → needs peer re-sync
+Date: 2026-05-31
+Landed after the plan was marked shipped:
+- default-deny FLIPPED ON in papercup (PROJECTED_DEPS.defaultDeny=true, commit 1e5b14a06) after a conclusive audit (every built-in type-certain gated; all 21 bundled plugin manifests declare caps+roles; zero ungated). Takes effect on the next :3070 host restart (no hot-reload).
+- D-E rename DONE (commit a67bc5cdc): tool.roles → tool.agentRoles across 205 files (the agent-orchestration allowlist; principal.roles/requireRoles untouched). tooldef 218/218.
+
+CONSEQUENCE: in-tree packages/tooldef has re-diverged from the Papercusp/tooldef mirror since the last sync. The new in-tree-only changes are: Phase 1b authorize gate + audit, Phase 2 (generic Principal<TKind> + Principal.roles + requireRoles gate + role-requirement DispatchStep), Phase 3 (default-deny mechanism + public + toolDeclaresGate/listUngatedProjectedTools), and the agentRoles rename. The tooldef/shared-lib owner needs to re-sync these to Papercusp/tooldef (I do not push the shared remote). The tooldef-adoption-restart peer (28dbf719) is gated on this sync + on Restart's libs/tooldef pin advancing past 0b3056ea.
+
+Restart side (separate plan restart-service-principal-redesign): the requireRoles adoption is CODE COMPLETE — all 9 requireAdminKey controllers cut over to requireRole; only deploy-env steps remain (migration, seed keys, cut external agent callers, remove shim).
