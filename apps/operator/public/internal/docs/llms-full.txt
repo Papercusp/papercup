@@ -478,6 +478,99 @@ The catchall at `/api/agent-tools/*` works because external callers ARE bearer-a
 
 The other working option is bypassing `handleHttpToolRequest` entirely and calling `tool.fn(input, ctx)` directly with a hand-built ctx — that works but loses the dispatcher’s role/quota/audit pipeline. Prefer the proxy pattern.
 
+# The attention/importance system (Planning tab)
+
+> How plan-item importance + the unified AttentionItem feed fit together, and two non-obvious gotchas — parseWarnings become lint ERRORS, and the Plans tab has no in-app chat host.
+
+## What it is
+
+[Section titled “What it is”](#what-it-is)
+
+Plan items carry an **importance** — a 4th axis orthogonal to status: `urgent | high | normal | low` (default `normal`), written as an `importance:` keyword on the item line and parsed glyph-agnostically like `blocked-by:`. It drives the Planning-tab sort/badges, the orchestrator’s halt-on-`urgent`, and (eventually) the push threshold. Source of truth: `@papercusp/plan-parser` (`IMPORTANCE_LEVELS`, `PlanItem.importance`); spec at [plan-format §Importance](/internal/docs/spec/plan-format#importance); rubric in [agent-policies §18](/internal/docs/agent-policies).
+
+The Planning tab also shows a **unified attention feed**: one `AttentionItem` read-model (`apps/operator/lib/attention/`) that every “needs the human” surface adapts into — plan items, coord escalations, coord messages-to-human, smoke-test failures, plans-awaiting-review. The `plans:attention` tool unions them (best-effort per source), grouped by plan + a synthetic per-harness “Alerts” bucket, importance-sorted. The UI filter facets are ToDos / Needs Human / Blocked (plan-item statuses) + Escalations / Messages / Smoke / Reviews (the non-plan-item kinds).
+
+## Gotcha 1 — parseWarnings become lint ERRORS
+
+[Section titled “Gotcha 1 — parseWarnings become lint ERRORS”](#gotcha-1--parsewarnings-become-lint-errors)
+
+`plans:lint` turns **every** `parsed.parseWarnings` entry into a hard `parse_warning` **error** (`lint.ts`). So the parser must NOT push a parseWarning for a recoverable condition like an unknown `importance:` value — that would fail CI on a typo. Instead:
+
+* the parser **degrades silently** to `normal` (no parseWarning), and
+* `plans:lint` re-scans the item’s `rawLine` and emits a soft `unknown_importance` **warning** (never an error).
+
+If you add another tolerant item-keyword, follow the same split: degrade in the parser, warn (don’t error) in lint.
+
+## Gotcha 2 — the Plans tab has no in-app chat host
+
+[Section titled “Gotcha 2 — the Plans tab has no in-app chat host”](#gotcha-2--the-plans-tab-has-no-in-app-chat-host)
+
+The in-app agent chat (`ChatPanel` via `AdvChatPanel`) is hosted **only by the `/adv` HarnessesDock**, opened by an `OPEN_CHAT_EVENT` that the dock listens for (`openFeatureChat` → `POST /api/harness/:slug/agent-chats` → dispatch event). The **Plans admin tab is not inside that dock**, so an `openFeatureChat`-style call there creates a chat that opens nowhere visible. The PlanItemPreview/PlanOtherList “Chat” buttons fall back to `launchAgent` (an external OMP/claude terminal session), which on desktop is invisible/no-op if the agent isn’t configured — hence “Chat does nothing.”
+
+To make Chat work in the Plans tab you must add a host (e.g. a modal that creates a chat and renders `<ChatPanel slug chatId />` directly), and a chat needs a **harness** (`agent_chats` is per-harness-schema) — pure SU plans with no harness can’t host one. This is the open work in `planning-attention-importance-2026-05-31` P-017.
+
+# Attention push-notification delivery (and why retiring the poll is coupled)
+
+> How needs-human / escalation / smoke / plan-review notifications actually get delivered, the mobile-vs-desktop channel gap, and why P-020's event-driven push can't drop the 60s poll for its legacy triggers without P-021.
+
+## What it is
+
+[Section titled “What it is”](#what-it-is)
+
+The flip side of [the attention/importance system](/internal/docs/agent-insights/attention-importance-system): how an attention item that needs a human actually becomes a **push notification** on the user’s devices. This is the part the `planning-attention-importance-2026-05-31` plan’s P-020/P-021/D-007 touch, and the topology is non-obvious — reverse-engineering it took a session, so this is the map.
+
+## The two delivery facts that surprise everyone
+
+[Section titled “The two delivery facts that surprise everyone”](#the-two-delivery-facts-that-surprise-everyone)
+
+1. **The only delivery channel today is MOBILE push.** `apps/operator/lib/device-push-dispatcher.ts` → `notifyWorkspace(wsId, payload)` → APNs/FCM to devices paired in `harness_shared.mobile_push_tokens`. It is a **no-op when no device is paired** (safe to call unconditionally). There is **no desktop-native (Tauri OS notification) bridge** — D-007’s “emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge” describes a bridge that does **not exist yet**. Building it is Rust/Tauri work and is unverifiable headless.
+
+2. **The legacy triggers are delivered by a 60s POLL, not at the source.** `apps/operator/lib/device-intervention-watcher.ts` `setInterval(60s)` does three `SELECT`s — `harness_escalations`, `harness_smoke_test (status=fail)`, `harness_plan_review` — dedupes via an in-memory `seen` set keyed on `(workspace, slug, phase/status, mtime)`, and pushes each new row. It is a **robust catch-all**: it fires regardless of which code path wrote the row.
+
+## Where those rows are written (the producer chokepoints)
+
+[Section titled “Where those rows are written (the producer chokepoints)”](#where-those-rows-are-written-the-producer-chokepoints)
+
+The fs-watcher mirror for these three tables is **retired** (see the long comment block in `harness-fs-watcher.ts`). They’re now written **at producer time** by three internal endpoints, called by `bash run.sh` / `bin/supervisor.sh` / `bin/service-smoke-test.sh`:
+
+* `POST /api/internal/escalation-event` → `harness_escalations`
+* `POST /api/internal/smoke-test-event` → `harness_smoke_test`
+* `POST /api/internal/plan-review-event` → `harness_plan_review`
+
+So an event-driven emit for these has a clean home (those 3 endpoints) — but see the coupling gotcha below.
+
+## The importance map (what the ≥high gate includes)
+
+[Section titled “The importance map (what the ≥high gate includes)”](#the-importance-map-what-the-high-gate-includes)
+
+P-020 pushes only at importance **≥ high**. The per-kind importance lives in `apps/operator/lib/attention/adapters.ts`:
+
+| Kind                   | importance                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| smoke-fail             | `high` (fixed)                                                                  |
+| plan-review            | `high` (fixed)                                                                  |
+| coord escalation       | `severityToImportance(sev)` — blocker→`urgent`, question→`high`, advisory→`low` |
+| coord message-to-human | `normal`                                                                        |
+| plan item              | the item’s own `importance:` keyword                                            |
+
+Note `harness_escalations` (the table the watcher polls) has **no severity column** — it’s a harness-level escalation, distinct from a *coord* escalation. Treat it as inherently high. Net: the watcher’s three triggers are all already high, so the watcher never pushed low-importance noise to begin with.
+
+## P-020 was safe to ship; P-021 is the coupled, risky part
+
+[Section titled “P-020 was safe to ship; P-021 is the coupled, risky part”](#p-020-was-safe-to-ship-p-021-is-the-coupled-risky-part)
+
+**Shipped (P-020, safe, additive):** `plans:set-status` pushes when an item transitions INTO `needs-human` at importance ≥ high (`shouldPushNeedsHuman` + `itemImportance` in `set-status.ts`). A plan item is a source the watcher *never polls*, so there is **no overlap → no double-fire**. It’s transition-gated (a re-set won’t re-push), importance-gated, and fully fail-safe (a push error never fails the flip). With the watcher’s already-high triggers, the full push set is now exactly the ≥high attention items.
+
+**Not shipped (P-021, coupled + risky):** moving the watcher’s *own* triggers (escalation/smoke/plan-review) to producer-time emits at the 3 endpoints **cannot be done additively** — the poll already pushes them, so adding emits **double-fires** (duplicate push to the user’s phone). Avoiding that requires **retiring the poll** in the same change, which trades away the catch-all: any write path not explicitly hooked silently **loses** its notification. The only upside is latency (≤60s → instant) — no new user-facing notifications. That’s why P-021 is held for a human decision (accept the missed-path tradeoff, or keep a low-frequency reconcile floor), not done blind.
+
+## If you’re the agent picking up P-021 / D-007
+
+[Section titled “If you’re the agent picking up P-021 / D-007”](#if-youre-the-agent-picking-up-p-021--d-007)
+
+* **P-021:** either (a) emit at the 3 endpoints + delete the poll (accept missed-path risk — audit every writer of those tables first), or (b) emit at the 3 endpoints for low latency + keep a *reduced-frequency* poll as a reconcile floor, sharing the dedup so it only catches what emits missed.
+* **D-007:** there is no desktop notification bridge. You’d add a Tauri IPC command + a JS emit path; `notifyWorkspace` is mobile-only. Decide whether desktop-native is worth it or mobile push is sufficient.
+* Both need a running desktop to verify delivery — neither is headless-testable.
+
 # Split a budget conditionally on which pools are actually active
 
 > When fanning out a `limit` across N optional pools (user / workspace / N harnesses), the per-pool slice must depend on which pools are non-empty THIS call — not a fixed compile-time ratio.
@@ -1551,6 +1644,50 @@ Built-in/generalized tests (lint, typecheck, smoke — `generalizedRegistry` in 
 
 The harness Tests tab is an `/adv` dock panel (`adv:tests`), not a `HarnessDashboard` tab — that monolith was deleted by the `/adv` migration.
 
+# Harness Tests-tab domains are harness-owned, not operator-hardwired
+
+> The harness Tests tab's domain nav comes from the harness's OWN contract at <worktree>/.harness/testing-domains.json (served by GET /api/harness/:slug/testing/domains), falling back to the generic generalized+Acceptance set. Do not special-case a harness in operator code. Also — harness endpoints resolve against reg.current (the global active workspace), so a CLI curl can silently hit the wrong workspace.
+
+Two things to know before you touch the harness **Tests** tab (`/adv` → `HarnessTestsView` → `@papercusp/testing-shell`, backed by `/api/harness/:slug/testing/*`).
+
+## The domain nav is HARNESS-owned data, not an operator registry
+
+[Section titled “The domain nav is HARNESS-owned data, not an operator registry”](#the-domain-nav-is-harness-owned-data-not-an-operator-registry)
+
+`/admin/testing` reads `adminRegistry` (5 generalized + 16 Papercusp domains) from `apps/operator/lib/testing-domains-registry.ts` — operator-internal code. The **harness** Tests tab does NOT import that. Each harness declares its own test domains in its contract surface:
+
+```plaintext
+<worktree>/.harness/testing-domains.json   ->  { domains: TestDomain[], tierLabels?: {} }
+```
+
+served by `GET /api/harness/:slug/testing/domains` (`endpoint-route/routes/harness/testing.ts` → `loadHarnessDomains(root)`). A harness that declares **no** file falls back to the generic `harnessTestingRegistry` (Built-in *generalized* tier + Acceptance). The frontend fetches that route for its nav; it does not import a static registry.
+
+Don't special-case a harness in operator code
+
+The wrong fix (rejected) was `isSelfHarness(slug) ? adminRegistry : …` wired into the view/route. That hard-wires the operator’s internal registry into a harness surface. The right place for a harness’s test config is the harness’s own `.harness/` contract — the same surface where `tests.json` (tester-created tests) lives. To give a harness more domains, write its `.harness/testing-domains.json`; don’t edit operator code.
+
+The **papercup dogfood harness** (its worktree IS the operator repo) ships a `.harness/testing-domains.json` **generated from `adminRegistry`** (so there’s no hand-maintained drift) — that’s why its Tests tab shows all 22 domains while a generic harness shows the sparse generalized tier + Acceptance. Regenerate it the same way (load `adminRegistry` + the Acceptance domain, serialize) if the domains change. Note the generalized tier’s `test-runs`/`ai` are `admin-suite` runners that are non-functional in the harness data-source, and `live`/`chaos`/`routes` glob operator-internal paths — so for a *non-papercup* harness the Built-in tier is mostly empty; that’s expected, not a bug. Default the nav to the first non-`generalized` (content-bearing) tab.
+
+## Harness endpoints resolve against `reg.current` — your curl can hit the wrong workspace
+
+[Section titled “Harness endpoints resolve against reg.current — your curl can hit the wrong workspace”](#harness-endpoints-resolve-against-regcurrent--your-curl-can-hit-the-wrong-workspace)
+
+`resolvePhasedProject(slug, phase)` resolves the harness from the registry scoped to `activeWorkspaceId()`, which reads `current` from `~/.papercusp-workspaces/registry.json` — a **single global** value, not per-request. The `:3070` host serves whatever `reg.current` is *right now*.
+
+This bites hard when debugging: a `curl /api/harness/papercup/...` returns `{"error":"unknown project"}` not because the harness is gone, but because `reg.current` is a workspace that doesn’t contain it (it switches under you — the desktop, or a concurrent agent, flips it). I burned real time concluding “the papercup harness was deleted” when it was simply that `reg.current` had moved from `papercusp-workspace` to `default` mid-session.
+
+Before concluding a harness is missing
+
+Check the active workspace and where the harness actually lives:
+
+```bash
+python3 -c "import json;d=json.load(open('$HOME/.papercusp-workspaces/registry.json'));print('current:',d['current'])"
+```
+
+To list a *specific* workspace’s harnesses (the `?workspace=` query param on `projects/lite` is ignored — it uses `reg.current`), call `loadHarnessRegistry('<workspace-id>')` directly via a one-off `tsx` script. The papercup self-harness lives in the `papercusp-workspace` workspace, pointed at the operator repo.
+
+Corollary: server-side edits to `harness/testing.ts` need a host restart (`systemctl --user restart papercup-dev-api.service`) — the `:3070` host has no hot-reload — and frontend edits to `HarnessTestsView` ship via the operator-vite watch-build + a desktop reload.
+
 # The 5-rule harness-tree classifier
 
 > When walking a git repo's nested .git entries, classify each as submodule / worktree / standalone / plain-dir. Used by the harness-creation flow to decide what becomes a sub-harness.
@@ -2215,6 +2352,58 @@ vi.mock('@/lib/mobile-device-store', async (orig) => ({
 [Section titled “Gotcha 3 — route-stack auth needs a DB; handler-direct tests don’t”](#gotcha-3--route-stack-auth-needs-a-db-handler-direct-tests-dont)
 
 Driving a `requirePrincipal`-gated route through `registerAllRoutes` + `app.request()` exercises the real resolver chain, which touches PG. In a no-DB test that throws (or flakily 500s). Either mock the auth/DB layer (the `auth.test.ts` pattern) or test the handler directly with a hand-built `RouteContext` (the `agent-tools-catchall.test.ts` pattern) — the latter is cleaner for verifying port fidelity.
+
+# A new package in a CJS family must not set type:module (and needs main+types, not just exports)
+
+> Two packaging traps that bite when you add a workspace package to the src-as-entry tooldef family. (1) Setting "type": "module" on a package that CJS siblings re-export from breaks the operator's tsx host with 'does not provide an export named X' — vitest/esbuild mask it, so unit tests stay green while the real host would fail on reload. (2) A package.json with only "exports" and no top-level "main"/"types" is unresolvable under classic moduleResolution: node. Both surfaced during the @papercusp/tooldef extraction.
+
+When you scaffold a **new** workspace package and wire it into the `@papercusp/tooldef` family (src-as-entry packages — `main`/`types`/`exports` all point at `./src/index.ts`, consumed via a direct `node_modules/@papercusp/<pkg>` symlink), two `package.json` fields decide whether the **operator host** can load it at runtime. Both default to the wrong thing, and both are **masked by the test runner**, so green unit tests are not proof the host works.
+
+## Trap 1 — `"type": "module"` in a CJS family
+
+[Section titled “Trap 1 — "type": "module" in a CJS family”](#trap-1--type-module-in-a-cjs-family)
+
+`@papercusp/tooldef` and `@papercusp/agent-mcp` are **CommonJS** (their `tsconfig.build.json` emits CJS; no `type` field → Node treats `.js`/`.ts` as CJS). The operator’s `:3070` Hono host runs under **`tsx`**, which honours `type`.
+
+If you give a new sibling (`@papercusp/tooldef-http`, `@papercusp/tooldef-mcp`, …) `"type": "module"`, then importing a **named** binding across the CJS↔ESM boundary throws under tsx:
+
+```plaintext
+SyntaxError: The requested module '@papercusp/tooldef' does not provide an
+export named 'dispatchProjectedTool'
+```
+
+— the classic CJS↔ESM named-export interop break (the named binding isn’t statically visible across the boundary). **Observed directly:** the standalone `examples/standalone-http.ts` proof failed with exactly this under both node 22 and node 25 while the packages carried `"type": "module"`.
+
+**Why it hides:** `vitest`/`esbuild` transpile everything to a single module graph and don’t enforce the CJS/ESM boundary, so the package’s own test suite passes 100%. The break only appears under real Node/tsx module resolution — a `npx tsx examples/…` script, or the operator’s `:3070` Hono host, which runs under the same tsx runtime and imports these packages (via `agent-mcp`’s re-export) — so the host is exposed to the same break. During the extraction the bug was invisible until the standalone example ran it under tsx.
+
+**Verified after the fix (2026-05-31, live host):** with `"type"` removed, the operator’s `:3070` Hono host (`bin/hono-host.ts` under tsx, node 22) boots clean on the fixed packages and serves both transports end-to-end — a live HTTP projected-tool call returns `200` + the `{content}` envelope (`tooldef-http`), and MCP `tools/call` dispatches projected tools through `tooldef-mcp`. (The caveat the examples teach still stands: only `tsx`/real-Node resolution exercises this boundary; the bundled test suite won’t.)
+
+**Rule:** a new package that any CJS package re-exports from (or that the tsx host imports) must **not** set `"type": "module"`. Match the family — omit `type` (CJS). If you genuinely need ESM, the whole re-export chain has to move together, which the family deliberately hasn’t done.
+
+## Trap 2 — `"exports"` without top-level `"main"`/`"types"`
+
+[Section titled “Trap 2 — "exports" without top-level "main"/"types"”](#trap-2--exports-without-top-level-maintypes)
+
+The operator + several consumers compile under **classic `moduleResolution: node`** (not `node16`/`bundler`). Classic resolution **ignores the `exports` map** and looks only at top-level `"main"`/`"types"`. A `package.json` like:
+
+```jsonc
+{ "exports": { ".": { "types": "./src/index.ts", "import": "./src/index.ts" } } }
+```
+
+resolves fine under `tsx`/bundler but fails a consumer’s `tsc` with `Cannot find module '@papercusp/<pkg>'`. This is exactly why `@papercusp/chat-protocol` “didn’t exist” until its submodule `package.json` gained top-level `main`/`types`.
+
+**Rule:** every src-as-entry package ships **both** — top-level `"main": "./src/index.ts"` + `"types": "./src/index.ts"` **and** the `exports` map. Belt and suspenders covers both resolver modes.
+
+## How to actually verify (don’t trust the test suite)
+
+[Section titled “How to actually verify (don’t trust the test suite)”](#how-to-actually-verify-dont-trust-the-test-suite)
+
+The package’s own `vitest` is necessary but **not sufficient**. Before claiming a new package works in the host:
+
+1. Write a `examples/standalone-*.ts` that imports only the package(s) under test and run it with `npx tsx examples/<x>.ts`. This exercises real Node/tsx resolution and the CJS/ESM boundary the bundler hides.
+2. If it’s on the host’s import path, reload the Tauri shell (server-side code has no hot-reload) and exercise the route — a green tsc + green vitest can still ship a host that won’t boot.
+
+See also [`generalizing-a-lib-host-seam-pattern`](/agent-insights/generalizing-a-lib-host-seam-pattern) for the src-as-entry + symlink recipe these packages follow, and the plan `papercusp-tooldef-extraction-2026-05-29` (P-051) for the commit that fixed it.
 
 # Octokit 7+ changed the `auth:` API — use `hook.before('request')` instead of an async factory
 
@@ -4833,6 +5022,21 @@ Don’t `find` the directory by hand. Use the tools:
 Writes are tool-mediated: `plans:new` / `set-status` / `set-now` / `add-decision` / `add-item` / `set-content` / `set-content-chunk`. Each acquires a `locks:*` lock around the real plan write; ID allocation (D-NNN, P-NNN) is serialized so parallel callers produce non-colliding sequential ids.
 
 For large whole-plan writes, **use `plans:set-content-chunk`** instead of a giant `plans:set-content` payload. Send `begin` with the `plans:get` `contentHash`, `append` chunks under 24k characters, then `commit`. Anthropic/tool-call errors on large plan writes often happen before the Papercusp tool receives the request, so chunking must happen at the caller/tool-call level.
+
+### Item importance (always set it)
+
+[Section titled “Item importance (always set it)”](#item-importance-always-set-it)
+
+Every plan item carries an **importance** — a 4th axis orthogonal to status: `urgent | high | normal | low` (default `normal`, written as an `importance:` keyword, parsed like `blocked-by:`). `plans:add-item` **requires** it; change it later with `plans:set-importance`. It drives the Planning-tab sort/badges, the push threshold (≥ `high`), and the orchestrator’s halt-on-`urgent`. Full spec: [plan-format §Importance](/internal/docs/spec/plan-format#importance).
+
+Set it from **consequences, not feeling** — *“what breaks, and how fast, if a human never sees this / if it’s picked up last?”*:
+
+* **urgent** — progress is fully blocked, or acting without a human risks harm (repeated failures after the debugger ran, an irreversible / production-affecting approval, a security or data-loss risk, a release gate). Interrupt the human now.
+* **high** — a real decision is needed and this thread is paused until it’s answered; should be seen today.
+* **normal** *(default)* — needed, nothing is stuck, normal cadence.
+* **low** — informational, or there’s a safe default to proceed with.
+
+When torn between two adjacent levels pick the higher — **except** never inflate a routine approval to `urgent`. Crying wolf trains the human to ignore the badge, which is worse than a missed `normal`.
 
 ### This directory is the project history
 

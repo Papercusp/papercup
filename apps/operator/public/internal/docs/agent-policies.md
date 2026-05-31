@@ -468,6 +468,32 @@ of a giant `plans:set-content` payload. Send `begin` with the
 before the Papercusp tool receives the request, so chunking must happen
 at the caller/tool-call level.
 
+### Item importance (always set it)
+
+Every plan item carries an **importance** — a 4th axis orthogonal to
+status: `urgent | high | normal | low` (default `normal`, written as an
+`importance:` keyword, parsed like `blocked-by:`). `plans:add-item`
+**requires** it; change it later with `plans:set-importance`. It drives
+the Planning-tab sort/badges, the push threshold (≥ `high`), and the
+orchestrator's halt-on-`urgent`. Full spec:
+[plan-format §Importance](/internal/docs/spec/plan-format#importance).
+
+Set it from **consequences, not feeling** — *"what breaks, and how
+fast, if a human never sees this / if it's picked up last?"*:
+
+* **urgent** — progress is fully blocked, or acting without a human
+  risks harm (repeated failures after the debugger ran, an
+  irreversible / production-affecting approval, a security or data-loss
+  risk, a release gate). Interrupt the human now.
+* **high** — a real decision is needed and this thread is paused until
+  it's answered; should be seen today.
+* **normal** *(default)* — needed, nothing is stuck, normal cadence.
+* **low** — informational, or there's a safe default to proceed with.
+
+When torn between two adjacent levels pick the higher — **except**
+never inflate a routine approval to `urgent`. Crying wolf trains the
+human to ignore the badge, which is worse than a missed `normal`.
+
 ### This directory is the project history
 
 When the user asks "remember when we were working on X?" or "what
