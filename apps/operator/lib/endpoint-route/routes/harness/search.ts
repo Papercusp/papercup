@@ -6,7 +6,7 @@
  *
  * Ported from app/api/harness/search/route.ts. `auth: 'public'`.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { routeWithWorkspace } from '@/lib/route-workspace';
 import { defineTool } from '@papercusp/agent-mcp';
 

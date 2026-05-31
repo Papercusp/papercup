@@ -25,7 +25,7 @@ vi.mock('drizzle-orm/postgres-js', () => ({
   }),
 }));
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   withWorkspace: async (_ws: string, cb: (tx: unknown) => Promise<unknown>) => cb({}),
   generated: { auditLogInHarnessShared: { id: {}, ts: {}, actor: {}, action: {}, subject: {}, details: {}, workspace_id: {} } },
 }));

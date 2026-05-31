@@ -24,7 +24,7 @@ import {
 import dagre from '@dagrejs/dagre';
 import '@xyflow/react/dist/style.css';
 import { toast } from 'sonner';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { Plus, X, Wand2 } from 'lucide-react';
 
 interface Props { slug: string }

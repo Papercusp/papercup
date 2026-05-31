@@ -21,7 +21,7 @@
  * No brace expansion, no `?`. Good enough for common path globs.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureCoordSubscriptionsTable } from '@/lib/ensure-schema';
 import { PgSubscriptionStore } from '@papercusp/coordination/subscription-store';
 import {

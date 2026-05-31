@@ -4,7 +4,7 @@
  * timer.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryClient, getResolvedMode } from '@/lib/memory/mem0-client';
 import { readCredentials } from '@/lib/credentials';
 

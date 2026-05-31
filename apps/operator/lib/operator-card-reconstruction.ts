@@ -13,7 +13,7 @@
  * reloads or workspace switches.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { readLastScan } from './operator-last-scan';
 import { listDismissed } from './operator-dismissed-cache';

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface Entry {
   spawn_id: string;

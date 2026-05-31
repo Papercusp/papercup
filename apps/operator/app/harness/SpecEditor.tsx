@@ -11,7 +11,7 @@ import { BacklinksPanel } from '../_components/BacklinksPanel';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
 import { CollectionTab, type CollectionItem } from './CollectionTab';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 type ProjectFilesRow = { harnessSlug: string; spec: string | null; agents: string | null; contract: string | null; config: string | null; updatedAt: number };
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };

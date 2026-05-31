@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { papercuspPath } from '@/lib/papercusp-root';
 
 export interface GrantInput {

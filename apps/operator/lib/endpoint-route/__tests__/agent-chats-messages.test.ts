@@ -63,7 +63,7 @@ const MOCKED_MODULES = [
   '@/lib/operator-notes',
   '@papercusp/orchestrator/role-prompt',
   '@/lib/agent-chats-data',
-  '@restart/db-org',
+  '@papercusp/db-org',
 ];
 
 beforeEach(() => {
@@ -120,8 +120,8 @@ async function agentChatsMessagesHandler(
     readFeatureLockState: vi.fn(async () => null),
     rowToChat: (row: Record<string, unknown>) => row,
   }));
-  vi.doMock('@restart/db-org', async () => {
-    const actual = await vi.importActual<Record<string, unknown>>('@restart/db-org');
+  vi.doMock('@papercusp/db-org', async () => {
+    const actual = await vi.importActual<Record<string, unknown>>('@papercusp/db-org');
     return {
       ...actual,
       getLegacyClient: () => ({

@@ -8,9 +8,9 @@ import { Checkbox } from './Checkbox';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { toast } from 'sonner';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 
 type MemoryEntry = {

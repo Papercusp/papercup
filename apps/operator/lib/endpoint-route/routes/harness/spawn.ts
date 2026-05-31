@@ -22,7 +22,7 @@ import {
 import { unlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { getOrgPg, listUnconsumedEvents, consumeEvents } from '@restart/db-org';
+import { getOrgPg, listUnconsumedEvents, consumeEvents } from '@papercusp/db-org';
 import {
   resolveProject,
   resolvePhasedProject,

@@ -8,7 +8,7 @@ import { Hono } from 'hono';
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 vi.mock('@/lib/require-flag', () => ({ gateApiRoute: vi.fn(async () => null) }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { DESIGN: 'design' } }));
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(() => ({
     sql: Object.assign(
       (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),

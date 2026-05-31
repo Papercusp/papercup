@@ -1,12 +1,12 @@
 'use client';
 
 import { memo, useMemo } from 'react';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Tooltip } from './Tooltip';
 import { Heart } from 'lucide-react';
-import { StatCard } from '@restart/ui-primitives';
+import { StatCard } from '@papercusp/ui-primitives';
 
 // Derived shape — same fields HealthBadge always rendered, just assembled
 // from multiple Zero queries instead of one /health REST aggregate.

@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // works correctly (the @/ tsconfig alias is not resolved in module-reset context).
 const MODULE_PATH = '../plan-context-for-feature';
 const SOURCE_MODULE = '../agent-tools/plans/source';
-const DB_MODULE = '@restart/db-org';
+const DB_MODULE = '@papercusp/db-org';
 
 beforeEach(() => {
   vi.resetModules();

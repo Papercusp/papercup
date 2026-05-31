@@ -12,7 +12,7 @@
  * Plan: apps/operator/docs/plans/endpoint-route-migration-2026-05-20.md §6 R2
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import type { RouteExecution } from './route-stack';
 

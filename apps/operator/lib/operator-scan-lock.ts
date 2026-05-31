@@ -11,7 +11,7 @@
  * the panel surfaces this to the user as "another tab is scanning."
  */
 
-import { withWorkspace, generated } from '@restart/db-org';
+import { withWorkspace, generated } from '@papercusp/db-org';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { and, eq, gt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';

@@ -6,7 +6,7 @@ import { describe, it } from 'vitest';
 // stored. PG round-trip is covered by integration smoke (insert, GET via
 // /api/agent-mcp/operator-budget, compare).
 //
-// Re-introducing a unit test would require mocking @restart/db-org's
+// Re-introducing a unit test would require mocking @papercusp/db-org's
 // getOrgPg() with an in-memory tagged-template handler; fine to add when
 // we have one shared mock instead of per-module bespoke ones.
 

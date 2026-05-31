@@ -129,7 +129,7 @@ export default defineTool({
 
     // 4 + 5. Failing smoke tests + plans awaiting review (PG, workspace-scoped).
     try {
-      const { getOrgPg } = await import('@restart/db-org');
+      const { getOrgPg } = await import('@papercusp/db-org');
       const { activeWorkspaceId } = await import('../../workspace-registry');
       const { sql } = getOrgPg();
       const wid = activeWorkspaceId();

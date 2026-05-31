@@ -30,7 +30,7 @@ afterEach(() => {
   vi.doUnmock('@/lib/stt-spend');
   vi.doUnmock('@/lib/tts-spend');
   vi.doUnmock('@/lib/workspace-registry');
-  vi.doUnmock('@restart/db-org');
+  vi.doUnmock('@papercusp/db-org');
 });
 
 function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
@@ -207,7 +207,7 @@ describe('operator:voice_spend_summary', () => {
     vi.doMock('@/lib/workspace-registry', () => ({
       activeWorkspaceId: vi.fn(() => 'default'),
     }));
-    vi.doMock('@restart/db-org', async (importOriginal) => {
+    vi.doMock('@papercusp/db-org', async (importOriginal) => {
       const actual = (await importOriginal()) as Record<string, unknown>;
       return {
         ...actual,

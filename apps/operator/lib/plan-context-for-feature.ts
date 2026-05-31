@@ -10,7 +10,7 @@
  * this limit is truncated with a `[truncated]` marker.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { readPlanBySlug } from './agent-tools/plans/source';
 
 const PLAN_CONTEXT_CHAR_BUDGET = 6_000;

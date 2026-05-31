@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import RouteLink from '../../../../_components/RouteLink';
 import { Checkbox } from '../../../../harness/Checkbox';
 import { explainCapability, tierBadgeColor } from '@/lib/capability-explain';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface ManifestResp {
   name: string;

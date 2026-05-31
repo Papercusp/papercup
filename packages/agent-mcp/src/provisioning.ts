@@ -14,7 +14,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 
 export interface ProvisionSystemPrincipalArgs {
   workspaceId: string;

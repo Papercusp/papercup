@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import RouteLink from '../_components/RouteLink';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';

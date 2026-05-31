@@ -35,4 +35,4 @@ tokenizer, and the MDX → markdown rendering. Three adapters ship today:
 - Results are cached per run (`per-run-cache.ts`).
 
 Extracted/audited per `papercusp-systems-abstraction-2026-05-29` (D-007):
-zero `harness_shared.*` / `@restart/db-org` / domain-type imports.
+zero `harness_shared.*` / `@papercusp/db-org` / domain-type imports.

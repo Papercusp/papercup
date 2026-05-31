@@ -4,7 +4,7 @@
  *
  * Ported from app/api/operator/conversations/route.ts. `auth: 'public'`.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
 import {
   getOrCreateActiveConversation,

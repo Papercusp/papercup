@@ -6,7 +6,7 @@
  * Keep transport concerns (NextRequest, ctx.json) in the callers.
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, gte } from 'drizzle-orm';
 import { ensureToastLogTable } from './ensure-schema';
 

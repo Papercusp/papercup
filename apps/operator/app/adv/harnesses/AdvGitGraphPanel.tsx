@@ -3,7 +3,7 @@
 /**
  * AdvGitGraphPanel — the /adv Git dock's commit-graph panel.
  *
- * Replaces the @restart/git-graph library's custom row list with the app's
+ * Replaces the @papercusp/git-graph library's custom row list with the app's
  * RichGrid (per the user request "make the grid use richgrid"), while keeping
  * the branch-lane graph as the first column. We REUSE the lib's data + layout
  * + detail pieces (fetchGitLog / getCachedGitLog / assignLanes / laneColor /
@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { RefreshCw, Star } from 'lucide-react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import {
   CommitDetail,
   assignLanes,
@@ -34,7 +34,7 @@ import {
   type Commit,
   type LaidOutCommit,
   type Worktree,
-} from '@restart/git-graph';
+} from '@papercusp/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { crossOriginUrl } from '@/lib/cross-origin-url';
 

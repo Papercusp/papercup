@@ -14,7 +14,7 @@ import {
   applySort,
   type ColumnDef,
   type RichGridSortState,
-} from '@restart/grid-core';
+} from '@papercusp/grid-core';
 
 interface FeatureRow {
   harness_slug: string;

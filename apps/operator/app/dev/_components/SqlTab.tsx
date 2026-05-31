@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
  * /dev SQL tab — Monaco-backed read-only SQL playground.

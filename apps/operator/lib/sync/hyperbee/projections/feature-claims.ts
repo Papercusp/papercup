@@ -11,7 +11,7 @@
  * On `del` ops: refuse — the table is append-only. We log + drop.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { TableProjection } from '../projection';
 
 export interface FeatureClaimRow {

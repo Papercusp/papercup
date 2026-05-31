@@ -16,7 +16,7 @@
  * §4 decision 3 (the route handler simply doesn't call checkRate).
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql } from 'drizzle-orm';
 
 const t = generated.operatorRateLimitInHarnessShared;

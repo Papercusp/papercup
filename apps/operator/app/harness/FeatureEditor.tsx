@@ -6,7 +6,7 @@ import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import * as Collapsible from '@radix-ui/react-collapsible';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
 type Status = (typeof VALID_STATUSES)[number];

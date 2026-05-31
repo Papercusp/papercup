@@ -12,7 +12,7 @@
  * during mint when the table grows beyond ~1000 entries.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, gte, lt, count } from 'drizzle-orm';
 
 const t = generated.mobilePairTokensInHarnessShared;

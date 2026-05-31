@@ -16,7 +16,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 export type AuthAuditKind =
   | 'login_ok'

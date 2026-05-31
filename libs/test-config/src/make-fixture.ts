@@ -12,7 +12,7 @@
  *
  * Usage:
  *   import { makeFixture } from '@papercusp/test-config';
- *   import { generated } from '@restart/db-org';
+ *   import { generated } from '@papercusp/db-org';
  *
  *   const row = makeFixture(generated.harness_testsInHarness_shared, {
  *     harness_slug: 'demo',

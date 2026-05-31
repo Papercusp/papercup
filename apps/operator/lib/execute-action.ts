@@ -14,7 +14,7 @@
  * scaffold_harness) are implemented in this module. spinup_project recurses
  * in-process to fire follow-up send_messages within a single transaction.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { execFile } from 'node:child_process';

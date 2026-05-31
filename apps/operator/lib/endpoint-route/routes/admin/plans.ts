@@ -36,7 +36,7 @@ import { bodyFromSearchParams } from './_plans-args';
 // /api/toast-log uses for `toastLog.recent`. The client-side hook
 // migration (useAsyncJson → useSyncQuery) is deferred until P-022
 // (drop @rocicorp/zero), since useSyncQuery currently resolves
-// queryNames through the @restart/zero-harness registry which is being
+// queryNames through the @papercusp/zero-harness registry which is being
 // retired alongside the @rocicorp/zero dep.
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 

@@ -12,7 +12,7 @@
  * `onBlocked` logs rather than raising a harness issue (Phase E). The sweep is a
  * **no-op for every plan without a `## Promote` policy**, so wiring it in is safe.
  */
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-registry';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { parsePromotePolicy } from '../agent-tools/plans/promote-policy';

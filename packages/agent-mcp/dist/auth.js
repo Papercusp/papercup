@@ -21,7 +21,7 @@ exports.resolveBearer = resolveBearer;
 exports.invalidate = invalidate;
 exports._resetAuthCacheForTests = _resetAuthCacheForTests;
 const node_crypto_1 = require("node:crypto");
-const db_org_1 = require("@restart/db-org");
+const db_org_1 = require("@papercusp/db-org");
 const CACHE = new Map();
 function cacheKey(workspaceId, slug) {
     return `${workspaceId}:${slug}`;

@@ -4,7 +4,7 @@
  */
 import { listAllProjectedTools, type ProjectedTool } from '@papercusp/agent-mcp';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface SerializedTool {

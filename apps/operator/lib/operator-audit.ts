@@ -15,7 +15,7 @@
  * Path-a escalation criterion needs.
  */
 
-import { withWorkspace, generated } from '@restart/db-org';
+import { withWorkspace, generated } from '@papercusp/db-org';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';

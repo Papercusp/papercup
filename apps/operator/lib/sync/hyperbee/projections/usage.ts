@@ -14,7 +14,7 @@
  * `del` ops are silent no-ops — append-only contract.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { TableProjection } from '../projection';
 
 export interface ContributorUsageEventRow {

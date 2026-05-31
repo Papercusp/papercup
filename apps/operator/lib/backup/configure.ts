@@ -12,7 +12,7 @@
  * Part of papercusp-systems-abstraction-2026-05-29 P-023/P-024.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { workspacesRoot } from '@/lib/workspace-registry';
 import { getHarnessAdminUrlWithSource } from '@/lib/embedded-pg-discovery';
 import { shouldRun } from '@/lib/search/battery-policy';

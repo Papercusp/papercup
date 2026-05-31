@@ -6,7 +6,7 @@
  * the GUC bypass it (canonical Drizzle/Knex RLS regression — see
  * spec/workspace-scoping).
  */
-import { withWorkspace, getOrgPg } from '@restart/db-org';
+import { withWorkspace, getOrgPg } from '@papercusp/db-org';
 
 export interface DeviceRow {
   device_id: string;

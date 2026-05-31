@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts } from '../../memory/conflict-check';

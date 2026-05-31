@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface RuntimeStatus {
   loaded: number;

@@ -6,7 +6,7 @@
 //   _semantic.css          — desktop's semantic + ink layer as CSS variables (--bg, --accent etc.)
 //
 // Tooling (transforms + preflight) comes from @papercusp/token-kit — generic,
-// brand-value-free, shared with Restart's @restart/design-tokens. Only the
+// brand-value-free, shared with Restart's @papercusp/design-tokens. Only the
 // papercup-specific *.tokens.json values + the platform wiring below live here.
 //
 // Mobile mirrors primitives.tokens.json (see Phase 4); each platform's

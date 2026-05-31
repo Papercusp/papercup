@@ -15,7 +15,7 @@
  * separate client-side fetch.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
 import { listBootHistory } from '@/lib/sync/hyperbee/boot-history';

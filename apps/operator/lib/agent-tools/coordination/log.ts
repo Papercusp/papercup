@@ -12,7 +12,7 @@
  * handle (`getSql`) and the flag-gated table bootstrap (`ensureSchema`).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
 import { ensureCoordEventLogTable } from '@/lib/ensure-schema';
 

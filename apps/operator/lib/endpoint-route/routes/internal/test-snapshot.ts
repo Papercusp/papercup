@@ -2,7 +2,7 @@
  * POST /api/internal/test-snapshot — replace-all tests snapshot per-phase.
  * Ported from app/api/internal/test-snapshot/route.ts. `auth: 'public'`.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';

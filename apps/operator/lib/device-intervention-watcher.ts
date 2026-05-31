@@ -12,7 +12,7 @@
  *
  * Runs every 60s. Cheap — three small SELECTs per workspace.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { notifyWorkspace } from './device-push-dispatcher';
 
 const POLL_MS = 60_000;

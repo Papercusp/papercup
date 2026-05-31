@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface Entry {
   tool_name: string;

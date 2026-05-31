@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import '@excalidraw/excalidraw/index.css';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 type BrainstormRow = { harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number };
 

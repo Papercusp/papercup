@@ -21,7 +21,7 @@
  * unaffected. Never throws.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryClient } from './mem0-client';
 import { bumpLastSurfacedSql } from './bump-last-surfaced';
 

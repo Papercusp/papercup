@@ -17,7 +17,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureHarnessEscalationsTable } from '../ensure-schema';
 import {
   buildRebaseConflictEscalation,

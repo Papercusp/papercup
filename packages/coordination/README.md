@@ -3,7 +3,7 @@
 Agent-coordination substrate, extracted from
 `apps/operator/lib/agent-tools/coordination/` as **three host-agnostic
 pieces** (papercusp-systems-abstraction D-009 / P-011). No
-`@papercusp/*` / `@restart/*` runtime deps.
+`@papercusp/*` / `@papercusp/*` runtime deps.
 
 ## The three pieces
 

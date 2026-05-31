@@ -30,7 +30,7 @@
  * failure. That is the degraded mode, not the default.
  */
 import { type ReactNode } from 'react';
-import { SyncProvider } from '@restart/sync';
+import { SyncProvider } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const DEFAULT_REST_ENDPOINT = '/api/zero-harness';

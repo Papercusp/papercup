@@ -10,7 +10,7 @@
  * report); the data + this read endpoint are what R2 commits to.
  */
 import { z } from 'zod';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 

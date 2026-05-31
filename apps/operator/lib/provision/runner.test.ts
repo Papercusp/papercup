@@ -1,7 +1,7 @@
 /**
  * Runner integration test.
  *
- * Skips PG-dependent paths by mocking @restart/db-org. Exercises:
+ * Skips PG-dependent paths by mocking @papercusp/db-org. Exercises:
  *   - script-found / not-found
  *   - hash decision flow (fresh vs unchanged)
  *   - consent gating
@@ -22,10 +22,10 @@ beforeEach(async () => {
   process.env.PAPERCUSP_HOME = TMP_HOME;
   process.env.PAPERCUSP_DISABLE_SANDBOX = '1';
   vi.resetModules();
-  // Mock @restart/db-org so the operator-claims path is exercised against
+  // Mock @papercusp/db-org so the operator-claims path is exercised against
   // a fake sql tag. The runner falls back to process-only mode when PG
   // throws; we drive that explicit branch.
-  vi.doMock('@restart/db-org', () => ({
+  vi.doMock('@papercusp/db-org', () => ({
     getOrgPg: () => ({
       sql: () => {
         throw new Error('pg-not-available-in-test');
@@ -39,7 +39,7 @@ afterEach(async () => {
   delete process.env.PAPERCUSP_DISABLE_SANDBOX;
   await fs.rm(TMP_HOME, { recursive: true, force: true });
   await fs.rm(TMP_PLUGIN, { recursive: true, force: true });
-  vi.doUnmock('@restart/db-org');
+  vi.doUnmock('@papercusp/db-org');
 });
 
 async function writeScript(rel: string, contents: string): Promise<string> {

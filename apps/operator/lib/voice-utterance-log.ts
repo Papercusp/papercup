@@ -6,7 +6,7 @@
  * silently when the table doesn't exist (best-effort).
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 const ALLOWED_SOURCES = new Set(['legacy', 'elevenlabs-conv', 'realtime']);

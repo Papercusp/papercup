@@ -12,7 +12,7 @@
  * `adv:sessions_list` MCP tool (later).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureAdvSessionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';

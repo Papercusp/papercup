@@ -211,8 +211,8 @@ const openFeedback = defineTool({
     {
       const slug = await projectDirToSlug(projectDir);
       if (!slug) return Response.json({ error: 'unknown harness' }, { status: 404 });
-      const { db } = (await import('@restart/db-org')).getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { db } = (await import('@papercusp/db-org')).getOrgPg();
+      const { generated } = await import('@papercusp/db-org');
       const ws = activeWorkspaceId();
       await db.insert(generated.harnessExpertFeedbackInHarnessShared).values({
         workspaceId: ws,
@@ -254,8 +254,8 @@ const appendTurn = defineTool({
 
     const slug = await projectDirToSlug(projectDir);
     if (!slug) return Response.json({ error: 'unknown harness' }, { status: 404 });
-    const { db } = (await import('@restart/db-org')).getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { db } = (await import('@papercusp/db-org')).getOrgPg();
+    const { generated } = await import('@papercusp/db-org');
     const { and, eq, sql: dsql, count } = await import('drizzle-orm');
     const hef = generated.harnessExpertFeedbackInHarnessShared;
     const het = generated.harnessExpertTurnsInHarnessShared;
@@ -309,8 +309,8 @@ const endFeedback = defineTool({
 
     const slug = await projectDirToSlug(projectDir);
     if (!slug) return Response.json({ error: 'unknown harness' }, { status: 404 });
-    const { db } = (await import('@restart/db-org')).getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { db } = (await import('@papercusp/db-org')).getOrgPg();
+    const { generated } = await import('@papercusp/db-org');
     const { and, eq, sql: dsql } = await import('drizzle-orm');
     const hef = generated.harnessExpertFeedbackInHarnessShared;
     const he = generated.harnessExpertsInHarnessShared;
@@ -418,8 +418,8 @@ const fork = defineTool({
     {
       const slugInner = await projectDirToSlug(projectDir);
       if (slugInner) {
-        const { db } = (await import('@restart/db-org')).getOrgPg();
-        const { generated } = await import('@restart/db-org');
+        const { db } = (await import('@papercusp/db-org')).getOrgPg();
+        const { generated } = await import('@papercusp/db-org');
         const { and, eq } = await import('drizzle-orm');
         const he = generated.harnessExpertsInHarnessShared;
         const ws = activeWorkspaceId();
@@ -486,7 +486,7 @@ const putSpec = defineTool({
     if (!EXPERT_ID_RE.test(expertId)) return Response.json({ error: 'invalid expert id' }, { status: 400 });
     const body = (await req.json().catch(() => ({}))) as { content?: string };
     if (typeof body.content !== 'string') return Response.json({ error: 'content required' }, { status: 400 });
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
     const ws = activeWorkspaceId();
     const updated = await sql<{ updated: boolean }[]>`
       UPDATE harness_shared.harness_experts
@@ -524,7 +524,7 @@ const putAssertions = defineTool({
     if (!EXPERT_ID_RE.test(expertId)) return Response.json({ error: 'invalid expert id' }, { status: 400 });
     const body = (await req.json().catch(() => ({}))) as { content?: string };
     if (typeof body.content !== 'string') return Response.json({ error: 'content required' }, { status: 400 });
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
     const ws = activeWorkspaceId();
     const updated = await sql<{ updated: boolean }[]>`
       UPDATE harness_shared.harness_experts

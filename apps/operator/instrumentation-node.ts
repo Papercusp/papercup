@@ -135,7 +135,7 @@ export async function register(): Promise<void> {
       // submodule pointer on papercup main may lag that export. The
       // src/migration-runner.js file has been stable since the runner
       // was added, so importing it directly is robust to submodule drift.
-      const { applyPendingMigrations } = await import('@restart/embedded-postgres-server/src/migration-runner.js');
+      const { applyPendingMigrations } = await import('@papercusp/embedded-postgres-server/src/migration-runner.js');
       const { getHarnessAdminUrlWithSource } = await import('@/lib/embedded-pg-discovery');
       const postgres = (await import('postgres')).default;
       const { createRequire } = await import('node:module');
@@ -568,7 +568,7 @@ async function maybeStartPtyWsServer(): Promise<void> {
 
 async function prewarmSchema(): Promise<void> {
   const t0 = Date.now();
-  const { getOrgPg } = await import('@restart/db-org');
+  const { getOrgPg } = await import('@papercusp/db-org');
   // First touch establishes the PG pool; subsequent ensure calls reuse it.
   try {
     const { sql } = getOrgPg();
@@ -625,7 +625,7 @@ let _voicePrefsMigrateRan = false;
 async function migrateVoicePrefsDefaults(): Promise<void> {
   if (_voicePrefsMigrateRan) return;
   _voicePrefsMigrateRan = true;
-  const { getOrgPg } = await import('@restart/db-org');
+  const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
   // Migrate ONLY rows where the field exactly equals the OLD default —
   // preserves explicit user choices (e.g. someone who actually wants 5).

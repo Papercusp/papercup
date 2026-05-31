@@ -19,7 +19,7 @@ vi.mock('@/lib/auth/require-principal', () => ({
 }));
 vi.mock('@/lib/process-kill', () => ({ killProcess: vi.fn(async () => ({ ok: true, pid: 1 })) }));
 vi.mock('@/lib/workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(() => ({
     sql: Object.assign(
       (_s: TemplateStringsArray) => Promise.resolve([]),

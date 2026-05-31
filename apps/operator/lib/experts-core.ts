@@ -124,7 +124,7 @@ function rowToIdentity(r: ExpertRow): Identity {
 export async function readIdentity(projectDir: string, expertId: string): Promise<Identity | null> {
   const slug = await projectDirToSlug(projectDir);
   if (slug) {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
     const ws = activeWorkspaceId();
     const rows = await sql<ExpertRow[]>`
       SELECT expert_id, title, status, budget_cents, feature_size,
@@ -175,8 +175,8 @@ export async function writeIdentity(projectDir: string, identity: Identity): Pro
   const ws = activeWorkspaceId();
   const createdAtMs = identity.createdAt ? Date.parse(identity.createdAt) : Date.now();
   const updatedAtMs = Date.parse(identity.updatedAt);
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
+  const { db } = (await import('@papercusp/db-org')).getOrgPg();
+  const { generated } = await import('@papercusp/db-org');
   const { sql: dsql } = await import('drizzle-orm');
   const he = generated.harnessExpertsInHarnessShared;
   await db
@@ -243,7 +243,7 @@ export async function listExpertIdsInPg(projectDir: string): Promise<string[]> {
   const slug = await projectDirToSlug(projectDir);
   if (!slug) return [];
   try {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
     const ws = activeWorkspaceId();
     const rows = await sql<{ expertId: string }[]>`
       SELECT expert_id FROM harness_shared.harness_experts
@@ -282,7 +282,7 @@ export async function nextExpertId(projectDir: string): Promise<string> {
 export async function nextFeedbackId(projectDir: string, expertId: string): Promise<string> {
   const slug = await projectDirToSlug(projectDir);
   if (!slug) return 'FB-001';
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const ws = activeWorkspaceId();
   const rows = await sql<{ feedback_id: string }[]>`
     SELECT feedback_id FROM harness_shared.harness_expert_feedback
@@ -300,7 +300,7 @@ export async function nextFeedbackId(projectDir: string, expertId: string): Prom
 async function readVerdict(projectDir: string, expertId: string, fbId: string): Promise<unknown | null> {
   const slug = await projectDirToSlug(projectDir);
   if (!slug) return null;
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const ws = activeWorkspaceId();
   const rows = await sql<{ verdict: unknown }[]>`
     SELECT verdict FROM harness_shared.harness_expert_feedback
@@ -321,7 +321,7 @@ async function readVerdict(projectDir: string, expertId: string, fbId: string): 
 export async function evaluateConvergence(projectDir: string, expertId: string): Promise<'final' | null> {
   const slug = await projectDirToSlug(projectDir);
   if (!slug) return null;
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const ws = activeWorkspaceId();
   const rows = await sql<{ verdict: unknown }[]>`
     SELECT verdict FROM harness_shared.harness_expert_feedback
@@ -363,7 +363,7 @@ export async function computeNextAction(projectDir: string, expertId: string, id
 
   const slug = await projectDirToSlug(projectDir);
   if (!slug) return 'dispatch_expert';
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const ws = activeWorkspaceId();
   const fbs = await sql<{ feedback_id: string; verdict: unknown | null }[]>`
     SELECT feedback_id, verdict FROM harness_shared.harness_expert_feedback
@@ -434,7 +434,7 @@ export async function aggregateExpertSpendCents(projectDir: string, expertId: st
   try {
     const slug = await projectDirToSlug(projectDir);
     if (slug) {
-      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const ws = activeWorkspaceId();
       const rows = await sql<{ feedback_id: string }[]>`
         SELECT feedback_id FROM harness_shared.harness_expert_feedback

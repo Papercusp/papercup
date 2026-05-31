@@ -15,7 +15,7 @@
 import { existsSync } from 'node:fs';
 import { writeFile, appendFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg, getLegacyClient } from '@restart/db-org';
+import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import type { ProjectEntry } from '@/lib/harness-registry';
@@ -61,7 +61,7 @@ const getReview = defineTool({
     const phase = phaseFromReq(req);
     const id = String(ctx.params.id).replace(/[^A-Za-z0-9_.-]/g, '');
     const { db } = getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { generated } = await import('@papercusp/db-org');
     const { and, eq } = await import('drizzle-orm');
     const prev = generated.pendingReviewsInHarnessShared;
     const rows = await db
@@ -88,7 +88,7 @@ const resolveReview = defineTool({
     const body = (await req.json()) as { response?: string; accept?: boolean };
 
     const { db } = getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { generated } = await import('@papercusp/db-org');
     const { and, eq } = await import('drizzle-orm');
     const prev = generated.pendingReviewsInHarnessShared;
     const rows = await db

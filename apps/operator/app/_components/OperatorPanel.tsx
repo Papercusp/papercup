@@ -19,7 +19,7 @@
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
 import { usePathname } from 'next/navigation';
 import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { createResilientEventSource } from '@papercusp/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';

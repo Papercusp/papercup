@@ -18,7 +18,7 @@ exports.endPiSession = endPiSession;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
-const db_org_1 = require("@restart/db-org");
+const db_org_1 = require("@papercusp/db-org");
 function genBearer() {
     return (0, node_crypto_1.randomBytes)(32).toString('base64url');
 }

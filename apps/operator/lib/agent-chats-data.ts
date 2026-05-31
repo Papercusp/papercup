@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getLegacyClient, getOrgPg } from '@restart/db-org';
+import { getLegacyClient, getOrgPg } from '@papercusp/db-org';
 import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';

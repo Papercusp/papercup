@@ -5,7 +5,7 @@
  * Ported from app/api/admin/prune-executed-actions/route.ts.
  * `auth: 'public'` — the route does its own Bearer-token auth.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { deriveCallerFromBearer } from '@/lib/execute-action';
 import { defineTool } from '@papercusp/agent-mcp';
 

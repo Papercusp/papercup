@@ -9,7 +9,7 @@
  * audit rows live in `harness_shared.audit_log` (workspace-scoped).
  */
 
-import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 export function slugToSchema(slug: string): string {

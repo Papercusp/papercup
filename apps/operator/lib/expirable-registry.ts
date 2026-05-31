@@ -29,7 +29,7 @@
  * Writers don't change.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 const SWEEP_INTERVAL_MS = 30_000;
 

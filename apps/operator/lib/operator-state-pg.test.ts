@@ -9,7 +9,7 @@ vi.mock('./db-encryption', () => ({
   getDbEncryptionKey: () => 'unused',
 }));
 
-vi.mock('@restart/db-org', () => {
+vi.mock('@papercusp/db-org', () => {
   function tableFromFragment(s: string): string | null {
     const m = /harness_shared\.([a-zA-Z0-9_]+)/.exec(s);
     return m ? m[1] : null;

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // the mock just preserves that semantic.
 const store = new Map<string, unknown>();
 
-vi.mock('@restart/db-org', () => {
+vi.mock('@papercusp/db-org', () => {
   function tagged(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
     if (/SELECT payload FROM harness_shared\.operator_rate_limit/.test(sqlText)) {

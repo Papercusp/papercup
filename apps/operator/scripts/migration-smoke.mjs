@@ -31,7 +31,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { startEmbeddedPostgresServer } from '@restart/embedded-postgres-server';
+import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
 
 const REQUIRED_TABLES = [
   ['harness_shared', 'harness_summaries'],

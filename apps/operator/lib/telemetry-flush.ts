@@ -21,7 +21,7 @@
  * When the gate fails this worker still archives locally so the user
  * can see their own reports — it just doesn't forward.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 import { ensureInstallId } from './setup-wizard-install-id';

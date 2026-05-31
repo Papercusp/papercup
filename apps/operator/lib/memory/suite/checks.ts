@@ -10,7 +10,7 @@
  * suite start with is_active=false so the user-picker doesn't show
  * them; dropped on suite end.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   getMemoryClient,
   getResolvedMode,

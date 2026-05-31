@@ -4,7 +4,7 @@
  *
  * Ported from app/api/operator/settings/[key]/route.ts. `auth: 'public'`.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { defineTool } from '@papercusp/agent-mcp';
 

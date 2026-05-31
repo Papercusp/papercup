@@ -10,7 +10,7 @@
  * Idempotent. Called from add-project flow and onboard-action flow so a
  * new harness install needs no out-of-process bash.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 function slugToSchema(slug: string): string {
   // Lowercase + hyphens to underscores. Matches harnessSchemaName in

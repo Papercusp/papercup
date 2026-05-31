@@ -5,7 +5,7 @@
  * row-shape stays consistent across surfaces.
  */
 
-import { withWorkspaceLegacy, getLegacyClient } from '@restart/db-org';
+import { withWorkspaceLegacy, getLegacyClient } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 export interface ProjectRow {

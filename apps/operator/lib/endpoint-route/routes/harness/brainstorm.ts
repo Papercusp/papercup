@@ -16,7 +16,7 @@
  */
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir, safeRead } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { loadIssuesOrSeed, saveIssues } from '@/lib/harness-issues';
@@ -40,8 +40,8 @@ const brainstormMindmapPath = (p: ProjectEntry) => join(harnessDir(p), 'brainsto
 async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: unknown; mindmap: unknown }> {
   const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
   await ensureBrainstormTable();
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
+  const { db } = (await import('@papercusp/db-org')).getOrgPg();
+  const { generated } = await import('@papercusp/db-org');
   const { and, eq } = await import('drizzle-orm');
   const hb = generated.harnessBrainstormInHarnessShared;
   const rows = await db
@@ -55,8 +55,8 @@ async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: 
 async function saveBrainstorm(slug: string, patch: { content?: string; canvas?: unknown; mindmap?: unknown }): Promise<void> {
   const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
   await ensureBrainstormTable();
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
+  const { db } = (await import('@papercusp/db-org')).getOrgPg();
+  const { generated } = await import('@papercusp/db-org');
   const { sql: dsql } = await import('drizzle-orm');
   const hb = generated.harnessBrainstormInHarnessShared;
   const now = Date.now();

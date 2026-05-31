@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { generated } from '@restart/db-org';
+import { generated } from '@papercusp/db-org';
 import { makeFixture, makeFixtures, _resetFixtureCounters } from './make-fixture.ts';
 
 describe('makeFixture', () => {

@@ -9,14 +9,14 @@ vi.mock('../../auth', () => ({
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
 }));
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(),
 }));
 
 import remember from './remember';
 import { getMemoryClient } from '../../memory/mem0-client';
 import { getSessionUserOrDefault } from '../../auth';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 type FakeClient = {
   add: ReturnType<typeof vi.fn>;

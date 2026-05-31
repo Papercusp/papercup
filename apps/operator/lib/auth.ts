@@ -17,7 +17,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 export const SESSION_COOKIE = 'papercusp_session';
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days

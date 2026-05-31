@@ -13,7 +13,7 @@
  * Plan: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24 P-073b.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { loadHarnessActivity } from '@/lib/harness-activity/load';

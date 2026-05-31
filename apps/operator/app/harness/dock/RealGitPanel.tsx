@@ -1,5 +1,5 @@
 /**
- * RealGitPanel — wraps the existing GitGraphPanel from @restart/git-graph
+ * RealGitPanel — wraps the existing GitGraphPanel from @papercusp/git-graph
  * for use inside a dock panel.
  *
  * The library component already handles fetch + virtualization + commit
@@ -13,7 +13,7 @@ import type { PanelComponentProps } from './panel-registry';
 import { crossOriginUrl } from '@/lib/cross-origin-url';
 
 const GitGraphPanelLib = dynamic(
-  () => import('@restart/git-graph').then((m) => ({ default: m.GitGraphPanel })),
+  () => import('@papercusp/git-graph').then((m) => ({ default: m.GitGraphPanel })),
   { ssr: false, loading: () => (
     <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-mute)' }}>
       Loading git graph…

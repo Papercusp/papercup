@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, HarnessStatus } from './theme';
 import { IconButton } from './primitives';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Modal } from './Modal';
 import { PromptBudgetView } from './PromptBudgetView';
 

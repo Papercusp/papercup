@@ -11,7 +11,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
 import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';

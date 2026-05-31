@@ -7,7 +7,7 @@ import { describe, it } from 'vitest';
 // the pure-logic mergePrefs() helper is internal and not separately tested.
 //
 // If we want a unit test for voice-prefs again, the right shape is a mock
-// of @restart/db-org's getOrgPg() with an in-memory tagged-template handler
+// of @papercusp/db-org's getOrgPg() with an in-memory tagged-template handler
 // that records the SQL call and returns the canned row. That's a heavier
 // scaffold than this module needed previously and isn't reused yet.
 

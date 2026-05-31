@@ -11,7 +11,7 @@
  */
 
 import { ensureAutoReviewAuditTable } from '../ensure-schema-dogfood';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { PrHost, Pr } from './types';
 
 export interface AutoApproveContext {

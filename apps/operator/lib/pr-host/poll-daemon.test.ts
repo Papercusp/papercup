@@ -6,7 +6,7 @@ vi.mock('../ensure-schema-dogfood', () => ({
   ensurePrCheckStatusCacheTable: vi.fn().mockResolvedValue(undefined),
   ensureAutoReviewAuditTable: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));
 

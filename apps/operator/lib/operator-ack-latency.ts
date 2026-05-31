@@ -11,7 +11,7 @@
  * per-harness threshold to the existing age-vs-glyph rule.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 const MIN_THRESHOLD_MS = 60_000;

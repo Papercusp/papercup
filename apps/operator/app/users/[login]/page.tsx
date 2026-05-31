@@ -10,7 +10,7 @@
  */
 
 import { redirect, notFound } from 'next/navigation';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 export const dynamic = 'force-dynamic';
 

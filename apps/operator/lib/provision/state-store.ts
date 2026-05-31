@@ -23,7 +23,7 @@
  */
 
 import { join } from 'node:path';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
 const t = generated.provisionStateInHarnessShared;

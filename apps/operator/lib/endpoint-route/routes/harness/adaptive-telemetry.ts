@@ -14,7 +14,7 @@
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 10).
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '@/lib/harness-core';
 import { ensureAdaptiveTelemetryTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -31,7 +31,7 @@ const getTelemetry = defineTool({
     const limit = Math.max(1, Math.min(1000, Number.isFinite(limitRaw) ? limitRaw : 200));
     await ensureAdaptiveTelemetryTable();
     const { db } = getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { generated } = await import('@papercusp/db-org');
     const { desc, eq } = await import('drizzle-orm');
     const at = generated.adaptiveTelemetryInHarnessShared;
     const rows = await db
@@ -88,7 +88,7 @@ const postTelemetry = defineTool({
     }
     await ensureAdaptiveTelemetryTable();
     const { db } = getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { generated } = await import('@papercusp/db-org');
     const at = generated.adaptiveTelemetryInHarnessShared;
     const ws = activeWorkspaceId();
     const rows = await db
@@ -139,7 +139,7 @@ const patchTelemetry = defineTool({
     }
     await ensureAdaptiveTelemetryTable();
     const { db } = getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { generated } = await import('@papercusp/db-org');
     const { and, eq } = await import('drizzle-orm');
     const at = generated.adaptiveTelemetryInHarnessShared;
     const update: Record<string, unknown> = {};

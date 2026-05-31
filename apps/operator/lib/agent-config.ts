@@ -28,7 +28,7 @@ import { papercuspPath } from './papercusp-root';
 /**
  * Canonical subprocess-spawn backend set (operator side). Kept in sync
  * with the orchestrator's `AGENT_BACKENDS` (`@papercusp/orchestrator`
- * types.ts) and the spawn-capable subset of `@restart/papercup-shared`
+ * types.ts) and the spawn-capable subset of `@papercusp/papercup-shared`
  * chat-stream's `AgentBackend` (which additionally has `meridian`, a
  * stateless brains-only HTTP backend — not a subprocess). The submodule
  * boundary rules out a single literal import; `agent-backend-sync.test.ts`

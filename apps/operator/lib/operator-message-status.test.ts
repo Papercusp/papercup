@@ -4,7 +4,7 @@ const messageStatuses = new Map<string, string>();
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 
-vi.mock('@restart/db-org', () => {
+vi.mock('@papercusp/db-org', () => {
   function tagged(strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
     if (/SELECT id, status[\s\S]*FROM papercup_shared\.messages/.test(sqlText)) {

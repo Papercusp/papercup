@@ -2,12 +2,12 @@
 
 import dynamic from 'next/dynamic';
 import { parseAsString, useQueryState } from 'nuqs';
-import { CommitDetail } from '@restart/git-graph';
+import { CommitDetail } from '@papercusp/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { crossOriginUrl } from '@/lib/cross-origin-url';
 
 const GitGraphPanelLib = dynamic(
-  () => import('@restart/git-graph').then((m) => ({ default: m.GitGraphPanel })),
+  () => import('@papercusp/git-graph').then((m) => ({ default: m.GitGraphPanel })),
   {
     ssr: false,
     loading: () => (

@@ -35,7 +35,7 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { loadHarnessRegistry } from '@/lib/harness-registry';

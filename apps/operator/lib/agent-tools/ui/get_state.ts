@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureUiClientsTable } from '@/lib/ensure-schema';
 
 const ALL_ROLES = [

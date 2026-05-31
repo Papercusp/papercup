@@ -20,7 +20,7 @@ vi.mock('./workspace-registry', () => ({
 }));
 // Stub the PG layer — every readOperatorState/withWorkspace call path
 // is mocked above. Anything else slipping through should fail loudly.
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   withWorkspace: async () => {
     throw new Error('PG unavailable — should be mocked at higher layer');
   },

@@ -5,7 +5,7 @@
  * Ported from app/api/admin/spawn-signing/failures/route.ts.
  * `auth: { trust: ['trusted'] }`.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, count, desc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { ensureSpawnSigVerificationFailuresTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';

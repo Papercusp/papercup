@@ -7,7 +7,7 @@
  * for the workspace it paired into (regardless of which one the desktop
  * is currently looking at).
  */
-import { getOrgPg, withWorkspace, generated } from '@restart/db-org';
+import { getOrgPg, withWorkspace, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 
 const hr = generated.harnessRegistryInHarnessShared;

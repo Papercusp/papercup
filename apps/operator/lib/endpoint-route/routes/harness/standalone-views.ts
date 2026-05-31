@@ -11,7 +11,7 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { harnessPath } from '@/lib/harness-paths';
 import { rowToFeature, safeRead } from '@/lib/harness-core';
 import { TEMPLATE_DETECT_FILES } from '@/lib/harness-state-files';
@@ -30,8 +30,8 @@ const getIdentity = defineTool({
     // doesn't readdir per request and Zero subscribers wake up on changes.
     const { ensureIdentityFilesTable } = await import('@/lib/ensure-schema');
     await ensureIdentityFilesTable();
-    const { db } = (await import('@restart/db-org')).getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { db } = (await import('@papercusp/db-org')).getOrgPg();
+    const { generated } = await import('@papercusp/db-org');
     const { asc } = await import('drizzle-orm');
     const idf = generated.identityFilesInHarnessShared;
     const rows = await db

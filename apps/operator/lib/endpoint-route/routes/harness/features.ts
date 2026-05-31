@@ -15,7 +15,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getLegacyClient, withWorkspaceLegacy, getOrgPg } from '@restart/db-org';
+import { getLegacyClient, withWorkspaceLegacy, getOrgPg } from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';

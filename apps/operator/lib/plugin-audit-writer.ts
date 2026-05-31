@@ -10,7 +10,7 @@
  */
 
 import type { AuditRow, AuditWriter } from '@papercusp/plugin-loader';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 let _ensured = false;
 async function ensureTable(): Promise<void> {

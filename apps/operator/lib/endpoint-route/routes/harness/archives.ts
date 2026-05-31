@@ -16,7 +16,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { mkdir, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { STATE_FILES_FOR_RESET } from '@/lib/harness-state-files';

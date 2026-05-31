@@ -10,7 +10,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generated, schemaOf } from '@restart/db-org';
+import { generated, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 
 const goals = generated.goalsInHarnessShared;

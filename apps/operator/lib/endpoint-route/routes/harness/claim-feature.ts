@@ -25,7 +25,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getClaimStrategy } from '@/lib/orchestrator/get-claim-strategy';
 import { attemptDistributedClaim } from '@/lib/orchestrator/distributed-claim';

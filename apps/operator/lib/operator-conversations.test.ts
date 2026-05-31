@@ -12,7 +12,7 @@ import { describe, it } from 'vitest';
 // stabilizes and we can use a shared drizzle stub helper across
 // operator-{audit,scan-lock,conversations,...}.
 describe.skip('operator-conversations (PG-backed)', () => {
-  it('TODO: re-port to drizzle stub once @restart/db-org migration lands', () => {
+  it('TODO: re-port to drizzle stub once @papercusp/db-org migration lands', () => {
     /* placeholder */
   });
 });

@@ -13,7 +13,7 @@
     }
   },
   "dependencies": {
-    "@restart/db-org": "*",
+    "@papercusp/db-org": "*",
     "@testcontainers/postgresql": "^11.0.0",
     "drizzle-orm": "^0.45.2",
     "msw": "^2.7.0",

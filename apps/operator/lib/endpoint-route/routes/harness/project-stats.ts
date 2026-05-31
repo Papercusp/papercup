@@ -10,7 +10,7 @@
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 6).
  */
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const getBudget = defineTool({

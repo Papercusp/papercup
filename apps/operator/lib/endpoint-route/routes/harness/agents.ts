@@ -63,7 +63,7 @@ const getAgentRun = defineTool({
     // back to disk for runs predating activation or in CLI-only mode.
     let jsonlRaw: string | null = null;
     try {
-      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
       const rows = await sql<{ jsonl_body: string }[]>`
         SELECT jsonl_body FROM harness_shared.harness_run_output
          WHERE harness_slug = ${project.slug} AND run_id = ${runId}

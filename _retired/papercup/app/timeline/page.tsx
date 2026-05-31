@@ -10,7 +10,7 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useQuery, useZero } from '@rocicorp/zero/react';
-import { queries } from '@restart/zero-harness';
+import { queries } from '@papercusp/zero-harness';
 
 export const dynamic = 'force-dynamic';
 

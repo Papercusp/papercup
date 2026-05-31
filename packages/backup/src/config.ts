@@ -8,7 +8,7 @@ import type { Sql } from 'postgres';
  * org Postgres handle, the workspaces-root path, the schema bootstrap, or
  * the embedded-pg admin URL — those are the embedding application's
  * concerns, injected here. This keeps the package free of any
- * `@papercusp/*` / `@restart/*` runtime dependency.
+ * `@papercusp/*` / `@papercusp/*` runtime dependency.
  */
 export interface BackupHost {
   /**

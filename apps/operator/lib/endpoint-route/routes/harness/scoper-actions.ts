@@ -17,7 +17,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { resolveProject, harnessDir, parseFeatures } from '@/lib/harness-core';
 import { harnessPackageDir, orchestratorRunBin, tsxBin } from '@/lib/harness-paths';
 import { STATE_FILES_FOR_BACKUP } from '@/lib/harness-state-files';

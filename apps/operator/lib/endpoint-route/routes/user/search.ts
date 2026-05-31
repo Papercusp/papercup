@@ -16,7 +16,7 @@
 import { getSessionUser } from '@/lib/auth';
 import { getMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runFullTextSearch, runHybridSearch, type SearchHit } from '@papercusp/search';
 import { SEARCH_SOURCES } from '@/lib/agent-tools/search/sources';

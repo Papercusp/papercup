@@ -22,7 +22,7 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { getOrgPg, generated, typedSql } from '@restart/db-org';
+import { getOrgPg, generated, typedSql } from '@papercusp/db-org';
 import { and, eq, sql } from 'drizzle-orm';
 import { ensureTextArtifactsTable } from './ensure-schema';
 

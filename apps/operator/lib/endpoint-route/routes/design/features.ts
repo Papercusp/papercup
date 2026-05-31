@@ -8,7 +8,7 @@
  * Ported from app/api/design/features/route.ts. `auth: 'public'` —
  * gateApiRoute(FLAGS.DESIGN) is the actual gate.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
 import { defineTool } from '@papercusp/agent-mcp';

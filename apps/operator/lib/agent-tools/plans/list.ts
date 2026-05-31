@@ -16,7 +16,7 @@ import { listPlanFiles, readPlanBySlug, resolveHarnessPlansDir } from './source'
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */

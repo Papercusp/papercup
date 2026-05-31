@@ -9,7 +9,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const sqlBegin = vi.fn(async () => {});
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: vi.fn(() => ({ sql: { begin: sqlBegin } })),
 }));
 vi.mock('@/lib/workspace-registry', () => ({
@@ -17,7 +17,7 @@ vi.mock('@/lib/workspace-registry', () => ({
 }));
 
 import { recordRouteInvocation } from '../telemetry';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { RouteExecution } from '../route-stack';
 import type { RouteDefinition } from '../define-route';
 

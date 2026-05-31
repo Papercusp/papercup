@@ -23,7 +23,7 @@ export interface ProjectFiles {
 export async function loadProjectFiles(slug: string): Promise<ProjectFiles> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const rows = await sql<Array<ProjectFiles>>`
     SELECT spec, agents, contract, config, version
       FROM harness_shared.harness_project_files
@@ -54,7 +54,7 @@ export async function saveProjectFiles(
 ): Promise<{ version: number }> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const now = Date.now();
 
   // Two paths: with OCC (expectedVersion set) → UPDATE-only with the

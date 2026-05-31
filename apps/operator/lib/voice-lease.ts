@@ -20,7 +20,7 @@
  * The server is the source of truth. Browsers and phones both call
  * REST endpoints; no special protocol.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 import { notifySyncInvalidate } from './sync-sse';
 

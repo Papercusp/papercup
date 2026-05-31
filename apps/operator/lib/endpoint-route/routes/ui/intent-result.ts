@@ -5,7 +5,7 @@
  * loopback inline.
  */
 import { z } from 'zod';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';

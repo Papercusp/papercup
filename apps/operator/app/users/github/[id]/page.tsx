@@ -13,7 +13,7 @@
  * the session; viewers seeing their own profile bypass the filter.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { UserProfile } from './UserProfile';
 import { loadUserProfile } from '../../../../lib/user-profile/load';
 import { getSessionUserOrDefault } from '@/lib/auth';

@@ -5,7 +5,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import Editor from '@monaco-editor/react';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { useShortcut } from '../../lib/hotkeys';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 

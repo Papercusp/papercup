@@ -2,7 +2,7 @@
  * GET /api/agent-mcp/decisions?limit=N — operator_decisions view read.
  * Ported from app/api/agent-mcp/decisions/route.ts. `auth: 'public'`.
  */
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 

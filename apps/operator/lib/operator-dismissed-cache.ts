@@ -15,7 +15,7 @@
  * source-compat with the operator-scan route's existing call site).
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 const DEFAULT_COOLDOWN_MS = 60 * 60 * 1000;

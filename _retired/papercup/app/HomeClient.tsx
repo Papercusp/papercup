@@ -10,7 +10,7 @@
 import Link from 'next/link';
 import { useMemo } from 'react';
 import { useQuery, useZero } from '@rocicorp/zero/react';
-import { queries } from '@restart/zero-harness';
+import { queries } from '@papercusp/zero-harness';
 
 type HarnessRegistryEntry = {
   slug: string;

@@ -17,7 +17,7 @@ vi.mock('./ensure-schema', () => ({
   ensureOperatorSecretsTable: vi.fn(async () => {}),
 }));
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   generated: {
     operatorSecretsInHarnessShared: { name: 'name', valueB64: 'value_b64', rotatedAt: 'rotated_at' },
   },

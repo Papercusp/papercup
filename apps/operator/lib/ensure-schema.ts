@@ -15,7 +15,7 @@
  * The canonical runtime-DDL pattern (see lib/autoloop.ts,
  * lib/provision/operator-claims.ts) only works for harness_shared.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureCoordEventLogTable as ensureCoordEventLogTableDdl } from '@papercusp/coordination/event-log';
 import { ensureCoordWatermarksTable as ensureCoordWatermarksTableDdl } from '@papercusp/coordination/watermark-store';
 import { ensureCoordSubscriptionsTable as ensureCoordSubscriptionsTableDdl } from '@papercusp/coordination/subscription-store';

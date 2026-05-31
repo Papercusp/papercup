@@ -10,7 +10,7 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq } from 'drizzle-orm';
 import {
   aggregateCostFromLogDir,

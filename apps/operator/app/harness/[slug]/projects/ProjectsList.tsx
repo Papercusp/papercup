@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTransitionRouter } from 'next-transition-router';
 import { Loader2, FolderKanban } from 'lucide-react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../theme';
 
 interface FeatureCounts {

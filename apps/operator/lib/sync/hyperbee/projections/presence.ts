@@ -18,7 +18,7 @@
  * the substrate's merge order). del-ops hard-delete the row.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { TableProjection } from '../projection';
 
 export interface SharedPresenceRow {

@@ -10,7 +10,7 @@
  * Always uses `harness_admin` (RLS bypass); the editable-column filter
  * prevents privilege escalation to sensitive columns.
  */
-import { schemaOf, getOrgPg } from '@restart/db-org';
+import { schemaOf, getOrgPg } from '@papercusp/db-org';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 import { getAdminTable } from '@/lib/admin-tables';

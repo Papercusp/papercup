@@ -7,7 +7,7 @@
  * `voice_lease`) via the same admin surface used for editing tiers and
  * settings. Every entry declares:
  *
- *   - the table (the drizzle export from `@restart/db-org`)
+ *   - the table (the drizzle export from `@papercusp/db-org`)
  *   - the PK column(s) used to identify a row for PATCH/DELETE
  *   - an optional `editableColumns` filter — if present, only those
  *     columns are accepted on POST/PATCH bodies (others are stripped)
@@ -16,7 +16,7 @@
  * Plugins extend this registry at boot via `registerAdminTable()` so
  * a plugin's owned tables get an admin page without bespoke UI code.
  */
-import { generated } from '@restart/db-org';
+import { generated } from '@papercusp/db-org';
 import type { Table } from 'drizzle-orm';
 
 export interface AdminTableEntry {

@@ -4,7 +4,7 @@ import { describe, it } from 'vitest';
 // to `harness_shared.operator_preferences` (PG, migration 022). The
 // previous tests mocked papercusp-root + filesystem; that's no longer how
 // state is stored. Re-introducing tests requires a shared mock for
-// @restart/db-org's getOrgPg().
+// @papercusp/db-org's getOrgPg().
 
 describe('operator-preferences (PG-backed)', () => {
   it.skip('migrated to PG — see operator-state-pg integration coverage', () => {

@@ -12,7 +12,7 @@
  */
 import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { getHarnessPg } from '@restart/db-org';
+import { getHarnessPg } from '@papercusp/db-org';
 import { harnessDir } from '@/lib/harness-core';
 import { type ProjectEntry } from '@/lib/harness-registry';
 

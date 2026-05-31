@@ -18,7 +18,7 @@
 
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
-import { withWorkspace } from '@restart/papercusp-db/workspace-context';
+import { withWorkspace } from '@papercusp/db-org/workspace-context';
 
 const ADMIN_URL =
   process.env.HARNESS_ADMIN_DATABASE_URL ??

@@ -10,7 +10,7 @@
  * Not in zero_harness publication — internal cooldown ledger.
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql } from 'drizzle-orm';
 
 const t = generated.cooldownMarksInHarnessShared;

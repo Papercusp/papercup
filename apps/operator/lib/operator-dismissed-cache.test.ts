@@ -10,7 +10,7 @@ vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
 
-vi.mock('@restart/db-org', () => {
+vi.mock('@papercusp/db-org', () => {
   function tagged(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
     if (/INSERT INTO harness_shared\.operator_dismissed_cards/.test(sqlText)) {

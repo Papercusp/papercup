@@ -216,7 +216,7 @@ export function migrationChecker(sqlDir: string): AnchorChecker {
 /**
  * featureChecker takes an async lookup that returns true iff the
  * F-NNN id exists in any harness's harness_features table. The
- * caller supplies it (so this module doesn't import @restart/db-org).
+ * caller supplies it (so this module doesn't import @papercusp/db-org).
  */
 export function featureChecker(
   lookup: (featureId: string) => Promise<boolean>,

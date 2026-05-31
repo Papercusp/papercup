@@ -13,7 +13,7 @@
  * faithful port at current posture (D3 — flagged for auth-tightening).
  */
 import { z } from 'zod';
-import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 

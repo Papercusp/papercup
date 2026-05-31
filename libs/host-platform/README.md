@@ -29,4 +29,4 @@ logic) stays host-clean and takes a `HostPlatform` when it needs the host.
   async signature would force callers to go async or block.
 
 Extracted/audited per `papercusp-systems-abstraction-2026-05-29` (D-007):
-zero `harness_shared.*` / `@restart/db-org` / domain-type imports.
+zero `harness_shared.*` / `@papercusp/db-org` / domain-type imports.

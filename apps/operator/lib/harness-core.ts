@@ -17,7 +17,7 @@ import {
   openSync, readSync, closeSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import {
   HARNESS_SHARED_CONFIG_REL_PATH,
   isHarnessSharedConfig,

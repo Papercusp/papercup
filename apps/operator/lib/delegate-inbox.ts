@@ -9,7 +9,7 @@
  *
  * Server-only.
  */
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { ensureDelegateInboxTable } from './ensure-schema';
 
 export interface DelegateInboxRow {

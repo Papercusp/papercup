@@ -17,7 +17,7 @@
  * on failure and the caller proceeds.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { ensurePlanRevisionsTable } from '../../ensure-schema';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { hashPlanContent } from './content-hash';

@@ -29,7 +29,7 @@
 // compiler.)
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { queryNamesForTriggerEvent } from './sync-resolver/table-to-query-names';
 

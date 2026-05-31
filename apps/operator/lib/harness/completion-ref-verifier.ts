@@ -39,7 +39,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { ensureToastLogTable } from '../ensure-schema';
 import { notifySyncInvalidate } from '../sync-sse';

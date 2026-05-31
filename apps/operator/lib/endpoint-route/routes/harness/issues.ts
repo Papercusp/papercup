@@ -21,7 +21,7 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg, getLegacyClient } from '@restart/db-org';
+import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { auditFeatureChange } from '@/lib/feature-audit';
 import { phasePhaseLabel } from '@/lib/harness-phases';
@@ -131,8 +131,8 @@ const appendPendingIssue = defineTool({
     };
     const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
     await ensureHarnessPendingIssuesTable();
-    const { db } = (await import('@restart/db-org')).getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { db } = (await import('@papercusp/db-org')).getOrgPg();
+    const { generated } = await import('@papercusp/db-org');
     const hpi = generated.harnessPendingIssuesInHarnessShared;
     const issueId = `PENDING-${Date.now()}`;
     const ts = Date.now();
@@ -250,8 +250,8 @@ const triage = defineTool({
     {
       const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
       await ensureHarnessPendingIssuesTable();
-      const { db } = (await import('@restart/db-org')).getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { db } = (await import('@papercusp/db-org')).getOrgPg();
+      const { generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const hpi = generated.harnessPendingIssuesInHarnessShared;
       await db
@@ -364,7 +364,7 @@ const promoteIssue = defineTool({
 
 // Silence unused-import warning — `getOrgPg` survives at the top so the
 // dynamic imports inside append-pending / triage still type-check against
-// the same @restart/db-org module surface.
+// the same @papercusp/db-org module surface.
 void getOrgPg;
 
 export default [issuesList, createIssue, appendPendingIssue, updateIssue, triage, promoteIssue];

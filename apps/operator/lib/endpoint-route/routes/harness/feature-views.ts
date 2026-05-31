@@ -22,7 +22,7 @@ import {
   slugToSchemaName,
   getFeatureLineage,
   formatLineageForPrompt,
-} from '@restart/db-org';
+} from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -69,8 +69,8 @@ const getAudit = defineTool({
     // PG-canonical via harness_shared.feature_audit_consolidated; falls
     // back to the per-harness table for rows pre-dating the cutover.
     try {
-      const { db } = (await import('@restart/db-org')).getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { db } = (await import('@papercusp/db-org')).getOrgPg();
+      const { generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const fa = generated.featureAuditConsolidatedInHarnessShared;
       const rows = await db

@@ -11,7 +11,7 @@
  * It is host-agnostic: the org Postgres handle, the workspaces-root
  * path, the schema bootstrap, and the embedded-pg admin URL are all
  * injected via `configureBackup(host)` (see ./config). The package
- * carries no `@papercusp/*` / `@restart/*` runtime dependency.
+ * carries no `@papercusp/*` / `@papercusp/*` runtime dependency.
  *
  * The self-exclusion guard (`IGNORE_PATTERNS` must contain `backups`)
  * is load-bearing — without it the kopia repo recursively snapshots its

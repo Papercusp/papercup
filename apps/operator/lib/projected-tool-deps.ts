@@ -17,7 +17,7 @@
  * column lands.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,

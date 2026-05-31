@@ -6,7 +6,7 @@ import { BlockNoteView } from '@blocknote/mantine';
 import '@blocknote/core/fonts/inter.css';
 import '@blocknote/mantine/style.css';
 import { toast } from 'sonner';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 type BrainstormRow = { harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number };
 

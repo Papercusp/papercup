@@ -18,7 +18,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readRecentActivity } from '@/lib/cross-harness-data';

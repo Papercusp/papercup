@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { ConfigPanel } from '@/app/harness/ConfigPanel';
 import { pluginSlugFromPath, type InstalledPluginInfo } from '@/app/harness/plugin-utils';

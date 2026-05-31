@@ -2,7 +2,7 @@
  * /api/toast-log — POST record a toast, GET list recent, DELETE clear.
  * Ported from app/api/toast-log/route.ts. `auth: 'public'`.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { ensureToastLogTable } from '@/lib/ensure-schema';
 import { notifySyncInvalidate } from '@/lib/sync-sse';

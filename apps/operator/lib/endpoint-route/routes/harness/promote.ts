@@ -23,7 +23,7 @@ import {
   safeRead,
   parseFeatures,
 } from '@/lib/harness-core';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
@@ -85,8 +85,8 @@ const promote = defineTool({
       resolved: false,
     };
     {
-      const { db } = (await import('@restart/db-org')).getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { db } = (await import('@papercusp/db-org')).getOrgPg();
+      const { generated } = await import('@papercusp/db-org');
       const { sql: dsql } = await import('drizzle-orm');
       const prev = generated.pendingReviewsInHarnessShared;
       const tsMs = ts * 1000;
@@ -248,8 +248,8 @@ const confirmPromotion = defineTool({
     {
       const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
       await ensureHarnessPromotionsTable();
-      const { db } = (await import('@restart/db-org')).getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { db } = (await import('@papercusp/db-org')).getOrgPg();
+      const { generated } = await import('@papercusp/db-org');
       const hp = generated.harnessPromotionsInHarnessShared;
       await db
         .insert(hp)
@@ -311,8 +311,8 @@ const rollback = defineTool({
 
     const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
     await ensureHarnessPromotionsTable();
-    const { db } = (await import('@restart/db-org')).getOrgPg();
-    const { generated } = await import('@restart/db-org');
+    const { db } = (await import('@papercusp/db-org')).getOrgPg();
+    const { generated } = await import('@papercusp/db-org');
     const { and, desc, eq } = await import('drizzle-orm');
     const hp = generated.harnessPromotionsInHarnessShared;
     const promotions = await db

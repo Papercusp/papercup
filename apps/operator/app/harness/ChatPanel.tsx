@@ -19,7 +19,7 @@ import { useConfirmDialog } from './useConfirmDialog';
 import { Send, Archive, Loader2, AlertTriangle, Coins, RotateCcw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';
 import { Tooltip } from './Tooltip';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';

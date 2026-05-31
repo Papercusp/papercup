@@ -16,7 +16,7 @@ import type { ComponentType } from 'react';
 import { lazy } from 'react';
 
 export interface ComponentRef {
-  /** npm package name (e.g. '@restart/papercup-shared') */
+  /** npm package name (e.g. '@papercusp/papercup-shared') */
   componentRoot: string;
   /** Named export within that module (e.g. 'DirectivesView') */
   componentId: string;
@@ -140,7 +140,7 @@ export async function fetchContributions(
  * bundler can include them.
  */
 const KNOWN_ROOTS: Record<string, () => Promise<unknown>> = {
-  '@restart/papercup-shared': () => import('@restart/papercup-shared'),
+  '@papercusp/papercup-shared': () => import('@papercusp/papercup-shared'),
 };
 
 /**

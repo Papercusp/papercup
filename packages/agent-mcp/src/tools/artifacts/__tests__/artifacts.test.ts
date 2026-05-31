@@ -1,5 +1,5 @@
 /**
- * artifacts:* tool tests — mock @restart/db-org.getOrgPg's sql template
+ * artifacts:* tool tests — mock @papercusp/db-org.getOrgPg's sql template
  * tag and verify each tool's input validation + output shape + role
  * gate via dispatchProjectedTool.
  */
@@ -12,7 +12,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const sqlImpl = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const sqlTag = (...args: unknown[]) => sqlImpl(...args);
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: sqlTag }),
 }));
 

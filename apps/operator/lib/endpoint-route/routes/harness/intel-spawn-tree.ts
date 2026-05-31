@@ -3,7 +3,7 @@
  *
  * Ported from app/api/harness/[slug]/intel/spawn-tree/route.ts. `auth: 'public'`.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 

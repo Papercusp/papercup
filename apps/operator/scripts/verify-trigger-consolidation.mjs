@@ -11,7 +11,7 @@
  * Brings its own embedded PG on a non-default port — does NOT touch the
  * user's running operator dev/prod or any existing PG. Cleans up after.
  */
-import { startEmbeddedPostgresServer } from '@restart/embedded-postgres-server';
+import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
 import postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';

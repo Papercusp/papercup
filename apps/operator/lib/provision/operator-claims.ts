@@ -14,7 +14,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
 const oc = generated.operatorClaimsInHarnessShared;

@@ -20,7 +20,7 @@
  * on writes so a future migration can drop it. Tables NOT in the set
  * continue to use the plaintext `payload` JSONB column unchanged.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { ENCRYPTED_TABLES, getDbEncryptionKey } from './db-encryption';
 

@@ -18,12 +18,12 @@ import {
   ArrowLeft, Loader2, AlertTriangle, RefreshCw, Save, X, Pencil,
   Coins, Clock, Hammer, History as HistoryIcon, FileText,
 } from 'lucide-react';
-import { MarkdownView } from '@restart/ui-primitives';
+import { MarkdownView } from '@papercusp/ui-primitives';
 import { MarkdownEditor } from '../../../../_components/MarkdownEditor';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
 import { Tooltip } from '../../../Tooltip';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 interface FeatureCounts {
   todo: number; in_progress: number; validating: number; failing: number;

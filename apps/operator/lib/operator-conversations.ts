@@ -13,7 +13,7 @@
  * unification, 2026-05-10).
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';

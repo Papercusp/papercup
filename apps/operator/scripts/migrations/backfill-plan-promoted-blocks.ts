@@ -31,7 +31,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { listPlanFiles } from '../../lib/agent-tools/plans/source';
 import { upsertPromotedBlock } from '../../lib/agent-tools/coordination/tools/promote';
 import { bumpUpdatedDate } from '../../lib/agent-tools/plans/with-plan-lock';

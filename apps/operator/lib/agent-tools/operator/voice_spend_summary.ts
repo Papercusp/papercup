@@ -15,7 +15,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
 import { loadSttSpend } from '@/lib/stt-spend';

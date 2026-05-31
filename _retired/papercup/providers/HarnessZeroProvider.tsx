@@ -17,7 +17,7 @@
  */
 import { type ReactNode } from 'react';
 import { ZeroProvider } from '@rocicorp/zero/react';
-import { schema, queries } from '@restart/zero-harness';
+import { schema, queries } from '@papercusp/zero-harness';
 
 const ENV_HARNESS_ZERO_SERVER =
   (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_HARNESS_ZERO_SERVER) || '';

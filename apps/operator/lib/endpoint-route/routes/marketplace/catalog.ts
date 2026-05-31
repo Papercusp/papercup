@@ -10,7 +10,7 @@
  */
 import { FLAGS } from '@papercusp/flags';
 import { gateApiRoute } from '@/lib/require-flag';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import FALLBACK_CATALOG from './fallback-catalog.json';
 import { defineTool } from '@papercusp/agent-mcp';
 

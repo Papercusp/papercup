@@ -10,7 +10,7 @@
  */
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
 import { is, Table } from 'drizzle-orm';
-import { generated } from '@restart/db-org';
+import { generated } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function tableByExportName(exportName: string): PgTable | null {

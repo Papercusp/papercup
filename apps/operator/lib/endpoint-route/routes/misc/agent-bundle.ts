@@ -8,7 +8,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { verifyAccessToken } from '@/lib/power-user-token';
 import { getActivePowerUserSession } from '@/lib/power-user-sessions';
 import { workspaceById } from '@/lib/workspace-registry';

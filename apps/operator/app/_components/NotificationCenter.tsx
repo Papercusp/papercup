@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Bell, X, Trash2 } from 'lucide-react';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { Tooltip } from '../harness/Tooltip';
 import { Popover } from '../harness/Popover';
 import { useConfirmDialog } from '../harness/useConfirmDialog';

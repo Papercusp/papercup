@@ -39,7 +39,7 @@
     "documenter",
     "summarizer"
   ],
-  "componentRoot": "@restart/papercup-shared",
+  "componentRoot": "@papercusp/papercup-shared",
   "ui": {
     "slug": "papercup",
     "label": "Papercup",

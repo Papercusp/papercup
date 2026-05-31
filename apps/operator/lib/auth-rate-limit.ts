@@ -24,7 +24,7 @@
  * "user:<addr>:<username>" (hard). Reads GC their own table after 24h.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   createRateLimiter,
   isLoopbackIp,

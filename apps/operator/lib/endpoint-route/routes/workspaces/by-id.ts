@@ -109,7 +109,7 @@ export default [
         /* leak ok */
       }
       try {
-        const { getOrgPg } = await import('@restart/db-org');
+        const { getOrgPg } = await import('@papercusp/db-org');
         const { sql } = getOrgPg();
         await sql`DELETE FROM harness_shared.backup_snapshots WHERE workspace_id = ${id}`;
         await sql`DELETE FROM harness_shared.workspace_backup_settings WHERE workspace_id = ${id}`;

@@ -18,7 +18,7 @@ const TEST_SLUG = `contract-test-${Date.now()}-${Math.random().toString(36).slic
 const TEST_SCHEMA = `harness_${TEST_SLUG.replace(/-/g, '_')}`;
 
 async function getSql() {
-  const { getOrgPg } = await import('@restart/db-org');
+  const { getOrgPg } = await import('@papercusp/db-org');
   return getOrgPg().sql;
 }
 

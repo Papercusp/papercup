@@ -22,7 +22,7 @@
  * the same reason — it's the key we hand back to the CLI to resume.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 
 export interface DelegateTurn {
   ts: string;          // ISO8601

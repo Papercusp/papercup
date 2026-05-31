@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { requireFlag } from '@/lib/require-flag';
 

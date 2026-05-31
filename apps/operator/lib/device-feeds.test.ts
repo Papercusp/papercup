@@ -1,5 +1,5 @@
 /**
- * Tests for device-feeds. Mocks @restart/db-org so we can verify the
+ * Tests for device-feeds. Mocks @papercusp/db-org so we can verify the
  * workspace-scoping contract and SQL shape without a live database.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -15,7 +15,7 @@ function makeTx() {
   };
 }
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   withWorkspace: vi.fn(async (workspaceId: string, fn: (tx: any) => Promise<unknown>) => {
     (globalThis as any).__lastWorkspaceId = workspaceId;
     return fn(makeTx());

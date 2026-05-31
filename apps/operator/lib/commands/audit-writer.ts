@@ -6,7 +6,7 @@
  * no-ops on first failure and we surface a single console.warn.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import type { AgentId } from './types';
 

@@ -15,7 +15,7 @@
  * run already streamed to the user).
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import {
   ensurePlanRunsTable,
   ensurePlanRunTurnsTable,

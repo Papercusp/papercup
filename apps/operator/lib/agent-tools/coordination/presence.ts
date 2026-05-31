@@ -12,7 +12,7 @@
  * NOT stored here — they live in the separate papercusp_su DB.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureCoordPresenceTable } from '@/lib/ensure-schema';
 import {
   PgPresenceStore,

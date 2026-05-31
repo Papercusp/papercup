@@ -12,7 +12,7 @@ interface DismissedRow { workspace_id: string; card_id: string }
 const scanRowsMock = vi.fn<() => ScanRow[]>();
 const dismissedRowsMock = vi.fn<() => DismissedRow[]>();
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
     // The implementation calls `sql<...>` with two distinct queries.
     // Distinguish them by the first interpolated literal in the

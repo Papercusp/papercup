@@ -10,7 +10,7 @@
  * for the username yet (e.g. they have not joined any shared harness).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
 export function isValidLogin(login: unknown): login is string {

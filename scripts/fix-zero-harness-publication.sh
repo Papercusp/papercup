@@ -10,7 +10,7 @@
 # that targets them returns the error
 #   "harness_shared.<table> does not exist or is not one of the
 #    replicated tables"
-# and the @restart/sync provider falls back to REST polling forever.
+# and the @papercusp/sync provider falls back to REST polling forever.
 #
 # This script is idempotent — `ADD TABLE` errors when a table is already
 # in the publication, so we add them one at a time and ignore "already a

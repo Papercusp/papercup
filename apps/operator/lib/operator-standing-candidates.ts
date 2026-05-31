@@ -12,7 +12,7 @@
  * render them without re-querying audit_log on every mount.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { loadPreferences } from './operator-preferences';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';

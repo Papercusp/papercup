@@ -10,7 +10,7 @@
  * Cheap query — bounded by ~7 days of operator-actor audit rows.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { loadBudget } from './operator-budget';
 

@@ -4,7 +4,7 @@
  * authenticated by its own HMAC-SHA256 signature check.
  */
 import crypto from 'node:crypto';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';

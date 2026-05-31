@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.doUnmock('@restart/db-org');
+  vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('@/lib/workspace-registry');
   vi.doUnmock('@/lib/operator-notes');
   vi.doUnmock('@/lib/operator-fuzzy-dedup');
@@ -40,7 +40,7 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
 
 describe('operator:decisions', () => {
   // Tool was rewritten to use drizzle's typed query builder (phase 3).
-  // Mock the drizzle builder chain + use importOriginal for @restart/db-org
+  // Mock the drizzle builder chain + use importOriginal for @papercusp/db-org
   // so other internals (schemaOf etc.) keep working when drizzle reaches
   // into the module during select/from.
   async function setupMocks(rowsToReturn: unknown[]) {
@@ -61,7 +61,7 @@ describe('operator:decisions', () => {
       const actual = (await importOriginal()) as Record<string, unknown>;
       return { ...actual, desc: vi.fn((c) => c) };
     });
-    vi.doMock('@restart/db-org', async (importOriginal) => {
+    vi.doMock('@papercusp/db-org', async (importOriginal) => {
       const actual = (await importOriginal()) as Record<string, unknown>;
       return {
         ...actual,

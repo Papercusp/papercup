@@ -25,7 +25,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { resolveBearer } from './auth';
 import { getCatalog, lookup, standardValidate, formatIssues } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';

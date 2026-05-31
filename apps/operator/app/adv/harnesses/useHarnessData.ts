@@ -15,7 +15,7 @@
 // shipped with is gone; live freshness comes from Zero.
 
 import { useCallback, useEffect, useState } from 'react';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
 
 export type FeatureStatus =

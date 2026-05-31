@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import RouteLink from '../../_components/RouteLink';
 import { CreateHarnessPicker } from '../../harness/CreateHarnessPicker';
 import { toast } from 'sonner';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface ProjectRow {
   slug: string;

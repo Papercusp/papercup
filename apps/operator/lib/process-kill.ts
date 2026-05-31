@@ -13,7 +13,7 @@
  *      if signaling crashes the process tree somehow.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { listProcesses, type ProcessEntry } from './dev-data';
 
 export type KillableKind = 'run.sh' | 'omp' | 'claude';

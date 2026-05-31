@@ -19,13 +19,13 @@
  */
 import { useMemo, useState } from 'react';
 import { useQuery, useZero } from '@rocicorp/zero/react';
-import { queries } from '@restart/zero-harness';
+import { queries } from '@papercusp/zero-harness';
 import {
   type ProjectRow,
   type AuditLogRow,
   type DirectiveSummaryRow,
-} from '@restart/zero-harness';
-import { RichGrid, applySort, type ColumnDef, type RichGridSortState } from '@restart/grid-core';
+} from '@papercusp/zero-harness';
+import { RichGrid, applySort, type ColumnDef, type RichGridSortState } from '@papercusp/grid-core';
 
 function fmtMoney(cents: number | undefined | null): string {
   if (cents == null) return '—';

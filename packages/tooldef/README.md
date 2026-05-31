@@ -16,7 +16,7 @@ What makes it reusable outside Papercusp:
 - **Host-agnostic.** Every side effect — quota reads, telemetry writes,
   principal resolution, capability→tier mapping, gate-bypass policy — is
   *injected*. The core depends on no database, no web framework, and no
-  `@papercusp/*` / `@restart/*` package.
+  `@papercusp/*` / `@papercusp/*` package.
 - **Validator-agnostic.** Tool `args`/`input`, card payloads, and `state`
   accept any [Standard Schema](https://standardschema.dev) validator (Zod
   3.24+, Valibot, ArkType), validated via `~standard.validate`. JSON-Schema

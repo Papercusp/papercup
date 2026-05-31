@@ -13,7 +13,7 @@
  * agent-coordination-architecture-v2 §7.2.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureCoordWatermarksTable } from '@/lib/ensure-schema';
 import { PgWatermarkStore } from '@papercusp/coordination/watermark-store';
 import { emptyWatermark, type Watermark } from '@papercusp/coordination/core';

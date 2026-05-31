@@ -3,7 +3,7 @@
  * SELECT-only; search_path scoped to plugin_<name>.
  * Ported from app/api/plugins/host/query/route.ts. `auth: 'public'`.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface ReqBody {

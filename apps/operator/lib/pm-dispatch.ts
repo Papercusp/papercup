@@ -20,11 +20,11 @@
  * the caller's `lockMode` choice.
  */
 import { spawn } from 'node:child_process';
-import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
+import { getLegacyClient, withWorkspaceLegacy } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectDirForSlug } from './operator-notes';
-import { resolveBackend, resolveAgentBin } from '@restart/papercup-shared/agent';
+import { resolveBackend, resolveAgentBin } from '@papercusp/papercup-shared/agent';
 import { applyToProcessEnv, readAgentConfig } from './agent-config';
 import { getPlanContextsForFeatures } from './plan-context-for-feature';
 
@@ -33,7 +33,7 @@ export interface RunPmOptions {
   projectId: string;
   /**
    * Override the agent CLI command. When omitted, resolves via
-   * `resolveBackend()` + `resolveAgentBin()` from `@restart/papercup-shared/agent`
+   * `resolveBackend()` + `resolveAgentBin()` from `@papercusp/papercup-shared/agent`
    * — the same path runAgentChat uses — so the persisted settings
    * file's `backend` choice (claude-code vs omp) is honored. Without
    * this routing, pm-dispatch would only read AGENT_CMD env and silently

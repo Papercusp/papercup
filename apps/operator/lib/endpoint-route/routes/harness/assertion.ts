@@ -6,7 +6,7 @@
  *
  * Per plans-central-harness-ux-2026-05-26 Phase 6 P-020.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';

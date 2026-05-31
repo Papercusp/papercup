@@ -4,10 +4,10 @@ import { useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
 import { toast } from 'sonner';
 import RouteLink from '../../_components/RouteLink';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface InstalledPluginRecord {
   name: string;

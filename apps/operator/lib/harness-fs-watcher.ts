@@ -59,7 +59,7 @@ import { join, basename, dirname } from 'node:path';
 const execFileP = promisify(execFile);
 import chokidar, { type FSWatcher } from 'chokidar';
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, sql as dsql } from 'drizzle-orm';
 
 const hsum = generated.harnessSummariesInHarnessShared;

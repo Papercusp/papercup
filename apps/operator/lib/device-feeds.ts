@@ -4,7 +4,7 @@
  * Both queries go through `withWorkspace()` so RLS enforces the workspace
  * boundary using the same GUC contract as the rest of harness_shared.
  */
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 
 export interface ToastRow {
   id: number;

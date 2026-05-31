@@ -73,7 +73,7 @@ export async function bumpLastSurfaced(
 /**
  * postgres-js variant — takes the `sql` template-tag from
  * `getOrgPg().sql` instead of a node-pg Client. Used by injection.ts
- * which already plumbs through @restart/db-org.
+ * which already plumbs through @papercusp/db-org.
  *
  * Same defensive posture as the node-pg variant.
  */

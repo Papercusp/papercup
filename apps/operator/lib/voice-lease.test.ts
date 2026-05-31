@@ -1,5 +1,5 @@
 /**
- * Tests for the cross-surface voice lease. Mocks @restart/db-org so the
+ * Tests for the cross-surface voice lease. Mocks @papercusp/db-org so the
  * claim/release/preempt logic runs without a live PG.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -8,7 +8,7 @@ const sqlCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
 const sqlQueue: unknown[][] = [];
 let lastUnsafe = '';
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
     sql: Object.assign(
       (strings: TemplateStringsArray, ...values: unknown[]) => {

@@ -43,7 +43,7 @@ vi.mock('@/lib/power-user-sessions', () => ({
   }),
 }));
 
-vi.mock(import('@restart/db-org'), async (importOriginal) => {
+vi.mock(import('@papercusp/db-org'), async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,

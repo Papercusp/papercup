@@ -20,7 +20,7 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';

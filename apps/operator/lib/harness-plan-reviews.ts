@@ -11,7 +11,7 @@
  * cooldown cache; nothing in this module tracks that.
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { ensureHarnessPlanReviewTable } from './ensure-schema';
 
 const hpr = generated.harnessPlanReviewInHarnessShared;

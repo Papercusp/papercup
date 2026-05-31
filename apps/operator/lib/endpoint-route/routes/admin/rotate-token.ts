@@ -5,7 +5,7 @@
  * Ported from app/api/admin/rotate-token/route.ts. `auth: 'public'` —
  * the route does its own Bearer-token auth (the caller's CURRENT token).
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { promises as fs, existsSync } from 'node:fs';

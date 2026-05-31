@@ -18,8 +18,8 @@ import {
   queries,
   type ProjectRow,
   type MessageRow,
-} from '@restart/zero-harness';
-import { RichGrid, applySort, type ColumnDef, type RichGridSortState } from '@restart/grid-core';
+} from '@papercusp/zero-harness';
+import { RichGrid, applySort, type ColumnDef, type RichGridSortState } from '@papercusp/grid-core';
 
 const KIND_COLOR: Record<string, string> = {
   Directive: '#fbbf24',

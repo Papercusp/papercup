@@ -7,7 +7,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
 import { ensureUserActionsTable } from '@/lib/ensure-schema';
 import { loadHarnessRegistry } from '@/lib/harness-registry';

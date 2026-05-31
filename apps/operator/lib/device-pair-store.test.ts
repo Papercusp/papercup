@@ -1,5 +1,5 @@
 /**
- * Tests for device-pair-store. Mocks @restart/db-org so the PG-backed
+ * Tests for device-pair-store. Mocks @papercusp/db-org so the PG-backed
  * mint/consume contract is exercised without a live database.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -7,7 +7,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const sqlCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
 const sqlQueue: unknown[][] = [];
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
       sqlCalls.push({ strings, values });

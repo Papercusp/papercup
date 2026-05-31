@@ -7,7 +7,7 @@ import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Trash2, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { useShortcut } from '../../lib/hotkeys';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 
 type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 

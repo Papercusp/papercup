@@ -487,7 +487,7 @@ function attachPluginCtxExtras(
   // Lazy require so test contexts without PG don't crash on context build.
   try {
     const { makePluginKv } = require('@/lib/plugin-kv');
-    const { getOrgPg } = require('@restart/db-org');
+    const { getOrgPg } = require('@papercusp/db-org');
     const { sql } = getOrgPg();
     const manifestQuota = (lp.plugin as unknown as {
       kvQuota?: { maxBytesPerKey?: number; maxBytesPerPlugin?: number };
@@ -670,7 +670,7 @@ async function ensureInitialized(
       ) {
         try {
           const { popPluginReloadState } = require('@/lib/plugin-reload-state');
-          const { getOrgPg } = require('@restart/db-org');
+          const { getOrgPg } = require('@papercusp/db-org');
           const { sql } = getOrgPg();
           const state = await popPluginReloadState({
             pluginId: lp.plugin.name,
@@ -1100,7 +1100,7 @@ export async function captureReloadStates(): Promise<void> {
   let sql: any;
   let savePluginReloadState: any;
   try {
-    const dep = await import('@restart/db-org');
+    const dep = await import('@papercusp/db-org');
     sql = dep.getOrgPg().sql;
     ({ savePluginReloadState } = await import('./plugin-reload-state'));
   } catch {

@@ -10,7 +10,7 @@ import { Select } from '../../harness/Select';
 import { Modal } from '../../harness/Modal';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { Button } from '../../harness/Button';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import {
   initVoiceMode,
   listAvailableVoices,

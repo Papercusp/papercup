@@ -16,7 +16,7 @@
  * Plan: papercusp-dogfood-phase6-orchestrator-claim-2026-05-24.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import {

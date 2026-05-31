@@ -29,8 +29,8 @@
  */
 
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
-import { generated } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
+import { generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { ensureOperatorSecretsTable } from './ensure-schema';
 

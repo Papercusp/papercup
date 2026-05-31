@@ -13,7 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 export interface TriggerState {

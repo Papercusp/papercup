@@ -10,7 +10,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useForm } from 'react-hook-form';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
 import MonacoEditor from '@monaco-editor/react';
 import { SlidersHorizontal, Check, Save } from 'lucide-react';

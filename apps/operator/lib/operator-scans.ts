@@ -13,7 +13,7 @@
  * Any client-side caller must go through `/api/agent-mcp/operator-scans`
  * (HTTP) instead of importing this module directly.
  */
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { ensureOperatorScansTable } from './ensure-schema';
 import { notifySyncInvalidate } from './sync-sse';
 import { DEFAULT_WORKSPACE_ID } from './workspace-registry';

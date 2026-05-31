@@ -21,7 +21,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { getLegacyClient, getFeatureLineage, formatLineageForPrompt } from '@restart/db-org';
+import { getLegacyClient, getFeatureLineage, formatLineageForPrompt } from '@papercusp/db-org';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 

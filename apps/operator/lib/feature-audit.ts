@@ -12,7 +12,7 @@
  * preserved verbatim; the local `dbcFor` alias is inlined as
  * `getLegacyClient(slug)`.
  */
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 
 export function auditFeatureChange(
   harnessSlug: string,
@@ -24,8 +24,8 @@ export function auditFeatureChange(
 ): void {
   (async () => {
     try {
-      const { db } = (await import('@restart/db-org')).getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { db } = (await import('@papercusp/db-org')).getOrgPg();
+      const { generated } = await import('@papercusp/db-org');
       const { activeWorkspaceId } = await import('@/lib/workspace-registry');
       const ws = activeWorkspaceId();
       await db.insert(generated.featureAuditConsolidatedInHarnessShared).values({

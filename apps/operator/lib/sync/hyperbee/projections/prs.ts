@@ -10,7 +10,7 @@
  * PG primary key: `(workspace_id, harness_slug, feature_id)`.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { TableProjection } from '../projection';
 
 export interface HarnessFeaturePrRow {

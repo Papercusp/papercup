@@ -5,7 +5,7 @@
 // time/level/source/message rows, level filter chips + source text filter.
 // One-shot read + manual Refresh (no 3s auto-poll, per the /adv ethos).
 //
-// Rendered on @restart/grid-core RichGrid in LEGACY (non-virtual) mode: the
+// Rendered on @papercusp/grid-core RichGrid in LEGACY (non-virtual) mode: the
 // feed is bounded (≤300 events from useHarnessLogs) and the message column
 // wraps to multiple lines, so auto-height rows are simpler + read better than
 // a fixed-height virtualized window.
@@ -13,7 +13,7 @@
 import { useMemo } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Tooltip } from '../../harness/Tooltip';
 import { useHarnessLogs, type HarnessLogEvent } from './useHarnessData';

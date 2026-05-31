@@ -13,14 +13,14 @@
  */
 import { useMemo, useState } from 'react';
 import { useQuery, useZero } from '@rocicorp/zero/react';
-import { queries } from '@restart/zero-harness';
-import { type FeatureConsolidatedRow } from '@restart/zero-harness';
+import { queries } from '@papercusp/zero-harness';
+import { type FeatureConsolidatedRow } from '@papercusp/zero-harness';
 import {
   RichGrid,
   applySort,
   type ColumnDef,
   type RichGridSortState,
-} from '@restart/grid-core';
+} from '@papercusp/grid-core';
 
 interface FeatureRow {
   harness_slug: string;

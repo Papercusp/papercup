@@ -69,7 +69,7 @@ export interface PlanLintReport {
  *  unreachable so the lint never breaks on infra blips. */
 async function countFeaturesFromPlan(planSlug: string): Promise<number> {
   try {
-    const { getOrgPg } = await import('@restart/db-org');
+    const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ n: number }>>`
       SELECT COUNT(*)::int AS n

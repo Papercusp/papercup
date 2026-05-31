@@ -17,7 +17,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import '@/lib/testing-domains-registry';
 import { getTestDomain } from '@/lib/testing-domains';
 import { expandGlobs, inferWorkspaceRoot } from '@/lib/testing-domain-glob';

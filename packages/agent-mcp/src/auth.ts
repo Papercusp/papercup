@@ -17,7 +17,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { Principal } from '@papercusp/tooldef';
 
 const CACHE = new Map<string, Principal>();

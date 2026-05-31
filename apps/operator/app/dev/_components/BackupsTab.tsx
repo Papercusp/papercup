@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { RepoStats, SnapshotInfo } from '@/lib/backup';
 
 interface ServerInfo { workspaceId: string; port: number; url: string; startedAt: string; }

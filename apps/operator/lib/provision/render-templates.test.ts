@@ -30,7 +30,7 @@ beforeEach(async () => {
   process.env.PAPERCUSP_HOME = TMP_HOME;
   process.env.PAPERCUSP_DISABLE_SANDBOX = '1';
   vi.resetModules();
-  vi.doMock('@restart/db-org', () => ({
+  vi.doMock('@papercusp/db-org', () => ({
     getOrgPg: () => ({
       sql: () => {
         throw new Error('no PG in this test');

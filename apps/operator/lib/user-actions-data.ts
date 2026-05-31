@@ -8,7 +8,7 @@
  * stay in the route handler.
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, gte } from 'drizzle-orm';
 import { ensureUserActionsTable } from './ensure-schema';
 

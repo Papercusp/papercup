@@ -15,7 +15,7 @@
  * keeps RLS + audit + budget scoping coherent.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { readRegistry } from './workspace-registry';
 
 export interface ForeignCard {

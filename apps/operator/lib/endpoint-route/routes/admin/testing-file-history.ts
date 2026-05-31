@@ -8,7 +8,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureTestRunsTable } from '@/lib/ensure-schema';
 
 function toIso(v: unknown): string | null {

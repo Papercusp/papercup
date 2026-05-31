@@ -3,7 +3,7 @@
  *
  * Replaces the @rocicorp/zero-coupled resolver at apps/operator/lib/
  * zero-harness-resolver.ts incrementally. The legacy resolver looks
- * each name up in `@restart/zero-harness`'s registry, compiles a ZQL
+ * each name up in `@papercusp/zero-harness`'s registry, compiles a ZQL
  * expression to SQL via `zeroPostgresJS`, runs it. This module does
  * the same thing the dumb way: a switch-on-name table where each
  * entry runs hand-written SQL (or calls into an existing data-access
@@ -23,7 +23,7 @@
  *      to `resolveNamedQueryV2`. After verification, the legacy
  *      resolver + the @rocicorp/zero dep go.
  *
- *   3. The 1107-line @restart/zero-harness queries.ts stays as a
+ *   3. The 1107-line @papercusp/zero-harness queries.ts stays as a
  *      structural reference (table → fields map is still useful)
  *      until P-067 — at which point both go together.
  *
@@ -100,7 +100,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { workspaceId, limit } = args as { workspaceId: string; limit: number };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.auditLogInHarnessShared;
       const { db } = getOrgPg();
@@ -122,7 +122,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { workspaceId, limit } = args as { workspaceId: string; limit: number };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.operatorScansInHarnessShared;
       const { db } = getOrgPg();
@@ -142,7 +142,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ workspaceId: z.string() }),
     resolve: async (args) => {
       const { workspaceId } = args as { workspaceId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.operatorBudgetInHarnessShared;
       const { db } = getOrgPg();
@@ -160,7 +160,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ workspaceId: z.string() }),
     resolve: async (args) => {
       const { workspaceId } = args as { workspaceId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.operatorLastScanInHarnessShared;
       const { db } = getOrgPg();
@@ -184,7 +184,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessTextArtifactsInHarnessShared;
       const { db } = getOrgPg();
@@ -202,7 +202,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.harnessProjectFilesInHarnessShared;
       const { db } = getOrgPg();
@@ -219,7 +219,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessSkillsInHarnessShared;
       const { db } = getOrgPg();
@@ -237,7 +237,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessDecisionsInHarnessShared;
       const { db } = getOrgPg();
@@ -255,7 +255,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessExpertsInHarnessShared;
       const { db } = getOrgPg();
@@ -286,7 +286,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspaceId: string;
         phase: string;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessLanesInHarnessShared;
       const { db } = getOrgPg();
@@ -313,7 +313,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessEscalationsInHarnessShared;
       const { db } = getOrgPg();
@@ -331,7 +331,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessCheckpointsInHarnessShared;
       const { db } = getOrgPg();
@@ -352,7 +352,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, limit } = args as { harnessSlug: string; limit: number };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessGitLogInHarnessShared;
       const { db } = getOrgPg();
@@ -371,7 +371,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturePrsInHarnessShared;
       const { db } = getOrgPg();
@@ -399,7 +399,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspaceId: string;
         phase: string;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessStatusInHarnessShared;
       const { db } = getOrgPg();
@@ -426,7 +426,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessTestsInHarnessShared;
       const { db } = getOrgPg();
@@ -447,7 +447,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessArchivesInHarnessShared;
       const { db } = getOrgPg();
@@ -465,7 +465,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessHookLogsInHarnessShared;
       const { db } = getOrgPg();
@@ -484,7 +484,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.harnessHealthInHarnessShared;
       const { db } = getOrgPg();
@@ -514,7 +514,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspaceId: string;
         phase: string;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessSummariesInHarnessShared;
       const { db } = getOrgPg();
@@ -538,7 +538,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessPhasesInHarnessShared;
       const { db } = getOrgPg();
@@ -556,7 +556,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.harnessSmokeTestInHarnessShared;
       const { db } = getOrgPg();
@@ -574,7 +574,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.harnessPlanReviewInHarnessShared;
       const { db } = getOrgPg();
@@ -592,7 +592,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessBrainstormInHarnessShared;
       const { db } = getOrgPg();
@@ -624,7 +624,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         phase: string;
         includeResolved: boolean;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.pendingReviewsInHarnessShared;
       const { db } = getOrgPg();
@@ -651,7 +651,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessPendingIssuesInHarnessShared;
       const { db } = getOrgPg();
@@ -672,7 +672,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, phase } = args as { harnessSlug: string; phase: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessScreenshotsInHarnessShared;
       const { db } = getOrgPg();
@@ -690,7 +690,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string(), branch: z.string() }),
     resolve: async (args) => {
       const { harnessSlug, branch } = args as { harnessSlug: string; branch: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.harnessBranchActionsInHarnessShared;
       const { db } = getOrgPg();
@@ -711,7 +711,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { harnessSlug, limit } = args as { harnessSlug: string; limit: number };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.agentChatsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -732,7 +732,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeatureNotesInHarnessShared;
       const { db } = getOrgPg();
@@ -750,7 +750,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeatureDebugNotesInHarnessShared;
       const { db } = getOrgPg();
@@ -768,7 +768,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.featureAuditConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -788,7 +788,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.harnessChunkPlansInHarnessShared;
       const { db } = getOrgPg();
@@ -807,7 +807,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string(), featureId: z.string() }),
     resolve: async (args) => {
       const { harnessSlug, featureId } = args as { harnessSlug: string; featureId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, asc, eq } = await import('drizzle-orm');
       const t = generated.harnessChunkPlansInHarnessShared;
       const { db } = getOrgPg();
@@ -834,7 +834,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         status: string;
         limit: number;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.delegatesInHarnessShared;
       const { db } = getOrgPg();
@@ -861,7 +861,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         harnessSlug: string;
         workspaceId: string;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.pluginConfigsInHarnessShared;
       const { db } = getOrgPg();
@@ -878,7 +878,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ workspaceId: z.string() }),
     resolve: async (args) => {
       const { workspaceId } = args as { workspaceId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.pluginEnablesInHarnessShared;
       const { db } = getOrgPg();
@@ -899,7 +899,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { projectId, limit } = args as { projectId: string; limit: number };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.projectSpecRevisionsInHarnessShared;
       const { db } = getOrgPg();
@@ -918,7 +918,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ orgId: z.string().default('default') }),
     resolve: async (args) => {
       const { orgId } = args as { orgId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { eq } = await import('drizzle-orm');
       const t = generated.orgCharterInHarnessShared;
       const { db } = getOrgPg();
@@ -936,7 +936,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ orgId: z.string().default('default') }),
     resolve: async (args) => {
       const { orgId } = args as { orgId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.orgDepartmentsInHarnessShared;
       const { db } = getOrgPg();
@@ -956,7 +956,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ orgId: z.string().default('default') }),
     resolve: async (args) => {
       const { orgId } = args as { orgId: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { asc, eq } = await import('drizzle-orm');
       const t = generated.orgProjectsInHarnessShared;
       const { db } = getOrgPg();
@@ -977,7 +977,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { orgId, deptSlug } = args as { orgId: string; deptSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.orgInboxInHarnessShared;
       const { db } = getOrgPg();
@@ -998,7 +998,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { orgId, deptSlug } = args as { orgId: string; deptSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.orgOutboxInHarnessShared;
       const { db } = getOrgPg();
@@ -1019,7 +1019,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { orgId, deptSlug } = args as { orgId: string; deptSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.orgNotesInHarnessShared;
       const { db } = getOrgPg();
@@ -1040,7 +1040,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { orgId, deptSlug } = args as { orgId: string; deptSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const t = generated.orgDecisionsInHarnessShared;
       const { db } = getOrgPg();
@@ -1067,7 +1067,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspaceId: string;
         phase: string;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.harnessProposalsSharedInHarnessShared;
       const { db } = getOrgPg();
@@ -1098,7 +1098,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -1117,7 +1117,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ planSlug: z.string() }),
     resolve: async (args) => {
       const { planSlug } = args as { planSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessFeaturesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -1140,7 +1140,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessIssuesConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -1158,7 +1158,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.agentRunsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -1176,7 +1176,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.agentRunsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -1195,7 +1195,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     argsSchema: z.object({ harnessSlug: z.string() }),
     resolve: async (args) => {
       const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { desc, eq } = await import('drizzle-orm');
       const t = generated.harnessSnapshotsConsolidatedInHarnessShared;
       const { db } = getOrgPg();
@@ -1222,7 +1222,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         workspaceId: string;
         limit: number;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();
@@ -1252,7 +1252,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         kind: string;
         limit: number;
       };
-      const { getOrgPg, generated } = await import('@restart/db-org');
+      const { getOrgPg, generated } = await import('@papercusp/db-org');
       const { and, desc, eq } = await import('drizzle-orm');
       const t = generated.userActionsInHarnessShared;
       const { db } = getOrgPg();

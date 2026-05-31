@@ -15,7 +15,7 @@ REGISTRY="$HOME/.restart-harness-projects.json"
 
 # Two modes (matching bin/papercusp-init-db.sh):
 # - real Postgres (default)
-# - pglite (PAPERCUSP_USE_PGLITE=1) — connects to @restart/pglite-server
+# - pglite (PAPERCUSP_USE_PGLITE=1) — connects to @papercusp/pglite-server
 #   over a unix domain socket; pglite has a single 'postgres' database.
 if [[ "${PAPERCUSP_USE_PGLITE:-}" = "1" ]]; then
   : "${PGLITE_SOCKET_DIR:=$HOME/.papercusp/pglite-socket}"

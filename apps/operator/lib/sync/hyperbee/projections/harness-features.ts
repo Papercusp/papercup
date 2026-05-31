@@ -14,7 +14,7 @@
  * need to thread it through every op.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { TableProjection } from '../projection';
 
 /**

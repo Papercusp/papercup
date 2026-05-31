@@ -6,7 +6,7 @@
  * NOT in the zero_harness publication — credentials must not be broadcast
  * over WS. Read via authenticated REST only.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';

@@ -21,7 +21,7 @@ const index_js_1 = require("@modelcontextprotocol/sdk/server/index.js");
 const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
 const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
 const zod_to_json_schema_1 = require("zod-to-json-schema");
-const db_org_1 = require("@restart/db-org");
+const db_org_1 = require("@papercusp/db-org");
 const auth_1 = require("./auth");
 const registry_1 = require("./registry");
 /**

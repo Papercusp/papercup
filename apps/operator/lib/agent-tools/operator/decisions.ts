@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { withWorkspace, generated } from '@restart/db-org';
+import { withWorkspace, generated } from '@papercusp/db-org';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { desc } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';

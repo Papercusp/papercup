@@ -4,7 +4,7 @@
  * Ported from app/api/internal/escalation-event/route.ts. `auth: 'public'`.
  */
 import { z } from 'zod';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';

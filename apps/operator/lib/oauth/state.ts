@@ -19,7 +19,7 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 const STATE_VERSION = 1 as const;
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min

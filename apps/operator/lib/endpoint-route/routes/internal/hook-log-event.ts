@@ -3,7 +3,7 @@
  * Ported from app/api/internal/hook-log-event/route.ts. `auth: 'public'`.
  */
 import { z } from 'zod';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';

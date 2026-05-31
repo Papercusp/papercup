@@ -1,7 +1,7 @@
 /**
  * Helpers for Next.js route handlers to do workspace-scoped reads/writes.
  *
- * Existing routes that use `getOrgPg()` from `@restart/db-org` use the
+ * Existing routes that use `getOrgPg()` from `@papercusp/db-org` use the
  * harness_admin role which BYPASSES RLS by design (for migrations). For
  * application-code reads against `harness_shared.*`, those routes need
  * to migrate to `withWorkspace()` so the app-role connection sees only
@@ -23,7 +23,7 @@
  * `db` references inside the callback are forbidden (eslint-rule).
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import type { Sql } from 'postgres';
 

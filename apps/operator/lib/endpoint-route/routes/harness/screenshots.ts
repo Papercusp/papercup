@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -81,7 +81,7 @@ const postScreenshot = defineTool({
     // Producer-time PG write — replaces the chokidar replace-all mirror.
     {
       const { db } = getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { generated } = await import('@papercusp/db-org');
       const { sql: dsql } = await import('drizzle-orm');
       const hsh = generated.harnessScreenshotsInHarnessShared;
       const ws = activeWorkspaceId();
@@ -133,7 +133,7 @@ const deleteScreenshot = defineTool({
     // may still be lingering from a previous fs.watch race.
     {
       const { db } = getOrgPg();
-      const { generated } = await import('@restart/db-org');
+      const { generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
       const hsh = generated.harnessScreenshotsInHarnessShared;
       await db

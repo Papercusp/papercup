@@ -18,7 +18,7 @@
  * different lookup model entirely. Tracked as future work.
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 

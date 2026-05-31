@@ -5,7 +5,7 @@
  * loopback check inline (preserves exact 403 'loopback_required' shape).
  */
 import { z } from 'zod';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiClientsTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';

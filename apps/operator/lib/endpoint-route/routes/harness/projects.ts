@@ -14,7 +14,7 @@ import { workspacesRoot } from '@/lib/workspace-registry';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import {
   loadHarnessRegistry,
   saveHarnessRegistry,

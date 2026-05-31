@@ -10,7 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { Select } from '@/app/harness/Select';
 
 interface Row {

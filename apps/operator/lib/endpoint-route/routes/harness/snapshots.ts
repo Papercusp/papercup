@@ -15,7 +15,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { copyFile, rename, unlink, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg, getHarnessPg } from '@restart/db-org';
+import { getOrgPg, getHarnessPg } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { ensureSnapshotFeaturesTable } from '@/lib/ensure-schema';

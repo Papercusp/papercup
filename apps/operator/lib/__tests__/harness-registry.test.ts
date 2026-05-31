@@ -14,7 +14,7 @@ vi.mock('../operator-state-pg', () => ({
   },
 }));
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
     sql: {
       unsafe: async (_q: string, params: unknown[]) => {

@@ -2,7 +2,7 @@
  * GET /api/agent-mcp/operator-el-spend — current-month ElevenLabs Conv-AI usage.
  * Ported from app/api/agent-mcp/operator-el-spend/route.ts. `auth: 'public'`.
  */
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { loadVoicePrefs } from '@/lib/voice-prefs';
 import { readElevenLabsKey } from '@/lib/voice-credentials';

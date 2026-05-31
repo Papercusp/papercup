@@ -17,7 +17,7 @@
  *   operatorBackstoryEnabled
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 export type UserPrefsPayload = Record<string, unknown>;
 

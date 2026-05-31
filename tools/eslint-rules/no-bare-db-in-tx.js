@@ -13,7 +13,7 @@
  *     a callback whose first parameter is named `tx`.
  *   - Calls to `getOrgPg()` / `getHarnessPg(...)` inside such callbacks.
  *
- * Recommended targets: files in `@restart/papercusp-db/`, the operator's
+ * Recommended targets: files in `@papercusp/papercusp-db/`, the operator's
  * Hono routes, and anywhere the workspace-context wrapper is used.
  *
  * Wire-up when ESLint config is added to the project:

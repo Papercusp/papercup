@@ -6,7 +6,7 @@ import { AddPanelCatalog } from '../../harness/dock/AddPanelCatalog';
 import { resetLayout } from '../../harness/dock/dock-actions';
 import { Tooltip } from '../../harness/Tooltip';
 import { toast } from 'sonner';
-import { StatCard } from '@restart/ui-primitives';
+import { StatCard } from '@papercusp/ui-primitives';
 import { STATUS } from '../../harness/theme';
 import HealthBadge from '../../harness/HealthBadge';
 import type { AdvProjectEntry } from './HarnessesWorkspace';

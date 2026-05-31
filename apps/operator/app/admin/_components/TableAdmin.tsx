@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import '../admin-tables.css';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
  * Drizzle-driven CRUD admin UI factory.

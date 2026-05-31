@@ -25,7 +25,7 @@ const { mustGetQuery } = require('@rocicorp/zero') as {
   mustGetQuery: (registry: any, name: string) => { fn: (ctx: any) => any };
 };
 
-import { schema, queries } from '@restart/zero-harness';
+import { schema, queries } from '@papercusp/zero-harness';
 
 export async function POST(req: Request) {
   const body = await req.json();

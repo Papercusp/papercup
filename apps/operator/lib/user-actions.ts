@@ -17,7 +17,7 @@
  * handler updates status when it finishes (see updateUserAction).
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { ensureUserActionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';

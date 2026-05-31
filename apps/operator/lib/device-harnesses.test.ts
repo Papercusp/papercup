@@ -1,5 +1,5 @@
 /**
- * Tests for device-harnesses. Mocks `@restart/db-org` so the registry
+ * Tests for device-harnesses. Mocks `@papercusp/db-org` so the registry
  * lookup, status merge, and lane/escalation rollups are exercised
  * without a live Postgres.
  */
@@ -10,7 +10,7 @@ const txQueue: unknown[][] = [];
 const sqlCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
 const txCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
 
-vi.mock('@restart/db-org', () => ({
+vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
       sqlCalls.push({ strings, values });

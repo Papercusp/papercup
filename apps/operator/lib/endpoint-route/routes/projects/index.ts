@@ -13,7 +13,7 @@
  * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
  */
 import { randomUUID } from 'node:crypto';
-import { withWorkspaceLegacy } from '@restart/db-org';
+import { withWorkspaceLegacy } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getProjectDetail, listProjectsForHarness } from '@/lib/projects-data';

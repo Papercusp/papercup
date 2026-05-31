@@ -12,7 +12,7 @@
  * `ensure-schema-dogfood.ts::ensureClaimAuditTable`).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 export type ClaimOutcome = 'won' | 'lost' | 'timeout' | 'error';
 

@@ -7,7 +7,7 @@
  *
  * Ported from app/api/operator/conversations/[id]/turn-answer/route.ts. `auth: 'public'`.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';

@@ -17,7 +17,7 @@
  * catch + branch on `.error.code` per the typed error union.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getOctokit } from '@/lib/identity/octokit-client';
 import { ensureSharedRepoBindingCacheTable } from '@/lib/ensure-schema-dogfood';

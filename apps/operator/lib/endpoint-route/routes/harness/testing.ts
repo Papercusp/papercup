@@ -31,7 +31,7 @@ import { type Phase, phasePhaseLabel, phasePath } from '@/lib/harness-phases';
 import { expandGlobs } from '@/lib/testing-domain-glob';
 import { harnessTestingRegistry, ACCEPTANCE_DOMAIN_ID } from '@/lib/harness-testing-registry';
 import { type TestDomain, type ChipStatus, type FileStatusEntry } from '@/lib/testing-domains';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 import { computePlanItemTestStatus } from '@/lib/harness-test-rollup';

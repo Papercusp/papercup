@@ -15,7 +15,7 @@ import { Modal } from '../harness/Modal';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import InstallButton from './InstallButton';
 import RouteLink from '../_components/RouteLink';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 gsap.registerPlugin(useGSAP);

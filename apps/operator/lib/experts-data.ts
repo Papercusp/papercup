@@ -8,7 +8,7 @@
  */
 
 import { join } from 'node:path';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, asc, eq } from 'drizzle-orm';
 
 const he = generated.harnessExpertsInHarnessShared;

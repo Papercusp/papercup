@@ -14,7 +14,7 @@
  * Server-only.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { ensurePowerUserSessionsTable } from './ensure-schema';
 import { newAuthSessionId } from './power-user-token';
 

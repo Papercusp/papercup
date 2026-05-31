@@ -14,7 +14,7 @@
  * Spec: /docs/snapshots/build-scripts#audit-log.
  */
 
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, asc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { publish as publishAudit } from '@/lib/provision-audit-bus';

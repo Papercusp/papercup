@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
-import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { getRoleStyle } from '../../harness/theme';
 import { Tooltip } from '../../harness/Tooltip';

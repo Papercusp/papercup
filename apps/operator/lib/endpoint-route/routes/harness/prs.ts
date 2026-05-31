@@ -26,7 +26,7 @@ import {
 } from '@/lib/pr-host/auto-approve';
 import { tryAutoMerge, type AutoMergeContext } from '@/lib/pr-host/auto-merge';
 import { ensurePrCheckStatusCacheTable } from '@/lib/ensure-schema-dogfood';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { PrRowData } from '@/app/harness/PrRow';
 
 /** Flat runtime shape that github.ts actually returns (predates types.ts restructure). */

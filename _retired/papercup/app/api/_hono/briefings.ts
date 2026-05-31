@@ -14,7 +14,7 @@ import { Hono } from 'hono';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 const ORG_ROOT = join(homedir(), '.restart-org');
 const BRIEFINGS_PATH = join(ORG_ROOT, 'briefings.json');

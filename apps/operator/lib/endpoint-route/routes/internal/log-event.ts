@@ -4,7 +4,7 @@
  * Ported from app/api/internal/log-event/route.ts. `auth: 'public'` —
  * harness-token bearer check inline.
  */
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
 import { publish } from '@/lib/harness-log-bus';
 import { defineTool } from '@papercusp/agent-mcp';

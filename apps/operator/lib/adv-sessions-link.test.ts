@@ -3,14 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 describe('adv-sessions link persistence', () => {
   afterEach(() => {
     vi.resetModules();
-    vi.doUnmock('@restart/db-org');
+    vi.doUnmock('@papercusp/db-org');
     vi.doUnmock('./ensure-schema');
     vi.doUnmock('./workspace-registry');
   });
 
   it('returns conflict when the ADV row is already linked to a different OMP session', async () => {
     const sql = vi.fn(async () => [{ omp_thread_id: '019-old' }]);
-    vi.doMock('@restart/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
     vi.doMock('./ensure-schema', () => ({ ensureAdvSessionsTable: vi.fn(async () => {}) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
@@ -23,7 +23,7 @@ describe('adv-sessions link persistence', () => {
     const sql = vi.fn()
       .mockResolvedValueOnce([{ omp_thread_id: null }])
       .mockResolvedValueOnce([]);
-    vi.doMock('@restart/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
     vi.doMock('./ensure-schema', () => ({ ensureAdvSessionsTable: vi.fn(async () => {}) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
@@ -34,7 +34,7 @@ describe('adv-sessions link persistence', () => {
 
   it('stores cwd when recording a session row', async () => {
     const sql = vi.fn(async () => [{ id: 42 }]);
-    vi.doMock('@restart/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
     vi.doMock('./ensure-schema', () => ({ ensureAdvSessionsTable: vi.fn(async () => {}) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 

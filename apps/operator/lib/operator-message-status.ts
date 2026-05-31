@@ -20,7 +20,7 @@
  * heuristic if no parent link is set).
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
 export type ReceivingState = 'dispatched' | 'consumed' | 'escalated' | 'rejected';

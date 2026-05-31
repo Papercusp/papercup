@@ -30,7 +30,7 @@
  * release the timer.
  */
 import { existsSync } from 'node:fs';
-import { getOrgPg, generated } from '@restart/db-org';
+import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
 
 const hl = generated.harnessLanesInHarnessShared;

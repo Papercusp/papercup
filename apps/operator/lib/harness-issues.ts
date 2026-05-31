@@ -12,7 +12,7 @@
  */
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getHarnessPg } from '@restart/db-org';
+import { getHarnessPg } from '@papercusp/db-org';
 import { safeRead, harnessDir } from '@/lib/harness-core';
 import type { Issue, IssueSeverity } from '@/app/harness/issues/types';
 import type { ProjectEntry } from '@/lib/harness-registry';
@@ -209,8 +209,8 @@ export function loadIssuesOrSeed(project: ProjectEntry): IssuesFile {
 export async function readPendingIssues(project: ProjectEntry): Promise<Issue[]> {
   const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
   await ensureHarnessPendingIssuesTable();
-  const { db } = (await import('@restart/db-org')).getOrgPg();
-  const { generated } = await import('@restart/db-org');
+  const { db } = (await import('@papercusp/db-org')).getOrgPg();
+  const { generated } = await import('@papercusp/db-org');
   const { asc, eq } = await import('drizzle-orm');
   const hpi = generated.harnessPendingIssuesInHarnessShared;
   const rows = await db

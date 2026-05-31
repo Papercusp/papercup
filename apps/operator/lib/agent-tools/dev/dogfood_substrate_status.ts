@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getInProcessSubstrateStatus } from '@/lib/sync/hyperbee/in-process-status';
 import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 export default defineTool({
   name: 'dev:dogfood_substrate_status',

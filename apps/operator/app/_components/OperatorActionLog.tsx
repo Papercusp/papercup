@@ -23,7 +23,7 @@
 import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { Clock, DollarSign } from 'lucide-react';
-import { useSyncQuery } from '@restart/sync';
+import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 export interface UserAction {

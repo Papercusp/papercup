@@ -9,7 +9,7 @@
  * and fans out to per-workspace state. workspaceIds=null means "all".
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 
 /**
  * Build a transport WHERE-fragment for tool_invocations queries.
@@ -741,7 +741,7 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
   let relatedChats: Array<{ id: string; role: string; title: string | null; updated_at: string }> = [];
   if (agent && agent.harness_slug && agent.feature_id) {
     try {
-      const dbc = (await import('@restart/db-org')).getLegacyClient(agent.harness_slug);
+      const dbc = (await import('@papercusp/db-org')).getLegacyClient(agent.harness_slug);
       const rows = (await dbc
         .prepare(
           'SELECT id, role, title, updated_at FROM agent_chats WHERE feature_id = ? ORDER BY updated_at DESC LIMIT 20',
