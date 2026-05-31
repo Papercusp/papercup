@@ -654,14 +654,15 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   standalone usability. The **HTTP+MCP-serving** form awaits the transport extraction
   (Phase 4, P-030/P-031) — added then. blocked-by: P-050 (in-process form pulled
   forward as the Phase-2 capstone)
-- **P-052** `partial` `README.md` + `TESTING.md` (2026-05-30) + the canonical docs-site
-  **`endpoint-system/overview.mdx`** now has a "How it's packaged" section: the package
-  table (`@papercusp/tooldef` engine / `tooldef-http` / `ipc-endpoint-server` / `agent-mcp`
-  host adapter) + the host-injection seam table + the standalone-example pointer.
-  **Remaining:** the other `endpoint-system/*` pages (gating, transports, writing-a-tool,
-  …) still read as if the system is monolithic — but they describe *behavior* that the
-  extraction preserved, so they're lower-priority touch-ups (mostly s/agent-mcp's endpoint
-  system/the engine/). blocked-by: P-050
+- **P-052** `done` (docs) `README.md` + `TESTING.md` (2026-05-30); `endpoint-system/overview.mdx`
+  "How it's packaged" section (package table + host-injection seam table + standalone-example
+  pointer); and a **path/symbol accuracy pass across all `endpoint-system/*` pages** —
+  every stale `packages/agent-mcp/src/<engine-file>` pointer repointed to `packages/tooldef/src/`
+  (P-002 move) / `tooldef-http` (P-030), the File map updated (MCP-transport + host-deps + IPC
+  rows), and two references to the **deleted** `computeProjectedQuotaWindowKey` symbol
+  (reference "Window keys" + telemetry) rewritten to the P-011 `computeQuotaWindow` reality.
+  Remaining is only optional deep-narrative polish (prose still occasionally frames the system
+  as monolithic), which describes unchanged behavior — not worth the churn. blocked-by: P-050
 - **P-053** `todo` `npm run test:affected:integration` + `npm run lint:knip` clean.
   blocked-by: P-050
 - **P-054** `needs-human` Decide whether to promote `@papercusp/tooldef` to a separate
