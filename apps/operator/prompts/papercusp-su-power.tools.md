@@ -177,8 +177,13 @@ run it before you report a change as done.
 - **Don't write to `harness_features` or schema-canonical tables with
   raw SQL.** Use the documented verbs — they emit audit rows and keep
   state in sync.
-- **Don't spawn workers / validators / architects directly.** File a
-  feature or send a directive through the harness workflow instead.
+- **Don't call `orchestrator.spawn` directly.** For *autonomous* work,
+  file a feature or send a directive through the harness workflow. For an
+  **interactive** role session — a human-driven worker / validator /
+  architect / scoper / … with that role's persona + role-scoped tools +
+  (when the role needs one) a bound feature — launch it via `psu` (the
+  picker has a role step) or `psu --role <role> [--feature F-NNN]`. It's
+  interactive + tracked, so it's safe for exploration, unlike a raw spawn.
 
 ## Mid-call interactivity
 
