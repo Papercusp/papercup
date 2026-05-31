@@ -223,7 +223,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
 - **P-027** `todo` Expand architect (2→~6) and oracle (3→~6) LLM scenarios under
   `apps/operator/lib/llm-testing/scenarios/`.
 
-- **P-028** `todo` Depth for design IR/codegen, `packages/plan-parser` (1 test for
+- **P-028** `todo` Depth for design IR/codegen, `packages/plan-parser` (1 test for (— PARTIAL: agent-tools/flags slice done lib/agent-tools/flags/__tests__/flags.test.ts, 8 tests for get/list/set + fixed a latent audit-actor bug in set.ts: ctx.principal?.subject→slug; commit bcd731243. STILL TODO: packages/plan-parser submodule libs/generic/plan-parser format-parser test + operator plugin host-runtime plugin-host/runtime/kv/spawn-impl.)
   a load-bearing format parser), the operator plugin host-runtime
   (`plugin-host`/`runtime`/`kv`/`spawn-impl`), and `agent-tools/flags`.
 
