@@ -25,6 +25,7 @@ import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useSearchParams } from 'next/navigation';
 import { useShortcutAction } from '../../lib/hotkeys';
 import { buildRegistryPaletteItems } from '../../lib/commands/shims/palette-shim';
+import { useServerCapabilityCommands } from './use-server-capabilities';
 import type { Command } from './CommandPalette';
 
 const CommandPalette = lazy(() => import('./CommandPalette'));
@@ -43,10 +44,10 @@ export default function GlobalCommandPalette() {
     { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   );
 
-  // Rows come from the Action Registry — every command tagged with a
-  // `paletteEntry` (nav.*, operator.*, panel.*). Memoized by workspace
+  // Browser-reflexive rows from the Action Registry — every command tagged
+  // with a `paletteEntry` (nav.*, operator.*, panel.*). Memoized by workspace
   // so the perform() closures capture the active ws; cheap to rebuild.
-  const commands = useMemo<Command[]>(() => {
+  const registryCommands = useMemo<Command[]>(() => {
     const sessionId = typeof window !== 'undefined'
       ? (window.sessionStorage.getItem('pc-voice-tab-id') ?? undefined)
       : undefined;
@@ -59,6 +60,17 @@ export default function GlobalCommandPalette() {
       perform: it.perform,
     }));
   }, [workspace]);
+
+  // Server tool catalog (the agent tools) — the §3-eligible, principal-gated
+  // subset, fetched the first time the palette opens. Executes via the gated
+  // /run-tool endpoint. This is the unification payoff: Ctrl+P now spans both
+  // the browser commands AND the agent catalog.
+  const serverCommands = useServerCapabilityCommands(open);
+
+  const commands = useMemo<Command[]>(
+    () => [...registryCommands, ...serverCommands],
+    [registryCommands, serverCommands],
+  );
 
   // Don't mount the lazy palette chunk until first open.
   if (!open) return null;
