@@ -26,6 +26,7 @@
  */
 
 import type Corestore from 'corestore';
+import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
 
 export interface SwarmHandle {
   /** Leave the topic + detach this harness's connection handler.
@@ -59,6 +60,32 @@ export interface JoinHarnessSwarmOpts {
    *  Noise public key (hex) when Hyperswarm surfaces it (P-002). Useful for the
    *  substrate dashboard, boot-history, and per-peer accounting/rate-limiting. */
   onPeerConnected?: (remotePublicKeyHex?: string) => void;
+  /** DoS guard (ban-list + connection rate-limit). Defaults to the process-global
+   *  guard (the same one the shared swarm's firewall reads). Injectable for tests. */
+  guard?: SwarmGuard;
+}
+
+/**
+ * Pull the remote peer's IP out of a Hyperswarm connection socket, defensively
+ * — the encrypted stream exposes the underlying UDX stream's `remoteHost`. The
+ * DoS guard keys its connection-rate limit on IP when available (robust to a
+ * peer rotating its Noise key — see hyperswarm-dos-hardening D-003). Returns
+ * undefined for test fakes / shapes that don't expose it.
+ */
+export function extractRemoteIp(socket: unknown): string | undefined {
+  const host = (socket as { rawStream?: { remoteHost?: unknown } } | null | undefined)?.rawStream
+    ?.remoteHost;
+  return typeof host === 'string' && host.length > 0 ? host : undefined;
+}
+
+/** Best-effort close of a live peer connection (Hyperswarm's `ban()` prevents
+ *  RECONNECT but does NOT close an open connection — D-003). */
+function destroySocket(socket: unknown): void {
+  try {
+    (socket as { destroy?: () => void } | null | undefined)?.destroy?.();
+  } catch {
+    // best-effort; a peer we're dropping doesn't get to crash us
+  }
 }
 
 /**
@@ -89,10 +116,37 @@ export async function joinHarnessSwarm(
   }
   if (!opts.swarm) throw new Error('joinHarnessSwarm: swarm required');
 
+  const guard = opts.guard ?? getSwarmGuard();
   let connectionCount = 0;
   const handler = (socket: unknown, peerInfo?: unknown): void => {
     connectionCount++;
     const remotePublicKeyHex = extractPublicKeyHex(peerInfo);
+    const remoteIp = extractRemoteIp(socket);
+
+    // Drop an already-banned peer BEFORE replicating (sync). The constructor
+    // firewall rejects banned *keys* pre-handshake, but two cases land here: a
+    // connection already in flight when the ban took effect, and any connect
+    // from a banned IP (the key-only firewall can't see IPs). ban() doesn't
+    // close a live connection (P-004 / D-003), so we destroy the socket.
+    if (
+      (remotePublicKeyHex && guard.isBannedKey(remotePublicKeyHex)) ||
+      (remoteIp && guard.isBannedIp(remoteIp))
+    ) {
+      destroySocket(socket);
+      return;
+    }
+
+    // Per-connection rate-limit (P-005). Over the ceiling → the guard bans the
+    // key + IP (future connects are firewall-/handler-rejected) and we drop this
+    // tripping connection. Fire-and-forget: the in-memory limiter is a microtask,
+    // and we don't block replication of legitimate peers on it.
+    void guard
+      .recordConnection(remotePublicKeyHex, remoteIp)
+      .then((v) => {
+        if (!v.allow) destroySocket(socket);
+      })
+      .catch(() => {});
+
     try {
       // corestore.replicate(stream) connects the corestore to the
       // peer's stream. Returns a stream we pipe nothing else through;
@@ -182,8 +236,23 @@ export function swarmConstructorOpts(): { maxPeers: number } {
 export async function getSharedSwarm(): Promise<HyperswarmLike> {
   if (_sharedSwarm) return _sharedSwarm;
   const mod = await import('hyperswarm');
-  const Swarm = (mod as { default: new (opts?: { maxPeers?: number }) => HyperswarmLike }).default;
-  _sharedSwarm = new Swarm(swarmConstructorOpts());
+  const Swarm = (
+    mod as {
+      default: new (opts?: {
+        maxPeers?: number;
+        firewall?: (remotePublicKey: Buffer) => boolean;
+      }) => HyperswarmLike;
+    }
+  ).default;
+  const guard = getSwarmGuard();
+  // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
+  // rejects banned keys without spending handshake CPU. Hyperswarm only hands
+  // the firewall the remote public key, so IP-level bans are enforced in the
+  // connection handler instead.
+  _sharedSwarm = new Swarm({
+    ...swarmConstructorOpts(),
+    firewall: (remotePublicKey: Buffer) => guard.firewall(remotePublicKey),
+  });
   return _sharedSwarm;
 }
 

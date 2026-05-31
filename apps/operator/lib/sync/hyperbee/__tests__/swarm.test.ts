@@ -3,14 +3,19 @@ import {
   joinHarnessSwarm,
   swarmConstructorOpts,
   extractPublicKeyHex,
+  extractRemoteIp,
   type HyperswarmLike,
   _setSharedSwarmForTests,
   _peekSharedSwarmForTests,
 } from '../swarm';
+import { createSwarmGuard, _setSwarmGuardForTests } from '../swarm-guard';
 import type Corestore from 'corestore';
 
 afterEach(() => {
   _setSharedSwarmForTests(null);
+  // Reset the process-global guard so each test gets a fresh ban-list +
+  // rate-limit buckets (the connection handler defaults to the global guard).
+  _setSwarmGuardForTests(null);
 });
 
 interface FakeSwarmState {
@@ -163,6 +168,68 @@ describe('joinHarnessSwarm — happy path', () => {
     } as unknown as Corestore;
     await joinHarnessSwarm({ store: badStore, topic: topic32(), swarm });
     expect(() => emit('connection', { pipe: vi.fn() })).not.toThrow();
+  });
+});
+
+describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
+  const BANNED_KEY = '11'.repeat(32);
+  const BANNED_IP = '198.51.100.9';
+
+  it('drops a banned-key peer before replicating + destroys the socket', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store, replicateCalls } = fakeStore();
+    const guard = createSwarmGuard();
+    guard.banKey(BANNED_KEY);
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard });
+
+    const socket = { pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from(BANNED_KEY, 'hex') });
+
+    expect(replicateCalls).toEqual([]); // never replicated
+    expect(socket.pipe).not.toHaveBeenCalled();
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a banned-IP peer (the key-only firewall cannot see IPs)', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store, replicateCalls } = fakeStore();
+    const guard = createSwarmGuard();
+    guard.banIp(BANNED_IP);
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard });
+
+    const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: BANNED_IP } };
+    emit('connection', socket); // no peerInfo → no key, only the IP
+
+    expect(replicateCalls).toEqual([]);
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('replicates a non-banned peer + does not destroy it', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store, replicateCalls } = fakeStore();
+    const guard = createSwarmGuard();
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard });
+
+    const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: '203.0.113.4' } };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+    // Let the fire-and-forget rate-limit settle (in-memory → a few microtasks).
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(replicateCalls).toEqual([true]);
+    expect(socket.destroy).not.toHaveBeenCalled();
+  });
+});
+
+describe('extractRemoteIp (P-005)', () => {
+  it('reads rawStream.remoteHost', () => {
+    expect(extractRemoteIp({ rawStream: { remoteHost: '10.0.0.1' } })).toBe('10.0.0.1');
+  });
+  it('returns undefined for missing / non-string / empty hosts', () => {
+    expect(extractRemoteIp(undefined)).toBeUndefined();
+    expect(extractRemoteIp({})).toBeUndefined();
+    expect(extractRemoteIp({ rawStream: {} })).toBeUndefined();
+    expect(extractRemoteIp({ rawStream: { remoteHost: 123 } })).toBeUndefined();
+    expect(extractRemoteIp({ rawStream: { remoteHost: '' } })).toBeUndefined();
   });
 });
 
