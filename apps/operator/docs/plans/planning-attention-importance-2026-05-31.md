@@ -1,7 +1,7 @@
 ---
 title: Planning tab: importance levels + unified attention items
 slug: planning-attention-importance-2026-05-31
-status: draft
+status: active
 created: 2026-05-31
 updated: 2026-05-31
 owner: aviynw3@gmail.com
@@ -11,21 +11,19 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Draft for review. Audit (2026-05-30) found the escalation→needs-human
-folding already shipped (`plans-central-harness-ux-2026-05-26` D-003; items
-P-010–P-014 all done): ESCALATE, architect-REVIEW (spec-suspect), `escalation.md`,
-`supervisor-notes.md`, and `pending_reviews` already become `needs-human` plan
-items. Remaining work: an **importance** level on all items
-(`urgent | high | normal | low`); a generic `AttentionItem` type so the other live
-attention surfaces fold into the same view under a new **"Other"** item-filter —
-coord escalations, coord messages-to-human, smoke-test failures, and
-plan-ready-for-review; the "Needs Decision"→**"ToDos"** rename; cross-harness
-attention; **event-driven push over the existing IPC bus (no polling)**; and
-operator/orchestrator reading importance.
+**State:** Approved (2026-05-31). P-022 resolved — operator recommendations and
+design reviews stay in their own surfaces (importance-aware only); P-028 dropped.
+Implementation underway at Phase 1. Prior context: the escalation→needs-human
+folding already shipped (`plans-central-harness-ux-2026-05-26` D-003; P-010–P-014
+done). This plan adds an **importance** level on all items
+(`urgent | high | normal | low`); a generic `AttentionItem` type so coord
+escalations, coord messages-to-human, smoke-test failures, and plan-ready-for-review
+fold into the same view under a new **"Other"** item-filter; the "Needs
+Decision"→**"ToDos"** rename; cross-harness attention; **event-driven push over IPC
+(no polling)**; and operator/orchestrator reading importance.
 
-**Next:** One decision is left — P-022 (do operator recommendations + design reviews
-also fold in as "Other" kinds, or stay importance-aware in their own surfaces?).
-Resolve that, then flip status to `ready`.
+**Next:** Phase 1 — `importance:` keyword in the plan-format spec + parser + a
+`plans:items` sort + `plans:add-item` authoring enforcement (P-001..P-004).
 
 ## Background
 
@@ -40,8 +38,11 @@ it) that the operator/orchestrator also read. Surfaces, by disposition:
   escalations (`coord:escalate`; severity→importance), coord messages addressed to
   the human (`to:['human']`), smoke-test failures (`harness_smoke_test = fail`), and
   plan-ready-for-review (`harness_plan_review`).
-- **Candidates, gated on P-022:** operator suggestion cards (carry a capability
-  `tier`, not importance) and design reviews (`design_status`).
+- **Excluded — stay importance-aware in their own surfaces (P-022 resolved):**
+  operator suggestion cards (carry a capability `tier`) and design reviews
+  (`design_status`). These are suggestions/reviews, not items awaiting a decision;
+  folding them would dilute the inbox. The operator panel sorts its own cards by
+  importance (P-018); it does not move into the Planning tab.
 - **Excluded (not attention items):** toast log (ephemeral replay), inter-agent
   `messages` (agent↔agent), `pending_events` (hook plumbing).
 - **Delivery:** push becomes event-driven over the existing IPC / event bus; the
@@ -57,49 +58,49 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 
 ## Phase 1 — Importance on plan items (data + authoring)
 
-- [ ] P-001: plan-format spec (`apps/operator-docs/src/content/docs/spec/plan-format.mdx`) — document an `importance:` keyword on items, values `urgent | high | normal | low`, default `normal`, parsed glyph-agnostically exactly like `blocked-by:`. Add a worked example. References D-002, D-003.
-- [ ] P-002: `packages/plan-parser` — parse `importance:` into `PlanItem.importance` (default `normal`); surface it through effective-status output and the items array. Add a `*.property.test.ts` for the keyword parse (separator-agnostic, default, bad-value → normal + lint warning). References D-003.
-- [ ] P-003: `plans:items` returns `importance`; sort ToDos and needs-human items by importance (urgent→low) then age. `plans:lint` validates the value is one of the four (warning, degrade to `normal`, on unknown).
-- [ ] P-004: `plans:add-item` REQUIRES an `importance` arg (no silent default) so the rubric is enforced at authoring; `plans:set-status` plus a new `plans:set-importance` can change it later. References D-002.
+- **P-001** `todo` plan-format spec (`apps/operator-docs/src/content/docs/spec/plan-format.mdx`) — document an `importance:` keyword on items, values `urgent | high | normal | low`, default `normal`, parsed glyph-agnostically exactly like `blocked-by:`; also correct the spec's item-line example to the canonical `- **P-NNN** ` + backtick-status form. Add a worked example. References D-002, D-003.
+- **P-002** `todo` `packages/plan-parser` — parse `importance:` into `PlanItem.importance` (default `normal`); surface it through effective-status output and the items array. Add a property test for the keyword parse (separator-agnostic, default, bad-value → normal + warning). References D-003.
+- **P-003** `todo` `plans:items` returns `importance`; sort ToDos and needs-human items by importance (urgent→low) then age. `plans:lint` validates the value is one of the four (warning, degrade to `normal`, on unknown).
+- **P-004** `todo` `plans:add-item` REQUIRES an `importance` arg (no silent default) so the rubric is enforced at authoring; `plans:set-status` plus a new `plans:set-importance` can change it later. References D-002.
 
 ## Phase 2 — Rubric + agent enforcement
 
-- [ ] P-005: Author the importance rubric (see the "Rubric" section below) and add it to the scoper, architect, orchestrator, and operator persona/tools prompts under `apps/operator/prompts/`. References D-002.
-- [ ] P-006: Orchestrator — when it auto-creates a `needs-human` item (ESCALATE→item per shipped P-011; architect-REVIEW→item per shipped P-012) it must set `importance` from the rubric; set `urgent` for a feature still failing after the debugger threshold (closes the "3-failed-attempts alert" gap, which today lands as a plain needs-human item with no urgency). blocked-by: P-004
-- [ ] P-007: `tools-md-sync` + prompt-assembly tests green; verify `plans:add-item` enforcement with a unit test.
+- **P-005** `todo` Author the importance rubric (see the "Rubric" section below) and add it to the scoper, architect, orchestrator, and operator persona/tools prompts under `apps/operator/prompts/`. References D-002.
+- **P-006** `todo` Orchestrator — when it auto-creates a `needs-human` item (ESCALATE→item per shipped P-011; architect-REVIEW→item per shipped P-012) it must set `importance` from the rubric; set `urgent` for a feature still failing after the debugger threshold (closes the "3-failed-attempts alert" gap, which today lands as a plain needs-human item with no urgency). blocked-by: P-004
+- **P-007** `todo` `tools-md-sync` + prompt-assembly tests green; verify `plans:add-item` enforcement with a unit test.
 
 ## Phase 3 — Generic AttentionItem read-model + adapters + reader
 
-- [ ] P-008: Define a shared `AttentionItem` type: `{ id, kind, source, harnessSlug, planSlug?, itemRef?, title, body, status, importance, needsHuman, actions[], ref }`. `planSlug` and `itemRef` (P-NNN) are **nullable** — an unattached item (an escalation with no plan, a smoke-fail) carries only a `body` message. `actions[]` is a typed list of buttons each kind declares. References D-004, D-008.
-- [ ] P-009: Adapter `planItem → AttentionItem` (actions: Chat, Resolve = mark-done). References D-004.
-- [ ] P-010: Adapter `coordEscalation → AttentionItem`; map `severity` → importance (blocker→urgent/high, question→normal, advisory→low); actions: Chat, Resolve = `coord:resolve(choice)` using the escalation's options. Reads the coord event log (single source of truth); `/coord` stays. References D-004, D-006, D-008.
-- [ ] P-011: Reader — extend `/api/admin/plans/items` (or add `/api/admin/plans/attention`) to return `AttentionItem`s grouped by plan, importance-sorted, harness-filtered; unattached items (no `planSlug`) group under a synthetic per-harness "Alerts" bucket; cross-harness UNION when "all harnesses" is selected (fan-out via the `harness_slugs` arg `plans:items` already supports). References D-005, D-008.
-- [ ] P-012: Preserve the orchestrator needs-human DONE-gate (today `GET /api/admin/plans/items?needsHuman=true`) against the new reader shape. blocked-by: P-011
-- [ ] P-025: Adapter `smokeFail → AttentionItem` — kind `smoke-fail`, no plan link, `body` = failure summary, actions: Chat, View log, Resolve (ack). References D-008.
-- [ ] P-026: Adapter `planReviewReady → AttentionItem` — kind `plan-review`, from `harness_plan_review`, actions: Open/Review, Chat. References D-008.
-- [ ] P-027: Adapter `coordMessageToHuman → AttentionItem` — kind `coord-message`, coord messages `to:['human']`, actions: Chat, Ack. References D-008.
-- [ ] P-028: (gated) Adapters for operator recommendations + design reviews as "Other" kinds — only if P-022 includes them. blocked-by: P-022. References D-008.
+- **P-008** `todo` Define a shared `AttentionItem` type with `id`, `kind`, `source`, `harnessSlug`, nullable `planSlug` + `itemRef` (P-NNN), `title`, `body`, `status`, `importance`, `needsHuman`, a typed `actions[]` each kind declares, and a `ref` back to the backend. An unattached item (an escalation with no plan, a smoke-fail) carries only a `body` message. References D-004, D-008.
+- **P-009** `todo` Adapter `planItem → AttentionItem` (actions: Chat, Resolve = mark-done). References D-004.
+- **P-010** `todo` Adapter `coordEscalation → AttentionItem`; map `severity` → importance (blocker→urgent or high, question→normal, advisory→low); actions: Chat, Resolve = `coord:resolve(choice)` using the escalation's options. Reads the coord event log (single source of truth); `/coord` stays. References D-004, D-006, D-008.
+- **P-011** `todo` Reader — extend `/api/admin/plans/items` (or add `/api/admin/plans/attention`) to return `AttentionItem`s grouped by plan, importance-sorted, harness-filtered; unattached items (no `planSlug`) group under a synthetic per-harness "Alerts" bucket; cross-harness UNION when "all harnesses" is selected (fan-out via the `harness_slugs` arg `plans:items` already supports). References D-005, D-008.
+- **P-012** `todo` Preserve the orchestrator needs-human DONE-gate (today GET `/api/admin/plans/items?needsHuman=true`) against the new reader shape. blocked-by: P-011
+- **P-025** `todo` Adapter `smokeFail → AttentionItem` — kind `smoke-fail`, no plan link, `body` = failure summary, actions: Chat, View log, Resolve (ack). References D-008.
+- **P-026** `todo` Adapter `planReviewReady → AttentionItem` — kind `plan-review`, from `harness_plan_review`, actions: Open/Review, Chat. References D-008.
+- **P-027** `todo` Adapter `coordMessageToHuman → AttentionItem` — kind `coord-message`, coord messages `to:['human']`, actions: Chat, Ack. References D-008.
+- **P-028** `dropped` Adapters for operator recommendations + design reviews as "Other" kinds — DROPPED per P-022 (they stay importance-aware in their own surfaces). References D-008.
 
 ## Phase 4 — Planning tab UI (rename + Other filter + master-detail + cross-harness)
 
-- [ ] P-013: `PlansClient` — rename the `todo` item-filter label "Needs Decision" → "ToDos"; add a new **"Other"** item-filter surfacing all non-plan-item `AttentionItem` kinds (coord escalations, coord messages, smoke-fail, plan-review); reframe the tab framing as "Planning". References D-005, D-008.
-- [ ] P-014: Render a color-coded importance badge on every item row (urgent/high/normal/low); sort rows by importance within each group.
-- [ ] P-015: Detail (right) pane renders an `AttentionItem` via a **per-kind renderer** and its declared action buttons (Chat, Resolve, Mark-done, Accept, View log…). An item with no `planSlug`/`itemRef` renders as a bare title + message + buttons (no plan context). Reuse the `/adv` `DetailPanel` + `PinMenu` + `panel-registry` + `?sel=<id>` pattern. References D-004, D-008.
-- [ ] P-016: Cross-harness mode — an "all harnesses" selector that fans out and groups by plan (plus the synthetic "Alerts" bucket) with a harness label on each group. blocked-by: P-011. References D-005.
-- [ ] P-017: Wire actions — Resolve dispatches per kind (plan item → mark-done; coord escalation → `coord:resolve`; smoke-fail → ack; plan-review → open); Chat opens an agent chat scoped to the item.
+- **P-013** `todo` `PlansClient` — rename the `todo` item-filter label "Needs Decision" → "ToDos"; add a new "Other" item-filter surfacing all non-plan-item `AttentionItem` kinds (coord escalations, coord messages, smoke-fail, plan-review); reframe the tab framing as "Planning". References D-005, D-008.
+- **P-014** `todo` Render a color-coded importance badge on every item row (urgent/high/normal/low); sort rows by importance within each group.
+- **P-015** `todo` Detail (right) pane renders an `AttentionItem` via a per-kind renderer and its declared action buttons (Chat, Resolve, Mark-done, Accept, View log). An item with no `planSlug`/`itemRef` renders as a bare title + message + buttons (no plan context). Reuse the `/adv` `DetailPanel` + `PinMenu` + `panel-registry` + `?sel=` pattern. References D-004, D-008.
+- **P-016** `todo` Cross-harness mode — an "all harnesses" selector that fans out and groups by plan (plus the synthetic "Alerts" bucket) with a harness label on each group. blocked-by: P-011. References D-005.
+- **P-017** `todo` Wire actions — Resolve dispatches per kind (plan item → mark-done; coord escalation → `coord:resolve`; smoke-fail → ack; plan-review → open); Chat opens an agent chat scoped to the item.
 
 ## Phase 5 — Operator / orchestrator consumption + push delivery
 
-- [ ] P-018: Operator — sort recommendations by importance; read open attention items and base its nudge / interrupt decision on the max open importance instead of the ad-hoc tier heuristic; stamp importance on any human-decision suggestion it emits. References D-002.
-- [ ] P-019: Orchestrator — an `urgent` open needs-human item halts the relevant feature loop (today a needs-human item only gates terminal DONE). blocked-by: P-006
-- [ ] P-020: Push delivery is **event-driven over the existing IPC / event bus — NOT polling**: at the `AttentionItem` write/escalate path, when importance ≥ `high`, emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge. References D-007.
-- [ ] P-021: Retire `device-intervention-watcher`'s 60s polling loop; its three triggers (escalation / smoke / plan-review) are now `AttentionItem` emits at the source. blocked-by: P-020. References D-007.
+- **P-018** `todo` Operator — sort recommendations by importance; read open attention items and base its nudge / interrupt decision on the max open importance instead of the ad-hoc tier heuristic; stamp importance on any human-decision suggestion it emits. References D-002.
+- **P-019** `todo` Orchestrator — an `urgent` open needs-human item halts the relevant feature loop (today a needs-human item only gates terminal DONE). blocked-by: P-006
+- **P-020** `todo` Push delivery is event-driven over the existing IPC / event bus — NOT polling: at the `AttentionItem` write/escalate path, when importance is at least `high`, emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge. References D-007.
+- **P-021** `todo` Retire `device-intervention-watcher`'s 60s polling loop; its three triggers (escalation / smoke / plan-review) are now `AttentionItem` emits at the source. blocked-by: P-020. References D-007.
 
 ## Phase 6 — Docs, tests, sign-off gate
 
-- [needs-human] P-022: DECISION — fold operator recommendations and design reviews in as `AttentionItem` "Other" kinds, or leave them in their own surfaces (importance-aware only)? Gates P-028. References D-008.
-- [ ] P-023: Tests — parser importance (property), all adapters, the reader, and a UI snapshot of grouped-by-plan list + "Alerts" bucket + detail pane + badges.
-- [ ] P-024: Update `plan-format.mdx`, agent-policies (add a rubric section), and the testing docs.
+- **P-022** `done` DECISION — RESOLVED (user, 2026-05-31): operator recommendations and design reviews stay in their own surfaces (importance-aware only); NOT folded as `AttentionItem` "Other" kinds. Dropped P-028. References D-008.
+- **P-023** `todo` Tests — parser importance (property), all adapters, the reader, and a UI snapshot of grouped-by-plan list + "Alerts" bucket + detail pane + badges.
+- **P-024** `todo` Update `plan-format.mdx`, agent-policies (add a rubric section), and the testing docs.
 
 ## Decisions
 
@@ -167,22 +168,23 @@ human fold in the same way (P-027). Related: P-010, P-027, P-013
 ### D-007 — RESOLVED (user, 2026-05-31): push is event-driven over IPC, no polling
 Date: 2026-05-31
 Push delivery uses the existing IPC / event bus, not a poller. When an
-`AttentionItem` is created or escalates to importance ≥ `high`, the write path emits
-an event the desktop turns into a native OS notification via the existing Tauri IPC
-bridge. The 60s `device-intervention-watcher` polling loop (escalation / smoke /
-plan-review triggers) is retired — those become `AttentionItem` emits at the source.
-Related: P-020, P-021
+`AttentionItem` is created or escalates to importance at least `high`, the write
+path emits an event the desktop turns into a native OS notification via the existing
+Tauri IPC bridge. The 60s `device-intervention-watcher` polling loop (escalation /
+smoke / plan-review triggers) is retired — those become `AttentionItem` emits at the
+source. Related: P-020, P-021
 
 ### D-008 — Item-kind taxonomy + the "Other" filter + standalone rendering
 Date: 2026-05-31
 Item-filter facets in the Planning tab: **ToDos** (`effectiveStatus = todo`),
 **Needs Human** (`needs-human` plan items), **Blocked** (`blocked`), and a new
 **Other** for every non-plan-item `AttentionItem` kind. Kinds folding in now:
-`coord-escalation`, `coord-message`, `smoke-fail`, `plan-review`. Candidates gated on
-P-022: `operator-recommendation`, `design-review`. Excluded: toast log, inter-agent
-messages, pending_events. Items without a `planSlug` group under a synthetic
-per-harness "Alerts" bucket and render in the right pane as a bare message + their
-kind's buttons. Related: P-008, P-013, P-025, P-026, P-027, P-028, P-022
+`coord-escalation`, `coord-message`, `smoke-fail`, `plan-review`. RESOLVED (P-022,
+user 2026-05-31): `operator-recommendation` and `design-review` are EXCLUDED — they
+stay in their own surfaces, importance-aware only (P-028 dropped). Also excluded:
+toast log, inter-agent messages, pending_events. Items without a `planSlug` group
+under a synthetic per-harness "Alerts" bucket and render in the right pane as a bare
+message + their kind's buttons. Related: P-008, P-013, P-025, P-026, P-027, P-022
 
 ## Rubric — importance level (proposed wording for P-005)
 
