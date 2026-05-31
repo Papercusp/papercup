@@ -197,3 +197,16 @@ Caveat: even fixed, apply_patch hook coverage is flaky upstream (#16732/#20204);
 
 Plan: (a) code-fix hooks.json + flag (correct regardless), (b) user runs the sysctl, (c) re-verify the lock-block gate end-to-end. Supersedes the soft-coord-only recommendation.</body>
 Related: P-053, P-030
+
+### D-011 — D-011: env fix landed (bwrap works), but codex 0.135 AND 0.136-alpha emit NO PreToolUse hook in exec mode → blocked upstream (#20204)
+Date: 2026-05-31
+Closing out the D-010 fix path with live results after the user ran the sysctl:
+
+- ENV FIXED: `kernel.apparmor_restrict_unprivileged_userns=0` → bwrap now works (userns + netns), so `--sandbox workspace-write` codex sessions can write (no more bwrap perm errors). This was a real, necessary fix.
+- HOOK CONFIG: confirmed codex wants hooks.json / config.toml [hooks]; `features list` shows `hooks=stable=true` (enabled).
+- BUT EMPIRICALLY: with hooks.json + `--sandbox workspace-write` + `--dangerously-bypass-hook-trust` + bwrap working + (even) `features.exec_permission_approvals=true`, NO PreToolUse hook fired for EITHER a shell `echo` (Bash) OR a file edit (apply_patch) — on codex 0.135.0 AND on 0.136.0-alpha.1 (installed to a temp prefix to test). All in `codex exec` (headless) mode.
+- CONCLUSION: codex's hook emission is broken/absent in current releases in headless exec mode — matches the OPEN upstream issue #20204 ("most tools never emit hook events"). It is NOT our config: we exhausted file location, flags, feature flags, env, and two codex versions.
+- UNTESTED-CLEAN: INTERACTIVE codex (the TUI, which psu actually launches) + hooks.json. The earlier manual test used settings.json (wrong file) so it's inconclusive; a stdlib-pty driver couldn't render the TUI. This is the only remaining combination that might fire (some evidence hooks are wired to the interactive approval UI).
+
+RECOMMENDATION: codex hook-based lock enforcement is blocked on upstream codex (#20204) regardless of our code. Land the cheap correctness fix (writeCodexLockHooks → hooks.json not settings.json) so we're READY when upstream fires; use SOFT coordination for codex now (no regression — D-008); keep the --sandbox-workspace-write flag switch DEFERRED (it's a su privilege/security tradeoff + needs the per-box sysctl). Optionally: one manual interactive test with hooks.json to settle the interactive case.</body>
+Related: P-053
