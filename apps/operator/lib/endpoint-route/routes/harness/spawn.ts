@@ -160,6 +160,11 @@ const invoke = defineTool({
   method: 'POST',
   path: '/harness/:slug/invoke',
   auth: 'public',
+  // A single-role agent invocation runs an LLM to completion — far longer than
+  // the 30s route default. The handler caps the child at `timeoutMs` (≤300s);
+  // give the route a ceiling just above that so it never aborts a within-limits
+  // agent mid-run (claude-code promote reads the plan + calls plans:promote, ~30-120s).
+  timeoutSec: 310,
   async handler(req, ctx) {
     const url = new URL(req.url);
     const project = await resolveProject(ctx.params.slug as string);
