@@ -2,7 +2,7 @@
 title: Papercusp dogfood — Phase 8 (sidebar tabs + Insights + contributor stats + user profile)
 slug: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24
 created: 2026-05-24
-updated: 2026-05-30
+updated: 2026-05-31
 status: active
 ---
 
@@ -10,29 +10,9 @@ status: active
 
 ## Now
 
-**State:** **P-047a/b + P-072 (numeric + login) + P-073g SHIPPED 2026-05-25.**
+**State:** GitHub-enrichment cards advanced 2026-05-31: P-001/P-002 already shipped (bookkeeping corrected from stale `todo`); P-004 (HowItWorksHereCard renders the repo README via loadRepoReadme — `a8a005078`) and P-005 (ProjectCard topics pills + latest release — `4828a9806`) done. The Insights tab itself is now mounted in the live /adv shell as the `adv:insights` dock panel (`a03398d7d`) — it had been built+tested but had no in-shell consumer. Remaining Phase 8: **P-003** (ActivityFeedCard tier-A merged-PR/commit events) — DEFERRED as security-adjacent: it ties into the completion_ref / trust-tier provenance model still under design (see papercusp-trust-model-2026-05-31). **P-047c** (feature detail panel) is still open and security-independent. P-038 still gated on the `working_users` Hyperbee projection (Phase 5b follow-up).
 
-Today's Phase 8 commits (8 incl. this turn):
-- `730119af` FeatureFilterChips primitive
-- `7397a7ce` useViewerGithubId hook
-- `1240532e` FeatureList toolbar wiring
-- `2dd0b34b` per-row Queue column
-- `654cc4b0` Vite /harness/$slug/insights + first-visit gate
-- `b7c57abb` Vite /users/github/$id (P-072 canonical)
-- `<this commit>` by-login endpoint + Vite /users/$login redirect (P-072e)
-
-Three Vite routes now live in the SPA matching the SSR Next pages:
-- `/harness/$slug/insights` — InsightsTab from /api/harness/:slug/insights
-- `/users/github/$id` — UserProfile from /api/users/github/:id
-- `/users/$login` — redirect via /api/users/by-login/:login
-
-P-072 + P-072e + P-073g are all functionally complete. P-050 audited complete.
-
-**Remaining Phase 8:**
-- **P-047c** — feature detail panel (vditor description, notes, audit log, current PR).
-- P-038 still gated on `working_users` Hyperbee projection (separate Phase 5b follow-up).
-
-**Next:** P-047c — feature detail panel. Or pivot to a different phase per direction. Phase 8 visual + routing story essentially complete.
+**Next:** P-047c (feature detail panel) is the next security-independent UI item; P-003 waits on the trust-model decision.
 
 ## Background
 
@@ -151,12 +131,12 @@ v5 §9.0: pinned-top sidebar tab; post-install default landing; six cards. **Blo
 
 ## GitHub enrichment (2026-05-30)
 
-- **P-001** `todo` ✅ SHIPPED (`b862dd5e`+`476d0d7a`): Insights ProjectCard rendered from real GitHub repo facts. New `lib/harness-insights/github-facts.ts` resolves the harness repo via its git `origin` remote + authenticated Octokit and fills description / owner / license / top-3 languages (linguist colors) + a tier-A stats row (★ stars, forks, open issues, last-push). 1h cache; degrades to slug fallback (no token/remote/match). Extends P-073a.
+- **P-001** `done` ✅ SHIPPED (`b862dd5e`+`476d0d7a`): Insights ProjectCard rendered from real GitHub repo facts. New `lib/harness-insights/github-facts.ts` resolves the harness repo via its git `origin` remote + authenticated Octokit and fills description / owner / license / top-3 languages (linguist colors) + a tier-A stats row (★ stars, forks, open issues, last-push). 1h cache; degrades to slug fallback (no token/remote/match). Extends P-073a. (Bookkeeping: item text already records ✅ SHIPPED b862dd5e+476d0d7a; stored status was stale `todo`.)
 
 
 ## GitHub enrichment (2026-05-30)
 
-- **P-002** `todo` ✅ SHIPPED (`7cbf34d2`): Insights PeopleCard tier-A GitHub commit counts. `loadGithubContributorCommits` fetches GET /contributors and merges per-login commit counts onto People rows (pure merge in loadHarnessInsights; endpoint does the fetch). Card renders a `✓ N` tier-A marker per contributor. Extends P-073c / P-071a.
+- **P-002** `done` ✅ SHIPPED (`7cbf34d2`): Insights PeopleCard tier-A GitHub commit counts. `loadGithubContributorCommits` fetches GET /contributors and merges per-login commit counts onto People rows (pure merge in loadHarnessInsights; endpoint does the fetch). Card renders a `✓ N` tier-A marker per contributor. Extends P-073c / P-071a. (Bookkeeping: item text already records ✅ SHIPPED 7cbf34d2; stored status was stale `todo`.)
 
 
 ## GitHub enrichment (2026-05-30)
@@ -166,12 +146,12 @@ v5 §9.0: pinned-top sidebar tab; post-install default landing; six cards. **Blo
 
 ## GitHub enrichment (2026-05-30)
 
-- **P-004** `todo` TODO: HowItWorksHereCard renders the repo README (GET /repos/:owner/:repo/readme) for new-joiner orientation. Closes P-073e (currently slug-derived placeholder). Needs a read-only markdown renderer in the card.
+- **P-004** `done` TODO: HowItWorksHereCard renders the repo README (GET /repos/:owner/:repo/readme) for new-joiner orientation. Closes P-073e (currently slug-derived placeholder). Needs a read-only markdown renderer in the card. (SHIPPED a8a005078: HowItWorksHereCard renders the repo README via loadRepoReadme GET /repos/:owner/:repo/readme, base64-decoded, 1h-cached, degrades + react-markdown/remark-gfm read-only render.)
 
 
 ## GitHub enrichment (2026-05-30)
 
-- **P-005** `todo` TODO: ProjectCard extras — repo topics (pills) + latest release tag/date (GET /repos/:owner/:repo/releases/latest). Small follow-up to the shipped P-073a GitHub facts; reuses github-facts.ts.
+- **P-005** `done` TODO: ProjectCard extras — repo topics (pills) + latest release tag/date (GET /repos/:owner/:repo/releases/latest). Small follow-up to the shipped P-073a GitHub facts; reuses github-facts.ts. (SHIPPED 4828a9806: ProjectCard topics pills + latest release tag + relative date via github-facts.ts getLatestRelease; 18→ unit tests.)
 
 ## Decisions
 
