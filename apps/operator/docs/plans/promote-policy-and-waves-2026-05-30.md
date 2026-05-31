@@ -56,19 +56,37 @@ the plan-format spec (`/internal/docs/spec/plan-format`) now has a `## Promote` 
   lines), and **correctly ADVANCES** the moment tier1 drains (all `passed`) — firing `promoteWave` for tier2
   (next wave, `blocked_by` respected) which reaches the Phase-F `/invoke?role=promote` connection point. The
   `promote` role is registered in the live `roles_known`. Test used a throwaway `harness_slug` + plan (cleaned
-  up). The only unexercised tail is the promote **agent actually running** — blocked by an **invalid Anthropic
-  key on this box** (`401 invalid x-api-key` in the host log), an environment issue, not the mechanism.
+  up).
 
-**Remaining:**
-- **Phase E** — `onBlocked` → a `harness_issues` row (currently logs) → scanner. Still unwritten code; needs
-  the `IssueSource: 'system'` member (see P-012, UI icon-map blast radius).
-- **P-015 dogfood** — author the `restart` universal-schema plan's real `## Promote` block, start it, watch
-  Tier-1 promote + drain → Tier-2 auto-generate. Blocked on (a) the env Anthropic key (the promote agent must
-  run) and (b) `restart` being a registered harness in the authed workspace (`harness:import` here needs
-  bearer + workspace tx). The deterministic pipeline it would exercise is already host-verified above.
+**Sweep→agent chain — verified + 4 more bugs fixed (2026-05-31, second pass).** Driving the real
+`/harness/:slug/invoke?role=promote` against a throwaway harness (`sheets-from-template-e2e`, workspace
+`default`, cleaned up) exposed and fixed the wiring between the sweep and the agent:
+- **EXTRAS format** (commit `e647a6e`/`27c92f3`): `promoteWave` was POSTing `{plan_slug,wave,needs_items}` as
+  top-level JSON, but the invoke route reads `body.extra` (a `K=V` string[]) and renders it as the agent's
+  `## Runtime context` lines. Now sends `extra:["PLAN_SLUG=…","WAVE=…","NEEDS_ITEMS=…"]`; `promote.md` reads
+  those uppercase keys from Runtime context.
+- **Workspace** (`27c92f3`): sweep used `DEFAULT_WORKSPACE_ID`; the invoke route + `features/import` + the
+  sibling `harness-status-sweep` all use `activeWorkspaceId()`. Aligned the sweep to `activeWorkspaceId()` so it
+  can resolve+invoke the harness it queried (was silently `unknown project` when the UI was on another ws).
+- **buildInvokeOnce PG env** (`2993f58`): invoke-route/scoper/expert agents got no `PAPERCUSP_USE_PG_STATE`/
+  `DATABASE_URL` (only `harness-launch` set them) → the spawned agent ran with empty in-memory state. Now sets
+  both (mirrors harness-launch) → verified live: `PG bootstrap: connected … ctx.pg active`.
+- **bun PATH** (host-ops, in `apps/operator/.env.local`, gitignored): the systemd `papercup-dev-api.service`
+  PATH lacked `~/.bun/bin`, so omp's `#!/usr/bin/env bun` shebang failed `rc=127` for **every** invoke-spawned
+  agent. Prepended `~/.bun/bin` in `.env.local` (sourced by ExecStart) → agent now spawns `rc=0`.
 
-Also: **bump the superproject submodule pointer** to include `da4c2d0` (the migration fixes) — commit locally,
-don't push (pins are local-only).
+After all four: the full chain **sweep decision → promoteWave → /invoke → resolveProject → buildInvokeOnce →
+invoke-once → PG connected → promote prompt built (`role=promote total=5510`) → omp `rc=0`** is verified live.
+
+**Remaining (one gap, orthogonal to the wave mechanism):**
+- **omp agent task-completion.** The promote agent spawns + runs (`rc=0`) but returned an empty result and
+  created no features — i.e. omp ran the LLM but did not effect `plans:promote`. Likely an agent-runtime /
+  MCP-tool / plan-access detail (e.g. the harness agent's `plans:get` resolving the operator-side plan, or
+  omp's tool/auth config), **not** the wave wiring (which is now fully verified up to `rc=0`). Investigate by
+  capturing omp's transcript for an `invoke promote` run (the `.out` log was empty here) — best done as a
+  focused agent-runtime task, then re-run the P-015 dogfood.
+- **P-015 full dogfood** — author the `restart` universal-schema plan's real `## Promote` block + run it end to
+  end; gated only on the omp task-completion above (`restart` is a registered harness in `default`).
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -203,19 +221,16 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 - **P-011** `todo` Per-`(plan, wave)` readers: extend `harness-readers.ts` to compute wave-scoped
   `{total, passed, failing, inProgress, blocked}` + the `not_stuck`/blocked signal per wave.
-- **P-012** `todo` Deterministic issue raise: blocked-wave (`isWaveBlocked`) and `attempt_count >= N` (N
-  configurable, default 3) → create/update a `harness_issues` row (`harness-issues.ts`) keyed by
-  `(plan, wave[, feature])` so the **operator scanner** surfaces it (dedup by id). Today's stuck-detection is
-  time-based (">7d") / the 3-consecutive alert is voice-only — this adds the feature-attempt + wave path.
-  **Host-session pre-work (decided 2026-05-30, no code yet):** the issue store is FS-canonical
-  (`.harness/issues.json` via `loadIssuesOrSeed`/`saveIssues`, PG-mirrored) — reuse it, don't build new (D-004).
-  `wave-advance-sweep.ts`'s `onBlocked` already carries `{slug, harnessSlug, wave}`; the live adapter resolves
-  a `ProjectEntry` from `harnessSlug`, computes a deterministic id `I-WAVE-<plan>-<wave>` (dedup), and upserts.
-  **Blocker requiring a host:** `IssueSource` (`app/harness/issues/types.ts`) is
-  `'validator' | 'worker' | 'human'` — none fits a sweep-detected block. Add a **`'system'`** member, then
-  audit every `SOURCE_*` icon/label/filter map for a missing-key crash (per the React-icon-map-fallback rule a
-  missing key takes down the whole subtree) — which is exactly why this is host-verified, not shipped blind.
-  Severity `major`; `source: 'system'`; `foundDuring: <plan>`; title `Wave "<wave>" blocked in <plan>`.
+- **P-012** `done` (2026-05-31, `27c92f3`) Deterministic issue raise: `wave-advance-sweep-live.onBlocked`
+  resolves a `ProjectEntry` from `harnessSlug` (active workspace), and via the FS-canonical issue store
+  (`loadIssuesOrSeed`/`saveIssues`, PG-mirrored — D-004) upserts a `(plan, wave)`-keyed row
+  `I-WAVE-<plan>-<wave>` (`severity: major`, `source: 'system'`, `foundDuring: <plan>`, title
+  `Wave "<wave>" blocked in <plan>`). Idempotent: re-block is a no-op; a human-closed row reopens. `IssueSource`
+  gained a **`'system'`** member; only `SOURCE_ICON` (`IssuesPanel.tsx`) is a `Record<IssueSource>` (got a `Cpu`
+  entry — runtime already had `?? Circle`); the other `SOURCE_*` maps key off different types. tsc-clean (only
+  a pre-existing unrelated Virtualizer error in that file). _Runtime raise not yet observed against a live
+  blocked wave — the deterministic decision path that calls it is host-verified (see ## Now)._ The
+  `attempt_count >= N` variant (vs the existing time-based ">7d" / voice-only 3-consecutive alert) is still open.
 - **P-013** `todo` Per-wave progress on the started plan: extend the promote-status line
   (`upsertPromoteStatusLine` in `promote.ts`) to render per-wave counts; surface the same in the harness UI
   (plan detail).
