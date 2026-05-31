@@ -2,7 +2,7 @@
 title: Papercusp dogfood — Phase 11 (multi-engineer dogfood)
 slug: papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-26
 created: 2026-05-26
-updated: 2026-05-30
+updated: 2026-05-31
 status: active
 owner: avi@storewolf.com
 ---
@@ -106,12 +106,12 @@ End-of-Phase-11 verdict. Either:
 
 ## Substrate wiring (2026-05-30)
 
-- **P-001** `todo` ✅ SHIPPED (`409681ff`): Hyperbee→PG read-loop (Phase 5a P-031 read side). startHyperbeeReadLoop replays each harness's merged Autobase view op-log into PG via applyHyperbeeOpToPg (which had ZERO runtime callers — substrate was write-only). Driven by the 'update' event + 1s polled fallback; idempotent op-replay; wired into bootHarnessSubstrate start+close. read-loop 7/7, boot/boot-all 31/31, tsc clean.
+- **P-001** `done` ✅ SHIPPED (`409681ff`): Hyperbee→PG read-loop (Phase 5a P-031 read side). startHyperbeeReadLoop replays each harness's merged Autobase view op-log into PG via applyHyperbeeOpToPg (which had ZERO runtime callers — substrate was write-only). Driven by the 'update' event + 1s polled fallback; idempotent op-replay; wired into bootHarnessSubstrate start+close. read-loop 7/7, boot/boot-all 31/31, tsc clean. (Bookkeeping: item text records ✅ SHIPPED 409681ff; stored status was stale `todo`.)
 
 
 ## Substrate wiring (2026-05-30)
 
-- **P-002** `todo` ✅ SHIPPED (`a3f6c812`): ShareWizard finalize route (P-077 backend). POST /api/harness/:slug/share/finalize → finalizeShare() writes a valid .harness/shared.json (SharedHarnessConfig: topic/github_remote/github_repository_id/privacy/claim_status/created_at/schema_version) via writeSharedConfig + flips registry state to shared-{private,public} via setHarnessState. boot-all's defaultResolveSwarmBinding keys the swarm on github_repository_id, so this is what lets a harness actually join the swarm. Core logic deps-injected; registered in routes/index.ts (mirrors join-link). share-finalize 9/9, tsc clean.
+- **P-002** `done` ✅ SHIPPED (`a3f6c812`): ShareWizard finalize route (P-077 backend). POST /api/harness/:slug/share/finalize → finalizeShare() writes a valid .harness/shared.json (SharedHarnessConfig: topic/github_remote/github_repository_id/privacy/claim_status/created_at/schema_version) via writeSharedConfig + flips registry state to shared-{private,public} via setHarnessState. boot-all's defaultResolveSwarmBinding keys the swarm on github_repository_id, so this is what lets a harness actually join the swarm. Core logic deps-injected; registered in routes/index.ts (mirrors join-link). share-finalize 9/9, tsc clean. (Bookkeeping: item text + P-004 correction record ✅ SHIPPED clean share-finalize 8/8; stored status was stale `todo`.)
 
 
 ## Substrate wiring (2026-05-30)
