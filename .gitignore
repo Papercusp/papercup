@@ -29,3 +29,12 @@ apps/papercusp-docs/.astro/
 packages/tooldef/dist/
 packages/tooldef-http/dist/
 packages/tooldef-mcp/dist/
+
+# Per-spawn MCP config written into a harness cwd by console-launch /
+# bootstrap-role (SU + role sessions). For the `papercup` harness that cwd IS
+# this main checkout, and the file carries a SIGNED, time-limited MCP URL — it
+# must never be committed (paperclip's `git add -A` would otherwise leak the
+# credential). Was historically tracked then deleted; this closes the re-leak
+# hole. `.papercusp.bak` is the backup console-launch makes of a pre-existing one.
+.mcp.json
+.mcp.json.papercusp.bak
