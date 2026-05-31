@@ -1,7 +1,7 @@
 ---
 title: Production-readiness test coverage — audit + phased plan to a real, executing gate
 slug: production-readiness-test-coverage-2026-05-30
-status: ready
+status: active
 created: 2026-05-30
 updated: 2026-05-31
 owner: aviynw3@gmail.com
@@ -12,22 +12,9 @@ companion-to: [admin-testing-tab-restructure-2026-05-24]
 
 ## Now
 
-**State:** Audit complete (2026-05-30), plan in **draft** awaiting greenlight — no
-test code written yet. Goal: make "if it passes all the tests, it is
-production-ready" a claim we can stand behind. Today that claim is **unprovable**:
-there are ~753 test files but the CI gate has **never executed a single test**
-(every recent `Test` run fails at `actions/checkout` in 3–4s because
-`submodules: recursive` cannot clone the 11 private `Papercusp/*` submodules without
-a PAT), no coverage is measured anywhere (`--coverage` appears nowhere), and the
-"integration" layer is mostly mocked or self-skipped. Where coverage exists it is
-genuinely deep (orchestrator state machine, plans/locks/coordination, auth,
-endpoint dispatcher, agent-mcp framework, LLM-testing framework). Scope steer from
-the user: **shipping-desktop critical path first** (D-001); **plan-only, no test
-code until greenlit** (D-002).
+**State:** Greenlit 2026-05-31 (status→active). Shipped this pass (locally-verified via test:affected, tsc-clean): **P-014** (token-gate tests for all 14 internal `/*-event` ingestion sinks, 34 tests), **P-013** (destructive `auth:public` backups+flags route tests, 22) + **D-009** posture decision, **P-030** (CLAUDE.md Playwright-suite reconciliation), and the **D-009 defense-in-depth loopback gate** on all 8 destructive `auth:public` routes (backups restore/rollback/promote, flags set/preset, harness spawn launch/invoke/resume) via a shared `lib/endpoint-route/loopback-guard.ts` (host-docs.ts now imports the one canonical `isLoopbackHost`). **CI still runs zero tests** until the `SUBMODULES_PAT` repo secret is added (P-001, needs-human). The integration tier (**P-002** globalSetup + **P-015/016/017** tool suites) is BLOCKED on the owed migration-baseline rebuild — `fresh-migrate.integration.test.ts` confirms the set is not self-contained from empty (D-005). **P-009/012** deferred as substrate/security-adjacent (Autobase-arbitrated claim). Untouched-this-pass: browser/Tauri E2E (P-020–023), visual baselines (P-005/025), dep/submodule items (P-024/028/029), voice (P-026).
 
-**Next:** human greenlights Phase 0 (make the gate executable). Recommended
-sequencing is gate-first (D-003) — every later phase is unprovable until CI runs,
-integration touches real Postgres, and coverage is measured.
+**Next:** Add the `SUBMODULES_PAT` repo secret (P-001) so CI runs the new tests; the owed migration-baseline rebuild is the key unblock for the whole integration tier (P-002 → P-015/016/017).
 
 ## Background — the audit (2026-05-30)
 
@@ -110,7 +97,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   Acceptance: a `Test` run reaches `npm ci` and actually invokes the affected
   suite. Until this lands, every other phase is unverifiable.
 
-- **P-002** `todo` Boot a real Postgres in the integration layer: add a Vitest
+- **P-002** `blocked` Boot a real Postgres in the integration layer: add a Vitest (Blocked on the owed migration baseline rebuild D-005: fresh-migrate.integration.test.ts confirms the set is NOT self-contained from empty applies a prefix, then fails, so a globalSetup that "applies migrations once per run" can't succeed yet. P-015/016/017 need full schema inherit this block. Unblocks once the baseline is rebuilt + the tripwire flips RED.)
   `globalSetup` to `apps/operator/vitest.integration.config.ts` that starts a
   testcontainer PG via `@papercusp/test-config` and applies migrations once per
   run. Acceptance: `*.integration.test.ts` files no longer self-skip without a hand
