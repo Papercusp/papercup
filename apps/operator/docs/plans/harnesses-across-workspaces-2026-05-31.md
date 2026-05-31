@@ -63,7 +63,28 @@ deliberately not attempted autonomously to avoid risking the running system):**
 1. **Apply migration 091 live** — reboot the desktop (boot migration-runner
    applies it as `postgres_app`), then the operator principal can be provisioned
    in any workspace. *Next step: reboot + re-run a `harness:membership` move.*
-2. **Cutover = coupled read+write (investigated 2026-05-31).** The seam is
+2. **✅ Cutover read+write LANDED 2026-05-31 (regression-safe, both modes).**
+   - Write: `PUT/DELETE /api/harness/:slug/prompts/:role` dual-writes the PG store
+     alongside the file/config.json (`b727fc3ad`) — best-effort, file remains the
+     standalone/CLI read path, so no regression.
+   - Read: orchestrator `resolvePromptOverrideWithStore` (`9b38f0a`, parent
+     `3fbbbf69f`) prefers the PG store via `ctx.pg`, falls back to the file on
+     ANY failure (no pg / table absent / error / empty). In-app spawns (ctx.pg
+     present) read PG; standalone/CLI (no pg) read the file. 4 unit tests; 0 new
+     tsc errors.
+   - **STILL PENDING: a live harness-run e2e** (spawn a real pipeline agent,
+     confirm it gets the workspace's override) — the one thing unit tests can't
+     cover. User-gated (won't spawn agents asleep-user).
+   - **OPEN DESIGN FORK (D-6 reset semantics):** dual-write makes the on-disk
+     `.harness/prompts/<role>.md` a *live mirror*, not an immutable seed — so
+     "reset to default" has no clean default source. Options: (a) git-committed
+     HEAD of the file = default (`git show HEAD:...`); (b) a separate seed dir;
+     (c) PG-only write + accept that standalone/CLI runs see the repo default not
+     the PG edit. **Reset endpoints + seed-on-install deferred until this is
+     decided** (the resolver/seed/reset *functions* are built + tested, just not
+     wired pending the fork). *This is the next decision needed.*
+
+   ~~Original analysis (superseded by the above):~~ The seam is
    `resolvePromptOverride(cfg, stateDir, role)` in `orchestrator/invoke.ts:144`
    (sync; reads `config.json promptOverrides[role]`); the orchestrator has
    `ctx.client` (PG) + `ctx.workspaceId` + slug, so an async store-aware variant
