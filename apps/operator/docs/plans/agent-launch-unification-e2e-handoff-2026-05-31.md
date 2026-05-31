@@ -73,6 +73,35 @@ With that, the bulk of the e2e backlog is now **verified or built**:
 terminal — inherent); (b) Phase 4 launch-button render/click in-webview (fresh
 Xvfb instance); (c) P-032 (see below).
 
+### Session 2b (2026-05-31, driving Tauri myself per the testing docs) — (a) and (b) now closed too
+
+- **Phase 4 launch button — VERIFIED in-webview.** Booted a **fresh isolated
+  Tauri instance under Xvfb** (binary direct, dedicated display :99 — the doc's
+  §15.4 no-focus-steal recipe; it logged "dev mode — skipping sidecar spawn",
+  reusing the shared :3070). Drove its bridge: on `/adv?tab=sessions`, installed
+  a `window.fetch` stub (capture, no real spawn), clicked **"Launch SU"** →
+  captured `POST /api/adv/sessions/launch-su {agent:"claude",
+  harness_slug:"papercup", plan_slug:null}`. Confirms onClick→launchAgent→correct
+  endpoint for the claude path through the real UI. omp→console-launch branch
+  stays covered by the 6 launch-agent unit tests. Instance torn down; the user's
+  live windows were never touched. **Lesson:** drive a fresh Xvfb instance, never
+  the user's live window; the bridge works on it fine (probe by its own token
+  file `/tmp/tauri-dev-bridge-<pid>.token`, NOT the `PAPERCUSP_BRIDGE_PORT` env,
+  which the dev bridge ignores in favor of its own port).
+- **codex role CODEX_HOME — VERIFIED via `codex mcp get`.** Built a role
+  CODEX_HOME (the structure `writeRoleCodexHome` emits) from a live signed
+  `role=scoper` url + role prompt; `CODEX_HOME=<dir> codex mcp get papercusp`
+  reports the server **enabled, transport streamable_http**, signed role url, no
+  bearer. So real codex reads + accepts exactly what the builder produces;
+  combined with P-013 (codex connecting + tool_call + result) the codex role
+  path is verified end-to-end at the config + connection level.
+
+**Truly remaining:** (a) the codex interactive **TUI** human-at-keyboard
+interaction (inherent); (b) the **live HTTP** `psu --role --agent=codex`
+round-trip — gated ONLY on restarting `papercup-dev-api.service` so the :3070
+host loads the codex `bootstrap-role` change (Hono host has no hot-reload). The
+deterministic HTTP path is unit-tested; the restart just confirms it live.
+
 ---
 
 ## Already verified live (2026-05-31 session 1, do NOT redo)
