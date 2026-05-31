@@ -24,6 +24,7 @@ import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-cli
 // cycle. (Were CJS require()s, which are undefined in the Vite browser bundle.)
 import { loadVoicePrefsClient } from './voice-prefs-client';
 import { requestVoiceLead, getVoiceLeaderState } from './voice-leader';
+import type { PttRawCapture, PttRawCaptureResult } from './ptt-capture';
 
 /**
  * Emit the voice-engagement signal the OperatorConversationProvider
@@ -1439,6 +1440,12 @@ if (typeof window !== 'undefined') {
 
 let whisperCapture: { stop(): void } | null = null;
 let porcupineHandle: { stop(): Promise<void> } | null = null;
+// Raw push-to-talk capture (voicemode whisper engine). Unlike the streaming
+// `whisperCapture` above (Silero VAD, which can't load on WebKitGTK), this
+// records the whole hold and transcribes on release — see ./ptt-capture.
+let pttRawCapture: PttRawCapture | null = null;
+
+const VOICEMODE_WHISPER_URL = 'http://localhost:2022';
 
 async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
   // Returns true if a wake-word engine took over (Whisper should NOT
@@ -1734,44 +1741,112 @@ export function startPushToTalk(): void {
   });
 }
 
+/**
+ * Fire the actionable "no audio" toast, tailoring the message to the real
+ * getUserMedia failure (captured by useMicLevel / the PTT raw capture) so it
+ * stops being a guessing game. Always phase:'no-audio' so VoiceButton renders
+ * the "Mic permissions" deep-link action.
+ */
+function dispatchNoAudioToast(): void {
+  if (typeof window === 'undefined') return;
+  const errStr = lastMicError ? `${lastMicError.name} ${lastMicError.message}` : '';
+  let message = 'No audio detected — check your microphone and try again.';
+  if (/NotAllowedError|SecurityError|Permission|denied/i.test(errStr)) {
+    message = 'Microphone access is blocked — grant permission and try again.';
+  } else if (/NotReadableError|NotFoundError|OverconstrainedError|AbortError|busy|in use|device/i.test(errStr)) {
+    message = `Microphone unavailable${lastMicError?.name ? ` (${lastMicError.name})` : ''} — make sure it isn't muted or used by another app, and that the right input device is selected.`;
+  }
+  try {
+    window.dispatchEvent(
+      new CustomEvent('papercusp:voiceTimeout', { detail: { phase: 'no-audio', message } }),
+    );
+  } catch { /* ignore */ }
+}
+
+/** Fire the "no transcript" toast — the mic worked but no words came back. */
+function dispatchNoTranscriptToast(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('papercusp:voiceTimeout', {
+        detail: { phase: 'transcript', message: 'No transcript received — try speaking again.' },
+      }),
+    );
+  } catch { /* ignore */ }
+}
+
 /** Stop push-to-talk: tear down whichever capture is running. */
 export function stopPushToTalk(): void {
-  // Only enter "processing transcript" phase if we actually captured
-  // audio. If audioReceiving never became true during the hold, the
-  // mic was dead — fire a warning toast instead of pretending we're
-  // about to receive a transcript.
+  // Read before the reset below: for streaming engines this is the "did we
+  // capture audio?" signal.
   const heardAudio = state.audioReceiving || !!state.lastTranscript;
   setState({ status: state.mode === 'off' ? 'off' : 'idle', audioReceiving: false });
   if (recognition) {
     try { recognition.stop(); } catch { /* ignore */ }
     recognition = null;
   }
+
+  // Voicemode raw-capture path: finalize from the actual recorded buffer
+  // (robust — the no-audio decision comes from real captured audio, not the
+  // visualization analyser's threshold).
+  if (pttRawCapture) {
+    const cap = pttRawCapture;
+    pttRawCapture = null;
+    let result: PttRawCaptureResult | null = null;
+    try { result = cap.stop(); } catch { result = null; }
+    void finalizePttRawCapture(result);
+    return;
+  }
+
+  // Streaming engines (Deepgram / Web Speech): only enter "processing
+  // transcript" if we actually captured audio. If audioReceiving never became
+  // true during the hold, the mic was dead — fire the no-audio toast instead
+  // of pretending a transcript is on the way.
   stopWhisperCaptureIfRunning();
   if (heardAudio) {
     beginProcessingTranscript();
-  } else if (typeof window !== 'undefined') {
-    // Tailor the message to the real getUserMedia failure (captured by
-    // useMicLevel) so "no audio" stops being a guessing game. All cases
-    // keep phase:'no-audio' so the toast still links to mic permissions.
-    const errStr = lastMicError ? `${lastMicError.name} ${lastMicError.message}` : '';
-    let message = 'No audio detected — check your microphone and try again.';
-    if (/NotAllowedError|SecurityError|Permission|denied/i.test(errStr)) {
-      message = 'Microphone access is blocked — grant permission and try again.';
-    } else if (/NotReadableError|NotFoundError|OverconstrainedError|AbortError|busy|in use|device/i.test(errStr)) {
-      message = `Microphone unavailable${lastMicError?.name ? ` (${lastMicError.name})` : ''} — make sure it isn't muted or used by another app, and that the right input device is selected.`;
+  } else {
+    dispatchNoAudioToast();
+  }
+}
+
+/**
+ * Finalize a voicemode PTT raw capture: classify the buffer, and either fire
+ * the actionable no-audio toast (capture failed / mic delivered silence) or
+ * resample → WAV-encode → POST to whisper and dispatch the transcript.
+ */
+async function finalizePttRawCapture(result: PttRawCaptureResult | null): Promise<void> {
+  const { classifyPttResult, resampleLinearTo16k, isBlankTranscript } = await import('./ptt-capture');
+  if (classifyPttResult(result) === 'no-audio') {
+    dispatchNoAudioToast();
+    return;
+  }
+  // Non-null after classify !== 'no-audio'.
+  const captured = result as PttRawCaptureResult;
+  beginProcessingTranscript();
+  try {
+    const [{ f32ToWav }, { transcribeChunk }] = await Promise.all([
+      import('./f32-to-wav'),
+      import('../../../lib/voice-engines/whisper'),
+    ]);
+    const pcm16k = resampleLinearTo16k(captured.samples, captured.sampleRate);
+    const blob = f32ToWav(pcm16k, 16000);
+    const text = (await transcribeChunk(VOICEMODE_WHISPER_URL, blob)).trim();
+    if (!isBlankTranscript(text)) {
+      setState({ lastTranscript: text });
+      onUtteranceFinal(text); // clears processing, begins awaiting-response
+    } else {
+      endProcessingTranscript();
+      dispatchNoTranscriptToast();
     }
-    try {
-      window.dispatchEvent(
-        new CustomEvent('papercusp:voiceTimeout', {
-          detail: { phase: 'no-audio', message },
-        }),
-      );
-    } catch { /* ignore */ }
+  } catch {
+    endProcessingTranscript();
+    dispatchNoTranscriptToast();
   }
 }
 
 async function maybeStartCaptureForPtt(): Promise<void> {
-  if (whisperCapture) return; // already running
+  if (whisperCapture || pttRawCapture) return; // already running
   // Reuse the same engine-selection logic as always-on.
   const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs').catch(() => null);
   const prefs = prefsR?.ok ? await prefsR.json() : null;
@@ -1779,17 +1854,23 @@ async function maybeStartCaptureForPtt(): Promise<void> {
     if (state.hasWebSpeechSTT) activateListening('');
     return;
   }
-  // Voicemode whisper if reachable
+  // Voicemode whisper if reachable. PTT records the whole hold as raw audio
+  // and transcribes it on release — no Silero VAD, because the button marks
+  // the utterance boundaries and MicVAD (onnxruntime-web → SharedArrayBuffer)
+  // can't load on the WebKitGTK desktop webview. See ./ptt-capture.
   if (prefs.sttEngine === 'voicemode') {
-    const probe = await fetch('http://localhost:2022/health', { signal: AbortSignal.timeout(2000) }).catch(() => null);
+    const probe = await fetch(`${VOICEMODE_WHISPER_URL}/health`, { signal: AbortSignal.timeout(2000) }).catch(() => null);
     if (probe?.ok) {
-      const { startWhisperCapture } = await import('./stt-voicemode');
-      whisperCapture = await startWhisperCapture('http://localhost:2022', {
-        onFinal: (text) => {
-          setState({ lastTranscript: text });
-          onUtteranceFinal(text);
-        },
-      });
+      try {
+        const { startPttRawCapture } = await import('./ptt-capture');
+        pttRawCapture = await startPttRawCapture();
+        setMicCaptureError(null);
+      } catch (err) {
+        // getUserMedia/permission/device failure — record it so the no-audio
+        // toast on release names the real cause. pttRawCapture stays null, so
+        // stopPushToTalk falls through to the no-audio branch below.
+        setMicCaptureError(err);
+      }
       return;
     }
   }
