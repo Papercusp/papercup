@@ -70,7 +70,8 @@ themed tree.
 
 | Token | Value | Use for |
 |---|---|---|
-| `--bg` | `#07101d` | Page / app background (deepest). |
+| `--bg-deepest` `--bg-deeper` `--bg-deep` | `#02060c` / `#030a14` / `#050d18` | **Surface depth scale** — below the page: deepest gradient stops / deep surfaces / sub-base. Use these for dark gradients & shadows instead of a hand-picked navy literal. |
+| `--bg` | `#07101d` | Page / app background. |
 | `--bg-1` | `#0b1220` | Panel background — one step up from the page. |
 | `--bg-2` `--bg-3` `--bg-4` | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised. |
 | `--bg-popover` | `#0d1829` | Solid elevated surface for menus / hover cards / popovers. |
@@ -151,18 +152,20 @@ your component, your component is the bug, not the theme system.
 Full design + history: the plan `personalization-theme-selector-2026-05-30`
 (`apps/operator/docs/plans/`).
 
-## Known gap — dark surfaces are not fully tokenized yet
+## Surfaces are tokenized too — use the depth scale, not a navy literal
 
-The accent layer is fully tokenized; **dark *surfaces* are not.** The frost theme
-hand-tunes ~270 distinct near-black navy literals (`#07101d`, `rgb(6,13,24)`,
-`rgb(3,10,20)`, …) directly in gradients and surfaces, so the Black theme still
-shows a faint navy cast on some chrome (sidebar, header). Fully neutralizing it is
-a deliberate surface re-skin (introduce a `--surface-*` scale, or normalize the
-navy family to `--bg`), not yet done.
+Surfaces used to be the weak spot: ~1100 bespoke near-black navy literals
+(`#07101d`, `rgb(6,13,24)`, `rgb(3,10,20)`, …) were hand-coded directly into
+gradients and surfaces, *below* the `--bg` tokens — so they ignored the theme
+switch and stayed navy under every theme. They were routed to the
+**surface depth scale** (`--bg-deepest`/`--bg-deeper`/`--bg-deep` + `--bg`/`--bg-1`/
+`--bg-popover`); each frost value matches the navy it replaced, so frost is
+unchanged, while black and any custom theme fully recolor the surfaces.
 
-**What this means for you:** for **new** dark surfaces, reach for the `--bg`
-family — do **not** add another bespoke navy literal. That's the exact debt this
-gap is made of.
+**What this means for you:** for any dark surface, gradient stop, or shadow, reach
+for a surface token (`--bg-deepest` … `--bg-popover`) or a `color-mix` over one —
+**never** a hand-picked dark-navy literal. A raw navy is the exact debt that was
+just paid down; re-introducing one re-breaks every theme but frost.
 
 ## Status colors — one canonical source
 

@@ -62,22 +62,23 @@ These are the variables new UI should use — never a raw hex. Each has a fallba
 baked in (`var(--bg, #07101d)`) so a component renders correctly even outside the
 themed tree.
 
-| Token                                             | Value                               | Use for                                                                                                                                                     |
-| ------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--bg`                                            | `#07101d`                           | Page / app background (deepest).                                                                                                                            |
-| `--bg-1`                                          | `#0b1220`                           | Panel background — one step up from the page.                                                                                                               |
-| `--bg-2` `--bg-3` `--bg-4`                        | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                                                                                |
-| `--bg-popover`                                    | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                                                                                  |
-| `--fg`                                            | `#e7f7ff`                           | Primary text.                                                                                                                                               |
-| `--fg-dim`                                        | `#b9d4e8`                           | Secondary text.                                                                                                                                             |
-| `--fg-mute`                                       | `#7f9bb4`                           | Tertiary / metadata text.                                                                                                                                   |
-| `--border` `--border-strong`                      | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                                                                                        |
-| `--accent` `--accent-strong` `--accent-cool`      | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                                                                                     |
-| `--accent-soft` `--accent-deep` `--accent-deeper` | sky-200 / sky-500 / sky-700         | The **accent-tint scale** — lighter & deeper accent shades for glows, gradients, and HUD washes. Use these instead of the raw `sky-200/500/700` they alias. |
-| `--accent-ink`                                    | `#051827`                           | Text **on** an accent-filled background.                                                                                                                    |
-| `--good` `--warn` `--bad`                         | emerald / amber / rose              | Semantic status (success / warning / danger).                                                                                                               |
-| `--warn-bg` `--warn-border`                       | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                                                                               |
-| `--ease-out` `--dur-fast` …                       | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance).                                                            |
+| Token                                             | Value                               | Use for                                                                                                                                                                    |
+| ------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--bg-deepest` `--bg-deeper` `--bg-deep`          | `#02060c` / `#030a14` / `#050d18`   | **Surface depth scale** — below the page: deepest gradient stops / deep surfaces / sub-base. Use these for dark gradients & shadows instead of a hand-picked navy literal. |
+| `--bg`                                            | `#07101d`                           | Page / app background.                                                                                                                                                     |
+| `--bg-1`                                          | `#0b1220`                           | Panel background — one step up from the page.                                                                                                                              |
+| `--bg-2` `--bg-3` `--bg-4`                        | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                                                                                               |
+| `--bg-popover`                                    | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                                                                                                 |
+| `--fg`                                            | `#e7f7ff`                           | Primary text.                                                                                                                                                              |
+| `--fg-dim`                                        | `#b9d4e8`                           | Secondary text.                                                                                                                                                            |
+| `--fg-mute`                                       | `#7f9bb4`                           | Tertiary / metadata text.                                                                                                                                                  |
+| `--border` `--border-strong`                      | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                                                                                                       |
+| `--accent` `--accent-strong` `--accent-cool`      | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                                                                                                    |
+| `--accent-soft` `--accent-deep` `--accent-deeper` | sky-200 / sky-500 / sky-700         | The **accent-tint scale** — lighter & deeper accent shades for glows, gradients, and HUD washes. Use these instead of the raw `sky-200/500/700` they alias.                |
+| `--accent-ink`                                    | `#051827`                           | Text **on** an accent-filled background.                                                                                                                                   |
+| `--good` `--warn` `--bad`                         | emerald / amber / rose              | Semantic status (success / warning / danger).                                                                                                                              |
+| `--warn-bg` `--warn-border`                       | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                                                                                              |
+| `--ease-out` `--dur-fast` …                       | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance).                                                                           |
 
 **Tinting pattern.** Derive accent washes with `color-mix` over a token, never a
 hardcoded rgba — it tracks the active theme automatically:
@@ -143,18 +144,20 @@ your component, your component is the bug, not the theme system.
 Full design + history: the plan `personalization-theme-selector-2026-05-30`
 (`apps/operator/docs/plans/`).
 
-## Known gap — dark surfaces are not fully tokenized yet
+## Surfaces are tokenized too — use the depth scale, not a navy literal
 
-The accent layer is fully tokenized; **dark *surfaces* are not.** The frost theme
-hand-tunes \~270 distinct near-black navy literals (`#07101d`, `rgb(6,13,24)`,
-`rgb(3,10,20)`, …) directly in gradients and surfaces, so the Black theme still
-shows a faint navy cast on some chrome (sidebar, header). Fully neutralizing it is
-a deliberate surface re-skin (introduce a `--surface-*` scale, or normalize the
-navy family to `--bg`), not yet done.
+Surfaces used to be the weak spot: \~1100 bespoke near-black navy literals
+(`#07101d`, `rgb(6,13,24)`, `rgb(3,10,20)`, …) were hand-coded directly into
+gradients and surfaces, *below* the `--bg` tokens — so they ignored the theme
+switch and stayed navy under every theme. They were routed to the
+**surface depth scale** (`--bg-deepest`/`--bg-deeper`/`--bg-deep` + `--bg`/`--bg-1`/
+`--bg-popover`); each frost value matches the navy it replaced, so frost is
+unchanged, while black and any custom theme fully recolor the surfaces.
 
-**What this means for you:** for **new** dark surfaces, reach for the `--bg`
-family — do **not** add another bespoke navy literal. That's the exact debt this
-gap is made of.
+**What this means for you:** for any dark surface, gradient stop, or shadow, reach
+for a surface token (`--bg-deepest` … `--bg-popover`) or a `color-mix` over one —
+**never** a hand-picked dark-navy literal. A raw navy is the exact debt that was
+just paid down; re-introducing one re-breaks every theme but frost.
 
 ## Status colors — one canonical source
 
