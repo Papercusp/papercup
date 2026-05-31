@@ -1,7 +1,7 @@
 ---
 title: psu-only launch unification — retire the *-su wrappers, one launch spec for su + roles
 slug: psu-only-launch-unification-2026-05-31
-status: draft
+status: active
 created: 2026-05-31
 updated: 2026-05-31
 ---
@@ -10,21 +10,38 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** Not started — design agreed 2026-05-31 (follow-on from
-`agent-launch-unification-2026-05-30`, which converged the launch *dispatch* but
-left `su` on the three `*-su` wrappers). Decision: retire `claude-su` / `omp-su`
-/ `codex-su` so **`psu` is the single launch utility**; `su` becomes the
-operator/engineer "role" run at **superuser tier** through the same
-`buildLaunchSpec` path roles already use, with the engineer playbook **assembled
-per-launch** instead of install-baked.
+**State:** ACTIVE. **Phase 0 DONE** (P-001/P-002). Retire `claude-su`/`omp-su`/
+`codex-su` so **`psu` is the single launch utility**; `su` = the operator/engineer
+"role" at superuser tier via a generalized `buildLaunchSpec`, playbook assembled
+per-launch. Also shipped independently (advances P-042): **`psu --resume=<id>` /
+`psu --resume <id>`** resumes a session by id, skipping the picker (commit `50f0e0ac6`).
 
-**Next:** Phase 0 — audit every caller/reference of the three wrappers (repo,
-installer, `~/.claude.json`, docs, PATH) and inventory exactly what each wrapper
-injects beyond the prompt (superuser MCP, lock hooks, omp coord `-e`,
-`PAPERCUSP_SID`) so nothing load-bearing is dropped. **Hard gate (D-003):**
-lock-enforcement hooks must still fire on all three agents launched via psu —
-especially codex (whose hooks live in the scoped `codex-su` CODEX_HOME) — BEFORE
-any wrapper is deleted.
+**Phase 0 findings (de-risk Phases 1–4):**
+- **Reference map.** psu-internal (re-home): `su-agents.ts` `SU_WRAPPER_BIN`,
+  `bootstrap-su.ts:293` (`wrapperBin: SU_WRAPPER_BIN[agent]`), `psu-launcher.mjs`
+  (SU-flow exec + `resumeArgsFor`). Install/boot (P-040): `install-standalone-mcp.sh`
+  §4d/4e/4f, `ensure-omp-su.ts` (+ `host-bootstrap.ts`/`instrumentation-node.ts`
+  callers), `desktop-install/omp-integration.ts`. UI/docs (P-052): `settings/*`,
+  `agent-tools/docs/*`. Plus tests. Comment-only refs in `console-launcher.ts` /
+  `native-console.ts` (post-P-032).
+- **claude is the TRIVIAL case.** `claude-su` = `claude
+  --dangerously-skip-permissions --append-system-prompt-file <playbook.claude.md>
+  [+launch-ctx] "$@"`; its MCP (`papercusp-su` in `~/.claude.json`) AND lock hooks
+  (`~/.claude/settings.json`, PreToolUse×2 + PostToolUse) are **user-level →
+  survive a raw `claude`**. So psu only needs to add the playbook prompt + mint
+  `PAPERCUSP_SID`; no per-session MCP/hook minting for claude.
+- **codex is the GATE.** `codex-su-home` carries its OWN scoped `settings.json`
+  hooks (PreToolUse+PostToolUse) + `config.toml` (superuser MCP + bearer) +
+  AGENTS.md + auth symlink. A per-session CODEX_HOME (P-030) **must re-home those
+  hooks** or per-session codex loses lock enforcement. D-003 confirmed real.
+- **omp** needs the `-e papercusp-coord.ts` extension carried into psu's omp args
+  (P-021). Only `claude-su` is installed on this box (omp-su/codex-su absent).
+
+**Next:** Phase 1 — P-010 generalize `buildRoleLaunchSpec` → `buildLaunchSpec({
+kind:'su'|'role', … })` (su = playbook prompt + superuser MCP), then P-011
+(playbook single-sourced) + P-012 (superuser MCP minting). **Hard gate (D-003)
+stands:** no wrapper deleted until P-031/P-032 prove lock enforcement + coord
+identity on all three agents launched via psu.
 
 ## Background
 
@@ -70,8 +87,8 @@ role launches + `writeRoleCodexHome` work). Key code:
 
 ## Phase 0 — Discovery & inventory (do before touching anything)
 
-- **P-001** `todo` Audit every reference to `claude-su`/`omp-su`/`codex-su` across the repo (scripts, `lib/**`, docs, prompts), `~/.claude.json`, the installer, and PATH shims; classify each as psu-internal (`SU_WRAPPER_BIN`, `resumeArgsFor`, `bootstrap-su` `wrapperBin`, `launch-su`) vs external (docs, user habit) → produce a kill-list + a "must re-home" list.
-- **P-002** `todo` Inventory what each wrapper injects that psu must reproduce: (a) playbook prompt source + profile (engineer/power); (b) superuser MCP config (claude `~/.claude.json` papercusp-su, omp path-discovered `.mcp.json`, codex CODEX_HOME `config.toml` + `PAPERCUSP_SU_TOKEN` bearer); (c) lock-enforcement hooks (claude user-level `settings.json` — survives raw launch; codex scoped `codex-su` CODEX_HOME `settings.json` — MUST re-home; omp `-e papercusp-coord.ts`); (d) `PAPERCUSP_SID`; (e) skip-perms/approval flags. Confirm the claude-survives / codex-doesn't asymmetry empirically.
+- **P-001** `done` Audit every reference to `claude-su`/`omp-su`/`codex-su` across the repo (scripts, `lib/**`, docs, prompts), `~/.claude.json`, the installer, and PATH shims; classify each as psu-internal (`SU_WRAPPER_BIN`, `resumeArgsFor`, `bootstrap-su` `wrapperBin`, `launch-su`) vs external (docs, user habit) → produce a kill-list + a "must re-home" list. (Audited — refs classified below in Now. Only claude-su installed on this box omp-su/codex-su absent; papercusp-su MCP in ~/.claude.json.)
+- **P-002** `done` Inventory what each wrapper injects that psu must reproduce: (a) playbook prompt source + profile (engineer/power); (b) superuser MCP config (claude `~/.claude.json` papercusp-su, omp path-discovered `.mcp.json`, codex CODEX_HOME `config.toml` + `PAPERCUSP_SU_TOKEN` bearer); (c) lock-enforcement hooks (claude user-level `settings.json` — survives raw launch; codex scoped `codex-su` CODEX_HOME `settings.json` — MUST re-home; omp `-e papercusp-coord.ts`); (d) `PAPERCUSP_SID`; (e) skip-perms/approval flags. Confirm the claude-survives / codex-doesn't asymmetry empirically. (Confirmed live: claude MCP + lock hooks are USER-level survive raw claude → claude is trivial; codex hooks are scoped to codex-su-home/settings.json P-030 must re-home; omp needs -e coord. Details in Now.)
 
 ## Phase 1 — buildLaunchSpec (generalize the spec)
 
