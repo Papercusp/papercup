@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** **Phase A core SHIPPED + tested (2026-05-31), commits d5604fb98 + 6bdca2265.** D-006 is settled (→ D-008: one shared operator+PG; creds isolated via per-spawn `HOME`; no per-workspace standing memory). The request/fetch path now resolves per-window: a new `workspace-als.ts` (`runWithWorkspace`/`currentRequestWorkspaceId`), `activeWorkspaceId()` prefers the request scope (ALS > process pin > `reg.current`), `workspaceContextMiddleware` reads `x-papercusp-workspace` (missing→fallback, unknown→400 per D-007, known→ALS) mounted on the inner Hono app + allowed through CORS, and the frontend `installWorkspaceHeaderFetch()` stamps the header from `getBrowserWorkspaceId()`. 26/26 new unit tests green; touched files typecheck clean. Because `resolveProject` + `routeWithWorkspace` already call `activeWorkspaceId()`, harness resolution AND PG scoping became per-request with ~zero call-site changes (D-002 confirmed working in the middleware test: a request with a header resolves its workspace while `reg.current` differs — the exact flapping fix).
+**State:** **Phase A fully implemented + tested (2026-05-31).** Per-window resolution now covers BOTH transports: fetch stamps `x-papercusp-workspace` (P-013); streams append `?ws=` on connect because EventSource/IpcEventSource can't set headers (P-015) — `installWorkspaceParamEventSource` wraps `window.EventSource`, and `workspaceContextMiddleware` reads the header then falls back to `?ws=` (unknown→400 either way, D-007). `activeWorkspaceId()` prefers the request scope (ALS > process pin > `reg.current`), so harness resolution + PG row-scoping went per-request with ~zero call-site changes (D-002). Commits d5604fb98 (backend), 6bdca2265 (fetch), a7bae5e2d (streams). **42/42 new unit tests green; touched files typecheck clean; middleware live-verified on `:3070` (D-007 fires with the exact error body).** Key finding: the headline sync SSE (`/api/zero-harness/sse`) is GLOBAL-broadcast by design (no per-event workspace; client re-fetches via the fixed fetch path), so it was never a half-fix vector; the streams that DO resolve a workspace (oracle, agent-mcp events, agent-chats) capture it at connect inside `sseResponse`'s `ReadableStream.start` (still within the middleware ALS scope) — they were capturing the GLOBAL only because the connect lacked the workspace, which `?ws=` now supplies.
 
-**Next:** An agent does P-015 — the stream transport (extend `IpcEventSource` with a `headers` option + carry the workspace on SSE/WS connect) so live `/api/zero-harness/sse` + voice/Zero WS invalidations also resolve per-window; without it the fetch fix is a half-fix (D-001). Then P-014 live-verify in the Tauri shell (needs a `:3070` host restart — no hot-reload).
+**Next:** An agent does P-014 (live-verify a real SSE subscription resolves per-window in the Tauri shell — needs a `:3070` restart) + P-016 (confirm `resolveProject` honors the request workspace, since papercup resolved under every workspace header on the dogfood host). Then Phases B (background/MCP ALS safety) → F.
 
 ## Background
 
@@ -240,7 +240,7 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
   neither a window nor purely background — the MCP server is harness-scoped at
   launch; define how a tool call carries its workspace into the ALS). Count via
   `rg -c activeWorkspaceId` per file (output-mangling caveat).
-- **P-002** `todo` **Decide + spec the stream transport** (D-001): extend
+- **P-002** `done` **Decide + spec the stream transport** (D-001): extend (Decided: ?ws= query on connect uniform for native EventSource + IpcEventSource; headers impossible on native ES. Implemented in P-015.)
   `IpcEventSource` with `headers` (preferred) vs `?ws=` on connect. Stream surface
   enumerated (P-003 grep): SSE endpoints `/api/zero-harness/sse`,
   `/api/flags/stream`, `/api/provision/stream`, `/api/backups/events`, the
@@ -275,7 +275,7 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
 - **P-013** `done` Frontend fetch: inject `x-papercusp-workspace` from
   `getBrowserWorkspaceId()` in the operator-vite `fetch` wrapper (trivial —
   `ipcFetch` already forwards headers).
-- **P-015** `todo` **Stream transport (D-001/P-002):** implement the chosen option
+- **P-015** `done` **Stream transport (D-001/P-002):** implement the chosen option (via ?ws= on connect EventSource can't set headers + window.EventSource wrapper; middleware reads ?ws= fallback. Sync SSE is global-by-design so was never a half-fix vector; oracle/agent-mcp/agent-chats capture-at-connect, now get the window ws.)
   for SSE + voice/Zero WS so live invalidations carry the window's workspace —
   without this the fix is a half-fix.
 - **P-014** `wip` Verify the win on **both** paths: `GET /testing/domains` AND a
