@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase 1 landed (commit 6e5b6715): importance is a first-class item axis. P-002 done — `@papercusp/plan-parser` parses an `importance:` keyword (urgent|high|normal|low, default normal, glyph-agnostic like blocked-by; unknown→normal with no parseWarning). P-003 done — `plans:items` sorts by importance (urgent→low, stable) and `plans:lint` emits a soft `unknown_importance` warning. P-001 done — plan-format spec documents importance + the misleading `- [ ]` item example was corrected to the canonical `- **P-NNN** \`status\`` form (note: the served HTML mirror under apps/operator/public/internal/docs/ regenerates on the next docs/prod build). P-004 PARTIAL — `plans:add-item`/`buildItemLine` take an optional `importance` arg (emitted only when ≠ normal); the hard-required enforcement + the new `plans:set-importance` verb + caller updates (UI +Item picker, architect plan-block-handler) are deliberately sequenced to land WITH P-005 so agents have the rubric in their prompt before being forced to choose. Tests green: plan-parser 13, operator write-mutators 29 + lint 4.
+**State:** Phases 1 + most of 2 landed (commits 6e5b6715, d237f7b3). Importance (urgent|high|normal|low) is a first-class item axis end to end: parser keyword + default + lint (P-002/P-003), plan-format spec (P-001), `plans:add-item` requires it with both callers updated (UI +Item modal has a picker; architect handler passes normal pending P-006), the new `plans:set-importance` verb (P-004), and the authoring rubric in the scoper + architect prompts (P-005; orchestrator gets it in code at P-006, operator is consumption-side at P-018). Tests green: plan-parser 13, write-mutators 34, lint 4, tools-md-sync 42, prompt-assembly 17; operator tsc clean for all touched files. Remaining in Phase 2: P-006 (orchestrator sets importance on auto-created needs-human items; urgent for stuck-after-debugger) + P-007 (enforcement test).
 
-**Next:** P-005 — add the importance rubric to the scoper/architect/orchestrator/operator prompts — then finish P-004 (make the add-item arg required, add plans:set-importance, update callers), then Phase 3 (AttentionItem + adapters).
+**Next:** P-006 — orchestrator sets importance when it auto-creates needs-human items (urgent for a feature still failing after the debugger threshold), then P-007, then Phase 3 (AttentionItem read-model + coord/smoke/plan-review adapters).
 
 ## Background
 
@@ -51,11 +51,11 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 - **P-001** `done` plan-format spec (`apps/operator-docs/src/content/docs/spec/plan-format.mdx`) — document an `importance:` keyword on items, values `urgent | high | normal | low`, default `normal`, parsed glyph-agnostically exactly like `blocked-by:`; also correct the spec's item-line example to the canonical `- **P-NNN** ` + backtick-status form. Add a worked example. References D-002, D-003.
 - **P-002** `done` `packages/plan-parser` — parse `importance:` into `PlanItem.importance` (default `normal`); surface it through effective-status output and the items array. Add a property test for the keyword parse (separator-agnostic, default, bad-value → normal + warning). References D-003.
 - **P-003** `done` `plans:items` returns `importance`; sort ToDos and needs-human items by importance (urgent→low) then age. `plans:lint` validates the value is one of the four (warning, degrade to `normal`, on unknown).
-- **P-004** `todo` `plans:add-item` REQUIRES an `importance` arg (no silent default) so the rubric is enforced at authoring; `plans:set-status` plus a new `plans:set-importance` can change it later. References D-002.
+- **P-004** `done` `plans:add-item` REQUIRES an `importance` arg (no silent default) so the rubric is enforced at authoring; `plans:set-status` plus a new `plans:set-importance` can change it later. References D-002.
 
 ## Phase 2 — Rubric + agent enforcement
 
-- **P-005** `todo` Author the importance rubric (see the "Rubric" section below) and add it to the scoper, architect, orchestrator, and operator persona/tools prompts under `apps/operator/prompts/`. References D-002.
+- **P-005** `done` Author the importance rubric (see the "Rubric" section below) and add it to the scoper, architect, orchestrator, and operator persona/tools prompts under `apps/operator/prompts/`. References D-002. (rubric in scoper+architect tools.md; orchestrator=code via P-006; operator is consumption-side P-018)
 - **P-006** `todo` Orchestrator — when it auto-creates a `needs-human` item (ESCALATE→item per shipped P-011; architect-REVIEW→item per shipped P-012) it must set `importance` from the rubric; set `urgent` for a feature still failing after the debugger threshold (closes the "3-failed-attempts alert" gap, which today lands as a plain needs-human item with no urgency). blocked-by: P-004
 - **P-007** `todo` `tools-md-sync` + prompt-assembly tests green; verify `plans:add-item` enforcement with a unit test.
 
