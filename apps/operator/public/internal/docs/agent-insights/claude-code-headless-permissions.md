@@ -70,6 +70,15 @@ separate argv elements so internal spaces (`Bash(git push:*)`) survive —
 `--disallowed-tools` swallows nothing unintended. Defers the whole posture if the
 user set any permission flag in `AGENT_CMD`.
 
+The allow-list is **per-role** (`fleetAllowedToolsForRole(role)`): most roles
+get the kit above, but the API-only roles `expert` / `feedback` drop `Edit`/`Write`
+because their prompts explicitly say "do NOT use the `Write` or `Edit` tools" —
+mechanically enforcing an existing instruction. That's the *only* per-role
+built-in cut that's safe from a prompt read (other review/gate roles write
+legit output via `Write`). It's a nudge, not a boundary — `Bash` is still
+granted, so a shell redirect could write; deeper per-role cuts need a real
+fleet-spawn run, not a prompt read. An unknown role gets the full kit.
+
 **No-push** is *really* enforced by a spawn-env-scoped pre-push hook
 (`gitConfigNoPushEnv` injects `core.hooksPath` via `GIT_CONFIG_*` into the spawn
 env only — the shared checkout's config and the user's/other agents' pushes are

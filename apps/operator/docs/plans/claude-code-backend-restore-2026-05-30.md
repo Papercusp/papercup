@@ -199,9 +199,17 @@ commits `97a4f58` whitelist + `63c042d` pre-push hook):
   `FLEET_ALLOWED_TOOLS` / `FLEET_DISALLOWED_TOOLS` exported + unit-tested.
 - The `mcp__papercusp` wildcard rides the already-role-scoped server surface
   (belt-and-suspenders: `listMcpProjections` + dispatch `role-allowlist`), so no
-  per-role allow-list is hand-derived. Built-ins are a uniform safe floor;
-  per-role built-in *tightening* is a deferred follow-up (needs per-role
-  real-spawn verification — withholding a needed built-in silently breaks a role).
+  per-role allow-list is hand-derived for the MCP surface.
+- **Per-role built-ins:** `claudeMcpArgs(role)` → `fleetAllowedToolsForRole(role)`
+  gives most roles the uniform safe kit, but drops `Edit`/`Write` for the
+  API-only roles whose prompts *explicitly forbid* those tools (`expert.md` /
+  `feedback.md`: "do NOT use the `Write` or `Edit` tools"). That's the only
+  per-role built-in cut verifiable from a prompt read — other review/gate roles
+  (reviewer, infra-reviewer, project_manager, …) write legitimate output via the
+  `Write` tool, so denying it would break them. Verified: an expert-style kit
+  under `dontAsk` denies the `Edit` tool (file unchanged). It's a defense-in-depth
+  nudge, not a boundary (`Bash` stays granted → a shell redirect could still
+  write); further per-role cuts need a real fleet-spawn run, not a prompt read.
 - **Key correction caught by verifying:** `dontAsk` gating is non-uniform — a
   class of session-local tools (`CronCreate`, `EnterWorktree`, …) BYPASSES the
   allow-list, so the dangerous ones are hard-removed via `--disallowed-tools`
@@ -375,7 +383,7 @@ Originally shipped as **option A** (`--permission-mode bypassPermissions`, no al
 - **Gating under `dontAsk` is NON-uniform.** A class of session-local / meta built-ins is **exempt** from the allow-list — verified: with the exact allow-list, `CronCreate` still created a job and `EnterWorktree` still ran. A `claude -p` spawn on this box carries 250+ tools including `CronCreate/Delete/List`, `Workflow`, `Enter/ExitWorktree`, `RemoteTrigger`, `PushNotification`, `Monitor`, `ScheduleWakeup`, `Task`, `Skill`, `LSP`. So the allow-list alone is **not** a complete boundary.
 - **`--disallowed-tools` is the hard block.** It removes a tool entirely ("No such tool exists in this environment"), wins over the allow-list AND over `bypassPermissions`, and supports command-granularity (`Bash(git push:*)` blocks `git push` while `echo` runs). This is what closes the dangerous *exempt* tools and dangerous Bash *commands*.
 
-**Implemented posture (option B):** `dontAsk` + `--allowed-tools "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"` (wildcard grants the already-role-scoped MCP surface; safe dev kit for built-ins) + `--disallowed-tools` enumerating the dangerous exempt tools + `Bash(sudo:*)`/`Bash(git push:*)`. `mcp__papercusp` wildcard handles the per-role MCP surface (server-enforced), so we did NOT hand-derive per-role allow-lists from tools.md — that would duplicate + drift from the server's authority. Built-ins are a uniform safe floor; per-role *tightening* of built-ins is a deferred follow-up (needs per-role real-spawn verification — withholding a needed built-in silently breaks a role).
+**Implemented posture (option B):** `dontAsk` + `--allowed-tools "mcp__papercusp Read Edit Write Bash Glob Grep WebFetch WebSearch"` (wildcard grants the already-role-scoped MCP surface; safe dev kit for built-ins) + `--disallowed-tools` enumerating the dangerous exempt tools + `Bash(sudo:*)`/`Bash(git push:*)`. `mcp__papercusp` wildcard handles the per-role MCP surface (server-enforced), so we did NOT hand-derive per-role allow-lists from tools.md — that would duplicate + drift from the server's authority. **Per-role built-ins** (`fleetAllowedToolsForRole`): most roles get the uniform safe kit; the API-only roles `expert`/`feedback` drop `Edit`/`Write` (mechanically enforcing their prompts' explicit "do NOT use the `Write`/`Edit` tools" — the only prompt-verifiable safe cut, since other review/gate roles write legit output via `Write`). Defense-in-depth nudge, not a boundary (Bash stays granted). Further per-role cuts need a real fleet-spawn run.
 
 **Honest limits (recorded so they're not mistaken for containment):** this is defense-in-depth, not a sandbox. Credential reads (the allow-listed `Read` reaches any path) and network egress (allow-listed `WebFetch`) are NOT closed — true containment needs a network/fs sandbox. And `worktree isolation` is conditional: `invoke.ts:714` falls back to `ctx.projectDir` (the shared main checkout) when there's no feature-worktree, so "contained" is not universally true.
 Related: P-004, P-002. Full runbook: agent-insight `claude-code-headless-permissions`.

@@ -134,6 +134,14 @@ separate argv elements so internal spaces (<code dir="auto">Bash(git push:*)</co
 <code dir="auto">claudeMcpArgs</code> is the <strong>tail</strong> of <code dir="auto">finalArgv</code> for claude-code, so the variadic
 <code dir="auto">--disallowed-tools</code> swallows nothing unintended. Defers the whole posture if the
 user set any permission flag in <code dir="auto">AGENT_CMD</code>.</p>
+<p>The allow-list is <strong>per-role</strong> (<code dir="auto">fleetAllowedToolsForRole(role)</code>): most roles
+get the kit above, but the API-only roles <code dir="auto">expert</code> / <code dir="auto">feedback</code> drop <code dir="auto">Edit</code>/<code dir="auto">Write</code>
+because their prompts explicitly say “do NOT use the <code dir="auto">Write</code> or <code dir="auto">Edit</code> tools” —
+mechanically enforcing an existing instruction. That’s the <em>only</em> per-role
+built-in cut that’s safe from a prompt read (other review/gate roles write
+legit output via <code dir="auto">Write</code>). It’s a nudge, not a boundary — <code dir="auto">Bash</code> is still
+granted, so a shell redirect could write; deeper per-role cuts need a real
+fleet-spawn run, not a prompt read. An unknown role gets the full kit.</p>
 <p><strong>No-push</strong> is <em>really</em> enforced by a spawn-env-scoped pre-push hook
 (<code dir="auto">gitConfigNoPushEnv</code> injects <code dir="auto">core.hooksPath</code> via <code dir="auto">GIT_CONFIG_*</code> into the spawn
 env only — the shared checkout’s config and the user’s/other agents’ pushes are
