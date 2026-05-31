@@ -79,14 +79,35 @@ following were checked live against `:3070`/`:3055` and need no repeat:
 - **Code audit of all four new surfaces — no bugs found**: `bootstrap-role.ts`,
   `psu-launcher.mjs`, `launch-su.ts`, and the `invoke.ts` codex path. The
   remaining items are genuine live-behavior gates, not latent defects.
+- **D-001 tool-scoping at dispatch — LIVE-VERIFIED** (this was the keystone gap).
+  Ran `spawn-signing-e2e.integration.test.ts` against the live operator: 10/10
+  pass, including **signed `role=worker` URL → role-filtered tool list** (no
+  `autoloop:control`), **worker calling operator-only `autoloop:control` →
+  `role_not_allowed`**, operator role *can* call it, tampered role →
+  `invalid_signature`, expired → rejected, unsigned+claimed → empty list, audit
+  row written on tamper. This is the exact dispatch-layer enforcement
+  `buildRoleLaunchSpec`'s signed URL depends on; since its param set is a subset
+  of the test's `SIGNED` set (`{harness,workspace,role,run,spawn,feature,…}`),
+  its URLs verify and scope identically. NB: this test reads the signing key via
+  `psql -h localhost -p 5432 -d papercusp` — correct on THIS dev box (native PG
+  `:5432/papercusp` is the live store; no `papercusp_legacy` here), but it would
+  need an embedded-pg DSN on a desktop-embedded-pg box. If it skips/fails on your
+  box, that's the topology difference, not a regression.
 
 **NOT yet verified (still your job — needs terminal / codex auth / Tauri UI):**
 the bootstrap-role *happy path* against a real harness was deliberately skipped
 (it writes a signed `.mcp.json` into a shared-checkout harness cwd — risky to do
 casually; the happy path is unit-tested with a temp cwd). The genuinely-live
-gaps remain: an actual interactive launch, **tool-scoping enforcement at
-dispatch** (the D-001 core claim — confirm a non-worker tool is rejected for a
-role=worker session), codex (P-013 + codex role), and the UI widgets.
+gaps remaining are now narrower than before:
+- **Phase 3 interactive-launch plumbing** — that `psu --role=worker` actually
+  execs claude/omp which connect to the role-scoped `.mcp.json` and open a
+  working session with `FEATURE_ID` set, tracked in /adv. The **tool-scoping
+  guarantee itself is already proven** (D-001 above) — what's left is confirming
+  the CLI picks up `--mcp-config`/path-discovery and connects.
+- **codex** — P-013 (codex worker pipeline) + codex interactive role; both need
+  a fresh codex login (token revoked).
+- **UI widgets** — Phase 4 launch buttons + the P-041 `/settings/agent` model
+  input, driven in the actual webview.
 
 ---
 
@@ -166,12 +187,17 @@ are **actually scoped to the worker role** (not operator/superuser), with
   (`lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts`) → `buildRoleLaunchSpec`
   (`lib/role-launch-spec.ts`) writes a signed role-scoped `.mcp.json` + the role
   prompt file, records the `adv_sessions` row (role+feature+agent).
-- **The scoping is the point (D-001):** the role `.mcp.json` uses a
-  `signSpawnParams`-signed URL carrying `role=worker`, **not** `?superuser=1`.
-  claude is launched with `--strict-mcp-config` so only that config's server is
-  available. **Verify a non-worker tool is actually rejected** at dispatch —
-  that's the proof the signed-URL path enforces the allowlist, vs SU which
-  hardcodes `role: operator`.
+- **The scoping is the point (D-001) — ALREADY PROVEN, see "Already verified
+  live".** The role `.mcp.json` uses a `signSpawnParams`-signed URL carrying
+  `role=worker`, **not** `?superuser=1`; the dispatch layer rejects non-worker
+  tools (verified live via `spawn-signing-e2e.integration.test.ts`: worker →
+  `role_not_allowed` on `autoloop:control`). claude is launched with
+  `--strict-mcp-config` so only that config's server is available. So you do NOT
+  need to re-prove the scoping — you only need to confirm the **launch plumbing**:
+  that the claude/omp process actually starts, connects to the `.mcp.json`, and
+  the session shows `FEATURE_ID` + a /adv row. (If you want belt-and-suspenders,
+  inside the launched session ask the agent to call an operator-only tool and
+  confirm it's refused.)
 - Then repeat once on the **codex** backend — but note codex interactive role
   sessions are currently **400'd on purpose** (see deferred item B); for now
   Phase 3 verification is claude + omp only.

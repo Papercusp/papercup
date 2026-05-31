@@ -45,10 +45,12 @@ Full notes in the e2e handoff brief
 driving; the data paths behind these are proven):**
 - **P-013** — live codex worker e2e (a codex pipeline agent streams a result +
   fires an MCP tool_call). Needs codex re-auth (token was revoked).
-- **Phase 3 e2e** — `psu --role=worker --feature=F` opens a worker session with
-  **worker-scoped tools** (the D-001 claim: confirm a non-worker tool is rejected
-  at dispatch), tracked in /adv. Server gates verified; interactive launch +
-  tool-scoping not yet.
+- **Phase 3 e2e** — `psu --role=worker --feature=F` opens a worker session
+  tracked in /adv. **D-001 tool-scoping at dispatch is now LIVE-VERIFIED**
+  (spawn-signing-e2e: signed worker URL → role-filtered list; worker →
+  `role_not_allowed` on operator-only `autoloop:control`; tamper/expiry rejected;
+  10/10). Server gates + scoping proven; only the interactive-launch *plumbing*
+  (psu→claude/omp connects to the role `.mcp.json`) is unverified.
 - **Phase 4 e2e** — the launch buttons on claude/codex (in the webview).
 - **P-041 UI** — the `/settings/agent` model widget driving the (proven) round-trip.
 
