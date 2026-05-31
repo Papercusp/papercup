@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { resolveEscalation } from '../escalations';
+import { unblockLinkedCard } from '../card-link';
 import { COORD_ROLES } from '../roles';
 
 export default defineTool({
@@ -66,6 +67,11 @@ export default defineTool({
         isError: true,
       };
     }
+    // inbox-cards-unification Phase D (P-035): if this escalation was linked to
+    // a live ctx.askUser card (agent blocked waiting), unblock it too so an
+    // inbox resolution resumes the agent. No-op when unlinked (flag-off) or the
+    // card already resolved; the escalation is resolved regardless.
+    unblockLinkedCard(out, args.choice);
     return {
       content: [
         {

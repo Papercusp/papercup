@@ -38,7 +38,12 @@ export type {
 /** Open a new escalation — writes the immutable per-event record. */
 export async function openEscalation(
   identity: AgentIdentity,
-  input: OpenEscalationInput,
+  // `meta` is an optional domain-free extras bag persisted on the record via
+  // CoordEnvelope's `[key:string]:unknown` index signature — inbox-cards-
+  // unification Phase D (P-033) stashes `{ cardCorrelationId, cardWorkspaceId }`
+  // here to link a durable escalation to a live ctx.askUser card. The generic
+  // coordination lib is untouched (the field lives only in this adapter input).
+  input: OpenEscalationInput & { meta?: Record<string, unknown> },
 ): Promise<EscalationRecord> {
   const env: EscalationRecord = {
     ts: new Date().toISOString(),
@@ -53,6 +58,7 @@ export async function openEscalation(
   if (input.body !== undefined) env.body = input.body;
   if (input.plan_slug !== undefined) env.plan_slug = input.plan_slug;
   if (input.options !== undefined) env.options = input.options;
+  if (input.meta) Object.assign(env, input.meta);
   await coordLog.putEvent('escalations', env.msg_id, env);
   return env;
 }

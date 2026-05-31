@@ -20,6 +20,8 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { openEscalation, resolveEscalation as resolveEscalationRecord } from '../coordination/escalations';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 const ALL_ROLES = [
   'scoper',
@@ -137,13 +139,63 @@ export default defineTool({
           ...(normalized.voiceAnswerable === true ? { voiceAnswerable: true } : {}),
         };
 
+    // inbox-cards-unification Phase D (P-034): when the flag is on, ALSO write
+    // a durable coord escalation linked to this card's correlationId, so the
+    // human can answer it from the inbox and this blocked agent resumes
+    // (coord:resolve → resolveCardResponse, P-035). Default OFF ⇒ no escalation
+    // and zero behavior change. Best-effort throughout: a write/resolve failure
+    // never breaks the card flow.
+    let durableEscalation = false;
+    try {
+      const { getFlag } = await import('@papercusp/flags/server');
+      const { FLAGS } = await import('@papercusp/flags');
+      durableEscalation = await getFlag(FLAGS.INBOX_DURABLE_ESCALATIONS, 'system');
+    } catch {
+      durableEscalation = false;
+    }
+    let escalationP: Promise<{ msg_id: string } | null> = Promise.resolve(null);
+
     const response = await ctx.askUser({
       prompt: normalized.question,
       dataSchema: responseSchema,
       presentation,
       fallbackText,
       allowDecline: normalized.allowDecline ?? true,
+      ...(durableEscalation
+        ? {
+            onCard: ({ correlationId, workspaceId }) => {
+              try {
+                escalationP = openEscalation(resolveAgentIdentity(ctx), {
+                  severity: 'question',
+                  summary: normalized.question,
+                  options: normalized.options.map((o) => ({ id: o.id, label: o.label })),
+                  meta: { cardCorrelationId: correlationId, cardWorkspaceId: workspaceId },
+                }).catch(() => null);
+              } catch {
+                /* identity/write failure must not break the card */
+              }
+            },
+          }
+        : {}),
     });
+
+    // Close the inbox copy once the card resolves. Idempotent: if it was the
+    // INBOX that resolved the card (via coord:resolve), the escalation is
+    // already resolved and this is a no-op ('already_resolved').
+    if (durableEscalation) {
+      const esc = await escalationP;
+      if (esc) {
+        const choice =
+          response.action === 'submit'
+            ? String(response.payload.picks[0] ?? 'resolved')
+            : response.action;
+        try {
+          await resolveEscalationRecord({ msg_id: esc.msg_id, choice, resolver: 'human' });
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    }
 
     if (response.action === 'decline') {
       return {
