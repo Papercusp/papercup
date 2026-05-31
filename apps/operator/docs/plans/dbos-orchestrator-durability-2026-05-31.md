@@ -11,16 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Sub-plan of `dbos-durable-jobs-2026-05-31` (Phase 3, gate-approved D-012). The first piece of
-P-015 **landed**: `invoke()` now takes an opt-in `idempotencyKey` (→ deterministic `harness_run_output` run_id)
-and **checks-before-spawn**, returning a prior completed run instead of re-spawning the agent (submodule
-`c4c897a`, superproject pointer `c798261e`; 50 invoke+run-output tests green; opt-in, so every current caller
-is unchanged). This sub-plan scopes the careful, higher-risk remainder — everything here edits the **live
-agent-running core in the `libs/papercusp` submodule** (commit on submodule main + bump the superproject
-pointer; **no push**).
+**State:** **Phase 3 core built + verified** (D-009). The agent pipeline runs as a DBOS durable workflow (`orchestrator-workflow.ts`) that resumes mid-pipeline without re-running completed roles (proven end-to-end); the idempotency-key path is complete end-to-end (`invoke()` check-before-spawn + `invoke-once` `IDEMPOTENCY_KEY`); flag-gated `PAPERCUSP_DBOS_ORCHESTRATOR` with the legacy main loop as the default + A/B fallback. Done: P-001, P-002 (moot), P-003, P-004, P-005, P-007 (+ P-006 version-pin). All committed (submodule + operator); live orchestrator untouched.
 
-**Next:** the dedicated idempotent-hit unit test (P-001), then the in-flight-run policy (P-003 — the deepest
-semantic) before wrapping the pipeline as a durable workflow.
+**Next:** Live-wire + validate **together** (needs a dev harness + REAL agents, so not done autonomously): wire the real invoke runner (spawn `invoke-once` with `IDEMPOTENCY_KEY`) + route eligible features to `startFeaturePipeline`, then run a real feature's pipeline under `PAPERCUSP_DBOS_ORCHESTRATOR=1`, confirming crash/resume + no double-spawn/double-commit (P-012/P-013). Decide **P-009** (lane-pool redesign) before parallel features; then Phase C reconciliation (P-008/P-010/P-011).
 
 ## Background
 
@@ -85,6 +78,35 @@ The in-memory lane pool (`lanes.ts` / `lanes.json`) cannot survive a restart whi
 `harness-status-sweep` reaper + the distributed claim all reconcile to the workflow (the workflow ID can be the
 claim token). Parallel-lane handling (N workers/feature) is redesigned (child workflows or a concurrency
 queue), preserving the `lanes.json` UI surface.
+
+
+### D-008 — Phase A resolved — P-001 done, P-002 moot, P-003 = re-spawn-fresh
+Date: 2026-05-31
+**P-001 done** — extracted `findPriorRunForIdempotency` (testable helper, primitives only) + 2 unit tests (reconstructs prior result on hit, null on miss); 52 invoke+run-output tests green (submodule `4b7f459`, pointer `f1beecc2`).
+
+**P-002 moot** — determinism *inside* `invoke()` doesn't matter: `invoke()` is wrapped as a DBOS **step**, so only its RESULT is checkpointed; its internal `Date.now()`/`randomUUID()` spawnId don't affect workflow replay. The only invoke-side determinism that matters is `runId = idempotencyKey` (already landed), so the run row is keyed stably. The determinism that DOES matter is in the **workflow body** (the dispatch loop) — that's D-004 / P-005 in Phase B.
+
+**P-003 decided — re-spawn-fresh.** An interrupted run leaves no `harness_run_output` completion row, so on resume `invoke()` re-spawns. The re-spawned agent re-reads **git state**, which already reflects any partial commits from the interrupted run — so **git is the dedup**; no double-commit in practice and no new "started" marker is needed for correctness. (A started-marker for *observability* — surfacing "this is a re-run of an interrupted invoke" — is a possible future refinement, not a blocker.) This unblocks P-004.
+Related: P-001, P-002, P-003
+
+
+### D-009 — Phase 3 core built + verified; live-wiring/validation is the remaining boundary
+Date: 2026-05-31
+Autonomous build complete for the **verifiable** scope:
+- **P-004 done + VERIFIED** — `lib/dbos/orchestrator-workflow.ts` (commit 317c0cb2): the agent pipeline as a DBOS durable workflow (dynamic `parseDecision`-driven dispatch, each agent run a checkpointed step keyed `harness:feature:role:turn`). Proven: crash mid-`worker` → `SUCCESS`, deterministic dispatch intact (step ledger `decide-0 → invoke-worker-0 → decide-1 → invoke-validator-1 → decide-2`), completed step not re-run.
+- **P-005 done by construction** — the durable dispatch is a NEW clean loop (NOT wrapping the legacy 800-line main-loop), deterministic (`parseDecision` is pure on checkpointed step outputs); all non-determinism is inside steps. The legacy main-loop's determinism hazards don't apply because we don't wrap it.
+- **P-006 partial** — `DBOS__APPVERSION` is pinned (parent D-008); the `patched()` discipline applies when the pipeline step-shape changes (documented); a resume-across-version test rides with live validation.
+- **P-007 done** — flag-gated `PAPERCUSP_DBOS_ORCHESTRATOR=1` (bootstrap 01b82f22), legacy main loop is the default + A/B fallback.
+- **Idempotency-key path COMPLETE end-to-end** — `invoke()` check-before-spawn (P-015) + `invoke-once` `IDEMPOTENCY_KEY` plumbing (de50c8e0), so the durable pipeline's runner spawns `invoke-once` with the key and a re-run reuses a completed agent run.
+
+**Remaining = live-wiring + validation (needs the live env + REAL agents) + one design fork — where autonomous work responsibly stops:**
+- **Real invoke-runner adapter** + **dispatch-routing**: wire `setPipelineInvokeRunner` to spawn `invoke-once` (`PROJECT_DIR`/`ROLE`/`FEATURE_ID`/`IDEMPOTENCY_KEY`/`RESULT_PATH`) and route eligible features to `startFeaturePipeline` instead of the legacy loop. Buildable, but only VALIDATABLE with real agent runs — so build+validate together, not blind.
+- **P-009 (needs-human)** — lane-pool redesign (parallel N-workers/feature under DBOS).
+- **Phase C (P-008/P-010/P-011)** — reconcile `harness_lanes`/`spawned_agents`/reaper/claim once the live path runs.
+- **Phase D (P-012/P-013)** — live validation: a real feature's pipeline under the flag; crash/resume + no double-spawn/double-commit with REAL agents.
+
+I (autonomous) stopped here deliberately: the rest requires **real agent runs** (LLM cost + irreversible git side effects — not run unprompted) and the **P-009 design call**. Everything built is flag-gated default-off; the live orchestrator is untouched.
+Related: P-004, P-005, P-006, P-007
 
 ## Phase A — invoke() idempotency hardening (finish P-015)
 
