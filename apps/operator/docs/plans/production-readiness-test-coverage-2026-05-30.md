@@ -216,7 +216,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
 
 ## Phase 4 — Breadth (deferred until the critical path is green)
 
-- **P-026** `todo` Voice engine adapter contract tests for the 12 bare STT/TTS
+- **P-026** `todo` Voice engine adapter contract tests for the 12 bare STT/TTS (— PARTIAL: cloud-adapter connection/health request-shaping + error tests for deepgram/openai/cartesia/elevenlabs cloud-adapters.test.ts, 15 tests, 096dea5c2. REMAINING: streaming-frame parse + speak/cancel browser-coupled → integration/e2e + the local engines whisper/kokoro/webspeech/porcupine/openwakeword/openai-realtime.)
   adapters (`apps/operator/lib/voice-engines/`): request shaping, streaming-frame
   parse, error/cancel.
 
