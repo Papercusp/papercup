@@ -62,11 +62,14 @@ describe('planItemsToAttention (plan-item source of plans:attention)', () => {
     expect(p2.harnessSlug).toBe('papercup');
   });
 
-  it('flags the needs-human item and gives it a Resolve action', () => {
+  it('flags the needs-human item and gives it the full Answer/Resolve/Drop/Chat toolkit', () => {
     const p3 = items.find((i) => i.itemRef === 'P-003')!;
     expect(p3.needsHuman).toBe(true);
     expect(p3.importance).toBe('high');
-    expect(p3.actions.map((a) => a.id)).toEqual(['mark-done', 'chat']);
+    // The needs-human action set is the single source the inbox card maps from
+    // (inbox-cards-unification P-009): answer + Resolve(primary) + drop + chat.
+    expect(p3.actions.map((a) => a.id)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
+    expect(p3.actions.find((a) => a.id === 'mark-done')?.primary).toBe(true);
   });
 
   it('surfaces a computed-blocked item with effective status blocked', () => {
