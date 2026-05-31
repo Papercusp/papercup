@@ -20,7 +20,7 @@ export interface LaunchOpts {
   label?: string | null;
   /** OMP session id to pass through as `omp -r <id>` so the new
    *  session resumes an existing conversation. Honored only in
-   *  omp mode (launchOmpAgent). */
+   *  omp mode (launchAgent). */
   resumeSessionId?: string | null;
   /** Optional OMP model fuzzy-match argument (`omp-su --model <value>`). */
   model?: string | null;
