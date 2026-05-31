@@ -25,6 +25,7 @@ import { usePlan } from './plans-api';
 import type { AttentionItem } from './plans-api';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { InputCard, type InputCardResponse } from '@/app/_components/chat/InputCard';
+import { InboxCardActions } from './InboxCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction, answerAttentionItem } from './attention-card';
 import { scrollPlanTarget, stripFrontmatter } from './plan-renderers';
 
@@ -173,6 +174,13 @@ export default function PlanItemPreview({
     <aside className="pc-items__detail">
       <div className="pc-items__detail-toolbar">
         <span className="pc-items__id">{itemId}</span>
+        {/* #4: the item's actions live here in the toolbar, not in the card. */}
+        <InboxCardActions
+          options={spec.options}
+          answered={answered}
+          busy={busy}
+          onResponse={(r) => void onCardResponse(r)}
+        />
         <button
           type="button"
           className="pc-items__view-full"
@@ -187,6 +195,7 @@ export default function PlanItemPreview({
           args={spec}
           answered={answered}
           allowDecline={false}
+          hideOptions
           onResponse={(r) => void onCardResponse(r)}
         />
         {answerOpen ? (

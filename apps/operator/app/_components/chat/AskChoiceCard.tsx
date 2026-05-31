@@ -103,6 +103,12 @@ interface AskChoiceCardProps {
    * the same answered card again with the options highlighted.
    */
   disableWhenAnswered?: boolean;
+  /**
+   * Render only the question + answered summary — no option/nav/submit/skip
+   * buttons. Used when the actions are surfaced elsewhere (the inbox detail
+   * toolbar, #4) so the body shows just the item's content. Default false.
+   */
+  hideOptions?: boolean;
 }
 
 
@@ -113,6 +119,7 @@ export function AskChoiceCard({
   onAnswer,
   allowDecline = true,
   disableWhenAnswered = true,
+  hideOptions = false,
 }: AskChoiceCardProps): ReactNode {
   const questionId = `ask-${args.question.slice(0, 16).replace(/\s+/g, '-')}`;
   const isAnswered = !!answered;
@@ -123,8 +130,10 @@ export function AskChoiceCard({
   // navigate (open a sub-surface; card stays live). Multi-select ignores the
   // flag — every option is a toggle. Chat callers pass no `terminal`, so
   // `navOptions` is empty and the card renders exactly as before.
-  const mainOptions = multi ? args.options : args.options.filter((o) => o.terminal !== false);
-  const navOptions = multi ? [] : args.options.filter((o) => o.terminal === false);
+  // #4: hideOptions suppresses every action affordance (the inbox detail
+  // toolbar renders them instead) — the card shows only the head/content.
+  const mainOptions = hideOptions ? [] : multi ? args.options : args.options.filter((o) => o.terminal !== false);
+  const navOptions = hideOptions ? [] : multi ? [] : args.options.filter((o) => o.terminal === false);
 
   /**
    * Bridge: callers may pass onResponse (new), onAnswer (legacy), or
@@ -174,6 +183,7 @@ export function AskChoiceCard({
         </p>
         {renderPickedSummary()}
       </div>
+      {mainOptions.length > 0 && (
       <div className="ask-choice-options">
         {mainOptions.map((opt) => {
           const isPicked = pickedIds.has(opt.id);
@@ -242,6 +252,7 @@ export function AskChoiceCard({
           );
         })}
       </div>
+      )}
       {navOptions.length > 0 && (
         <div className="ask-choice-nav">
           {navOptions.map((opt) => (
@@ -260,7 +271,7 @@ export function AskChoiceCard({
           ))}
         </div>
       )}
-      {multi && !isAnswered && (
+      {!hideOptions && multi && !isAnswered && (
         <div className="ask-choice-submit-row">
           <span className="ask-choice-submit-hint">
             {selected.size === 0
@@ -294,7 +305,7 @@ export function AskChoiceCard({
           </div>
         </div>
       )}
-      {!multi && !isAnswered && allowDecline && (
+      {!hideOptions && !multi && !isAnswered && allowDecline && (
         <div className="ask-choice-skip-row">
           <button
             type="button"

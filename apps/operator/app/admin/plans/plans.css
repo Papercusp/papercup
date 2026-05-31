@@ -1564,6 +1564,66 @@
   outline-offset: 2px;
 }
 
+/* #4: inbox item actions live in the detail toolbar (next to "View full plan"),
+   not inside the card — right-aligned compact buttons mirroring the card option
+   styles (primary=resolve, danger=drop, nav=quiet for Answer/Chat). */
+.pc-items__detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.pc-items__action {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 11px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 55%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.pc-items__action:hover { background: color-mix(in oklab, var(--accent), transparent 76%); }
+.pc-items__action:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), transparent 28%);
+  outline-offset: 2px;
+}
+.pc-items__action:disabled { opacity: 0.5; cursor: default; }
+.pc-items__action--primary {
+  border-color: color-mix(in oklab, #22c55e, transparent 45%);
+  background: color-mix(in oklab, #22c55e, transparent 80%);
+}
+.pc-items__action--primary:hover { background: color-mix(in oklab, #22c55e, transparent 68%); }
+.pc-items__action--danger {
+  border-color: color-mix(in oklab, #f87171, transparent 45%);
+  background: color-mix(in oklab, #f87171, transparent 82%);
+}
+.pc-items__action--danger:hover { background: color-mix(in oklab, #f87171, transparent 70%); }
+.pc-items__action--nav {
+  border-color: color-mix(in oklab, var(--accent-strong, #7dd3fc), transparent 78%);
+  background: transparent;
+  color: var(--fg-dim, #b9d4e8);
+  font-weight: 500;
+}
+.pc-items__action--nav:hover {
+  color: var(--fg, #e7f7ff);
+  background: color-mix(in oklab, var(--accent-strong, #7dd3fc), transparent 90%);
+}
+.pc-items__action-done {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--good, #22c55e);
+  white-space: nowrap;
+}
+
 .pc-items__detail-body {
   min-height: 0;
   overflow: auto;

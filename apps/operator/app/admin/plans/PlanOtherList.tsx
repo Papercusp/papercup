@@ -24,6 +24,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import PlanChat from './PlanChat';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
+import { InboxCardActions } from './InboxCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction } from './attention-card';
 import type { AttentionGroup, AttentionItem, AttentionKind } from './plans-api';
 
@@ -238,12 +239,20 @@ function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResol
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
         ) : null}
         {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
+        {/* #4: actions live in the toolbar, not in the card body. */}
+        <InboxCardActions
+          options={spec.options}
+          answered={answered}
+          busy={busy}
+          onResponse={(r) => void onResponse(r)}
+        />
       </div>
       <div className="pc-items__detail-body">
         <AskChoiceCard
           args={spec}
           answered={answered}
           allowDecline={false}
+          hideOptions
           onResponse={(r) => void onResponse(r)}
         />
         {chatOpen ? <PlanChat harnessSlug={item.harnessSlug} label={chatLabel} /> : null}
