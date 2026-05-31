@@ -332,3 +332,10 @@ So `::jsonb` is NOT a fix (chunk-plan uses it and is still broken); `sql.json()`
 
 **Fix:** replace `${JSON.stringify(x)}` with `${ctx.pg.json(x)}` at those 4 sites. Ripple: `OrchestratorPg` (invoke.ts) needs a `json()` member (or a localized cast), and the 3 `makeMockPg` unit mocks need a `.json` stub. ~6-8 files, submodule commit + parent pointer bump. NOT done here (engine-internal submodule surgery beyond "write tests") — captured as green tripwires in the mission-state / dispatches / chunk-plan integration tests (each asserts the current broken `jsonb_typeof='string'` and flips RED when fixed). **Recommend the user authorize this fix** — it is real durable-state corruption with a definitive one-pattern remedy.
 Related: P-008
+
+### D-008 — D-007 RESOLVED — JSONB double-encode fix landed + verified
+Date: 2026-05-31
+The systemic JSONB double-encode bug (D-007) is **fixed**. Added `pgJson(pg, value)` to `orchestrator/src/invoke.ts` — uses the postgres-js `sql.json()` helper on a real client, falls back to the raw value for `makeMockPg` test doubles — and routed the 4 jsonb write sites through it (mission-state `persistLanesPg`, dispatches `recordDispatchPg`, chunk-plan `persistPlan` + `updateChunkPlan`). Updated the 3 orchestrator unit-test assertions that had pinned the buggy stringified form, and flipped the 3 real-PG integration tripwires to real round-trip assertions (lanes → jsonb array, dispatch body → jsonb object, chunk files → jsonb array, all round-trip + `jsonb_typeof` correct).
+
+Verified: 20 orchestrator unit tests + 17 real-PG integration tests green. Submodule commit `0adef06` (libs/papercusp), parent pointer bump + integration tests `942c648e`. Scoped commits left another agent's concurrent uncommitted `role-prompt-from-slug.ts` untouched. This restores lane persistence, dispatch-audit fidelity, and (critically) chunk-plan `files` for resume-on-restart.
+Related: P-008
