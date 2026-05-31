@@ -1,29 +1,16 @@
 /**
  * launch-agent.ts — one renderer-side entry point for launching a
  * tracked agent session, across all three backends (agent-launch
- * unification, Phase 4 / P-030).
+ * unification; Phase 4 P-030, converged in P-032).
  *
- * Dispatch by agent, lowest-regression-risk:
- *   - `omp`           → the existing `launchOmpAgent` path (console-launch
- *                       `mode:'omp'`). Unchanged — preserves model / kickoff /
- *                       resume / label exactly. Still the default.
- *   - `claude`/`codex` → `POST /api/adv/sessions/launch-su` → server spawns
- *                       a terminal running `psu --no-picker --agent=<a> …`,
- *                       which records the tracked adv_sessions row + exec's
- *                       the matching `*-su` wrapper.
- *
- * So every "Launch agent" button becomes agent-selectable now, with no
- * behavior change when the agent is `omp`. The legacy console-launch
- * `mode:'omp'` builder stays as the omp implementation (the deferred
- * P-032 deletion converges omp onto psu too, once e2e-verified).
- *
- * Parity note: model / kickoff / resume are honored only on the `omp`
- * path today. Selecting claude/codex for a launch that needs one of those
- * drops it (a new-capability limitation, not an omp regression) — callers
- * that require those features should keep agent='omp' until the psu path
- * reaches parity.
+ * ALL agents go through one path now: `POST /api/adv/sessions/launch-su`
+ * → server spawns a terminal running `psu --no-picker --agent=<a> …`,
+ * which records the tracked `adv_sessions` row + exec's the matching
+ * `*-su` wrapper. model / resume-by-id / kickoff are threaded through to
+ * the wrapper (P-032 retired the omp-only `buildEngineerOmpLaunchCommand`
+ * / console-launch `mode:'omp'` path — omp now rides psu like the others,
+ * so there's a single launch implementation instead of two).
  */
-import { launchOmpAgent, type OmpLaunchResult } from './native-omp-launch';
 import type { LaunchOpts } from './native-console';
 import type { SuAgent } from './su-agents';
 
@@ -32,7 +19,14 @@ export interface LaunchAgentOpts extends LaunchOpts {
   agent?: SuAgent;
 }
 
-export type LaunchAgentResult = OmpLaunchResult;
+export interface LaunchAgentResult {
+  ok: boolean;
+  /** Set when the launcher (`psu`/`*-su` wrappers) isn't installed. */
+  code?: 'omp_not_installed';
+  error?: string;
+  /** Suggested local command to repair the missing prerequisite. */
+  installCmd?: string;
+}
 
 /** The launch-su endpoints to try (same-origin first, then Tauri fallback ports). */
 function launchSuEndpoints(): string[] {
@@ -47,19 +41,18 @@ function launchSuEndpoints(): string[] {
 }
 
 /**
- * Launch a tracked agent session. `omp` delegates to the proven
- * launchOmpAgent path; claude/codex go through launch-su → psu.
+ * Launch a tracked agent session via launch-su → psu → `<agent>-su`.
+ * Threads model / resume / kickoff so every backend has parity.
  */
 export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentResult> {
   const agent: SuAgent = opts.agent ?? 'omp';
-  if (agent === 'omp') {
-    return launchOmpAgent(opts);
-  }
-
   const body = JSON.stringify({
     agent,
     harness_slug: opts.slug ?? null,
     plan_slug: opts.planSlug ?? null,
+    model: opts.model ?? null,
+    resume_session_id: opts.resumeSessionId ?? null,
+    kickoff: opts.kickoff ?? null,
   });
   let lastError = 'no spawn path available';
   for (const url of launchSuEndpoints()) {

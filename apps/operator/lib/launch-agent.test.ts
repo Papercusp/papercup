@@ -1,13 +1,9 @@
 /**
- * Unit tests for launchAgent dispatch (Phase 4 / P-030): omp keeps the
- * proven launchOmpAgent path; claude/codex route through launch-su.
+ * Unit tests for launchAgent dispatch (agent-launch unification; P-032
+ * converged ALL agents onto one path). Every backend POSTs to launch-su
+ * with agent + harness + plan + model/resume/kickoff threaded through.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const launchOmpAgentMock = vi.fn(async () => ({ ok: true }));
-vi.mock('./native-omp-launch', () => ({
-  launchOmpAgent: (...a: unknown[]) => launchOmpAgentMock(...a),
-}));
 
 import { launchAgent } from './launch-agent';
 
@@ -16,7 +12,6 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  launchOmpAgentMock.mockResolvedValue({ ok: true });
   // Fresh Response per call — a Response body can only be read once, and
   // launchAgent retries across fallback endpoints (real fetch returns a
   // new response each time).
@@ -25,27 +20,41 @@ beforeEach(() => {
 });
 afterEach(() => { globalThis.fetch = origFetch; });
 
+function firstBody(): Record<string, unknown> {
+  return JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+}
+
 describe('launchAgent', () => {
-  it('defaults to omp → delegates to launchOmpAgent (no fetch)', async () => {
-    const r = await launchAgent({ slug: 'papercup', planSlug: 'p', model: 'opus' });
+  it('defaults to omp → POST launch-su with agent:omp (no special-case path)', async () => {
+    const r = await launchAgent({ slug: 'papercup', planSlug: 'p' });
     expect(r.ok).toBe(true);
-    expect(launchOmpAgentMock).toHaveBeenCalledWith(expect.objectContaining({ slug: 'papercup', planSlug: 'p', model: 'opus' }));
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalled();
+    const body = firstBody();
+    expect(body.agent).toBe('omp');
+    expect(body.harness_slug).toBe('papercup');
+    expect(body.plan_slug).toBe('p');
   });
 
-  it('explicit omp → launchOmpAgent', async () => {
-    await launchAgent({ agent: 'omp', slug: null });
-    expect(launchOmpAgentMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).not.toHaveBeenCalled();
+  it('omp threads model / resume / kickoff through the body (P-032 parity)', async () => {
+    await launchAgent({ agent: 'omp', slug: 'papercup', model: 'opus', resumeSessionId: 's-42', kickoff: { kind: 'new-plan' } });
+    const body = firstBody();
+    expect(body).toEqual({
+      agent: 'omp',
+      harness_slug: 'papercup',
+      plan_slug: null,
+      model: 'opus',
+      resume_session_id: 's-42',
+      kickoff: { kind: 'new-plan' },
+    });
   });
 
-  it('claude → POST launch-su with agent + harness + plan', async () => {
+  it('claude → POST launch-su', async () => {
     const r = await launchAgent({ agent: 'claude', slug: 'papercup', planSlug: 'my-plan' });
     expect(r.ok).toBe(true);
-    expect(launchOmpAgentMock).not.toHaveBeenCalled();
-    expect(fetchMock).toHaveBeenCalled();
-    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
-    expect(body).toEqual({ agent: 'claude', harness_slug: 'papercup', plan_slug: 'my-plan' });
+    const body = firstBody();
+    expect(body.agent).toBe('claude');
+    expect(body.harness_slug).toBe('papercup');
+    expect(body.plan_slug).toBe('my-plan');
   });
 
   it('codex → launch-su; maps psu_not_installed to an install hint', async () => {
@@ -56,7 +65,7 @@ describe('launchAgent', () => {
     expect(r.installCmd).toMatch(/install-standalone-mcp/);
   });
 
-  it('claude → surfaces a server error', async () => {
+  it('surfaces a server error', async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ status: 'error', error: 'boom' }), { status: 500 }));
     const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
     expect(r.ok).toBe(false);

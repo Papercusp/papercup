@@ -19,9 +19,17 @@ import { join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { isSuAgent } from '@/lib/su-agents';
+import { buildKickoffPromptFile } from '@/lib/agent-kickoff/prompt-file';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
+// model fuzzy-match (e.g. `anthropic/claude-opus-4-7`, `gpt-5.5`) + recorded
+// session ids — broader than SLUG_RE (slash/colon allowed), still no shell
+// metacharacters (shellEscape is the real guard; this rejects the absurd).
+const MODEL_RE = /^[A-Za-z0-9._:/-]{1,80}$/;
+const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+// Curated kickoff kinds the launch accepts (mirrors console-launch's allowlist).
+const KICKOFF_KINDS = new Set(['new-plan']);
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
@@ -64,7 +72,16 @@ const launchSu = defineTool({
   path: '/adv/sessions/launch-su',
   auth: 'public',
   async handler(req) {
-    let body: { agent?: string; harness_slug?: string | null; plan_slug?: string | null } = {};
+    let body: {
+      agent?: string;
+      harness_slug?: string | null;
+      plan_slug?: string | null;
+      // P-032: omp-parity passthroughs (the features the retired
+      // buildEngineerOmpLaunchCommand used to provide).
+      model?: string | null;
+      resume_session_id?: string | null;
+      kickoff?: { kind?: string } | null;
+    } = {};
     try {
       const text = await req.text();
       if (text.trim()) body = JSON.parse(text);
@@ -80,6 +97,15 @@ const launchSu = defineTool({
     const plan = body.plan_slug?.trim() || null;
     if (harness && !SLUG_RE.test(harness)) return json({ status: 'error', error: 'invalid harness slug' }, 400);
     if (plan && !SLUG_RE.test(plan)) return json({ status: 'error', error: 'invalid plan slug' }, 400);
+
+    const model = body.model?.trim() || null;
+    const resumeSessionId = body.resume_session_id?.trim() || null;
+    if (model && !MODEL_RE.test(model)) return json({ status: 'error', error: 'invalid model' }, 400);
+    if (resumeSessionId && !SESSION_ID_RE.test(resumeSessionId)) return json({ status: 'error', error: 'invalid resume session id' }, 400);
+    const kickoffKind = body.kickoff?.kind?.trim() || null;
+    if (kickoffKind && !KICKOFF_KINDS.has(kickoffKind)) {
+      return json({ status: 'error', error: `kickoff.kind '${kickoffKind.slice(0, 32)}' not allowed (${[...KICKOFF_KINDS].join(', ')})` }, 400);
+    }
 
     if (process.platform !== 'linux') {
       return json({ status: 'error', error: 'server-side spawn only implemented for Linux' }, 501);
@@ -106,11 +132,28 @@ const launchSu = defineTool({
       );
     }
 
-    // All tokens are fixed flags or validated slugs; shellEscape is
-    // belt-and-suspenders against a future un-validated field.
+    // Kickoff brief (P-032): generate the curated prompt file server-side
+    // (same factory the retired console-launch omp path used) and hand its
+    // path to psu, which feeds it to the *-su wrapper as the launch-context
+    // (layered onto the engineer playbook). Best-effort — a generation miss
+    // just launches without the brief rather than failing the launch.
+    let kickoffFile: string | null = null;
+    if (kickoffKind === 'new-plan') {
+      try {
+        kickoffFile = await buildKickoffPromptFile({ kind: 'new-plan', harnessSlug: harness });
+      } catch {
+        kickoffFile = null;
+      }
+    }
+
+    // All tokens are fixed flags or validated values; shellEscape is the real
+    // guard (the validators above reject shell metacharacters anyway).
     const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`];
     if (harness) psuArgs.push(`--harness=${harness}`);
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
+    if (model) psuArgs.push(`--model=${model}`);
+    if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
+    if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
 
     try {

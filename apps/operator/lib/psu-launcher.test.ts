@@ -7,6 +7,7 @@ import {
   resumeArgsFor,
   roleLaunchArgs,
   agentInvalidForRole,
+  suWrapperExtraArgs,
   AGENTS,
   NO_PLAN,
 } from '../scripts/psu-launcher.mjs';
@@ -23,6 +24,9 @@ describe('psu-launcher arg parsing', () => {
       harness: null,
       plan: null,
       noPlan: false,
+      model: null,
+      resumeSession: null,
+      launchContext: null,
     });
   });
 
@@ -39,6 +43,9 @@ describe('psu-launcher arg parsing', () => {
       harness: 'papercup',
       plan: 'my-plan',
       noPlan: false,
+      model: null,
+      resumeSession: null,
+      launchContext: null,
     });
   });
 
@@ -197,5 +204,25 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(agentInvalidForRole('codex')).toBe(false);
     expect(agentInvalidForRole(null)).toBe(true);
     expect(agentInvalidForRole('gemini')).toBe(true);
+  });
+});
+
+describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
+  it('parses the new omp-convergence flags', () => {
+    const a = parseArgs(['--no-picker', '--agent=omp', '--model=opus', '--resume-session=s-7', '--launch-context=/dev/shm/k.md']);
+    expect(a.model).toBe('opus');
+    expect(a.resumeSession).toBe('s-7');
+    expect(a.launchContext).toBe('/dev/shm/k.md');
+  });
+
+  it('omp/claude: --model + -r; codex: -m + resume', () => {
+    expect(suWrapperExtraArgs('omp', { model: 'opus', resumeSession: 's-1' })).toEqual(['--model', 'opus', '-r', 's-1']);
+    expect(suWrapperExtraArgs('claude', { model: 'sonnet', resumeSession: 's-2' })).toEqual(['--model', 'sonnet', '-r', 's-2']);
+    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5', resumeSession: 's-3' })).toEqual(['-m', 'gpt-5.5', 'resume', 's-3']);
+  });
+
+  it('emits nothing when neither model nor resume is set', () => {
+    expect(suWrapperExtraArgs('omp', {})).toEqual([]);
+    expect(suWrapperExtraArgs('omp')).toEqual([]);
   });
 });

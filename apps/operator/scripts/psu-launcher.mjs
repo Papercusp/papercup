@@ -34,7 +34,7 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false };
+  const out = { picker: true, resume: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
     else if (a === '--resume') out.resume = true;
@@ -45,8 +45,36 @@ export function parseArgs(argv) {
     else if (a.startsWith('--workspace=')) out.workspace = a.slice('--workspace='.length);
     else if (a.startsWith('--harness=')) out.harness = a.slice('--harness='.length);
     else if (a.startsWith('--plan=')) out.plan = a.slice('--plan='.length);
+    // P-032 omp-convergence passthroughs: a model fuzzy-match, resume of a
+    // specific recorded session, and a kickoff/launch-context file the server
+    // pre-generated (fed to the *-su wrapper as its launch-context).
+    else if (a.startsWith('--model=')) out.model = a.slice('--model='.length);
+    else if (a.startsWith('--resume-session=')) out.resumeSession = a.slice('--resume-session='.length);
+    else if (a.startsWith('--launch-context=')) out.launchContext = a.slice('--launch-context='.length);
   }
   return out;
+}
+
+/**
+ * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
+ * wrappers all end with `"$@"`). Maps a model fuzzy-match + a resume-by-id
+ * onto each backend's native flags. Pure — exported for tests.
+ *
+ * This is what gives psu launches model/resume parity with the retired
+ * `buildEngineerOmpLaunchCommand` (P-032): omp `--model`/`-r`, claude
+ * `--model`/`--resume`, codex `-m`/`resume`.
+ */
+export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
+  const args = [];
+  if (model) {
+    if (agent === 'codex') args.push('-m', model);
+    else args.push('--model', model); // claude + omp
+  }
+  if (resumeSession) {
+    if (agent === 'omp' || agent === 'claude') args.push('-r', resumeSession);
+    else if (agent === 'codex') args.push('resume', resumeSession);
+  }
+  return args;
 }
 
 /**
@@ -517,7 +545,15 @@ async function main() {
       `  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  resume this session by running the agent's resume command from here`);
-  runWrapper({ wrapperBin: res.wrapperBin, cwd: res.cwd, envelopeEnv: res.envelopeEnv });
+  // P-032: model/resume passthrough to the *-su wrapper, + a server-generated
+  // launch-context (kickoff) file layered into the wrapper's system prompt via
+  // PAPERCUSP_LAUNCH_CONTEXT_FILE. Set explicitly in envelopeEnv (not relying on
+  // process.env inheritance) so it's deterministic; bootstrap-su only sets that
+  // env for a bound-plan launch, and no caller sends both a plan AND a kickoff.
+  const wrapperArgs = suWrapperExtraArgs(selections.agent, { model: args.model, resumeSession: args.resumeSession });
+  const launchEnv = { ...res.envelopeEnv };
+  if (args.launchContext) launchEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE = args.launchContext;
+  runWrapper({ wrapperBin: res.wrapperBin, args: wrapperArgs, cwd: res.cwd, envelopeEnv: launchEnv });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
