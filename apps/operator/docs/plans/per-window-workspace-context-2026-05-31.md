@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** **Phase A complete + Phase B's concrete items done (2026-05-31).** Per-window resolution covers fetch (header, P-013) + streams (`?ws=`, P-015); `activeWorkspaceId()` prefers the request scope (ALS). Phase B: **P-022** — MCP `tools/call` now wraps dispatch in `runWithWorkspaceIfConcrete(ctx.workspaceId)` so tool handlers resolving a harness via `activeWorkspaceId()` (not just the PG GUC `withWorkspace` already set) see the caller's workspace, `'*'` unpinned. **P-021** — `runInRequestScope`/`isInRequestScope` + a deduped dev warning when `activeWorkspaceId()` falls to the global *inside* a request scope (the ALS-context-loss guardrail the review flagged; gated to NODE_ENV=development / PAPERCUSP_DEBUG_WORKSPACE). Commits 7e07a60b6 (P-022), ab661d910 (P-021). Full workspace suite **53/53**, touched files typecheck clean. The middleware (incl. P-022) is live on `:3070`; the rest goes live on the next restart (no hot-reload).
+**State:** **Phases A + B shipped + tested; Phase F tests done; Phase E precisely spec'd + gated (2026-05-31, autonomous A→F pass).** Per-window resolution is complete for the dev/shared-host model: fetch (header, P-013) + streams (`?ws=`, P-015), `activeWorkspaceId()` request-scoped (P-012), MCP tool calls scoped (P-022), and a dev guardrail for global fall-through inside a request (P-021). Verification: **P-016** harness-resolution is correct-by-design (request-workspace-first + a shared-results cross-workspace fallback); **P-060** proves 50 interleaved concurrent requests isolate per-window with no cross-talk; **P-061** guards against direct `reg.current` reads. ~80 unit/integration tests green across the workspace surface; middleware + MCP scoping live-verified on `:3070` (D-007 fires). **Phase E (packaged shared-operator + per-spawn HOME) and P-020's runtime threading are deliberately NOT implemented** — D-009 documents why (piecemeal = dev-breaking + unverifiable without a packaged build) and lists the exact touchpoints (`invoke.ts:1284` spawn-env, `main.rs:1016` switch=restart, the pty path, multi-window) for when that packaging is built.
 
-**Next:** An agent does P-020 — now EMPIRICALLY driven by P-021: run dev with PAPERCUSP_DEBUG_WORKSPACE=1, watch which background readers (scanner sweep, orchestrator spawn, scheduled routines, SSE/WS push fan-out) warn that they resolved the global inside a scope, and thread an explicit workspace from each job's creation context. Then P-014/P-016 live-verify + Phase E (packaged child-HOME migration).
+**Next:** A future session with a packaged-build loop executes Phase E per D-009 — P-050 (one shared embedded-PG, drop switch=restart) → P-051 (per-spawn HOME at the enumerated spawn sites) → P-052 (operator's own ~/ reads) → P-053 (multi-window); P-020's runtime threading rides along, surfaced by P-021's diagnostic (PAPERCUSP_DEBUG_WORKSPACE=1). The dev-model work (Phases A/B/F) needs no further code.
 
 ## Background
 
@@ -230,6 +230,24 @@ workspace-owned, in PG" decision already set); (3) embedded-PG discovery resolve
 the **one** shared instance. Memory footprint vs alternatives is the table in the
 owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**.
 
+
+### D-009 — Phase E + P-020 runtime-threading are gated on the shared-operator packaging — do not flip piecemeal in dev
+Date: 2026-05-31
+Verified 2026-05-31 (autonomous Phase A→F pass). Phase E (D-008 per-spawn HOME) and the runtime-threading half of P-020 (background readers) **cannot be safely implemented or verified until packaged adopts the one-shared-operator model** — and doing them piecemeal in the current model would BREAK dev. The coupling, with touchpoints:
+
+**Why piecemeal breaks dev.** Children inherit HOME today: `orchestrator/src/invoke.ts:1284` builds `spawnEnv = { ...process.env }`, so a spawned claude/codex/git gets the sidecar's HOME (`~` in dev → finds `~/.claude`, `~/.gitconfig`). Flipping to `HOME = workspaceDir(ws)` now points children at `~/.papercusp-workspaces/<ws>/` — which is NOT the populated cred source in dev → agents lose their credentials. P-051 therefore depends on P-050 (shared operator) + per-workspace homes being populated as the cred source.
+
+**Phase E touchpoints (for when the shared-operator packaging is built):**
+- **P-051 per-spawn HOME:** set `spawnEnv.HOME = workspaceDir(jobWorkspace)` (+ `USERPROFILE` on Windows) at every operator child-spawn: `orchestrator/src/invoke.ts:1284` (agent spawns), `apps/operator/lib/plugin-spawn-impl.ts` (pluginSpawnImpl), `harness-launch.ts`, and the pty path (`pty.rs` + its operator caller). Precedent already in tree: invoke.ts:1328 mints a per-spawn `CODEX_HOME` — same shape. `workspaceDir(id)` already exists (workspace-registry.ts:96).
+- **P-050 shared PG + drop switch=restart:** `papercusp-desktop/src-tauri/src/main.rs` — stop the per-`HOME` per-workspace sidecar+PG spawn and the `workspaces_switch → kill_sidecar + app.restart` (main.rs:1016); spawn ONE shared sidecar + ONE shared embedded-PG.
+- **P-052 operator's own ~/ reads:** audit `os.homedir()` / `~/.papercusp` / `~/.claude` reads on the request path → workspace-scope them (compute `workspaceDir(ws)` or read workspace-scoped PG).
+- **P-053 multi-window:** Tauri shell opens >1 WebviewWindow, each pinned to a workspace (today it's single-window — no WebviewWindow code).
+
+**P-020 (background readers):** the scanner scopes via the global `activeWorkspaceId()` (`operator-scan-lock.ts:38`), which is CORRECT in today's single-active-workspace model; the orchestrator is pinned per-workspace via the `PAPERCUSP_WORKSPACE_ID` env. Explicit per-workspace iteration is only needed once one shared operator serves multiple workspaces (Phase E). P-021's dev diagnostic (`PAPERCUSP_DEBUG_WORKSPACE=1`) is wired to surface the concrete sites when that lands. So P-020's runtime-threading folds into Phase E rather than being a standalone dev change now.
+
+**Verification reality:** all of Phase E needs a packaged build to verify (per CLAUDE.md, the app runs only via the Tauri shell; these are Rust + lifecycle + spawn-env changes). Implementing it without that build would be unverifiable + dev-breaking — explicitly out of scope for the inline dev session that shipped Phases A/B + the F tests.
+Related: P-020, P-050, P-051, P-052, P-053
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `todo` Enumerate every `activeWorkspaceId()` reader (492 sites) +
@@ -289,7 +307,7 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
   probed (`projects/lite`, `testing/domains`) enumerate harnesses **globally**, so
   they don't reflect the flip. That delta belongs to P-060 against an RLS-scoped
   table.
-- **P-016** `todo` Confirm the **harness-resolution** half honors the request
+- **P-016** `done` Confirm the **harness-resolution** half honors the request (No bug. resolveProject tries the request workspace first ALS, then an intentional cross-workspace fallback for named slugs harness-core.ts:226 — correct for shared-results D-1. Named harness always resolves; the per-window fix governs the strictly-per-workspace PG GUC. Strict membership is the sibling plan's concern.)
   workspace: `resolveProject`/`resolvePhasedProject` should return `null` for a
   slug absent from the request workspace. On the dogfood host papercup +
   dbosroll/dbostest resolved under *every* workspace header — confirm that's
@@ -299,7 +317,7 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
 
 ## Phase B — Background- and MCP-context safety
 
-- **P-020** `todo` For each background reader (P-001 class b), thread an explicit
+- **P-020** `blocked` For each background reader (P-001 class b), thread an explicit (Audit done D-009: scanner scopes via global activeWorkspaceId correct in single-active-workspace model; orchestrator pinned via PAPERCUSP_WORKSPACE_ID. Runtime per-workspace threading folds into Phase E gated on the shared-operator packaging + is surfaced by P-021's diagnostic. Not a standalone dev change.)
   workspace from the job's creation context (scanner sweep, orchestrator spawn,
   scheduled routine, SSE/WS push fan-out) — never the global.
 - **P-022** `done` For MCP/agent tool calls (P-001 class c), carry the launch-time (MCP tools/call dispatch wraps in runWithWorkspaceIfConcretectx.workspaceId so activeWorkspaceId harness resolution, not just the PG GUC resolves the caller's workspace; '*' stays unpinned.)
