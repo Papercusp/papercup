@@ -559,3 +559,53 @@ unconditional requirements — they are the price of model A.** Model B is the
 dominant pattern precisely because it avoids that price. Choosing A must be worth
 canonical-claim-arbitration + a consistent view; if it isn't, B is lighter and
 safer.
+
+## C.5 — B's advantages (the full case, for symmetry with A)
+
+**1. The trust model largely collapses — structural, not incremental.**
+A per-peer Hypercore is single-writer and **natively signed by that device's
+keypair**, so authorship *and scope* are free: a peer can only write facts *about
+itself*, and there is no shared structure to forge a row "about Bob" into. The
+forged-op problem mostly **evaporates** — A needs three things it lacks today
+(`addWriter` admission, per-op **authorization**, signature-verify-on-receipt)
+because any admitted writer can append ops affecting *any* object in the shared
+view; B reduces all of it to **one read-time decision — "do I aggregate this
+peer's log?"** (= is this a GitHub-verified collaborator?). Trust moves from
+write-time-on-a-shared-structure to read-time-per-author, mapping 1:1 to GitHub
+identity. **Revocation is trivial *and actually possible*** — stop reading the
+log — whereas A hits the append-only **no-true-removal** problem. And there's
+**no multi-writer flood into shared storage** (a flooder bloats only its own
+log), so the per-writer op-rate-limit (DoS Phase 4) is largely unnecessary at the
+substrate.
+
+**2. Simpler + more robust by construction.**
+No **deterministic-`apply()`** constraint — A requires a pure, identical-on-every-
+peer merge (no `Date.now`/random; a subtle non-determinism diverges the view for
+*everyone*); B's read-aggregate is ordinary per-consumer code. **Failure
+isolation:** a corrupt log → consumers skip that author, vs. a bad op corrupting
+the merged view globally in A.
+
+**3. Looser coupling → easier evolution (matters in alpha).**
+A: all writers must run the same `apply()` + agree on the op schema (the
+schema-version gate); migrations must roll out across peers or diverge. B: each
+consumer reads with its own *versioned reader* — an older-schema peer reads what
+it understands. Far less cross-peer coordination tax while iterating fast.
+
+**4. Selective replication at scale.**
+B peers replicate only the logs they care about (the collaborators on my
+harnesses); A's merged view is generally pulled whole. Scales better to many
+peers / large history.
+
+**5. Lower onboarding + ecosystem fit.**
+No `addWriter` ceremony — publish your own log, others choose to read it
+(write-your-own is permissionless; *being read* is the gated part). It is also
+the **dominant** Hyperswarm/Hypercore pattern, with mature read-merge CRDT
+libraries (Automerge/Yjs) available.
+
+**The trade, restated for the decision:** B buys a much smaller trust surface +
+simpler/looser/scalable, **at the cost of** building your own read-merge and
+losing a free global total order. A buys free total order + relational
+apply/projection, **at the cost of** the forged-op / flood / no-removal /
+deterministic-`apply` burden. Deciding question unchanged: is canonical global
+ordering (mainly claim/queue arbitration) worth A's trust+coordination tax — or
+can ordering be GitHub-anchored, making B's lighter, safer model the better fit?
