@@ -20,10 +20,13 @@ and is the config/settings boundary; **results are shared** by slug. This
 collapses the hardest migration (no per-harness data fork) and makes "different
 prompts per workspace on the same harness" fall out of the workspace-owned config.
 
-**Next:** All decisions locked (D-1 shared, D-6 seed-from-repo + reset-to-default
-UX, D-7 workspace-owned config); D-4 topology is the only thing still to call but
-it doesn't gate Phase 1. Ready to scope/build per §6. The slug-identity blockers
-(§3.1) + workspace addressing (§3.4) are required regardless.
+**Next:** ALL decisions locked — D-1 (shared results), D-4 (shared-PG; retire
+per-workspace-PG + pglite), D-6 (seed-from-repo + reset-to-default UX), D-7
+(workspace-owned config). Ready to scope/build per §6. Net shape: one
+embedded-pg per install, RLS-scoped by workspace; a harness = a linked folder
+that can belong to N workspaces; each workspace owns config (3-tier) + settings;
+run data is shared by slug. The big new work item D-4 adds: the desktop
+PG-consolidation (one embedded-pg + RLS-per-request instead of restart-per-switch).
 
 ---
 
@@ -123,12 +126,15 @@ runtime can't address a harness except via the one active workspace.**
 - A **Project** = a folder/repo on disk (referenced by absolute path = a *link*).
   Global, workspace-independent. Stable identity = the path (or a generated
   `project_id`), **not** the slug.
-- A **Harness-instance** = a Project **included in** a Workspace. This is the
-  thing that owns per-workspace data + settings (runs, feature pass/fail,
-  backend/prompt config). Keyed by **(workspace_id, project_id)**.
-- "Harness in N workspaces" = one Project, N instances (N membership edges).
-- "Move" = re-point / add / remove a membership edge (+ optionally migrate
-  instance data). "Link not move" = adding a Project to a workspace never
+- A **Harness-instance** = a Project **included in** a Workspace. Keyed by
+  **(workspace_id, project_id)**. Per the locked decisions it owns the
+  per-workspace **config/settings** (backend/model/prompt overrides — D-7) and
+  the **membership edge** — but NOT the run data: **run results are SHARED by
+  slug across workspaces (D-1)**, one `harness_<slug>` data set.
+- "Harness in N workspaces" = one Project, N instances (N membership edges) over
+  one shared run-data set + N independent config overlays.
+- "Move" = re-point / add / remove a membership edge (no data migration, since
+  results are shared). "Link not move" = adding a Project to a workspace never
   touches the folder.
 
 ### Decisions (need owner sign-off)
@@ -186,12 +192,30 @@ runtime can't address a harness except via the one active workspace.**
   required `?workspace=`), and `resolveProject` must take `(workspace, slug)`.
   Keep `activeWorkspaceId()` only as the default when none is supplied.
 
-- **D-4 — Topology reconciliation.** Decide whether the product is
-  shared-PG-with-workspace_id (dev today) or per-workspace-PG (desktop switch
-  restarts the sidecar). The membership model is cleaner if we **commit to one**.
-  Per-workspace-PG makes D-1 "forked" almost free (separate schemas already) but
-  makes cross-workspace *views* (e.g. "all my harnesses") harder; shared-PG is
-  the reverse. (See §5.)
+- **D-4 — Topology: one shared embedded-pg (workspace_id + RLS) → LOCKED:
+  SHARED-PG (2026-05-31).** One embedded-postgres per *install*; all workspaces
+  live in it, isolated by `workspace_id` columns + RLS (`app.workspace_id` GUC,
+  already 45 policy/GUC lines in the SQL). **Retire the per-workspace-PG model**
+  (the desktop's restart-sidecar-+-embedded-pg/pglite-per-switch in
+  `papercusp-desktop/src-tauri/src/{workspaces.rs,main.rs}`) and the legacy
+  pglite path.
+  - **Why it's forced, not optional:** D-1 (shared results) + the
+    `(workspace × project)` membership model are *only coherent under shared-PG*.
+    Per-workspace-PG puts a harness's `harness_<slug>` data in separate Postgres
+    instances → results can't be shared, "move" becomes cross-instance
+    export/import, and cross-workspace views need N-instance fan-out. The
+    slug-uniqueness constraints we hit exist *because* we're shared-PG.
+  - **Upside:** the SQL is already built for it; workspace switch becomes a cheap
+    `registry.current` flip + RLS GUC change (no PG/sidecar restart — faster
+    switching); cross-workspace UX ("all my harnesses") is one query.
+  - **Cost (desktop migration):** the desktop must run ONE embedded-postgres for
+    the install instead of one per workspace, set `app.workspace_id` per
+    request/connection from the active (or per-request) workspace, and stop
+    restarting on switch. Per-workspace **HOME dirs** can stay (file-based state);
+    only the PG consolidates. RLS is partly built already.
+  - **Security note:** single-user desktop app → row-level isolation (RLS) is
+    sufficient; physical per-workspace PG isolation is overkill here. (Revisit
+    only for a multi-tenant cloud deployment.)
 
 - **D-5 — Slug vs path collisions.** If a user links the *same folder* into two
   workspaces, keep the same slug (it's the same Project). If two *different*
@@ -201,25 +225,24 @@ runtime can't address a harness except via the one active workspace.**
 
 ## 5. Topology note (must resolve — D-4)
 
-Two PG topologies coexist in the codebase:
-- **Shared embedded-pg (this dev box now):** one `postgres 18/main` serving db
-  `papercusp`; all workspaces in one PG, isolated by `workspace_id` columns +
-  RLS (`app.workspace_id` GUC). Cross-workspace queries are natural; per-harness
-  schema is slug-keyed → **shared data across workspaces** (the §3.2 problem).
-- **Per-workspace embedded-pg (desktop intent):** `workspaces/switch.ts` notes
-  the Tauri `workspaces_switch` command "kills the sidecar + pglite-server first"
-  and restarts in the new workspace's home → **separate PG per workspace** →
-  data naturally forked, but "show all harnesses across workspaces" needs
-  fan-out across instances, and `workspace_id` columns become near-redundant.
-
-The membership model's difficulty (and the move difficulty) is partly *because
-the code straddles both*. Picking one (D-4) is a prerequisite for a clean design.
+Two PG topologies coexist in the codebase today (the straddle is half of why
+this is messy). **D-4 resolves it to shared-PG** (§4 D-4):
+- **Shared embedded-pg (CHOSEN; what the dev box + SQL already are):** one
+  Postgres serving db `papercusp`; all workspaces in one PG, isolated by
+  `workspace_id` + RLS (`app.workspace_id` GUC). Cross-workspace queries natural;
+  per-harness schema slug-keyed → **shared run data (= the locked D-1)**.
+- **Per-workspace embedded-pg (RETIRED by D-4):** the desktop
+  (`workspaces.rs`/`main.rs`) currently spawns a sidecar + embedded-postgres (or
+  legacy pglite) **per workspace** with `HOME=<workspace-id>/`, restarting on
+  `switch()`. Incompatible with shared results + cheap switch + cross-workspace
+  views → retired. Per-workspace **HOME dirs stay** (file state); only the PG
+  consolidates to one instance.
 
 ## 6. Phased plan (after decisions)
 
-**Phase 0 — Decisions.** D-1 (shared) + D-7 (workspace-owned config) LOCKED.
-Remaining: D-6 (seed vs pure) + D-4 (topology). D-4 still needs a call but no
-longer gates Phase 1 the way forked-data would have.
+**Phase 0 — Decisions.** ALL LOCKED: D-1 (shared results), D-4 (shared-PG; retire
+per-workspace-PG + pglite), D-6 (seed-from-repo + reset UX), D-7 (workspace-owned
+config). Ready to build.
 
 **Phase 1 — Identity + constraints (schema).**
 - Add `project_id` (stable) to `projects`; make uniqueness `(workspace_id, slug)`;
@@ -246,14 +269,26 @@ longer gates Phase 1 the way forked-data would have.
 - Audit the ~30+ `activeWorkspaceId()` call sites; convert harness-scoped ones to
   explicit workspace.
 
+**Phase 2b — Desktop PG consolidation (D-4).**
+- Desktop runs ONE embedded-postgres for the install (not per workspace); stop
+  killing/respawning PG on `switch()` — `switch()` becomes a `registry.current`
+  flip. Keep per-workspace HOME dirs for file state.
+- Set the RLS `app.workspace_id` GUC per connection/request from the active (or
+  per-request, Phase 2) workspace, so the one shared PG enforces isolation.
+- Retire the legacy pglite spawn path (`main.rs` `spawn_pglite_server`,
+  `pglite_child`) + the stale `pglite-server` references
+  (`desktop/preflight.ts`, `setup-status.ts`, `workspaces/switch.ts` comment).
+
 **Phase 3 — Membership operations (the actual feature).**
 - `harness:add_to_workspace { project, workspace }` (link — never touches files).
 - `harness:remove_from_workspace { project, workspace }` (unlink — never deletes
-  the folder; warn if last reference + offer data archive).
-- `harness:move { project, fromWs, toWs }` = add + remove + (D-1) migrate
-  instance data in one transaction.
-- `harness:copy_into_workspace` (link + seed instance data from another
-  workspace's instance — the "fork an experiment" path for prompt testing).
+  the folder; warn if last reference).
+- `harness:move { project, fromWs, toWs }` = add edge to B + remove edge from A.
+  **No data migration** (D-1: run data is shared by slug); just the membership
+  edge + the per-(workspace,harness) config overlay (carry or reset per choice).
+- `harness:copy_into_workspace` (add edge + copy the source workspace's config
+  overlay — the "fork an experiment" path for prompt testing; run data still
+  shared).
 
 **Phase 4 — UX.**
 - Install UI: explicit "Linked in place" vs "Created inside workspace" labeling;
@@ -309,10 +344,14 @@ removing it from one workspace leaves the folder + the other workspace intact.
   if A/B-on-same-harness is the real need, it's the most direct fit. Worth
   considering vs. overloading "workspace."
 
-**Recommendation:** the proposed Project/Harness-instance model (forked data,
-link-not-move, (workspace,slug) identity) is the right long-term shape — it
-serves the stated goal, fixes the move problem and the principal bug, and
-generalizes A/B testing. But **confirm D-1 and D-4 first**; and seriously weigh
-**Alt C** if "test different prompts" is the *primary* driver, since an
-Experiment concept could deliver that value without a workspace-membership
-refactor.
+**Decision (2026-05-31): the membership model is adopted** — but with **SHARED
+run data (D-1), not forked.** Final shape: a Project is a linked folder that can
+belong to N workspaces (membership edges) over **one shared `harness_<slug>`
+run-data set**, with each workspace owning an independent **config overlay**
+(3-tier, D-7) on one **shared-PG** instance (D-4). "Test different prompts" is
+served by the per-workspace config overlay, not by run isolation. Alts A/B/C were
+considered: A collapses into this model; B (move-only, no multi-membership) is
+rejected as not serving simultaneous prompt-testing; C (a first-class Experiment
+concept) was weighed but not needed — the workspace config overlay already
+delivers A/B-on-same-harness without a separate concept. Revisit C only if A/B
+testing later needs isolated *result sets* (which would reopen D-1).
