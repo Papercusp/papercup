@@ -23,12 +23,22 @@ live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
   P-041 `surfaceModels` foundation (OQ3); P-042 docs + memory note.
 
 **Partial live verification DONE (2026-05-31, desktop up on this code):**
-18 guardrail unit tests green; **P-041 backend round-trip** confirmed via
-`/api/agent-config` (set `surfaceModels.oracle` → GET → reset); **bootstrap-role
-route mounted + principal-gated** with all negative gates live — invalid-role
-400, codex→400 `codex_role_unsupported`, worker-no-feature→400 `feature_required`
-(proves `roleConsumes('worker')`=required on the live registry), missing-harness
-400. Full notes in the e2e handoff brief
+45 unit tests green (guardrail set + psu-launcher/adv-sessions); **P-041 backend
+round-trip** confirmed via `/api/agent-config` (set `surfaceModels.oracle` → GET
+→ reset); **bootstrap-role route mounted + principal-gated** with all negative
+gates live — invalid-role 400, codex→400 `codex_role_unsupported`,
+worker-no-feature→400 `feature_required`, missing-harness 400. **Options endpoint
+(the picker data layer) live** — 28 roles each with `consumes`
+(worker=feature:required, scoper=plan:optional), 6 workspaces, 19 features — so
+P-023's pickers + P-002's consumes single-source are correct on the wire.
+**CLI flags parse-verified** against the installed binaries: claude 2.1.158
+accepts `--append-system-prompt-file` + `--strict-mcp-config`; codex-cli 0.135.0
+`exec` has every flag invoke.ts passes (the `-`-stdin pattern matches the
+live-verified chat-stream path); omp's `--append-system-prompt` documents
+file-content support (the one omp-role detail still for e2e). **Code audit of
+all four new surfaces (bootstrap-role, psu-launcher, launch-su, invoke.ts codex)
+found no bugs** — remaining items are live-behavior gates, not latent defects.
+Full notes in the e2e handoff brief
 (`agent-launch-unification-e2e-handoff-2026-05-31.md`, "Already verified live").
 
 **Outstanding (the verification debt — needs terminal / authed codex / Tauri UI

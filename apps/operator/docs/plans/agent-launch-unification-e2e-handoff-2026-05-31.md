@@ -37,8 +37,9 @@ The build session's desktop was up on this exact code (host PID started
 *after* every relevant commit — confirmed by start-time vs commit-time). The
 following were checked live against `:3070`/`:3055` and need no repeat:
 
-- **18 guardrail unit tests green** — `agent-backend-sync` (4), `launch-agent`
-  (5), `role-launch-spec` (3), `bootstrap-role` (6).
+- **45 unit tests green** — guardrail set: `agent-backend-sync` (4),
+  `launch-agent` (5), `role-launch-spec` (3), `bootstrap-role` (6); plus
+  `psu-launcher` (20), `adv-sessions` (4), `adv-sessions-link` (3).
 - **P-041 backend round-trip** — POST `surfaceModels.oracle` to
   `/api/agent-config` → GET returns it → reset to `{}`. The route +
   `parseSurfaceModels` + storage + snapshot all work. **Still pending:** the
@@ -49,6 +50,35 @@ following were checked live against `:3070`/`:3055` and need no repeat:
   `codex_role_unsupported`** (the deferred gate is in place); **worker without a
   feature → 400 `feature_required`** (proves `roleConsumes('worker')` =
   `feature:'required'` against the live registry); missing harness_slug → 400.
+- **Options endpoint (the picker's whole data layer) live** —
+  `GET /api/agent-mcp/console/bootstrap-su/options` (bare) returns 28 roles
+  **each with `consumes`** (`worker`→`{feature:required,plan:none}`,
+  `scoper`→`{feature:none,plan:optional}`), 6 workspaces (+activeWorkspace), and
+  the harness list; `?harness=papercup&features=1` returns 19 features. So the
+  role/workspace/feature pickers (P-023) and the `consumes` single-source (P-002)
+  are end-to-end correct on the wire — only the interactive launch they feed is
+  unverified.
+- **CLI flags parse-verified against the installed binaries** (a flag-name bug
+  would fail launch regardless of auth, so this was worth closing):
+  - **claude 2.1.158** accepts `--append-system-prompt-file` AND
+    `--strict-mcp-config` (parse-tested via `claude <flag> --help` → exit 0, no
+    "unknown option"). The claude role-launch args in `roleLaunchArgs` are sound.
+  - **omp** parse-accepts the space-form `--approval-mode yolo
+    --append-system-prompt <path>`; its help documents `--append-system-prompt`
+    as "text **or file contents**" (distinct from MESSAGES, which need an `@`
+    prefix). The launcher passes a bare file path relying on that auto-detection
+    — the **one omp-role detail still to confirm live** (does omp read the
+    file's contents vs inject the path string?).
+  - **codex-cli 0.135.0** `exec` has every flag invoke.ts passes
+    (`--json --skip-git-repo-check --ephemeral -s <mode>
+    --dangerously-bypass-approvals-and-sandbox -m <model>`), and the trailing
+    `-`-positional + piped-stdin prompt pattern matches the **live-verified**
+    chat-stream codex brain path (chat-stream.ts:550) — so it's correct by
+    parity. invoke.ts's extra sandbox-bypass (absent in chat-stream) is the
+    deliberate pipeline-agent addition (§8: without it codex cancels MCP calls).
+- **Code audit of all four new surfaces — no bugs found**: `bootstrap-role.ts`,
+  `psu-launcher.mjs`, `launch-su.ts`, and the `invoke.ts` codex path. The
+  remaining items are genuine live-behavior gates, not latent defects.
 
 **NOT yet verified (still your job — needs terminal / codex auth / Tauri UI):**
 the bootstrap-role *happy path* against a real harness was deliberately skipped
