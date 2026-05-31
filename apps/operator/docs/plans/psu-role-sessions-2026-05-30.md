@@ -10,12 +10,17 @@ updated: 2026-05-30
 
 ## Now
 
+**⚠️ SUPERSEDED 2026-05-30 — folded into
+`agent-launch-unification-2026-05-30`.** This plan's work (the `consumes`
+field, the shared `buildRoleLaunchSpec` extracted from `invoke()`, and
+interactive role-scoped sessions) is now Phases 1 + 3 of the unified plan,
+sequenced together with the agent-backend handoff's codex-in-orchestrator
+work because both touch `invoke.ts` + the `AgentBackend` type. Execute from
+the unified plan; this doc is kept for its design rationale (D-001..D-005).
+
 **State:** Plan drafted; design decisions locked with the user (role-scoped
 tools via the signed per-spawn URL; `consumes` declared in the role
-registry). Awaiting review before Phase 1.
-
-**Next:** human confirms phase ordering, then Phase 1 (the `consumes` field
-+ shared launch-spec builder extracted from `invoke()`).
+registry). Continue in the unified plan.
 
 ## Background
 

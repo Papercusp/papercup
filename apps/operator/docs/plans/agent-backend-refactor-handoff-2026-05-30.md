@@ -9,6 +9,15 @@ owner: aviynw3@gmail.com
 
 ## Now
 
+**▶ EXECUTION MOVED 2026-05-30 → `agent-launch-unification-2026-05-30`.** The
+two remaining items below — (b-orchestrator) codex in the pipeline, and (c)
+the legacy console-launch path — are now Phases 2 + 4 of the unified plan,
+sequenced with the psu role-sessions work because both efforts converge on
+`orchestrator/invoke.ts` + the `AgentBackend` type (the unified plan reconciles
+the two type copies once, up front). **This brief remains the canonical
+REFERENCE** — §2 (two-backend model), §7 (live-test codex), §8 (LANDMINES),
+§9 (file index). Read it; execute from the unified plan.
+
 **State:** The audit + the two highest-value pieces are DONE and committed:
 (a) a per-surface backend override for the in-app brains, honored at all 8
 brain launch sites + a `/settings/agent` UI; (b) **codex** is now a real,
