@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Spun out of the SPEC.md/validation-contract.md deprecation audit (commits `aef7243b3` + `ee616f631`, 2026-05-31). That audit finished every live operator surface that *reads or writes* the deprecated files. What it surfaced — and deliberately deferred — is that the **substrate role prompts** at `libs/papercusp/packages/harness/prompts/<role>.md` are a stale *generation*: they reference a whole dead infra layer, of which SPEC.md is only one axis. These prompts are **live** — the harness pipeline orchestrator loads `<role>.md` and injects it into spawned scoper/worker/validator/reviewer/etc., so the staleness actively misguides real agents. A find-replace of SPEC.md would leave a Frankenstein prompt still wrong on five other axes, so the prior session stopped and scoped this as its own effort.
+**State:** The **SPEC.md (D-004) + validation-contract.md (D-005) axis is now fully scrubbed from every substrate prompt** (2026-05-31). Commits: submodule 8adae67 (reviewer/plan-gate/curator) + 7785bee (infra-reviewer/security-reviewer, harness-root SPEC.md) + 63bb673 (crosscheck/debugger/documenter/ui-qa/security-reviewer/orchestrator/expert, validation-contract.md), each with a superproject gitlink bump (7c7c27902, 356e806e0, 9e5cd70b8). SPEC.md → owning plan; validation-contract.md → inline VAL-* assertions; dead proposal→SPEC.md flow → folded-into-plan; dead GOAL.md → plan. The per-expert `.harness/experts/<id>/SPEC.md` (a live, different artifact) and explicit deprecation notes are correctly preserved. Verified: zero harness-root SPEC.md and zero live validation-contract.md references remain in the prompts. No `:3070` restart needed — prompts are read per agent-spawn.
 
-**Next:** human go-ahead on approach (D-001) before rewriting any prompt — these change agent behavior fleet-wide. Then execute P-001…P-008 in staleness order (reviewer first).
+**Next:** Only the **dead-infra axis** remains (this plan's original P-001…P-009 minus the now-done SPEC/contract work): the prompts still reference retired SQLite `store.db`, `.harness/features.json`, and the `:3055` webapp API (worst: scoper 19, orchestrator, curator). That's a separate modernization to the PG-canonical + `:3070` reality — needs avi's go-ahead on approach (D-001) before fleet-wide rewrites.
 
 ## Background
 
