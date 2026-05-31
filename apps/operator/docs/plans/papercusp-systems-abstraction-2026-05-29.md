@@ -19,9 +19,9 @@ and the order to do it in.
 
 ## Now
 
-**State:** @restart retirement is now DONE on both sides. Papercup: 0 @restart, CI fail-loud guard (D-014). Restart: shared-generic libs migrated to @papercusp — papergrid family (a70bbbfa, clean FF bump) + sync (29a8627e + submodule bfc5d5d, work-preserving rename that PRESERVED the diverged optimistic-mutators commits). Executed live on the running storefront with zero service disruption; all routes that exercise the renamed imports return 200 (D-016). Remaining @restart in Restart are all genuinely Restart-owned domain packages and correctly stay.
+**State:** @restart retirement COMPLETE + hardened on both sides. Papercup: 0 @restart, fail-loud CI guard now broadened to catch config-string regressions (D-014, D-017). Restart: papergrid + sync migrated to @papercusp (work-preserving), build-config stragglers the guard surfaced are fixed, and a targeted regression guard gates CI (D-016, D-017) — all on the live storefront with zero service disruption. Lesson captured as an agent-insight (scope-rename-grep-misses-config-strings). Only remaining @restart in Restart is genuinely Restart-owned domain packages + the out-of-scope @restart/papercup-shared (dead app).
 
-**Next:** Optional/out-of-arc: assess @restart/papercup-shared (Papercup domain lib, 7 imports, currently unresolved in Restart) and tidy ~5 cosmetic stale @restart comments — neither affects function. Otherwise the generic-lib generalization + @restart retirement arc is complete.
+**Next:** Nothing required — the generic-lib generalization + @restart retirement arc is complete on both repos. Optional: rebuild operator-docs to publish the new insight's served HTML (next `npm run build` picks it up automatically).
 
 ## Background
 
@@ -671,6 +671,17 @@ Per user's "papergrid + sync, both" choice, executed the Restart-side migration 
 **Result:** 0 residual real imports of the migrated set in Restart. All remaining @restart/* are genuinely Restart-owned domain packages (db, ui, shop-sdk, universal-schema, com, mongo, redis, typesense, zero, request-origin, marketplace-adapters, catalog-search, startup, api-auth, db-org, data-fetch) that correctly stay @restart forever.
 
 **Two follow-ups noted, NOT done (out of scope of the generic-lib arc):** (1) @restart/papercup-shared (7 imports) is a Papercup *domain* lib (not a borrowable generic), currently unresolved in Restart — needs its own assessment. (2) ~5 cosmetic stale comments referencing @restart/{ui-primitives,agent-chat,rerank,test-config} (no real imports — those were already on @papercusp). Neither affects function.
+
+
+### D-017 — Restart migration hardened with a regression guard — which caught build-config misses the import-pass missed
+Date: 2026-05-31
+Follow-on after the papergrid+sync migration (D-016). Added a TARGETED regression guard to Restart (scripts/check-migrated-scope.mjs, npm lint:no-restart-migrated, gating in .github/workflows/test.yml; Restart commit 49fe97cc): fails if any of the 6 migrated basenames (grid, grid-core, bloom-grid, kv-persist, kv-persist-indexeddb, sync) reappears under @restart, while allowing Restart-owned @restart/* (db, ui, shop-sdk, com, ...).
+
+The guard immediately caught references the import-grep had MISSED — all of which break a fresh build but pass a running dev server (Restart commit c3fe4540): apps/shop/astro.{config,static.config}.mjs noExternal arrays, apps/web/next.config.js transpilePackages, tsconfig.base.json @restart/sync path map (my earlier grep wrongly excluded it via `grep -v libs/sync` — the path VALUE contains libs/sync), and a dashboard bench command `npm run --workspace @restart/grid-core`. The package-lock.json had stale extraneous @restart cruft (orphan records for non-existent libs/grid paths) — harmless, clears on `npm ci`, excluded from the guard.
+
+Applied the lesson back to Papercup: hardened scripts/check-no-restart-imports.mjs (papercup commit 388522e70) to match ANY @restart/<pkg> string across code+json (not just import syntax), + maxBuffer for large git ls-files; still passes clean (papercup is 0 @restart). Wrote agent-insight scope-rename-grep-misses-config-strings.mdx (papercup commit f89742456) documenting the miss-class + the grep -v self-exclusion gotcha + a scope-rename checklist.
+
+Also assessed @restart/papercup-shared (the last @restart item flagged in D-016): it's a Papercup DOMAIN lib (not a generic borrowable), unresolved in Restart (no node_modules/tsconfig/dir), imported only by the non-running apps/public-site (a retired-style surface). Out of the generic-lib arc; left as-is.
 
 ## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
 
