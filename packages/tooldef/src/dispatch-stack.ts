@@ -48,6 +48,7 @@ import {
 export type DispatchStepName =
   | 'role-allowlist'
   | 'capability-check'
+  | 'role-requirement'
   | 'harness-check'
   | 'quota'
   | 'authorize'
@@ -191,6 +192,45 @@ const capabilityCheckStep: DispatchStep = {
       }
     }
     return null;
+  },
+};
+
+/**
+ * RBAC role-requirement gate (RFC tooldef-auth Phase 2).
+ *
+ * A tool declaring `requireRoles` is callable only by a principal whose `roles` include
+ * at least ONE of them (any-of) — the declarative, typed replacement for ad-hoc
+ * `requireAdminKey`/`requireStaff` checks. Additive (a tool with no `requireRoles` is
+ * unaffected). Fail-closed: an anonymous call (no principal) is DENIED, since a role
+ * requirement can't be satisfied without an identity. Bypassed by `GateBypass.role` (a
+ * superuser passes RBAC role gates as it passes the agent-role allowlist). Audited like
+ * the other gates (gate:'role').
+ */
+const roleRequirementStep: DispatchStep = {
+  name: 'role-requirement',
+  async run(exec) {
+    const { tool, ctx, toolName, deps } = exec;
+    const required = tool.requireRoles;
+    if (!required || required.length === 0 || ctx.gateBypass?.role) return null;
+    const have = ctx.principal?.roles;
+    if (have && required.some((r) => have.has(r))) return null;
+    deps.auditAuth?.({
+      ts: Date.now(),
+      principal: ctx.principal ? { slug: ctx.principal.slug, workspaceId: ctx.principal.workspaceId } : null,
+      tool: toolName,
+      action: toolName,
+      decision: 'deny',
+      gate: 'role',
+      reason: `requires one of role(s): ${required.join(', ')}`,
+    });
+    return {
+      ok: false,
+      error: {
+        code: 'missing_role' as DispatchProjectedErrorCode,
+        message: `Principal ${ctx.principal ? `"${ctx.principal.slug}"` : '(anonymous)'} lacks a required role for tool "${toolName}" (needs one of: ${required.join(', ')})`,
+        meta: { tool: toolName, required, principal: ctx.principal?.slug ?? null },
+      },
+    };
   },
 };
 
@@ -561,6 +601,7 @@ const authorizeStep: DispatchStep = {
 export const DEFAULT_DISPATCH_STACK: ReadonlyArray<DispatchStep> = Object.freeze([
   roleAllowlistStep,
   capabilityCheckStep,
+  roleRequirementStep,
   harnessCheckStep,
   quotaStep,
   authorizeStep,

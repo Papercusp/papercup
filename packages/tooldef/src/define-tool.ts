@@ -187,6 +187,7 @@ function definePrincipalGatedTool<TArgs extends StandardSchemaV1>(
     profile: input.profile,
     harness: input.harness,
     authorize: input.authorize,
+    requireRoles: input.requireRoles,
   };
 
   // The catalog stores defs with their schema type erased (handlers run on
@@ -231,6 +232,7 @@ function defineRoleGatedTool<TArgs extends StandardSchemaV1>(
     tier,
     requirePrincipal: false,
     authorize: input.authorize,
+    requireRoles: input.requireRoles,
     roles: input.roles,
     rolesQuota: input.rolesQuota,
     timeoutSec: input.timeoutSec,
@@ -386,6 +388,7 @@ function registerLegacyAsProjected<TArgs extends StandardSchemaV1>(def: ToolDefi
     profile: def.profile,
     harness: def.harness,
     authorize: def.authorize,
+    requireRoles: def.requireRoles,
     expose: {
       mcp: { name: def.name },
       http: { path: httpPath, methods: ['POST'] },
@@ -448,6 +451,7 @@ function registerRoleGatedAsProjected<TArgs extends StandardSchemaV1>(
     roles: def.roles,
     rolesQuota: def.rolesQuota,
     authorize: def.authorize,
+    requireRoles: def.requireRoles,
     timeoutSec: def.timeoutSec,
     idleTimeoutSec: def.idleTimeoutSec,
     replayBufferSize: def.replayBufferSize,

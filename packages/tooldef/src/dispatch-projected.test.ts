@@ -830,3 +830,58 @@ describe('authorize gate (RFC tooldef-auth Phase 1b — resource authz + audited
     expect(events).toEqual([]);
   });
 });
+
+describe('role-requirement gate (RFC tooldef-auth Phase 2 — declarative RBAC)', () => {
+  const withRoles = (roles: string[]) => ({
+    kind: 'system' as const,
+    slug: 'p',
+    workspaceId: 'default',
+    authMethod: 'process-internal' as const,
+    trust: 'trusted' as const,
+    capabilities: new Set<string>(),
+    roles: new Set(roles),
+  });
+
+  it('allows when the principal has one of the required roles (any-of)', async () => {
+    const tool = makeTool({ requireRoles: ['admin'] });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ principal: withRoles(['staff', 'admin']) }), MAKE_DEPS(),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('denies (missing_role) + audits when the principal lacks every required role', async () => {
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool({ requireRoles: ['admin'] });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ principal: withRoles(['staff']) }),
+      MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('missing_role');
+    expect(events[0]).toMatchObject({ gate: 'role', decision: 'deny' });
+  });
+
+  it('fails closed for an anonymous call (no principal)', async () => {
+    const tool = makeTool({ requireRoles: ['admin'] });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ principal: undefined }), MAKE_DEPS());
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('missing_role');
+  });
+
+  it('gateBypass.role bypasses the RBAC requirement (a superuser passes role gates)', async () => {
+    const tool = makeTool({ requireRoles: ['admin'] });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ principal: withRoles([]), gateBypass: { role: true } }), MAKE_DEPS(),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('a tool with no requireRoles is unaffected (additive)', async () => {
+    const tool = makeTool();
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ principal: withRoles([]) }), MAKE_DEPS(),
+    );
+    expect(r.ok).toBe(true);
+  });
+});

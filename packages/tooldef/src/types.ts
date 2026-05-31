@@ -60,9 +60,9 @@ export type PrincipalAuthMethod =
 export type PrincipalTrust = 'trusted' | 'verified' | 'unverified-loopback';
 
 /** Resolved caller identity. */
-export interface Principal {
-  /** Who the caller is. */
-  kind: PrincipalKind;
+export interface Principal<TKind extends string = PrincipalKind> {
+  /** Who the caller is. Generic so a host can widen the kind union (RFC tooldef-auth Phase 2); defaults to the built-in `PrincipalKind`. */
+  kind: TKind;
   /** e.g. `"system:operator"`, `"pi:abc123"`, `"harness-foo"`, user id, mobile deviceId. */
   slug: string;
   /** Workspace the call is scoped to. No global principals. */
@@ -76,6 +76,15 @@ export interface Principal {
   trust: PrincipalTrust;
   /** Granted capability strings (e.g. `tasks:read`). Freeform; namespacing convention only. */
   capabilities: ReadonlySet<string>;
+  /**
+   * RBAC roles the caller holds (e.g. `'staff'`, `'admin'`) — RFC tooldef-auth Phase 2.
+   * A DISTINCT axis from `kind` (how the caller authenticated), from `capabilities`
+   * (OAuth-scope-like grants), and from agent `tool.roles` (the orchestration allowlist
+   * checked against `ctx.role`). This is what the declarative require-role gate checks —
+   * the typed replacement for ad-hoc `requireAdminKey`/`requireStaff` checks. Optional +
+   * freeform; the host's principal resolver populates it.
+   */
+  roles?: ReadonlySet<string>;
   /** Optional human-readable label for logging. Not load-bearing. */
   label?: string;
 }
@@ -323,6 +332,8 @@ export interface ToolDefinition<TArgs extends StandardSchemaV1 = StandardSchemaV
   name: string;
   /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
+  /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
+  requireRoles?: readonly string[];
   /** TSDoc-derived description for MCP `tools/list`. */
   description: string;
   /** Capability gate (e.g. `"tasks:read"`). One per tool. */
@@ -351,6 +362,8 @@ export interface ToolDefinitionInput<TArgs extends StandardSchemaV1 = StandardSc
   name?: string;
   /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
+  /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
+  requireRoles?: readonly string[];
   /** Optional explicit description; defaults to caller's TSDoc. */
   description?: string;
   capability: string;
@@ -428,6 +441,8 @@ export interface RoleToolDefinition<
   name: string;
   /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
+  /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
+  requireRoles?: readonly string[];
   description: string;
   /** Capability string for tier classification + descriptive listings. Not enforced. */
   capability: string;
@@ -504,6 +519,8 @@ export interface RoleToolDefinitionInput<
   name?: string;
   /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
   authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
+  /** RBAC role requirement (RFC tooldef-auth Phase 2): caller's `principal.roles` must include one of these (any-of). See `ProjectedTool.requireRoles`. */
+  requireRoles?: readonly string[];
   description?: string;
   capability: string;
   /** Visibility profile gate — see RoleToolDefinition.profile. */

@@ -50,6 +50,7 @@ describe('DEFAULT_DISPATCH_STACK — enumeration', () => {
     const expected: DispatchStepName[] = [
       'role-allowlist',
       'capability-check',
+      'role-requirement',
       'harness-check',
       'quota',
       'authorize',

@@ -335,7 +335,7 @@ export interface UnifiedToolContext {
 
   /* ── Auth / db (typically built-in tools) ─────────────────────────── */
   /** Auth principal resolved from bearer. Null when caller is anonymous. */
-  principal?: { slug: string; workspaceId: string; capabilities: Set<string> } | null;
+  principal?: { slug: string; workspaceId: string; capabilities: Set<string>; roles?: ReadonlySet<string> } | null;
   /**
    * Transaction-bound Sql client with `app.workspace_id` GUC set. Built-in
    * tools rely on this; plugin tools may use it. Null when call wasn't
@@ -609,6 +609,16 @@ export interface ProjectedTool {
    * default; default-deny is RFC Phase 3). See `Authorizer`.
    */
   authorize?: Authorizer<unknown, UnifiedToolContext, UnifiedToolContext['principal']>;
+  /**
+   * RBAC role requirement (RFC tooldef-auth Phase 2). The caller's `principal.roles`
+   * must include at least ONE of these (any-of). Checked by the dispatcher's
+   * `role-requirement` gate — fail-closed (denied when there is no principal), audited,
+   * and bypassed by `GateBypass.role` (a superuser passes RBAC role gates too). Distinct
+   * from `roles` above, which is the AGENT-orchestration allowlist checked against
+   * `ctx.role`. The declarative, typed replacement for ad-hoc `requireAdminKey` /
+   * `requireStaff`-style checks.
+   */
+  requireRoles?: readonly string[];
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
   /**
