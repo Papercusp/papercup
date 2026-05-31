@@ -21,6 +21,8 @@
  * Part of papercusp-systems-abstraction-2026-05-29 (P-021).
  */
 
+import os from 'node:os';
+import path from 'node:path';
 import {
   configureMemory,
   buildLocalEmbedder,
@@ -143,6 +145,12 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
 
 configureMemory({
   getAdminUrl: getHarnessAdminUrl,
+  // The operator's memory tables live in the harness_shared schema
+  // (migration 081); the embedded-pg database is `papercusp`; the SQLite
+  // event-history log persists under ~/.papercusp.
+  schema: 'harness_shared',
+  defaultDbName: 'papercusp',
+  localStoreDir: path.join(os.homedir(), '.papercusp'),
   getCredentials: async () => {
     const c = await readCredentials();
     return { openai_api_key: c.openai_api_key, anthropic_api_key: c.anthropic_api_key };
