@@ -20,7 +20,7 @@
  * Scripting:     psu --no-picker --agent=<claude|omp|codex> --harness=<slug> [--plan=<slug>|--no-plan]
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -35,7 +35,7 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null };
+  const out = { picker: true, resume: false, resumeId: null, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false, model: null, resumeSession: null, launchContext: null, profile: null, yes: false };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
     // `--resume` alone → pick from the recent-session list. `--resume=<id>`
@@ -59,6 +59,8 @@ export function parseArgs(argv) {
     // P-023: su playbook profile (engineer|power) — assembled per-launch now,
     // so it's a launch flag, not a per-install choice. Default (server-side) engineer.
     else if (a.startsWith('--profile=')) out.profile = a.slice('--profile='.length);
+    // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
+    else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
     else if (!a.startsWith('--') && out.resume && !out.resumeId) out.resumeId = a;
   }
@@ -198,8 +200,13 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath } = {}) {
  * CODEX_HOME the caller points at.
  */
 export function resumeArgsFor(session, { coordExtPath } = {}) {
+  // `session.sessionId` is the agent's NATIVE session id (a UUID) when known —
+  // set for store-found (untracked) sessions, so we resume that EXACT session.
+  // Without it (tracked rows don't carry the native id) we fall back to the
+  // agent's "most-recent-in-cwd" resume.
   if (session.agent === 'claude') {
-    return { bin: 'claude', args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'] };
+    const resume = session.sessionId ? ['--resume', session.sessionId] : ['--continue'];
+    return { bin: 'claude', args: [...resume, '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions'] };
   }
   if (session.agent === 'omp') {
     const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];
@@ -208,11 +215,66 @@ export function resumeArgsFor(session, { coordExtPath } = {}) {
     return { bin: 'omp', args };
   }
   if (session.agent === 'codex') {
-    // Bypass flags BEFORE the `resume` subcommand (top-level), mirroring the
-    // old codex-su wrapper. CODEX_HOME (the session's home) is set by the caller.
-    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', '--last'] };
+    // Bypass flags BEFORE the `resume` subcommand (top-level). CODEX_HOME (the
+    // session's home) is set by the caller. `resume <uuid>` (UUIDs take
+    // precedence) for an exact session; `resume --last` otherwise.
+    const resume = session.sessionId ? ['resume', session.sessionId] : ['resume', '--last'];
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', ...resume] };
   }
   throw new Error(`resumeArgsFor: unknown agent: ${session.agent}`);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function safeReaddir(dir) {
+  try { return readdirSync(dir, { withFileTypes: true }); } catch { return []; }
+}
+
+/** First `"cwd":"…"` in a session jsonl (claude events + codex rollout meta both
+ *  carry it), so we recover the launch dir WITHOUT knowing where it started. */
+function cwdFromSessionFile(file) {
+  try {
+    const m = readFileSync(file, 'utf8').match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch { return null; }
+}
+
+/** Recursively find the codex rollout file whose name ends with `-<id>.jsonl`. */
+function findCodexRollout(root, id) {
+  for (const e of safeReaddir(root)) {
+    const p = join(root, e.name);
+    if (e.isDirectory()) { const hit = findCodexRollout(p, id); if (hit) return hit; }
+    else if (e.name.endsWith(`-${id}.jsonl`)) return p;
+  }
+  return null;
+}
+
+/**
+ * Find a session the user did NOT launch via psu, by searching each agent's
+ * OWN session store for the id — NOT a filesystem crawl: claude keeps every
+ * session under `~/.claude/projects/<dir>/<id>.jsonl`, codex under
+ * `~/.codex/sessions/**​/rollout-*-<uuid>.jsonl`. The store IS the index, and
+ * the matched file records its own `cwd`, so the launch dir falls out of it.
+ * Returns `{ agent, sessionId|ompThreadId, cwd, untracked:true }` or null.
+ * A UUID → claude/codex (whichever store has it); a non-UUID → an omp thread
+ * name (resumed in the current dir, since omp's store isn't path-indexed here).
+ * Pure-ish (reads FS); exported for tests.
+ */
+export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd() } = {}) {
+  if (!id) return null;
+  if (UUID_RE.test(id)) {
+    const claudeProjects = join(home, '.claude', 'projects');
+    for (const d of safeReaddir(claudeProjects)) {
+      if (!d.isDirectory()) continue;
+      const f = join(claudeProjects, d.name, `${id}.jsonl`);
+      if (existsSync(f)) return { agent: 'claude', sessionId: id, cwd: cwdFromSessionFile(f) || cwd, untracked: true };
+    }
+    const codexRollout = findCodexRollout(join(home, '.codex', 'sessions'), id);
+    if (codexRollout) return { agent: 'codex', sessionId: id, cwd: cwdFromSessionFile(codexRollout) || cwd, untracked: true };
+    return null;
+  }
+  // Non-UUID → treat as an omp thread name; resume in the current dir.
+  return { agent: 'omp', ompThreadId: id, cwd, untracked: true };
 }
 
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
@@ -506,32 +568,65 @@ function launchResume(session) {
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }
 
+/** An untracked session (one psu didn't launch) has no engineer playbook
+ *  loaded — and for codex, no papercusp-su tools (it ran under ~/.codex). Warn
+ *  + require explicit confirmation before resuming it as if it were SU. `--yes`
+ *  bypasses (scripts); non-interactive without `--yes` refuses. */
+async function confirmUntrackedResume(session, args) {
+  const sid = session.sessionId || session.ompThreadId || '?';
+  const missing = session.agent === 'codex'
+    ? 'the engineer playbook and the papercusp-su tools are'
+    : 'the engineer playbook is';
+  console.error(
+    `psu: ⚠ session ${sid} was NOT started by psu — ${missing} not loaded ` +
+      `(a vanilla ${session.agent} session in ${session.cwd}). Resuming continues it as-is.`,
+  );
+  if (args.yes) { console.error('psu: --yes given; proceeding.'); return; }
+  if (!args.picker) {
+    console.error('psu: refusing to resume an untracked session non-interactively — re-run without --no-picker, or pass --yes.');
+    process.exit(2);
+  }
+  const { confirm } = await import('@inquirer/prompts');
+  const proceed = await confirm({ message: 'Do you want to proceed anyway?', default: false });
+  if (!proceed) { console.error('psu: aborted.'); process.exit(0); }
+}
+
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
-// (direct): resume a recent tracked session — cd to its recorded cwd and
-// run the agent there.
+// (direct): resume a tracked session by adv id, OR a raw (non-psu) session by
+// the agent's native session id — cd to its recorded cwd and run the agent there.
 async function resumeFlow(args = {}) {
   const data = await api('/api/adv/sessions/resumable');
   const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
-  if (sessions.length === 0) {
-    console.error('psu: no resumable sessions found — launch one with `psu` first.');
-    process.exit(1);
-  }
 
   // Direct resume by id — skip the picker.
   if (args.resumeId) {
-    const target = sessions.find((s) => String(s.id) === String(args.resumeId));
-    if (!target) {
+    // 1. A psu-tracked session (adv_sessions row)?
+    const tracked = sessions.find((s) => String(s.id) === String(args.resumeId));
+    if (tracked) { launchResume(tracked); return; }
+
+    // 2. Not tracked → search the agents' OWN session stores for the id.
+    const untracked = findUntrackedSession(args.resumeId);
+    if (!untracked) {
       const ids = sessions.map((s) => s.id).filter((x) => x != null).join(', ');
       console.error(
-        `psu: no resumable session with id "${args.resumeId}" (resumable ids: ${ids || 'none'}). ` +
-          `A session needs a recorded agent + cwd to resume.`,
+        `psu: no session "${args.resumeId}" — not a tracked psu session (ids: ${ids || 'none'}), ` +
+          `and no claude/codex session file with that id under ~/.claude/projects or ~/.codex/sessions ` +
+          `(omp threads resume by thread name).`,
       );
       process.exit(1);
     }
-    launchResume(target);
+
+    // 3. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
+    //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
+    await confirmUntrackedResume(untracked, args);
+    launchResume(untracked);
     return;
   }
 
+  if (sessions.length === 0) {
+    console.error('psu: no tracked sessions — launch one with `psu`, or resume a raw session by id with `psu --resume=<session-id>`.');
+    process.exit(1);
+  }
   const { search } = await import('@inquirer/prompts');
   const rows = sessions.map((s) => ({
     name:

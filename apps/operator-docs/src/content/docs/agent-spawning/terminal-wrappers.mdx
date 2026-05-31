@@ -119,6 +119,26 @@ hooks are user-level, so they survive the raw resume. You can also resume
 directly (`claude --continue` from the launch dir) or from the `/adv`
 Sessions tab, which knows the cwd.
 
+### Resuming a session psu didn't start
+
+`psu --resume=<id>` also resumes a **raw** session (one you started with plain
+`claude`/`codex`/`omp`, not tracked in `/adv`). It doesn't crawl the disk — when
+the id isn't a tracked session it searches each agent's **own** session store
+(`~/.claude/projects/*/<id>.jsonl`, `~/.codex/sessions/**/rollout-*-<id>.jsonl`)
+for that exact id, reads the **cwd recorded in the session file**, `cd`s there,
+and resumes by id (`claude --resume <id>` / `codex resume <uuid>`). A non-UUID
+id is treated as an omp thread name (resumed in the current dir). So you never
+have to remember where you launched it — the store is the index and the file
+records its own cwd.
+
+:::caution[Untracked sessions resume *vanilla*]
+A session psu didn't start has **no engineer playbook loaded** (and for codex,
+no `papercusp-su` tools — it ran under `~/.codex`). So `psu --resume` of an
+untracked session prints a warning and asks **"Do you want to proceed anyway?"**
+before continuing it as-is. Pass `--yes` to skip the prompt in scripts;
+non-interactive (`--no-picker`) without `--yes` refuses rather than guess.
+:::
+
 ## Role sessions — `psu --role`
 
 By default `psu` launches an **engineer-collaborator (`su`)** session.

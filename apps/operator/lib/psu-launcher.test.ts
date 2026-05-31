@@ -1,10 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseArgs,
   planValue,
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
+  findUntrackedSession,
   roleLaunchArgs,
   suLaunchArgs,
   agentInvalidForRole,
@@ -30,6 +34,7 @@ describe('psu-launcher arg parsing', () => {
       resumeSession: null,
       launchContext: null,
       profile: null,
+      yes: false,
     });
   });
 
@@ -51,6 +56,7 @@ describe('psu-launcher arg parsing', () => {
       resumeSession: null,
       launchContext: null,
       profile: null,
+      yes: false,
     });
   });
 
@@ -81,6 +87,12 @@ describe('psu-launcher arg parsing', () => {
     expect(parseArgs(['--agent=claude']).profile).toBeNull();
   });
 
+  it('parses --yes / -y (untracked-resume confirm bypass); defaults false', () => {
+    expect(parseArgs(['--resume=x', '--yes']).yes).toBe(true);
+    expect(parseArgs(['--resume=x', '-y']).yes).toBe(true);
+    expect(parseArgs(['--resume=x']).yes).toBe(false);
+  });
+
   it('resumeArgsFor maps each agent to its RAW CLI + resume args (P-042, no wrapper)', () => {
     expect(resumeArgsFor({ agent: 'claude', cwd: '/x' })).toEqual({
       bin: 'claude',
@@ -100,6 +112,16 @@ describe('psu-launcher arg parsing', () => {
       args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', '--last'],
     });
     expect(() => resumeArgsFor({ agent: 'gemini', cwd: '/x' })).toThrow();
+  });
+
+  it('resumeArgsFor uses precise resume-by-id when a native sessionId is known', () => {
+    // Store-found (untracked) sessions carry the agent's native id → resume EXACTLY it.
+    expect(resumeArgsFor({ agent: 'claude', sessionId: 'uuid-1' }).args).toEqual([
+      '--resume', 'uuid-1', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
+    ]);
+    expect(resumeArgsFor({ agent: 'codex', sessionId: 'uuid-2' }).args).toEqual([
+      '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', 'uuid-2',
+    ]);
   });
 
   it('planValue maps the NO_PLAN sentinel + empties to null', () => {
@@ -293,5 +315,42 @@ describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
   it('emits nothing when neither model nor resume is set', () => {
     expect(suWrapperExtraArgs('omp', {})).toEqual([]);
     expect(suWrapperExtraArgs('omp')).toEqual([]);
+  });
+});
+
+describe('findUntrackedSession (resume a non-psu session by searching the agent stores)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-stores-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('finds a CLAUDE session by id + recovers cwd from the jsonl (not the dir name)', () => {
+    const projDir = join(home, '.claude', 'projects', '-some-dashed-dir');
+    mkdirSync(projDir, { recursive: true });
+    // The real cwd contains a dash — dir-name decoding would be wrong; the
+    // jsonl's "cwd" is authoritative.
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/home/me/my-repo"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'claude', sessionId: UUID, cwd: '/home/me/my-repo', untracked: true,
+    });
+  });
+
+  it('finds a CODEX session by id under sessions/YYYY/MM/DD + recovers cwd', () => {
+    const dir = join(home, '.codex', 'sessions', '2026', '05', '31');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-05-31T09-00-00-${UUID}.jsonl`), `{"type":"meta","cwd":"/home/me/proj"}\n`);
+    expect(findUntrackedSession(UUID, { home })).toEqual({
+      agent: 'codex', sessionId: UUID, cwd: '/home/me/proj', untracked: true,
+    });
+  });
+
+  it('a non-UUID id → an omp thread name, resumed in the current dir', () => {
+    expect(findUntrackedSession('my-thread', { home, cwd: '/here' })).toEqual({
+      agent: 'omp', ompThreadId: 'my-thread', cwd: '/here', untracked: true,
+    });
+  });
+
+  it('returns null for an unknown UUID with no matching file', () => {
+    expect(findUntrackedSession(UUID, { home })).toBeNull();
   });
 });
