@@ -1,6 +1,6 @@
 ---
 title: "Can't find variable: Buffer — Vite drops the Node globals Next polyfilled"
-description: "The operator-vite SPA is bundled by Vite, which (unlike Next's webpack) does not polyfill Node globals like Buffer/process/global. Bundled deps that touch them throw a Buffer ReferenceError in the Tauri WebKit renderer. Fix is a global polyfill at the top of main.tsx. Also: the desktop serves built dist, not live src — a broken build silently freezes it on stale dist."
+description: "The operator-vite SPA is bundled by Vite, which (unlike Next's webpack) does not polyfill Node globals (Buffer) and externalizes Node built-ins (os.homedir, fs) to empty stubs. Renderer-bundled code throws 'Can't find variable: Buffer' or 'homedir is not a function'. Fixes: a Buffer global polyfill in main.tsx, and deferring module-eval Node-builtin calls in server-only libs that leak into the SPA. Also: the desktop serves built dist, not live src — a broken build silently freezes it on stale dist."
 discovered: 2026-05-30
 tags: [operator-vite, vite, buffer, polyfill, desktop, tauri, renderer, migration]
 status: active
@@ -54,6 +54,49 @@ if (typeof globalThis.Buffer === 'undefined') globalThis.Buffer = BufferPolyfill
 
 If a future dep needs `process`/`global`, add them the same way (or adopt
 `vite-plugin-node-polyfills`).
+
+## Sibling failure: `os.homedir`/`fs` called at module-eval
+
+Same root cause, different symptom:
+**`TypeError: (0,i7.homedir) is not a function`** (or `… is not a function` for
+any `node:os`/`node:fs`/`node:path` member). Vite **externalizes** Node
+built-ins to empty browser stubs — so `homedir`, `readFileSync`, etc. are
+`undefined`, not just missing globals. You can't polyfill these: the renderer
+genuinely can't read the OS home dir.
+
+The real bug is **server-only code being bundled into the SPA**. operator-vite
+is a *pure SPA* — there are no Server Components, so a `.tsx` that was a Next
+Server Component (or a lib it imports) now runs in the browser. A client
+component importing a server lib — even for one type or a `Set` like
+`db-encryption.ts`'s `ENCRYPTED_TABLES` — drags the whole module in. Real chains
+seen: `client cmpt → operator-state-pg.ts → db-encryption.ts` and
+`client cmpt → agent-tools/endpoint routes → omp-sessions.ts`.
+
+The crash is at **module-eval**, so it's almost always a top-level statement:
+
+```ts
+const KEY_FILE = join(homedir(), '.papercusp', 'db-encryption-key'); // throws on import
+```
+
+Fix = make the side effect **lazy** so importing the module is pure (and as a
+bonus, rolldown can then **tree-shake the now-side-effect-free unused server
+code out of the renderer bundle entirely**):
+
+```ts
+function keyFile() { return join(homedir(), '.papercusp', 'db-encryption-key'); }
+// …call keyFile() inside the function that actually needs it (server-side only)
+```
+
+<Aside type="tip" title="Find them before users do">
+Scan client-bundled libs for the pattern:
+`grep -rnE "^(export )?const [A-Za-z0-9_]+ ?=.*(homedir|readFileSync|existsSync|hostname)\(" apps/operator/lib`
+then confirm which are actually in the renderer chunk by grepping the built
+`dist/assets/index-*.js` for a tell-tale string from each module. As of
+2026-05-31, latent (server-only, not yet bundled) offenders include
+`flag-distinct-id.ts`, `superuser-token.ts`, `console-launcher.ts`,
+`identity/keychain.ts`, and `flags/preset.ts` — fix them if the migration ever
+pulls them client-side.
+</Aside>
 
 ## The trap that hides it: the desktop serves built `dist`, not live src
 

@@ -2262,7 +2262,7 @@ Type-check + tests both pass on a dead `page.tsx` — the file imports real modu
 
 # Can't find variable: Buffer — Vite drops the Node globals Next polyfilled
 
-> The operator-vite SPA is bundled by Vite, which (unlike Next's webpack) does not polyfill Node globals like Buffer/process/global. Bundled deps that touch them throw a Buffer ReferenceError in the Tauri WebKit renderer. Fix is a global polyfill at the top of main.tsx. Also: the desktop serves built dist, not live src — a broken build silently freezes it on stale dist.
+> The operator-vite SPA is bundled by Vite, which (unlike Next's webpack) does not polyfill Node globals (Buffer) and externalizes Node built-ins (os.homedir, fs) to empty stubs. Renderer-bundled code throws 'Can't find variable: Buffer' or 'homedir is not a function'. Fixes: a Buffer global polyfill in main.tsx, and deferring module-eval Node-builtin calls in server-only libs that leak into the SPA. Also: the desktop serves built dist, not live src — a broken build silently freezes it on stale dist.
 
 If you see **`ReferenceError: Can't find variable: Buffer`** (or `process is not defined`, `global is not defined`) in the desktop app, this is the cause.
 
@@ -2297,6 +2297,31 @@ if (typeof globalThis.Buffer === 'undefined') globalThis.Buffer = BufferPolyfill
 ```
 
 If a future dep needs `process`/`global`, add them the same way (or adopt `vite-plugin-node-polyfills`).
+
+## Sibling failure: `os.homedir`/`fs` called at module-eval
+
+[Section titled “Sibling failure: os.homedir/fs called at module-eval”](#sibling-failure-oshomedirfs-called-at-module-eval)
+
+Same root cause, different symptom: **`TypeError: (0,i7.homedir) is not a function`** (or `… is not a function` for any `node:os`/`node:fs`/`node:path` member). Vite **externalizes** Node built-ins to empty browser stubs — so `homedir`, `readFileSync`, etc. are `undefined`, not just missing globals. You can’t polyfill these: the renderer genuinely can’t read the OS home dir.
+
+The real bug is **server-only code being bundled into the SPA**. operator-vite is a *pure SPA* — there are no Server Components, so a `.tsx` that was a Next Server Component (or a lib it imports) now runs in the browser. A client component importing a server lib — even for one type or a `Set` like `db-encryption.ts`’s `ENCRYPTED_TABLES` — drags the whole module in. Real chains seen: `client cmpt → operator-state-pg.ts → db-encryption.ts` and `client cmpt → agent-tools/endpoint routes → omp-sessions.ts`.
+
+The crash is at **module-eval**, so it’s almost always a top-level statement:
+
+```ts
+const KEY_FILE = join(homedir(), '.papercusp', 'db-encryption-key'); // throws on import
+```
+
+Fix = make the side effect **lazy** so importing the module is pure (and as a bonus, rolldown can then **tree-shake the now-side-effect-free unused server code out of the renderer bundle entirely**):
+
+```ts
+function keyFile() { return join(homedir(), '.papercusp', 'db-encryption-key'); }
+// …call keyFile() inside the function that actually needs it (server-side only)
+```
+
+Find them before users do
+
+Scan client-bundled libs for the pattern: `grep -rnE "^(export )?const [A-Za-z0-9_]+ ?=.*(homedir|readFileSync|existsSync|hostname)\(" apps/operator/lib` then confirm which are actually in the renderer chunk by grepping the built `dist/assets/index-*.js` for a tell-tale string from each module. As of 2026-05-31, latent (server-only, not yet bundled) offenders include `flag-distinct-id.ts`, `superuser-token.ts`, `console-launcher.ts`, `identity/keychain.ts`, and `flags/preset.ts` — fix them if the migration ever pulls them client-side.
 
 ## The trap that hides it: the desktop serves built `dist`, not live src
 
@@ -27266,7 +27291,7 @@ Date: YYYY-MM-DD
 body
 ```
 
-Everything else (background, scope, verification, prose) is free.
+Everything else (background, scope, verification, prose) is free. One optional operator-parsed section — **`## Promote`** — carries the promote/waves policy (how the plan becomes harness features); see [The `## Promote` policy (waves)](#the-promote-policy-waves) below.
 
 ## Frontmatter
 
@@ -27580,6 +27605,53 @@ Short form: each assertion is a nested sub-bullet block under a plan item:
 ```
 
 The plan parser ignores these sub-bullets; `plans:promote` extracts them into `harness_plan_assertions` and populates `feature.claims`.
+
+## The `## Promote` policy (waves)
+
+[Section titled “The ## Promote policy (waves)”](#the--promote-policy-waves)
+
+A plan can carry a **`## Promote` policy** — plan-resident, fine-grained control over *how* it is promoted into a harness as features, in ordered **waves**. The human/architect authors it; the promote step and the wave-advance sweep honor it. Optional — without it, promote takes an explicit `features[]` list. (Source of truth: `promote-policy-and-waves-2026-05-30`.)
+
+A fenced `yaml` block under a `## Promote` heading (numbered headings like `## 9a. Promote` are also recognized):
+
+```yaml
+target_harness: restart          # default harness (a promote call may override)
+waves:
+  - id: tier1                     # static wave — features listed verbatim
+    features:
+      - title: "Fix marketplace schema fetchers"
+        from_items: [P-001]       # plan items this feature covers (marked done on promote)
+        assigned_role: worker     # per-feature hint → feature metadata
+  - id: tier2
+    blocked_by: tier1             # documents ordering (tier2 follows tier1)
+    generate:                     # generative wave — one feature per runtime item
+      for_each: universal_type    # a named set the promoter resolves at promote time
+      feature_template:
+        title: "Universal schema: {item}"          # {item} substituted per item
+        acceptance: ["validates vs asinDetails for {item}"]
+        agent_hint: "row-grain; union all marketplaces"
+```
+
+**Waves** run in order. A wave is **static** (`features[]` listed verbatim) and/or **generative** (`generate` — the `feature_template` expanded once per item in the `for_each` runtime set, with `{item}` substituted in title/acceptance/body). A generative wave’s set is **resolved at promote time**, not hand-listed — so a plan whose later features depend on what earlier waves *discover* (e.g. “one feature per universal product type the Tier-1 pass found”) is expressible.
+
+**Static feature fields:** `title` (required), `from_items?` (P-NNN ids covered), `acceptance?`, `body?`, and the hints `assigned_role?` / `blocked_by?` / `order?` (carried into the feature’s `metadata` for the orchestrator).
+
+### Promoting a wave
+
+[Section titled “Promoting a wave”](#promoting-a-wave)
+
+`plans:promote \{ slug, wave \}` (policy-mode) reads the policy, builds the named wave’s features (static defs, and/or the generative template × `generate_items`), and imports them — stamping each feature’s `wave`. `harness_slug` falls back to `target_harness`. The legacy explicit form — `plans:promote \{ slug, harness_slug, features:[...] \}` — still works for plans without a policy.
+
+### Deterministic wave-advance
+
+[Section titled “Deterministic wave-advance”](#deterministic-wave-advance)
+
+Once a plan is `started` (`plans:start`), its waves advance **deterministically** — no orchestrator/LLM judgment:
+
+* A wave is **drained** when every feature in it is terminal (`passed` or `deprecated`). On drain, the next wave auto-promotes; a `current_wave` cursor makes it fire exactly once.
+* A **failing/stuck** feature **blocks** the wave (it can’t drain) — the advance stalls until a human fixes or `deprecate`s it, and the blocked wave is surfaced as a harness issue.
+
+A background sweep evaluates this per started plan and launches the `promote` role for the next wave. The control path is mechanical — a deterministic drain-check, not an LLM call.
 
 ## Tool surface
 
