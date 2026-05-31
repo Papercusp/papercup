@@ -10,7 +10,9 @@
  *   P-012d  Per-error-code error messages
  *   P-012e  Phase 1b placeholder entries link out
  *
- * Entry 2 (GitHub URL) and Entry 4 (Harness link) are Phase 1b stubs.
+ * Entries are grouped under "Local" (new / existing local) and "Shared"
+ * (GitHub URL, Harness link). GitHub URL still routes to a coming-soon
+ * stub; Harness link is wired (EntryHarnessLinkForm).
  */
 
 import { useState, useRef, type FormEvent, type ReactNode } from 'react';
@@ -317,37 +319,55 @@ function Phase1bStub({ title, onBack }: { title: string; onBack: () => void }) {
 
 // ── Picker cards ───────────────────────────────────────────────────────────
 
-const ENTRIES: {
+interface PickerEntry {
   id: Step;
   label: string;
   description: string;
   icon: string;
-  phase1b?: boolean;
+  /** Routes to a not-yet-available stub; renders dimmed (no visible badge). */
+  comingSoon?: boolean;
+}
+
+const SECTIONS: {
+  heading: string;
+  subheading?: string;
+  entries: PickerEntry[];
 }[] = [
   {
-    id: 'new-local',
-    label: 'New local directory',
-    description: 'Create a new folder, run git init, and register it as a harness.',
-    icon: '📁',
+    heading: 'Local',
+    entries: [
+      {
+        id: 'new-local',
+        label: 'New local directory',
+        description: 'Create a new folder, run git init, and register it as a harness.',
+        icon: '📁',
+      },
+      {
+        id: 'existing-local',
+        label: 'Existing local repo',
+        description: 'Register an existing local directory or git repo as a harness.',
+        icon: '📂',
+      },
+    ],
   },
   {
-    id: 'existing-local',
-    label: 'Existing local repo',
-    description: 'Register an existing local directory or git repo as a harness.',
-    icon: '📂',
-  },
-  {
-    id: 'github-url-stub',
-    label: 'GitHub URL',
-    description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
-    icon: '🐙',
-    phase1b: true,
-  },
-  {
-    id: 'harness-link-stub',
-    label: 'Harness link',
-    description: 'Join a shared harness via a papercusp://harness?… invite link.',
-    icon: '🔗',
+    heading: 'Shared',
+    subheading: 'Work on these repositories collaboratively.',
+    entries: [
+      {
+        id: 'github-url-stub',
+        label: 'GitHub URL',
+        description: 'Clone a GitHub repository and register it. Requires GitHub auth.',
+        icon: '🐙',
+        comingSoon: true,
+      },
+      {
+        id: 'harness-link-stub',
+        label: 'Harness link',
+        description: 'Join a shared harness via a papercusp://harness?… invite link.',
+        icon: '🔗',
+      },
+    ],
   },
 ];
 
@@ -358,54 +378,57 @@ function PickerStep({ onSelect }: { onSelect: (step: Step) => void }) {
       <p style={{ margin: '0 0 20px', fontSize: 13, color: 'var(--fg-dim)' }}>
         Choose how to add a new harness to this workspace.
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        {ENTRIES.map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            onClick={() => onSelect(entry.id)}
-            className="pc-create-harness-entry"
-            style={{
-              textAlign: 'left',
-              padding: 16,
-              background: 'var(--bg-2)',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              cursor: 'pointer',
-              position: 'relative',
-              transition: 'border-color 0.1s',
-            }}
-          >
-            <span style={{ fontSize: 24, display: 'block', marginBottom: 8 }}>{entry.icon}</span>
-            <strong style={{ fontSize: 13, display: 'block', marginBottom: 4, color: entry.phase1b ? 'var(--fg-mute)' : 'var(--fg)' }}>
-              {entry.label}
-            </strong>
-            <span style={{ fontSize: 12, color: 'var(--fg-mute)', lineHeight: 1.4, display: 'block' }}>
-              {entry.description}
-            </span>
-            {entry.phase1b && (
-              <span
-                aria-label="Phase 1b"
+      {SECTIONS.map((section) => (
+        <div key={section.heading} style={{ marginBottom: 18 }}>
+          <div style={{ marginBottom: 10 }}>
+            <h3
+              style={{
+                margin: 0,
+                fontSize: 12,
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+                color: 'var(--fg-dim)',
+              }}
+            >
+              {section.heading}
+            </h3>
+            {section.subheading && (
+              <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--fg-mute)' }}>
+                {section.subheading}
+              </p>
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            {section.entries.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                onClick={() => onSelect(entry.id)}
+                className="pc-create-harness-entry"
                 style={{
-                  position: 'absolute',
-                  top: 8,
-                  right: 8,
-                  background: 'var(--bg-3, #1a2540)',
+                  textAlign: 'left',
+                  padding: 16,
+                  background: 'var(--bg-2)',
                   border: '1px solid var(--border)',
-                  borderRadius: 4,
-                  fontSize: 10,
-                  fontWeight: 600,
-                  color: 'var(--fg-mute)',
-                  padding: '2px 5px',
-                  letterSpacing: '0.03em',
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                  position: 'relative',
+                  transition: 'border-color 0.1s',
                 }}
               >
-                Phase 1b
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+                <span style={{ fontSize: 24, display: 'block', marginBottom: 8 }}>{entry.icon}</span>
+                <strong style={{ fontSize: 13, display: 'block', marginBottom: 4, color: entry.comingSoon ? 'var(--fg-mute)' : 'var(--fg)' }}>
+                  {entry.label}
+                </strong>
+                <span style={{ fontSize: 12, color: 'var(--fg-mute)', lineHeight: 1.4, display: 'block' }}>
+                  {entry.description}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

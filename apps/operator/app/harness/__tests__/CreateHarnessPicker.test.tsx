@@ -43,15 +43,25 @@ describe('P-012a — picker step', () => {
     screen.getByText('Harness link');
   });
 
-  it('renders one Phase 1b badge (GitHub URL only — harness-link is now wired)', () => {
+  it('renders no Phase 1b badge in the picker (label removed)', () => {
     renderPicker();
-    const badges = screen.getAllByText('Phase 1b');
-    expect(badges.length).toBe(1);
+    expect(screen.queryByText('Phase 1b')).toBeNull();
   });
 
   it('shows the add-a-harness heading', () => {
     renderPicker();
     screen.getByRole('heading', { name: 'Add a harness' });
+  });
+
+  it('groups entries under Local and Shared headings', () => {
+    renderPicker();
+    screen.getByRole('heading', { name: 'Local' });
+    screen.getByRole('heading', { name: 'Shared' });
+  });
+
+  it('shows the Shared collaboration subheading', () => {
+    renderPicker();
+    screen.getByText('Work on these repositories collaboratively.');
   });
 });
 
