@@ -247,21 +247,8 @@ export default defineTool({
             },
           }
         : undefined;
-    // Testing-only lean mode (OPERATOR_LEAN_PROMPT=1, default off) — pairs
-    // with the lean prompt in converse-prompt.ts. Trims the tool surface to
-    // a handful so omp loads far fewer tool schemas, keeping per-turn input
-    // under tight rate limits. NOT for production.
-    const leanMode = process.env.OPERATOR_LEAN_PROMPT === '1';
     const allowedTools: readonly string[] =
-      principalOk && superuserToken
-        ? leanMode
-          ? ALL_AGENT_MCP_TOOLS.filter((t) =>
-              /(harness_status|harness_list|harness_escalation|harness_pending_reviews|issues_list|chat_ask_choice)/.test(
-                t,
-              ),
-            )
-          : ALL_AGENT_MCP_TOOLS
-        : [];
+      principalOk && superuserToken ? ALL_AGENT_MCP_TOOLS : [];
 
     let totalCost = 0;
     let assembled = '';
@@ -291,9 +278,6 @@ export default defineTool({
           mcpConfig,
           allowedTools: [...allowedTools],
           permissionMode: 'bypassPermissions',
-          // Lean mode: the operator orchestrates purely through MCP, so
-          // drop omp's built-in coding tools (~26k tokens of base prompt).
-          disableBuiltinTools: leanMode,
           signal: ctx.signal,
         })) {
           if (ctx.signal.aborted) break;
