@@ -46,6 +46,18 @@ describe('writeProvenance — happy path', () => {
       { id: 'F-AUTO-BBB', slug: 'myharn' },
     ]);
   });
+
+  it('carries the promote wave through to the updater', async () => {
+    const waved: ProvenanceFeature[] = [
+      { id: 'F-W', source_plan_slug: 'p', source_plan_item_ids: ['P-001'], wave: 'tier1' },
+    ];
+    let seenWave: string | null | undefined = 'UNSET';
+    await writeProvenance(waved, 'h', async (f) => {
+      seenWave = f.wave;
+      return 1;
+    });
+    expect(seenWave).toBe('tier1');
+  });
 });
 
 describe('writeProvenance — trigger-race / consolidated row missing', () => {

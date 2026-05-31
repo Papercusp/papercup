@@ -45,6 +45,8 @@ export interface ProvenanceFeature {
   id: string;
   source_plan_slug: string;
   source_plan_item_ids: string[];
+  /** Promote wave this feature belongs to (promote-policy-and-waves; null = un-waved). */
+  wave?: string | null;
 }
 export interface ProvenanceWriteResult {
   written: number;
@@ -356,6 +358,7 @@ const importFeatures = defineTool({
         ts?: number | null;
         source_plan_slug?: string | null;
         source_plan_item_ids?: string[] | null;
+        wave?: string | null;
       }>;
     };
     if (!body?.features || !Array.isArray(body.features) || body.features.length === 0) {
@@ -444,6 +447,7 @@ const importFeatures = defineTool({
             UPDATE harness_shared.harness_features_consolidated
                SET source_plan_slug     = ${f.source_plan_slug}
                  , source_plan_item_ids = ${f.source_plan_item_ids}
+                 , wave                  = ${f.wave ?? null}
              WHERE harness_slug = ${slug}
                AND feature_id   = ${f.id}
             RETURNING feature_id
@@ -460,6 +464,7 @@ const importFeatures = defineTool({
         id: f.id,
         source_plan_slug: f.source_plan_slug!,
         source_plan_item_ids: f.source_plan_item_ids ?? [],
+        wave: f.wave ?? null,
       })),
       project.slug,
       updater,
