@@ -39,7 +39,7 @@ vi.mock('@/lib/backup', () => ({
 }));
 vi.mock('@/lib/workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
-const setFlag = vi.fn(async () => ({ ok: true }));
+const setFlag = vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
 vi.mock('@papercusp/flags/server', () => ({ setFlag: (...a: unknown[]) => setFlag(...(a as [])) }));
 const publishFlagChange = vi.fn();
 const reinitFlagBackend = vi.fn();
