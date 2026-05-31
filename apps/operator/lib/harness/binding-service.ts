@@ -20,6 +20,7 @@
 import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getOctokit } from '@/lib/identity/octokit-client';
+import { ensureSharedRepoBindingCacheTable } from '@/lib/ensure-schema-dogfood';
 import {
   CLAIM_REQUIRED_PERMISSION,
   SUPERSEDE_REQUIRED_PERMISSION,
@@ -215,6 +216,11 @@ async function readCachedByRepoId(
   workspaceId: string,
   repositoryId: number,
 ): Promise<BindingRecord | null> {
+  // Self-ensure the (LOCAL-only) cache table. The hono-host doesn't run the
+  // dogfood schema-ensure at boot and nothing else writes this table, so the
+  // binding service is its first/only caller — ensure idempotently here
+  // (flag-guarded, ~free after the first call) so the routes work standalone.
+  await ensureSharedRepoBindingCacheTable();
   const { sql } = getOrgPg();
   const rows = (await sql`
     SELECT * FROM harness_shared.shared_repo_binding_cache
@@ -231,6 +237,7 @@ async function upsertCacheRow(
   workspaceId: string,
   rec: BindingRecord,
 ): Promise<void> {
+  await ensureSharedRepoBindingCacheTable();
   const { sql } = getOrgPg();
   await sql`
     INSERT INTO harness_shared.shared_repo_binding_cache
