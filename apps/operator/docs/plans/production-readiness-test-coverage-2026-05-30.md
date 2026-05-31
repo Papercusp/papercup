@@ -244,7 +244,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   bench beyond the single grid-core one (papergrid render hot paths per testing
   spec §1.12).
 
-- **P-030** `todo` Reconcile stale docs: root `CLAUDE.md` still says "we do not
+- **P-030** `done` Reconcile stale docs: root `CLAUDE.md` still says "we do not (SHIPPED 35a22ab0c: CLAUDE.md "no Playwright suite / verdict is the entire surface" claim reconciled vs the 26 committed apps/operator/e2e specs — verdict=ad-hoc/external, e2e suite=automated, operator UI=Tauri-shell. Testing docs already stated the Tauri-only posture no change needed.)
   maintain a checked-in Playwright suite; verdict is the entire browser surface" —
   contradicted by the real 26-spec suite. Resolve the `:3055`-vs-Tauri-shell test
   -surface contradiction in the testing docs too.
