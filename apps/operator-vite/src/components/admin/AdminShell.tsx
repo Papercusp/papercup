@@ -20,7 +20,6 @@ const TABS = [
   { href: '/admin/run', label: 'Run' },
   { href: '/admin/features', label: 'Features' },
   { href: '/admin/testing', label: 'Testing' },
-  { href: '/admin/docs', label: 'Docs' },
   { href: '/admin/dogfood-substrate', label: 'Substrate' },
   { href: '/admin/dbos', label: 'DBOS' },
 ] as const;
