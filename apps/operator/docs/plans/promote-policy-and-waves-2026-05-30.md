@@ -74,19 +74,27 @@ the plan-format spec (`/internal/docs/spec/plan-format`) now has a `## Promote` 
 - **bun PATH** (host-ops, in `apps/operator/.env.local`, gitignored): the systemd `papercup-dev-api.service`
   PATH lacked `~/.bun/bin`, so omp's `#!/usr/bin/env bun` shebang failed `rc=127` for **every** invoke-spawned
   agent. Prepended `~/.bun/bin` in `.env.local` (sourced by ExecStart) → agent now spawns `rc=0`.
+- **MCP endpoint URL** (host-ops, `.env.local`): `spawn-mcp.ts`'s default points the agent's `papercusp` MCP
+  server at `<base>/api/sse`, which **404s** on this host — the live agent-mcp endpoint is `/api/mcp`
+  (streamable HTTP; `initialize` verified). With the 404, omp loaded **zero** papercusp tools (`HTTP 404`), so
+  the promote agent had no `plans:promote`. Set `PAPERCUSP_OPERATOR_URL=http://localhost:3070/api/mcp` in
+  `.env.local` (what the desktop sets but the standing dev-api service didn't) → omp now connects + loads the
+  tools (`MCP prompt commands refreshed path=mcp:papercusp`; the residual `-32601` is only the optional
+  `resources/list`).
 
-After all four: the full chain **sweep decision → promoteWave → /invoke → resolveProject → buildInvokeOnce →
-invoke-once → PG connected → promote prompt built (`role=promote total=5510`) → omp `rc=0`** is verified live.
+After these: the full chain **sweep decision → promoteWave → /invoke → resolveProject → buildInvokeOnce →
+invoke-once → PG connected → promote prompt built (`role=promote total=5510`) → omp spawns `rc=0` → omp loads
+papercusp tools** is verified live. Every papercusp-side layer works.
 
-**Remaining (one gap, orthogonal to the wave mechanism):**
-- **omp agent task-completion.** The promote agent spawns + runs (`rc=0`) but returned an empty result and
-  created no features — i.e. omp ran the LLM but did not effect `plans:promote`. Likely an agent-runtime /
-  MCP-tool / plan-access detail (e.g. the harness agent's `plans:get` resolving the operator-side plan, or
-  omp's tool/auth config), **not** the wave wiring (which is now fully verified up to `rc=0`). Investigate by
-  capturing omp's transcript for an `invoke promote` run (the `.out` log was empty here) — best done as a
-  focused agent-runtime task, then re-run the P-015 dogfood.
-- **P-015 full dogfood** — author the `restart` universal-schema plan's real `## Promote` block + run it end to
-  end; gated only on the omp task-completion above (`restart` is a registered harness in `default`).
+**Remaining (one gap, orthogonal to the wave mechanism + papercusp):**
+- **omp model provider.** With tools loaded, the agent still produced empty output + no features because omp's
+  default model `openai-codex/gpt-5.5:high` (`~/.omp/agent/config.yml`) can't connect on this box
+  (`Codex websocket prewarm failed … wss://chatgpt.com/backend-api/codex/responses`). No working LLM → the agent
+  runs `rc=0` but does nothing. This is **omp's own model/auth config**, not the wave mechanism, the papercusp
+  app, or the agent wiring (all verified above). To finish the live P-015 dogfood: give omp a reachable model
+  for invoke-spawned agents (e.g. its `slow: anthropic/claude-opus-4-6` fallback, or fix codex auth), then
+  re-run `POST /api/harness/<slug>/invoke?role=promote` with `extra:[PLAN_SLUG,WAVE,NEEDS_ITEMS]` — the agent
+  will read the plan + run `plans:promote`. (`restart` is a registered harness in `default` for the real plan.)
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
