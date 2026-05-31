@@ -16,7 +16,11 @@
  * (`expandGlobs(phasePath(...), globs)`, reused from the admin path).
  * The Acceptance (project) domain's files come from `.harness/tests.json`.
  *
- * Gated by FLAGS.HARNESS_PHASES, like the sibling /harness/:slug/tests routes.
+ * NOT gated by FLAGS.HARNESS_PHASES (unlike the legacy /harness/:slug/tests
+ * routes): that flag gates the staging/testing/production PHASE system, which
+ * is a separate concern from surfacing a harness's tests. The Tests tab works
+ * regardless of the flag. (The flag itself is unchanged — still off by default,
+ * still gating PhaseTabs et al.)
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -31,12 +35,6 @@ import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 import { computePlanItemTestStatus } from '@/lib/harness-test-rollup';
-
-async function phasesEnabled(): Promise<boolean> {
-  const { getFlag } = await import('@papercusp/flags/server');
-  const { FLAGS } = await import('@papercusp/flags');
-  return getFlag(FLAGS.HARNESS_PHASES, 'system');
-}
 
 interface HarnessTestRow {
   id: string;
@@ -83,7 +81,6 @@ const domainDetail = defineTool({
   path: '/harness/:slug/testing/domain-detail',
   auth: 'public',
   async handler(req, ctx) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const url = new URL(req.url);
     const domainId = url.searchParams.get('domainId') ?? '';
     const domain = findDomain(domainId);
@@ -135,7 +132,6 @@ const fileStatus = defineTool({
   path: '/harness/:slug/testing/file-status',
   auth: 'public',
   async handler(req, ctx) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const url = new URL(req.url);
     const domainId = url.searchParams.get('domainId') ?? '';
     const resolved = await resolveCtx(ctx.params.slug as string, url.searchParams.get('phase'));
@@ -168,7 +164,6 @@ const healthStrip = defineTool({
   path: '/harness/:slug/testing/health-strip',
   auth: 'public',
   async handler(req) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const url = new URL(req.url);
     // Minimal strip for now — per-file run history isn't tracked in the
     // harness yet (the tester writes pass/fail, not a flake series).
@@ -188,7 +183,6 @@ const run = defineTool({
   path: '/harness/:slug/testing/run',
   auth: 'public',
   async handler(req, ctx) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const url = new URL(req.url);
     const resolved = await resolveCtx(ctx.params.slug as string, url.searchParams.get('phase'));
     if (resolved instanceof Response) return resolved;
@@ -252,7 +246,6 @@ const listAssertions = defineTool({
   path: '/harness/:slug/testing/assertions',
   auth: 'public',
   async handler(req, ctx) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const slug = ctx.params.slug as string;
     const planSlug = new URL(req.url).searchParams.get('plan');
     try {
@@ -283,7 +276,6 @@ const patchAssertion = defineTool({
   path: '/harness/:slug/testing/assertions/:valId',
   auth: 'public',
   async handler(req, ctx) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const slug = ctx.params.slug as string;
     const valId = ctx.params.valId as string;
     const body = (await req.json().catch(() => ({}))) as { requires_test?: unknown };
@@ -313,7 +305,6 @@ const planItemsTestStatus = defineTool({
   path: '/harness/:slug/plan-items-test-status',
   auth: 'public',
   async handler(req, ctx) {
-    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
     const slug = ctx.params.slug as string;
     const planSlug = new URL(req.url).searchParams.get('plan');
     try {
