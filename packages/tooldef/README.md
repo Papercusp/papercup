@@ -16,7 +16,7 @@ What makes it reusable outside Papercusp:
 - **Host-agnostic.** Every side effect — quota reads, telemetry writes,
   principal resolution, capability→tier mapping, gate-bypass policy — is
   *injected*. The core depends on no database, no web framework, and no
-  `@papercusp/*` / `@papercusp/*` package.
+  host-adapter package (e.g. `@papercusp/agent-mcp`).
 - **Validator-agnostic.** Tool `args`/`input`, card payloads, and `state`
   accept any [Standard Schema](https://standardschema.dev) validator (Zod
   3.24+, Valibot, ArkType), validated via `~standard.validate`. JSON-Schema
@@ -27,12 +27,18 @@ What makes it reusable outside Papercusp:
 
 ## Status
 
-Phases 1–3 of the extraction are **complete**: the engine (dispatcher,
-registry, `defineTool`, tool-projection, state/card/replay channels, OpenAPI
-assembly, core types) is carved out, host-agnostic, and validator-agnostic.
-Phase 4 (extracting the HTTP/MCP/IPC transport *adapters* into their own
-packages) is still pending — today the transports live in the Papercusp host
-(`@papercusp/agent-mcp`). Tracking plan:
+Phases 1–4 of the extraction are **complete**:
+- **Engine** (this package): dispatcher, registry, `defineTool`, tool-projection,
+  state/card/replay channels, OpenAPI assembly, core types — carved out,
+  host-agnostic, and validator-agnostic.
+- **Transports extracted:** HTTP → [`@papercusp/tooldef-http`](../tooldef-http),
+  IPC → [`@papercusp/ipc-endpoint-server`](../ipc-endpoint-server), and the
+  host-agnostic MCP bridge primitives → [`@papercusp/tooldef-mcp`](../tooldef-mcp)
+  (the MCP auth/spawn *assembly* stays in the host by design — see that package's
+  notes). The Papercusp host adapter is `@papercusp/agent-mcp`.
+
+Remaining: P-053 (lint/affected-test sweep) and P-054 (needs-human: whether to
+consume the standalone repo in-tree vs as a mirror). Tracking plan:
 [`papercusp-tooldef-extraction-2026-05-29.md`](../../apps/operator/docs/plans/papercusp-tooldef-extraction-2026-05-29.md).
 
 ## Quickstart (in-process)
@@ -97,7 +103,10 @@ orchestrator's `finally`. Swap a step by name with `withReplacedStep`.
   Schema's `validate()` doesn't expose.
 - **Route definitions** (`RouteDefinition`) stay Zod-typed: routes are
   validated host-side by the host's `registerRoute`, not the core dispatcher.
-- **Transports** (HTTP/MCP/IPC adapters) live in the host until Phase 4.
+- **MCP auth/spawn assembly** stays host-side (only the generic bridge
+  primitives are in `@papercusp/tooldef-mcp`): superuser/power-user admission +
+  HMAC spawn-URL verification + legacy-vs-projected routing are inherently
+  host-specific. (HTTP + IPC are fully extracted — see Status.)
 
 ## Consuming this package
 
