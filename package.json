@@ -6,6 +6,7 @@
     "apps/*",
     "packages/*",
     "libs/agent-chat",
+    "libs/chat-protocol",
     "libs/git-graph",
     "libs/ui-primitives",
     "libs/marketplace-public-ui",
