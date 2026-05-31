@@ -25,7 +25,17 @@ import { dirname } from 'node:path';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { papercuspPath } from './papercusp-root';
 
-export type AgentBackend = 'claude-code' | 'omp' | 'codex';
+/**
+ * Canonical subprocess-spawn backend set (operator side). Kept in sync
+ * with the orchestrator's `AGENT_BACKENDS` (`@papercusp/orchestrator`
+ * types.ts) and the spawn-capable subset of `@restart/papercup-shared`
+ * chat-stream's `AgentBackend` (which additionally has `meridian`, a
+ * stateless brains-only HTTP backend — not a subprocess). The submodule
+ * boundary rules out a single literal import; `agent-backend-sync.test.ts`
+ * guards the three against drift.
+ */
+export const AGENT_BACKENDS = ['claude-code', 'omp', 'codex'] as const;
+export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 
 export interface AgentConfig {
   /** Which backend to drive. 'auto' lets resolveBackend infer from the
