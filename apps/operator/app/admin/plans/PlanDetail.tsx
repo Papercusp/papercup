@@ -320,16 +320,6 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
       }
     >
       <LockBanner lock={lock} />
-      {!data.legacy && data.frontmatter ? (
-        <FrontmatterCard slug={data.slug} frontmatter={data.frontmatter} />
-      ) : null}
-      {data.now ? (
-        <NowHero
-          state={data.now.state}
-          next={data.now.next}
-          featureSummary={featureSummary}
-        />
-      ) : null}
       {data.legacy ? (
         <div className="pc-plans__legacy-banner">
           Legacy plan — frontmatter not parsed; rendering raw markdown.
@@ -414,6 +404,18 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
           items={data.items}
           decisions={data.decisions}
           scopeRef={editorScopeRef}
+        />
+      ) : null}
+      {/* Frontmatter + Now/Next sit directly under the in-plan jump/search
+          (relocated from the top of the detail pane). */}
+      {!data.legacy && data.frontmatter ? (
+        <FrontmatterCard slug={data.slug} frontmatter={data.frontmatter} />
+      ) : null}
+      {data.now ? (
+        <NowHero
+          state={data.now.state}
+          next={data.now.next}
+          featureSummary={featureSummary}
         />
       ) : null}
       <div ref={editorScopeRef} className="pc-plan-editor-scope">

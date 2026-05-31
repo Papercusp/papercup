@@ -217,6 +217,16 @@ export default function PlansClient() {
     for (const p of planList.data?.plans ?? []) m.set(p.slug, bucketOf(p));
     return m;
   }, [planList.data]);
+  // plan-slug → display title + lifecycle bucket, for the item-list group
+  // headers (show the human title + a ready/running pill instead of the raw
+  // slug).
+  const planMetaBySlug = useMemo(() => {
+    const m = new Map<string, { title: string | null; bucket: PlanBucket }>();
+    for (const p of planList.data?.plans ?? []) {
+      m.set(p.slug, { title: p.title ?? null, bucket: bucketOf(p) });
+    }
+    return m;
+  }, [planList.data]);
 
   // The three item-status categories are fetched separately (the server
   // filters each), then unioned + tagged so the additive filter can pick
@@ -608,6 +618,7 @@ export default function PlansClient() {
             refresh={refreshItems}
             onPick={navPlanTarget}
             harnessByPlan={harnessByPlan}
+            planMeta={planMetaBySlug}
             planFilters={itemPlans}
             title={itemTitle}
             subtitle={itemSubtitle}
@@ -654,6 +665,7 @@ export default function PlansClient() {
                 refresh={refreshItems}
                 onPick={navPlanTarget}
                 harnessByPlan={harnessByPlan}
+                planMeta={planMetaBySlug}
                 planFilters={itemPlans}
                 title={itemTitle}
                 subtitle={itemSubtitle}

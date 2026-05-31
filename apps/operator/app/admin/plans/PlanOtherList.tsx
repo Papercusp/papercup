@@ -16,8 +16,10 @@
  * out until that lands.
  */
 
+import { useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { launchAgent } from '@/lib/launch-agent';
 import type { AttentionGroup, AttentionItem, AttentionKind } from './plans-api';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
@@ -116,11 +118,15 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds }
                           title={it.title}
                           onClick={() => void setSelected(it.id)}
                         >
-                          <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
-                          {it.importance !== 'normal' ? (
-                            <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
-                          ) : null}
+                          {/* Free-form text first (leftmost); kind + importance
+                              pills follow on the right. */}
                           <span className="pc-items__text">{it.title}</span>
+                          <span className="pc-items__rowmeta">
+                            <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
+                            {it.importance !== 'normal' ? (
+                              <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
+                            ) : null}
+                          </span>
                         </button>
                       </li>
                     );
@@ -138,6 +144,8 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds }
 }
 
 function OtherDetail({ item }: { item: AttentionItem | null }) {
+  const [launching, setLaunching] = useState(false);
+
   if (!item) {
     return (
       <aside className="pc-items__detail">
@@ -145,6 +153,38 @@ function OtherDetail({ item }: { item: AttentionItem | null }) {
       </aside>
     );
   }
+
+  // Launch a context-scoped agent to discuss this attention item — the same
+  // interactive agent the plan pages + PlanItemPreview use. Plan-scoped when
+  // the item belongs to a plan, else harness-scoped (smoke / review live on a
+  // harness, not a plan slug).
+  const handleChat = async () => {
+    if (launching) return;
+    setLaunching(true);
+    try {
+      const kindLabel = KIND_LABEL[item.kind];
+      const result = await launchAgent({
+        slug: item.planSlug ? null : (item.harnessSlug ?? null),
+        planSlug: item.planSlug ?? null,
+        label: item.planSlug
+          ? `${item.planSlug} · ${kindLabel}`
+          : `${item.harnessSlug ?? 'harness'} · ${kindLabel}`,
+      });
+      if (result.ok) {
+        toast.success(`Launched a context agent to chat about this ${kindLabel}.`, { duration: 4000 });
+      } else if (result.installCmd) {
+        toast.error(
+          `${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`,
+          { duration: 12000 },
+        );
+      } else {
+        toast.error(`Chat launch failed: ${result.error ?? 'unknown error'}`, { duration: 10000 });
+      }
+    } finally {
+      setLaunching(false);
+    }
+  };
+
   return (
     <aside className="pc-items__detail">
       {/* Actions live on the top header bar (matching PlanItemPreview), not
@@ -156,18 +196,32 @@ function OtherDetail({ item }: { item: AttentionItem | null }) {
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
         ) : null}
         <div className="pc-items__detail-actions">
-          {item.actions.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
-              onClick={() =>
-                toast.info(`"${a.label}" — ${KIND_LABEL[item.kind]} action wiring lands in P-017.`)
-              }
-            >
-              {a.label}
-            </button>
-          ))}
+          {item.actions.map((a) =>
+            a.id === 'chat' ? (
+              <button
+                key={a.id}
+                type="button"
+                className="pc-items__action-btn pc-items__action-btn--chat"
+                onClick={handleChat}
+                disabled={launching}
+                title={`Chat with a context-scoped agent about this ${KIND_LABEL[item.kind]}`}
+              >
+                {launching ? 'Launching…' : `💬 ${a.label}`}
+              </button>
+            ) : (
+              <button
+                key={a.id}
+                type="button"
+                className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
+                onClick={() =>
+                  toast.info(`"${a.label}" — ${KIND_LABEL[item.kind]} action wiring lands in P-017.`)
+                }
+                title={`${a.label} — coord wiring (coord:resolve / coord:ack / open) is deferred to P-017`}
+              >
+                {a.label}
+              </button>
+            ),
+          )}
         </div>
       </div>
       <div className="pc-items__detail-body">

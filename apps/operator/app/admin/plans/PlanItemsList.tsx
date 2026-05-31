@@ -19,7 +19,7 @@ import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
-import { setItemStatus, addPlanDecision, type PlanItemRow } from './plans-api';
+import { setItemStatus, addPlanDecision, type PlanItemRow, type PlanBucket } from './plans-api';
 import PlanItemPreview from './PlanItemPreview';
 
 interface Props {
@@ -30,6 +30,9 @@ interface Props {
   onPick: (slug: string, targetId?: string) => void;
   /** plan-slug → harness-slug map; lets needs-human rows relaunch the loop. */
   harnessByPlan?: Map<string, string>;
+  /** plan-slug → display title + lifecycle bucket, for the group headers.
+   *  Headers show the human title + a ready/running pill instead of the slug. */
+  planMeta?: Map<string, { title: string | null; bucket: PlanBucket }>;
   /** Narrow the list to these plans (multi-select OR; the rail toggles
    *  them). Empty/undefined = all plans. */
   planFilters?: string[];
@@ -52,6 +55,7 @@ export default function PlanItemsList({
   refresh,
   onPick,
   harnessByPlan,
+  planMeta,
   planFilters,
 }: Props) {
   // A single selected plan renders "bare" (no repeated title); multiple
@@ -154,19 +158,23 @@ export default function PlanItemsList({
               title={r.item.text}
               onClick={() => void setSelectedItem(itemKey(planSlug, r.item.id))}
             >
-              <span className="pc-items__id">{r.item.id}</span>
-              <span className={`pc-count pc-count--${itemPillStatus(r.item)}`}>
-                {itemPillStatus(r.item)}
-              </span>
-              {r.item.importance && r.item.importance !== 'normal' ? (
-                <span
-                  className={`pc-imp pc-imp--${r.item.importance}`}
-                  title={`Importance: ${r.item.importance}`}
-                >
-                  {r.item.importance}
-                </span>
-              ) : null}
+              {/* Free-form text first (leftmost); id + status + importance
+                  pills follow on the right. */}
               <span className="pc-items__text">{r.item.text}</span>
+              <span className="pc-items__rowmeta">
+                <span className="pc-items__id">{r.item.id}</span>
+                <span className={`pc-count pc-count--${itemPillStatus(r.item)}`}>
+                  {itemPillStatus(r.item)}
+                </span>
+                {r.item.importance && r.item.importance !== 'normal' ? (
+                  <span
+                    className={`pc-imp pc-imp--${r.item.importance}`}
+                    title={`Importance: ${r.item.importance}`}
+                  >
+                    {r.item.importance}
+                  </span>
+                ) : null}
+              </span>
             </button>
           </li>
         );
@@ -192,6 +200,9 @@ export default function PlanItemsList({
                 );
               }
               const isExpanded = expandedGroups.includes(planSlug);
+              const meta = planMeta?.get(planSlug);
+              const planTitle = meta?.title?.trim() || planSlug;
+              const bucket = meta?.bucket;
               return (
                 <li key={planSlug} className="pc-items__group">
                   <Collapsible.Root
@@ -205,13 +216,18 @@ export default function PlanItemsList({
                     }
                   >
                     <Collapsible.Trigger asChild>
-                      <button type="button" className="pc-items__plan-head">
+                      <button type="button" className="pc-items__plan-head" title={planSlug}>
                         <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
                         <span className="pc-items__plan-copy">
-                          <span className="pc-items__plan-name">{planSlug}</span>
-                          {harnessSlug ? (
+                          <span className="pc-items__plan-name">{planTitle}</span>
+                          {bucket || harnessSlug ? (
                             <span className="pc-items__plan-meta">
-                              <span className="pc-pill pc-pill--harness">{harnessSlug}</span>
+                              {bucket ? (
+                                <span className={`pc-pill pc-pill--bucket-${bucket}`}>{bucket}</span>
+                              ) : null}
+                              {harnessSlug ? (
+                                <span className="pc-pill pc-pill--harness">{harnessSlug}</span>
+                              ) : null}
                             </span>
                           ) : null}
                         </span>
