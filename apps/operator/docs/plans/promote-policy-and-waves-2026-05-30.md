@@ -186,6 +186,15 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
   configurable, default 3) → create/update a `harness_issues` row (`harness-issues.ts`) keyed by
   `(plan, wave[, feature])` so the **operator scanner** surfaces it (dedup by id). Today's stuck-detection is
   time-based (">7d") / the 3-consecutive alert is voice-only — this adds the feature-attempt + wave path.
+  **Host-session pre-work (decided 2026-05-30, no code yet):** the issue store is FS-canonical
+  (`.harness/issues.json` via `loadIssuesOrSeed`/`saveIssues`, PG-mirrored) — reuse it, don't build new (D-004).
+  `wave-advance-sweep.ts`'s `onBlocked` already carries `{slug, harnessSlug, wave}`; the live adapter resolves
+  a `ProjectEntry` from `harnessSlug`, computes a deterministic id `I-WAVE-<plan>-<wave>` (dedup), and upserts.
+  **Blocker requiring a host:** `IssueSource` (`app/harness/issues/types.ts`) is
+  `'validator' | 'worker' | 'human'` — none fits a sweep-detected block. Add a **`'system'`** member, then
+  audit every `SOURCE_*` icon/label/filter map for a missing-key crash (per the React-icon-map-fallback rule a
+  missing key takes down the whole subtree) — which is exactly why this is host-verified, not shipped blind.
+  Severity `major`; `source: 'system'`; `foundDuring: <plan>`; title `Wave "<wave>" blocked in <plan>`.
 - **P-013** `todo` Per-wave progress on the started plan: extend the promote-status line
   (`upsertPromoteStatusLine` in `promote.ts`) to render per-wave counts; surface the same in the harness UI
   (plan detail).
