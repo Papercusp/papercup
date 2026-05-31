@@ -34,17 +34,50 @@ const OPERATOR_URL = process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:307
 
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
-  const out = { picker: true, resume: false, agent: null, workspace: null, harness: null, plan: null, noPlan: false };
+  const out = { picker: true, resume: false, agent: null, role: null, feature: null, workspace: null, harness: null, plan: null, noPlan: false };
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
     else if (a === '--resume') out.resume = true;
     else if (a === '--no-plan') out.noPlan = true;
     else if (a.startsWith('--agent=')) out.agent = a.slice('--agent='.length);
+    else if (a.startsWith('--role=')) out.role = a.slice('--role='.length);
+    else if (a.startsWith('--feature=')) out.feature = a.slice('--feature='.length);
     else if (a.startsWith('--workspace=')) out.workspace = a.slice('--workspace='.length);
     else if (a.startsWith('--harness=')) out.harness = a.slice('--harness='.length);
     else if (a.startsWith('--plan=')) out.plan = a.slice('--plan='.length);
   }
   return out;
+}
+
+/**
+ * Per-backend args for an interactive ROLE session — exec the raw CLI
+ * (NOT the *-su wrapper, which bakes the engineer playbook + superuser
+ * MCP) with the role prompt as system prompt + the signed role-scoped
+ * `.mcp.json`. Pure — exported for tests.
+ *
+ * claude gets `--strict-mcp-config` so it's restricted to ONLY the
+ * role-scoped server (true tool-scoping); omp path-discovers the cwd's
+ * `.mcp.json`. codex is rejected upstream (bootstrap-role 400) — its
+ * interactive role path needs a per-session CODEX_HOME (Phase 2).
+ */
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
+  if (backend === 'claude') {
+    return {
+      bin: 'claude',
+      args: [
+        '--dangerously-skip-permissions',
+        '--append-system-prompt-file', promptFile,
+        '--mcp-config', mcpJsonPath,
+        '--strict-mcp-config',
+        '--permission-mode', 'bypassPermissions',
+      ],
+    };
+  }
+  if (backend === 'omp') {
+    // omp path-discovers <cwd>/.mcp.json; --append-system-prompt takes a file path.
+    return { bin: 'omp', args: ['--approval-mode', 'yolo', '--append-system-prompt', promptFile] };
+  }
+  throw new Error(`roleLaunchArgs: backend '${backend}' has no interactive role launch (use claude or omp)`);
 }
 
 /**
@@ -224,6 +257,80 @@ async function pickPlan(workspace, harness) {
   });
 }
 
+/** Sentinel for the "no feature" picker row (optional-feature roles). */
+const NO_FEATURE = '<no-feature>';
+
+/** Pick the role. 'su' (plain engineer) leads; the known pipeline roles
+ *  follow. Returns { role, roles } so the caller reuses the consumes map. */
+async function pickRole() {
+  const { roles } = await api('/api/agent-mcp/console/bootstrap-su/options');
+  const known = Array.isArray(roles) ? roles : [];
+  const { select } = await import('@inquirer/prompts');
+  const role = await select({
+    message: 'Role',
+    choices: [
+      { name: 'su  — engineer collaborator (full SU catalog)', value: 'su' },
+      ...known.map((r) => ({ name: r.id, value: r.id })),
+    ],
+  });
+  return { role, roles: known };
+}
+
+/** Role sessions support claude + omp interactively (codex needs a
+ *  per-session CODEX_HOME — Phase 2). */
+async function pickRoleBackend() {
+  const { select } = await import('@inquirer/prompts');
+  return select({
+    message: 'Backend',
+    choices: [
+      { name: 'claude', value: 'claude' },
+      { name: 'omp', value: 'omp' },
+    ],
+  });
+}
+
+/** Harness picker that REQUIRES a real harness (role sessions are
+ *  harness-scoped — no workspace-root option). */
+async function pickHarnessRequired(workspace) {
+  const { search } = await import('@inquirer/prompts');
+  const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const { harnesses } = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
+  const rows = (harnesses || []).map((h) => ({ name: h.status ? `${h.slug}  (${h.status})` : h.slug, value: h.slug }));
+  if (rows.length === 0) {
+    console.error('psu: no harnesses registered in this workspace — a role session needs one.');
+    process.exit(1);
+  }
+  return search({ message: 'Harness', source: async (term) => filterRows(rows, term) });
+}
+
+/** Feature picker. `need` = 'required' (must pick) | 'optional' (offer
+ *  a "no feature" row). Returns the feature id or null. */
+async function pickFeature(workspace, harness, need) {
+  const { search } = await import('@inquirer/prompts');
+  let features = [];
+  try {
+    const params = new URLSearchParams({ harness, features: '1' });
+    if (workspace) params.set('workspace', workspace);
+    const r = await api(`/api/agent-mcp/console/bootstrap-su/options?${params.toString()}`);
+    features = r.features || [];
+  } catch {
+    features = [];
+  }
+  const featureRows = features.map((f) => ({
+    name: f.title ? `${f.id}  —  ${f.title}${f.status ? `  (${f.status})` : ''}` : f.id,
+    value: f.id,
+  }));
+  const rows = need === 'optional'
+    ? [{ name: 'NO FEATURE — run the role unscoped', value: NO_FEATURE }, ...featureRows]
+    : featureRows;
+  if (rows.length === 0) {
+    console.error(`psu: role needs a feature but harness '${harness}' has none.`);
+    process.exit(1);
+  }
+  const picked = await search({ message: 'Feature', source: async (term) => filterRows(rows, term) });
+  return picked === NO_FEATURE ? null : picked;
+}
+
 function runWrapper({ wrapperBin, args = [], cwd, envelopeEnv }) {
   const child = spawn(wrapperBin, args, {
     cwd,
@@ -287,12 +394,75 @@ async function resumeFlow() {
   });
 }
 
+// `psu --role=<role>` (or picking a non-su role): an interactive,
+// role-scoped session — role persona + tools + feature context, human at
+// the keyboard. Goes through bootstrap-role + execs the raw backend with
+// the role prompt + signed role-scoped .mcp.json (NOT a *-su wrapper).
+async function roleFlow(args, role, rolesMeta) {
+  const consumes = (rolesMeta || []).find((r) => r.id === role)?.consumes ?? { feature: 'none', plan: 'none' };
+  let agent, workspace, harness, feature;
+  if (args.picker) {
+    agent = args.agent || (await pickRoleBackend());
+    workspace = args.workspace || (await pickWorkspace());
+    harness = args.harness || (await pickHarnessRequired(workspace));
+    if (args.feature) feature = args.feature;
+    else if (consumes.feature === 'none') feature = null;
+    else feature = await pickFeature(workspace, harness, consumes.feature);
+  } else {
+    if (agentInvalidForRole(args.agent)) {
+      throw new Error('--agent must be claude or omp for a role session (codex not yet supported)');
+    }
+    if (!args.harness) throw new Error('--harness is required for a role session');
+    agent = args.agent;
+    workspace = args.workspace || null;
+    harness = args.harness;
+    feature = args.feature || null;
+  }
+
+  const res = await api('/api/agent-mcp/console/bootstrap-role', {
+    method: 'POST',
+    body: JSON.stringify({ role, agent, workspace, harness_slug: harness, feature }),
+  });
+
+  const { bin, args: launchArgs } = roleLaunchArgs(res.agent, {
+    promptFile: res.promptFile,
+    mcpJsonPath: res.mcpJsonPath,
+  });
+  console.error(
+    `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : 'no feature'}` +
+      `  ·  harness ${res.harnessSlug}  ·  session ${res.sessionId ?? '?'}`,
+  );
+  console.error(`psu: cwd ${res.cwd}  —  role-scoped MCP (${res.role}); resume from here`);
+  runWrapper({ wrapperBin: bin, args: launchArgs, cwd: res.cwd, envelopeEnv: res.envelopeEnv });
+}
+
+/** True when an --agent value can't back a role session (only claude/omp can). */
+export function agentInvalidForRole(agent) {
+  return agent !== 'claude' && agent !== 'omp';
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.resume) {
     await resumeFlow();
     return;
   }
+
+  // Resolve the role first: flag wins; else pick (picker mode); else 'su'.
+  let role = args.role || null;
+  let rolesMeta = null;
+  if (!role && args.picker) {
+    const picked = await pickRole();
+    role = picked.role;
+    rolesMeta = picked.roles;
+  }
+  if (!role) role = 'su';
+  if (role !== 'su') {
+    await roleFlow(args, role, rolesMeta);
+    return;
+  }
+
+  // ── plain SU / engineer flow (unchanged) ──
   let selections;
   if (args.picker) {
     // Honor any flags as preselections; prompt only for what was omitted.

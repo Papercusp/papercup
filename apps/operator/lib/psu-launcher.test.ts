@@ -5,6 +5,8 @@ import {
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
+  roleLaunchArgs,
+  agentInvalidForRole,
   AGENTS,
   NO_PLAN,
 } from '../scripts/psu-launcher.mjs';
@@ -15,6 +17,8 @@ describe('psu-launcher arg parsing', () => {
       picker: true,
       resume: false,
       agent: null,
+      role: null,
+      feature: null,
       workspace: null,
       harness: null,
       plan: null,
@@ -29,6 +33,8 @@ describe('psu-launcher arg parsing', () => {
       picker: false,
       resume: false,
       agent: 'claude',
+      role: null,
+      feature: null,
       workspace: 'ws1',
       harness: 'papercup',
       plan: 'my-plan',
@@ -145,5 +151,44 @@ describe('psu-launcher arg parsing', () => {
 
   it('presetsFromArgs: rejects a bad --agent', () => {
     expect(() => presetsFromArgs(parseArgs(['--agent=gemini']))).toThrow();
+  });
+
+  it('parses --role and --feature', () => {
+    const a = parseArgs(['--role=worker', '--feature=F-001', '--harness=papercup', '--agent=claude']);
+    expect(a.role).toBe('worker');
+    expect(a.feature).toBe('F-001');
+  });
+});
+
+describe('roleLaunchArgs (interactive role session)', () => {
+  const files = { promptFile: '/lc/session-7.md', mcpJsonPath: '/proj/.mcp.json' };
+
+  it('claude: raw claude, role prompt, strict role-scoped MCP, skip perms', () => {
+    const { bin, args } = roleLaunchArgs('claude', files);
+    expect(bin).toBe('claude');
+    expect(args).toEqual([
+      '--dangerously-skip-permissions',
+      '--append-system-prompt-file', '/lc/session-7.md',
+      '--mcp-config', '/proj/.mcp.json',
+      '--strict-mcp-config',
+      '--permission-mode', 'bypassPermissions',
+    ]);
+  });
+
+  it('omp: raw omp, role prompt file, yolo approvals (path-discovers .mcp.json)', () => {
+    const { bin, args } = roleLaunchArgs('omp', files);
+    expect(bin).toBe('omp');
+    expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
+  });
+
+  it('codex: no interactive role launch (throws)', () => {
+    expect(() => roleLaunchArgs('codex', files)).toThrow();
+  });
+
+  it('agentInvalidForRole accepts only claude/omp', () => {
+    expect(agentInvalidForRole('claude')).toBe(false);
+    expect(agentInvalidForRole('omp')).toBe(false);
+    expect(agentInvalidForRole('codex')).toBe(true);
+    expect(agentInvalidForRole(null)).toBe(true);
   });
 });

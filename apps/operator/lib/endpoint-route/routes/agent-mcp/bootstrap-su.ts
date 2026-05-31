@@ -114,6 +114,25 @@ const optionsGet = defineTool({
     const url = new URL(req.url);
     const workspace = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
     const harness = url.searchParams.get('harness')?.trim() || null;
+    const wantFeatures = url.searchParams.get('features') === '1';
+
+    // ?harness=X&features=1 → feature list (for the psu --role feature picker).
+    if (harness && wantFeatures) {
+      try {
+        const { listFeaturesForHarness } = await import('@/lib/harness-readers');
+        const r = await listFeaturesForHarness(harness, 'staging');
+        const features = r.ok
+          ? (r.data.features as Array<{ id?: string; feature_id?: string; title?: string; description?: string; status?: string }>).map((f) => ({
+              id: f.id ?? f.feature_id ?? '',
+              title: f.title ?? f.description ?? '',
+              status: f.status ?? null,
+            })).filter((f) => f.id)
+          : [];
+        return jsonRes({ status: 'ok', workspace, harness, features });
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: e?.message ?? 'features listing failed' }, 400);
+      }
+    }
 
     if (harness) {
       try {
@@ -138,7 +157,11 @@ const optionsGet = defineTool({
       status: h.status,
     }));
     const workspaces = readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name }));
-    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses });
+    // Roles + their consumes (feature/plan needs) for the psu --role picker.
+    const { getKnownRoles } = await import('@/lib/known-roles');
+    const { roleConsumes } = await import('@/lib/role-registry');
+    const roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles });
   },
 });
 
