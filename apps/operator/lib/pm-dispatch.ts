@@ -22,6 +22,7 @@
 import { spawn } from 'node:child_process';
 import { getLegacyClient, withWorkspaceLegacy } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { getPromptOverride } from '@/lib/harness-prompt-overrides';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectDirForSlug } from './operator-notes';
 import { resolveBackend, resolveAgentBin } from '@papercusp/papercup-shared/agent';
@@ -253,11 +254,17 @@ async function runProjectManagerInner(
     ).all(slug, projectId)) as Array<{ id: string }>;
     const eventIds = pendingEvents.map((e) => e.id);
 
-    // 5. Assemble the role prompt.
+    // 5. Assemble the role prompt. Resolve the workspace-owned prompt override
+    //    (D-7) and pass it; best-effort (store miss → committed-default fallback).
+    let pmOverride: string | undefined;
+    try {
+      pmOverride = (await getPromptOverride(activeWorkspaceId(), slug, 'project_manager')) ?? undefined;
+    } catch { /* fall back to config.json default */ }
     const assembled = assembleRolePrompt({
       slug,
       role: 'project_manager',
       mode: 'autonomous',
+      promptOverrideText: pmOverride,
       extras: [
         `PROJECT_ID=${projectId}`,
         `RECENT_PASSED_FEATURES=${recentFeatureIds.join(',')}`,

@@ -18,6 +18,7 @@ import { sseResponse } from '@papercusp/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { getLegacyClient } from '@papercusp/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { getPromptOverride } from '@/lib/harness-prompt-overrides';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { buildMemoryContextBlock } from '@/lib/memory/injection';
@@ -230,6 +231,11 @@ const messagesRoute = defineTool({
     // Assemble the role prompt + transcript history.
     let assembled: { text: string; runId: string };
     try {
+      // Workspace-owned prompt override (D-7), best-effort (miss → default).
+      let chatOverride: string | undefined;
+      try {
+        chatOverride = (await getPromptOverride(activeWorkspaceId(), slug, chat.role)) ?? undefined;
+      } catch { /* fall back to config.json default */ }
       const r = assembleRolePrompt({
         slug,
         role: chat.role,
@@ -237,6 +243,7 @@ const messagesRoute = defineTool({
         // 'discuss' (client sends it per message) reframes the worker to
         // advise-first; anything else is the default interactive chat.
         mode: body.mode === 'discuss' ? 'discuss' : 'chat',
+        promptOverrideText: chatOverride,
       });
       const lockNotice = featureLock?.active
         ? `\n---\n\n## ⚠ Concurrent autonomous run\n\nFeature ${chat.feature_id} is currently being worked on autonomously (taken_by=${featureLock.taken_by}, taken_at=${featureLock.taken_at}). The autonomous loop holds the worktree lock; you do not. **Do not propose code changes**; the user is asking you for advice or context. If they want guidance the autonomous worker should pick up, tell them to add a note (it lands in \`.harness/notes/${chat.feature_id}.md\`, which the next worker tick reads).\n`
