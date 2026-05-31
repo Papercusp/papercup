@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { readAgentConfig } from '@/lib/agent-config';
+import { readAgentConfig, surfaceBackend } from '@/lib/agent-config';
 import { selfUrl } from '@/lib/self-url';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
@@ -270,6 +270,9 @@ export default defineTool({
     // Resolve the brain model once per turn: env > agent-config
     // models['operator'] > pinned Anthropic default.
     const brainModel = await resolveBrainModel();
+    // Per-surface backend override (/settings/agent). undefined → inherit the
+    // global $AGENT_BACKEND that applyToProcessEnv mirrors from agent-config.
+    const operatorBackend = await surfaceBackend('operator');
 
     // The agent backend (omp → codex/anthropic) intermittently produces
     // an empty turn: a transient upstream model error, or omp exiting 0
@@ -284,6 +287,7 @@ export default defineTool({
           promptText: userPromptText,
           systemPromptText,
           model: brainModel,
+          backend: operatorBackend,
           mcpConfig,
           allowedTools: [...allowedTools],
           permissionMode: 'bypassPermissions',

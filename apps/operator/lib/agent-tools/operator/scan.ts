@@ -22,6 +22,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { surfaceBackend } from '@/lib/agent-config';
 import { selfUrl } from '@/lib/self-url';
 import { parseSuggestions, enrich } from '@/lib/operator-suggestion-parser';
 import { loadPreferences, type OperatorPreferences } from '@/lib/operator-preferences';
@@ -182,9 +183,12 @@ export default defineTool({
       const llmBlocks: SuggestionPayload[] = [];
       let parseErrors = 0;
 
+      // per-surface backend override (/settings/agent); undefined → global
+      const scannerBackend = await surfaceBackend('scanner');
       try {
         for await (const ev of runAgentChat({
           promptText,
+          backend: scannerBackend,
           mcpConfig: input.superuserToken
             ? {
                 mcpServers: {

@@ -31,6 +31,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { runAgentChat, type ChatEvent } from '@/lib/agent-chat-stream';
+import { surfaceBackend } from '@/lib/agent-config';
 import { selfUrl } from '@/lib/self-url';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
@@ -259,10 +260,13 @@ export async function* runPlanAgent(
         'or too short — the launched agent cannot reach the plans:* MCP surface.',
     );
   }
+  // per-surface backend override (/settings/agent); undefined → global
+  const plansBackend = await surfaceBackend('plans');
   yield* runAgentChat({
     promptText: opts.promptText,
     systemPromptText: opts.systemPromptText,
     model: PLAN_AGENT_MODEL,
+    backend: plansBackend,
     mcpConfig,
     allowedTools: [...PLAN_AGENT_ALLOWED_TOOLS],
     toolEventFilter: planAgentToolEventFilter,

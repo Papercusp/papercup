@@ -38,12 +38,37 @@ export interface AgentConfig {
   /** Per-role model overrides (e.g. `{ worker: 'haiku', reviewer: 'opus' }`).
       Forwarded to the orchestrator via $AGENT_MODELS env (JSON). */
   models: Record<string, string>;
+  /** Per-surface backend overrides for the in-app brains. A surface absent
+      from the map inherits the global `backend`. Lets you run e.g. oracle on
+      claude-code while the operator stays on omp. Resolved per-call via
+      `surfaceBackend()` and passed as RunAgentChatOptions.backend — NOT
+      mirrored to env (env carries only the single global backend). The
+      orchestrator's harness-pipeline agents are configured separately via
+      .harness/config.json `aiBackend.roles`. Optional: legacy rows/literals
+      omit it; `readAgentConfig` always populates it from `parseBackends`. */
+  backends?: Partial<Record<SurfaceKey, AgentBackend>>;
 }
+
+/** The in-app brain surfaces that support a per-surface backend override.
+    Keep in sync with the call sites that pass `surfaceBackend('<key>')` and
+    the /settings/agent per-surface table. */
+export const SURFACE_KEYS = [
+  'operator',
+  'scanner',
+  'delegate',
+  'oracle',
+  'architect',
+  'brainstorm',
+  'agent_chats',
+  'plans',
+] as const;
+export type SurfaceKey = (typeof SURFACE_KEYS)[number];
 
 const DEFAULT_CONFIG: AgentConfig = {
   backend: 'omp',
   cmd: '',
   models: {},
+  backends: {},
 };
 
 export async function readAgentConfig(): Promise<AgentConfig> {
@@ -59,7 +84,22 @@ export async function readAgentConfig(): Promise<AgentConfig> {
             .map(([k, v]) => [k, v as string]),
         )
       : {},
+    backends: parseBackends(raw.backends),
   };
+}
+
+/** Validate the per-surface backend map: keep only known surface keys
+    mapped to concrete (non-'auto') backends. Unknown keys / invalid
+    backends are dropped silently — absence means "inherit the global". */
+export function parseBackends(raw: unknown): Partial<Record<SurfaceKey, AgentBackend>> {
+  const out: Partial<Record<SurfaceKey, AgentBackend>> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if ((SURFACE_KEYS as readonly string[]).includes(k) && (v === 'omp' || v === 'claude-code')) {
+      out[k as SurfaceKey] = v;
+    }
+  }
+  return out;
 }
 
 export async function writeAgentConfig(cfg: AgentConfig): Promise<AgentConfig> {
@@ -157,4 +197,21 @@ export function effectiveBackend(cfg: AgentConfig): 'claude-code' | 'omp' {
   if (/(?:^|\/)(omp|pi)$/.test(first)) return 'omp';
   if (/(?:^|\/)claude$/.test(first)) return 'claude-code';
   return 'omp';
+}
+
+/**
+ * The per-surface backend override for an in-app brain, or `undefined` when
+ * the surface inherits the global backend. Pass the result straight to
+ * `RunAgentChatOptions.backend`: `undefined` lets `runAgentChat` fall back to
+ * `$AGENT_BACKEND` (the global pick `applyToProcessEnv` mirrors from config).
+ * Best-effort — returns `undefined` on any read error so the call site
+ * degrades to the global backend rather than throwing on the hot path.
+ */
+export async function surfaceBackend(surface: SurfaceKey): Promise<AgentBackend | undefined> {
+  try {
+    const cfg = await readAgentConfig();
+    return cfg.backends?.[surface];
+  } catch {
+    return undefined;
+  }
 }

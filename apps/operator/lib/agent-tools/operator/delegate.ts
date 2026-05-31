@@ -30,6 +30,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { surfaceBackend } from '@/lib/agent-config';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import {
@@ -235,9 +236,12 @@ export default defineTool({
     let tokensIn = 0;
     let tokensOut = 0;
 
+    // per-surface backend override (/settings/agent); undefined → global
+    const delegateBackend = await surfaceBackend('delegate');
     try {
       for await (const ev of runAgentChat({
         promptText,
+        backend: delegateBackend,
         sessionId: agentSessionId,
         sessionMode: 'force',
         mcpConfig,

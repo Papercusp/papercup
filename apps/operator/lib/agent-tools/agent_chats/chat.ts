@@ -27,6 +27,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { surfaceBackend } from '@/lib/agent-config';
 
 const ArgsSchema = z.object({
   promptText: z.string().min(1),
@@ -54,10 +55,13 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
   let lastErrorMessage: string | null = null;
   let lastErrorStderr: string | undefined;
 
+  // per-surface backend override (/settings/agent); undefined → global
+  const agentChatsBackend = await surfaceBackend('agent_chats');
   try {
     for await (const ev of runAgentChat({
       promptText: input.promptText,
       cwd: input.cwd,
+      backend: agentChatsBackend,
       signal: ctx.signal,
     })) {
       if (ev.type === 'delta') {

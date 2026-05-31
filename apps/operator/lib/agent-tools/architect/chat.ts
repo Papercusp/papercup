@@ -31,6 +31,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import { surfaceBackend, type SurfaceKey } from '@/lib/agent-config';
 import {
   composeArchitectPrompt,
   composeBrainstormPrompt,
@@ -89,12 +90,16 @@ async function streamPrompt(
   cwd: string,
   ctx: ChatCtx,
   label: string,
+  surface: SurfaceKey,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   let finalText = '';
+  // per-surface backend override (/settings/agent); undefined → global
+  const backend = await surfaceBackend(surface);
   try {
     for await (const ev of runAgentChat({
       promptText,
       cwd,
+      backend,
       // Caller-side cancellation: dispatcher's wrapped signal fires on
       // client disconnect / wall-clock timeout / idle timeout. Forward
       // so runAgentChat shuts the subprocess down instead of letting
@@ -144,7 +149,7 @@ async function architectHandler(
     input.message,
     input.reviewId,
   );
-  return streamPrompt(promptText, project.path, ctx, 'architect');
+  return streamPrompt(promptText, project.path, ctx, 'architect', 'architect');
 }
 
 async function brainstormHandler(
@@ -160,7 +165,7 @@ async function brainstormHandler(
     input.history as ChatHistoryEntry[],
     input.message,
   );
-  return streamPrompt(promptText, project.path, ctx, 'brainstorm');
+  return streamPrompt(promptText, project.path, ctx, 'brainstorm', 'brainstorm');
 }
 
 export const architectChat = defineTool({
