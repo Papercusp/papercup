@@ -219,3 +219,14 @@ Date: 2026-05-30
 
 Supersedes P-024's "gated by FLAGS.HARNESS_PHASES, same as the existing tests routes." Per the user, the harness `/api/harness/:slug/testing/*` routes (domain-detail, file-status, health-strip, run, assertions, plan-items-test-status) are NO LONGER gated by `HARNESS_PHASES` — the `phasesEnabled()` helper + its 7 gate checks were removed (commit 6def160f). Rationale: `HARNESS_PHASES` gates the staging/testing/production PHASE system, which is a separate concern from surfacing a harness's tests; coupling the Tests tab to it was wrong. The flag itself is unchanged — still off by default, still gating PhaseTabs and the legacy `/harness/:slug/tests` routes. The Tests tab now functions regardless of the flag.
 Related: P-024
+
+### D-008 — Harness Tests is a top-level /adv tab, not a harness dock panel
+Date: 2026-05-31
+Date: 2026-05-30
+
+Per the user, the testing surface is its own **top-level /adv tab** (alongside Harness, Git, Plans, Sessions), NOT a panel opened inside the Harnesses dock. This supersedes how P-020 wired it (registered `adv:tests` in HarnessesDock + AddPanelCatalog, openable via "Add panel").
+
+Implementation (commit e52a9c15): rendered via the same `AdvHarnessPanelPage` DIRECT mechanism as Git/Docs/Config — `'testing'` added to `ADV_TAB_IDS`/`ADV_TABS` (AdvShell), the `AdvHarnessPanel` union + labels + a `testing: (slug) => <HarnessTestsView slug={slug}/>` DIRECT entry, and `case 'testing'` in the route dispatcher. The Tests UI moved into a slug-prop `HarnessTestsView` (from the deleted `AdvTestsPanel`); the dock registration + catalog entries + HarnessTopBar allowedTypes entry were removed. The /adv global `?slug=` drives it; "All harnesses" shows the standard per-harness empty state.
+
+Also (separately, same session, commit 6def160f / D-007): the `/testing/*` routes are no longer gated by `HARNESS_PHASES`.
+Related: P-020, P-083
