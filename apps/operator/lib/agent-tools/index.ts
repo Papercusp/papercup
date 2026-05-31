@@ -197,6 +197,7 @@ import './coordination/tools/promote';
 import './plans/list';
 import './plans/get';
 import './plans/items';
+import './plans/attention';
 import './plans/search';
 import './plans/lint';
 import './plans/new';

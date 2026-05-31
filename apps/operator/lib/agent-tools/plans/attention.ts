@@ -1,0 +1,189 @@
+/**
+ * plans:attention — the unified attention reader for the Planning tab
+ * (planning-attention-importance-2026-05-31, P-011 / D-004, D-008).
+ *
+ * Fetches every "needs the human / pick this up" surface, maps each
+ * through its AttentionItem adapter, and returns them grouped by plan
+ * (+ a synthetic per-harness "Alerts" bucket for unattached items),
+ * importance-sorted. Sources:
+ *   - plan items (non-terminal)            → planItemToAttention
+ *   - open coord escalations               → coordEscalationToAttention
+ *   - coord messages addressed to 'human'  → coordMessageToAttention
+ *   - failing smoke tests (harness_smoke_test)  → smokeFailToAttention
+ *   - plans awaiting review (harness_plan_review) → planReviewToAttention
+ *
+ * Each source is best-effort: one source erroring (PG offline, no coord
+ * log) degrades to fewer items, never a failed read. The orchestrator's
+ * needs-human DONE-gate keeps using GET /api/admin/plans/items?needsHuman
+ * (unchanged) — this is a separate, additive read (P-012).
+ *
+ * v1 takes a single optional `harnessSlug` filter (applied to the
+ * harness-scoped sources); cross-harness fan-out via the UI selector is
+ * wired in Phase 4 (P-016). coord escalations/messages are workspace-
+ * level and always included.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { readAllPlans } from './source';
+import { ctxToPlanSourceOpts } from './_ctx-opts';
+import { resolveEffectiveStatus } from './effective-status';
+import {
+  planItemToAttention,
+  coordEscalationToAttention,
+  coordMessageToAttention,
+  smokeFailToAttention,
+  planReviewToAttention,
+} from '../../attention/adapters';
+import { buildAttentionGroups } from '../../attention/group';
+import type { AttentionItem } from '../../attention/types';
+
+const ALL_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+const argsSchema = z.object({
+  harnessSlug: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Restrict the harness-scoped sources (smoke-fails, plan-reviews) to one harness. Omit for workspace-wide.'),
+  includeArchived: z.boolean().optional().describe('Include items from archived plans. Default false.'),
+});
+
+export default defineTool({
+  name: 'plans:attention',
+  description:
+    "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + plan-reviews, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
+  guidance: {
+    when: 'You want everything awaiting the human / pickable, in one importance-sorted feed — the Planning tab inbox, or to find the single most-urgent open thing.',
+    notWhen:
+      'You only need plan items (use plans:items), or the full structure of one plan (plans:get). For the orchestrator DONE-gate use plans:items { needsHuman: true }.',
+    chaining: 'plans:attention → act on an item via its kind (plans:set-status for plan items, coord:resolve for escalations).',
+  },
+  capability: 'plans:read',
+  requirePrincipal: false,
+  roles: [...ALL_ROLES],
+  modality: ['text'],
+  args: argsSchema,
+  async handler(args, ctx) {
+    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const opts = await ctxToPlanSourceOpts(ctx);
+    const harnessFilter = args.harnessSlug ?? null;
+    const includeArchived = args.includeArchived === true;
+    const items: AttentionItem[] = [];
+
+    // 1. Plan items — non-terminal (todo/wip/blocked/needs-human).
+    try {
+      const plans = await readAllPlans({ includeArchived, ...opts });
+      for (const { parsed } of plans) {
+        if (parsed.isLegacy) continue;
+        const slug = parsed.frontmatter.slug ?? parsed.slug;
+        const resolved = resolveEffectiveStatus(parsed);
+        for (const it of resolved.items) {
+          if (it.storedStatus === 'done' || it.storedStatus === 'dropped') continue;
+          if (it.effectiveStatus === 'done' || it.effectiveStatus === 'dropped') continue;
+          items.push(
+            planItemToAttention({
+              slug,
+              harnessSlug: harnessFilter,
+              id: it.id,
+              text: it.text,
+              storedStatus: it.storedStatus,
+              effectiveStatus: it.effectiveStatus,
+              importance: it.importance,
+            }),
+          );
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 2. Open coord escalations (workspace-level).
+    try {
+      const { listEscalations } = await import('../coordination/escalations');
+      const escs = await listEscalations({ status: 'open' });
+      for (const e of escs) {
+        items.push(
+          coordEscalationToAttention({
+            msgId: e.msg_id,
+            severity: e.severity,
+            summary: typeof e.summary === 'string' ? e.summary : '',
+            body: typeof e.body === 'string' ? e.body : undefined,
+            planSlug: typeof e.plan_slug === 'string' ? e.plan_slug : null,
+            options: Array.isArray(e.options) ? e.options : [],
+          }),
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 3. Coord messages addressed to the human (most recent, capped).
+    try {
+      const { readInbox } = await import('../coordination/messages');
+      const msgs = await readInbox('human', { kinds: ['message'] });
+      for (const m of msgs.slice(-50)) {
+        items.push(
+          coordMessageToAttention({
+            msgId: m.msg_id,
+            summary: typeof m.summary === 'string' ? m.summary : undefined,
+            body: typeof m.body === 'string' ? m.body : undefined,
+            from: m.from,
+            planSlug: typeof m.plan_slug === 'string' ? m.plan_slug : null,
+          }),
+        );
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    // 4 + 5. Failing smoke tests + plans awaiting review (PG, workspace-scoped).
+    try {
+      const { getOrgPg } = await import('@restart/db-org');
+      const { activeWorkspaceId } = await import('../../workspace-registry');
+      const { sql } = getOrgPg();
+      const wid = activeWorkspaceId();
+      const hf = harnessFilter;
+
+      const smoke = await sql<{ harness_slug: string; failure_content: string | null }[]>`
+        SELECT harness_slug, failure_content
+          FROM harness_shared.harness_smoke_test
+         WHERE workspace_id = ${wid}
+           AND status = 'fail'
+           AND (${hf}::text IS NULL OR harness_slug = ${hf})
+      `;
+      for (const r of smoke) {
+        items.push(smokeFailToAttention({ harnessSlug: r.harness_slug, failureContent: r.failure_content }));
+      }
+
+      const reviews = await sql<{ harness_slug: string; content: string | null }[]>`
+        SELECT harness_slug, content
+          FROM harness_shared.harness_plan_review
+         WHERE workspace_id = ${wid}
+           AND (${hf}::text IS NULL OR harness_slug = ${hf})
+      `;
+      for (const r of reviews) {
+        items.push(planReviewToAttention({ harnessSlug: r.harness_slug, content: r.content }));
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    const groups = buildAttentionGroups(items);
+    ctxAny.metadata?.({ itemCount: items.length, groupCount: groups.length, scope: harnessFilter ?? 'all' });
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ groups }) }],
+    };
+  },
+});

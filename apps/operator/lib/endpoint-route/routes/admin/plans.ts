@@ -44,6 +44,7 @@ const READ_VERBS = new Set([
   'list',
   'get',
   'items',
+  'attention',
   'search',
   'lint',
   // plan-agent-launch P-017: the Revisions panel reads through here.
