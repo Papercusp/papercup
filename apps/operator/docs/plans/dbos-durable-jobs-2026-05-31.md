@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **Phases 0, 1, 2 COMPLETE**, all committed on `main`, every mechanism verified against real embedded PG16. Phase 2: all **6 server-side periodic timers** migrated to DBOS scheduled workflows (telemetry-flush, scratch-gc, memory-cleanup, completion-ref-verifier, embed-backfill, backup-cadence — commits 53fd89b2, 68533dbd, ef896e63, 4ed3bbd6), flag-gated `PAPERCUSP_DBOS_TIMERS=1` with legacy stand-down (D-011); the operator scanner was dropped (client-side, D-018); **P-012 dead-dep prune done** (bf94e948 — bullmq/@nestjs/bullmq/ioredis/redis gone). tsc-clean throughout, mine-only pathspecs. P-013 (delete old timer paths) is correctly deferred — the legacy setInterval paths are the A/B fallback (D-011) until the DBOS path is validated live.
+**State:** Phases 0, 1, 2 complete + committed. **Phase 3 P-014 spike done** (D-019, non-destructive): a dynamic-dispatch durable workflow resumes mid-pipeline without re-running completed roles (D-004 ✅), and the spike surfaced the integration crux — an **interrupted** step re-executes, so wrapping `invoke()` means a crash mid-agent-run re-spawns that agent → **`invoke()` steps must be idempotent** (D-005). Concrete integration design recorded: wrap `invoke()` as the step, keep `dispatchDecision` deterministic, move Date.now/randomUUID/distributed-claim/mutable-reads into checkpointed steps, reconcile the in-memory lane pool + reaper + claim to the DBOS workflow.
 
-**Next:** Two things remain. (1) **Live-service boot** — restart the dev API with `PAPERCUSP_DBOS_ENABLE=1 PAPERCUSP_DBOS_TIMERS=1 PAPERCUSP_DBOS_AUTOLOOP=1`, open `/admin/dbos`, confirm schedules + ticks land in the running operator; that validation unblocks P-013 (delete old paths). (2) **Phase 3** (orchestrator durability, gate-approved D-012) — the remaining major tier: wrap the scoper→…→reviewer pipeline as a DBOS durable workflow (P-014 spike) + reconcile lane pool / harness-status-sweep reaper / spawned_agents / distributed claim (P-015–P-017).
+**Next:** Phase 3 integration (P-015–P-017) — the gated, higher-risk step: edit the orchestrator submodule to wrap `invoke()` as an idempotent DBOS step (check-before-spawn on (feature, role, attempt)), adopt the D-008 `patched()` versioning discipline, and reconcile lane pool / harness-status-sweep reaper / spawned_agents / distributed claim to the workflow. Separately, the live-service boot validates Phases 1–2 in the running operator (restart dev API with the flags).
 
 ## Background
 
@@ -246,6 +246,23 @@ Investigating the "complex three" corrected the D-016 classification:
 - **P-011 backups — the ONLY genuinely-complex remaining migration.** `startBackupScheduler` lives in `packages/backup` with **per-workspace cadence** (not a single global schedule), so it needs a per-workspace enumeration design (the shape AutoLoop uses per-harness) plus care around the backup package boundary. Deferred to a focused pass.
 - **P-012 / P-013** (prune dead `bullmq`/`ioredis`/`redis` deps; delete old timer paths + flags) still deferred behind the rename's *uncommitted* `package.json` working-tree changes — do once those are committed.
 Related: P-009, P-010, P-011
+
+
+### D-019 — Phase 3 P-014 spike — dynamic resume validated; invoke()-idempotency is the integration crux
+Date: 2026-05-31
+Ran the P-014 spike (isolated, non-destructive — no orchestrator edits). A DBOS durable workflow modeling the pipeline as a **dynamic loop** (each turn a checkpointed `decide` step picks the next role, simulating LLM dispatch), crashed mid-`worker`, resumed:
+
+- ✅ **D-004 validated:** completed steps (`scoper`, `architect`) were **NOT re-run**; the loop resumed at `validator`→`reviewer`; workflow → `SUCCESS`. Dynamic (runtime-decided) routing and durable resume coexist — *provided the "next" decision comes from a checkpointed step* so control flow is deterministic on replay.
+- ⚠️ **The crux finding:** the **in-flight** step (`worker`, mid-sleep at crash) **re-executed fully on resume** → its side effect fired twice (`worker=2`). This is D-005 made concrete: wrapping `invoke()` as a DBOS step means **a crash mid-agent-run RE-SPAWNS that agent on resume**. Completed roles are safe; the interrupted one re-runs. So **`invoke()` steps must be idempotent** — check-before-spawn on `(feature, role, attempt)` (the prior partial run's git commits/PG writes already happened), or model each agent as a resumable child workflow.
+
+**Integration design (grounded in an orchestrator read of `libs/papercusp/packages/orchestrator/`):**
+- **Boundary:** wrap **`invoke()`** (`invoke.ts` — spawns one agent, returns `{output, exitCode, …}`) as the DBOS step; keep `dispatchDecision()` (`main-loop.ts:723–799`) as deterministic control flow around it. Do **NOT** wrap the raw main loop — it has mid-iteration non-determinism.
+- **Determinism hazards to move INTO checkpointed steps** (else replay diverges): `Date.now()`/`makeRunId()`, `randomUUID()` spawn IDs (`invoke.ts:1000`), the **distributed claim** fetch (`distributed-claim-fetch.ts` — outcome must be checkpointed, not re-fetched), and mutable mid-loop PG reads (feature status, plan slugs).
+- **Run-state reconciliation (P-016):** the in-memory **lane pool** (`lanes.ts`, persisted to `lanes.json`) cannot be the "is the pipeline running" source of truth under DBOS — it dies on restart while DBOS survives; parallel-lane handling needs redesign. DBOS workflow status becomes the truth; `harness_shared.harness_lanes` (live spawn rows) + `harness_run_output` + the `harness-status-sweep` reaper reconcile to it.
+- **Claim (P-017):** the distributed claim (`/api/harness/{slug}/claim-feature`) and a DBOS workflow ID must agree on "who owns F" — the workflow ID can BE the claim token.
+
+This is the spike only. The integration (editing the orchestrator submodule, P-015–P-017) is the next, gated, higher-risk step — it carries the idempotency rework above plus the D-008 `patched()` versioning discipline.
+Related: P-014, P-015, P-016, P-017
 
 ## Phase 0 — Spike & validation (GATE)
 
