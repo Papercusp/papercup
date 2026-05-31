@@ -69,17 +69,47 @@ export function planValue(picked) {
   return picked === NO_PLAN || picked == null || picked === '' ? null : picked;
 }
 
-/** Resolve the non-interactive selections from parsed args. Pure; throws on bad agent. */
+/**
+ * Resolve which fields the flags PRE-SELECT vs which still need an
+ * interactive prompt. Pure — exported for tests. Throws on a bad --agent.
+ *
+ * Any flag you pass preselects that field (the picker skips it); anything
+ * you omit is marked `need*` so the interactive picker fills it in. This
+ * is what lets you preselect some fields and still get prompted for the
+ * rest — e.g. `psu --agent=claude --workspace=ws2` presets agent +
+ * workspace and prompts for harness + plan.
+ */
+export function presetsFromArgs(args) {
+  const agent = args.agent || null;
+  if (agent && !AGENTS.includes(agent)) {
+    throw new Error(`--agent must be one of ${AGENTS.join('|')} (got ${agent})`);
+  }
+  const harness = args.harness != null && args.harness !== '' ? args.harness : null;
+  const planProvided = args.noPlan || (args.plan != null && args.plan !== '');
+  return {
+    agent,
+    workspace: args.workspace || null,
+    harness,
+    plan: args.noPlan ? null : (args.plan || null),
+    needAgent: !agent,
+    needWorkspace: !args.workspace,
+    needHarness: !harness,
+    needPlan: !planProvided,
+  };
+}
+
+/**
+ * Strict (no-prompt) resolution for `--no-picker`. Pure; throws if the
+ * required --agent is missing (can't prompt in scripting mode). Omitted
+ * workspace/harness/plan fall back to the server defaults (active
+ * workspace, workspace root, no plan).
+ */
 export function selectionsFromArgs(args) {
-  if (!AGENTS.includes(args.agent)) {
+  const p = presetsFromArgs(args);
+  if (p.needAgent) {
     throw new Error(`--agent must be one of ${AGENTS.join('|')} (got ${String(args.agent)})`);
   }
-  return {
-    agent: args.agent,
-    workspace: args.workspace || null,
-    harness: args.harness || null,
-    plan: args.noPlan ? null : (args.plan || null),
-  };
+  return { agent: p.agent, workspace: p.workspace, harness: p.harness, plan: p.plan };
 }
 
 function readToken() {
@@ -265,10 +295,12 @@ async function main() {
   }
   let selections;
   if (args.picker) {
-    const agent = await pickAgent();
-    const workspace = await pickWorkspace();
-    const harness = await pickHarness(workspace);
-    const plan = planValue(await pickPlan(workspace, harness));
+    // Honor any flags as preselections; prompt only for what was omitted.
+    const p = presetsFromArgs(args);
+    const agent = p.needAgent ? await pickAgent() : p.agent;
+    const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
+    const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
+    const plan = p.needPlan ? planValue(await pickPlan(workspace, harness)) : p.plan;
     selections = { agent, workspace, harness, plan };
   } else {
     selections = selectionsFromArgs(args);

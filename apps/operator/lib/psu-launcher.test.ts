@@ -3,6 +3,7 @@ import {
   parseArgs,
   planValue,
   selectionsFromArgs,
+  presetsFromArgs,
   resumeArgsFor,
   AGENTS,
   NO_PLAN,
@@ -96,5 +97,53 @@ describe('psu-launcher arg parsing', () => {
 
   it('AGENTS lists exactly the three kinds', () => {
     expect(AGENTS).toEqual(['claude', 'omp', 'codex']);
+  });
+
+  it('presetsFromArgs: all flags preselect everything (no prompts needed)', () => {
+    const p = presetsFromArgs(parseArgs(['--agent=claude', '--workspace=ws2', '--harness=papercup', '--plan=p']));
+    expect(p).toMatchObject({
+      agent: 'claude',
+      workspace: 'ws2',
+      harness: 'papercup',
+      plan: 'p',
+      needAgent: false,
+      needWorkspace: false,
+      needHarness: false,
+      needPlan: false,
+    });
+  });
+
+  it('presetsFromArgs: no flags → everything needs a prompt', () => {
+    const p = presetsFromArgs(parseArgs([]));
+    expect(p).toMatchObject({
+      agent: null,
+      workspace: null,
+      harness: null,
+      plan: null,
+      needAgent: true,
+      needWorkspace: true,
+      needHarness: true,
+      needPlan: true,
+    });
+  });
+
+  it('presetsFromArgs: partial preselect (agent + workspace) prompts only for harness + plan', () => {
+    const p = presetsFromArgs(parseArgs(['--agent=omp', '--workspace=ws2']));
+    expect(p.agent).toBe('omp');
+    expect(p.workspace).toBe('ws2');
+    expect(p.needAgent).toBe(false);
+    expect(p.needWorkspace).toBe(false);
+    expect(p.needHarness).toBe(true);
+    expect(p.needPlan).toBe(true);
+  });
+
+  it('presetsFromArgs: --no-plan preselects "no plan" (no plan prompt)', () => {
+    const p = presetsFromArgs(parseArgs(['--agent=claude', '--no-plan']));
+    expect(p.plan).toBeNull();
+    expect(p.needPlan).toBe(false);
+  });
+
+  it('presetsFromArgs: rejects a bad --agent', () => {
+    expect(() => presetsFromArgs(parseArgs(['--agent=gemini']))).toThrow();
   });
 });

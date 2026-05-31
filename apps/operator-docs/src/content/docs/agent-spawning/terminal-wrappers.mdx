@@ -48,6 +48,21 @@ Harnesses are **workspace-scoped**, so the picker asks for the workspace
 before the harness. When there's only one workspace it's chosen
 automatically (no prompt).
 
+### Preselecting with flags
+
+You can preselect any of agent / workspace / harness / plan on the command
+line and the picker will **only prompt for what you omit**:
+
+```bash
+psu --agent=claude                      # preset the backend; pick workspace/harness/plan
+psu --agent=omp --workspace=my-ws       # preset both; pick harness/plan
+psu --agent=codex --harness=papercup --no-plan   # everything preset → no prompts
+```
+
+Flags: `--agent=<claude|omp|codex>`, `--workspace=<id>`, `--harness=<slug>`,
+`--plan=<slug>`, `--no-plan`. Whatever you leave off is still picked
+interactively.
+
 Under the hood `psu` calls `POST /api/agent-mcp/console/bootstrap-su`,
 which creates the `adv_sessions` row (with `agent` + `plan_slug`, or a
 null `plan_slug` for "No plan") and returns the cwd + tracking env; `psu`
