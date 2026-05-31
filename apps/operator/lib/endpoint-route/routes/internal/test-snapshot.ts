@@ -7,6 +7,7 @@ import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
+import { deriveAssertionStatus } from '@/lib/harness-test-rollup';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -62,28 +63,64 @@ export default defineTool({
       keep.push({ testId: f.testId, name, status, durationMs, lastRunTs, payload });
     }
 
-    // P-058: quarantine any test row whose `coversVALs` references a VAL
-    // that isn't a known plan assertion (harness_plan_assertions). Only
-    // enforced when the harness HAS assertions — harnesses not yet on the
-    // inline-VAL flow are left untouched. Fail-soft if the table is absent.
+    // The plan↔test link, through the VAL (Phase E P-058 + Phase G P-080/P-081).
+    // One assertion fetch drives three things; fail-soft if the table is absent
+    // and skipped entirely for harnesses not yet on the inline-VAL flow.
     if (keep.length > 0) {
       try {
         await ensureHarnessPlanAssertionsTable();
-        const valRows = await sql<{ val_id: string }[]>`
-          SELECT val_id FROM harness_shared.harness_plan_assertions
+        const assertions = await sql<
+          { val_id: string; plan_slug: string; item_id: string; requires_test: boolean }[]
+        >`
+          SELECT val_id, plan_slug, item_id, requires_test
+            FROM harness_shared.harness_plan_assertions
            WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
-        if (valRows.length > 0) {
-          const known = new Set(valRows.map((r) => r.val_id));
-          for (const k of keep) {
+        if (assertions.length > 0) {
+          const byVal = new Map(assertions.map((a) => [a.val_id, a]));
+          const coversOf = (k: Keep): string[] => {
             const raw = (k.payload as { coversVALs?: unknown }).coversVALs;
-            const covers = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
-            if (covers.length > 0 && covers.some((v) => !known.has(v))) {
+            return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
+          };
+
+          // P-058: quarantine test rows whose coversVALs reference an unknown VAL.
+          for (const k of keep) {
+            const covers = coversOf(k);
+            if (covers.length > 0 && covers.some((v) => !byVal.has(v))) {
               k.status = 'invalid_val_ref';
+            }
+          }
+
+          // P-080: stamp plan linkage (plan_slug + item ids) onto each test's
+          // payload, resolved from the VALs it covers. Empty/unmatched → no stamp
+          // (infra/Built-in tests stay plan-unlinked, P-084).
+          for (const k of keep) {
+            const matched = coversOf(k)
+              .map((v) => byVal.get(v))
+              .filter((a): a is NonNullable<typeof a> => !!a);
+            if (matched.length > 0) {
+              k.payload = {
+                ...k.payload,
+                planSlug: matched[0].plan_slug,
+                planItemIds: Array.from(new Set(matched.map((a) => a.item_id))),
+              };
+            }
+          }
+
+          // P-081: drive each VAL's assertion status from the tests covering it.
+          // Uncovered VALs (derived 'todo') are left as-is.
+          const tests = keep.map((k) => ({ coversVALs: coversOf(k), status: k.status }));
+          for (const a of assertions) {
+            const derived = deriveAssertionStatus(a.val_id, tests);
+            if (derived !== 'todo') {
+              await sql`
+                UPDATE harness_shared.harness_plan_assertions
+                   SET status = ${derived}
+                 WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${a.val_id}`;
             }
           }
         }
       } catch {
-        /* assertions table unavailable — skip validation (fail-soft) */
+        /* assertions table unavailable — skip linkage/status (fail-soft) */
       }
     }
 

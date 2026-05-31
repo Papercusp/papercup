@@ -30,6 +30,7 @@ import { type TestDomain, type ChipStatus, type FileStatusEntry } from '@/lib/te
 import { getOrgPg } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
+import { computePlanItemTestStatus } from '@/lib/harness-test-rollup';
 
 async function phasesEnabled(): Promise<boolean> {
   const { getFlag } = await import('@papercusp/flags/server');
@@ -302,4 +303,46 @@ const patchAssertion = defineTool({
   },
 });
 
-export default [domainDetail, fileStatus, healthStrip, run, listAssertions, patchAssertion];
+// ── Plan↔test rollup (P-082) ───────────────────────────────────────────────
+// Per-plan-item test coverage, joined from harness_plan_assertions ⋈
+// harness_tests through the VAL. Mirrors plans-central's feature-status badge
+// but for tests; consumed by the Plans-tab coverage badge (P-083).
+
+const planItemsTestStatus = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/plan-items-test-status',
+  auth: 'public',
+  async handler(req, ctx) {
+    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
+    const slug = ctx.params.slug as string;
+    const planSlug = new URL(req.url).searchParams.get('plan');
+    try {
+      await ensureHarnessPlanAssertionsTable();
+      const { sql } = getOrgPg();
+      const ws = activeWorkspaceId();
+      const assertions = planSlug
+        ? await sql<{ val_id: string; item_id: string; requires_test: boolean }[]>`
+            SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND plan_slug = ${planSlug}`
+        : await sql<{ val_id: string; item_id: string; requires_test: boolean }[]>`
+            SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
+      const testRows = await sql<{ status: string; payload: { coversVALs?: unknown } }[]>`
+        SELECT status, payload FROM harness_shared.harness_tests
+         WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
+      const tests = testRows.map((r) => ({
+        status: r.status,
+        coversVALs: Array.isArray(r.payload?.coversVALs)
+          ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+          : [],
+      }));
+      const byItem = computePlanItemTestStatus(assertions, tests);
+      return Response.json({ items: Object.values(byItem) });
+    } catch {
+      // Table/PG absent — empty is a valid "no coverage data".
+      return Response.json({ items: [] });
+    }
+  },
+});
+
+export default [domainDetail, fileStatus, healthStrip, run, listAssertions, patchAssertion, planItemsTestStatus];
