@@ -20,23 +20,34 @@ runner**, so green unit tests are not proof the host works.
 The operator's `:3070` Hono host runs under **`tsx`**, which honours `type`.
 
 If you give a new sibling (`@papercusp/tooldef-http`, `@papercusp/tooldef-mcp`,
-…) `"type": "module"`, then the moment a **CJS** package (`agent-mcp`) re-exports
-from your **ESM** package, the tsx host throws:
+…) `"type": "module"`, then importing a **named** binding across the CJS↔ESM
+boundary throws under tsx:
 
 ```
 SyntaxError: The requested module '@papercusp/tooldef' does not provide an
 export named 'dispatchProjectedTool'
 ```
 
-— the classic CJS↔ESM named-export interop break. The named binding isn't
-statically visible across the boundary.
+— the classic CJS↔ESM named-export interop break (the named binding isn't
+statically visible across the boundary). **Observed directly:** the standalone
+`examples/standalone-http.ts` proof failed with exactly this under both node 22
+and node 25 while the packages carried `"type": "module"`.
 
 **Why it hides:** `vitest`/`esbuild` transpile everything to a single module
 graph and don't enforce the CJS/ESM boundary, so the package's own test suite
-passes 100%. The break only appears when something runs under real Node/tsx
-module resolution — i.e. the operator host on reload, or a `npx tsx examples/…`
-script. During the extraction the bug was invisible until a standalone
-`examples/standalone-http.ts` proof ran it under tsx.
+passes 100%. The break only appears under real Node/tsx module resolution — a
+`npx tsx examples/…` script, or the operator's `:3070` Hono host, which runs
+under the same tsx runtime and imports these packages (via `agent-mcp`'s
+re-export) — so the host is exposed to the same break. During the extraction the
+bug was invisible until the standalone example ran it under tsx.
+
+**Verified after the fix (2026-05-31, live host):** with `"type"` removed, the
+operator's `:3070` Hono host (`bin/hono-host.ts` under tsx, node 22) boots clean
+on the fixed packages and serves both transports end-to-end — a live HTTP
+projected-tool call returns `200` + the `{content}` envelope (`tooldef-http`),
+and MCP `tools/call` dispatches projected tools through `tooldef-mcp`. (The
+caveat the examples teach still stands: only `tsx`/real-Node resolution exercises
+this boundary; the bundled test suite won't.)
 
 **Rule:** a new package that any CJS package re-exports from (or that the tsx
 host imports) must **not** set `"type": "module"`. Match the family — omit

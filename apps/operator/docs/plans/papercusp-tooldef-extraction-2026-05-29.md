@@ -70,7 +70,9 @@ zero functional gain and is deliberately not performed).
 tooldef-http 3 / tooldef-mcp 5 / agent-mcp 113). P-051 — standalone proof across all three
 caller shapes (in-process, HTTP via `handleHttpToolRequest`, MCP via `dispatchProjectedToolToMcp`),
 each importing only the engine/adapter packages; the HTTP example also surfaced + fixed a
-`type:module` packaging bug that would have broken the operator's tsx host. P-052 — docs.
+`type:module` packaging bug (CJS↔ESM named-export break under tsx — proven by the example
+under node 22+25; the `:3070` host runs under the same tsx runtime and so was exposed).
+P-052 — docs.
 P-053 — knip clean for the extracted packages (one genuine finding, `resolveGuidance`,
 deleted; rest false positives) + affected-integration shows **zero** failures attributable
 to the extraction (all touched packages green; 0 tooldef resolution/export errors — the
@@ -100,6 +102,32 @@ that wants typed storage can already re-export `ToolContext<MyClient>`.
 > (`f41566f5`). tooldef tsc is back to 0 baseline errors.
 
 ## Progress log
+
+### 2026-05-31 — Live host verification (both extracted transports, real runtime)
+
+Verified the extraction end-to-end against the **running** operator host (not just unit
+tests / standalone examples), per `/internal/docs/testing/agent-e2e`. The `:3070` Hono
+host (`bin/hono-host.ts`, pid 3268710) runs **under tsx** (node 22.21.1) and had restarted
+at 04:17 — **after** the `type:module` fix (03:19) and HEAD (04:08) — so it was serving the
+**fixed, current packages** (confirmed: neither `tooldef-http` nor `tooldef-mcp` carries
+`"type"`). Evidence:
+
+- **`tooldef-http` (`handleHttpToolRequest`) — live `:3070`:**
+  - `POST /api/agent-tools/roles/known` → **200** + `{content:[{type:'text',…}]}` (happy path).
+  - `POST /api/agent-tools/nope/missing` → **404** `unknown_tool` (resolution).
+  - `POST /api/agent-tools/audit/list` (anonymous) → **401** `unauthorized` (gate→status
+    mapping via `statusForErrorCode`).
+- **`tooldef-mcp` (`dispatchProjectedToolToMcp`) — live MCP `tools/call`:** `roles:known`
+  (a `defineTool` → projected tool) and `agent_tools_list` returned valid results;
+  `audit:list` was gate-denied (auth) — the dispatch pipeline discriminating per-tool. The
+  `_mcp-handler` routes projected tools through `lookupByMcpName` → `dispatchProjectedToolToMcp`
+  + the `bearerFromExtra`/`urlFromExtra`/`headersFromExtra` extractors.
+- **type:module fix validated in the runtime that matters:** the fixed CJS-aligned packages
+  boot the operator's tsx host clean and serve both transports. (Honest scope: I only
+  observed the *fixed* host; I did not capture a pre-fix host failing — the proof the fix
+  was *needed* is the standalone example failing under tsx, node 22+25.)
+- Non-intrusive: drove via curl + the `tauri-agent-tools` read-only bridge; the user's live
+  windows (shells 303920/2410226) were not perturbed.
 
 ### 2026-05-30 — P-030 shipped + P-032 found-done (Phase 4 begun: HTTP + IPC extracted)
 
