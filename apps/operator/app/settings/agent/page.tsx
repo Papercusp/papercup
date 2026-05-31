@@ -33,6 +33,7 @@ interface AgentConfig {
   cmd: string;
   models: Record<string, string>;
   backends?: Partial<Record<SurfaceKey, AgentBackend>>;
+  surfaceModels?: Partial<Record<SurfaceKey, string>>;
 }
 interface DetectedBinaries {
   claude: string | null;
@@ -67,6 +68,12 @@ export default function AgentSettingsPage() {
   const [surfaceBackends, setSurfaceBackends] = useState<Record<SurfaceKey, SurfaceChoice>>(
     () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, 'inherit'])) as Record<SurfaceKey, SurfaceChoice>,
   );
+  // Per-surface model overrides (OQ3 companion to surfaceBackends). '' = inherit
+  // the surface's own default model. Needed when a surface's backend differs
+  // from the global one and the default model id won't resolve there.
+  const [surfaceModels, setSurfaceModels] = useState<Record<SurfaceKey, string>>(
+    () => Object.fromEntries(SURFACE_KEYS.map((k) => [k, ''])) as Record<SurfaceKey, string>,
+  );
 
   const { register, submit, reset, isSubmitting, watch } = useFormWith(ConfigSchema, {
     defaultValues: { backend: 'omp', cmd: '', modelsJson: '' },
@@ -91,6 +98,12 @@ export default function AgentSettingsPage() {
         Object.fromEntries(
           SURFACE_KEYS.map((k) => [k, fetched[k] ?? 'inherit']),
         ) as Record<SurfaceKey, SurfaceChoice>,
+      );
+      const fetchedModels = d.config.surfaceModels ?? {};
+      setSurfaceModels(
+        Object.fromEntries(
+          SURFACE_KEYS.map((k) => [k, fetchedModels[k] ?? '']),
+        ) as Record<SurfaceKey, string>,
       );
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
@@ -123,15 +136,18 @@ export default function AgentSettingsPage() {
     // Only surfaces set to a concrete backend go in the map; 'inherit' ones
     // are omitted so they fall back to the global backend.
     const backends: Partial<Record<SurfaceKey, AgentBackend>> = {};
+    const surfaceModelsOut: Partial<Record<SurfaceKey, string>> = {};
     for (const k of SURFACE_KEYS) {
       const choice = surfaceBackends[k];
       if (choice !== 'inherit') backends[k] = choice;
+      const m = surfaceModels[k]?.trim();
+      if (m) surfaceModelsOut[k] = m;
     }
     try {
       const r = await fetch('/api/agent-config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models, backends }),
+        body: JSON.stringify({ backend: data.backend, cmd: data.cmd ?? '', models, backends, surfaceModels: surfaceModelsOut }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success('Saved. In-process spawns now use the new backend.');
@@ -294,8 +310,8 @@ export default function AgentSettingsPage() {
         </FormField>
 
         <FormField
-          label="Per-surface backend"
-          description="Override which CLI runs each in-app brain. 'Inherit global' uses the backend above."
+          label="Per-surface backend + model"
+          description="Override which CLI runs each in-app brain, and optionally pin a model for that surface. 'Inherit global' uses the backend above; an empty model uses the backend default."
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {SURFACE_KEYS.map((surface) => (
@@ -320,6 +336,18 @@ export default function AgentSettingsPage() {
                   <option value="claude-code">claude-code</option>
                   <option value="codex">codex</option>
                 </select>
+                <input
+                  className="pc-input"
+                  style={{ fontSize: 13, padding: '2px 6px', width: 160 }}
+                  placeholder="model (optional)"
+                  value={surfaceModels[surface]}
+                  onChange={(e) =>
+                    setSurfaceModels((prev) => ({
+                      ...prev,
+                      [surface]: e.target.value,
+                    }))
+                  }
+                />
               </label>
             ))}
           </div>
