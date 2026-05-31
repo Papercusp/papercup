@@ -51,10 +51,18 @@ export async function startDbos(): Promise<void> {
     systemDatabaseUrl: url,
     systemDatabaseSchemaName: 'dbos',
     applicationVersion: PINNED_APP_VERSION,
+    // The operator shares a box with Restart (shop-api binds :3001); DBOS's
+    // admin server defaults to :3001 and would EADDRINUSE. We don't use it.
+    runAdminServer: false,
   });
 
-  // Register workflows BEFORE launch so recovery can re-bind them.
+  // Register workflows BEFORE launch so recovery + the scheduler can bind them.
   await import('./hello-workflow');
+  if (process.env.PAPERCUSP_DBOS_AUTOLOOP === '1') {
+    // Phase 1: AutoLoop as a scheduled workflow + dedup-keyed fire queue
+    // (D-011 flag-gated; the legacy setInterval ticker stands down).
+    await import('./autoloop-workflow');
+  }
 
   await DBOS.launch();
   G.__papercuspDbosStarted = true;

@@ -61,7 +61,7 @@ async function ensureTable(): Promise<void> {
   await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`);
 }
 
-async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
+export async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
   try {
     // /projects/lite returns slug+path+harnessDir without the per-project
     // PG hits we don't need here (autoloop only checks director-config.json
@@ -75,7 +75,7 @@ async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
   }
 }
 
-async function readDirectorConfig(harnessPath: string): Promise<DirectorConfig | null> {
+export async function readDirectorConfig(harnessPath: string): Promise<DirectorConfig | null> {
   const cfg = join(harnessPath, '.harness', 'director-config.json');
   if (!existsSync(cfg)) return null;
   try {
@@ -85,7 +85,7 @@ async function readDirectorConfig(harnessPath: string): Promise<DirectorConfig |
   }
 }
 
-async function shouldFire(slug: string, role: string, intervalSeconds: number): Promise<boolean> {
+export async function shouldFire(slug: string, role: string, intervalSeconds: number): Promise<boolean> {
   const { db } = getOrgPg();
   const rows = await db
     .select({ last_fired_at: at.lastFiredAt })
@@ -96,7 +96,7 @@ async function shouldFire(slug: string, role: string, intervalSeconds: number): 
   return elapsed >= intervalSeconds;
 }
 
-async function recordFire(slug: string, role: string, status: string, errorBumped: boolean): Promise<void> {
+export async function recordFire(slug: string, role: string, status: string, errorBumped: boolean): Promise<void> {
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   if (errorBumped) {
@@ -150,7 +150,7 @@ interface HarnessConfig {
   roles?: Record<string, RoleConfig>;
 }
 
-async function readHarnessConfig(harnessPath: string): Promise<HarnessConfig | null> {
+export async function readHarnessConfig(harnessPath: string): Promise<HarnessConfig | null> {
   const cfg = join(harnessPath, '.harness', 'config.json');
   if (!existsSync(cfg)) return null;
   try {
@@ -160,7 +160,7 @@ async function readHarnessConfig(harnessPath: string): Promise<HarnessConfig | n
   }
 }
 
-async function fireDirector(operatorBase: string, slug: string, role: string): Promise<{ ok: boolean; detail?: string }> {
+export async function fireDirector(operatorBase: string, slug: string, role: string): Promise<{ ok: boolean; detail?: string }> {
   try {
     const r = await fetch(`${operatorBase}/api/harness/${encodeURIComponent(slug)}/invoke?role=${encodeURIComponent(role)}`, {
       method: 'POST',
@@ -234,6 +234,10 @@ function bootstrapState(): { lastAttempt: number; armed: boolean } {
 }
 
 export function startAutoLoopOnce(): void {
+  // Phase 1 A/B (dbos-durable-jobs-2026-05-31 D-011): when the DBOS AutoLoop
+  // is active, the legacy in-process ticker stands down so the two never
+  // double-fire. Flip PAPERCUSP_DBOS_AUTOLOOP to switch implementations.
+  if (process.env.PAPERCUSP_DBOS_AUTOLOOP === '1') return;
   if (started) return;
   started = true;
   const state = bootstrapState();
