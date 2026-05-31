@@ -145,9 +145,13 @@ export default function AdvShell({
         setProjectLoadError(null);
         if (!nextProjects.length) return;
         if (activeSlug && nextProjects.some((p: HarnessProjectLite) => p.slug === activeSlug)) return;
-        const saved = typeof window !== 'undefined' ? window.localStorage.getItem(wsLocalKey('harness.activeProject')) : null;
-        const savedProject = saved ? nextProjects.find((p: HarnessProjectLite) => p.slug === saved) : null;
-        void setActiveSlug(savedProject?.slug ?? nextProjects[0]!.slug);
+        // #2: with no explicit harness in the URL, default to "All harnesses"
+        // (scope=all) rather than arbitrarily auto-selecting the first (or a
+        // localStorage-saved) project. A user's explicit pick still round-trips
+        // via ?slug= across refresh (the early-return above), so only a truly
+        // fresh load lands on All — which then bounces to a workspace-wide tab
+        // (Plans/Sessions) via the allMode tab-guard below.
+        void setScopeMode('all');
       })
       .catch((e) => {
         if (!cancelled) setProjectLoadError(String(e?.message ?? e));
@@ -155,7 +159,7 @@ export default function AdvShell({
     return () => {
       cancelled = true;
     };
-  }, [activeSlug, setActiveSlug, refreshNonce]);
+  }, [activeSlug, setScopeMode, refreshNonce]);
 
   // "All harnesses" mode: list views (Plans, Sessions) span the whole
   // workspace. The single-harness widgets (Share, now-running, Discord)
