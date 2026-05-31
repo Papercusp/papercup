@@ -50,6 +50,7 @@ export type DispatchStepName =
   | 'capability-check'
   | 'harness-check'
   | 'quota'
+  | 'authorize'
   | 'timeout'
   | 'idle-watchdog'
   | 'replay-buffer'
@@ -470,6 +471,72 @@ const invokeStep: DispatchStep = {
   },
 };
 
+/**
+ * Resource-`authorize` gate (RFC tooldef-auth Phase 1b, decision D-F).
+ *
+ * Runs a tool's `authorize` hook — the fine-grained "can THIS principal act on THIS
+ * resource" layer the coarse gates can't express. Additive: a tool with no `authorize`
+ * is unaffected. Fail-closed (a throw denies). Sits with the other gates (before timer
+ * arming) so denials stay cheap and so it composes with `GateBypass` like its siblings.
+ *
+ * `GateBypass.policy` (default off, and NOT implied by the role/capability/quota
+ * bypasses) skips the hook — but the skip is AUDITED, never silent: break-glass best
+ * practice is "policy-governed + mandatorily logged" (RFC §8 D2). Every allow, deny, and
+ * bypass emits an `AuthAuditEvent` via `deps.auditAuth`.
+ */
+const authorizeStep: DispatchStep = {
+  name: 'authorize',
+  async run(exec) {
+    const { tool, toolName, input, ctx, deps } = exec;
+    const authorize = tool.authorize;
+    if (!authorize) return null; // no resource gate on this tool
+
+    const audit = (decision: 'allow' | 'deny', reason?: string) => {
+      deps.auditAuth?.({
+        ts: Date.now(),
+        principal: ctx.principal
+          ? { slug: ctx.principal.slug, workspaceId: ctx.principal.workspaceId }
+          : null,
+        tool: toolName,
+        action: toolName,
+        decision,
+        gate: 'authorize',
+        reason,
+      });
+    };
+
+    const deny = (reason: string | undefined): DispatchProjectedResult => ({
+      ok: false,
+      error: {
+        code: 'authorization_denied' as DispatchProjectedErrorCode,
+        message: reason ?? `Not authorized to call tool "${toolName}"`,
+        meta: { tool: toolName, principal: ctx.principal?.slug ?? null },
+      },
+    });
+
+    // Audited break-glass: skip the hook, but record the bypass.
+    if (ctx.gateBypass?.policy) {
+      audit('allow', 'gateBypass.policy');
+      return null;
+    }
+
+    let decision;
+    try {
+      decision = await authorize({ principal: ctx.principal, input, ctx });
+    } catch (err) {
+      const reason = `authorize threw: ${err instanceof Error ? err.message : String(err)}`;
+      audit('deny', reason);
+      return deny(reason);
+    }
+    if (!decision.allow) {
+      audit('deny', decision.reason);
+      return deny(decision.reason);
+    }
+    audit('allow', decision.reason);
+    return null;
+  },
+};
+
 /* ─── Default stack ──────────────────────────────────────────────────── */
 
 /**
@@ -477,8 +544,10 @@ const invokeStep: DispatchStep = {
  * the first one to return a `DispatchProjectedResult` short-circuits.
  *
  * Ordering invariants:
- *   - All gates (role / capability / quota) come first so denials are
- *     cheap (no timer arming, no buffer allocation, no ctx wrappers).
+ *   - All gates (role / capability / harness / quota / authorize) come first
+ *     so denials are cheap (no timer arming, no buffer allocation, no ctx
+ *     wrappers). `authorize` runs last among the gates — it is the
+ *     finest-grained and may touch the resource — but still before `timeout`.
  *   - `timeout` arms the AbortController; every subsequent step that
  *     races against it depends on this having run.
  *   - `idle-watchdog` runs after `timeout` so it composes with the same
@@ -494,6 +563,7 @@ export const DEFAULT_DISPATCH_STACK: ReadonlyArray<DispatchStep> = Object.freeze
   capabilityCheckStep,
   harnessCheckStep,
   quotaStep,
+  authorizeStep,
   timeoutStep,
   idleWatchdogStep,
   replayBufferStep,

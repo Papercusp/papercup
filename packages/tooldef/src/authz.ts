@@ -24,7 +24,7 @@
  * Uses the CURRENT `Principal` (identity = `slug`); the generic `Principal<TKind>` /
  * `roles` / `attributes` evolution is RFC Phase 2 and orthogonal to this contract.
  */
-import type { Principal, PrincipalTrust } from './types';
+import type { Principal } from './types';
 
 /**
  * An authorization query, shaped after the OpenID AuthZEN model
@@ -68,15 +68,46 @@ export interface PolicyDecisionPoint {
 }
 
 /**
+ * A tool's resource-authorization hook (RFC Phase 1b). Returns an `AuthDecision` for
+ * "can THIS principal perform THIS call". The dispatcher runs it AFTER the coarse gates
+ * (role / capability / harness / quota) and BEFORE the handler, fails closed if it
+ * throws, and audits every decision.
+ *
+ * It runs *in-process* with the tool's `ctx`, so — unlike an external PDP — it can load
+ * the resource it needs to decide (the "authorize close to the data" pattern, RFC §8 G1):
+ * extract an id from `input`, fetch via `ctx`, decide. For list endpoints, return a row
+ * filter via `AuthDecision.obligations` rather than checking each row.
+ *
+ * `principal` is the dispatch-layer caller identity (`null`/`undefined` for an anonymous
+ * call); a resource hook should treat the absent case as deny. It is the *narrow*
+ * principal the dispatcher carries (identity = `slug`), not the rich route-layer
+ * `Principal` — a hook that wants to query a full `PolicyDecisionPoint` builds an
+ * `AuthzQuery` from what it knows. The host may close over a `PolicyDecisionPoint`
+ * (in-proc or external engine) inside the hook — the framework neither ships nor assumes
+ * one. `TCtx`/`TPrincipal` are the host's context + principal types (Papercusp binds its
+ * `UnifiedToolContext`); kept generic so authz.ts imports no host types.
+ */
+export type Authorizer<TInput = unknown, TCtx = unknown, TPrincipal = unknown> = (args: {
+  principal: TPrincipal;
+  input: TInput;
+  ctx: TCtx;
+}) => AuthDecision | Promise<AuthDecision>;
+
+/**
  * One authorization decision, for the audit trail. A first-class invariant of the RFC:
  * every allow AND deny is emitted (when the host wires an audit sink) — auditability is
  * one of the two hard parts of any capability/PDP system. `gate` records which layer
  * decided so denials are attributable.
  */
 export interface AuthAuditEvent {
-  /** epoch ms — passed in by the caller (the engine has no ambient clock). */
+  /** epoch ms — stamped by the dispatcher when it emits the event. */
   ts: number;
-  principal: { slug: string; kind: string; trust: PrincipalTrust };
+  /**
+   * The caller as the dispatcher knows it (slug + workspace), or `null` for an anonymous
+   * call that still hit an `authorize` gate. Richer identity (kind/trust) is a route-layer
+   * concept not carried into dispatch; a host that wants it enriches in its audit sink.
+   */
+  principal: { slug: string; workspaceId?: string } | null;
   tool: string;
   action: string;
   resource?: { type: string; id?: string };

@@ -153,6 +153,7 @@ export type {
   AuthDecision,
   PolicyDecisionPoint,
   AuthAuditEvent,
+  Authorizer,
 } from './authz';
 
 /* ─── Core types ─────────────────────────────────────────────────────── */

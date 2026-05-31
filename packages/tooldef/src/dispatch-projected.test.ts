@@ -17,6 +17,7 @@ import {
 } from './tool-projection';
 import { PASS_THROUGH } from './dispatch-projected';
 import type { ToolResult } from './wire';
+import type { AuthAuditEvent } from './authz';
 
 const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
   log: vi.fn(),
@@ -745,5 +746,87 @@ describe('overrideTool dep (plan §10.4 — brain-subprocess injection)', () => 
     expect(seen).toEqual([
       { name: 'harness.status', args: { slug: 'sheets' }, uiClientId: 'llm-testing/abc' },
     ]);
+  });
+});
+
+describe('authorize gate (RFC tooldef-auth Phase 1b — resource authz + audited break-glass)', () => {
+  it('allow → handler runs, the allow is audited', async () => {
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool({ authorize: () => ({ allow: true, reason: 'owner' }) });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(true);
+    expect(events).toEqual([
+      expect.objectContaining({ gate: 'authorize', decision: 'allow', reason: 'owner', tool: 'fix.tool' }),
+    ]);
+  });
+
+  it('deny → authorization_denied, handler is NOT run, the deny is audited', async () => {
+    let ran = false;
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool({
+      fn: async () => { ran = true; return { content: [{ type: 'text', text: 'ok' }] }; },
+      authorize: () => ({ allow: false, reason: 'not owner' }),
+    });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('authorization_denied');
+    expect(ran).toBe(false);
+    expect(events[0]).toMatchObject({ gate: 'authorize', decision: 'deny', reason: 'not owner' });
+  });
+
+  it('fails closed when authorize throws (deny + audit)', async () => {
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool({ authorize: () => { throw new Error('boom'); } });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('authorization_denied');
+    expect(events[0]).toMatchObject({ gate: 'authorize', decision: 'deny' });
+    expect(events[0]?.reason).toContain('boom');
+  });
+
+  // Break-glass best practice: a privileged bypass must be policy-governed AND logged,
+  // never a silent super-admin (RFC §8 D2).
+  it('gateBypass.policy skips the hook BUT audits the bypass', async () => {
+    let ran = false;
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool({
+      fn: async () => { ran = true; return { content: [{ type: 'text', text: 'ok' }] }; },
+      authorize: () => ({ allow: false, reason: 'would-deny' }),
+    });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ gateBypass: { policy: true } }),
+      MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(true); // the deny was bypassed → handler ran
+    expect(ran).toBe(true);
+    expect(events[0]).toMatchObject({ gate: 'authorize', decision: 'allow', reason: 'gateBypass.policy' });
+  });
+
+  it('the role/capability/quota bypasses do NOT imply the authorize bypass', async () => {
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool({ authorize: () => ({ allow: false, reason: 'still enforced' }) });
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX({ gateBypass: { role: true, capability: true, quota: true } }),
+      MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('authorization_denied');
+    expect(events[0]).toMatchObject({ gate: 'authorize', decision: 'deny' });
+  });
+
+  it('a tool with no authorize hook is unaffected (additive — no decision, no audit)', async () => {
+    const events: AuthAuditEvent[] = [];
+    const tool = makeTool(); // no authorize
+    const r = await dispatchProjectedTool(
+      tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({ auditAuth: (e) => events.push(e) }),
+    );
+    expect(r.ok).toBe(true);
+    expect(events).toEqual([]);
   });
 });

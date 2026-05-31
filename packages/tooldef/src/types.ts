@@ -7,6 +7,7 @@ import type { AgentRole } from './host-types';
 import type { z, ZodTypeAny } from 'zod';
 import type { StandardSchemaV1 } from './standard-schema';
 import type { EventsSchema, UnifiedToolContext, UserEvents } from './tool-projection';
+import type { Authorizer } from './authz';
 import type { OpenCardSnapshot as WireOpenCardSnapshot } from '@papercusp/chat-protocol';
 
 /** A Papercusp capability tier per spec/capabilities §10.6.1. */
@@ -320,6 +321,8 @@ export function resolveGuidance(
 export interface ToolDefinition<TArgs extends StandardSchemaV1 = StandardSchemaV1> {
   /** Tool name, e.g. `"tasks:list"`. Defaults to file-path-derived. */
   name: string;
+  /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
+  authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** TSDoc-derived description for MCP `tools/list`. */
   description: string;
   /** Capability gate (e.g. `"tasks:read"`). One per tool. */
@@ -346,6 +349,8 @@ export interface ToolDefinition<TArgs extends StandardSchemaV1 = StandardSchemaV
 export interface ToolDefinitionInput<TArgs extends StandardSchemaV1 = StandardSchemaV1> {
   /** Optional explicit name; defaults to file-path-derived. */
   name?: string;
+  /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
+  authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** Optional explicit description; defaults to caller's TSDoc. */
   description?: string;
   capability: string;
@@ -421,6 +426,8 @@ export interface RoleToolDefinition<
   TEvents extends EventsSchema = EventsSchema,
 > {
   name: string;
+  /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
+  authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   description: string;
   /** Capability string for tier classification + descriptive listings. Not enforced. */
   capability: string;
@@ -495,6 +502,8 @@ export interface RoleToolDefinitionInput<
   TEvents extends EventsSchema = EventsSchema,
 > {
   name?: string;
+  /** Resource-authorization hook (RFC tooldef-auth Phase 1b) — see `Authorizer`. */
+  authorize?: Authorizer<StandardSchemaV1.InferOutput<TArgs>, UnifiedToolContext, UnifiedToolContext['principal']>;
   description?: string;
   capability: string;
   /** Visibility profile gate — see RoleToolDefinition.profile. */

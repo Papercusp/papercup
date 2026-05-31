@@ -13,6 +13,7 @@
 
 import type { RolesQuota, ToolResult } from './wire';
 import type { UnifiedToolContext } from './tool-projection';
+import type { AuthAuditEvent } from './authz';
 
 /* ─── Quota windowing ────────────────────────────────────────────────── */
 
@@ -62,6 +63,7 @@ export type DispatchProjectedErrorCode =
   | 'quota_exceeded'
   | 'invalid_input'
   | 'handler_error'
+  | 'authorization_denied'
   | 'timeout';
 
 /**
@@ -152,4 +154,11 @@ export interface DispatchProjectedDeps {
      */
     metadataJson?: Record<string, unknown> | null;
   }): Promise<void>;
+  /**
+   * Sink for resource-authorization decisions (RFC tooldef-auth Phase 1b). The
+   * dispatcher calls this for every `authorize` allow AND deny — and for every
+   * `GateBypass.policy` skip — so privileged bypasses are never silent. Best-effort;
+   * unset = decisions are not persisted (the host opted out of the audit trail).
+   */
+  auditAuth?(event: AuthAuditEvent): void;
 }

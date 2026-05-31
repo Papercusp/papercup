@@ -28,6 +28,7 @@ import type {
 import type { AgentRole, Capability, PluginSpawn } from './host-types';
 import { toJsonSchema } from './schema-adapter';
 import type { StandardSchemaV1 } from './standard-schema';
+import type { Authorizer } from './authz';
 
 /* ─── Event schema types ─────────────────────────────────────────────── */
 
@@ -290,6 +291,16 @@ export interface GateBypass {
    * the failure into the handler). Present as an explicit per-call escape hatch.
    */
   harness?: boolean;
+  /**
+   * Skip the resource-`authorize` gate (RFC tooldef-auth D-F). Default OFF and, unlike
+   * the bypasses above, it is NOT implied by them — resource ownership is a *separate*
+   * decision a host opts out of explicitly, per call (a host that maps superuser onto
+   * `{role,capability,quota}` still runs `authorize` unless it ALSO sets this). When set,
+   * the dispatcher does not run the tool's `authorize` hook — BUT it still emits an
+   * `AuthAuditEvent` recording the bypass (an *audited* break-glass, never a silent
+   * super-admin; break-glass best practice = "policy-governed + mandatorily logged").
+   */
+  policy?: boolean;
 }
 
 export interface UnifiedToolContext {
@@ -591,6 +602,13 @@ export interface ProjectedTool {
   roles?: AgentRole[];
   /** Per-role quota windows. Roles without an entry are unlimited. */
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
+  /**
+   * Resource-authorization hook (RFC tooldef-auth Phase 1b). When set, the dispatcher
+   * runs it after the coarse gates and before the handler — fail-closed, audited, and
+   * bypassable only via `GateBypass.policy`. Unset = no resource gate (the legacy
+   * default; default-deny is RFC Phase 3). See `Authorizer`.
+   */
+  authorize?: Authorizer<unknown, UnifiedToolContext, UnifiedToolContext['principal']>;
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
   /**
