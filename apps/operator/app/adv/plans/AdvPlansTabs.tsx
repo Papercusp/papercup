@@ -4,22 +4,23 @@
  * AdvPlansTabs — VSCode-style tab strip sitting above PlansClient.
  *
  * Tab model:
- *   - `index` (pinned, leftmost, not closeable) — the rail + browse/
- *     inbox/actionable views; mounts when slug is null and q
- *     is empty.
- *   - `search` (pinned, not closeable) — auto-focused whenever the
- *     query input becomes non-empty; mounts PlanSearchResults via
- *     PlansClient's existing behavior.
+ *   - `index` (pinned, leftmost, not closeable) — the rail + plan
+ *     browser; active when no plan is open and the query is empty.
+ *   - `search` (pinned, not closeable) — active whenever the query
+ *     input is non-empty; mounts PlanSearchResults via PlansClient's
+ *     existing behavior.
  *   - `plan:<slug>` (additive, closeable) — one per opened plan;
- *     focused when slug is set.
+ *     active when its plan is the open one.
  *
  * The strip is a *view layer* over PlansClient's existing nuqs state
- * (`view`/`slug`/`q`): clicking a tab adjusts those query params, and
+ * (`plan`/`q`/`tabs`): clicking a tab adjusts those query params, and
  * the strip observes them to keep the active highlight + open-plan
  * list in sync. The list of currently-open plan tabs persists in
  * `?tabs=` so a reload restores them; the active tab is derived from
- * (slug, q) so we don't keep an authoritative `activeTab` query
- * separately — single source of truth wins.
+ * (plan, q) so we don't keep an authoritative `activeTab` query
+ * separately — single source of truth wins. The main-pane Plans/Inbox
+ * mode is PlansClient's own `?view=` and is intentionally not driven
+ * from here.
  */
 
 import { useEffect, useMemo } from 'react';
@@ -31,7 +32,6 @@ import {
 } from 'nuqs';
 import { usePlanList } from '../../admin/plans/plans-api';
 
-type PlansView = 'list' | 'inbox' | 'actionable' | 'blocked';
 type PaneMode = 'read' | 'edit';
 
 interface Tab {
@@ -42,10 +42,6 @@ interface Tab {
 }
 
 export default function AdvPlansTabs({ children }: { children: React.ReactNode }) {
-  const [view, setView] = useQueryState(
-    'view',
-    parseAsStringEnum<PlansView>(['list', 'inbox', 'actionable', 'blocked']).withDefault('list'),
-  );
   // The OPEN-PLAN slug. Lives on `?plan=`, NOT `?slug=` — `?slug=` is
   // AdvShell's active-harness key, shared across every /adv tab.
   const [slug, setSlug] = useQueryState('plan', parseAsString);
@@ -114,11 +110,9 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
       void setPane('read');
       void setSlug(null);
       void setQ('');
-      void setView('list');
     } else if (tabId === 'search') {
       void setPane('read');
       void setSlug(null);
-      void setView('list');
       if (!queryTrimmed) {
         // Search tab focused with no query — focus the search input
         // so the user can immediately type. PlansClient's PlanFilters
@@ -131,7 +125,6 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
     } else if (tabId.startsWith('plan:')) {
       const next = tabId.slice('plan:'.length);
       void setPane('read');
-      void setView('list');
       void setSlug(next);
     }
   };
