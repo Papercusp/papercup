@@ -5,8 +5,16 @@
  * mocks the heavy deps (auth, envelope, session writer). su-agents is
  * NOT mocked — wrapperBin assertions exercise the real mapping.
  */
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
+
+// Redirect the launch-context file writes to a throwaway temp dir so the
+// route's best-effort persistence doesn't touch the real ~/.papercusp.
+const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-su-lc-'));
+process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = LC_DIR;
 
 const recordAdvSessionMock = vi.fn(async (_opts: unknown) => 42 as number | null);
 
@@ -47,6 +55,10 @@ vi.mock('@/lib/agent-tools/plans/source', () => ({
     { slug: 'plan-a', filePath: '/repo/plans/plan-a.md', archived: false },
     { slug: 'plan-archived', filePath: '/repo/plans/archive/plan-archived.md', archived: true },
   ]),
+  readPlanBySlug: vi.fn(async () => ({
+    parsed: { now: { state: 'do X', next: 'then Y' }, frontmatter: { title: 'My Plan' } },
+    archived: false,
+  })),
 }));
 
 const CTX: RouteContext = {
@@ -101,6 +113,28 @@ describe('bootstrap-su', () => {
     );
     expect(json.envelopeEnv.PAPERCUSP_AGENT).toBe('claude');
     expect(json.envelopeEnv.PAPERCUSP_ADV_SESSION_ID).toBe('42');
+    // Launch-context file is composed + persisted; env points the wrapper at it.
+    expect(json.envelopeEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE).toMatch(/session-42\.md$/);
+    const ctx = readFileSync(json.envelopeEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE, 'utf8');
+    expect(ctx).toContain('scoped to harness `papercup`');
+    expect(ctx).toContain('bound to plan `my-plan`');
+    expect(ctx).toContain('— My Plan');
+    expect(ctx).toContain('> **Now:** do X');
+  });
+
+  it('no harness + no plan → no launch-context file (playbook covers it)', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, cwd: '/home/me' });
+    const json = await res.json();
+    expect(json.envelopeEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE).toBeUndefined();
+  });
+
+  it('harness, no plan → launch-context with the scope block but no plan block', async () => {
+    const res = await callPost({ agent: 'omp', harness_slug: 'papercup', plan_slug: null });
+    const json = await res.json();
+    expect(json.envelopeEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE).toMatch(/session-42\.md$/);
+    const ctx = readFileSync(json.envelopeEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE, 'utf8');
+    expect(ctx).toContain('scoped to harness `papercup`');
+    expect(ctx).not.toContain('bound to plan');
   });
 
   it('plan_slug null → No-plan row; omp-su wrapper + mode omp', async () => {

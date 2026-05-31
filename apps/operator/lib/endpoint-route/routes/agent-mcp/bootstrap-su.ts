@@ -19,12 +19,14 @@
  * Principal-gated; CORS-open (operator binds loopback-only). `auth:
  * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, readRegistry, workspaceById } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { recordAdvSession } from '@/lib/adv-sessions';
 import { SU_WRAPPER_BIN, isSuAgent, type SuAgent } from '@/lib/su-agents';
+import { composeLaunchContext, launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -215,10 +217,46 @@ const post = defineTool({
       label: body.label?.trim() || null,
     });
 
+    // Compose a launch-specific context addendum (harness scope + the
+    // bound plan's `## Now`) and stash it where the chosen `*-su` wrapper
+    // can `--append-system-prompt[-file]` it (P-021/P-022). Entirely
+    // best-effort: plan reads are a nice-to-have, and a failed write must
+    // not fail the launch — the wrapper only appends the file if it exists.
+    let launchContextEnv: Record<string, string> = {};
+    {
+      let planNow: { state: string; next: string } | null = null;
+      let planTitle: string | null = null;
+      if (planSlug && harnessSlug) {
+        try {
+          const { resolveHarnessPlansDir, readPlanBySlug } = await import('@/lib/agent-tools/plans/source');
+          const { plans, archive } = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
+          const found = await readPlanBySlug(planSlug, { plansDir: plans, archiveDir: archive });
+          if (found) {
+            planNow = found.parsed.now;
+            planTitle = found.parsed.frontmatter?.title ?? null;
+          }
+        } catch {
+          // plan context is optional — proceed without it
+        }
+      }
+      const addendum = composeLaunchContext({ harnessSlug, planSlug, planTitle, planNow });
+      if (addendum) {
+        const file = launchContextPathFor(sessionId ?? `t-${Date.now()}`);
+        try {
+          mkdirSync(launchContextDir(), { recursive: true });
+          writeFileSync(file, addendum, 'utf8');
+          launchContextEnv = { PAPERCUSP_LAUNCH_CONTEXT_FILE: file };
+        } catch {
+          // couldn't persist the addendum — skip the env var (wrapper guards on the file)
+        }
+      }
+    }
+
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
       PAPERCUSP_AGENT: agent,
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
+      ...launchContextEnv,
     };
 
     const result: BootstrapSuResult = {

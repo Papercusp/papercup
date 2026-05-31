@@ -434,9 +434,20 @@ cat > "$WRAPPER_PATH" <<WRAPEOF
 # Plain \`omp\` is a vanilla coding assistant; this wrapper opts into the
 # ${PROFILE} playbook + the papercusp coordination extension.
 # To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+# Launch-context addendum (harness scope + bound-plan \`## Now\`), composed by
+# bootstrap-su and passed via PAPERCUSP_LAUNCH_CONTEXT_FILE when launched
+# through \`psu\`. OMP's --append-system-prompt is single-valued (last wins),
+# so a second flag would clobber the playbook — instead combine the playbook
+# + launch-context into one file (keyed off the per-launch context path, so
+# no races/leaks). A plain \`omp-su\` launch has no such env var → playbook only.
+APPEND_SP="${PLAYBOOK_DEST}"
+if [ -n "\${PAPERCUSP_LAUNCH_CONTEXT_FILE:-}" ] && [ -f "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}" ]; then
+  APPEND_SP="\${PAPERCUSP_LAUNCH_CONTEXT_FILE%.md}.combined.md"
+  cat "${PLAYBOOK_DEST}" "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}" > "\${APPEND_SP}" 2>/dev/null || APPEND_SP="${PLAYBOOK_DEST}"
+fi
 exec omp \\
   --approval-mode yolo \\
-  --append-system-prompt "${PLAYBOOK_DEST}" \\
+  --append-system-prompt "\${APPEND_SP}" \\
   -e "${HOME}/.papercusp/papercusp-coord.ts" \\
   "\$@"
 WRAPEOF
@@ -487,9 +498,19 @@ if [ -z "\${PAPERCUSP_SID:-}" ]; then
   PAPERCUSP_SID="claude-su-\$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "\$\$-\${RANDOM}")"
 fi
 export PAPERCUSP_SID
+# Launch-context addendum (harness scope + bound-plan \`## Now\`), composed by
+# bootstrap-su and passed via PAPERCUSP_LAUNCH_CONTEXT_FILE when launched
+# through \`psu\`. Appended as a SECOND system-prompt file — claude's
+# --append-system-prompt-file is repeatable. A plain \`claude-su\` launch has
+# no such env var, so no extra flag is added.
+LAUNCH_CTX_ARGS=()
+if [ -n "\${PAPERCUSP_LAUNCH_CONTEXT_FILE:-}" ] && [ -f "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}" ]; then
+  LAUNCH_CTX_ARGS=(--append-system-prompt-file "\${PAPERCUSP_LAUNCH_CONTEXT_FILE}")
+fi
 exec claude \\
   --dangerously-skip-permissions \\
   --append-system-prompt-file "${PLAYBOOK_DEST_CLAUDE}" \\
+  "\${LAUNCH_CTX_ARGS[@]}" \\
   "\$@"
 WRAPEOF
 chmod 755 "$CLAUDE_WRAPPER_PATH"
@@ -614,6 +635,12 @@ cat > "$CODEX_WRAPPER_PATH" <<WRAPEOF
 # CODEX_HOME whose AGENTS.md is the ${PROFILE} playbook, with the
 # papercusp-su MCP server scoped to it. Plain \`codex\` is unaffected.
 # To switch profiles, re-run: install-standalone-mcp.sh --profile=engineer|power
+#
+# Launch-context (PAPERCUSP_LAUNCH_CONTEXT_FILE) is composed by bootstrap-su
+# and consumed by claude-su/omp-su as an extra system prompt. Codex has no
+# per-launch system-prompt flag (only a static CODEX_HOME/AGENTS.md or a
+# positional user PROMPT), so it is NOT injected here yet — the env var is
+# still present for a future per-launch CODEX_HOME overlay. (P-021/P-022 deferral.)
 if [ -z "\${PAPERCUSP_SU_TOKEN:-}" ] && [ -s "${TOKEN_PATH}" ]; then
   PAPERCUSP_SU_TOKEN="\$(cat "${TOKEN_PATH}")"
   export PAPERCUSP_SU_TOKEN
