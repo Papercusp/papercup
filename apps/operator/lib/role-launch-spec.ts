@@ -35,6 +35,7 @@ import { randomUUID } from 'node:crypto';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { signSpawnParams } from '@/lib/spawn-signing';
 import { resolveProjectDir } from '@/lib/spawn-config';
+import { getPromptOverride } from '@/lib/harness-prompt-overrides';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -98,6 +99,16 @@ export async function buildRoleLaunchSpec(
     );
   }
 
+  // 0b. Workspace-owned prompt override (D-7): resolve the per-(workspace,
+  //     harness,role) override from PG and hand it to the assembler, which
+  //     prefers it over the config.json fallback. Best-effort — a store miss
+  //     leaves it undefined and the assembler uses the committed default.
+  let promptOverrideText: string | undefined;
+  try {
+    promptOverrideText =
+      (await getPromptOverride(input.workspaceId, input.harnessSlug, input.role)) ?? undefined;
+  } catch { /* store unavailable → assembler falls back to config.json */ }
+
   // 1. Prompt (chat mode — a human drives this session). Same shared
   //    assembler the orchestrator's prompt path + operator brains use, but
   //    with the in-process projectDir so it skips the blind lookup.
@@ -109,6 +120,7 @@ export async function buildRoleLaunchSpec(
     featureId: featureId ?? undefined,
     extras: input.extras,
     planContext: input.planContext,
+    promptOverrideText,
   });
   const runId = assembled.meta.runId;
 
