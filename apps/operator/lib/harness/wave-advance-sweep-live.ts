@@ -6,16 +6,22 @@
  * `harness-status-sweep.ts`. The pure orchestration + decision live in
  * `wave-advance-sweep.ts` / `waves.ts` and are unit-tested there.
  *
- * ⚠️ UNVERIFIED until a host run (promote-policy-and-waves §Now): these adapters
- * compile but have not been exercised against a live harness. In particular
- * `promoteWave` launches a **promote role that does not exist yet** (Phase F) and
- * `onBlocked` logs rather than raising a harness issue (Phase E). The sweep is a
- * **no-op for every plan without a `## Promote` policy**, so wiring it in is safe.
+ * Host-verified 2026-05-31 (promote-policy-and-waves): the sweep waits while a
+ * wave is in-progress and, on drain, invokes the `promote` role for the next wave
+ * via `/harness/:slug/invoke?role=promote` — passing the wave as `body.extra`
+ * (`PLAN_SLUG`/`WAVE`/`NEEDS_ITEMS`, the format spawn.ts forwards as the agent's
+ * Runtime context). `onBlocked` raises a deterministic `(plan, wave)`-keyed
+ * `harness_issues` row (`source='system'`). Workspace resolves via
+ * `activeWorkspaceId()` — consistent with `harness-status-sweep` and the harness
+ * routes (`resolveProject`/`features/import`). The sweep is a **no-op for every
+ * plan without a `## Promote` policy**, so it is safe to leave running.
  */
 import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../workspace-registry';
+import { activeWorkspaceId } from '../workspace-registry';
 import { readPlanBySlug } from '../agent-tools/plans/source';
 import { parsePromotePolicy } from '../agent-tools/plans/promote-policy';
+import { resolveProject } from '../harness-core';
+import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
 import { runWaveAdvanceTick, type WaveSweepDeps, type StartedPlan } from './wave-advance-sweep';
 import type { WaveFeature, WaveForAdvance } from './waves';
 
@@ -30,7 +36,7 @@ function operatorBase(): string {
 export function liveWaveSweepDeps(): WaveSweepDeps {
   return {
     async listStartedPlans(): Promise<StartedPlan[]> {
-      return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+      return withWorkspace(activeWorkspaceId(), async (tx) => {
         const rows = (await tx`
           SELECT plan_slug, harness_slug, current_wave
             FROM harness_shared.harness_plan_status
@@ -49,7 +55,7 @@ export function liveWaveSweepDeps(): WaveSweepDeps {
     },
 
     async getPlanFeatures(plan: StartedPlan): Promise<WaveFeature[]> {
-      return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+      return withWorkspace(activeWorkspaceId(), async (tx) => {
         const rows = (await tx`
           SELECT wave, status, attempts
             FROM harness_shared.harness_features_consolidated
@@ -65,7 +71,7 @@ export function liveWaveSweepDeps(): WaveSweepDeps {
     },
 
     async setCursor(p): Promise<void> {
-      await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+      await withWorkspace(activeWorkspaceId(), async (tx) => {
         await tx`
           UPDATE harness_shared.harness_plan_status
              SET current_wave = ${p.wave}, updated_at = now()
@@ -75,24 +81,61 @@ export function liveWaveSweepDeps(): WaveSweepDeps {
     },
 
     async promoteWave(p): Promise<void> {
-      // Phase F: launch the promote agent for the next wave. The harness invoke
-      // is role-based; the `promote` role + its directive plumbing land in Phase
-      // F. Until then this is the wiring point — it will 4xx (no such role) and
-      // the tick logs + does not advance the cursor (promoteWave throws → retry).
+      // Launch the promote agent for the next wave via the role-based harness
+      // invoke (`/harness/:slug/invoke?role=promote`, spawn.ts). That route reads
+      // `body.extra` (a `KEY=value` string[]) and forwards it as the agent's
+      // EXTRAS / Runtime-context lines — so the wave must be passed THAT way, not
+      // as top-level JSON keys (the promote.md prompt reads PLAN_SLUG/WAVE/
+      // NEEDS_ITEMS from Runtime context). promoteWave throws on non-OK → the tick
+      // does NOT advance the cursor → it retries next tick.
       const url = `${operatorBase()}/api/harness/${encodeURIComponent(p.harnessSlug)}/invoke?role=promote`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ plan_slug: p.slug, wave: p.wave, needs_items: p.needsItems }),
+        body: JSON.stringify({
+          extra: [`PLAN_SLUG=${p.slug}`, `WAVE=${p.wave}`, `NEEDS_ITEMS=${p.needsItems}`],
+        }),
       });
-      if (!res.ok) throw new Error(`promote launch ${res.status} (promote role pending — Phase F)`);
+      if (!res.ok) throw new Error(`promote launch ${res.status} for ${p.harnessSlug} wave "${p.wave}"`);
     },
 
     async onBlocked(p): Promise<void> {
-      // Phase E: raise a deterministic `harness_issues` row so the operator
-      // scanner surfaces it. For now, log — issue creation is per-project/file-
-      // coupled (harness-issues.ts) and lands with Phase E.
-      console.warn(`[wave-advance] BLOCKED: plan ${p.slug}@${p.harnessSlug} wave "${p.wave}" — fix or deprecate the failing feature (Phase E: raise an issue here)`);
+      // Phase E: raise a deterministic `harness_issues` row (via the FS-canonical
+      // issues store, which mirrors to PG) so the operator scanner surfaces the
+      // blocked wave. Keyed by (plan, wave) → idempotent: re-blocking updates the
+      // same row instead of duplicating. source='system' (sweep-detected).
+      const project = await resolveProject(p.harnessSlug).catch(() => null);
+      if (!project) {
+        console.warn(`[wave-advance] BLOCKED: plan ${p.slug}@${p.harnessSlug} wave "${p.wave}" — harness not resolvable in the active workspace, cannot raise issue`);
+        return;
+      }
+      const issueId = `I-WAVE-${p.slug}-${p.wave}`;
+      const file = loadIssuesOrSeed(project);
+      const existing = file.issues.find((i) => i.id === issueId);
+      if (existing) {
+        // Already raised. Reopen only if a human had closed it while the wave is
+        // still blocked; otherwise leave it (no duplicate, no churn).
+        if (existing.status === 'closed' || existing.status === 'wontfix') {
+          existing.status = 'open';
+          await saveIssues(project, file);
+        }
+        return;
+      }
+      file.issues.push({
+        id: issueId,
+        title: `Wave "${p.wave}" blocked in ${p.slug}`,
+        severity: 'major',
+        source: 'system',
+        foundAt: new Date().toISOString(),
+        foundDuring: p.slug,
+        status: 'open',
+        evidence: `The wave-advance sweep cannot advance plan "${p.slug}" past wave "${p.wave}" in harness "${p.harnessSlug}": a feature in this wave is failing or stuck (not terminal), so the wave never drains and the next wave will not promote.`,
+        suggestedFix: `Resolve the failing feature(s) in wave "${p.wave}", or mark them deprecated if they are intentionally skipped — either lets the wave drain and the next wave promote.`,
+        attempts: 0,
+        notes: [],
+      });
+      await saveIssues(project, file);
+      console.warn(`[wave-advance] BLOCKED: raised issue ${issueId} — plan ${p.slug}@${p.harnessSlug} wave "${p.wave}"`);
     },
 
     log: (msg) => console.log(msg),

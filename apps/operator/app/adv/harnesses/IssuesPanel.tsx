@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
-import { ArrowUpRight, Bot, CheckCircle, Circle, Eye, FileCode, User, XCircle } from 'lucide-react';
+import { ArrowUpRight, Bot, CheckCircle, Circle, Cpu, Eye, FileCode, User, XCircle } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import type { Issue, IssueSource, IssueStatus } from '../../harness/issues/types';
@@ -44,6 +44,7 @@ const SOURCE_ICON: Record<IssueSource, typeof Circle> = {
   validator: Bot,
   worker: Bot,
   human: User,
+  system: Cpu,
 };
 
 export default function IssuesPanel({ params, api }: PanelComponentProps) {

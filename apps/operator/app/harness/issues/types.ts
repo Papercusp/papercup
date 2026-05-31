@@ -1,7 +1,7 @@
 // Shared types for the structured Issues tracker.
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
-export type IssueSource = 'validator' | 'worker' | 'human';
+export type IssueSource = 'validator' | 'worker' | 'human' | 'system';
 export type IssueStatus = 'open' | 'acknowledged' | 'fixing' | 'closed' | 'wontfix';
 
 export interface IssueNote {
