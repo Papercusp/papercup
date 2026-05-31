@@ -250,3 +250,14 @@ isn't keyed in `resolveAttentionAction`, so Skip would either no-op or hide the
 card while the backend record stays open. Inbox cards therefore render with
 `allowDecline={false}`. If a "dismiss/snooze" is wanted later it's an explicit
 action (local UI state), not the chat Skip. (From review, 2026-05-31.)
+
+### D-009 — Phase D live verification (session e36df27a resume) — round-trip confirmed; delegate-chat shim does NOT fire onCard
+Date: 2026-05-31
+Verified Phase D (durable-escalation ⇄ live-card convergence) on the running system (2026-05-31):
+
+1. **Flag mechanism.** PostHog isn't configured on :3070 (`flag-backend-not-configured`), so `flags:set` can't toggle it. The working lever is the env override `PAPERCUSP_FLAG_PAPERCUSP_INBOX_DURABLE_ESCALATIONS=1` (note: the env-var name derives from the flag VALUE, so it's double-"papercusp"). Set via `.env.local` + `:3070` restart; `flags:get` flipped true→false correctly. Reverted to default-off after the test.
+
+2. **Live round-trip — corroborated by a peer.** The coord escalation log already contains a peer-run live validation: escalation "LIVE-TEST-phaseD: pick a color" (from agent ec5f1aa0) carrying `cardCorrelationId: 0520b4bc-…` + `cardWorkspaceId: papercusp-workspace` (exactly what `openEscalation` writes when `chat:ask_choice`'s `onCard` fires under the flag), resolved from the inbox by su-3a9fa0aa with the note "confirm the blocked agent resumes." Plus the 4 unit tests (real correlator + InMemoryCoordLog) pass.
+
+3. **FINDING — delegate-chat shim doesn't fire onCard.** Driving `chat:ask_choice` via the `/api/agent-mcp/delegate-chat` SSE shim: the delegate's `askUser` opens a real card (it blocked + timed out at 60s) but did NOT invoke the `onCard` callback (P-032), so no durable escalation was written. So a delegate-driven decision card does NOT participate in Phase D — only real chat/oracle surfaces (where the peer's run originated) fire onCard. Likely worth wiring onCard through the delegate-session askUser if delegate-raised cards should also be inbox-resolvable, but it's a shim limitation, not a Phase D defect.
+Related: P-032, P-034, P-035

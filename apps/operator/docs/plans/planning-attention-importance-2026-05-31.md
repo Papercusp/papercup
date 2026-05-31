@@ -185,6 +185,20 @@ message + their kind's buttons. Related: P-008, P-013, P-025, P-026, P-027, P-02
 Date: 2026-05-31
 Not done in the autonomous loop, deliberately. Rationale: (1) they must ship as a pair — adding source-emits without retiring the poll double-fires duplicate push notifications to paired mobile devices; (2) it changes LIVE notification delivery to the user's own devices, so a dedup/double-fire bug spams or wakes them — the worst failure to introduce unattended; (3) native-notification / mobile-push behavior is unverifiable headless; (4) real design tradeoff — the current 60s poll is a robust safety net catching every write path, whereas source-emits are lower-latency but miss any path not explicitly hooked (escalation/smoke/plan-review/needs-human at importance>=high); (5) the existing device-intervention-watcher pushes to paired MOBILE devices (notifyWorkspace -> device-push-dispatcher), which D-007's "desktop native notification via Tauri IPC" framing must reconcile with first. Everything else in the plan shipped this session (P-017 dispatch + P-018 included).
 
+
+### D-010 — P-020 runtime verification (session e36df27a resume) — native-notify consumer was missing on the live desktop surface; fixed
+Date: 2026-05-31
+Runtime-verified the event-driven push path on the running Tauri desktop (2026-05-31). Findings:
+
+1. **Rust command works.** Rebuilt papercusp-desktop (the running binary predated commit 4b9b408); a direct bridge invoke of `show_attention_notification` returns Ok — the native OS notification dispatches. The earlier "needs a desktop rebuild" caveat is closed.
+
+2. **Emit chain works.** `plans:set-status`→needs-human/urgent → `notifyAttention` → `notifySyncInvalidate('attention.notify',…)` → pg_notify → :3070 SSE `invalidate` frame. Confirmed by capturing the exact payload on in-webview EventSource probes.
+
+3. **REAL GAP FOUND + FIXED.** `DesktopAttentionNotifier` (the SSE→toast→`show_attention_notification` consumer) was mounted ONLY in the Next `apps/operator/app/layout.tsx` — but the desktop renders the **operator-vite SPA** (`:3070` serves `apps/operator-vite/dist`; Next is retired for the operator per CLAUDE.md). So the SSE event reached the webview but nothing consumed it → native notifications would never fire on the real desktop. Fixed by mounting `<DesktopAttentionNotifier />` in `apps/operator-vite/src/routes/__root.tsx` (committed; bundle confirmed to contain it). Same class of bug as commit 8db79f2ee ("mount … in the LIVE vite root, not the retired Next layout").
+
+The fully-automatic SSE→notifier→toast e2e on the running desktop was intermittent due to known webview→localhost:3070 SSE connection flakiness (libsoup budget), but each link is independently verified and the consumer is now present on the correct surface.
+Related: P-020
+
 ## Rubric — importance level (proposed wording for P-005)
 
 > **Assigning an importance level (required for every needs-human and ToDo item).**
