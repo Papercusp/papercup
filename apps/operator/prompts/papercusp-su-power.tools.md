@@ -212,6 +212,11 @@ run.
 - **Don't write to `harness_features` or schema-canonical tables with
   raw SQL.** Use the documented verbs — they emit audit rows and keep
   state in sync.
+- **Don't default to polling for live updates — push instead.** Default to
+  a push transport keyed to the deployment: **IPC events on the desktop**
+  (co-located app↔sidecar) and **SSE on the web**. Polling — especially
+  polling the DB as a message channel — is the last resort and needs a
+  specific justification (e.g. a client that can't hold a connection).
 - **Don't call `orchestrator.spawn` directly.** For *autonomous* work,
   file a feature or send a directive through the harness workflow. For an
   **interactive** role session — a human-driven worker / validator /

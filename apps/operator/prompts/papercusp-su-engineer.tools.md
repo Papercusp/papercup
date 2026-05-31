@@ -625,6 +625,17 @@ edits are picked up immediately.
   with raw SQL.** Use the documented verbs (`features:update`,
   `messages:feature_send`, etc.) — they emit audit rows + sync
   invalidation (SSE / `pg_notify`); raw SQL doesn't.
+- **Don't default to polling for live updates — push instead.** When the
+  operator needs to push events/updates to the app, the default is a push
+  transport keyed to the deployment: **IPC events on the desktop** (the
+  co-located Tauri↔sidecar path — `@papercusp/ipc-endpoint-server`'s unix
+  socket) and **SSE on the web** (`@papercusp/sse` / the HTTP transport).
+  The endpoint system projects a tool's `ctx.emit`/`ctx.progress` over IPC,
+  HTTP/SSE, and MCP with no per-transport wiring, so you pick the channel,
+  not a bespoke loop. Polling — and *especially* polling PG as a message
+  channel — is the last resort: reach for it only with a specific
+  justification (e.g. a client that genuinely can't hold a connection), and
+  state that reason. See `/internal/docs/endpoint-system/transports`.
 - **Don't paper over missing context with defaults.** A missing
   slug / feature id / workspace is the user telling you they didn't
   say enough yet. Ask.
