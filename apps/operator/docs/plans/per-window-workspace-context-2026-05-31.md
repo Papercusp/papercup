@@ -25,13 +25,28 @@ papercup → the Tests tab fell back to the generic 6-domain set (and on reload
 the `/adv` window flipped to `default`'s `sheets` harness). The window's URL said
 `?ws=papercusp-workspace`, but the backend ignored it.
 
-**Next action:** Phase 0 — the **go/no-go gate (D-006)** comes first: confirm
-whether the data lives in one shared embedded-PG (RLS-scoped) or per-workspace
-DBs, because that decides whether "two workspaces in one process" is even
-feasible and whether the ALS/`app.workspace_id` mechanism is the right layer. In
-parallel, run the call-site audit (P-001, now 3 request classes) and settle the
-**stream transport** (P-002 — SSE/WS *cannot* carry a custom header; see D-001).
-Nothing ships until D-006 and D-001 are resolved.
+**Next action:** **Phase 0 research is done (P-003) and it reshapes the plan —
+a single human decision is now the only blocker (P-004, `needs-human`).** The
+D-006 feasibility research (2026-05-31) found the gate **splits by deployment
+mode**:
+
+- **Dev mode is already one shared embedded-PG with RLS** (`HOME=~`, a single
+  `~/.papercusp/embedded-pg.json`; workspaces isolated only by the
+  `app.workspace_id` GUC). So the dev flapping is a *pure resolution-layer* bug —
+  **Phase A's ALS+header core fixes the exact symptom above with NO dependency on
+  D-006.** It is no longer gated.
+- **Packaged is process-per-workspace** (`workspaces_switch` → `kill_sidecar()` +
+  `app.restart()`; per-`HOME` → per-workspace PG). It already can't hold two
+  workspaces open at once. So D-006 is **packaged-only**, and narrower than first
+  written: *should packaged move to one shared embedded-PG (RLS) to gain
+  concurrent multi-workspace windows, or keep hard per-`HOME` process isolation?*
+
+So the human decision (P-004) is: ratify **D-001** (stream transport) + the
+**packaged-only D-006 fork** (recommendation: **Go** — the schema already targets
+shared-DB-RLS; honest cost is credential isolation, see D-006) + **D-004** authz
+(low-risk for loopback). **Phase A (the dev win) can start now; only the packaged
+Phase E waits on D-006.** The remaining Phase 0 audit (P-001) + stream spec
+(P-002) proceed in parallel.
 
 ## Background
 
@@ -87,7 +102,20 @@ installed first in `__root.tsx`) forwards to the sidecar without a workspace.
   discovery is `HOME`-relative (`~/.papercusp/embedded-pg.json`) → packaged
   runtime gives each workspace its **own** PG instance. One window serving two
   workspaces is impossible under per-`HOME` PGs; it works only on the shared-DB
-  model the schema already assumes. **This is D-006 and it gates the plan.**
+  model the schema already assumes. **This is D-006** — see the P-003 finding next.
+- **P-003 finding (2026-05-31) — the fork is packaged-only; dev is already
+  shared-PG, so Phase A is NOT gated on D-006.** Confirmed in code: `withWorkspace()`
+  opens a tx and runs `SELECT set_config('app.workspace_id', …, true)` with RLS
+  `USING (workspace_id = current_setting('app.workspace_id', true))` — definitively
+  *one DB, many workspaces, GUC-isolated* (`db/src/workspace-context.ts:42`;
+  `route-workspace.ts:41` is the `activeWorkspaceId()` chokepoint). The **dev**
+  sidecar (`papercup-dev-api.service`, `HOME=~`) resolves that one shared PG via
+  `getHarnessAdminUrl()`, so every dev workspace already coexists in it — the
+  flapping is purely `activeWorkspaceId()` returning the global. **Packaged** alone
+  is per-`HOME`/per-workspace-PG, and switching there is `kill_sidecar()` +
+  `app.restart()` (`main.rs:1016`), so it already runs one workspace at a time.
+  ⇒ Phase A is a strict win in *both* modes; D-006 only governs whether *packaged*
+  gains concurrent multi-workspace.
 
 ### Why it "works" in packaged but not dev
 
@@ -175,7 +203,25 @@ workspaces and *collides* with `harnesses-across-workspaces`' shared results.
   reachable.
 - **No-go:** if per-`HOME` data isolation is load-bearing (real per-workspace DBs),
   then "two workspaces in one process" is off the table and the goal/mechanism
-  change. Decide before Phase A.
+  change. Decide before the *packaged* Phase E (not before Phase A — see below).
+
+**Research finding + recommendation (P-003, 2026-05-31).** The fork is
+**packaged-only** — dev is already shared-PG (see the P-003 bullet under "Verified
+by review"), so it **no longer gates Phase A**, only the packaged Phase E.
+Recommendation: **Go** — packaged adopts the one-shared-embedded-PG + RLS model the
+schema already targets (205 `workspace_id` cols + policies), because it is the
+*only* path to the headline "two windows, two workspaces" goal and it aligns with
+`harnesses-across-workspaces`' shared results. **Honest costs of Go the original
+draft understated:** (1) a one-time migration merging the N per-`HOME` per-workspace
+DBs into one shared DB (tag rows by `workspace_id`); (2) the workspace header
+becomes security-relevant → **D-004 authz must land** (RLS makes a wrong header
+yield *empty*, not a cross-tenant leak, but *acting* in the wrong workspace still
+needs gating); (3) per-`HOME` today also isolates **filesystem credentials**
+(`~/.claude`, `~/.gitconfig`, `~/.papercusp`), so one-process-many-workspaces means
+rethinking credential isolation too — not just PG. **No-go** keeps that hard
+per-workspace boundary + switch=restart, forgoing concurrent multi-workspace
+windows. This is the human's call (tracked as the `needs-human` item P-004); dev
+does not wait on it.
 
 ### D-007 — Unknown workspace header → hard error; only a *missing* header falls back `[proposed]`
 
@@ -196,17 +242,25 @@ only knows its own workspace).
   launch; define how a tool call carries its workspace into the ALS). Count via
   `rg -c activeWorkspaceId` per file (output-mangling caveat).
 - **P-002** `todo` **Decide + spec the stream transport** (D-001): extend
-  `IpcEventSource` with `headers` (preferred) vs `?ws=` on connect; enumerate ALL
-  stream endpoints (`/api/zero-harness/sse`, voice WS, Zero WS, agent-chat
-  streams). This is "decide + own as work," not "confirm."
-- **P-003** `todo` **Resolve D-006 (go/no-go).** Read `src-tauri/src/main.rs` +
-  the embedded-PG discovery path; determine whether packaged can move to one
-  shared embedded-PG (RLS) or whether per-`HOME` isolation is load-bearing. This
-  is the feasibility gate, not a late-phase cleanup.
-- **P-004** `todo` Lock D-001…D-007 with the owner (esp. D-006 go/no-go, D-004
-  authz, D-007 error semantics).
+  `IpcEventSource` with `headers` (preferred) vs `?ws=` on connect. Stream surface
+  enumerated (P-003 grep): SSE endpoints `/api/zero-harness/sse`,
+  `/api/flags/stream`, `/api/provision/stream`, `/api/backups/events`, the
+  attention stream + agent-chat streams; plus voice WS (`new WebSocket`) and Zero
+  WS. The fix must cover this whole set, not just `zero-harness/sse`. This is
+  "decide + own as work," not "confirm."
+- **P-003** `done` **Resolved D-006 feasibility (2026-05-31).** Read
+  `src-tauri/src/main.rs` + the embedded-PG discovery + `withWorkspace`: dev is
+  already one shared embedded-PG (RLS/GUC) so the fork is **packaged-only**, and
+  packaged is process-per-workspace (switch = `kill_sidecar()` + `app.restart()`).
+  Finding + recommendation (**Go** for packaged) folded into D-006; the go/no-go
+  *decision* is the human's, tracked as P-004. → D-006
+- **P-004** `needs-human` Ratify the open decisions with the owner before any packaged work: stream transport (extend IpcEventSource vs ?ws= on connect), the packaged go/no-go (recommendation Go — one shared embedded-PG; honest cost is credential isolation), authz posture, and unknown-header error semantics. Phase A's dev win is NOT blocked on this. → D-001 D-004 D-006 D-007 importance: high
 
 ## Phase A — Request-scoped workspace context + stream transport (the core)
+
+> **Not gated on D-006 (P-003 finding):** dev already runs one shared embedded-PG
+> with RLS, so this phase fixes the dev flapping on its own. Only packaged's
+> concurrent-multi-workspace outcome (Phase E) waits on the D-006 go/no-go.
 
 - **P-010** `todo` Add the workspace ALS — **match the existing
   `runWithPluginExecCtx`/`currentPluginExecCtx` precedent** (`lib/log-events.ts:54`)
