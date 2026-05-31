@@ -28,6 +28,10 @@ interface SessionRow {
   /** Which agent CLI backs this session (psu-launched rows); null for
    *  legacy/pre-*-su rows. More specific than `mode`. */
   agent: 'claude' | 'omp' | 'codex' | null;
+  /** Pipeline role this session runs as (psu --role); null = plain SU/engineer. */
+  role: string | null;
+  /** Feature the role session is scoped to; null when none. */
+  feature: string | null;
   mode: 'omp' | 'console';
   terminalBin: string | null;
   pid: number | null;
@@ -827,6 +831,16 @@ export default function AdvSessionsClient() {
                               >
                                 {row.agent ?? row.mode}
                               </span>
+                              {row.role ? (
+                                <span className="pc-adv-sessions__role-chip" title={`role: ${row.role}`}>
+                                  {row.role}
+                                </span>
+                              ) : null}
+                              {row.feature ? (
+                                <span className="pc-adv-sessions__feature-chip" title={`feature: ${row.feature}`}>
+                                  {row.feature}
+                                </span>
+                              ) : null}
                               {harnessForRow(row) ? (
                                 <span className="pc-adv-sessions__harness-chip" title={`harness: ${harnessForRow(row)}`}>
                                   {harnessForRow(row)}
@@ -1245,6 +1259,25 @@ export default function AdvSessionsClient() {
           font-size: 10px;
           font-weight: 700;
           letter-spacing: 0.01em;
+        }
+        .pc-adv-sessions__role-chip {
+          padding: 1px 6px;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--accent), transparent 84%);
+          color: #c4b5fd;
+          font-size: 10px;
+          font-weight: 760;
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+        }
+        .pc-adv-sessions__feature-chip {
+          padding: 1px 6px;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--ok, #34d399), transparent 86%);
+          color: #6ee7b7;
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-size: 10px;
+          font-weight: 700;
         }
         .pc-adv-sessions__harness-filter {
           padding: 4px 6px;
