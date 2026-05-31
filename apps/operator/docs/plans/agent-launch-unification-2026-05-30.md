@@ -9,17 +9,36 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Unifies two in-flight efforts that converge on the same hot path
-(`orchestrator/invoke.ts` + the backend abstraction): (1) the **agent-backend
-refactor** handoff (`agent-backend-refactor-handoff-2026-05-30`) — its (a)
-per-surface brain backend + (b-brains) codex-for-brains are DONE; (b-orchestrator)
-+ (c) remain; and (2) **psu role sessions** (`psu-role-sessions-2026-05-30`,
-now folded in here). Both touch `invoke.ts` and the `AgentBackend` type — doing
-them separately means colliding/reworking, so they are sequenced as one plan.
+**State: ALL FIVE PHASES CODE-COMPLETE (2026-05-31). One outstanding gate:
+live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
+- **Phase 1** (shared spine): P-001 unify `AGENT_BACKENDS` + drift guard;
+  P-002 `consumes` single-source; P-003 `buildRoleLaunchSpec`.
+- **Phase 2** (codex orchestrator pipeline): P-010/P-011/P-012 — codex spawn
+  path in `invoke.ts` + `writeSignedSpawnCodexHome`.
+- **Phase 3** (psu role sessions): P-020/P-021/P-022/P-023 — `adv_sessions`
+  role+feature, `bootstrap-role`, `psu --role` picker + role-scoped exec.
+- **Phase 4** (launch dispatcher): P-030/P-031 — 6 launch sites → `launchAgent`
+  (omp unchanged; claude/codex via launch-su).
+- **Phase 5** (surfacing + coupling + docs): P-040 /adv role+feature chips;
+  P-041 `surfaceModels` foundation (OQ3); P-042 docs + memory note.
+
+**Outstanding (the verification debt — needs the desktop running on this code
++ authed codex):**
+- **P-013** — live codex worker e2e (a codex pipeline agent streams a result +
+  fires an MCP tool_call).
+- **Phase 3 e2e** — `psu --role=worker --feature=F` opens a worker session with
+  worker-scoped tools, tracked in /adv.
+- **Phase 4 e2e** — the launch buttons on claude/codex.
+
+**Deferred follow-ups (gated on the e2e + parity):** P-032 (delete the legacy
+`buildEngineerOmpLaunchCommand` / console-launch `mode:'omp'`, converging omp
+onto psu); codex *interactive* role sessions (psu --role on codex); P-041
+consumption (wire `surfaceModel()` into the 8 brain call sites + `/settings/agent`
+per-surface model column).
 
 **Decisions locked (2026-05-30):** unify the AgentBackend copies (yes), do
 codex pipeline agents now (yes, Phase 2), migrate legacy console-launch onto
-psu (yes, Phase 4).
+psu (yes, Phase 4 — reversibly: omp keeps its path, P-032 deletion deferred).
 
 **✅ Phase 1 DONE (the shared spine):**
 - **P-001** — unified `AgentBackend` to one canonical subprocess set
