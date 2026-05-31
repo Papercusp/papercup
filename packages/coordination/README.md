@@ -1,47 +1,46 @@
 # @papercusp/coordination
 
 Agent-coordination substrate, extracted from
-`apps/operator/lib/agent-tools/coordination/` as **three host-agnostic
-pieces** (papercusp-systems-abstraction D-009 / P-011). No
-`@papercusp/*` / `@papercusp/*` runtime deps.
+`apps/operator/lib/agent-tools/coordination/` as host-agnostic pieces
+(papercusp-systems-abstraction D-009 / P-011). No operator / domain runtime
+deps — the only injected couplings are a PG handle and a `coordDir` resolver.
 
-## The three pieces
+## The pieces
 
-| Import | What it is | Storage |
+| Import | What it is | Storage backends |
 |---|---|---|
-| `@papercusp/coordination/core` | Pure protocol layer — envelope types + `newMsgId`, glob matcher, watermark merge, and the fold/filter logic (thread, inbox, handoffs, escalations, plan-events, promote validation). | none (pure) |
-| `@papercusp/coordination/event-log` | `CoordEventLog` — the **one swappable** append-only channel-log seam. `FsCoordLog` (portable default) + `InMemoryCoordLog` (double). Covers messages, handoffs, escalations, plan-events. | fs / in-memory / (future PG) |
-| `@papercusp/coordination/presence` | `PresenceStore` — live agent presence. `PgPresenceStore` (over an injected PgHandle) + `InMemoryPresenceStore` (double). | PG / in-memory |
+| `@papercusp/coordination/core` | Pure protocol layer — envelope types + `newMsgId`, glob matcher (`patternToRegex`), watermark merge, and the fold/filter logic (thread, inbox, handoffs, escalations, plan-events, promote validation). | none (pure) |
+| `@papercusp/coordination/event-log` | `CoordEventLog` — the swappable append-only channel-log seam. Covers messages, handoffs, escalations, plan-events. | `FsCoordLog` (portable default) / `InMemoryCoordLog` (double) / `PgCoordLog` (single `harness_shared.coord_event_log` table) |
+| `@papercusp/coordination/presence` | `PresenceStore` — live agent presence (mutable single-row-per-owner). | `PgPresenceStore` (injected PgHandle) / `InMemoryPresenceStore` |
+| `@papercusp/coordination/subscription-store` | `SubscriptionStore` — watch/notify subscriptions. | `PgSubscriptionStore` / `InMemorySubscriptionStore` |
+| `@papercusp/coordination/watermark-store` | `WatermarkStore` — per-agent read-cursor docs (mutable per-owner). | `PgWatermarkStore` / `InMemoryWatermarkStore` |
 
-`CoordEventLog` and `PresenceStore` are deliberately separate
-interfaces (D-009): an append-only event log and a mutable
-single-row-per-owner presence table are different data models, not one
-logic over two engines.
+`CoordEventLog` and the mutable stores (`PresenceStore` / `WatermarkStore` /
+`SubscriptionStore`) are deliberately separate interfaces (D-009): an
+append-only event log and a mutable single-row-per-owner table are different
+data models, not one logic over two engines.
 
 ## What stays host-side (by design — NOT in this package)
 
-- **Identity resolution** (`resolveAgentIdentity` from a host ctx) —
-  host/ctx glue. The pure core receives resolved owner-id strings.
-- **Watch/notify subscriptions** — the host fires them as a callback
-  (the locks system depends on this); only the pure glob matcher
-  (`patternToRegex`) is extracted into `core`.
-- **Watermark persistence** — a watermark is a mutable per-agent
-  read-cursor doc, not an append-only channel; only its value shape +
-  pure `mergeWatermark` live in `core`. The host owns the read/write.
+- **Identity resolution** (`resolveAgentIdentity` from a host ctx) — host/ctx
+  glue. The pure core receives resolved owner-id strings.
 - **`defineTool` verb wrappers**, role gating, and `coord/` repo-root
-  resolution.
+  resolution. The operator's channel modules (`messages.ts`, `handoffs.ts`,
+  …) are thin adapters that pick a backend and delegate to these seams.
 
 ## Seam injection
 
 `FsCoordLog` takes a `coordDir: () => string` resolver (the host owns
-repo-root / env policy). `PgPresenceStore` takes `getSql: () => Sql`
-and `ensureSchema: () => Promise<void>`. Both `*InMemory*` doubles pass
-the same conformance suites as the production impls — the swappability
-(P-050) gate.
+repo-root / env policy). The PG stores (`PgCoordLog`, `PgPresenceStore`,
+`PgWatermarkStore`, `PgSubscriptionStore`) take `getSql: () => Sql` +
+`ensureSchema: () => Promise<void>`. Every `*InMemory*` double passes the same
+conformance suite as the production impl — the swappability (P-050) gate.
+`PgCoordLog` is exercised against the same event-log conformance suite as the
+fs/in-memory backends in the operator's live-PG run.
 
-Tests: `npm test` (vitest). The PG presence impl is exercised by the
-operator's live `coord:presence` dispatch (it needs a real
-`harness_shared` schema); the package suite pins the in-memory double.
+Tests: `npm test` (vitest) — the package pins the in-memory + fs doubles; the
+PG impls are run against the shared conformance suites with a live
+`harness_shared` schema in the operator.
 
 ## Detached-mode proof (P-051)
 
