@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Backend complete (Phases 1-3). Phase 4 UI underway. DONE (commit ba8a87ca): the "Needs Decision"→"ToDos" rename (P-013, the rename half) and color-coded importance badges on plan-item rows (P-014) — directly addressing the user's asks #1 (rename) and #2 (importance visible for pick-order; rows are server-importance-sorted). 134 plans-UI tests green, tsc clean. REMAINING in Phase 4: the bigger attention-feed UI integration — P-013's new "Other" filter + tab reframe, P-015 the detail pane rendering AttentionItems with per-kind action buttons (incl. bare-message for unattached), P-016 the cross-harness selector, P-017 action wiring (resolve/chat/ack/view-log per kind, dispatching via the item's ref). This consumes the shipped `plans:attention` reader and benefits from Tauri-desktop-shell visual verification.
+**State:** Backend complete (Phases 1-3). Phase 4 UI: ToDos rename + importance badges (P-014) and now the "Other" filter + attention master-detail (P-013, P-015) all shipped (commits ba8a87ca, 5dce85aa). The Planning tab's item-status facet now has a 4th chip "Other" that surfaces the non-plan-item AttentionItem kinds (coord escalations, messages, smoke-fails, plan reviews) via the plans:attention reader — grouped by plan + per-harness "Alerts" buckets, kind + importance badges, click → right pane shows the message + the kind's action buttons (bare-message for unattached). 134 plans-UI tests green, tsc clean. REMAINING in Phase 4: P-017 wire the action-button DISPATCH (Resolve→coord:resolve, Ack, View-log, Open — currently the buttons render + report their pending action) and P-016 the cross-harness selector. Then Phase 5 (push-over-IPC + operator/orchestrator consumption). NOTE: the "Other" list only populates when live attention data exists (an open escalation / failing smoke test / plan-review row); with none it shows "Nothing else needs attention." Verify in the Tauri desktop shell (reload the window to pick up the new bundle).
 
-**Next:** Phase 4 cont. — wire `plans:attention` into PlansClient: add the "Other" filter (P-013) + the per-kind detail pane (P-015) + action wiring (P-017), then the cross-harness selector (P-016). Verify in the Tauri desktop shell.
+**Next:** P-017 — wire the Other-item action dispatch (coord:resolve / ack / view-log / open routes), then P-016 the cross-harness selector. Verify in the Tauri desktop shell.
 
 ## Background
 
@@ -73,9 +73,9 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 
 ## Phase 4 — Planning tab UI (rename + Other filter + master-detail + cross-harness)
 
-- **P-013** `todo` `PlansClient` — rename the `todo` item-filter label "Needs Decision" → "ToDos"; add a new "Other" item-filter surfacing all non-plan-item `AttentionItem` kinds (coord escalations, coord messages, smoke-fail, plan-review); reframe the tab framing as "Planning". References D-005, D-008.
+- **P-013** `done` `PlansClient` — rename the `todo` item-filter label "Needs Decision" → "ToDos"; add a new "Other" item-filter surfacing all non-plan-item `AttentionItem` kinds (coord escalations, coord messages, smoke-fail, plan-review); reframe the tab framing as "Planning". References D-005, D-008. (ToDos rename + new Other filter both shipped)
 - **P-014** `done` Render a color-coded importance badge on every item row (urgent/high/normal/low); sort rows by importance within each group.
-- **P-015** `todo` Detail (right) pane renders an `AttentionItem` via a per-kind renderer and its declared action buttons (Chat, Resolve, Mark-done, Accept, View log). An item with no `planSlug`/`itemRef` renders as a bare title + message + buttons (no plan context). Reuse the `/adv` `DetailPanel` + `PinMenu` + `panel-registry` + `?sel=` pattern. References D-004, D-008.
+- **P-015** `done` Detail (right) pane renders an `AttentionItem` via a per-kind renderer and its declared action buttons (Chat, Resolve, Mark-done, Accept, View log). An item with no `planSlug`/`itemRef` renders as a bare title + message + buttons (no plan context). Reuse the `/adv` `DetailPanel` + `PinMenu` + `panel-registry` + `?sel=` pattern. References D-004, D-008. (PlanOtherList detail pane renders per-kind body+buttons+bare-message; dispatch is P-017)
 - **P-016** `todo` Cross-harness mode — an "all harnesses" selector that fans out and groups by plan (plus the synthetic "Alerts" bucket) with a harness label on each group. blocked-by: P-011. References D-005.
 - **P-017** `todo` Wire actions — Resolve dispatches per kind (plan item → mark-done; coord escalation → `coord:resolve`; smoke-fail → ack; plan-review → open); Chat opens an agent chat scoped to the item.
 
