@@ -248,12 +248,6 @@ export default function PlansClient() {
     [attention.data],
   );
 
-  // Plans-view rows — the harness-scoped plans, narrowed by the active
-  // plan-status (bucket) filter. Click opens the plan (PlanDetail).
-  const planBrowseRows = useMemo(
-    () => visiblePlans.filter((p) => pBuckets.length === 0 || pBuckets.includes(bucketOf(p))),
-    [visiblePlans, pBuckets],
-  );
   // Split the active item-status facet into plan-item categories and the
   // non-plan-item ("Other") kinds. Empty selection = show everything.
   const otherFacets = useMemo(
@@ -589,46 +583,22 @@ export default function PlansClient() {
             needsHumanPlans={needsHumanPlans}
             needsDecisionPlans={needsDecisionPlans}
           />
-        ) : view === 'plans' ? (
-          <div className="pc-plan-browse">
-            <header className="pc-items__head">
-              <div className="pc-items__head-copy">
-                <span className="pc-items__kicker">Plans</span>
-                <h2>
-                  {planBrowseRows.length} plan{planBrowseRows.length === 1 ? '' : 's'}
-                </h2>
-                <p>{itemSubtitle}</p>
-              </div>
-            </header>
-            {planBrowseRows.length === 0 ? (
-              <div className="pc-items__empty">No plans match the current filters.</div>
-            ) : (
-              <ul className="pc-plan-browse__list" role="list">
-                {planBrowseRows.map((p) => {
-                  const needsHuman = p.itemCounts?.['needs-human'] ?? 0;
-                  return (
-                    <li key={p.slug}>
-                      <button
-                        type="button"
-                        className="pc-plan-browse__row"
-                        onClick={() => navPlanTarget(p.slug)}
-                        title={p.slug}
-                      >
-                        <span className="pc-plan-browse__title">{p.title ?? p.slug}</span>
-                        <span className="pc-plan-browse__meta">
-                          <span className="pc-count">{p.status}</span>
-                          {p.harness ? <span className="pc-pill pc-pill--harness">{p.harness}</span> : null}
-                          {needsHuman > 0 ? (
-                            <span className="pc-imp pc-imp--high">{needsHuman} needs-human</span>
-                          ) : null}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
+        ) : view !== 'inbox' ? (
+          /* Plans (default) — the already-implemented two-pane split:
+             grouped item list + read-only plan preview. Clicking an item
+             shows its plan in the right pane (not a full-screen redirect).
+             Restored after a bad single-pane detour. */
+          <PlanItemsList
+            items={filteredItems}
+            loading={itemsLoading}
+            error={itemsError}
+            refresh={refreshItems}
+            onPick={navPlanTarget}
+            harnessByPlan={harnessByPlan}
+            planFilter={itemPlan}
+            title={itemTitle}
+            subtitle={itemSubtitle}
+          />
         ) : (
           <div className="pc-inbox">
             {/* Item filters live here on the Inbox page (moved off the rail). */}
