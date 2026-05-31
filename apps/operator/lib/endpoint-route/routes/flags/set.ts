@@ -13,6 +13,7 @@ import { setFlag } from '@papercusp/flags/server';
 import { publishFlagChange } from '@/lib/flag-bus';
 import '@/lib/flag-bus';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const Body = z.object({ key: z.string(), enabled: z.boolean() });
 
@@ -21,7 +22,9 @@ export default defineTool({
   path: '/flags/set',
   auth: 'public',
   input: Body,
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const { key: rawKey, enabled } = ctx.input;
     const key = rawKey as FlagKey;
     if (!ALL_FLAG_KEYS.includes(key)) {

@@ -178,3 +178,39 @@ describe('flags public routes — mutate ship gates, auth:public (P-013)', () =>
     });
   });
 });
+
+describe('loopback gate — destructive routes reject non-loopback origin (D-009)', () => {
+  // The guard reads the host from req.url; app.request with a full non-loopback
+  // URL exercises the 0.0.0.0-bind threat without fighting the forbidden `Host`
+  // header. The existing tests above use path-only requests (→ http://localhost)
+  // so they stay on the loopback (allowed) path.
+  const cases: Array<{ name: string; def: AnyRoute; path: string; body: unknown }> = [
+    { name: 'backups/restore', def: backupRestore as AnyRoute, path: '/backups/restore', body: { kopiaSnapshotId: 's' } },
+    { name: 'backups/rollback', def: backupRollback as AnyRoute, path: '/backups/rollback', body: { brokenPath: '/x' } },
+    { name: 'backups/promote', def: backupPromote as AnyRoute, path: '/backups/promote', body: { restoredPath: '/r' } },
+    { name: 'flags/set', def: flagsSet as AnyRoute, path: '/flags/set', body: { key: ALL_FLAG_KEYS[0], enabled: true } },
+    { name: 'flags/preset', def: flagsPreset as AnyRoute, path: '/flags/preset', body: { name: 'testing' } },
+  ];
+  const send = (def: AnyRoute, origin: string, path: string, body: unknown) =>
+    appWith(def).request(`${origin}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: { 'content-type': 'application/json' },
+    });
+
+  for (const c of cases) {
+    it(`${c.name} → 403 loopback_only from a non-loopback host (before any side effect)`, async () => {
+      const res = await send(c.def, 'http://192.168.1.50:3070', c.path, c.body);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'loopback_only' });
+      expect(restoreToClone).not.toHaveBeenCalled();
+      expect(promoteRestore).not.toHaveBeenCalled();
+      expect(rollbackPromote).not.toHaveBeenCalled();
+      expect(setFlag).not.toHaveBeenCalled();
+    });
+    it(`${c.name} → reachable (not 403) from a loopback host`, async () => {
+      const res = await send(c.def, 'http://localhost', c.path, c.body);
+      expect(res.status).not.toBe(403);
+    });
+  }
+});

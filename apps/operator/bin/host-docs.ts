@@ -18,6 +18,7 @@
 import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
+import { isLoopbackHost } from '../lib/endpoint-route/loopback-guard';
 
 /**
  * Starlight docs root. `__dirname`-relative in dev (host run via `tsx`);
@@ -28,14 +29,6 @@ import { extname, join, resolve } from 'node:path';
 const PUBLIC_DOCS_ROOT = process.env.PAPERCUSP_DOCS_ROOT
   ? resolve(process.env.PAPERCUSP_DOCS_ROOT)
   : resolve(__dirname, '..', 'public', 'internal', 'docs');
-
-const LOOPBACK_HOSTS = new Set([
-  'localhost',
-  '127.0.0.1',
-  '::1',
-  '10.0.2.2',
-  'tauri.localhost',
-]);
 
 const EXT_CONTENT_TYPE: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -64,20 +57,6 @@ const TEXT_EXTS = new Set([
 
 const STATIC_ASSET_RE = /\.(md|txt|html|xml|js|mjs|css|json|svg|png|jpe?g|webp|gif|woff2?|wasm|ico)$/i;
 const EXT_RE = /\.[a-z0-9]+$/i;
-
-/** True iff the request's Host header points at a loopback address. */
-function isLoopbackHost(host: string | null): boolean {
-  if (!host) return false;
-  const lower = host.trim().toLowerCase();
-  if (LOOPBACK_HOSTS.has(lower)) return true;
-  let hostname = lower;
-  if (hostname.startsWith('[')) {
-    hostname = hostname.slice(1, hostname.indexOf(']'));
-  } else if (hostname.includes(':')) {
-    hostname = hostname.slice(0, hostname.indexOf(':'));
-  }
-  return LOOPBACK_HOSTS.has(hostname);
-}
 
 function serveFile(absPath: string, status = 200): Response {
   const ext = extname(absPath).toLowerCase();

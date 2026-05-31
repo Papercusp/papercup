@@ -34,12 +34,15 @@ import { buildInvokeOnce } from '@/lib/harness-invoke-once';
 import { launchRun } from '@/lib/harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const launch = defineTool({
   method: 'POST',
   path: '/harness/:slug/launch',
   auth: 'public',
   async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
       ctx.params.slug as string,
@@ -166,6 +169,8 @@ const invoke = defineTool({
   // agent mid-run (claude-code promote reads the plan + calls plans:promote, ~30-120s).
   timeoutSec: 310,
   async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const url = new URL(req.url);
     const project = await resolveProject(ctx.params.slug as string);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
@@ -267,6 +272,8 @@ const resume = defineTool({
   path: '/harness/:slug/resume',
   auth: 'public',
   async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const url = new URL(req.url);
     const project = await resolvePhasedProject(
       ctx.params.slug as string,

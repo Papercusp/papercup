@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const Schema = z.object({
   kopiaSnapshotId: z.string().min(1),
@@ -20,6 +21,8 @@ export default defineTool({
   path: '/backups/restore',
   auth: 'public',
   async handler(req) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     try {
       const body = await req.json();
       const args = Schema.parse(body);

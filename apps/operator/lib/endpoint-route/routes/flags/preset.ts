@@ -17,6 +17,7 @@ import { publishFlagChange, reinitFlagBackend } from '@/lib/flag-bus';
 import { resetPosthogConfigForTest } from '@/lib/posthog-config';
 import '@/lib/flag-bus';
 import { defineTool } from '@papercusp/agent-mcp';
+import { requireLoopbackOr403 } from '../../loopback-guard';
 
 const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
 const Body = z.object({ name: z.enum(['production', 'testing']) });
@@ -39,7 +40,9 @@ export default defineTool({
   path: '/flags/preset',
   auth: 'public',
   input: Body,
-  async handler(_req, ctx) {
+  async handler(req, ctx) {
+    const gate = requireLoopbackOr403(req);
+    if (gate) return gate;
     const { name } = ctx.input;
     if (name === 'production') {
       const cfg = readConfig();
