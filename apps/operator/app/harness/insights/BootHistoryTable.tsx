@@ -15,11 +15,16 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 
+// Keep in sync with the canonical union in
+// `lib/sync/hyperbee/boot-history.ts`. The KIND_COLOR / KIND_MARK maps below
+// must stay exhaustive over every kind.
 export type BootHistoryKind =
   | 'boot_start'
   | 'boot_ok'
   | 'boot_fail'
-  | 'close';
+  | 'close'
+  | 'peer_connected'
+  | 'swarm_join_failed';
 
 export interface BootHistoryEntry {
   ts: number;
@@ -40,6 +45,8 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   boot_ok: 'var(--accent, #4CAF50)',
   boot_fail: 'var(--fg-danger, #f44336)',
   close: 'var(--fg-dim, #888)',
+  peer_connected: 'var(--fg-link, #4a9eff)',
+  swarm_join_failed: 'var(--fg-warning, #ff9800)',
 };
 
 const KIND_MARK: Record<BootHistoryKind, string> = {
@@ -47,6 +54,8 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   boot_ok: '✓',
   boot_fail: '✗',
   close: '×',
+  peer_connected: '⇄',
+  swarm_join_failed: '⚠',
 };
 
 const TABLE: CSSProperties = {

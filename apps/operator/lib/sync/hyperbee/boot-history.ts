@@ -13,13 +13,26 @@
  * restarts. Test seams for time + reset.
  *
  * Event kinds:
- *   - 'boot_start'  — bootHarnessSubstrate called; corestore opening.
- *   - 'boot_ok'     — bootHarnessSubstrate returned successfully.
- *   - 'boot_fail'   — bootHarnessSubstrate threw.
- *   - 'close'       — handle.close() called.
+ *   - 'boot_start'        — bootHarnessSubstrate called; corestore opening.
+ *   - 'boot_ok'           — bootHarnessSubstrate returned successfully.
+ *   - 'boot_fail'         — bootHarnessSubstrate threw.
+ *   - 'close'             — handle.close() called.
+ *   - 'peer_connected'    — a Hyperswarm peer connected to a swarmed harness.
+ *   - 'swarm_join_failed' — swarm join threw; harness stays local-only.
+ *
+ * Keep this union in sync with the second declaration in
+ * `app/harness/insights/BootHistoryTable.tsx` (+ its KIND_COLOR / KIND_MARK
+ * maps) — the table renders these kinds and its Record maps must stay
+ * exhaustive.
  */
 
-export type BootHistoryKind = 'boot_start' | 'boot_ok' | 'boot_fail' | 'close';
+export type BootHistoryKind =
+  | 'boot_start'
+  | 'boot_ok'
+  | 'boot_fail'
+  | 'close'
+  | 'peer_connected'
+  | 'swarm_join_failed';
 
 export interface BootHistoryEntry {
   ts: number;

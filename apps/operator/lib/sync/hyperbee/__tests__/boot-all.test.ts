@@ -27,6 +27,7 @@ function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHand
     harnessSlug,
     store: {} as never,
     base: {} as never,
+    swarm: null,
     close: vi.fn(async () => {}),
   };
 }
