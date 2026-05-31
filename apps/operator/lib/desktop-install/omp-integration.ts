@@ -33,7 +33,6 @@ import * as os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveInstallPaths } from './papercusp-files';
-import { ENGINEER_OMP_SU_WRAPPER } from '../omp-su-wrapper';
 
 const exec = promisify(execFile);
 
@@ -267,21 +266,7 @@ function resolveWrapperPath(home: string, ompBinaryPath: string | null): string 
   return path.join(home, '.local', 'bin', 'omp-su');
 }
 
-function wrapperContent(): string {
-  return ENGINEER_OMP_SU_WRAPPER;
-}
-
-async function installWrapper(wrapperPath: string): Promise<boolean> {
-  const content = wrapperContent();
-  if (await pathExists(wrapperPath)) {
-    const existing = await fs.readFile(wrapperPath, 'utf8');
-    if (existing === content) return false;
-  }
-  await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
-  await fs.writeFile(wrapperPath, content, { mode: 0o755 });
-  await fs.chmod(wrapperPath, 0o755);
-  return true;
-}
+// (wrapperContent/installWrapper removed — omp-su wrapper retired, P-050.)
 
 function checkPathContains(dir: string, envPath: string | undefined): boolean {
   if (!envPath) return false;
@@ -392,13 +377,11 @@ export async function installOmpIntegration(opts: InstallOptions = {}): Promise<
     actions.push(`configured OMP Hindsight (${hindsightUpdated.join(', ')})`);
   }
 
-  // 4. install omp-su wrapper.
-  const wrapperPath = resolveWrapperPath(home, detection.ompBinaryPath);
-  if (!opts.skipWrapper) {
-    if (await installWrapper(wrapperPath)) {
-      actions.push(`installed wrapper at ${wrapperPath}`);
-    }
-  }
+  // 4. The omp-su wrapper is RETIRED (psu-only-launch P-050) — psu launches
+  //    raw omp per-launch (playbook + `-e` coord via suLaunchArgs /
+  //    resumeArgsFor), so this install no longer writes a wrapper.
+  //    uninstallOmpIntegration still removes a stale one. The MCP merge
+  //    (step 1) is what psu's raw omp depends on and stays.
 
   // Re-read final state.
   const finalState = await readOmpIntegrationState(opts);

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ENGINEER_OMP_SU_WRAPPER } from './omp-su-wrapper';
 
 let tmpHome = '';
 let fakeOmp = '';
@@ -45,7 +44,7 @@ afterEach(() => {
 });
 
 describe('ensure-omp-su', () => {
-  it('reports stale wrapper state and refreshes the wrapper on ensure', async () => {
+  it('reports bootstrap state + does NOT write/refresh the omp-su wrapper (P-050 retired)', async () => {
     const playbook = join(tmpHome, '.papercusp', 'engineer-collaborator.md');
     const coord = join(tmpHome, '.papercusp', 'papercusp-coord.ts');
     const wrapper = join(dirname(fakeOmp), 'omp-su');
@@ -58,15 +57,12 @@ describe('ensure-omp-su', () => {
     const before = mod.readEngineerOmpBootstrapState(tmpHome);
     expect(before.playbookPresent).toBe(true);
     expect(before.coordPresent).toBe(true);
+    // A leftover (stale) wrapper is detectable for cleanup, but no longer managed.
     expect(before.wrapperPresent).toBe(true);
-    expect(before.wrapperCurrent).toBe(false);
 
     await mod.ensureOmpSuInstalled();
 
-    const after = mod.readEngineerOmpBootstrapState(tmpHome);
-    expect(after.wrapperCurrent).toBe(true);
-    const content = readFileSync(wrapper, 'utf8');
-    expect(content).toBe(ENGINEER_OMP_SU_WRAPPER);
-    expect(content).not.toContain('echo stale');
+    // The wrapper is retired — ensure must NOT (re)write or refresh it.
+    expect(readFileSync(wrapper, 'utf8')).toBe('#!/usr/bin/env bash\necho stale\n');
   });
 });

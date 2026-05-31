@@ -18,7 +18,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { ENGINEER_OMP_SU_WRAPPER } from '../../omp-su-wrapper';
 import {
   installOmpIntegration,
   uninstallOmpIntegration,
@@ -82,7 +81,7 @@ describe('installOmpIntegration', () => {
     expect(result.mcpServerInstalled).toBe(false);
   });
 
-  it('first run: creates mcp.json + installs wrapper at fallback path', async () => {
+  it('first run: creates mcp.json (omp-su wrapper retired — NOT installed, P-050)', async () => {
     await seedPhase1(tmpHome);
     const result = await installOmpIntegration({
       home: tmpHome,
@@ -92,7 +91,7 @@ describe('installOmpIntegration', () => {
     expect(result.supported).toBe(true);
     expect(result.changed).toBe(true);
     expect(result.mcpServerInstalled).toBe(true);
-    expect(result.wrapperInstalled).toBe(true);
+    expect(result.wrapperInstalled).toBe(false); // wrapper retired — install no longer writes it
     expect(result.wrapperPath).toBe(path.join(tmpHome, '.local', 'bin', 'omp-su'));
 
     const cfg = JSON.parse(
@@ -105,7 +104,7 @@ describe('installOmpIntegration', () => {
     });
   });
 
-  it('wrapper co-locates with detected omp binary', async () => {
+  it('wrapperPath co-locates with the detected omp binary (no wrapper written, P-050)', async () => {
     await seedPhase1(tmpHome);
     const fakeBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fake-bin-'));
     const fakeOmp = path.join(fakeBinDir, 'omp');
@@ -116,9 +115,11 @@ describe('installOmpIntegration', () => {
         operatorUrl: 'http://localhost:3070',
         ompBinaryPath: fakeOmp,
       });
+      // Path is still reported (so a stale wrapper can be found), but install
+      // no longer writes one.
       expect(result.wrapperPath).toBe(path.join(fakeBinDir, 'omp-su'));
-      const wrapperContent = await fs.readFile(result.wrapperPath, 'utf8');
-      expect(wrapperContent).toBe(ENGINEER_OMP_SU_WRAPPER);
+      expect(result.wrapperInstalled).toBe(false);
+      await expect(fs.access(result.wrapperPath)).rejects.toThrow();
     } finally {
       await fs.rm(fakeBinDir, { recursive: true, force: true });
     }
@@ -198,7 +199,7 @@ describe('installOmpIntegration', () => {
     expect(second.changed).toBe(false);
     expect(second.actions).toEqual([]);
     expect(second.mcpServerInstalled).toBe(true);
-    expect(second.wrapperInstalled).toBe(true);
+    expect(second.wrapperInstalled).toBe(false); // wrapper retired (P-050)
   });
 
   it('merge preserves other MCP servers in mcp.json', async () => {
@@ -281,12 +282,12 @@ describe('readOmpIntegrationState', () => {
     expect(state.wrapperPath).toBe(path.join(tmpHome, '.local', 'bin', 'omp-su'));
   });
 
-  it('reports installed=true after install', async () => {
+  it('reports mcpServerInstalled=true after install (wrapper retired → still false)', async () => {
     await seedPhase1(tmpHome);
     await installOmpIntegration({ home: tmpHome, ompBinaryPath: null });
     const state = await readOmpIntegrationState({ home: tmpHome, ompBinaryPath: null });
     expect(state.mcpServerInstalled).toBe(true);
-    expect(state.wrapperInstalled).toBe(true);
+    expect(state.wrapperInstalled).toBe(false); // P-050: install no longer writes the wrapper
   });
 
   it('pathWarning fires when wrapperDir not on PATH', async () => {

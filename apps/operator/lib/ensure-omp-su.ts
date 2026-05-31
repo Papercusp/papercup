@@ -1,31 +1,29 @@
 /**
- * ensure-omp-su.ts — operator-startup helper that drops the omp-su
- * wrapper + its two dependencies (engineer-collaborator playbook +
- * papercusp-coord extension) into the user's home so the /adv
- * "Launch agent" / "Resume" buttons work without the user having to
- * run apps/operator/scripts/install-standalone-mcp.sh by hand.
+ * ensure-omp-su.ts — operator-startup helper that drops the engineer
+ * bootstrap files (playbook + papercusp-coord extension + token) into the
+ * user's home and registers the papercusp-su MCP in OMP, so the /adv
+ * "Launch agent" / "Resume" buttons work without the user having to run
+ * apps/operator/scripts/install-standalone-mcp.sh by hand.
  *
  * Scope:
  *   - ensure ~/.papercusp/engineer-collaborator.md exists and is fresh
  *   - ensure ~/.papercusp/papercusp-coord.ts exists and is fresh
  *   - ensure ~/.papercusp/superuser-token + su-agent-id exist
  *   - ensure ~/.omp/agent/mcp.json contains `papercusp-su`
- *   - ensure <PATH-dir>/omp-su exists
  *   - ensure OMP-native Hindsight config is enabled
  *
- * Idempotent. Safe to re-run. Logs to stderr; never throws. Unlike the
- * original shell installer, this helper is allowed to heal an incomplete
- * bootstrap on demand from the running operator so /adv OMP launches do
- * not depend on a one-time manual install having happened earlier.
+ * The omp-su WRAPPER is no longer installed here (psu-only-launch P-050) —
+ * psu launches raw omp per-launch (playbook + `-e` coord). This helper still
+ * ensures the bootstrap files + MCP registration that psu's raw omp depends
+ * on. (The name is kept to avoid churning the boot callers.)
+ *
+ * Idempotent. Safe to re-run. Logs to stderr; never throws.
  */
 
-import { ENGINEER_OMP_SU_WRAPPER } from './omp-su-wrapper';
-import { existsSync, mkdirSync, copyFileSync, writeFileSync, chmodSync, statSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
-
-const OMP_SU_WRAPPER = ENGINEER_OMP_SU_WRAPPER;
 
 function dlog(msg: string): void {
   process.stderr.write(`[ensure-omp-su] ${msg}\n`);
@@ -72,22 +70,16 @@ function resolveWrapperDir(home = homedir()): string {
   return join(home, '.local', 'bin');
 }
 
-function wrapperScriptCurrent(wrapperPath: string): boolean {
-  try {
-    return existsSync(wrapperPath) && readFileSync(wrapperPath, 'utf8') === OMP_SU_WRAPPER;
-  } catch {
-    return false;
-  }
-}
-
 export interface EngineerOmpBootstrapState {
   playbookPath: string;
   coordPath: string;
+  /** Path a STALE omp-su wrapper would sit at (the wrapper is retired —
+   *  reported only so a leftover can be detected/cleaned). */
   wrapperPath: string;
   playbookPresent: boolean;
   coordPresent: boolean;
+  /** True if a leftover omp-su wrapper from a pre-retirement install exists. */
   wrapperPresent: boolean;
-  wrapperCurrent: boolean;
 }
 
 export function readEngineerOmpBootstrapState(home = homedir()): EngineerOmpBootstrapState {
@@ -101,7 +93,6 @@ export function readEngineerOmpBootstrapState(home = homedir()): EngineerOmpBoot
     playbookPresent: existsSync(playbookPath),
     coordPresent: existsSync(coordPath),
     wrapperPresent: existsSync(wrapperPath),
-    wrapperCurrent: wrapperScriptCurrent(wrapperPath),
   };
 }
 
@@ -145,18 +136,7 @@ function ensureFileCopy(srcPath: string, destPath: string, mode = 0o644): boolea
   }
 }
 
-function ensureWrapperScript(wrapperPath: string): boolean {
-  try {
-    if (wrapperScriptCurrent(wrapperPath)) return false;
-    mkdirSync(dirname(wrapperPath), { recursive: true });
-    writeFileSync(wrapperPath, OMP_SU_WRAPPER, { mode: 0o755 });
-    chmodSync(wrapperPath, 0o755);
-    return true;
-  } catch (e) {
-    dlog(`write ${wrapperPath} failed: ${(e as Error).message}`);
-    return false;
-  }
-}
+// (ensureWrapperScript removed — omp-su wrapper retired, P-050.)
 
 async function ensurePapercuspBootstrap(): Promise<void> {
   try {
@@ -200,11 +180,11 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     await ensurePapercuspBootstrap();
     ensureOmpHindsightConfig();
 
-    // Skip if everything is already in place — fast path on every reboot.
-    const { playbookPath: playbookDest, coordPath: coordDest, wrapperPath, wrapperCurrent } =
+    // Skip if the bootstrap files are already in place — fast path on reboot.
+    const { playbookPath: playbookDest, coordPath: coordDest } =
       readEngineerOmpBootstrapState();
 
-    if (existsSync(playbookDest) && existsSync(coordDest) && wrapperCurrent) {
+    if (existsSync(playbookDest) && existsSync(coordDest)) {
       return;
     }
 
@@ -228,13 +208,7 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     } else {
       dlog(`coord extension source missing at ${coordSrc}; skipping`);
     }
-
-    if (ensureWrapperScript(wrapperPath)) {
-      dlog(`installed omp-su wrapper → ${wrapperPath}`);
-      if (!isOnPath('omp-su')) {
-        dlog(`note: ${dirname(wrapperPath)} is not on PATH; add it or invoke ${wrapperPath} by full path`);
-      }
-    }
+    // The omp-su wrapper is no longer written (P-050) — psu launches raw omp.
   })();
   // Don't release the cache on rejection either — a transient failure
   // shouldn't cause the next launch to re-spend 5s repeating the same
