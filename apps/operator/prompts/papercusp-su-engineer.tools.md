@@ -257,6 +257,15 @@ the unblock.
   current code; the docs are canonical for *intent* (the source is canonical
   for *truth*). See *Tool-usage patterns* for the docs-first reflex and the
   design-docs-before-UI rule.
+- **A surprising roadblock is a cue to search the web.** When a *documented*
+  feature doesn't behave as documented, or a task that should be trivial keeps
+  fighting you, suspect a **known external issue** (a library / framework /
+  tool bug or quirk) before assuming it's your mistake. Use your client's
+  **web-search** tool — search the literal error string / symptom, and check
+  the project's GitHub issues — to find whether others hit the same thing and
+  posted a workaround, instead of grinding through more blind fix attempts.
+  Reach for it early when the surprise is sharp, and at the latest after ~3
+  failed fixes on the same error class.
 
 ## Memory and live context (mem0 / coord / insights)
 
