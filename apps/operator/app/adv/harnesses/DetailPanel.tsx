@@ -503,6 +503,7 @@ function FeatureDetail({
                     role: 'worker',
                     featureId: feature.id,
                     title: feature.summary || feature.title,
+                    mode: 'discuss',
                   });
                   if (res && typeof res === 'object' && 'error' in res) {
                     throw new Error(String((res as { error: unknown }).error));

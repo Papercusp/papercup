@@ -55,6 +55,10 @@ interface ChatRow {
 export interface ChatPanelProps {
   slug: string;
   chatId: string;
+  /** Conversation mode, sent with each message so the server assembles the
+   *  right role prompt: 'discuss' reframes a worker to advise-first. Optional;
+   *  the server defaults to 'chat' when absent. */
+  mode?: 'chat' | 'discuss';
   /** Called when the user archives this chat — parent should remove the dock panel. */
   onArchive?: () => void;
 }
@@ -64,7 +68,7 @@ type SendState =
   | { kind: 'streaming'; partial: string }
   | { kind: 'error'; message: string };
 
-export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
+export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelProps) {
   const [chat, setChat] = useState<ChatRow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -163,7 +167,7 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, ...(mode ? { mode } : {}) }),
         },
       );
       if (!res.ok) {
@@ -230,7 +234,7 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
     } catch (err) {
       setSendState({ kind: 'error', message: `send failed: ${(err as Error).message}` });
     }
-  }, [chat, chatId, draft, loadChat, sendState.kind, slug]);
+  }, [chat, chatId, draft, loadChat, mode, sendState.kind, slug]);
 
   const onArchiveClick = useCallback(async () => {
     if (!await askConfirm({

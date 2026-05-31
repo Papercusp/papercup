@@ -41,7 +41,9 @@ function openChatInDock(d: OpenChatEventDetail): void {
   const title = d.title ?? (d.featureId ? `${d.role ?? 'worker'} · ${d.featureId}` : 'chat');
   const free = panels.find((p) => p.type === CHAT_PANEL_TYPE && !p.params.chatId);
   if (free) {
-    setPanelParams(free.id, { harnessSlug: d.slug, chatId: d.chatId, title });
+    // updateParameters replaces — pass mode explicitly so reusing a slot
+    // that previously held a discuss chat doesn't carry a stale mode.
+    setPanelParams(free.id, { harnessSlug: d.slug, chatId: d.chatId, title, mode: d.mode });
     setPanelTitle(free.id, title);
     focusPanel(free.id);
     return;
@@ -49,7 +51,7 @@ function openChatInDock(d: OpenChatEventDetail): void {
   const id = openPanel({
     type: CHAT_PANEL_TYPE,
     title,
-    params: { harnessSlug: d.slug, chatId: d.chatId },
+    params: { harnessSlug: d.slug, chatId: d.chatId, mode: d.mode },
   });
   focusPanel(id);
 }

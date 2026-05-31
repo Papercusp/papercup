@@ -18,6 +18,7 @@ import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 export default function AdvChatPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || '';
   const chatId = (params.chatId as string) || '';
+  const mode = params.mode === 'discuss' ? 'discuss' : undefined;
 
   const onArchive = useCallback(() => {
     // Free the slot (keep the panel) so the next opened chat reuses it.
@@ -49,7 +50,7 @@ export default function AdvChatPanel({ params, api }: PanelComponentProps) {
 
   return (
     <div style={{ width: '100%', height: '100%', minHeight: 0, display: 'flex' }}>
-      <ChatPanel slug={slug} chatId={chatId} onArchive={onArchive} />
+      <ChatPanel slug={slug} chatId={chatId} mode={mode} onArchive={onArchive} />
     </div>
   );
 }

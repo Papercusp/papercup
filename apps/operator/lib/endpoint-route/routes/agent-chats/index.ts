@@ -158,7 +158,7 @@ const messagesRoute = defineTool({
   async handler(req, ctx) {
     const slug = ctx.params.slug;
     const chatId = ctx.params.chatId;
-    let body: { content?: string };
+    let body: { content?: string; mode?: string };
     try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON body' }, { status: 400 }); }
     const userContent = (body.content ?? '').trim();
     if (!userContent) return Response.json({ error: 'content is required' }, { status: 400 });
@@ -234,7 +234,9 @@ const messagesRoute = defineTool({
         slug,
         role: chat.role,
         featureId: chat.feature_id ?? undefined,
-        mode: 'chat',
+        // 'discuss' (client sends it per message) reframes the worker to
+        // advise-first; anything else is the default interactive chat.
+        mode: body.mode === 'discuss' ? 'discuss' : 'chat',
       });
       const lockNotice = featureLock?.active
         ? `\n---\n\n## ⚠ Concurrent autonomous run\n\nFeature ${chat.feature_id} is currently being worked on autonomously (taken_by=${featureLock.taken_by}, taken_at=${featureLock.taken_at}). The autonomous loop holds the worktree lock; you do not. **Do not propose code changes**; the user is asking you for advice or context. If they want guidance the autonomous worker should pick up, tell them to add a note (it lands in \`.harness/notes/${chat.feature_id}.md\`, which the next worker tick reads).\n`

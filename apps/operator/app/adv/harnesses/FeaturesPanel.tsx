@@ -109,7 +109,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const handleChat = async (f: HarnessFeature) => {
     setBusyId(f.id);
     try {
-      const res = await openFeatureChat({ slug, role: 'worker', featureId: f.id, title: f.summary || f.title });
+      const res = await openFeatureChat({ slug, role: 'worker', featureId: f.id, title: f.summary || f.title, mode: 'discuss' });
       if (res && typeof res === 'object' && 'error' in res) {
         throw new Error(String((res as { error: unknown }).error));
       }
