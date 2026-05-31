@@ -10,9 +10,9 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** Design drafted from a card-system audit; awaiting human review of the approach (reuse the renderer, NOT the run-blocking lifecycle) and the phase ordering before any code is written.
+**State:** Approach reviewed. D-006 (Chat = **inline**) and D-007 (reuse the **endpoint-system coord proxy**, no new route) resolved 2026-05-31. One open question left: **D-005** — inbox layout (master-detail vs card stack) — a mock was produced (`/tmp/inbox-mock.png`) for the human to choose.
 
-**Next:** human approves the renderer-reuse / durable-emitter split + the open questions in Decisions, then we start Phase A (renderer extraction + a `terminal` option flag).
+**Next:** human picks D-005 (Option A master-detail / Option B card stack) from the mock; then flip to `ready` and start Phase A (renderer extraction + a `terminal` option flag).
 
 ## Background
 
@@ -99,14 +99,14 @@ P-004 todo Unit tests for the renderer: terminal click → submit + disabled; no
 ## Phase B — AttentionItem → CardSpec adapter + durable dispatch
 
 P-010 todo Pure mapper `attentionItemToCardSpec(item)` (new, `apps/operator/lib/attention/to-card-spec.ts`): `title`/`body` → question; `actions[]` → options (primary→`style:'primary'`, `drop`→`style:'danger'`, `chat`/`view-log`/`open`→`terminal:false`). Colocated unit test covering every kind. blocked-by:P-002
-P-011 todo Durable dispatch map `resolveAttentionAction(item, optionId)` (new, `apps/operator/lib/attention/resolve-action.ts`) keyed by `(ref.kind, optionId)`: coord-escalation/resolve→`coord:resolve` (with the escalation's named options), coord-message/ack→`coord:ack`, plan-item/resolve→`setItemStatus done`, plan-item/drop→`setItemStatus dropped`, smoke-fail/view-log→open log, plan-review/open→open review. Returns `{ resolved: boolean }` so the card knows whether to mark answered. This is the P-017 action wiring, centralized. blocked-by:P-010
-P-012 todo `coord:resolve` needs the human's chosen option. When `ref.options` is non-empty the card's options ARE those escalation options (terminal); when empty, fall back to a generic "Resolve" that records acknowledgement. Verify the `coord:resolve` client/endpoint path exists (today only the server MCP tool exists — may need a thin REST route). blocked-by:P-011
+P-011 todo Durable dispatch map `resolveAttentionAction(item, optionId)` (new, `apps/operator/lib/attention/resolve-action.ts`) keyed by `(ref.kind, optionId)`, calling the EXISTING client helpers (D-007): coord-escalation/<option>→`resolveEscalation({msg_id, choice})`, coord-message/ack→`ackCoordMessage({msg_id})`, plan-item/resolve→`setItemStatus done`, plan-item/drop→`setItemStatus dropped`, smoke-fail/view-log + plan-review/open→navigate (non-terminal). Returns `{ resolved: boolean }` so the card knows whether to mark answered. This is the P-017 action wiring, centralized. blocked-by:P-010
+P-012 todo Escalation options: when `ref.options` is non-empty, the card's terminal options ARE those named options and each pick passes its `option_id` as `choice` to `resolveEscalation`; when empty, a single generic "Resolve" records acknowledgement. No new endpoint — `/api/admin/coord/:verb` already exists (D-007). blocked-by:P-011
 P-013 todo Integration test: each kind's terminal action calls the right backend and the underlying record changes (escalation closed / item status flipped / message acked). blocked-by:P-011
 
 ## Phase C — Render the inbox through the card UI
 
-P-020 todo Replace `OtherDetail` (in `PlanOtherList.tsx`) body+buttons with `AskChoiceCard` fed by `attentionItemToCardSpec(item)`; wire `onResponse` → `resolveAttentionAction` for terminal picks and → open `PlanChatModal` / log / review for navigate. Delete the bespoke per-action `toast`/button code. blocked-by:P-010,P-011,P-003
-P-021 todo Do the same for needs-human plan items: render `PlanItemPreview` / `InboxItemActions` via the shared card (Answer becomes an `InputCard` text card; Resolve/Drop are terminal options; Chat is navigate). Retire `InboxItemActions` bespoke buttons. blocked-by:P-020
+P-020 todo Replace `OtherDetail` (in `PlanOtherList.tsx`) body+buttons with `AskChoiceCard` fed by `attentionItemToCardSpec(item)`; wire `onResponse` → `resolveAttentionAction` for terminal picks; for the `chat` navigate action, expand a `ChatPanel` INLINE beneath the card (D-006), retiring `PlanChatModal` for this surface. Delete the bespoke per-action `toast`/button code. blocked-by:P-010,P-011,P-003
+P-021 todo Do the same for needs-human plan items: render `PlanItemPreview` / `InboxItemActions` via the shared card (Answer becomes an `InputCard` text card; Resolve/Drop are terminal options; Chat expands the inline `ChatPanel`). Retire `InboxItemActions` bespoke buttons. blocked-by:P-020
 P-022 todo Decide + apply the inbox layout (see D-005): either keep master-detail with the card in the detail pane, or render the list itself as a vertical stack of compact cards (a durable `PendingCardsBar`). blocked-by:P-020
 P-023 todo Manual e2e in the Tauri desktop: an escalation, a message, a needs-human item, a smoke-fail, and a review each render as a card; the terminal action resolves the underlying record and the item leaves the inbox; "💬 Chat" opens the chat without resolving. blocked-by:P-021,P-022
 
@@ -158,16 +158,18 @@ cards (a durable cousin of `PendingCardsBar`). (a) is the smaller change and
 preserves the list/preview muscle memory; (b) is the more thorough
 unification. **Needs a human call.**
 
-### D-006 — OPEN: does "Chat" open inline or as a modal?
+### D-006 — "Chat" opens INLINE (RESOLVED 2026-05-31)
 
-Today `PlanChatModal` opens a full `ChatPanel` in a modal. As a card "navigate"
-action it could stay a modal, or the chat could render inline beneath the card
-(a sub-conversation). Modal is the lower-risk default; inline is the slicker
-end-state. **Needs a human call.**
+The card's `chat` navigate action expands a `ChatPanel` **inline beneath the
+card** (a sub-conversation), not the current `PlanChatModal`. The card stays
+live above the chat; resolving the item collapses the chat. `PlanChatModal`
+is retired for this surface. (Human call, 2026-05-31.)
 
-### D-007 — OPEN: `coord:resolve` REST path
+### D-007 — Use the existing endpoint-system coord proxy, NO new route (RESOLVED 2026-05-31)
 
-`coord:resolve` / `coord:ack` exist today only as server-side MCP tools. The
-durable dispatch (P-011/P-012) needs a client-reachable path. Confirm whether
-to add thin REST routes or reuse an existing endpoint surface. **Needs
-investigation in Phase B.**
+`defineTool` already projects the coord tools onto HTTP — `coord:resolve` /
+`coord:ack` are reachable from the client today via the `/api/admin/coord/:verb`
+proxy, with the ready-made helpers `resolveEscalation({msg_id, choice, note})`
+and `ackCoordMessage({msg_id})` in `plans-api.ts`. Phase B's dispatch calls
+those (plus `setItemStatus` for plan items) — no bespoke REST route to write.
+(Human call, 2026-05-31: "can't our defineTool take care of that?" — yes.)
