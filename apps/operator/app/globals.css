@@ -1049,7 +1049,7 @@ p {
 }
 
 .pc-button.primary {
-  background: linear-gradient(135deg, #b9edff, var(--accent) 55%, #0ea5e9);
+  background: linear-gradient(135deg, var(--accent-soft), var(--accent) 55%, var(--accent-deep));
   border-color: color-mix(in srgb, var(--accent-soft), transparent 45%);
   color: #04131f;
   box-shadow: 0 16px 34px color-mix(in srgb, var(--accent-deep), transparent 68%);
@@ -24623,7 +24623,7 @@ body:has(.operator-panel) {
   border: 1px solid rgb(from var(--accent-strong) r g b / 0.30);
   border-radius: 999px;
   background: transparent;
-  color: #bae6fd;
+  color: var(--accent-soft, #bae6fd);
   font-size: 12px;
   font-weight: 650;
   cursor: pointer;

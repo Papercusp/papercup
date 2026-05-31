@@ -1254,7 +1254,7 @@ export default function AdvSessionsClient() {
           padding: 1px 6px;
           border-radius: 999px;
           background: color-mix(in srgb, var(--accent-strong), transparent 88%);
-          color: #bae6fd;
+          color: var(--accent-soft, #bae6fd);
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           font-size: 10px;
           font-weight: 700;

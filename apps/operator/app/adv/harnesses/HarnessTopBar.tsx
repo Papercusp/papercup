@@ -200,7 +200,7 @@ export default function HarnessTopBar({ slug }: Props) {
         .pc-adv-stat .h-stat-value:not(.good):not(.warn):not(.bad):not(.info) {
           color: var(--stat-accent);
         }
-        .pc-adv-stat--pulse  { --stat-accent: #38bdf8; }
+        .pc-adv-stat--pulse  { --stat-accent: var(--accent, #38bdf8); }
         .pc-adv-stat--lanes  { --stat-accent: #a855f7; }
         .pc-adv-stat--passed { --stat-accent: #10b981; }
         .pc-adv-stat--cost   { --stat-accent: #f59e0b; }

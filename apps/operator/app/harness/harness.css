@@ -7746,7 +7746,7 @@ body:has(.h-top-collapse-inline) main {
   height: 16px !important;
   padding: 2px !important;
   border-radius: 999px !important;
-  color: #d7f3ff !important;
+  color: var(--accent-cool, #d7f3ff) !important;
   background: color-mix(in srgb, var(--accent), transparent 84%) !important;
   border: 1px solid color-mix(in srgb, var(--accent-strong), transparent 74%) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 0 12px color-mix(in srgb, var(--accent), transparent 86%) !important;
@@ -13703,7 +13703,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 .h-root .h-running-head span {
-  color: color-mix(in oklab, #bae6fd, white 18%) !important;
+  color: color-mix(in oklab, var(--accent-soft), white 18%) !important;
   font-weight: 900 !important;
   text-shadow: 0 0 12px rgba(34, 211, 238, 0.30);
 }
@@ -13772,12 +13772,12 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 .h-root .h-project-pulse > div > div {
-  color: color-mix(in oklab, #bae6fd, white 18%) !important;
+  color: color-mix(in oklab, var(--accent-soft), white 18%) !important;
   font-weight: 760 !important;
 }
 
 .h-root .h-project-pulse > div > div span {
-  color: color-mix(in oklab, #bae6fd, white 16%) !important;
+  color: color-mix(in oklab, var(--accent-soft), white 16%) !important;
   text-shadow: 0 0 12px color-mix(in srgb, var(--accent), transparent 78%);
 }
 
@@ -13912,7 +13912,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 }
 
 .h-root .h-project-pulse > div > div > span span:last-child {
-  color: #bae6fd !important;
+  color: var(--accent-soft, #bae6fd) !important;
   font-weight: 780 !important;
 }
 
@@ -14360,7 +14360,7 @@ body:has(.h-root) .pc-header .pc-voice-btn:focus-visible {
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-panel-title,
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="agents"] .h-panel-title {
-  color: color-mix(in oklab, var(--fg), #7dd3fc 16%) !important;
+  color: color-mix(in oklab, var(--fg), var(--accent-strong) 16%) !important;
   text-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong), transparent 84%);
 }
 
@@ -14932,7 +14932,7 @@ html body .h-root.h-root :is(
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-title {
-  color: color-mix(in oklab, var(--fg), #7dd3fc 16%) !important;
+  color: color-mix(in oklab, var(--fg), var(--accent-strong) 16%) !important;
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="logs"] .h-panel-count {
@@ -15048,7 +15048,7 @@ html body .h-root.h-root :is(
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub.on,
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub[data-state="active"],
 .h-root .h-main-shell.brainstorm-full .h-bsfull-sub[aria-selected="true"] {
-  color: color-mix(in oklab, var(--fg), #7dd3fc 15%) !important;
+  color: color-mix(in oklab, var(--fg), var(--accent-strong) 15%) !important;
   border-color: color-mix(in srgb, var(--accent), transparent 48%) !important;
   background: linear-gradient(180deg, rgba(18, 53, 73, 0.92), rgba(5, 18, 31, 0.98)) !important;
   box-shadow:
@@ -15984,7 +15984,7 @@ html body .h-root.h-root :is(
 }
 
 .h-root .h-dashboard-panel-anchor[data-dashboard-panel="issues"] .h-issues-filter.h-issues-filter--all:not(.on) {
-  color: color-mix(in oklab, #7dd3fc, white 8%) !important;
+  color: color-mix(in oklab, var(--accent-strong), white 8%) !important;
   border-color: color-mix(in srgb, var(--accent), transparent 66%) !important;
   background:
     radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent-soft), transparent 88%), transparent 34%),
