@@ -46,6 +46,8 @@ their own repo when needed.
 | `@papercusp/ipc-framing` | Length-prefixed binary frame codec for IPC/socket streams: [4B BE length][1B type][payload], with a streaming decoder. Pure, zero dependencies, zero domain coupling. | [Papercusp/ipc-framing](https://github.com/Papercusp/ipc-framing.git) |
 | `@papercusp/sse` | Spec-compliant Server-Sent Events primitives — server response builder, in-process channel bus, PG NOTIFY bridge, resilient EventSource client, React hook. | [Papercusp/sse](https://github.com/Papercusp/sse.git) |
 | `@papercusp/sync` | Schema-agnostic Zero + SSE sync transports with reconnect/backpressure handling. | [Papercusp/sync](https://github.com/Papercusp/sync.git) |
+| `@papercusp/tooldef-http` | HTTP transport adapter for @papercusp/tooldef — resolve an inbound request to a projected tool, build the context from headers/query (host-injected principal + harness-path resolution), and dispatch. Framework-neutral; Next.js/Hono/Express are thin shims on top. | [Papercusp/tooldef-http](https://github.com/Papercusp/tooldef-http.git) |
+| `@papercusp/tooldef` | Function-as-truth tool framework: write one typed (input, ctx) => result function and project it onto HTTP, MCP, IPC, and in-process transports with uniform auth/role/quota/telemetry/streaming. Schema-agnostic (Standard Schema), host-agnostic (all I/O injected). | [Papercusp/tooldef](https://github.com/Papercusp/tooldef.git) |
 
 ## UI components
 

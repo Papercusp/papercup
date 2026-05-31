@@ -44,6 +44,8 @@ const BORROWABLE = [
   ['libs/generic/sse',                            'IPC, transport & sync'],
   ['libs/generic/sync',                           'IPC, transport & sync'],
   ['libs/generic/chat-protocol',                  'IPC, transport & sync'],
+  ['libs/generic/tooldef',                        'IPC, transport & sync'],
+  ['libs/generic/tooldef-http',                   'IPC, transport & sync'],
   ['libs/generic/ui-primitives',                  'UI components'],
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],
