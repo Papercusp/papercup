@@ -41,7 +41,7 @@ import {
   type PlanBucket,
   type PlanItemRow,
 } from './plans-api';
-import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { launchAgent } from '@/lib/launch-agent';
 import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
@@ -352,7 +352,7 @@ export default function PlansClient() {
     if (launchingNewPlan) return;
     setLaunchingNewPlan(true);
     try {
-      const result = await launchOmpAgent({
+      const result = await launchAgent({
         slug: resolvedHarnessSlug ?? null,
         planSlug: null,
         label: resolvedHarnessSlug ? `new-plan · ${resolvedHarnessSlug}` : 'new-plan',

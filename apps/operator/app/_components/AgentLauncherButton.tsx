@@ -24,7 +24,7 @@ import { useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { toast } from 'sonner';
 
-import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { launchAgent } from '@/lib/launch-agent';
 
 const DEFAULT_INSTALL_CMD = 'npm i -g @oh-my-pi/cli @papercusp/omp';
 
@@ -46,7 +46,7 @@ export function AgentLauncherButton() {
   async function attempt(): Promise<void> {
     setBusy(true);
     try {
-      const result = await launchOmpAgent({ slug: harnessSlug });
+      const result = await launchAgent({ slug: harnessSlug });
       if (result.ok) {
         setInstallCmd(null);
         toast.success('Agent launched.', { duration: 4000 });

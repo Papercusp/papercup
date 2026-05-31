@@ -25,7 +25,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
-import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { launchAgent } from '@/lib/launch-agent';
 import {
   addPlanDecision,
   addPlanItem,
@@ -182,7 +182,7 @@ export default function PlanActions({
     setLaunchingAgent(true);
     try {
       const label = planTitle?.trim() || slug;
-      const result = await launchOmpAgent({ slug: null, planSlug: slug, label });
+      const result = await launchAgent({ slug: null, planSlug: slug, label });
       if (result.ok) {
         toast.success(`Launched agent for ${slug}.`, { duration: 4000 });
       } else if (result.installCmd) {

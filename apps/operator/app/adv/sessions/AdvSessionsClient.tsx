@@ -9,7 +9,7 @@ import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
-import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { launchAgent } from '@/lib/launch-agent';
 import { formatRelativeUpdated } from '@/lib/format/relative-time';
 import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
 
@@ -454,7 +454,7 @@ export default function AdvSessionsClient() {
     try {
       const model = launchModel.trim();
       const label = selectedLaunchPlan.title?.trim() || selectedLaunchPlan.slug;
-      const result = await launchOmpAgent({
+      const result = await launchAgent({
         slug: null,
         planSlug: selectedLaunchPlan.slug,
         label,
@@ -538,7 +538,7 @@ export default function AdvSessionsClient() {
   // Option A — open a fresh OMP at the same plan. No session id;
   // new conversation, same workspace context.
   const freshRow = useCallback(async (row: SessionRow) => {
-    const result = await launchOmpAgent({
+    const result = await launchAgent({
       slug: null,
       planSlug: row.planSlug,
       label: row.label ?? row.planSlug ?? `fresh-${row.id}`,
@@ -588,7 +588,7 @@ export default function AdvSessionsClient() {
       );
       return;
     }
-    const result = await launchOmpAgent({
+    const result = await launchAgent({
       slug: null,
       planSlug: row.planSlug,
       label: row.label ?? row.planSlug ?? `resume-${row.id}`,

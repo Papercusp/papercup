@@ -20,7 +20,7 @@ import { toast } from 'sonner';
 import PlanEditor from './PlanEditor';
 import { usePlan } from './plans-api';
 import { InboxItemActions } from './PlanItemsList';
-import { launchOmpAgent } from '@/lib/native-omp-launch';
+import { launchAgent } from '@/lib/launch-agent';
 import { scrollPlanTarget, stripFrontmatter } from './plan-renderers';
 
 interface Props {
@@ -77,7 +77,7 @@ export default function PlanItemPreview({
     if (!planSlug || !itemId || launching) return;
     setLaunching(true);
     try {
-      const result = await launchOmpAgent({ slug: null, planSlug, label: `${planSlug} · ${itemId}` });
+      const result = await launchAgent({ slug: null, planSlug, label: `${planSlug} · ${itemId}` });
       if (result.ok) {
         toast.success(`Launched a plan-context agent to chat about ${itemId}.`, { duration: 4000 });
       } else if (result.installCmd) {
