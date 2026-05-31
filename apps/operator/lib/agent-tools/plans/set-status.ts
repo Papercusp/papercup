@@ -134,7 +134,7 @@ export default defineTool({
   },
   capability: 'plans:write',
   requirePrincipal: false,
-  roles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
@@ -239,15 +239,13 @@ export default defineTool({
     const v = result.value;
     if (shouldPushNeedsHuman(v.oldStatus, v.newStatus, v.importance)) {
       void (async () => {
-        const [{ notifyWorkspace }, { activeWorkspaceId }] = await Promise.all([
-          import('@/lib/device-push-dispatcher'),
-          import('@/lib/workspace-registry'),
-        ]);
-        await notifyWorkspace(activeWorkspaceId(), {
+        const { notifyAttention } = await import('@/lib/attention-notify');
+        await notifyAttention({
+          kind: 'needs-human',
           title: v.importance === 'urgent' ? 'Urgent: needs your decision' : 'Needs your attention',
           body: `${args.slug} · ${args.itemId} (${v.importance}) is waiting on you.`,
-          data: { kind: 'intervention', plan: args.slug, item: args.itemId, importance: v.importance },
-          category: 'intervention',
+          importance: v.importance,
+          data: { plan: args.slug, item: args.itemId },
         });
       })().catch((e) =>
         console.warn('[plans:set-status] needs-human push failed:', (e as Error)?.message ?? e),

@@ -7,6 +7,7 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+import { notifyAttention } from '@/lib/attention-notify';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -49,6 +50,17 @@ export default defineTool({
       },
     });
     void notifySyncInvalidate('harnessPlanReview.byHarness', { harnessSlug: slug }).catch(() => {});
+
+    // P-021: push at the source (replaces the device-intervention-watcher
+    // poll). The producer calls this once per completed review, so each call
+    // is a genuine "plan ready for review" event. High-importance.
+    void notifyAttention({
+      kind: 'plan-review',
+      title: 'Plan ready for review',
+      body: `${slug} has a plan waiting on you.`,
+      harnessSlug: slug,
+      importance: 'high',
+    });
     return Response.json({ ok: true });
   },
 });

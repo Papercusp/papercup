@@ -8,6 +8,7 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+import { notifyAttention } from '@/lib/attention-notify';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -88,6 +89,21 @@ export default defineTool({
         },
       });
     void notifySyncInvalidate('harnessEscalations.byHarness', { harnessSlug: slug, phase }).catch(() => {});
+
+    // P-021: push at the source (replaces the device-intervention-watcher
+    // poll). A harness escalation is inherently high-importance → always
+    // notify. Gated on `escalation != null` so a supervisorNotes-only update
+    // doesn't ping. Fail-safe inside notifyAttention.
+    if (escalation != null) {
+      void notifyAttention({
+        kind: 'intervention',
+        title: 'Harness escalated',
+        body: `${slug} (${phase}) needs your attention.`,
+        harnessSlug: slug,
+        importance: 'high',
+        data: { phase },
+      });
+    }
     return Response.json({ ok: true });
   },
 });

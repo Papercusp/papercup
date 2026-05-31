@@ -7,6 +7,7 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+import { notifyAttention } from '@/lib/attention-notify';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -48,6 +49,10 @@ export default defineTool({
     const resultsJson = parsed.data.results == null ? null : JSON.stringify(parsed.data.results);
     const mtimeMs = parsed.data.mtimeMs ?? Date.now();
     const ws = activeWorkspaceId();
+    // Read the prior status so we push only on a TRANSITION into failing
+    // (pass→fail or first-ever fail), not on every re-run that stays failing.
+    const priorRows = await db.select({ status: hs.status }).from(hs).where(eq(hs.harnessSlug, slug)).limit(1);
+    const wasFailing = priorRows[0]?.status === 'fail';
     await db.insert(hs).values({
       harnessSlug: slug, status, passContent, failureContent,
       results: resultsJson ? (JSON.parse(resultsJson) as any) : null,
@@ -65,6 +70,19 @@ export default defineTool({
       },
     });
     void notifySyncInvalidate('harnessSmokeTest.byHarness', { harnessSlug: slug }).catch(() => {});
+
+    // P-021: push at the source (replaces the device-intervention-watcher
+    // poll). Smoke failure is high-importance. Transition-gated so a smoke
+    // run that stays failing doesn't re-ping each time.
+    if (status === 'fail' && !wasFailing) {
+      void notifyAttention({
+        kind: 'smoke-fail',
+        title: 'Smoke test failing',
+        body: `${slug} smoke test is failing.`,
+        harnessSlug: slug,
+        importance: 'high',
+      });
+    }
     return Response.json({ ok: true });
   },
 });
