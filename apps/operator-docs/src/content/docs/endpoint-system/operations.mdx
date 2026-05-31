@@ -34,7 +34,7 @@ The endpoint returns the host status:
 
 ## Where the registry lives
 
-Three module-level Maps in `packages/agent-mcp/src/tool-projection.ts`:
+Three module-level Maps in `packages/tooldef/src/tool-projection.ts`:
 
 - `REGISTRY` — keyed by `mcp:<name>` or `http:<path>`, value is the full `ProjectedTool`
 - `BY_MCP_NAME` — `Map<string, ProjectedTool>` for `tools/call` lookups
