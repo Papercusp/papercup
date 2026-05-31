@@ -63,6 +63,11 @@ export async function startDbos(): Promise<void> {
     // (D-011 flag-gated; the legacy setInterval ticker stands down).
     await import('./autoloop-workflow');
   }
+  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') {
+    // Phase 2: simple periodic timers (telemetry flush, scratch GC, …) as
+    // scheduled workflows; their legacy setInterval workers stand down.
+    await import('./periodic-workflows');
+  }
 
   await DBOS.launch();
   G.__papercuspDbosStarted = true;

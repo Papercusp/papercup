@@ -1,0 +1,46 @@
+/**
+ * Phase 2 of `dbos-durable-jobs-2026-05-31` — the simple periodic background
+ * timers as DBOS scheduled workflows (default **skip-missed** mode, D-009 — no
+ * backfill storm after a long-closed desktop). Replaces the `setInterval`
+ * workers in `telemetry-flush.ts` and `scratch-gc.ts`.
+ *
+ * Flag-gated by `PAPERCUSP_DBOS_TIMERS=1` — registered only when `bootstrap.ts`
+ * imports this module. Each legacy `start*()` worker stands down when the flag
+ * is set (guard in its own file), so exactly one implementation runs (D-011 A/B,
+ * instant revert by un-setting the flag).
+ *
+ * The tick bodies are the EXISTING, already-tested single-run functions
+ * (`flushTelemetry`, `runScratchGc`) — this only swaps the scheduler driving
+ * them, with DBOS step retries + a recovery cap (P-006). The remaining timers
+ * (memory cleanup, completion-ref verifier, operator scanner, embeddings,
+ * backups) follow this exact shape per the P-008 / D-016 classification.
+ */
+import { DBOS } from '@dbos-inc/dbos-sdk';
+import { flushTelemetry } from '@/lib/telemetry-flush';
+import { runScratchGc } from '@/lib/scratch-gc';
+import { readRegistry } from '@/lib/workspace-registry';
+
+// Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
+// enforce retention. A transient PostHog failure already degrades to retry-next,
+// so a light step retry covers PG hiccups.
+async function telemetryFlushTick(): Promise<void> {
+  await DBOS.runStep(() => flushTelemetry(), {
+    name: 'flush-telemetry', retriesAllowed: true, maxAttempts: 2, intervalSeconds: 30,
+  });
+}
+const telemetryFlushWorkflow = DBOS.registerWorkflow(telemetryFlushTick, {
+  name: 'telemetryFlush', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(telemetryFlushWorkflow, { name: 'telemetryFlush', crontab: '0 0 * * * *' });
+
+// Daily 03:00: scratch-storage GC sweep (retention + dead-workspace + quota).
+async function scratchGcTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
+    runScratchGc({ workspaceRegistry });
+  }, { name: 'scratch-gc' });
+}
+const scratchGcWorkflow = DBOS.registerWorkflow(scratchGcTick, {
+  name: 'scratchGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: '0 0 3 * * *' });
