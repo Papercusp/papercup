@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase F COMPLETE + committed (58 dbos unit tests, tsc clean): DBOS is code-complete as a full replacement for the legacy per-feature loop (finalization, full verb coverage, all-harnesses dispatch, cost-cap gate). P-008 live run on sheets VALIDATED the DBOS mechanism end-to-end against real DBOS (workflow ran, dispatched the director, ERRORed cleanly on empty output — the false-SUCCESS fix working), but a FULL green run (→ DONE → curator+documenter) is blocked by the pre-existing "empty claude output under concurrent load" wall (D-005): claude -p returns empty when spawned via invoke-once in the live pipeline though it works standalone — a shared invoke→claude issue affecting the legacy loop too, not Phase F code. Cleanup done (host restarted, workspace pin reverted, nothing auto-runs).
+**State:** Phase F complete + committed (64 dbos + 4 idempotency unit tests). P-008 live validation surfaced + FIXED the real blocker (D-006): the empty director output was a HARNESS_SLUG/schema bug (search_path=harness_sheets_clone, a nonexistent schema), NOT environmental — fixed by passing the registry slug as HARNESS_SLUG (buildPipelineExtraEnv). VALIDATED: director now does real 58s LLM calls against harness_sheets. A secondary intermittent empty-output remains under ~48 concurrent claude procs; P-010 (don't reuse empty cached runs → retries re-spawn) committed to make the pipeline resilient. Re-validating F-FIX-027:e1 with both fixes loaded (background monitor running).
 
-**Next:** Human/infra: diagnose the operator-wide "empty claude output under concurrent load" issue (reduce concurrent claude instances, or give the pipeline's claude an isolated CLAUDE_CONFIG_DIR) — it blocks legacy + DBOS equally. Once claude reliably emits output, re-run the sheets validation (POST /admin/dbos/pipeline/start), confirm DONE→curator+documenter→SUCCESS, then do P-009 (flip default-all + retire legacy). Optional: implement P-010 (don't cache empty invokes) so retries recover.
+**Next:** Watch F-FIX-027:e1 reach DONE→curator+documenter→SUCCESS (background monitor). If green → P-009 (flip default-all + retire legacy). If still blocked by concurrent-claude load, the fixes are correct + the remaining factor is the shared box's claude contention (re-run at lower load, or isolate CLAUDE_CONFIG_DIR per spawn).
 
 ## Background
 
@@ -114,3 +114,14 @@ REFINEMENT FOUND (P-010): the decide-step's 3 retries hit the same idempotency k
 
 NOT DONE: P-009 (retire legacy + flip default-all) — gated on a GREEN sheets run, which needs the backend to reliably produce output. Cleanup done: host restarted, workspace pin reverted (papercusp-workspace restored), .env.local DISPATCH_HARNESSES still blank (nothing auto-runs).
 Related: P-008, P-009
+
+### D-006 — D-006 — Empty-director-output root cause was a HARNESS_SLUG/schema bug (corrects D-005's "environmental"), now fixed; + P-010 resilience
+Date: 2026-05-31
+D-005 attributed the empty director output to environmental load. That was WRONG (or only secondary). The PRIMARY cause, confirmed: the durable runner spawned invoke-once WITHOUT HARNESS_SLUG, so the orchestrator's harnessSlug(projectDir) fell through env→registry-curl(:3055)→basename(projectDir). For sheets (dir `sheets-clone`, registry slug `sheets`) that yielded search_path=harness_sheets_clone — a schema that does NOT exist — so the director read no feature state and exited empty in ~4.5s. The :3055 registry-curl fallback also no longer resolves (operator moved Next→Vite). This is why the prior session's throwaway harnesses worked (basename==slug) but sheets didn't.
+
+FIX 1 (committed): buildPipelineExtraEnv() always passes the authoritative registry slug as HARNESS_SLUG to the role runner + finalizer → correct harness_<slug> schema. VALIDATED LIVE: F-FIX-027 director:t0 ran 58s (real LLM call), search_path=harness_sheets, produced a real decision (out_body=442, jsonl 132KB). The director gap is closed.
+
+SECONDARY (genuinely intermittent): under ~48 concurrent claude processes on the shared box, individual `claude -p` spawns occasionally still return empty (worker:t0 + director:t1 on that run were 4.5s empty; claude works standalone). This is real concurrency contention.
+
+FIX 2 / P-010 (committed): findPriorRunForIdempotency no longer reuses an empty/whitespace-only prior run → the DBOS decide-step's 3 retries (and re-triggers) actually re-spawn instead of replaying the cached empty result → the pipeline is resilient to intermittent empties. Re-validating on F-FIX-027:e1 now (reuses the good cached director:t0, re-spawns the empty worker/director:t1).
+Related: P-008, P-010
