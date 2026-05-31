@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** **Phases A + B shipped + tested; Phase F tests done; Phase E precisely spec'd + gated (2026-05-31, autonomous A→F pass).** Per-window resolution is complete for the dev/shared-host model: fetch (header, P-013) + streams (`?ws=`, P-015), `activeWorkspaceId()` request-scoped (P-012), MCP tool calls scoped (P-022), and a dev guardrail for global fall-through inside a request (P-021). Verification: **P-016** harness-resolution is correct-by-design (request-workspace-first + a shared-results cross-workspace fallback); **P-060** proves 50 interleaved concurrent requests isolate per-window with no cross-talk; **P-061** guards against direct `reg.current` reads. ~80 unit/integration tests green across the workspace surface; middleware + MCP scoping live-verified on `:3070` (D-007 fires). **Phase E (packaged shared-operator + per-spawn HOME) and P-020's runtime threading are deliberately NOT implemented** — D-009 documents why (piecemeal = dev-breaking + unverifiable without a packaged build) and lists the exact touchpoints (`invoke.ts:1284` spawn-env, `main.rs:1016` switch=restart, the pty path, multi-window) for when that packaging is built.
+**State:** **Every dev-model phase shipped + tested; the one non-gated Phase E fix landed; the rest precisely gated (2026-05-31, autonomous A→F pass).** Per-window resolution is complete and verified: fetch (header) + streams (`?ws=`), `activeWorkspaceId()` request-scoped, MCP tool calls scoped (P-022), dev guardrail (P-021), and **papercuspRoot() (P-052, 62 consumers) now resolves the request workspace** not the global. Verification: P-016 (resolution correct-by-design), P-060 (50 concurrent windows, no cross-talk), P-061 (reg.current guard, broadened to catch `parsed.current`). **68/68** tests green across the workspace surface; middleware + MCP scoping live on `:3070` (D-007 fires). Commits d5604fb98 / 6bdca2265 / a7bae5e2d / 7e07a60b6 / ab661d910 / 925c70aeb / 5f57c973f / f937b80d7. **What remains needs a packaged build (D-009): P-050 (shared embedded-PG + drop switch=restart, Rust), P-051 (per-spawn HOME at the enumerated spawn sites), P-053 (multi-window). P-020 runtime threading folds in.** The remaining raw `homedir()` reads were audited and are correct as-is (deliberate shared/bootstrap roots).
 
-**Next:** A future session with a packaged-build loop executes Phase E per D-009 — P-050 (one shared embedded-PG, drop switch=restart) → P-051 (per-spawn HOME at the enumerated spawn sites) → P-052 (operator's own ~/ reads) → P-053 (multi-window); P-020's runtime threading rides along, surfaced by P-021's diagnostic (PAPERCUSP_DEBUG_WORKSPACE=1). The dev-model work (Phases A/B/F) needs no further code.
+**Next:** A future session WITH a packaged Tauri build executes Phase E per D-009 — P-050 → P-051 (touchpoints listed: invoke.ts:1284, plugin-spawn-impl, harness-launch, pty) → P-053; verify in the desktop shell. No further dev-model code is needed — Phases A/B/F + the P-052 fix are complete.
 
 ## Background
 
@@ -356,7 +356,7 @@ Related: P-020, P-050, P-051, P-052, P-053
   inherited process `HOME`. Touchpoints: orchestrator spawn-env, `harness-launch`,
   `pty.rs`, the Rust spawn paths in `main.rs`. This is what preserves credential
   isolation under one shared process.
-- **P-052** `todo` Audit the operator's own direct `os.homedir()` / `~/.claude` /
+- **P-052** `done` Audit the operator's own direct `os.homedir()` / `~/.claude` / (Audit done + the genuine per-window bug fixed: papercuspRoot 62 consumers resolves via activeWorkspaceId not the global current f937b80d7. Other raw homedir reads are correct: scratch-root + launch-context are deliberate shared/bootstrap; execute-action follows process HOME folds into gated P-051. P-061 guard broadened for parsed.current.)
   `~/.papercusp` reads (non-spawn, request-path) → make them workspace-scoped
   (compute `workspace_dir(ws)` or read workspace-scoped PG), so the shared process
   resolves the right workspace's creds/config. Pairs with the locked
