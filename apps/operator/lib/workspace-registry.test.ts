@@ -6,10 +6,13 @@ import {
   readRegistry,
   activeWorkspaceId,
   workspaceById,
+  isKnownWorkspace,
+  DEFAULT_WORKSPACE_ID,
   setCompanyId,
   companyIdFor,
   workspacesRoot,
 } from './workspace-registry';
+import { runWithWorkspace } from './workspace-als';
 
 const REGISTRY_DIR = join(homedir(), '.papercusp-workspaces');
 const REGISTRY_PATH = join(REGISTRY_DIR, 'registry.json');
@@ -50,6 +53,14 @@ describe('workspace-registry', () => {
     expect(ws).toBeUndefined();
   });
 
+  it('isKnownWorkspace: true for the default id + any registered id, false otherwise', () => {
+    expect(isKnownWorkspace(DEFAULT_WORKSPACE_ID)).toBe(true);
+    const registered = readRegistry().workspaces[0];
+    if (registered) expect(isKnownWorkspace(registered.id)).toBe(true);
+    expect(isKnownWorkspace('definitely-not-a-workspace-' + Date.now())).toBe(false);
+    expect(isKnownWorkspace('')).toBe(false);
+  });
+
   it('setCompanyId / companyIdFor round-trip', () => {
     const id = activeWorkspaceId();
     const tag = 'test-co-' + Date.now();
@@ -65,6 +76,29 @@ describe('workspace-registry', () => {
 
   it('setCompanyId throws on unknown workspace', () => {
     expect(() => setCompanyId('unknown-workspace-xxx', 'foo')).toThrow(/unknown workspace/);
+  });
+});
+
+describe('activeWorkspaceId — request-scoped precedence (per-window-workspace-context P-012)', () => {
+  const PIN = 'PAPERCUSP_WORKSPACE_ID';
+  let prev: string | undefined;
+  beforeEach(() => {
+    prev = process.env[PIN];
+  });
+  afterEach(() => {
+    if (prev === undefined) delete process.env[PIN];
+    else process.env[PIN] = prev;
+  });
+
+  it('returns the request-scoped workspace inside runWithWorkspace, beating the process pin', () => {
+    process.env[PIN] = 'pinned-ws';
+    const inside = runWithWorkspace('request-ws', () => activeWorkspaceId());
+    expect(inside).toBe('request-ws');
+  });
+
+  it('falls back to the PAPERCUSP_WORKSPACE_ID process pin outside any request', () => {
+    process.env[PIN] = 'pinned-ws';
+    expect(activeWorkspaceId()).toBe('pinned-ws');
   });
 });
 

@@ -73,19 +73,42 @@ export function writeRegistry(reg: WorkspaceRegistry): void {
 // left `activeWorkspaceId`'s fallback referencing an undefined name.
 import { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
 export { DEFAULT_WORKSPACE_ID };
+import { currentRequestWorkspaceId } from './workspace-als';
 
 export function activeWorkspaceId(): string {
-  // Env override wins — mirrors the orchestrator's `activeWorkspaceId()` so a
-  // server process can PIN its workspace (e.g. for a durable-pipeline dispatcher
-  // that must not follow the desktop UI's volatile workspace switches).
+  // Precedence (per-window-workspace-context-2026-05-31, D-002/D-005):
+  // 1. The request-scoped workspace — a browser window stamped its workspace on
+  //    the request (`x-papercusp-workspace` header → ALS). Most specific; this is
+  //    what makes one shared sidecar serve many windows on different workspaces
+  //    without following the process-global `reg.current`.
+  const req = currentRequestWorkspaceId();
+  if (req && req.trim()) return req.trim();
+  // 2. Process pin — a dedicated single-workspace process (orchestrator agent,
+  //    durable-pipeline dispatcher) that must not follow the desktop UI's
+  //    volatile switches. Mirrors the orchestrator's `activeWorkspaceId()`.
   const env = process.env.PAPERCUSP_WORKSPACE_ID;
   if (env && env.trim()) return env.trim();
+  // 3. Global default — the workspace a new window opens into / background work
+  //    uses when not told otherwise. No longer authoritative for request work.
   const reg = readRegistry();
   return reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
 }
 
 export function workspaceById(id: string): WorkspaceEntry | undefined {
   return readRegistry().workspaces.find((w) => w.id === id);
+}
+
+/**
+ * Is `id` a workspace this host knows about? Used by the request-scope
+ * middleware to distinguish a *missing* header (→ global fallback) from a
+ * *present-but-unknown* one (→ hard error, D-007). The literal default
+ * workspace is always known (the desktop guarantees it exists), even if a
+ * sparse registry hasn't listed it.
+ */
+export function isKnownWorkspace(id: string): boolean {
+  if (!id || !id.trim()) return false;
+  if (id === DEFAULT_WORKSPACE_ID) return true;
+  return !!workspaceById(id);
 }
 
 /**
