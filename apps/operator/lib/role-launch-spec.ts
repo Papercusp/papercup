@@ -1,0 +1,136 @@
+/**
+ * role-launch-spec.ts — `buildRoleLaunchSpec`: the one place that turns
+ * (role, harness, feature) into everything a launcher needs to start a
+ * role-scoped agent session — the prompt, a signed role-scoped MCP URL,
+ * and the cwd. The keystone of agent-launch-unification (D-003).
+ *
+ * It is a thin COMPOSITION of the functions the rest of the system
+ * already shares, so a psu interactive role session is assembled from
+ * the same primitives as the orchestrator + the operator brains — no
+ * parallel reimplementation, no drift:
+ *
+ *   - prompt → `assembleRolePrompt` (`@papercusp/orchestrator/role-prompt`),
+ *     the same shared assembler the operator's brain dispatchers
+ *     (`pm-dispatch`, `agent-chats`) already use. `resolvePromptFile` +
+ *     `buildPrompt` underneath — the same leaves `invoke()` uses.
+ *   - MCP URL → the operator's `signSpawnParams` (HMAC key shared with
+ *     the MCP handler's `verifySpawnParams`), over the SAME param set
+ *     (`harness/workspace/role/run/spawn/[feature]`) the orchestrator's
+ *     `writeSignedSpawnMcp` signs. Because the URL carries `role=<role>`
+ *     (NOT `?superuser=1`), the dispatch layer enforces that role's
+ *     tool-allowlist — true role-scoping, identical to an orchestrator
+ *     agent (D-001).
+ *   - cwd → `resolveProjectDir` (the harness's registered project dir).
+ *
+ * `invoke()` (autonomous spawns) keeps its own richer inline assembly
+ * (substrate + feature-history + notes + identity, appropriate for a
+ * headless run); the shared LEAVES (`buildPrompt`, the signing key, the
+ * role `.md` files) are what both paths hold in common. Folding the
+ * orchestrator's hot path onto this builder would require unifying the
+ * autonomous-vs-chat context injection — a behavior change, deferred.
+ *
+ * Server-only.
+ */
+import { randomUUID } from 'node:crypto';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { signSpawnParams } from '@/lib/spawn-signing';
+import { resolveProjectDir } from '@/lib/spawn-config';
+
+export interface BuildRoleLaunchSpecInput {
+  /** Pipeline/kernel role id (worker, validator, reviewer, …). */
+  role: string;
+  /** Active workspace id. */
+  workspaceId: string;
+  /** Harness the role runs against (role sessions are harness-scoped). */
+  harnessSlug: string;
+  /** Operator base URL the signed MCP URL points at (e.g. http://localhost:3070). */
+  operatorBaseUrl: string;
+  /** Optional feature scope (required for feature-consuming roles — caller gates via roleConsumes). */
+  featureId?: string | null;
+  /** Optional plan context already fetched by the caller (operator has PG access). */
+  planContext?: string;
+  /** Extra runtime-context bullets, e.g. ['MODE=replan']. */
+  extras?: readonly string[];
+  /** Signed-URL TTL; defaults to the signer's 24h. */
+  ttlSec?: number;
+}
+
+export interface RoleLaunchSpec {
+  role: string;
+  runId: string;
+  spawnId: string;
+  harnessSlug: string;
+  featureId: string | null;
+  /** Working directory the launcher should exec the agent in. */
+  cwd: string;
+  /** Full role prompt (persona + tools + runtime context), chat-mode. */
+  promptText: string;
+  /** Which prompt file resolved (diagnostics). */
+  promptFile: string;
+  /** Signed, role-scoped MCP URL (role-allowlist enforced at dispatch). */
+  mcpUrl: string;
+  /** `.mcp.json` contents the launcher writes to `cwd` for the agent to discover. */
+  mcpJsonContents: string;
+}
+
+/**
+ * Build the launch spec for a role-scoped session. Throws if the harness
+ * isn't registered (via `assembleRolePrompt`) — the caller surfaces it.
+ */
+export async function buildRoleLaunchSpec(
+  input: BuildRoleLaunchSpecInput,
+): Promise<RoleLaunchSpec> {
+  const spawnId = randomUUID();
+  const featureId = input.featureId?.trim() || null;
+
+  // 1. Prompt (chat mode — a human drives this session). Same shared
+  //    assembler the orchestrator's prompt path + operator brains use.
+  const assembled = assembleRolePrompt({
+    slug: input.harnessSlug,
+    role: input.role,
+    mode: 'chat',
+    featureId: featureId ?? undefined,
+    extras: input.extras,
+    planContext: input.planContext,
+  });
+  const runId = assembled.meta.runId;
+
+  // 2. cwd — the harness's project dir. (A future refinement can prefer
+  //    an existing feature worktree; worktree creation stays orchestrator-owned.)
+  const cwd =
+    assembled.meta.projectDir ||
+    (await resolveProjectDir(input.harnessSlug, input.workspaceId)) ||
+    process.cwd();
+
+  // 3. Signed role-scoped MCP URL — same param set + signing key the
+  //    orchestrator's writeSignedSpawnMcp uses, so the MCP handler's
+  //    verifySpawnParams accepts it and dispatch enforces role's allowlist.
+  const params = new URLSearchParams();
+  params.set('harness', input.harnessSlug);
+  params.set('workspace', input.workspaceId);
+  params.set('role', input.role);
+  params.set('run', runId);
+  params.set('spawn', spawnId);
+  if (featureId) params.set('feature', featureId);
+  await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
+  const base = input.operatorBaseUrl.replace(/\/$/, '');
+  const mcpUrl = `${base}/api/mcp?${params.toString()}`;
+  const mcpJsonContents = JSON.stringify(
+    { mcpServers: { papercusp: { type: 'http', url: mcpUrl } } },
+    null,
+    2,
+  );
+
+  return {
+    role: input.role,
+    runId,
+    spawnId,
+    harnessSlug: input.harnessSlug,
+    featureId,
+    cwd,
+    promptText: assembled.text,
+    promptFile: assembled.meta.promptFile,
+    mcpUrl,
+    mcpJsonContents,
+  };
+}

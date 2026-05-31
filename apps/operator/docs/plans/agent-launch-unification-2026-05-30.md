@@ -17,9 +17,33 @@ per-surface brain backend + (b-brains) codex-for-brains are DONE; (b-orchestrato
 now folded in here). Both touch `invoke.ts` and the `AgentBackend` type — doing
 them separately means colliding/reworking, so they are sequenced as one plan.
 
-**Next:** human confirms the open decisions in §Decisions (esp. unifying the two
-`AgentBackend` copies, and migrating the legacy console-launch path onto psu),
-then Phase 1 (the shared spine: backend reconcile + `consumes` + `buildRoleLaunchSpec`).
+**Decisions locked (2026-05-30):** unify the AgentBackend copies (yes), do
+codex pipeline agents now (yes, Phase 2), migrate legacy console-launch onto
+psu (yes, Phase 4).
+
+**✅ Phase 1 DONE (the shared spine):**
+- **P-001** — unified `AgentBackend` to one canonical subprocess set
+  (`claude-code|omp|codex`) as runtime tuples per layer (type derived) +
+  a drift-guard test in `apps/operator` (imports all three across the
+  submodule boundary). orchestrator widened (+codex resolver/normalizer).
+  Commits: papercup-shared `f9b2cdd`, papercusp `ad15d1f`, parent `32212ca7`.
+- **P-002** — `consumes` (feature/plan) as the single role→context source:
+  `RoleManifest.consumes` + `KERNEL_ROLE_CONSUMES` + `roleConsumes()`,
+  surfaced on `roles:get`/`roles:known`. Commit `ee288244`.
+- **P-003** — `buildRoleLaunchSpec` (`apps/operator/lib/role-launch-spec.ts`).
+  **De-risked vs the original plan:** rather than carve apart `invoke()`'s
+  hot path, it COMPOSES the leaves the system already shares —
+  `assembleRolePrompt` (`@papercusp/orchestrator/role-prompt`, already used
+  by the operator brains) + the operator's `signSpawnParams` (same HMAC key
+  the MCP handler verifies) + `resolveProjectDir`. The orchestrator submodule
+  is untouched; psu role sessions are assembled from the same primitives as
+  the orchestrator + brains. Folding `invoke()` itself onto the builder would
+  require unifying autonomous-vs-chat context injection (a behavior change) —
+  deferred, not needed for psu. 3 tests green.
+
+**Next:** Phase 2 (codex in the orchestrator pipeline) — or jump to Phase 3
+(psu role sessions, which only needs Phase 1's `consumes` + `buildRoleLaunchSpec`,
+both done) if interactive role sessions are the priority over codex pipeline agents.
 
 **Reference (do not duplicate — read these):** the handoff brief
 `agent-backend-refactor-handoff-2026-05-30.md` is the canonical reference for
@@ -80,7 +104,7 @@ interactively*. So the keystone is a single **`buildRoleLaunchSpec`** + a
 
 P-001 todo **Reconcile the two `AgentBackend` copies** (handoff OQ2b). Make the orchestrator consume the shared `AgentBackend` from `@restart/papercup-shared` (which already has `codex`+`meridian`) instead of its private `types.ts:101` copy — or, if a clean import boundary isn't available across the submodule edge, narrow to a single shared source and document why. Removes the "keep two enums in sync" landmine. blocked-by:(none)
 P-002 todo Add `consumes: { feature: 'required'|'optional'|'none'; plan: 'optional'|'none' }` to `RoleManifest` (`role-registry.ts`) + validation; default `{none,none}` (back-compat). Declare it in each built-in `prompts/<role>.role.json`, cross-checked against which roles actually get `FEATURE_ID` in `main-loop.ts`. Surface on `roles:get`/`roles:list`. blocked-by:(none)
-P-003 todo **Extract `buildRoleLaunchSpec(ctx, role, extras, opts)`** from `invoke()` → `{ promptFile, mcpUrl (signed), cwd, env, backend, model, runId, spawnId, structuredOutputFlags }`. No exec — pure assembly. Re-express `invoke()` on top of it (its headless exec + decision-parse retained verbatim). Parity unit test: the spec for `worker`+`FEATURE_ID=F` is byte-identical to what `invoke()` built pre-refactor. **Highest-care change — the orchestrator hot path.** blocked-by:P-001
+P-003 done **`buildRoleLaunchSpec`** (`apps/operator/lib/role-launch-spec.ts`) → `{ role, runId, spawnId, cwd, promptText, promptFile, mcpUrl (signed, role-scoped), mcpJsonContents }`. **De-risked:** composes the already-shared leaves (`assembleRolePrompt` from `@papercusp/orchestrator/role-prompt` — already used by the operator brains — + the operator's `signSpawnParams` over the same param set the orchestrator's `writeSignedSpawnMcp` signs + `resolveProjectDir`), so the orchestrator hot path is NOT rewritten. The role's MCP URL carries `role=<role>` (not `?superuser=1`) → dispatch enforces the role tool-allowlist (D-001). Folding `invoke()` onto the builder is deferred (would change autonomous-vs-chat context injection). 3 unit tests green. blocked-by:P-001
 
 ## Phase 2 — codex in the orchestrator pipeline (handoff b-orchestrator)
 
