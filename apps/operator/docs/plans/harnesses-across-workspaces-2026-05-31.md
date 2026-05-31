@@ -245,11 +245,16 @@ per-workspace-PG + pglite), D-6 (seed-from-repo + reset UX), D-7 (workspace-owne
 config). Ready to build.
 
 **Phase 1 — Identity + constraints (schema).**
-- Add `project_id` (stable) to `projects`; make uniqueness `(workspace_id, slug)`;
-  drop global `projects_slug_idx`. Migration + backfill.
-- Make `token_index` unique `(workspace_id, harness_slug)`; fix
-  `readSystemPrincipal`/provision to be workspace-scoped + idempotent (this also
-  fixes the operator-principal bug we hit).
+- ✅ **DONE — migration 091** (libs/papercusp `a1a0345`, parent `eb10d1fee`):
+  `token_index` + `projects` slug uniqueness → composite `(workspace_id, slug)`
+  (drops global `token_index_harness_slug_key` + `projects_slug_idx`). Removes the
+  hard blocker + fixes the operator-principal-in-2nd-workspace bug. Verified
+  correct by inspection (names matched against the live catalog); applies on next
+  embedded-pg boot via the runner (couldn't pre-apply live — table owner is
+  `postgres_app`, no manual cred path). `readSystemPrincipal`/provision were
+  already workspace-scoped + idempotent → no runtime change needed.
+- TODO — add a stable `project_id` to `projects` (so "same folder in 2
+  workspaces" is recognized as one project, not two coincidental slugs).
 - **D-1 = shared → the per-harness `harness_<slug>` schema is NOT re-scoped.**
   The largest migration is OFF the table. Run data stays shared by slug.
 
