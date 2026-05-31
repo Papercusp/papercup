@@ -19,9 +19,9 @@ and the order to do it in.
 
 ## Now
 
-**State:** @restart retirement COMPLETE + hardened on both sides. Papercup: 0 @restart, fail-loud CI guard now broadened to catch config-string regressions (D-014, D-017). Restart: papergrid + sync migrated to @papercusp (work-preserving), build-config stragglers the guard surfaced are fixed, and a targeted regression guard gates CI (D-016, D-017) — all on the live storefront with zero service disruption. Lesson captured as an agent-insight (scope-rename-grep-misses-config-strings). Only remaining @restart in Restart is genuinely Restart-owned domain packages + the out-of-scope @restart/papercup-shared (dead app).
+**State:** @restart scope FULLY retired on both sides. Papercup: 0 @restart, config-aware fail-loud CI guard. Restart (D-018): the ENTIRE @restart npm scope is gone — all 46 packages renamed to @papercusp, node_modules/@restart no longer exists, @restart/* imports fail hard (MODULE_NOT_FOUND), blanket CI guard (lint:no-restart) gates regressions. Executed live on the running storefront with zero service disruption (web/shop-api/shop all 200). Committed (swept into concurrent commit 6658a91d but preserved + verified in HEAD).
 
-**Next:** Nothing required — the generic-lib generalization + @restart retirement arc is complete on both repos. Optional: rebuild operator-docs to publish the new insight's served HTML (next `npm run build` picks it up automatically).
+**Next:** Nothing required — @restart is fully retired across both repos. Heads-up: the 427-file Restart rename landed under a mislabeled concurrent commit (6658a91d); history is messy per the shared-tree model but no work was lost.
 
 ## Background
 
@@ -682,6 +682,19 @@ The guard immediately caught references the import-grep had MISSED — all of wh
 Applied the lesson back to Papercup: hardened scripts/check-no-restart-imports.mjs (papercup commit 388522e70) to match ANY @restart/<pkg> string across code+json (not just import syntax), + maxBuffer for large git ls-files; still passes clean (papercup is 0 @restart). Wrote agent-insight scope-rename-grep-misses-config-strings.mdx (papercup commit f89742456) documenting the miss-class + the grep -v self-exclusion gotcha + a scope-rename checklist.
 
 Also assessed @restart/papercup-shared (the last @restart item flagged in D-016): it's a Papercup DOMAIN lib (not a generic borrowable), unresolved in Restart (no node_modules/tsconfig/dir), imported only by the non-running apps/public-site (a retired-style surface). Out of the generic-lib arc; left as-is.
+
+
+### D-018 — EXECUTED: full @restart scope retirement in Restart — every package → @papercusp, scope folder gone, imports fail hard
+Date: 2026-05-31
+User clarified the goal ("rename the folder so imports fail hard" = retire the WHOLE @restart npm scope in Restart, not just the shared libs). Executed the blanket scope retirement on the live storefront.
+
+**Scope:** renamed all 46 @restart/* packages (29 apps + 16 libs + pglite-server) to @papercusp/*, plus ~1000 references across imports, deps, tsconfig path maps, build configs (next transpilePackages, astro noExternal, CSS @imports), Procfile + bin --workspace args, CI workflows, and docs. One blanket `@restart/` -> `@papercusp/` perl pass over 422 tracked files (git grep, which auto-excludes submodules + node_modules), excluding the 11 already-@papercusp shared submodules, read-only storewolf-central-server (under node_modules), generated .astro/.source, package-lock.json, and the guard script. npm install relinked (-46 @restart, +46 @papercusp).
+
+**Result:** node_modules/@restart no longer exists (0 entries); `require.resolve('@restart/db')` returns MODULE_NOT_FOUND (fails hard), @papercusp/db resolves. Replaced the targeted migrated-scope guard with a BLANKET @restart-scope guard (scripts/check-no-restart-scope.mjs, npm lint:no-restart, gating in CI) — any @restart/* reference now fails the build.
+
+**Verified live (no service disruption):** web routes /inventory, /admin/assets, /skus → 200; shop-api /health → 200; shop storefront (:4173) → 200; all overmind services (web, zero-cache, shop-api, shop-app, shop) running.
+
+**Commit hazard noted:** my 427-file staged change was swept into a concurrent agent's commit (6658a91d, mislabeled "docs(plan): caller inventory") — the shared-tree behavior CLAUDE.md documents as expected. Changes are preserved + verified in HEAD; history is messy but no work lost. Left untouched: another agent's in-flight libs/sync submodule edits (useOwnedSyncEntity.ts).
 
 ## Addendum — Phase 1 shipped (2026-05-30) + impact on in-flight plans
 
