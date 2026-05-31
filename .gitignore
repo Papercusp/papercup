@@ -24,3 +24,8 @@ apps/operator-docs/.astro/
 # papercusp-docs (Astro+Starlight)
 apps/papercusp-docs/dist/
 apps/papercusp-docs/.astro/
+
+# tooldef family — src-as-entry; `build` (tsc) emits dist/ but nothing consumes it
+packages/tooldef/dist/
+packages/tooldef-http/dist/
+packages/tooldef-mcp/dist/
