@@ -28,6 +28,17 @@ export interface PipelineInput {
   featureId: string;
   /** The primary/orchestrator role that decides the next action. Default 'director'. */
   orchestratorRole?: string;
+  /**
+   * Dispatch-epoch for this pipeline lifetime. DBOS will not re-enqueue a *completed*
+   * workflow ID, so a feature-forever ID (`pipeline:<slug>:<feature>`) would let a
+   * feature run exactly ONE pipeline ever — re-work after a prior SUCCESS (a reopen,
+   * a failed-validation retry, a later feature edit) could never start a fresh
+   * pipeline. The epoch — a monotonic per-feature counter the live caller sources
+   * from PG — makes the workflow ID unique per lifetime; the `deduplicationID` still
+   * guards a concurrent double-start *within* one epoch. See the sub-plan's
+   * feature-ownership decision. Defaults to 0.
+   */
+  epoch?: number;
 }
 
 /**
@@ -112,12 +123,14 @@ export const featurePipelineWorkflow = DBOS.registerWorkflow(featurePipelineImpl
 export const pipelineQueue = new WorkflowQueue('feature-pipeline', { concurrency: 4 });
 
 /**
- * Start (or resume) a feature's durable pipeline. The workflow ID is
- * deterministic per feature, so a re-dispatch resumes the same workflow rather
- * than starting a second one; the dedup ID guards concurrent double-dispatch.
+ * Start (or resume) a feature's durable pipeline. The workflow ID is deterministic
+ * per (feature, epoch), so a re-dispatch *within the same epoch* resumes the same
+ * workflow rather than starting a second one (the dedup ID guards concurrent
+ * double-dispatch); a new epoch starts a fresh pipeline lifetime after a prior one
+ * completed (DBOS will not re-enqueue a completed ID — see `PipelineInput.epoch`).
  */
 export async function startFeaturePipeline(input: PipelineInput): Promise<string> {
-  const workflowID = `pipeline:${input.harnessSlug}:${input.featureId}`;
+  const workflowID = `pipeline:${input.harnessSlug}:${input.featureId}:e${input.epoch ?? 0}`;
   await DBOS.startWorkflow(featurePipelineWorkflow, {
     workflowID,
     queueName: pipelineQueue.name,
