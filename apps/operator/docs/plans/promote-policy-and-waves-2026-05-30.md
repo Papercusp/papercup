@@ -40,14 +40,35 @@ propagation — 29 green with `waves.test.ts`. **Every non-host item is now done
 the plan-format spec (`/internal/docs/spec/plan-format`) now has a `## Promote` policy (waves) section (commit
 `5c1de763`) — closes the gap an SU engineer hits authoring a waves plan.
 
-**Remaining — host-only (can't be built/verified without a running harness):**
-- **P-014 run-verification** — confirm `invoke promote` runs the role + receives EXTRAS as the sweep sends.
-- **Phase E** — `onBlocked` → a `harness_issues` row (currently logs) → scanner.
-- **P-015 dogfood** — author the `restart` universal-schema plan's real `## Promote` block, start it, watch
-  Tier-1 promote + drain → Tier-2 auto-generate. This is the actual end-to-end proof.
+**HOST-VERIFIED 2026-05-31** (desktop up; `:3070` = standing `papercup-dev-api.service`, native PG :5432
+`papercusp`, the native fallback — no discovery file/env URL on this box):
 
-Do these in **one host-running session** (`papercusp-desktop` up). Also: **push the submodule** (migration
-`3dac481` + promote.md) when ready.
+- **Migration gate found + fixed (the real blocker).** The live DB was **8 migrations behind** (082–089) — the
+  sweep was failing *every tick* on `column "current_wave" does not exist`. Applying 082–089 surfaced **3 real
+  migration bugs**, now fixed (submodule `da4c2d0`): `084` backfill referenced `metadata_json` (canonical
+  column is `metadata` per 001-shared.sql; latent because embedded-pg boots from preseed snapshots that already
+  record 084); `086`/`087` `CREATE POLICY` lacked idempotency (failed when the table pre-existed) → added
+  `DROP POLICY IF EXISTS`. DB now at HEAD (99/99); `current_wave` + `wave` + `source_plan_slug` + the
+  `hfc_plan_wave_idx` index all present; the sweep ticks clean (verified over a real 35s window, +0 errors).
+- **P-014 run-verification — DONE.** Confirmed live (sweep log `/tmp/dev-api.log`): the sweep sees a started
+  policy plan, parses its `## Promote` policy (`getPlanWaves` → [tier1, tier2]), queries real consolidated
+  features by `(source_plan_slug, harness_slug, wave)`, **correctly WAITS** while tier1 is in-progress (0 log
+  lines), and **correctly ADVANCES** the moment tier1 drains (all `passed`) — firing `promoteWave` for tier2
+  (next wave, `blocked_by` respected) which reaches the Phase-F `/invoke?role=promote` connection point. The
+  `promote` role is registered in the live `roles_known`. Test used a throwaway `harness_slug` + plan (cleaned
+  up). The only unexercised tail is the promote **agent actually running** — blocked by an **invalid Anthropic
+  key on this box** (`401 invalid x-api-key` in the host log), an environment issue, not the mechanism.
+
+**Remaining:**
+- **Phase E** — `onBlocked` → a `harness_issues` row (currently logs) → scanner. Still unwritten code; needs
+  the `IssueSource: 'system'` member (see P-012, UI icon-map blast radius).
+- **P-015 dogfood** — author the `restart` universal-schema plan's real `## Promote` block, start it, watch
+  Tier-1 promote + drain → Tier-2 auto-generate. Blocked on (a) the env Anthropic key (the promote agent must
+  run) and (b) `restart` being a registered harness in the authed workspace (`harness:import` here needs
+  bearer + workspace tx). The deterministic pipeline it would exercise is already host-verified above.
+
+Also: **bump the superproject submodule pointer** to include `da4c2d0` (the migration fixes) — commit locally,
+don't push (pins are local-only).
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -201,13 +222,16 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase F — promote agent + first dogfood
 
-- **P-014** `done` (authored, ⚠️ run unverified) Promote-agent role: prompt at
+- **P-014** `done` (authored + **run-verified 2026-05-31**) Promote-agent role: prompt at
   `libs/papercusp/packages/harness/prompts/promote.md` (deterministic executor — read the wave from EXTRAS,
   promote it via `plans:promote`; resolve the `for_each` set for generative waves; one wave per invoke; never
-  fabricate features) + registered in `AGENT_ROLES` (`packages/agent-mcp/src/role-config.ts`; no
-  role-exhaustiveness break). **Remaining (host-only):** confirm `invoke promote` actually runs the role
-  through the harness run mechanism, and align `wave-advance-sweep-live.promoteWave`'s `/invoke?role=promote`
-  call with how the role receives EXTRAS (plan_slug/wave/needs_items).
+  fabricate features) + registered in `AGENT_ROLES` (`packages/agent-mcp/src/role-config.ts`; confirmed live in
+  `roles_known`). **Run-verified** against the live sweep (see ## Now): with a started policy plan + real
+  consolidated rows, the sweep waits while the wave is in-progress and, on drain, fires
+  `wave-advance-sweep-live.promoteWave` → `/invoke?role=promote` (the Phase-F connection point) for the next
+  wave. The agent-actually-runs tail is blocked by an invalid Anthropic key on the box (env, not the mechanism);
+  EXTRAS wire-up (plan_slug/wave/needs_items) is sent as the prompt expects but unconfirmed end-to-end until the
+  key is valid.
 - **P-015** `todo` **First real dogfood:** author the `restart` `universal-schema-2026-05-30` plan's actual
   `## Promote` block (Tier-1 static + Tier-2 generative), promote Tier-1 into the `restart` harness, run it,
   and verify the deterministic wave-advance fires Tier-2 once Tier-1 drains. (Confirm `restart` is a registered
