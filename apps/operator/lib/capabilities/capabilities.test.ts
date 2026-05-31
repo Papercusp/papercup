@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { schemaRequiresArgs } from './introspection';
 import { actionDefToCapability } from './from-action-registry';
 import { toolDefinitionToCapability, type ToolDefinitionMeta } from './from-tooldef';
+import { humanizeCapabilityId } from './format';
 import { paletteEligibility, isPaletteVisible, requiresPaletteConfirm } from './safety-filter';
 import type { Capability } from './types';
 import type { Definition } from '@/lib/commands/types';
@@ -63,6 +64,19 @@ describe('actionDefToCapability', () => {
   });
 });
 
+// ── id humanizer ─────────────────────────────────────────────────────────
+describe('humanizeCapabilityId', () => {
+  it('group-qualifies namespaced ids so bare verbs are self-describing', () => {
+    expect(humanizeCapabilityId('goals:list')).toBe('Goals: List');
+    expect(humanizeCapabilityId('panel.toggle')).toBe('Panel: Toggle');
+    expect(humanizeCapabilityId('papercusp:list_workspaces')).toBe('Papercusp: List Workspaces');
+    expect(humanizeCapabilityId('dev:hello-card')).toBe('Dev: Hello Card');
+  });
+  it('title-cases a bare id with no namespace', () => {
+    expect(humanizeCapabilityId('list_workspaces')).toBe('List Workspaces');
+  });
+});
+
 // ── tooldef adapter ──────────────────────────────────────────────────────
 function tool(over: Partial<ToolDefinitionMeta> & Pick<ToolDefinitionMeta, 'name' | 'capability'>): ToolDefinitionMeta {
   return { description: 'desc', tier: 'low', args: z.object({}), ...over };
@@ -72,6 +86,7 @@ describe('toolDefinitionToCapability', () => {
   it('read tool: low risk, no args, non-destructive → fire-and-toast', () => {
     const cap = toolDefinitionToCapability(tool({ name: 'harness:list', capability: 'harness:read' }));
     expect(cap.runsIn).toBe('server');
+    expect(cap.title).toBe('Harness: List'); // group-qualified, not a bare "List"
     expect(cap.destructive).toBe(false);
     expect(cap.requiresArgs).toBe(false);
     expect(cap.gating.auth?.capabilities).toEqual(['harness:read']);

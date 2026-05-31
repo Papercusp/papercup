@@ -28,11 +28,11 @@ interface ServerCapabilityDTO {
   eligibility: Eligibility;
 }
 
-function sectionFor(id: string): string {
-  const group = id.includes(':') ? id.split(':')[0] : id.split('.')[0];
-  if (!group) return 'Agent tools';
-  return `Tools · ${group.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}`;
-}
+// All server tools live in one palette section. The group is carried in each
+// row's title (e.g. "Goals: List", see humanizeCapabilityId) so a flat, sorted
+// list stays self-describing — per-group sub-sections produced one heading per
+// single-item group, which reads worse than a single "Agent tools" group.
+const SERVER_TOOLS_SECTION = 'Agent tools';
 
 async function runServerCapability(name: string, confirmed: boolean): Promise<void> {
   try {
@@ -84,7 +84,7 @@ export function useServerCapabilityCommands(open: boolean): Command[] {
           id: c.id,
           title: c.title,
           subtitle: c.description,
-          section: sectionFor(c.id),
+          section: SERVER_TOOLS_SECTION,
           keywords: `${c.id} ${c.description}`,
           icon: c.eligibility === 'confirm' ? '⚠' : '⚙',
           perform: () => void runServerCapability(c.id, false),

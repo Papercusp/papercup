@@ -20,15 +20,40 @@
  * first time the user opens it, keeping it off the first-paint path of
  * every page.
  */
-import { lazy, Suspense, useMemo } from 'react';
+import { Component, Suspense, useMemo, type ReactNode } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useSearchParams } from 'next/navigation';
+import { toast } from 'sonner';
+import { lazyWithRetry } from '../../lib/lazy-with-retry';
 import { useShortcutAction } from '../../lib/hotkeys';
 import { buildRegistryPaletteItems } from '../../lib/commands/shims/palette-shim';
 import { useServerCapabilityCommands } from './use-server-capabilities';
 import type { Command } from './CommandPalette';
 
-const CommandPalette = lazy(() => import('./CommandPalette'));
+const CommandPalette = lazyWithRetry(() => import('./CommandPalette'));
+
+/**
+ * Catches a failed dynamic import of the palette chunk. In dev, the background
+ * `vite build --watch` (`dev:nohmr`) deletes the chunk hashes an already-open
+ * desktop window loaded, so reopening the palette 404s; `lazyWithRetry` retries
+ * then rejects — it deliberately does NOT auto-reload on the desktop / :3070
+ * origin (DevReloadGate owns the no-auto-reload policy). Without this boundary
+ * that rejection throws past <Suspense> and could unmount the app root. Instead
+ * we close the palette and tell the user to reload. Production never hits this
+ * (no mid-session rebuilds), so it's a dev-ergonomics safety net.
+ */
+class PaletteChunkBoundary extends Component<{ onError: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 export default function GlobalCommandPalette() {
   const [open, setOpen] = useQueryState('palette', parseAsBoolean.withDefault(false));
@@ -75,8 +100,15 @@ export default function GlobalCommandPalette() {
   // Don't mount the lazy palette chunk until first open.
   if (!open) return null;
   return (
-    <Suspense fallback={null}>
-      <CommandPalette open onClose={() => { void setOpen(false); }} commands={commands} />
-    </Suspense>
+    <PaletteChunkBoundary
+      onError={() => {
+        toast('Command palette updated — reload (Ctrl/⌘R) to use it.');
+        void setOpen(false);
+      }}
+    >
+      <Suspense fallback={null}>
+        <CommandPalette open onClose={() => { void setOpen(false); }} commands={commands} />
+      </Suspense>
+    </PaletteChunkBoundary>
   );
 }
