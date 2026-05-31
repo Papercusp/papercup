@@ -509,23 +509,26 @@ The in-app agent chat (`ChatPanel` via `AdvChatPanel`) is hosted **only by the `
 
 To make Chat work in the Plans tab you must add a host (e.g. a modal that creates a chat and renders `<ChatPanel slug chatId />` directly), and a chat needs a **harness** (`agent_chats` is per-harness-schema) — pure SU plans with no harness can’t host one. This is the open work in `planning-attention-importance-2026-05-31` P-017.
 
-# Attention push-notification delivery (and why retiring the poll is coupled)
+# Attention push-notification delivery
 
-> How needs-human / escalation / smoke / plan-review notifications actually get delivered, the mobile-vs-desktop channel gap, and why P-020's event-driven push can't drop the 60s poll for its legacy triggers without P-021.
+> How needs-human / escalation / smoke / plan-review notifications get delivered — event-driven at the source (notifyAttention), to mobile push + a native desktop notification. No more 60s poll.
 
 ## What it is
 
 [Section titled “What it is”](#what-it-is)
 
-The flip side of [the attention/importance system](/internal/docs/agent-insights/attention-importance-system): how an attention item that needs a human actually becomes a **push notification** on the user’s devices. This is the part the `planning-attention-importance-2026-05-31` plan’s P-020/P-021/D-007 touch, and the topology is non-obvious — reverse-engineering it took a session, so this is the map.
+The flip side of [the attention/importance system](/internal/docs/agent-insights/attention-importance-system): how an attention item that needs a human becomes a **push notification** on the user’s devices. Implemented by `planning-attention-importance-2026-05-31` P-020/P-021/D-007 (2026-05-31). This is the map.
 
-## The two delivery facts that surprise everyone
+## One helper, two channels, event-driven
 
-[Section titled “The two delivery facts that surprise everyone”](#the-two-delivery-facts-that-surprise-everyone)
+[Section titled “One helper, two channels, event-driven”](#one-helper-two-channels-event-driven)
 
-1. **The only delivery channel today is MOBILE push.** `apps/operator/lib/device-push-dispatcher.ts` → `notifyWorkspace(wsId, payload)` → APNs/FCM to devices paired in `harness_shared.mobile_push_tokens`. It is a **no-op when no device is paired** (safe to call unconditionally). There is **no desktop-native (Tauri OS notification) bridge** — D-007’s “emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge” describes a bridge that does **not exist yet**. Building it is Rust/Tauri work and is unverifiable headless.
+Everything funnels through **`notifyAttention()`** in `apps/operator/lib/attention-notify.ts`. Producers call it at the source the moment a ≥high attention item appears; it fans out to two independently fail-safe channels (a delivery error is logged and swallowed — it never propagates into the producer’s write path):
 
-2. **The legacy triggers are delivered by a 60s POLL, not at the source.** `apps/operator/lib/device-intervention-watcher.ts` `setInterval(60s)` does three `SELECT`s — `harness_escalations`, `harness_smoke_test (status=fail)`, `harness_plan_review` — dedupes via an in-memory `seen` set keyed on `(workspace, slug, phase/status, mtime)`, and pushes each new row. It is a **robust catch-all**: it fires regardless of which code path wrote the row.
+1. **Mobile** — `notifyWorkspace(wsId, payload)` → `apps/operator/lib/device-push-dispatcher.ts` → APNs/FCM to devices paired in `harness_shared.mobile_push_tokens`. No-op when none are paired. `data` must be string-valued and `kind` a `PushKind` — the helper coerces/maps.
+2. **Desktop-native** — emits an `attention.notify` event on the sync SSE bus (`notifySyncInvalidate`). The webview’s `DesktopAttentionNotifier` (`apps/operator/app/_components/`, mounted once at the root, app-level so `@papercusp/sync` stays domain-free) shows an in-app **sonner toast** always, and in the Tauri shell invokes the **`show_attention_notification`** Rust command (`papercusp-desktop`, `tauri-plugin-notification`) for a native OS notification. Driven from Rust, so no JS-facing notification capability is needed; the command is app-defined → allowed by default.
+
+**No 60s poll.** The old `device-intervention-watcher` (a `setInterval(60s)` catch-all that SELECTed the three tables) was **deleted** in P-021 — its triggers now emit at the source.
 
 ## Where those rows are written (the producer chokepoints)
 
@@ -555,21 +558,81 @@ P-020 pushes only at importance **≥ high**. The per-kind importance lives in `
 
 Note `harness_escalations` (the table the watcher polls) has **no severity column** — it’s a harness-level escalation, distinct from a *coord* escalation. Treat it as inherently high. Net: the watcher’s three triggers are all already high, so the watcher never pushed low-importance noise to begin with.
 
-## P-020 was safe to ship; P-021 is the coupled, risky part
+## The four producer call-sites + their once-per-event gating
 
-[Section titled “P-020 was safe to ship; P-021 is the coupled, risky part”](#p-020-was-safe-to-ship-p-021-is-the-coupled-risky-part)
+[Section titled “The four producer call-sites + their once-per-event gating”](#the-four-producer-call-sites--their-once-per-event-gating)
 
-**Shipped (P-020, safe, additive):** `plans:set-status` pushes when an item transitions INTO `needs-human` at importance ≥ high (`shouldPushNeedsHuman` + `itemImportance` in `set-status.ts`). A plan item is a source the watcher *never polls*, so there is **no overlap → no double-fire**. It’s transition-gated (a re-set won’t re-push), importance-gated, and fully fail-safe (a push error never fails the flip). With the watcher’s already-high triggers, the full push set is now exactly the ≥high attention items.
+`notifyAttention()` is called at exactly the points that *create* a ≥high attention item — there’s no poll, so each must fire **once per genuine event**:
 
-**Not shipped (P-021, coupled + risky):** moving the watcher’s *own* triggers (escalation/smoke/plan-review) to producer-time emits at the 3 endpoints **cannot be done additively** — the poll already pushes them, so adding emits **double-fires** (duplicate push to the user’s phone). Avoiding that requires **retiring the poll** in the same change, which trades away the catch-all: any write path not explicitly hooked silently **loses** its notification. The only upside is latency (≤60s → instant) — no new user-facing notifications. That’s why P-021 is held for a human decision (accept the missed-path tradeoff, or keep a low-frequency reconcile floor), not done blind.
+| Source      | Where                           | Fire condition                                                                                 |
+| ----------- | ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| escalation  | `internal/escalation-event.ts`  | `escalation != null` (skip notes-only updates)                                                 |
+| smoke-fail  | `internal/smoke-test-event.ts`  | **transition** into failing — reads prior `status`, fires only on `pass→fail` / first fail     |
+| plan-review | `internal/plan-review-event.ts` | every call (the producer posts once per completed review)                                      |
+| needs-human | `plans:set-status`              | transition INTO `needs-human` at importance ≥ high (`shouldPushNeedsHuman` + `itemImportance`) |
 
-## If you’re the agent picking up P-021 / D-007
+Why this was safe to do at once: each source is its own chokepoint, so there’s **no double-fire** (the poll that used to also push escalation/smoke/plan-review is gone). The gating above prevents re-pushing on idempotent re-writes. The trade vs the old poll: the poll was a catch-all that fired regardless of write path; source emits only fire from these four sites — if a *new* write path for those tables appears, wire `notifyAttention` into it too.
 
-[Section titled “If you’re the agent picking up P-021 / D-007”](#if-youre-the-agent-picking-up-p-021--d-007)
+## Extending it
 
-* **P-021:** either (a) emit at the 3 endpoints + delete the poll (accept missed-path risk — audit every writer of those tables first), or (b) emit at the 3 endpoints for low latency + keep a *reduced-frequency* poll as a reconcile floor, sharing the dedup so it only catches what emits missed.
-* **D-007:** there is no desktop notification bridge. You’d add a Tauri IPC command + a JS emit path; `notifyWorkspace` is mobile-only. Decide whether desktop-native is worth it or mobile push is sufficient.
-* Both need a running desktop to verify delivery — neither is headless-testable.
+[Section titled “Extending it”](#extending-it)
+
+* **New attention source:** call `notifyAttention({ kind, title, body, harnessSlug, importance })` at the write site. Add the kind to `AttentionNotifyKind` + `MOBILE_KIND` if it needs a distinct mobile route.
+* **The desktop native notification needs a cargo rebuild** of `papercusp-desktop` to pick up `tauri-plugin-notification` + the `show_attention_notification` command. The toast + mobile push work without it; the native OS notification is a no-op (caught) until the rebuild.
+* End-to-end delivery (APNs/FCM, native OS notification) is **not headless-testable** — verify in the desktop shell. The `notifyAttention` fan-out + the gates are unit-tested (`attention-notify.test.ts`, `set-status.test.ts`).
+
+# The command palette and the agent MCP catalog are two registries unified at projection, not merged
+
+> Ctrl+P commands come from lib/commands (Action Registry, browser-reflexive); agent tools come from defineTool/tooldef (server, gated). The Capability contract (lib/capabilities) unifies them at the read/projection layer with a §3 safety filter — it does NOT merge the two definition systems. Key gotchas: persona-axis ≠ RBAC-axis, :3070 serves a static build, runsIn mirrors CommandDef.browser.
+
+## The two registries (and why they look like one)
+
+[Section titled “The two registries (and why they look like one)”](#the-two-registries-and-why-they-look-like-one)
+
+There are **two** “invokable thing” registries, and they are easy to confuse:
+
+1. **Action Registry** — `apps/operator/lib/commands/`. `CommandDef`s registered via `register()`. **Browser-reflexive**: they run in the tab (mutate DOM / nuqs / URL), `browser: 'required'|'optional'|'none'`. Surfaces: the ⌘K palette, keyboard shortcuts, voice, the mobile webhook. Discovery: `list({ kind:'command', agent:'palette' })`.
+
+2. **tooldef / endpoint catalog** — `defineTool()` in `apps/operator/lib/agent-tools/` (+ `packages/tooldef`, `packages/agent-mcp`). **Server-side, gated, audited**. Surfaces: the MCP transport (`papercusp-su` + in-app agents) and HTTP routes. Discovery: `getCatalog()` / `listAllProjectedTools()`.
+
+They share **no** definition substrate. The only long-standing seam is `lib/endpoint-route/routes/agent-mcp/run-command.ts` — itself a `defineTool` route that bridges an agent’s command id to a live browser tab (`session-registry.deliver`). The Action Registry’s `types.ts` header still claims it’s “the single source of truth for Oracle/Pi MCP” — that’s **stale**; conversational agents read the tooldef `mcp__agentmcp__*` catalog (`lib/operator-mcp-tools.ts`).
+
+## What `lib/capabilities/` does
+
+[Section titled “What lib/capabilities/ does”](#what-libcapabilities-does)
+
+Plan `capability-metadata-contract-2026-05-31`. The `Capability` contract unifies the two **at the read/projection layer only** — it does **not** merge the definition systems (a merge would re-couple browser concerns into the now-extracted host-agnostic `@papercusp/tooldef`). Two read-only adapters map each registry into one `Capability[]`: `from-action-registry.ts` and `from-tooldef.ts`. The palette then lists both; `Ctrl+P` spans browser commands **and** the server tool catalog.
+
+* `GET /api/agent-mcp/capabilities` — the §3-eligible, principal+role-gated server catalog.
+* `POST /api/agent-mcp/run-tool` — loopback-only invoke; runs the tool through the **full dispatch stack with NO gate-bypass** (`lookupByMcpName` + `dispatchProjectedToolToMcp` + `PROJECTED_DEPS`), so role/capability/authorize/quota/audit all apply.
+* `app/_components/use-server-capabilities.ts` — client fetch + execute + toast.
+
+## Gotchas that will bite you
+
+[Section titled “Gotchas that will bite you”](#gotchas-that-will-bite-you)
+
+* **Persona/surface axis ≠ principal RBAC axis.** A `CommandDef.agents` entry like `'palette'`/`'operator'` is the **persona/surface** axis (→ `Capability.gating.agentRoles`
+
+  * the `surfaces` overlay), **never** principal `auth.roles`. Conflating them is the exact bug RFC `tooldef-auth-rfc-2026-05-31`’s decision D-E forbids. The first draft of this plan’s §4 made that mistake; see D-004.
+
+* **The palette principal is just the request principal — no escalation.** On the desktop, `tryResolvePrincipal` → `principalFromLoopback` yields `kind:'loopback'`, `trust:'unverified-loopback'`, `capabilities: Set(['*'])`. Do **not** mint a higher-trust “trusted” palette principal — trust-gated tools correctly reject loopback, and the dispatch stack is the real boundary (D-005).
+
+* **One-keystroke ≠ safe.** “principal-allowed + no-args” is NOT “safe to fire from a fuzzy palette with a toast.” `safety-filter.ts` (`paletteEligibility`) excludes streaming/interactive/required-arg tools and forces a **confirm** step for destructive/`tier:high`. `run-tool` re-enforces this **server-side** (never trust the client) — destructive tools 409 without `confirmed:true`.
+
+* **`runsIn` is 3-valued, mirroring `CommandDef.browser`** (`required`→browser, `none`→server, `optional`→hybrid). A binary server/browser split silently drops `browser:'optional'` (e.g. `chat.dispatch`).
+
+* **`ToolDefinition` (from `getCatalog()`) has `tier` + `args`; `ProjectedTool` (from `listAllProjectedTools()`) has `agentRoles` + `expose` but NOT `tier`.** Use the catalog for risk/args, the projection for the role allowlist. Tooldef’s `CapabilityTier` is `'low'|'medium'|'high'` — note **`medium`**, not `med`.
+
+## Why your route change “doesn’t show up” in the running desktop
+
+[Section titled “Why your route change “doesn’t show up” in the running desktop”](#why-your-route-change-doesnt-show-up-in-the-running-desktop)
+
+The desktop webview loads **`:3070`, which serves a static pre-built `operator-vite/dist/`** (hashed `/assets/index-*.js`, no Vite HMR). `:3055` is the live HMR dev server but the webview does **not** use it. Consequences:
+
+* **Client (UI) changes** need `npm --workspace @papercusp/operator-vite run build` **and** a webview reload (`DevReloadGate` suppresses auto-reload — `Ctrl/Cmd+R` is manual).
+* **Server route changes** (`routes/index.ts`) need the **`:3070` hono host to restart** — it does not hot-reload new routes. Don’t restart it casually: it’s a shared service that also backs the `papercusp-su` MCP and other agents’ sessions. Announce/get authorization first (see how the dogfood agents restarted `papercup-dev-api.service`).
+
+This is why a freshly-added route can read `404` on `:3070` even though it’s correctly registered and the build is green — it’s live only after the host restarts.
 
 # Split a budget conditionally on which pools are actually active
 
@@ -1929,6 +1992,59 @@ The try/catch on the `does not exist` substring is the right shape: don’t prom
 * `apps/operator/lib/ensure-schema.ts` — original \~1860-line file with the same pattern. Don’t edit it for new tables — add a new sibling file instead.
 * `apps/operator/lib/sync-sse.ts` — uses the same `globalThis` pin pattern for the 90s dedupe map.
 * [pg-migrations-dollar-quote](/internal/docs/agent-insights/pg-migrations-dollar-quote) — the migration-file side of PG DDL hazards.
+
+# Inbox items are durable cards — reuse the renderer, not the ctx.askUser lifecycle
+
+> The Planning inbox renders every human-facing AttentionItem through the same AskChoiceCard/InputCard the chat uses, via a durable third emitter — NOT by routing items through the run-blocking ctx.askUser. Terminal vs navigate options is the key convention.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+The operator has a nice “card system” — `AskChoiceCard` / `InputCard` (`app/_components/chat/`) — that agents drive via `chat:ask_choice` → `ctx.askUser`. It’s tempting to route the whole Planning **inbox** (escalations, coord messages, needs-human plan items, smoke-fails, plan reviews) through the same `ctx.askUser` so everything that reaches the human is “a card”.
+
+**Don’t.** `ctx.askUser` is a *live, synchronous, ephemeral* handshake: the card exists only while an agent is **blocked inside the tool call**, and the human’s click is the tool’s return value. The inbox is the opposite — *durable, asynchronous* records that are resolved later and read by the agent on its **next** run. Nothing is blocked waiting. Forcing the inbox through `ctx.askUser` would mean pinning agents alive blocking on a human.
+
+## The split that actually works
+
+[Section titled “The split that actually works”](#the-split-that-actually-works)
+
+Reuse the **renderer**, keep the **lifecycle** separate:
+
+* **Renderers** (`AskChoiceCard`, `InputCard`) are pure presentational components — no context, no hooks, no transport coupling. Reuse them anywhere.
+
+* There are now **three emitters** feeding those renderers, all dispatching by presentation:
+
+  1. server SSE state-channel → `PendingCardsBar` (the live `ctx.askUser` path),
+  2. client `askUserLocal` registry → `LocalCardHost`,
+  3. the **durable inbox** → `app/admin/plans/attention-card.ts`.
+
+The inbox emitter is two pure functions:
+
+* `attentionItemToCardSpec(item)` maps an `AttentionItem` → `AskChoiceArgs`. `item.actions[]` is the single source of truth (so the adapter in `lib/attention/adapters.ts` must emit the *complete* set — see the gotcha).
+* `resolveAttentionAction(item, optionId)` dispatches a **terminal** pick to the item’s existing backend helper (`resolveEscalation` / `ackCoordMessage` / `setItemStatus`) via the `/api/admin/coord/:verb` proxy — no new route, because `defineTool` already projects the coord tools onto HTTP.
+
+## Terminal vs navigate — the option convention
+
+[Section titled “Terminal vs navigate — the option convention”](#terminal-vs-navigate--the-option-convention)
+
+`AskChoiceOption` has an optional `terminal?: boolean` (default `true`):
+
+* **terminal** options *answer* the card: click → `{action:'submit'}`, card disables. Inbox: `resolve` / `mark-done` / `drop` / `ack`.
+* **navigate** options (`terminal:false`) *open a sub-surface* and leave the card live: click → `{action:'navigate', option_id}`. Inbox: `chat` (inline `PlanChat`), `answer` (inline `InputCard`), `view-log` / `open` (harness view).
+
+`resolveAttentionAction` only handles terminal ids; the component owns navigate.
+
+## Gotchas that will bite you
+
+[Section titled “Gotchas that will bite you”](#gotchas-that-will-bite-you)
+
+* **The adapter must emit the full action set.** `AttentionActionId` originally lacked `answer` and `drop`, and a needs-human item’s `actions[]` was only `[mark-done, chat]` — Answer/Drop were **hard-coded in the UI** (`InboxItemActions`). An `actions[]`-driven mapper silently loses anything the adapter doesn’t emit. Add the action to `AttentionActionId` *and* `planItemToAttention`, and mirror the union in the client wire type (`plans-api.ts`).
+* **Preserve `resumeLoop`.** Plan-item Resolve/Answer POST `/api/harness/:slug/launch?phase=staging` to resume the orchestrator; **Drop deliberately does not**. Centralizing the dispatch must keep that distinction (parity-test it).
+* **No “Skip” on durable cards.** `AskChoiceCard` shows a Skip (`decline`) by default; `decline` is undefined for a durable record. Render inbox cards with `allowDecline={false}`.
+* **Inline chat needs a bounded height.** `ChatPanel` is `height:100%`; give the inline host (`.pc-plan-chat-inline`) a fixed height or it collapses.
+
+See the plan `inbox-cards-unification-2026-05-31` and the predecessor `planning-attention-importance-2026-05-31` (P-017, superseded).
 
 # Canonical-form JSON for signed payloads — reach for JCS (RFC 8785)
 
@@ -3400,6 +3516,52 @@ The discriminator-extension pattern works because POST /harness/projects’s ent
 * `apps/operator/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
 * `apps/operator/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
 * [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — sister principle: signals belong on the entity they describe; the same instinct applied to error shapes here.
+
+# npm-scope renames: import-grep misses the references that break fresh builds
+
+> When migrating a package across npm scopes (e.g. @restart/* -> @papercusp/*), grepping for import statements finds the imports but MISSES bare-string references — next.config transpilePackages, astro noExternal, tsconfig path maps, and command/script tables. Those pass a running dev server (it cached the old config) so route-200 smoke checks give false confidence, then break a fresh build. Guard by scanning every line for the package pattern, not just import syntax, and verify against a clean build. Includes the grep -v self-exclusion gotcha that hid a tsconfig path.
+
+Migrating a workspace package from one npm scope to another — here `@restart/{grid,grid-core,bloom-grid,kv-persist,kv-persist-indexeddb,sync}` → `@papercusp/*` in the sibling Restart monorepo — looks like a mechanical find-and-replace of import statements. It isn’t. The imports are the *easy* references; the ones that bite are the bare strings that no import-grep matches.
+
+## The miss-class: bare package strings in configs
+
+[Section titled “The miss-class: bare package strings in configs”](#the-miss-class-bare-package-strings-in-configs)
+
+A grep for `from '@restart/x'` / `require('@restart/x')` / `import('@restart/x')` catches imports and (with a second pattern) `package.json` deps. It does **not** catch these, all of which name the package as a plain string:
+
+* **`next.config.js` `transpilePackages: ['@restart/grid', ...]`** — Next won’t transpile the workspace package if the name doesn’t match.
+* **Astro `noExternal: ['@restart/grid', '@restart/grid-core', ...]`** — SSR bundling silently stops including it.
+* **`tsconfig.base.json` path maps** — `"@restart/sync": ["libs/sync/src/index.ts"]`.
+* **Command / script-runner tables** — `command: 'npm run bench --workspace @restart/grid-core'` in a dashboard, a Procfile, a CI matrix. The `--workspace @restart/x` arg fails once the workspace is renamed.
+
+A running dev server hides all of this
+
+The dev server cached the old config at boot, so hitting routes that use the renamed package returns **HTTP 200** even though the configs are stale. Route smoke checks give false confidence. These references only fail on a **fresh build** (`next build`, `astro build`, `npm ci` + start) or a dev-server restart. Verify a scope rename against a clean build, not just the warm dev server.
+
+## The fix: guard on the package pattern, not import syntax
+
+[Section titled “The fix: guard on the package pattern, not import syntax”](#the-fix-guard-on-the-package-pattern-not-import-syntax)
+
+Replace the import-syntax matcher with one that flags **any** `@restart/<pkg>` occurrence, scanning every line of every code + json file (excluding `node_modules`, `dist`, the auto-generated `package-lock.json`, and historical docs). That single pattern catches imports, deps, tsconfig maps, and config strings uniformly. Make it **targeted** when some names in the old scope are legitimate (Restart still owns `@restart/{db,ui,shop-sdk,com,...}`): guard only the migrated basenames, allow the rest. See `scripts/check-no-restart-imports.mjs` (papercup) and `scripts/check-migrated-scope.mjs` (Restart) — both wired as gating CI steps.
+
+## Bonus gotcha: `grep -v <substring>` self-exclusion
+
+[Section titled “Bonus gotcha: grep -v \<substring> self-exclusion”](#bonus-gotcha-grep--v-substring-self-exclusion)
+
+While auditing tsconfig for stragglers I ran `grep '"@restart/sync"' tsconfig*.json | grep -v libs/sync` to drop the submodule — and it silently hid the real offender, because the path-map **line** is `"@restart/sync": ["libs/sync/src/index.ts"]`: the *value* contains `libs/sync`, so `grep -v libs/sync` filtered out the very line I needed. When excluding the submodule, match on the file path (`grep -v '^libs/sync/'` against the filename), never on a substring that can also appear in a line’s content.
+
+## Checklist for a scope rename across a monorepo
+
+[Section titled “Checklist for a scope rename across a monorepo”](#checklist-for-a-scope-rename-across-a-monorepo)
+
+1. Imports (`from`/`require`/`import()`), incl. subpath imports `@scope/pkg/sub`.
+2. `package.json` deps (and the package’s own `name`, if it’s the one moving).
+3. `tsconfig*.json` path maps — `paths` and any project-refs.
+4. Build configs: next `transpilePackages`, astro `noExternal`, vite/webpack `optimizeDeps`/aliases, jest/vitest `moduleNameMapper`.
+5. Command tables / Procfiles / CI: `--workspace @scope/pkg`, `nx run @scope/pkg:*`.
+6. Doc-comments and string literals (cosmetic, but a future grep will re-flag them).
+7. Relink `node_modules` (`npm install`) so the new scope resolves; then verify a **fresh build**, not just the running dev server.
+8. Add a gating CI guard so the rename can’t silently regress.
 
 # Sleep-mode shared-checkout discipline
 
@@ -15503,11 +15665,15 @@ Three more cheap wins:
 * Did not edit any settings; observations are from the pages as they rendered.
 * Screenshots: `/tmp/set-personalization.png`, `/tmp/set-oracle.png`, `/tmp/set-operator.png`, `/tmp/set-voice.png`, `/tmp/set-api-keys.png`, `/tmp/set-agent.png`, `/tmp/set-meridian.png`, `/tmp/set-orchestrator.png`, `/tmp/set-profile.png`, `/tmp/set-publishing.png`, `/tmp/set-plugin-runtime.png`, `/tmp/set-mobile.png`, `/tmp/set-shortcuts.png`.
 
-# Design tokens — the bluefrost theme
+# Design tokens, themes & the theming standard
 
-> How the DTCG token pipeline generates the bluefrost CSS variables, the semantic scale, and the canonical status-color tables.
+> The DTCG token pipeline, the semantic scale (incl. the accent-tint scale), the theme contract every agent must follow, how themes (frost/black/custom) work, and the canonical status-color tables.
 
-The operator UI is themed by a single set of CSS custom properties — the **bluefrost** palette (deep sky-tinted dark surfaces, frost-white text, a sky accent). Those variables are **generated from DTCG token JSON**, not written by hand. This page is the reference for what exists and how to change it.
+The operator UI is themed by one set of CSS custom properties. The **default theme is “bluefrost”** (deep sky-tinted dark surfaces, frost-white text, a sky accent), generated from DTCG token JSON; a **“black”** theme and **user-created custom themes** swap the same variables (see [Themes](#themes--frost--black--custom)). This page is the reference for what exists, **the contract agents must follow**, and how to change it.
+
+The one rule: never hardcode a brand color
+
+Components must reference a **semantic `var(--…)` token**, never a brand primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`, `#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the **semantic** layer — anything hardcoded to a sky value stays blue when the user picks Black. This is enforced by `app/_lints/css-tokens.test.ts` and audited periodically. The full do/don’t is the [theme contract](#the-theme-contract--what-agents-must-follow) below.
 
 Never hand-edit the generated CSS
 
@@ -15551,28 +15717,79 @@ If you change a **primitive** (a brand color), also re-mirror mobile (`make toke
 
 These are the variables new UI should use — never a raw hex. Each has a fallback baked in (`var(--bg, #07101d)`) so a component renders correctly even outside the themed tree.
 
-| Token                                        | Value                               | Use for                                                                                          |
-| -------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `--bg`                                       | `#07101d`                           | Page / app background (deepest).                                                                 |
-| `--bg-1`                                     | `#0b1220`                           | Panel background — one step up from the page.                                                    |
-| `--bg-2` `--bg-3` `--bg-4`                   | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                     |
-| `--bg-popover`                               | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                       |
-| `--fg`                                       | `#e7f7ff`                           | Primary text.                                                                                    |
-| `--fg-dim`                                   | `#b9d4e8`                           | Secondary text.                                                                                  |
-| `--fg-mute`                                  | `#7f9bb4`                           | Tertiary / metadata text.                                                                        |
-| `--border` `--border-strong`                 | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                             |
-| `--accent` `--accent-strong` `--accent-cool` | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                          |
-| `--accent-ink`                               | `#051827`                           | Text **on** an accent-filled background.                                                         |
-| `--good` `--warn` `--bad`                    | emerald / amber / rose              | Semantic status (success / warning / danger).                                                    |
-| `--warn-bg` `--warn-border`                  | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                    |
-| `--ease-out` `--dur-fast` …                  | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance). |
+| Token                                             | Value                               | Use for                                                                                                                                                     |
+| ------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--bg`                                            | `#07101d`                           | Page / app background (deepest).                                                                                                                            |
+| `--bg-1`                                          | `#0b1220`                           | Panel background — one step up from the page.                                                                                                               |
+| `--bg-2` `--bg-3` `--bg-4`                        | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                                                                                |
+| `--bg-popover`                                    | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                                                                                  |
+| `--fg`                                            | `#e7f7ff`                           | Primary text.                                                                                                                                               |
+| `--fg-dim`                                        | `#b9d4e8`                           | Secondary text.                                                                                                                                             |
+| `--fg-mute`                                       | `#7f9bb4`                           | Tertiary / metadata text.                                                                                                                                   |
+| `--border` `--border-strong`                      | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                                                                                        |
+| `--accent` `--accent-strong` `--accent-cool`      | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                                                                                     |
+| `--accent-soft` `--accent-deep` `--accent-deeper` | sky-200 / sky-500 / sky-700         | The **accent-tint scale** — lighter & deeper accent shades for glows, gradients, and HUD washes. Use these instead of the raw `sky-200/500/700` they alias. |
+| `--accent-ink`                                    | `#051827`                           | Text **on** an accent-filled background.                                                                                                                    |
+| `--good` `--warn` `--bad`                         | emerald / amber / rose              | Semantic status (success / warning / danger).                                                                                                               |
+| `--warn-bg` `--warn-border`                       | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                                                                               |
+| `--ease-out` `--dur-fast` …                       | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance).                                                            |
 
-**Tinting pattern.** Derive accent washes with `color-mix` rather than a new hardcoded rgba — it tracks the accent automatically:
+**Tinting pattern.** Derive accent washes with `color-mix` over a token, never a hardcoded rgba — it tracks the active theme automatically:
 
 ```css
 background: color-mix(in oklab, var(--accent), transparent 86%); /* selected row */
 border-color: color-mix(in oklab, var(--accent), transparent 55%);
 ```
+
+**Migrating an existing `rgba(<sky>, a)` → use `in srgb`.** `color-mix(in srgb, C, transparent N%)` resolves to *exactly* `C` at alpha `(1 − N/100)` (premultiplied mix with `transparent`), so it’s **byte-identical** to the old rgba in frost and goes monochrome in black. Pick the token whose frost value equals the sky shade:
+
+| Old literal                                        | Replace with                                                                             |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `var(--sky-300)`, `#7dd3fc`, `rgba(125,211,252,a)` | `--accent-strong` / `color-mix(in srgb, var(--accent-strong), transparent {(1−a)·100}%)` |
+| `var(--sky-400)`, `#38bdf8`, `rgba(56,189,248,a)`  | `--accent` / `color-mix(in srgb, var(--accent), …)`                                      |
+| `#d7f3ff`, `rgba(215,243,255,a)`                   | `--accent-cool`                                                                          |
+| `#bae6fd`, `rgba(186,230,253,a)`                   | `--accent-soft`                                                                          |
+| `#0ea5e9`, `rgba(14,165,233,a)`                    | `--accent-deep`                                                                          |
+| `#0369a1`, `rgba(3,105,161,a)`                     | `--accent-deeper`                                                                        |
+
+(`in oklab` is fine for *new* washes; use `in srgb` when you’re replacing an existing rgba and need the frost render to stay pixel-for-pixel identical.)
+
+## The theme contract — what agents must follow
+
+[Section titled “The theme contract — what agents must follow”](#the-theme-contract--what-agents-must-follow)
+
+A theme (frost, black, a custom one) is a swap of the **semantic** layer only. For that swap to actually re-skin the UI, components must route every color through it. The rules:
+
+1. **Never write a brand primitive in a component.** No `var(--sky-400)`, `var(--sky-300)`, … in any `.tsx`/`.css`. Those are the raw palette; they don’t move when the theme changes.
+2. **Never write a sky/cyan literal.** No `#38bdf8` / `#7dd3fc` / `#bae6fd` / `#d7f3ff` / `#0ea5e9` hexes and no `rgba(125,211,252,…)` / `rgba(56,189,248,…)` etc. Use the semantic token (or a `color-mix` over one — see the migration table above).
+3. **A `var(--token, #fallback)` fallback is fine and encouraged** — the token wins; the literal only applies if the var is somehow undefined. That’s *not* a leak. (`border: 1px solid var(--border, rgba(125,211,252,0.15))` ✓.)
+4. **Surfaces use the `--bg` family**, text the `--fg` family, borders `--border`/`--border-strong`, accents the `--accent` family (incl. the accent-tint scale). New dark surfaces → `--bg` / `--bg-1` / `--bg-popover`, **never** a hand-picked dark-navy literal.
+5. **Status & decorative palettes are exempt** — see the next two sections.
+
+The litmus test
+
+Switch the operator to the **Black** theme (Settings → Personalization). Anything still tinted blue is a leak — find the hardcoded sky value and route it through the matching `--accent*` token. If swapping the semantic tokens *doesn’t* restyle your component, your component is the bug, not the theme system.
+
+## Themes (frost / black / custom)
+
+[Section titled “Themes (frost / black / custom)”](#themes-frost--black--custom)
+
+| Concern                  | How                                                                                                                                                                                                                                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mechanism                | `document.documentElement.dataset.theme` (`lib/theme.ts`). Frost is the `:root` default; `[data-theme="black"]` / `[data-theme="custom:<id>"]` override the semantic vars.                                                                                                              |
+| Built-ins (frost, black) | Authored in `design-tokens/*.semantic.tokens.json`, generated by Style Dictionary into `_semantic.css` (`:root` = frost), `_semantic.frost.css` (scopable frost), `_semantic.black.css` (`[data-theme="black"]`). Add a built-in = a new token file + a `css-semantic-<name>` platform. |
+| Custom themes            | Saved to a per-workspace local file (`papercuspPath('themes', …)`), applied at runtime by injecting a `<style>` block. Created in Settings → Personalization.                                                                                                                           |
+| The allow-list           | `THEME_TOKENS` in `lib/theme-tokens.ts` — the *only* tokens a theme may set; `validateCustomTheme` rejects anything else (also blocks CSS-injection). `design-tokens/tokens.test.ts` enforces the same contract for built-ins.                                                          |
+
+Full design + history: the plan `personalization-theme-selector-2026-05-30` (`apps/operator/docs/plans/`).
+
+## Known gap — dark surfaces are not fully tokenized yet
+
+[Section titled “Known gap — dark surfaces are not fully tokenized yet”](#known-gap--dark-surfaces-are-not-fully-tokenized-yet)
+
+The accent layer is fully tokenized; **dark *surfaces* are not.** The frost theme hand-tunes \~270 distinct near-black navy literals (`#07101d`, `rgb(6,13,24)`, `rgb(3,10,20)`, …) directly in gradients and surfaces, so the Black theme still shows a faint navy cast on some chrome (sidebar, header). Fully neutralizing it is a deliberate surface re-skin (introduce a `--surface-*` scale, or normalize the navy family to `--bg`), not yet done.
+
+**What this means for you:** for **new** dark surfaces, reach for the `--bg` family — do **not** add another bespoke navy literal. That’s the exact debt this gap is made of.
 
 ## Status colors — one canonical source
 

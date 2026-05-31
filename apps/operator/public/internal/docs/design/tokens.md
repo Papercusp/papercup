@@ -1,14 +1,23 @@
-# Design tokens — the bluefrost theme
+# Design tokens, themes & the theming standard
 URL: /internal/docs/design/tokens
 
-How the DTCG token pipeline generates the bluefrost CSS variables, the semantic scale, and the canonical status-color tables.
+The DTCG token pipeline, the semantic scale (incl. the accent-tint scale), the theme contract every agent must follow, how themes (frost/black/custom) work, and the canonical status-color tables.
 
 import { Aside } from '@astrojs/starlight/components';
 
-The operator UI is themed by a single set of CSS custom properties — the
-**bluefrost** palette (deep sky-tinted dark surfaces, frost-white text, a sky
-accent). Those variables are **generated from DTCG token JSON**, not written by
-hand. This page is the reference for what exists and how to change it.
+The operator UI is themed by one set of CSS custom properties. The **default
+theme is "bluefrost"** (deep sky-tinted dark surfaces, frost-white text, a sky
+accent), generated from DTCG token JSON; a **"black"** theme and **user-created
+custom themes** swap the same variables (see [Themes](#themes--frost--black--custom)).
+This page is the reference for what exists, **the contract agents must follow**,
+and how to change it.
+
+Components must reference a **semantic `var(--…)` token**, never a brand
+primitive (`--sky-400`, `--sky-300`, …) and never a raw sky literal (`#38bdf8`,
+`#7dd3fc`, `#bae6fd`, `rgba(125, 211, 252, …)`, …). A theme can only swap the
+**semantic** layer — anything hardcoded to a sky value stays blue when the user
+picks Black. This is enforced by `app/_lints/css-tokens.test.ts` and audited
+periodically. The full do/don't is the [theme contract](#the-theme-contract--what-agents-must-follow) below.
 
 `apps/operator/app/_brand-primitives.css` and `apps/operator/app/_semantic.css`
 both start with `/** Do not edit directly, this file was auto-generated. */`.
@@ -53,29 +62,99 @@ These are the variables new UI should use — never a raw hex. Each has a fallba
 baked in (`var(--bg, #07101d)`) so a component renders correctly even outside the
 themed tree.
 
-| Token                                        | Value                               | Use for                                                                                          |
-| -------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `--bg`                                       | `#07101d`                           | Page / app background (deepest).                                                                 |
-| `--bg-1`                                     | `#0b1220`                           | Panel background — one step up from the page.                                                    |
-| `--bg-2` `--bg-3` `--bg-4`                   | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                     |
-| `--bg-popover`                               | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                       |
-| `--fg`                                       | `#e7f7ff`                           | Primary text.                                                                                    |
-| `--fg-dim`                                   | `#b9d4e8`                           | Secondary text.                                                                                  |
-| `--fg-mute`                                  | `#7f9bb4`                           | Tertiary / metadata text.                                                                        |
-| `--border` `--border-strong`                 | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                             |
-| `--accent` `--accent-strong` `--accent-cool` | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                          |
-| `--accent-ink`                               | `#051827`                           | Text **on** an accent-filled background.                                                         |
-| `--good` `--warn` `--bad`                    | emerald / amber / rose              | Semantic status (success / warning / danger).                                                    |
-| `--warn-bg` `--warn-border`                  | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                    |
-| `--ease-out` `--dur-fast` …                  | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance). |
+| Token                                             | Value                               | Use for                                                                                                                                                     |
+| ------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--bg`                                            | `#07101d`                           | Page / app background (deepest).                                                                                                                            |
+| `--bg-1`                                          | `#0b1220`                           | Panel background — one step up from the page.                                                                                                               |
+| `--bg-2` `--bg-3` `--bg-4`                        | translucent white 4.5% / 7.5% / 12% | Surface tiers: inputs, chips, hover, raised.                                                                                                                |
+| `--bg-popover`                                    | `#0d1829`                           | Solid elevated surface for menus / hover cards / popovers.                                                                                                  |
+| `--fg`                                            | `#e7f7ff`                           | Primary text.                                                                                                                                               |
+| `--fg-dim`                                        | `#b9d4e8`                           | Secondary text.                                                                                                                                             |
+| `--fg-mute`                                       | `#7f9bb4`                           | Tertiary / metadata text.                                                                                                                                   |
+| `--border` `--border-strong`                      | sky-300 @ 0.15 / 0.32               | Hairline / emphasized borders (sky-tinted, the bluefrost signature).                                                                                        |
+| `--accent` `--accent-strong` `--accent-cool`      | sky-400 / sky-300 / sky-cool        | Interactive accent, hover, soft accent.                                                                                                                     |
+| `--accent-soft` `--accent-deep` `--accent-deeper` | sky-200 / sky-500 / sky-700         | The **accent-tint scale** — lighter & deeper accent shades for glows, gradients, and HUD washes. Use these instead of the raw `sky-200/500/700` they alias. |
+| `--accent-ink`                                    | `#051827`                           | Text **on** an accent-filled background.                                                                                                                    |
+| `--good` `--warn` `--bad`                         | emerald / amber / rose              | Semantic status (success / warning / danger).                                                                                                               |
+| `--warn-bg` `--warn-border`                       | amber @ 0.1 / 0.35                  | Warning banner fill + border.                                                                                                                               |
+| `--ease-out` `--dur-fast` …                       | see `_semantic.css`                 | Motion — pair with `[data-anim]` per the [performance rules](/internal/docs/design/performance).                                                            |
 
-**Tinting pattern.** Derive accent washes with `color-mix` rather than a new
-hardcoded rgba — it tracks the accent automatically:
+**Tinting pattern.** Derive accent washes with `color-mix` over a token, never a
+hardcoded rgba — it tracks the active theme automatically:
 
 ```css
 background: color-mix(in oklab, var(--accent), transparent 86%); /* selected row */
 border-color: color-mix(in oklab, var(--accent), transparent 55%);
 ```
+
+**Migrating an existing `rgba(<sky>, a)` → use `in srgb`.** `color-mix(in srgb,
+C, transparent N%)` resolves to *exactly* `C` at alpha `(1 − N/100)` (premultiplied
+mix with `transparent`), so it's **byte-identical** to the old rgba in frost and
+goes monochrome in black. Pick the token whose frost value equals the sky shade:
+
+| Old literal                                        | Replace with                                                                             |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `var(--sky-300)`, `#7dd3fc`, `rgba(125,211,252,a)` | `--accent-strong` / `color-mix(in srgb, var(--accent-strong), transparent {(1−a)·100}%)` |
+| `var(--sky-400)`, `#38bdf8`, `rgba(56,189,248,a)`  | `--accent` / `color-mix(in srgb, var(--accent), …)`                                      |
+| `#d7f3ff`, `rgba(215,243,255,a)`                   | `--accent-cool`                                                                          |
+| `#bae6fd`, `rgba(186,230,253,a)`                   | `--accent-soft`                                                                          |
+| `#0ea5e9`, `rgba(14,165,233,a)`                    | `--accent-deep`                                                                          |
+| `#0369a1`, `rgba(3,105,161,a)`                     | `--accent-deeper`                                                                        |
+
+(`in oklab` is fine for *new* washes; use `in srgb` when you're replacing an
+existing rgba and need the frost render to stay pixel-for-pixel identical.)
+
+## The theme contract — what agents must follow
+
+A theme (frost, black, a custom one) is a swap of the **semantic** layer only.
+For that swap to actually re-skin the UI, components must route every color
+through it. The rules:
+
+1. **Never write a brand primitive in a component.** No `var(--sky-400)`,
+   `var(--sky-300)`, … in any `.tsx`/`.css`. Those are the raw palette; they
+   don't move when the theme changes.
+2. **Never write a sky/cyan literal.** No `#38bdf8` / `#7dd3fc` / `#bae6fd` /
+   `#d7f3ff` / `#0ea5e9` hexes and no `rgba(125,211,252,…)` / `rgba(56,189,248,…)`
+   etc. Use the semantic token (or a `color-mix` over one — see the migration
+   table above).
+3. **A `var(--token, #fallback)` fallback is fine and encouraged** — the token
+   wins; the literal only applies if the var is somehow undefined. That's *not*
+   a leak. (`border: 1px solid var(--border, rgba(125,211,252,0.15))` ✓.)
+4. **Surfaces use the `--bg` family**, text the `--fg` family, borders
+   `--border`/`--border-strong`, accents the `--accent` family (incl. the
+   accent-tint scale). New dark surfaces → `--bg` / `--bg-1` / `--bg-popover`,
+   **never** a hand-picked dark-navy literal.
+5. **Status & decorative palettes are exempt** — see the next two sections.
+
+Switch the operator to the **Black** theme (Settings → Personalization). Anything
+still tinted blue is a leak — find the hardcoded sky value and route it through
+the matching `--accent*` token. If swapping the semantic tokens *doesn't* restyle
+your component, your component is the bug, not the theme system.
+
+## Themes (frost / black / custom)
+
+| Concern                  | How                                                                                                                                                                                                                                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mechanism                | `document.documentElement.dataset.theme` (`lib/theme.ts`). Frost is the `:root` default; `[data-theme="black"]` / `[data-theme="custom:<id>"]` override the semantic vars.                                                                                                              |
+| Built-ins (frost, black) | Authored in `design-tokens/*.semantic.tokens.json`, generated by Style Dictionary into `_semantic.css` (`:root` = frost), `_semantic.frost.css` (scopable frost), `_semantic.black.css` (`[data-theme="black"]`). Add a built-in = a new token file + a `css-semantic-<name>` platform. |
+| Custom themes            | Saved to a per-workspace local file (`papercuspPath('themes', …)`), applied at runtime by injecting a `<style>` block. Created in Settings → Personalization.                                                                                                                           |
+| The allow-list           | `THEME_TOKENS` in `lib/theme-tokens.ts` — the *only* tokens a theme may set; `validateCustomTheme` rejects anything else (also blocks CSS-injection). `design-tokens/tokens.test.ts` enforces the same contract for built-ins.                                                          |
+
+Full design + history: the plan `personalization-theme-selector-2026-05-30`
+(`apps/operator/docs/plans/`).
+
+## Known gap — dark surfaces are not fully tokenized yet
+
+The accent layer is fully tokenized; **dark *surfaces* are not.** The frost theme
+hand-tunes \~270 distinct near-black navy literals (`#07101d`, `rgb(6,13,24)`,
+`rgb(3,10,20)`, …) directly in gradients and surfaces, so the Black theme still
+shows a faint navy cast on some chrome (sidebar, header). Fully neutralizing it is
+a deliberate surface re-skin (introduce a `--surface-*` scale, or normalize the
+navy family to `--bg`), not yet done.
+
+**What this means for you:** for **new** dark surfaces, reach for the `--bg`
+family — do **not** add another bespoke navy literal. That's the exact debt this
+gap is made of.
 
 ## Status colors — one canonical source
 
