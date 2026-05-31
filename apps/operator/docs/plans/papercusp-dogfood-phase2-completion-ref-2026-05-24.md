@@ -120,7 +120,9 @@ Scope by (harness_slug, feature_id) only — NO workspace_id (that's only on har
 
 **Trigger caveat:** confirm the `sync_features_consolidated` trigger (001-shared.sql ~95-120) doesn't clobber a direct `status` write from a later per-harness feature mutation (low risk since 'shipped' is terminal, but verify).
 
-Status: the writer is a real, well-scoped change but is BLOCKED on the feature_id-threading prerequisite (UI + route-body). Not landed this session.
+Status: ✅ **WRITER LANDED 2026-05-31** (commit `5e3f9e0c5`). `apps/operator/lib/harness/completion-ref-writer.ts` exposes `resolveMergedPrFeatureId` (caller `feature_id` → `harness_feature_prs` lookup-by-pr_url → null) + `stampCompletionRefOnMerge` (stamps `completion_ref` + `status='shipped'` + fresh `updated_ts`, idempotent via `completion_ref IS NULL`, skips silently on no-feature/empty-SHA/invalid-ref), with 8 unit tests. Wired into `prs.ts` `reviewPr` on the `'merged'` branch of `tryAutoMerge`; the route body now accepts an optional `feature_id`.
+
+**Default activation is still BLOCKED** — but NOT on UI threading as originally framed. The deeper blocker: the PR→feature linkage (`harness_feature_prs`) has **no model-independent producer**. Its only writer is the gated Hyperbee `prs` projection (`PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`); `PrHost.openPr` has **zero callers** (Papercusp doesn't open PRs through that path yet); the pr-host poll-daemon is dead code. So with the substrate off, `harness_feature_prs` is empty, `resolveMergedPrFeatureId` returns null, and nothing is stamped. The `PrsTab` UI can't supply `feature_id` either — its `PrRowData` carries no feature linkage (the list endpoint can't resolve one without the same gated table). Closing the gap requires a PR-open-time linkage write **outside** the substrate (overlaps the deferred substrate/gate arc) — i.e. when Papercusp itself starts opening PRs for features via `PrHost.openPr`, write `(harness_slug, feature_id, pr_url)` into `harness_feature_prs` there. Until then the writer is correct + dormant.
 Related: P-016
 
 ## Named fallback rollout
