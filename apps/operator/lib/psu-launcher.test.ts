@@ -205,10 +205,10 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
   });
 
-  it('codex: raw codex, approvals/sandbox bypass (CODEX_HOME via envelopeEnv)', () => {
+  it('codex: raw codex, hook-trust + approvals/sandbox bypass (CODEX_HOME via envelopeEnv)', () => {
     const { bin, args } = roleLaunchArgs('codex', files);
     expect(bin).toBe('codex');
-    expect(args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+    expect(args).toEqual(['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox']);
   });
 
   it('unknown backend: throws', () => {
@@ -225,18 +225,19 @@ describe('roleLaunchArgs (interactive role session)', () => {
 });
 
 describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () => {
-  const files = { promptFile: '/lc/session-9.md', mcpJsonPath: '/proj/.mcp.json', coordExtPath: '/home/u/.papercusp/papercusp-coord.ts' };
+  const files = { promptFile: '/lc/session-9.md', coordExtPath: '/home/u/.papercusp/papercusp-coord.ts' };
 
-  it('claude: playbook prompt + superuser MCP, NO --strict-mcp-config (D-004)', () => {
+  it('claude: playbook prompt + skip-perms, NO --mcp-config (papercusp-su is user-level)', () => {
     const { bin, args } = suLaunchArgs('claude', files);
     expect(bin).toBe('claude');
     expect(args).toEqual([
       '--dangerously-skip-permissions',
       '--append-system-prompt-file', '/lc/session-9.md',
-      '--mcp-config', '/proj/.mcp.json',
       '--permission-mode', 'bypassPermissions',
     ]);
-    // The defining su≠role difference: superuser keeps the user's servers.
+    // su relies on the user-level papercusp-su MCP (no per-launch --mcp-config),
+    // so the user's full toolkit loads (D-005) and the server isn't doubled.
+    expect(args).not.toContain('--mcp-config');
     expect(args).not.toContain('--strict-mcp-config');
   });
 
@@ -251,15 +252,15 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
   });
 
   it('omp: omits -e when no coordExtPath is supplied', () => {
-    const { args } = suLaunchArgs('omp', { promptFile: '/lc/s.md', mcpJsonPath: '/p/.mcp.json' });
+    const { args } = suLaunchArgs('omp', { promptFile: '/lc/s.md' });
     expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/s.md']);
     expect(args).not.toContain('-e');
   });
 
-  it('codex: approvals/sandbox bypass (CODEX_HOME minted server-side, P-030)', () => {
+  it('codex: hook-trust + approvals/sandbox bypass (CODEX_HOME minted server-side, P-030)', () => {
     const { bin, args } = suLaunchArgs('codex', files);
     expect(bin).toBe('codex');
-    expect(args).toEqual(['--dangerously-bypass-approvals-and-sandbox']);
+    expect(args).toEqual(['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox']);
   });
 
   it('unknown backend: throws', () => {

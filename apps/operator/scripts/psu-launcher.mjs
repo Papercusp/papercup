@@ -116,11 +116,13 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
     return { bin: 'omp', args: ['--approval-mode', 'yolo', '--append-system-prompt', promptFile] };
   }
   if (backend === 'codex') {
-    // CODEX_HOME (with AGENTS.md + role-scoped config.toml) is supplied via
-    // envelopeEnv. --dangerously-bypass-approvals-and-sandbox lets the
-    // session call MCP tools without per-call approval (codex CANCELS MCP
-    // tool calls under the default sandbox — see the orchestrator codex path).
-    return { bin: 'codex', args: ['--dangerously-bypass-approvals-and-sandbox'] };
+    // CODEX_HOME (with AGENTS.md + role-scoped config.toml + lock-hook
+    // settings.json) is supplied via envelopeEnv.
+    // --dangerously-bypass-hook-trust runs the home's SU-locks hooks (P-030;
+    // the only hooks there are ours); --dangerously-bypass-approvals-and-sandbox
+    // lets the session call MCP tools without per-call approval (codex CANCELS
+    // MCP tool calls under the default sandbox — see the orchestrator path).
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'] };
   }
   throw new Error(`roleLaunchArgs: backend '${backend}' has no interactive role launch`);
 }
@@ -129,47 +131,49 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
  * Raw-CLI launch args for a SUPERUSER (`su`) session — the engineer/
  * collaborator path. Pure — exported for tests. The su counterpart to
  * `roleLaunchArgs`: same raw backends, but the prompt is the engineer
- * playbook (`buildLaunchSpec({kind:'su'})`) and the MCP is the loopback
- * `?superuser=1` door, NOT a signed role-scoped URL.
+ * playbook (`buildLaunchSpec({kind:'su'})`).
  *
- * D-004 — su does NOT pass `--strict-mcp-config`. A role is tool-scoped
- * (claude restricted to ONLY its role server); the engineer is a
- * superuser and KEEPS their full MCP toolkit from user/project config,
- * with the superuser `papercusp` server ADDED via `--mcp-config`. This
- * preserves the `claude-su` wrapper's behavior (which relied on the
- * user-level `~/.claude.json` papercusp-su entry — i.e. all user servers
- * live), while no longer depending on a pre-installed user-level entry.
+ * MCP is USER-LEVEL for claude + omp and survives a raw launch (the Phase 0
+ * finding) — claude's `papercusp-su` lives in `~/.claude.json` (its url
+ * env-expands `${PAPERCUSP_SID}`, so per-session identity flows once psu
+ * exports the SID), omp's in `~/.omp/agent/mcp.json`. So psu supplies NO
+ * `--mcp-config`: it would double the `papercusp-su` server. This also
+ * realizes D-005 (su keeps its FULL toolkit — every user server loads, not
+ * just papercusp) more directly than `--mcp-config` + non-strict would.
  *
- * P-021 — omp carries the coordination extension (`-e <coordExtPath>`,
- * ~/.papercusp/papercusp-coord.ts) so coord/lock hooks fire; this is what
- * the `omp-su` wrapper baked in. codex has no --mcp-config/-e/-prompt
- * flags, so (as with role) a per-session CODEX_HOME is minted server-side
- * (P-030: AGENTS.md = playbook, config.toml = superuser MCP, + lock
- * hooks) and supplied via `envelopeEnv.CODEX_HOME`; the launcher just
- * execs `codex` with the approvals/sandbox bypass MCP tool calls need.
+ * Lock-hook enforcement is likewise USER-LEVEL for claude (Pre/PostToolUse
+ * in `~/.claude/settings.json`); omp loads it as a module via `-e`
+ * (P-021, `~/.papercusp/papercusp-coord.ts`). codex is the only one whose
+ * MCP + hooks are NOT user-level — it has no --mcp-config/-e/-prompt flag,
+ * so a per-session CODEX_HOME is minted server-side (P-030: AGENTS.md =
+ * playbook, config.toml = superuser MCP w/ bearer, settings.json = lock
+ * hooks) and supplied via `envelopeEnv.CODEX_HOME`; the launcher execs
+ * `codex` with `--dangerously-bypass-hook-trust` (the home's only hooks are
+ * ours) + the approvals/sandbox bypass MCP tool calls need.
  */
-export function suLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath } = {}) {
+export function suLaunchArgs(backend, { promptFile, coordExtPath } = {}) {
   if (backend === 'claude') {
     return {
       bin: 'claude',
       args: [
         '--dangerously-skip-permissions',
         '--append-system-prompt-file', promptFile,
-        '--mcp-config', mcpJsonPath,
-        // NB: no --strict-mcp-config (D-004) — superuser keeps user servers.
+        // No --mcp-config: claude's papercusp-su is user-level (~/.claude.json)
+        // and survives a raw launch; adding it would duplicate the server.
         '--permission-mode', 'bypassPermissions',
       ],
     };
   }
   if (backend === 'omp') {
-    // omp path-discovers <cwd>/.mcp.json; --append-system-prompt takes a file
-    // path; -e loads the coordination extension (P-021) when one is provided.
+    // omp's papercusp-su is user-level (~/.omp/agent/mcp.json);
+    // --append-system-prompt takes a file path; -e loads the coordination
+    // extension (P-021) for lock enforcement when one is provided.
     const args = ['--approval-mode', 'yolo', '--append-system-prompt', promptFile];
     if (coordExtPath) args.push('-e', coordExtPath);
     return { bin: 'omp', args };
   }
   if (backend === 'codex') {
-    return { bin: 'codex', args: ['--dangerously-bypass-approvals-and-sandbox'] };
+    return { bin: 'codex', args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'] };
   }
   throw new Error(`suLaunchArgs: backend '${backend}' has no interactive su launch`);
 }
@@ -617,19 +621,29 @@ async function main() {
   // our cwd (above) for a no-harness one. Agents scope resumable sessions
   // by cwd, so resume works from res.cwd.
   console.error(
-    `psu: ${res.agent} -> ${res.wrapperBin}  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}` +
-      `  ·  session ${res.sessionId ?? '?'}`,
+    `psu: ${res.agent} (su)  ·  ${res.planSlug ? `plan ${res.planSlug}` : 'no plan'}  ·  session ${res.sessionId ?? '?'}`,
   );
   console.error(`psu: cwd ${res.cwd}  —  resume this session by running the agent's resume command from here`);
-  // P-032: model/resume passthrough to the *-su wrapper, + a server-generated
-  // launch-context (kickoff) file layered into the wrapper's system prompt via
-  // PAPERCUSP_LAUNCH_CONTEXT_FILE. Set explicitly in envelopeEnv (not relying on
-  // process.env inheritance) so it's deterministic; bootstrap-su only sets that
-  // env for a bound-plan launch, and no caller sends both a plan AND a kickoff.
-  const wrapperArgs = suWrapperExtraArgs(selections.agent, { model: args.model, resumeSession: args.resumeSession });
-  const launchEnv = { ...res.envelopeEnv };
-  if (args.launchContext) launchEnv.PAPERCUSP_LAUNCH_CONTEXT_FILE = args.launchContext;
-  runWrapper({ wrapperBin: res.wrapperBin, args: wrapperArgs, cwd: res.cwd, envelopeEnv: launchEnv });
+
+  // P-020: exec the RAW backend (not a *-su wrapper) with the engineer
+  // playbook (res.promptFile) + flags. MCP + lock hooks are user-level for
+  // claude/omp (they survive a raw launch); codex runs in res.codexHome.
+  const { bin, args: baseArgs } = suLaunchArgs(res.agent, {
+    promptFile: res.promptFile,
+    coordExtPath: res.coordExtPath,
+  });
+  // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
+  const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });
+  const launchArgs = [...baseArgs, ...extra];
+  // A kickoff launch-context (server-generated) layers in as a SECOND system
+  // prompt for claude/omp; codex would need it folded into AGENTS.md (deferred).
+  if (args.launchContext && res.agent !== 'codex') {
+    launchArgs.push(res.agent === 'claude' ? '--append-system-prompt-file' : '--append-system-prompt', args.launchContext);
+  }
+
+  // codex's superuser bearer is baked into its per-session config.toml
+  // server-side (D-006); nothing for psu to export here.
+  runWrapper({ wrapperBin: bin, args: launchArgs, cwd: res.cwd, envelopeEnv: { ...res.envelopeEnv } });
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

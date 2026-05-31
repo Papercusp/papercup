@@ -36,7 +36,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 export interface RoleCodexHome {
   /** Absolute path to set as the child's CODEX_HOME. */
@@ -45,6 +45,73 @@ export interface RoleCodexHome {
   agentsPath: string;
   /** The config.toml (role-scoped MCP) path — diagnostics. */
   configPath: string;
+}
+
+// ── Shared codex-home internals (role + su) ───────────────────────────
+
+/** codex edits via apply_patch / write_file / edit_file — NOT Edit/Write. */
+const CODEX_LOCK_MATCHER = 'apply_patch|write_file|edit_file';
+
+/** Escape a value for a TOML double-quoted basic string. */
+function tomlEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/** Single-quote a value for a shell command (env prefix). */
+function shellSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** Workspace root the lock hooks scope to — the parent of the harness
+ *  worktrees. Honors PAPERCUSP_WORKSPACE_ROOT (matches the installer's
+ *  explicit set); else 4 dirs up from this module (apps/operator/lib →
+ *  …/papercupai-workspace), which is also the hook script's own default. */
+function resolveWorkspaceRoot(): string {
+  return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(__dirname, '..', '..', '..', '..');
+}
+
+/** Rebuild a per-session codex home dir fresh + share the ChatGPT OAuth
+ *  login via a SYMLINK (never a copy — a copied single-use refresh token
+ *  can log the user out). Returns the home path. */
+function freshCodexHome(codexHome: string): string {
+  rmSync(codexHome, { recursive: true, force: true });
+  mkdirSync(codexHome, { recursive: true });
+  try {
+    const realAuth = join(homedir(), '.codex', 'auth.json');
+    if (existsSync(realAuth)) symlinkSync(realAuth, join(codexHome, 'auth.json'));
+  } catch {
+    /* best-effort — codex surfaces an auth error if missing */
+  }
+  return codexHome;
+}
+
+/**
+ * Write a fresh `settings.json` into a per-session CODEX_HOME carrying ONLY
+ * the SU-locks Pre/PostToolUse hooks (P-030). The home is recreated each
+ * launch, so there is nothing to merge — we write our two entries verbatim
+ * (the bytes `merge_lock_hooks` in install-standalone-mcp.sh §4f produces
+ * for a codex home). No-op (returns false) when the shared hook scripts
+ * aren't installed at `~/.papercusp/hooks/cc/`. The launcher must exec codex
+ * with `--dangerously-bypass-hook-trust` (the only hooks here are ours).
+ */
+export function writeCodexLockHooks(codexHome: string): boolean {
+  const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
+  const pre = join(dir, 'pretooluse-locks-acquire.sh');
+  const post = join(dir, 'posttooluse-locks-release.sh');
+  if (!existsSync(pre) || !existsSync(post)) return false;
+  const root = shellSingleQuote(resolveWorkspaceRoot());
+  const settings = {
+    hooks: {
+      PreToolUse: [
+        { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${pre}` }] },
+      ],
+      PostToolUse: [
+        { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${post}` }] },
+      ],
+    },
+  };
+  writeFileSync(join(codexHome, 'settings.json'), JSON.stringify(settings, null, 2), { mode: 0o600 });
+  return true;
 }
 
 /**
@@ -60,26 +127,9 @@ export function writeRoleCodexHome(opts: {
   /** The role prompt — becomes AGENTS.md. */
   promptText: string;
 }): RoleCodexHome {
-  const codexHome = join(
-    homedir(),
-    '.papercusp',
-    'role-codex-homes',
-    `session-${opts.sessionKey}`,
+  const codexHome = freshCodexHome(
+    join(homedir(), '.papercusp', 'role-codex-homes', `session-${opts.sessionKey}`),
   );
-  // Fresh each launch — a stale AGENTS.md / url must never leak in.
-  rmSync(codexHome, { recursive: true, force: true });
-  mkdirSync(codexHome, { recursive: true });
-
-  // Share the ChatGPT OAuth login via a SYMLINK (codex resolves auth from
-  // $CODEX_HOME/auth.json). Symlink, not copy: codex rotates the refresh
-  // token in place against the real file — a copy would strand a
-  // single-use token and can log the user out.
-  try {
-    const realAuth = join(homedir(), '.codex', 'auth.json');
-    if (existsSync(realAuth)) symlinkSync(realAuth, join(codexHome, 'auth.json'));
-  } catch {
-    /* best-effort — codex surfaces an auth error if missing */
-  }
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt
   // flag; its instruction file is $CODEX_HOME/AGENTS.md (same mechanism
@@ -95,10 +145,88 @@ export function writeRoleCodexHome(opts: {
   const toml = [
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
-    `url = "${opts.mcpUrl.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
+    `url = "${tomlEscape(opts.mcpUrl)}"`,
     '',
   ].join('\n');
   writeFileSync(configPath, toml, { mode: 0o600 });
+
+  // P-030: a role codex session edits files too — install the same SU-locks
+  // hooks so its edits are coordinated (the role home previously had none,
+  // a silent gap). Launcher must pass --dangerously-bypass-hook-trust.
+  writeCodexLockHooks(codexHome);
+
+  return { codexHome, agentsPath, configPath };
+}
+
+export interface SuCodexHome {
+  /** Absolute path to set as the child's CODEX_HOME. */
+  codexHome: string;
+  /** The AGENTS.md (engineer playbook) path — diagnostics. */
+  agentsPath: string;
+  /** The config.toml (superuser MCP) path — diagnostics. */
+  configPath: string;
+}
+
+/**
+ * Materialize a per-session CODEX_HOME for an interactive SUPERUSER (`su`)
+ * codex session (psu su --agent=codex). The codex counterpart of the
+ * claude/omp raw-CLI su launch — codex has no --mcp-config/-prompt flags,
+ * so the engineer playbook is AGENTS.md and the superuser MCP is declared
+ * in config.toml. Per-session port of install-standalone-mcp.sh §4f
+ * (the static `codex-su` home), with two differences:
+ *   - the `&client=<sid>` is baked per session (codex does NOT env-expand
+ *     config.toml; the static wrapper overrode it via `-c` at launch).
+ *   - the SU-locks hooks are written here (writeCodexLockHooks), so the
+ *     home is self-contained.
+ *
+ * D-006 — the superuser bearer is baked into config.toml as
+ * `http_headers = { Authorization = "Bearer <tok>" }`, NOT via
+ * `bearer_token_env_var`. Verified on codex 0.135: the env-var form
+ * connects but does NOT deliver a valid bearer for a streamable_http
+ * server (→ `isSuperuser:false`), while the baked header works
+ * (→ `isSuperuser:true`, the 217-tool superuser surface). The static
+ * `codex-su` wrapper uses the env-var form and shares this latent bug.
+ * Baking the token is acceptable: the home is mode-0600 + ephemeral
+ * (rebuilt each launch), exactly like claude's `~/.claude.json` header.
+ * Launcher execs codex with `--dangerously-bypass-hook-trust`.
+ */
+export function writeSuCodexHome(opts: {
+  sessionKey: string | number;
+  /** Superuser MCP url (?superuser=1&workspace=…) from buildLaunchSpec(su). */
+  mcpUrl: string;
+  /** The engineer playbook — becomes AGENTS.md. */
+  promptText: string;
+  /** Per-session coordination identity, baked into the url's &client=. */
+  sid: string;
+  /** Superuser bearer token, baked as an http_headers Authorization (D-006).
+   *  Omit only when no token is installed → a degraded non-superuser home. */
+  token?: string | null;
+}): SuCodexHome {
+  const codexHome = freshCodexHome(
+    join(homedir(), '.papercusp', 'su-codex-homes', `session-${opts.sessionKey}`),
+  );
+
+  const agentsPath = join(codexHome, 'AGENTS.md');
+  writeFileSync(agentsPath, opts.promptText, { mode: 0o600 });
+
+  // Bake the per-session client identity into the url (codex can't env-expand
+  // config.toml) + the superuser bearer as an http_headers Authorization
+  // (D-006 — the env-var form doesn't deliver on codex 0.135).
+  const sep = opts.mcpUrl.includes('?') ? '&' : '?';
+  const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
+  const configPath = join(codexHome, 'config.toml');
+  const toml = [
+    '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
+    '[mcp_servers.papercusp-su]',
+    `url = "${tomlEscape(url)}"`,
+    ...(opts.token
+      ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`]
+      : []),
+    '',
+  ].join('\n');
+  writeFileSync(configPath, toml, { mode: 0o600 });
+
+  writeCodexLockHooks(codexHome);
 
   return { codexHome, agentsPath, configPath };
 }

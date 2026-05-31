@@ -19,14 +19,20 @@
  * Principal-gated; CORS-open (operator binds loopback-only). `auth:
  * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, readRegistry, workspaceById } from '@/lib/workspace-registry';
 import { buildConsoleEnvelope } from '@/lib/console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '@/lib/auth/require-principal';
 import { recordAdvSession } from '@/lib/adv-sessions';
-import { SU_WRAPPER_BIN, isSuAgent, type SuAgent } from '@/lib/su-agents';
-import { composeLaunchContext, launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
+import { isSuAgent, type SuAgent } from '@/lib/su-agents';
+import { launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
+import { buildLaunchSpec } from '@/lib/role-launch-spec';
+import { writeSuCodexHome } from '@/lib/role-codex-home';
+import { resolveInstallPaths } from '@/lib/desktop-install/papercusp-files';
+import { readSuperuserToken } from '@/lib/superuser-token';
+import { homedir } from 'node:os';
 
 const CORS_HEADERS: Record<string, string> = {
   'access-control-allow-origin': '*',
@@ -59,16 +65,35 @@ export interface BootstrapSuResult {
   agent: SuAgent;
   /** Workspace the harness + session belong to. */
   workspaceId: string;
-  /** Working directory the launcher should exec the wrapper in. */
+  /** Working directory the launcher should exec the agent in. */
   cwd: string;
   harnessSlug: string | null;
   planSlug: string | null;
-  /** The `*-su` wrapper the launcher should exec (e.g. 'claude-su'). */
-  wrapperBin: string;
   /**
-   * Env the launcher exports into the CHILD process (the *-su wrapper).
-   * Carries the MCP/context vars + PAPERCUSP_AGENT + PAPERCUSP_ADV_SESSION_ID.
-   * No secrets — the wrappers self-authenticate via their own config.
+   * File holding the engineer playbook + per-launch scope/plan addendum —
+   * the launcher feeds it as the system prompt. claude/omp: a launch-context
+   * `.md` (--append-system-prompt[-file]). codex: the CODEX_HOME AGENTS.md.
+   */
+  promptFile: string;
+  /**
+   * Per-session CODEX_HOME for a codex su session (AGENTS.md = playbook,
+   * config.toml = superuser MCP, settings.json = lock hooks, auth symlink).
+   * null for claude/omp (their MCP + hooks are user-level). Also surfaced in
+   * `envelopeEnv.CODEX_HOME`.
+   */
+  codexHome: string | null;
+  /**
+   * The omp coordination extension path (`~/.papercusp/papercusp-coord.ts`)
+   * the launcher loads via `-e` for lock enforcement, or null if not
+   * installed. Ignored for claude (hooks are user-level) + codex (home).
+   */
+  coordExtPath: string | null;
+  /**
+   * Env the launcher exports into the CHILD process (the raw CLI). Carries
+   * the MCP/context vars + PAPERCUSP_AGENT + PAPERCUSP_SID (per-session
+   * coord/lock owner) + PAPERCUSP_ADV_SESSION_ID + CODEX_HOME (codex). No
+   * secrets — the superuser bearer is read from the 0600 token file by the
+   * launcher, never sent over HTTP.
    */
   envelopeEnv: Record<string, string>;
 }
@@ -206,9 +231,8 @@ const post = defineTool({
     const callerCwd = body.cwd?.trim() || null;
 
     // Resolve cwd + context env from the existing console envelope builder
-    // (shell mode), scoped to the chosen workspace. We don't use its
-    // .mcp.json/launchCommand — the *-su wrapper carries its own MCP
-    // config + flags.
+    // (shell mode), scoped to the chosen workspace. We use its env + cwd;
+    // the prompt + MCP come from buildLaunchSpec(su) below.
     let envelope;
     try {
       envelope = await buildConsoleEnvelope({
@@ -228,9 +252,44 @@ const post = defineTool({
     // the user is. Recorded + returned + exec'd consistently.
     const cwd = harnessSlug ? envelope.cwd : (callerCwd || envelope.cwd);
 
-    // Record the tracked session. plan_slug null → a "No plan" row (D-005).
-    // mode mirrors the agent kind for the legacy omp|console CHECK; the
-    // new `agent` column carries the precise kind.
+    // Fetch the bound plan's `## Now` + title for the launch-context addendum
+    // (best-effort — buildLaunchSpec composes the addendum from these).
+    let planNow: { state: string; next: string } | null = null;
+    let planTitle: string | null = null;
+    if (planSlug && harnessSlug) {
+      try {
+        const { resolveHarnessPlansDir, readPlanBySlug } = await import('@/lib/agent-tools/plans/source');
+        const { plans, archive } = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
+        const found = await readPlanBySlug(planSlug, { plansDir: plans, archiveDir: archive });
+        if (found) {
+          planNow = found.parsed.now;
+          planTitle = found.parsed.frontmatter?.title ?? null;
+        }
+      } catch {
+        // plan context is optional — proceed without it
+      }
+    }
+
+    // Build the su launch spec: engineer playbook + per-launch scope/plan
+    // addendum (promptText) + the superuser MCP url (codex consumes it). The
+    // SAME builder roles use, at the superuser tier (D-001).
+    let spec;
+    try {
+      spec = await buildLaunchSpec({
+        kind: 'su',
+        agent,
+        workspaceId: workspace,
+        operatorBaseUrl: new URL(req.url).origin,
+        harnessSlug,
+        planSlug,
+        planTitle,
+        planNow,
+      });
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);
+    }
+
+    // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,
       agent,
@@ -240,46 +299,47 @@ const post = defineTool({
       label: body.label?.trim() || null,
     });
 
-    // Compose a launch-specific context addendum (harness scope + the
-    // bound plan's `## Now`) and stash it where the chosen `*-su` wrapper
-    // can `--append-system-prompt[-file]` it (P-021/P-022). Entirely
-    // best-effort: plan reads are a nice-to-have, and a failed write must
-    // not fail the launch — the wrapper only appends the file if it exists.
-    let launchContextEnv: Record<string, string> = {};
-    {
-      let planNow: { state: string; next: string } | null = null;
-      let planTitle: string | null = null;
-      if (planSlug && harnessSlug) {
-        try {
-          const { resolveHarnessPlansDir, readPlanBySlug } = await import('@/lib/agent-tools/plans/source');
-          const { plans, archive } = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
-          const found = await readPlanBySlug(planSlug, { plansDir: plans, archiveDir: archive });
-          if (found) {
-            planNow = found.parsed.now;
-            planTitle = found.parsed.frontmatter?.title ?? null;
-          }
-        } catch {
-          // plan context is optional — proceed without it
-        }
+    // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
+    // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
+    // and the lock hooks read the same var, so a session's interactive calls
+    // and its hooks share ONE owner — and two concurrent psu sessions get
+    // distinct owners (the collapse the per-session id fixes).
+    const sid = `su-${randomUUID()}`;
+    const sessionKey = sessionId ?? `t-${randomUUID()}`;
+
+    // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
+    // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
+    // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
+    // a raw launch — no per-launch .mcp.json needed for su).
+    let promptFile = '';
+    let codexHome: string | null = null;
+    try {
+      if (agent === 'codex') {
+        // D-006: the superuser bearer is baked into the home's config.toml
+        // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
+        // Read it server-side — it never transits the bootstrap HTTP response.
+        const ch = writeSuCodexHome({ sessionKey, mcpUrl: spec.mcpUrl, promptText: spec.promptText, sid, token: readSuperuserToken() });
+        codexHome = ch.codexHome;
+        promptFile = ch.agentsPath; // AGENTS.md — diagnostics
+      } else {
+        promptFile = launchContextPathFor(sessionKey);
+        mkdirSync(launchContextDir(), { recursive: true });
+        writeFileSync(promptFile, spec.promptText, { mode: 0o600 });
       }
-      const addendum = composeLaunchContext({ harnessSlug, planSlug, planTitle, planNow });
-      if (addendum) {
-        const file = launchContextPathFor(sessionId ?? `t-${Date.now()}`);
-        try {
-          mkdirSync(launchContextDir(), { recursive: true });
-          writeFileSync(file, addendum, 'utf8');
-          launchContextEnv = { PAPERCUSP_LAUNCH_CONTEXT_FILE: file };
-        } catch {
-          // couldn't persist the addendum — skip the env var (wrapper guards on the file)
-        }
-      }
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: `write su launch artifacts: ${e?.message}` }, 500);
     }
+
+    // omp loads the coordination extension via -e for lock enforcement.
+    const coordExt = resolveInstallPaths(homedir()).extensionPath;
+    const coordExtPath = existsSync(coordExt) ? coordExt : null;
 
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
       PAPERCUSP_AGENT: agent,
+      PAPERCUSP_SID: sid,
+      ...(codexHome ? { CODEX_HOME: codexHome } : {}),
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
-      ...launchContextEnv,
     };
 
     const result: BootstrapSuResult = {
@@ -290,7 +350,9 @@ const post = defineTool({
       cwd,
       harnessSlug,
       planSlug,
-      wrapperBin: SU_WRAPPER_BIN[agent],
+      promptFile,
+      codexHome,
+      coordExtPath,
       envelopeEnv,
     };
     return jsonRes(result);

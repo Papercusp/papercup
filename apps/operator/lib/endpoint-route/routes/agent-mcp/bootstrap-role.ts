@@ -23,6 +23,7 @@
  * Principal-gated; CORS-open (operator binds loopback-only).
  */
 import { mkdirSync, writeFileSync, existsSync, renameSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, workspaceById } from '@/lib/workspace-registry';
@@ -253,6 +254,11 @@ const post = defineTool({
       envelopeEnv: {
         PAPERCUSP_AGENT: agent,
         PAPERCUSP_ROLE: role,
+        // P-022: per-session coord/lock owner. The lock hooks (claude
+        // user-level; codex in the role home's settings.json) read this, so a
+        // session's calls + hooks share one owner and concurrent sessions
+        // don't collide.
+        PAPERCUSP_SID: `role-${randomUUID()}`,
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),

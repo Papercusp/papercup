@@ -36,6 +36,21 @@ async function load() {
   return (await import('./role-codex-home')).writeRoleCodexHome;
 }
 
+async function loadMod() {
+  return import('./role-codex-home');
+}
+
+/** Drop stub CC lock-hook scripts under the fake home so writeCodexLockHooks
+ *  has something to point at (it no-ops when they're absent). */
+async function installFakeHooks() {
+  const { mkdirSync } = await import('node:fs');
+  const dir = join(fakeHome, '.papercusp', 'hooks', 'cc');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'pretooluse-locks-acquire.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
+  return dir;
+}
+
 describe('writeRoleCodexHome', () => {
   it('writes AGENTS.md (role prompt) + config.toml (role-scoped url) under ~/.papercusp', async () => {
     const writeRoleCodexHome = await load();
@@ -87,5 +102,77 @@ describe('writeRoleCodexHome', () => {
     const out = writeRoleCodexHome({ sessionKey: 1, mcpUrl: 'http://x/?a="b"\\c', promptText: 'P' });
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('url = "http://x/?a=\\"b\\"\\\\c"');
+  });
+
+  it('P-030: installs the SU-locks settings.json (codex matcher) when hooks are present', async () => {
+    await installFakeHooks();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 7, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    const settings = JSON.parse(readFileSync(join(out.codexHome, 'settings.json'), 'utf8'));
+    expect(settings.hooks.PreToolUse[0].matcher).toBe('apply_patch|write_file|edit_file');
+    expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
+    expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    expect(settings.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
+  });
+
+  it('writeCodexLockHooks no-ops (no settings.json) when the hook scripts are absent', async () => {
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 8, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+    expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
+  });
+});
+
+describe('writeSuCodexHome', () => {
+  it('writes the engineer playbook + a superuser MCP (baked http_headers bearer, per-session client)', async () => {
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({
+      sessionKey: 5,
+      mcpUrl: 'http://127.0.0.1:3070/api/mcp?superuser=1&workspace=default',
+      promptText: 'ENGINEER PLAYBOOK BODY',
+      sid: 'su-abc-123',
+      token: 'TESTBEARER123456',
+    });
+    expect(out.codexHome).toBe(join(fakeHome, '.papercusp', 'su-codex-homes', 'session-5'));
+    expect(readFileSync(out.agentsPath, 'utf8')).toBe('ENGINEER PLAYBOOK BODY');
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).toContain('[mcp_servers.papercusp-su]');
+    // D-006: bearer baked as http_headers (codex 0.135 ignores bearer_token_env_var for HTTP).
+    expect(toml).toContain('http_headers = { Authorization = "Bearer TESTBEARER123456" }');
+    expect(toml).not.toContain('bearer_token_env_var');
+    // per-session client baked into the url (codex can't env-expand config.toml).
+    expect(toml).toContain('client=su-abc-123');
+    expect(toml).toContain('superuser=1');
+  });
+
+  it('no token → degraded config (url only, no http_headers / superuser bearer)', async () => {
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 11, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    const toml = readFileSync(out.configPath, 'utf8');
+    expect(toml).not.toContain('http_headers');
+    expect(toml).not.toContain('Authorization');
+  });
+
+  it('symlinks auth.json (shared OAuth) + rebuilds fresh', async () => {
+    const realAuthDir = join(fakeHome, '.codex');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(realAuthDir, { recursive: true });
+    writeFileSync(join(realAuthDir, 'auth.json'), '{"token":"real"}');
+
+    const { writeSuCodexHome } = await loadMod();
+    const first = writeSuCodexHome({ sessionKey: 'k', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'OLD', sid: 's1' });
+    writeFileSync(join(first.codexHome, 'STALE.txt'), 'stale');
+    const second = writeSuCodexHome({ sessionKey: 'k', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'NEW', sid: 's2' });
+
+    expect(lstatSync(join(second.codexHome, 'auth.json')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(second.agentsPath, 'utf8')).toBe('NEW');
+    expect(existsSync(join(second.codexHome, 'STALE.txt'))).toBe(false);
+    expect(readFileSync(second.configPath, 'utf8')).toContain('client=s2');
+  });
+
+  it('installs the SU-locks settings.json when hooks are present', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 6, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(true);
   });
 });
