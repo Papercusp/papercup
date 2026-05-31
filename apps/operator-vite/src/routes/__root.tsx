@@ -8,6 +8,8 @@ import { OperatorConversationProvider } from '@/app/_components/OperatorConversa
 import { PostHogProvider } from '@/app/_components/PostHogProvider';
 import WslOnboardingGate from '@/app/_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from '@/app/_components/GlobalShortcutDispatcher';
+import GlobalNavShortcuts from '@/app/_components/GlobalNavShortcuts';
+import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
 import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
@@ -20,6 +22,9 @@ import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
 import '@/app/globals.css';
+// App-wide command-palette chrome (⌘K / Ctrl+P). The palette markup uses
+// `.h-cmd*` classes that used to live in harness.css; they now live here.
+import '@/app/command-palette.css';
 // Harness panel styles (the `h-*` classes). The legacy /harness page loaded
 // these via HarnessDashboard; now that /adv tabs render harness panel
 // components directly (brainstorm/prs/settings/insights — see
@@ -87,6 +92,12 @@ function RootComponent() {
           <Suspense fallback={null}>
             <NuqsAdapter>
               <UiPresenceProvider />
+              {/* App-wide keyboard surfaces — mounted at the router root,
+                  above ChromeShell, so Ctrl+P (palette) and Alt+Left/Right
+                  (history nav) work on EVERY route, including /settings and
+                  the chromeless iframe targets ChromeShell itself skips. */}
+              <GlobalNavShortcuts />
+              <GlobalCommandPalette />
               <RouteTransitionProvider>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>
