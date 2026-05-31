@@ -11,16 +11,21 @@ related: [papercusp-tooldef-extraction-2026-05-29]
 
 ## Now
 
-**State:** `Papercusp/tooldef` exists (`main` `5405204b`, history-preserving split of
-papercup `packages/tooldef`) and is wired into Restart (`libs/tooldef`, `97cf3476`).
-papercup is unchanged — `packages/tooldef` is still in-tree, so the two copies will
-drift unless edits are propagated (see ⚠️ below). The papercup in-tree→submodule
-conversion is the deferred `needs-human` P-054 fork.
+**State:** `Papercusp/tooldef` exists and is wired into Restart (`libs/tooldef`).
+papercup `packages/tooldef` is still in-tree. **⚠️ The drift is ACTIVE, not
+hypothetical:** a peer landed P-020 (Standard Schema — core no longer Zod-locked) +
+P-052 (README) in papercup `packages/tooldef` *after* the initial `5405204b` split, and
+is actively syncing `Papercusp/tooldef` main forward (observed `5405204b → 89dc309 →
+0b3056ea` in minutes). So there is an active owner of the shared-repo sync — **do not
+race them.** The in-tree→submodule conversion (the durable one-source fix) is still the
+deferred `needs-human` P-054 fork AND now also needs coordination with that active
+developer.
 
-**Next:** (1) papercup agents — propagate any `packages/tooldef` edit to
-`Papercusp/tooldef` until P-054 is decided. (2) Whoever owns P-054 — decide the
-papercup conversion (in-place submodule vs mirror). (3) Restart agents — Phase 1 can
-consume `@papercusp/tooldef` now.
+**Next:** (1) papercup agents editing `packages/tooldef` — your edits must reach
+`Papercusp/tooldef` (the active syncer is doing this; don't duplicate). (2) P-054 owner
+(avi) + the active tooldef developer — coordinate if/when to do the papercup conversion
+(in-place submodule vs mirror); don't convert mid-development. (3) Restart agents —
+Phase 1 can consume `@papercusp/tooldef` now (pin tracks the shared main).
 
 **TL;DR:** `@papercusp/tooldef` was extracted to a standalone **`Papercusp/tooldef`**
 repo (history-preserving, `main` = `5405204b`) so the **Restart** project can consume
