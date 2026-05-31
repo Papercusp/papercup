@@ -151,31 +151,33 @@ function OtherDetail({ item }: { item: AttentionItem | null }) {
   }
   return (
     <aside className="pc-items__detail">
+      {/* Actions live on the top header bar (matching PlanItemPreview), not
+          inside the card body. */}
       <div className="pc-items__detail-toolbar">
         <span className={`pc-kind pc-kind--${item.kind}`}>{KIND_LABEL[item.kind]}</span>
         <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
         {item.importance !== 'normal' ? (
           <span className={`pc-imp pc-imp--${item.importance}`}>{item.importance}</span>
         ) : null}
-        {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
+        <div className="pc-items__detail-actions">
+          {item.actions.map((a) => (
+            <button
+              key={a.id}
+              type="button"
+              className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
+              onClick={() =>
+                toast.info(`"${a.label}" — ${KIND_LABEL[item.kind]} action wiring lands in P-017.`)
+              }
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="pc-items__detail-body">
         <h3>{item.title}</h3>
+        {item.harnessSlug ? <span className="pc-pill pc-pill--harness">{item.harnessSlug}</span> : null}
         {item.body ? <p>{item.body}</p> : null}
-      </div>
-      <div className="pc-items__detail-actions">
-        {item.actions.map((a) => (
-          <button
-            key={a.id}
-            type="button"
-            className={a.primary ? 'pc-items__resolve' : 'pc-items__action-btn'}
-            onClick={() =>
-              toast.info(`"${a.label}" — ${KIND_LABEL[item.kind]} action wiring lands in P-017.`)
-            }
-          >
-            {a.label}
-          </button>
-        ))}
       </div>
     </aside>
   );

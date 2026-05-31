@@ -128,6 +128,12 @@ export default function PlansClient() {
     'pBuckets',
     parseAsArrayOf(parseAsStringEnum<PlanBucket>([...BUCKET_IDS])).withDefault([]),
   );
+  // Main-pane view: the plan browser (default — this is the Plans tab) vs the
+  // item inbox. The Plans / Inbox header buttons flip it.
+  const [view, setView] = useQueryState(
+    'view',
+    parseAsStringEnum<'plans' | 'inbox'>(['plans', 'inbox']).withDefault('plans'),
+  );
 
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -240,6 +246,13 @@ export default function PlansClient() {
   const otherItems = useMemo(
     () => (attention.data?.groups ?? []).flatMap((g) => g.items).filter((i) => i.kind !== 'plan-item'),
     [attention.data],
+  );
+
+  // Plans-view rows — the harness-scoped plans, narrowed by the active
+  // plan-status (bucket) filter. Click opens the plan (PlanDetail).
+  const planBrowseRows = useMemo(
+    () => visiblePlans.filter((p) => pBuckets.length === 0 || pBuckets.includes(bucketOf(p))),
+    [visiblePlans, pBuckets],
   );
   // Split the active item-status facet into plan-item categories and the
   // non-plan-item ("Other") kinds. Empty selection = show everything.
@@ -409,7 +422,18 @@ export default function PlansClient() {
     void setQ(null);
     void setIstatus([]);
     void setItemPlan(null);
-  }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlan]);
+    void setView('inbox');
+  }, [leaveGuard, setPane, setSlug, setQ, setIstatus, setItemPlan, setView]);
+
+  // "Plans" — the plan browser view. Closes any open plan + search; plan-status
+  // / harness filters stay applied (they scope which plans show).
+  const goPlans = useCallback(() => {
+    if (!leaveGuard()) return;
+    setPane('read');
+    setSlug(null);
+    void setQ(null);
+    void setView('plans');
+  }, [leaveGuard, setPane, setSlug, setQ, setView]);
 
   usePlanShortcuts({ navSlug, setQ, rail: railRef, search: searchRef });
 
@@ -455,15 +479,6 @@ export default function PlansClient() {
         <div className="pc-plans__rail-actions">
           <button
             type="button"
-            className="pc-plans__inbox-btn"
-            onClick={goInbox}
-            title="Open the Inbox — every item & attention surface across plans, with item filters cleared (plan filters stay)."
-          >
-            <span className="pc-plans__inbox-btn-label">Inbox</span>
-            {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
-          </button>
-          <button
-            type="button"
             className="pc-plans__new-plan"
             onClick={onNewPlan}
             disabled={launchingNewPlan}
@@ -474,6 +489,23 @@ export default function PlansClient() {
             }
           >
             {launchingNewPlan ? 'Launching…' : '+ New plan'}
+          </button>
+          <button
+            type="button"
+            className={`pc-plans__plans-btn${view === 'plans' && !slug ? ' is-active' : ''}`}
+            onClick={goPlans}
+            title="Browse plans — open one to view/edit it. (Plan-status & harness filters stay applied.)"
+          >
+            Plans
+          </button>
+          <button
+            type="button"
+            className={`pc-plans__inbox-btn${view === 'inbox' && !slug ? ' is-active' : ''}`}
+            onClick={goInbox}
+            title="Open the Inbox — every item & attention surface across plans, with item filters cleared (plan filters stay)."
+          >
+            <span className="pc-plans__inbox-btn-label">Inbox</span>
+            {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
           </button>
         </div>
 
@@ -557,6 +589,46 @@ export default function PlansClient() {
             needsHumanPlans={needsHumanPlans}
             needsDecisionPlans={needsDecisionPlans}
           />
+        ) : view === 'plans' ? (
+          <div className="pc-plan-browse">
+            <header className="pc-items__head">
+              <div className="pc-items__head-copy">
+                <span className="pc-items__kicker">Plans</span>
+                <h2>
+                  {planBrowseRows.length} plan{planBrowseRows.length === 1 ? '' : 's'}
+                </h2>
+                <p>{itemSubtitle}</p>
+              </div>
+            </header>
+            {planBrowseRows.length === 0 ? (
+              <div className="pc-items__empty">No plans match the current filters.</div>
+            ) : (
+              <ul className="pc-plan-browse__list" role="list">
+                {planBrowseRows.map((p) => {
+                  const needsHuman = p.itemCounts?.['needs-human'] ?? 0;
+                  return (
+                    <li key={p.slug}>
+                      <button
+                        type="button"
+                        className="pc-plan-browse__row"
+                        onClick={() => navPlanTarget(p.slug)}
+                        title={p.slug}
+                      >
+                        <span className="pc-plan-browse__title">{p.title ?? p.slug}</span>
+                        <span className="pc-plan-browse__meta">
+                          <span className="pc-count">{p.status}</span>
+                          {p.harness ? <span className="pc-pill pc-pill--harness">{p.harness}</span> : null}
+                          {needsHuman > 0 ? (
+                            <span className="pc-imp pc-imp--high">{needsHuman} needs-human</span>
+                          ) : null}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         ) : (
           <div className="pc-inbox">
             {/* Item filters live here on the Inbox page (moved off the rail). */}
