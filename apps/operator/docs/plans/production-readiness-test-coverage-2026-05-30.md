@@ -167,12 +167,12 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
 
 ## Phase 2 — HTTP + agent-tool safety (mutation / auth / core capabilities)
 
-- **P-013** `todo` Destructive `auth:'public'` route tests + an explicit decision
+- **P-013** `done` Destructive `auth:'public'` route tests + an explicit decision (SHIPPED 02afd0c5c,471a96d94: backups restore/rollback/promote + flags set/preset tested 12; posture decision recorded as D-009 public OK under loopback bind; flagged defense-in-depth gate + the 500-vs-400 validation inconsistency. spawn.ts /launch,/invoke carved out to a follow-up item real child_process spawn risk.)
   on the intended auth posture: `harness/spawn.ts` (`/launch`,`/invoke`),
   `backups/{restore,rollback,promote}.ts`, `flags/{set,preset}.ts`. Assert
   payload validation, side effects, and the (in)correctness of the public posture.
 
-- **P-014** `todo` Internal-ingestion route tests: the 14 token-gated agent-event
+- **P-014** `done` Internal-ingestion route tests: the 14 token-gated agent-event (SHIPPED e71c59059: 34 tests — all 14 internal /*-event sinks reject unauthenticated missing + non-Bearer requests with 401; escalation-event + pr-event cover unknown-token→401 / bad-body→400 / valid→200+persist. requirePrincipal + db-org mocked to isolate the handler token gate.)
   sinks under `endpoint-route/routes/internal/` (run-chunk, log-event, pr-event,
   decision-event, …) — token-gate enforcement + payload shape.
 
@@ -197,6 +197,8 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   assert budget-exceeded throw, the single empty-output retry (no retry after a
   committed delta), and `<spawn>`-tag dispatch. Fix the stale `buildOperatorPrompt`
   mock in `__tests__/converse-mcp-url.test.ts` while there.
+
+- **P-031** `todo` Carve-out from P-013: `harness/spawn.ts` (/launch, /invoke) route tests. Deferred because the handler shells out via `node:child_process.spawn` to the orchestrator — exercising it risks real spawns, so it needs its own file with `node:child_process` + getOrgPg + listUnconsumedEvents/consumeEvents fully mocked. Assert: public reachability, payload validation, and that a valid /launch dispatches spawn() with the expected argv WITHOUT a real child process. Posture context in D-009.
 
 ## Phase 3 — Live UI + sync (the user-facing gap)
 
@@ -339,3 +341,16 @@ The systemic JSONB double-encode bug (D-007) is **fixed**. Added `pgJson(pg, val
 
 Verified: 20 orchestrator unit tests + 17 real-PG integration tests green. Submodule commit `0adef06` (libs/papercusp), parent pointer bump + integration tests `942c648e`. Scoped commits left another agent's concurrent uncommitted `role-prompt-from-slug.ts` untouched. This restores lane persistence, dispatch-audit fidelity, and (critically) chunk-plan `files` for resume-on-restart.
 Related: P-008
+
+### D-009 — Destructive auth:'public' routes are acceptable under loopback-only bind; two follow-ups flagged
+Date: 2026-05-31
+P-013 asked for "an explicit decision on the intended auth posture" of the destructive `auth:'public'` routes (backups restore/rollback/promote, flags set/preset, harness spawn launch/invoke).
+
+**Posture (verified, recommend confirm):** these routes carry NO per-route principal check, but the operator's Hono host binds **127.0.0.1 by default** (`bin/hono-host.ts:31` — `PAPERCUSP_BIND_HOST ?? HOSTNAME ?? '127.0.0.1'`). So the perimeter is the loopback bind, consistent with the operator-auth model (magic-link removed; loopback-only). Under that model `auth:'public'` is acceptable: the routes are unreachable off-box. The risk is realized only if the host is bound to `0.0.0.0` (via `PAPERCUSP_BIND_HOST`/`HOSTNAME`) — then any LAN peer can restore/rollback a backup or flip ship-gating flags with no credential.
+
+**Recommendation (for the user / security pass, NOT done here):** add defense-in-depth — a loopback/Host gate on these specific destructive routes (the same gate `/desktop/*` and `/internal/docs` already carry, per `bin/host-docs.ts`) so an accidental non-loopback bind can't expose backup-restore + flag mutation. Low effort; removes the single-config-flag blast radius.
+
+**Validation-consistency finding (asserted in the tests):** the backups routes parse the body with in-handler zod inside a try/catch, so a malformed payload returns **500**; the flags routes declare `input`, so a malformed payload returns **400** via the route-stack. Same family, two different rejection codes. Recommend standardizing the backups routes onto declared `input` (→ 400) for consistent client-observable validation errors.
+
+**Deferred:** `harness/spawn.ts` (/launch,/invoke) was NOT tested — it shells out via `node:child_process.spawn` to the orchestrator and risks real spawns; it needs its own carefully-mocked file. The backups + flags subset (`02afd0c5c`, `471a96d94`) is covered: 12 tests.
+Related: P-013
