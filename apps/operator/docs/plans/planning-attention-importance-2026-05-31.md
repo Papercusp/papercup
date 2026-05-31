@@ -11,11 +11,17 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** P-020 ADVANCED — the genuinely-new push trigger shipped. plans:set-status now pushes a notification (proven mobile notifyWorkspace path) when an item transitions INTO needs-human at importance>=high — the urgent/high human-decision signal that had NO push trigger before (the device-intervention-watcher only ever covered escalation/smoke/plan-review, which are all already high-importance). Additive (a plan item is a source the watcher never polls → no overlap, no double-fire), transition-gated, importance-gated, fail-safe (push error never fails the flip; no-op when no device paired). Pure gate + importance-parse unit-tested (10 tests), tsc clean. Net effect: the full push set is now exactly the >=high attention items = P-020's semantics. Commit (set-status push) added this loop, on top of P-017 dispatch (2535ba95e), P-018 (35a4eb480 + submodule a2581b7), and the chat fix (2d040229b).
+**State:** PLAN COMPLETE — all items done (P-028 dropped per D-008). User green-lit P-020/P-021/D-007 on 2026-05-31 ("push through them all"); shipped this session:
 
-STILL OPEN (held for the user — D-009): (a) P-021 — retire the watcher's 60s poll for ITS triggers (escalation/smoke/plan-review) in favour of producer-time emits at the 3 /api/internal/*-event endpoints. Risk: the poll is a robust catch-all; producer-emits miss any write path not explicitly hooked → silently-lost notifications. Latency win only (<=60s → instant); no new user-facing notifications. (b) D-007 desktop-native OS notification via Tauri IPC — NO such bridge exists today (the only delivery is mobile push via notifyWorkspace/APNs+FCM); building it is Rust/Tauri work, unverifiable headless. Both need the user awake to decide channel + verify delivery.
+P-021 — retired the device-intervention-watcher 60s poll (file deleted, host-bootstrap start removed). A new notifyAttention() helper (lib/attention-notify.ts) fans out to two fail-safe channels and is called at the producer chokepoints: escalation-event (real escalation only), smoke-test-event (transition INTO failing, reads prior status), plan-review-event (per completed review), and plans:set-status (needs-human>=high). Net push set = exactly the >=high attention items.
 
-**Next:** User-awake: (1) verify in the Tauri shell — Planning tab + Chat + Resolve/Ack dispatch, and (if a device is paired) that a needs-human urgent/high flip pushes. (2) Decide P-021 (retire poll → producer emits; accept the missed-path tradeoff or keep a low-freq reconcile floor) and D-007 (build a desktop-native Tauri notification channel, or treat mobile push as sufficient). Everything else in the plan is done.
+P-020 — event-driven, importance-gated push (the above), replacing the timer.
+
+D-007 — desktop-native channel. notifyAttention emits an attention.notify SSE event; DesktopAttentionNotifier (mounted at root, app-level so @papercusp/sync stays domain-free) shows an in-app sonner toast always + invokes the new show_attention_notification Rust command for a native OS notification in the Tauri shell. Added tauri-plugin-notification + the command to papercusp-desktop (commit 4b9b408). Driven from Rust, so no JS-facing notification capability needed.
+
+Verification: operator tsc clean on all touched files; attention-notify (5) + set-status (10) + attention adapters/group/sources tests green. NEEDS a desktop cargo rebuild for the native OS notification (show_attention_notification command); the toast + mobile push work without it. Couldn't compile-verify the Rust here — a wrong API would surface as a loud cargo error on rebuild.
+
+**Next:** Rebuild the Tauri desktop (cargo) to activate the native OS notification, then verify end-to-end: flip a plan item to needs-human urgent (toast + native ping), and trigger an escalation/smoke-fail/plan-review. Plan is otherwise complete.
 
 ## Background
 
@@ -85,8 +91,8 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 
 - **P-018** `done` Operator — sort recommendations by importance; read open attention items and base its nudge / interrupt decision on the max open importance instead of the ad-hoc tier heuristic; stamp importance on any human-decision suggestion it emits. References D-002. (commit 35a4eb480 + submodule a2581b7: scanner reads plans:items{needsHuman}/plans:attention added to operator allowlist and orders/selects suggestions by importance; importance!=tier note prevents conflation. Substrate+allowlist tests pass; end-to-end weighting needs a live scan.)
 - **P-019** `done` Orchestrator — an `urgent` open needs-human item halts the relevant feature loop (today a needs-human item only gates terminal DONE). blocked-by: P-006 (orchestrator handleNextWorker halts idles on an open urgent needs-human item; fail-open. Submodule libs/papercusp 4dcee29 + pointer bump.)
-- **P-020** `todo` Push delivery is event-driven over the existing IPC / event bus — NOT polling: at the `AttentionItem` write/escalate path, when importance is at least `high`, emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge. References D-007.
-- **P-021** `todo` Retire `device-intervention-watcher`'s 60s polling loop; its three triggers (escalation / smoke / plan-review) are now `AttentionItem` emits at the source. blocked-by: P-020. References D-007.
+- **P-020** `done` Push delivery is event-driven over the existing IPC / event bus — NOT polling: at the `AttentionItem` write/escalate path, when importance is at least `high`, emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge. References D-007. (Event-driven push at the source via notifyAttention at the 3 /api/internal/*-event producers + needs-human>=high in set-status. Mobile notifyWorkspace + desktop SSE attention.notify event. User-approved 2026-05-31.)
+- **P-021** `done` Retire `device-intervention-watcher`'s 60s polling loop; its three triggers (escalation / smoke / plan-review) are now `AttentionItem` emits at the source. blocked-by: P-020. References D-007. (device-intervention-watcher.ts + its 60s poll deleted; the 3 triggers escalation/smoke/plan-review now emit at the source. Smoke is transition-gated reads prior status. attention-notify unit-tested.)
 
 ## Phase 6 — Docs, tests, sign-off gate
 
