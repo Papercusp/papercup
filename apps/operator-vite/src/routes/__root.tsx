@@ -13,6 +13,7 @@ import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
 import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
+import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier';
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
@@ -125,6 +126,12 @@ function RootComponent() {
               />
               <ToasterSelectionFix />
               <ToastHistoryRecorder />
+              {/* Desktop-native attention pushes (planning-attention-importance
+                  P-020/D-007). Mounted here, not only in the Next layout.tsx —
+                  the desktop renders THIS operator-vite SPA, so without it the
+                  attention.notify SSE event reaches the webview but nothing
+                  turns it into a sonner toast + native OS notification. */}
+              <DesktopAttentionNotifier />
               <PerfObserverProvider />
               <RecorderHost />
               <DevReloadGate />

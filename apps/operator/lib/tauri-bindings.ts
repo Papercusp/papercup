@@ -9,6 +9,14 @@ export const commands = {
 	workspacesRename: (id: string, name: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_rename", { id, name })),
 	workspacesDelete: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_delete", { id })),
 	workspacesSwitch: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_switch", { id })),
+	/**
+	 *  Raise a native OS notification (planning-attention-importance D-007).
+	 *  Invoked from the webview's DesktopAttentionNotifier on `attention.notify`
+	 *  SSE events (escalation / smoke-fail / plan-review / needs-human≥high).
+	 *  The webview already shows an in-app toast, so a failure here is non-fatal
+	 *  — it's returned as a string and the caller swallows it.
+	 */
+	showAttentionNotification: (title: string, body: string) => typedError<null, string>(__TAURI_INVOKE("show_attention_notification", { title, body })),
 	appVersion: () => __TAURI_INVOKE<string>("app_version"),
 	checkForUpdate: () => typedError<UpdateInfo, string>(__TAURI_INVOKE("check_for_update")),
 	installUpdate: () => typedError<null, string>(__TAURI_INVOKE("install_update")),

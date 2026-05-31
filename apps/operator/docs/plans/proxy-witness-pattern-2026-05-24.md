@@ -1,7 +1,7 @@
 ---
 title: Team-proxy witness pattern — substrate for cross-engineer verifiable LLM-side stats
 slug: proxy-witness-pattern-2026-05-24
-status: draft
+status: ready
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com

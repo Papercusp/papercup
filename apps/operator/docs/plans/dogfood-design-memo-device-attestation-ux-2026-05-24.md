@@ -3,7 +3,7 @@ title: Papercusp dogfood — design memo — device attestation UX
 slug: dogfood-design-memo-device-attestation-ux-2026-05-24
 created: 2026-05-24
 updated: 2026-05-25
-status: draft
+status: ready
 ---
 
 # Design memo — device attestation UX

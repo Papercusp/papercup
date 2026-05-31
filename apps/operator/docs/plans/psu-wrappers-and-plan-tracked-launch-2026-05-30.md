@@ -1,7 +1,7 @@
 ---
 title: PSU wrappers + plan-tracked terminal launch
 slug: psu-wrappers-and-plan-tracked-launch-2026-05-30
-status: draft
+status: ready
 created: 2026-05-30
 updated: 2026-05-30
 ---

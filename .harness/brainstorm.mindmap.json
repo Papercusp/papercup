@@ -1,0 +1,21 @@
+{
+  "nodes": [
+    {
+      "id": "root",
+      "type": "mind",
+      "position": {
+        "x": 100,
+        "y": 200
+      },
+      "data": {
+        "text": "Brainstorm",
+        "kind": "idea"
+      },
+      "measured": {
+        "width": 180,
+        "height": 52
+      }
+    }
+  ],
+  "edges": []
+}

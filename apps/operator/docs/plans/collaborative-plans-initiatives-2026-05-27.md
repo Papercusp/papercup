@@ -1,7 +1,7 @@
 ---
 title: Collaborative plans — initiatives as the grouping primitive
 slug: collaborative-plans-initiatives-2026-05-27
-status: draft
+status: ready
 created: 2026-05-27
 updated: 2026-05-27
 owner: avi@storewolf.com

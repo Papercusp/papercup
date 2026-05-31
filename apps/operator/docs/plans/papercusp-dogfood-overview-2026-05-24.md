@@ -1,7 +1,7 @@
 ---
 title: Papercusp dogfood — overview (5-minute read across the arc)
 slug: papercusp-dogfood-overview-2026-05-24
-status: draft
+status: ready
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com

@@ -58,6 +58,7 @@ describe('buildHttpSpawnContext', () => {
         'x-papercusp-chunk': 'ck_X',
         'x-papercusp-run': 'run_X',
         'x-papercusp-spawn': 'spw_X',
+        'x-papercusp-client': 'su-abc',
       },
       searchParams: new URLSearchParams(),
     });
@@ -69,13 +70,14 @@ describe('buildHttpSpawnContext', () => {
       chunkId: 'ck_X',
       runId: 'run_X',
       spawnId: 'spw_X',
+      uiClientId: 'su-abc',
     });
   });
 
   it('falls back to URL search params when headers absent', () => {
     const ctx = buildHttpSpawnContext({
       headers: {},
-      searchParams: new URLSearchParams('workspace=default&harness=sheets&role=architect&run=run_X&spawn=spw_X'),
+      searchParams: new URLSearchParams('workspace=default&harness=sheets&role=architect&run=run_X&spawn=spw_X&client=cli_X'),
     });
     expect(ctx).toMatchObject({
       workspaceId: 'default',
@@ -83,6 +85,7 @@ describe('buildHttpSpawnContext', () => {
       role: 'architect',
       runId: 'run_X',
       spawnId: 'spw_X',
+      uiClientId: 'cli_X',
     });
   });
 
@@ -94,11 +97,24 @@ describe('buildHttpSpawnContext', () => {
     expect(ctx.role).toBe('architect');
   });
 
+  it('the x-papercusp-client header overrides a static ?client= (OMP per-session id)', () => {
+    // OMP can't env-interpolate its mcp.json url, so its `?client=` stays
+    // the static machine id; but OMP DOES resolve header values at connect
+    // time, so the per-launch SID rides x-papercusp-client and — header-first
+    // — wins. (Claude/Codex put the SID in ?client= directly.)
+    const ctx = buildHttpSpawnContext({
+      headers: { 'x-papercusp-client': 'su-per-session' },
+      searchParams: new URLSearchParams('client=28dbf719-machine-id'),
+    });
+    expect(ctx.uiClientId).toBe('su-per-session');
+  });
+
   it('returns null/undefined fields when nothing is supplied', () => {
     const ctx = buildHttpSpawnContext({ headers: {}, searchParams: new URLSearchParams() });
     expect(ctx.workspaceId).toBeUndefined();
     expect(ctx.featureId).toBeNull();
     expect(ctx.chunkId).toBeNull();
+    expect(ctx.uiClientId).toBeUndefined();
   });
 });
 

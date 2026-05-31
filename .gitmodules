@@ -67,3 +67,6 @@
 [submodule "libs/generic/memory"]
 	path = libs/generic/memory
 	url = https://github.com/Papercusp/memory.git
+[submodule "libs/generic/tooldef"]
+	path = libs/generic/tooldef
+	url = https://github.com/Papercusp/tooldef.git

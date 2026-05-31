@@ -1,7 +1,7 @@
 ---
 title: Papercusp dogfood — Phase 10 (Hyperdrive peer-mirror — optional opt-in)
 slug: papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24
-status: draft
+status: ready
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com

@@ -222,13 +222,28 @@ cfg.setdefault('mcpServers', {})
 # enabled through `omp config set memory.backend hindsight` below; standalone
 # Hindsight MCP entries are no longer stripped by the Papercusp installer.
 # `?client=<agent_id>` surfaces as ctx.uiClientId in tool handlers so
-# locks:* can identify ownership without per-call args.
+# locks:* can identify ownership without per-call args. That static
+# machine id is the FALLBACK; the x-papercusp-client header below carries
+# the PER-SESSION id (read header-first by the operator) when present.
 profile_param = '&profile=power' if profile == 'power' else ''
 cfg['mcpServers']['papercusp-su'] = {
     'type': 'http',
     'url': operator_url + '/api/mcp?superuser=1' + profile_param + '&client=' + agent_id,
     'headers': {
         'Authorization': 'Bearer ' + token,
+        # Per-session coord/lock identity for OMP. OMP can't env-interpolate
+        # the mcp.json URL (so the &client= above stays the static machine
+        # id), but it DOES resolve header values at connect time
+        # (config/resolve-config-value.ts): a leading "!" runs the rest in a
+        # subshell that inherits the OMP process env. `psu` exports a
+        # per-launch PAPERCUSP_SID, so this resolves to that per-session SID
+        # — and is DROPPED (empty stdout => undefined) for a plain `omp` with
+        # no SID, falling back to the static &client=. The operator reads
+        # x-papercusp-client header-first (tooldef-http buildHttpSpawnContext),
+        # so it overrides the static machine id. OMP's analogue of Claude's
+        # ${PAPERCUSP_SID} URL interpolation + Codex's per-launch
+        # `-c ...&client=<sid>` bake — see three-client-lock-enforcement plan.
+        'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
     },
 }
 with open(path, 'w') as f:

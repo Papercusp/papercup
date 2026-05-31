@@ -1,7 +1,7 @@
 ---
 title: Finish SPEC.md UI + health-subsystem deprecation cleanup
 slug: spec-md-ui-deprecation-cleanup-2026-05-30
-status: draft
+status: ready
 created: 2026-05-30
 updated: 2026-05-30
 owner: avi@storewolf.com

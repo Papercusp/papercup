@@ -2,16 +2,15 @@
 title: Llm Testing P5 Handoff
 slug: llm-testing-P5-handoff-2026-05-21
 created: 2026-05-21
-updated: 2026-05-25
-status: draft
+updated: 2026-05-30
+status: ready
 ---
 
-# P5 live-triage handoff — 2026-05-21
+## Now
 
-Handoff brief for the next agent picking up the operator-behavior-tests
-(plan: `operator-behavior-tests-2026-05-14.md`). Written after the
-prior agent over-claimed a root-cause conclusion; this doc separates
-**verified** from **hypothesis**. Trust nothing here without re-checking.
+**State:** P5 live-triage handoff
+
+**Next:** P5 live-triage handoff
 
 ## Where the plan stands
 

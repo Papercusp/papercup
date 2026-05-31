@@ -23,6 +23,7 @@ import postgres from 'postgres';
 import { readFeaturesPg } from '@papercusp/orchestrator';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { listAllHarnesses } from '@/lib/dev-data';
 import { ensureFeaturePipeline } from './orchestrator-start';
 
 /**
@@ -44,7 +45,11 @@ export function selectFeaturesToDispatch(
   eligible: ReadonlyArray<{ id: string; status: string }>,
   liveCount: number,
   cap: number,
+  overCostCap = false,
 ): string[] {
+  // Cost-cap gate (P-004): a harness over its configured maxCostUsd starts NO new
+  // pipelines (in-flight ones finish). Mirrors the legacy loop's spend ceiling.
+  if (overCostCap) return [];
   const slots = Math.max(0, cap - liveCount);
   if (slots <= 0) return [];
   return eligible
@@ -53,11 +58,46 @@ export function selectFeaturesToDispatch(
     .map((f) => f.id);
 }
 
-function dispatchHarnesses(): string[] {
-  return (process.env.PAPERCUSP_DBOS_DISPATCH_HARNESSES ?? '')
+/**
+ * Resolve which harnesses the dispatcher serves from the env value + the full
+ * workspace harness list (P-006). Pure (testable):
+ *   - `'*'` → ALL harnesses in the workspace (the default-on-for-all rollout);
+ *   - an explicit comma list → that allowlist (scoped testing override);
+ *   - empty / unset → none (safe until the Phase-G flip makes `'*'` the default).
+ */
+export function resolveDispatchHarnesses(
+  envRaw: string | undefined,
+  allSlugs: string[],
+): string[] {
+  const v = (envRaw ?? '').trim();
+  if (v === '*') return allSlugs;
+  return v
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/** Whether to arm the 30s scheduled tick: all-mode (`'*'`) or a non-empty allowlist. */
+export function shouldScheduleDispatch(envRaw: string | undefined): boolean {
+  const v = (envRaw ?? '').trim();
+  return v === '*' || v.split(',').some((s) => s.trim().length > 0);
+}
+
+/**
+ * The concrete harness slugs to sweep this tick. In all-mode (`'*'`) enumerate
+ * every harness in the active workspace; otherwise use the explicit allowlist.
+ */
+async function resolveTickHarnesses(workspaceId: string): Promise<string[]> {
+  const envRaw = process.env.PAPERCUSP_DBOS_DISPATCH_HARNESSES;
+  if ((envRaw ?? '').trim() !== '*') {
+    return resolveDispatchHarnesses(envRaw, []);
+  }
+  try {
+    const { harnesses } = await listAllHarnesses([workspaceId]);
+    return harnesses.map((h) => h.slug);
+  } catch {
+    return [];
+  }
 }
 
 function maxPipelines(): number {
@@ -86,10 +126,10 @@ export interface DispatchTickResult {
  * tests). A per-harness failure is isolated (logged-as-empty, never throws).
  */
 export async function runDispatchTick(): Promise<DispatchTickResult[]> {
-  const slugs = dispatchHarnesses();
+  const workspaceId = activeWorkspaceId();
+  const slugs = await resolveTickHarnesses(workspaceId);
   if (slugs.length === 0) return [];
   const cap = maxPipelines();
-  const workspaceId = activeWorkspaceId();
   const adminUrl = getHarnessAdminUrl();
   const out: DispatchTickResult[] = [];
 
@@ -143,12 +183,12 @@ export const orchestratorDispatchWorkflow = DBOS.registerWorkflow(dispatchTickWo
 // Every 30s (6-field crontab with seconds). Skip-missed by default — a closed
 // desktop doesn't stampede a backlog of ticks on reboot.
 //
-// Only SCHEDULE the tick when at least one harness is opted in — otherwise the
-// no-op tick would still record a SUCCESS workflow row every 30s, cluttering the
-// DBOS system DB / `/admin/dbos`. With the orchestrator flag on but no harnesses
-// opted in (the rollout-ready state), the workflow stays registered (so the
-// manual trigger + recovery work) but nothing fires on a timer.
-if (dispatchHarnesses().length > 0) {
+// Only SCHEDULE the tick in all-mode (`'*'`) or when an explicit allowlist is set
+// — otherwise the no-op tick would still record a SUCCESS workflow row every 30s,
+// cluttering the DBOS system DB / `/admin/dbos`. With the orchestrator flag on but
+// no harnesses opted in, the workflow stays registered (so the manual trigger +
+// recovery work) but nothing fires on a timer.
+if (shouldScheduleDispatch(process.env.PAPERCUSP_DBOS_DISPATCH_HARNESSES)) {
   DBOS.registerScheduled(orchestratorDispatchWorkflow, {
     name: 'orchestratorDispatch',
     crontab: '*/30 * * * * *',

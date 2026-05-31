@@ -3,7 +3,7 @@ title: Papercusp dogfood — design memo — create-harness picker UX (P-012)
 slug: dogfood-design-memo-create-harness-picker-ux-2026-05-24
 created: 2026-05-24
 updated: 2026-05-25
-status: draft
+status: ready
 ---
 
 # Design memo — create-harness picker UX (P-012)

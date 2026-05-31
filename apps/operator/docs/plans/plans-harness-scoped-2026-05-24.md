@@ -1,7 +1,7 @@
 ---
 title: Plans become harness-scoped, author-owned, fork-on-drag
 slug: plans-harness-scoped-2026-05-24
-status: draft
+status: ready
 created: 2026-05-24
 updated: 2026-05-24
 owner: avi@storewolf.com

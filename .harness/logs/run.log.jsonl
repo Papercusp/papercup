@@ -1,0 +1,7 @@
+{"ts":"2026-05-30T09:54:02.967Z","source":"plugin:@papercupai/jira-sync","level":"info","msg":"jira-sync: schema ensured"}
+{"ts":"2026-05-30T09:54:02.989Z","source":"plugin:@papercupai/linear-sync","level":"info","msg":"linear-sync: schema ensured"}
+{"ts":"2026-05-30T09:54:03.026Z","source":"plugin:pythonista","level":"info","msg":"[daemon pythonista] [supervisor] bwrap unavailable; spawning unsandboxed: pythonista"}
+{"ts":"2026-05-30T09:54:03.041Z","source":"plugin:pythonista","level":"info","msg":"daemon plugin started: pythonista (cmd=/usr/bin/python3)"}
+{"ts":"2026-05-30T09:54:03.049Z","source":"plugin:@papercupai/jira-sync","level":"info","msg":"jira-sync: runSync — skipped (creds not set)"}
+{"ts":"2026-05-30T09:54:03.049Z","source":"plugin:@papercupai/linear-sync","level":"info","msg":"linear-sync: runSync — skipped (LINEAR_API_KEY not set)"}
+{"ts":"2026-05-30T09:54:03.064Z","source":"plugin:pythonista","level":"info","msg":"[daemon pythonista] [pythonista] daemon ready"}
