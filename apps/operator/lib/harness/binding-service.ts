@@ -62,6 +62,7 @@ type SrbcRow = {
   privacy: BindingPrivacy;
   claim_status: BindingRecord['claim_status'];
   provisional_owner_github_user_id: number;
+  provisional_owner_github_login: string;
   claimed_by_github_user_ids: number[];
   created_at: Date;
   claimed_at: Date | null;
@@ -81,6 +82,7 @@ function rowToBinding(r: SrbcRow): BindingRecord {
     privacy: r.privacy,
     claim_status: r.claim_status,
     provisional_owner_github_user_id: Number(r.provisional_owner_github_user_id),
+    provisional_owner_github_login: r.provisional_owner_github_login ?? '',
     claimed_by_github_user_ids: (r.claimed_by_github_user_ids ?? []).map(Number),
     created_at: r.created_at.toISOString(),
   };
@@ -234,13 +236,15 @@ async function upsertCacheRow(
     INSERT INTO harness_shared.shared_repo_binding_cache
       (workspace_id, provider, github_repository_id, github_full_name,
        harness_topic, harness_slug, harness_link, privacy, claim_status,
-       provisional_owner_github_user_id, claimed_by_github_user_ids,
+       provisional_owner_github_user_id, provisional_owner_github_login,
+       claimed_by_github_user_ids,
        created_at, claimed_at, last_permission_verified_at,
        superseded_by_harness_topic, cached_at)
     VALUES
       (${workspaceId}, ${rec.provider}, ${rec.github_repository_id}, ${rec.github_full_name},
        ${rec.harness_topic}, ${rec.harness_slug}, ${rec.harness_link}, ${rec.privacy}, ${rec.claim_status},
-       ${rec.provisional_owner_github_user_id}, ${rec.claimed_by_github_user_ids as unknown as string},
+       ${rec.provisional_owner_github_user_id}, ${rec.provisional_owner_github_login},
+       ${rec.claimed_by_github_user_ids as unknown as string},
        ${rec.created_at}, ${rec.claimed_at ?? null}, ${rec.last_permission_verified_at ?? null},
        ${rec.superseded_by_harness_topic ?? null}, now())
     ON CONFLICT (workspace_id, provider, github_repository_id) DO UPDATE SET
@@ -251,6 +255,7 @@ async function upsertCacheRow(
       privacy = EXCLUDED.privacy,
       claim_status = EXCLUDED.claim_status,
       provisional_owner_github_user_id = EXCLUDED.provisional_owner_github_user_id,
+      provisional_owner_github_login = EXCLUDED.provisional_owner_github_login,
       claimed_by_github_user_ids = EXCLUDED.claimed_by_github_user_ids,
       claimed_at = EXCLUDED.claimed_at,
       last_permission_verified_at = EXCLUDED.last_permission_verified_at,
@@ -261,12 +266,27 @@ async function upsertCacheRow(
 
 // ── Public surface ──────────────────────────────────────────────
 
+/** Resolved repo identity + any existing binding. The share-wizard binding
+ *  step needs the GitHub-resolved repo id + owner/name EVEN WHEN no binding
+ *  row exists yet (it feeds shared.json, whose repo id derives the swarm
+ *  topic). resolveRepoBinding alone can't supply that — it returns null on a
+ *  cache miss, discarding the resolved id. */
+export interface RepoIdentity {
+  github_repository_id: number;
+  github_owner: string;
+  github_repo: string;
+  github_full_name: string;
+  existing_binding: BindingRecord | null;
+}
+
 /**
- * Per memo `resolveRepoBinding`. Resolves a GitHub URL to a canonical
- * record. Caches result for 24h. Returns null when no binding exists
- * for the repo (caller dispatches to createUnclaimedBinding).
+ * Resolve a GitHub URL to its canonical numeric repo id + owner/name (always,
+ * via GitHub) AND any existing binding row (cache). owner/name come from
+ * GitHub's canonical `full_name` (correct casing), not the user-typed URL.
+ * Refreshes a cached row's full_name on rename. Throws BindingServiceError
+ * (GITHUB_REPO_NOT_FOUND / RATE_LIMIT / etc.) on GitHub failures.
  */
-export async function resolveRepoBinding(githubUrl: string): Promise<BindingRecord | null> {
+export async function resolveRepoIdentity(githubUrl: string): Promise<RepoIdentity> {
   const parsed = parseGithubRepoUrl(githubUrl);
   if (!parsed) {
     fail({ code: 'GITHUB_API_DOWN', message: 'unparseable GitHub URL: ' + githubUrl });
@@ -274,15 +294,29 @@ export async function resolveRepoBinding(githubUrl: string): Promise<BindingReco
   const workspaceId = activeWorkspaceId();
   const { id, full_name } = await resolveGithubRepoNumericId(parsed!.owner, parsed!.repo);
   const cached = await readCachedByRepoId(workspaceId, id);
-  if (cached) {
+  if (cached && cached.github_full_name !== full_name) {
     // Refresh full_name if changed (rename); other fields untouched.
-    if (cached.github_full_name !== full_name) {
-      cached.github_full_name = full_name;
-      await upsertCacheRow(workspaceId, cached);
-    }
-    return cached;
+    cached.github_full_name = full_name;
+    await upsertCacheRow(workspaceId, cached);
   }
-  return null;
+  const [canonOwner, canonRepo] = full_name.split('/');
+  return {
+    github_repository_id: id,
+    github_owner: canonOwner ?? parsed!.owner,
+    github_repo: canonRepo ?? parsed!.repo,
+    github_full_name: full_name,
+    existing_binding: cached,
+  };
+}
+
+/**
+ * Per memo `resolveRepoBinding`. Resolves a GitHub URL to a canonical
+ * record. Caches result for 24h. Returns null when no binding exists
+ * for the repo (caller dispatches to createUnclaimedBinding). Thin wrapper
+ * over `resolveRepoIdentity` for callers that only want the binding row.
+ */
+export async function resolveRepoBinding(githubUrl: string): Promise<BindingRecord | null> {
+  return (await resolveRepoIdentity(githubUrl)).existing_binding;
 }
 
 /**
@@ -324,6 +358,7 @@ export async function createUnclaimedBinding(input: {
     privacy: input.privacy,
     claim_status: 'unclaimed',
     provisional_owner_github_user_id: me.id,
+    provisional_owner_github_login: me.login,
     claimed_by_github_user_ids: [],
     created_at: new Date().toISOString(),
   };
@@ -419,6 +454,7 @@ export async function supersedeBinding(input: {
     privacy: existing!.privacy,
     claim_status: 'claimed',
     provisional_owner_github_user_id: me.id,
+    provisional_owner_github_login: me.login,
     claimed_by_github_user_ids: [me.id],
     created_at: nowIso,
     claimed_at: nowIso,

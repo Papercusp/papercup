@@ -399,6 +399,7 @@ export async function ensureSharedRepoBindingCacheTable(): Promise<void> {
       claim_status                     TEXT   NOT NULL DEFAULT 'unclaimed'
         CHECK (claim_status IN ('unclaimed','claimed','stale','superseded')),
       provisional_owner_github_user_id BIGINT NOT NULL,
+      provisional_owner_github_login   TEXT   NOT NULL DEFAULT '',
       claimed_by_github_user_ids       BIGINT[] NOT NULL DEFAULT '{}',
       created_at                       TIMESTAMPTZ NOT NULL DEFAULT now(),
       claimed_at                       TIMESTAMPTZ,
@@ -407,6 +408,10 @@ export async function ensureSharedRepoBindingCacheTable(): Promise<void> {
       cached_at                        TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (workspace_id, provider, github_repository_id)
     );
+    -- Idempotent add for tables created before P-068 binding-route work
+    -- (the share UI surfaces the provisional owner's login).
+    ALTER TABLE harness_shared.shared_repo_binding_cache
+      ADD COLUMN IF NOT EXISTS provisional_owner_github_login TEXT NOT NULL DEFAULT '';
     CREATE INDEX IF NOT EXISTS srbc_by_full_name_idx
       ON harness_shared.shared_repo_binding_cache (workspace_id, github_full_name);
     CREATE INDEX IF NOT EXISTS srbc_by_harness_topic_idx

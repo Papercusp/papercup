@@ -127,6 +127,7 @@ describe('type sanity (compile-time)', () => {
       privacy: 'shared-public',
       claim_status: 'claimed',
       provisional_owner_github_user_id: 99,
+      provisional_owner_github_login: 'octocat',
       claimed_by_github_user_ids: [99],
       created_at: '2026-05-24T00:00:00Z',
       claimed_at: '2026-05-24T00:01:00Z',

@@ -72,6 +72,10 @@ export type BindingRecord = {
   // Claim state
   claim_status: BindingClaimStatus;
   provisional_owner_github_user_id: number;
+  /** GitHub login of the provisional owner (the engineer who created the
+   *  binding). Stored at create time so the share UI can name the existing
+   *  publisher without an extra id→login GitHub lookup on every resolve. */
+  provisional_owner_github_login: string;
   claimed_by_github_user_ids: number[];
 
   // Lifecycle
