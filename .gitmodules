@@ -2,10 +2,10 @@
 	path = libs/agent-chat
 	url = https://github.com/Papercusp/agent-chat.git
 [submodule "libs/git-graph"]
-	path = libs/git-graph
+	path = libs/generic/git-graph
 	url = https://github.com/Papercusp/git-graph.git
 [submodule "libs/papergrid"]
-	path = libs/papergrid
+	path = libs/generic/papergrid
 	url = https://github.com/Papercusp/papergrid.git
 [submodule "libs/papercup-db"]
 	path = libs/papercup-db
@@ -14,7 +14,7 @@
 	path = libs/papercup-shared
 	url = https://github.com/Papercusp/papercup-shared.git
 [submodule "libs/ui-primitives"]
-	path = libs/ui-primitives
+	path = libs/generic/ui-primitives
 	url = https://github.com/Papercusp/ui-primitives.git
 [submodule "libs/papercusp"]
 	path = libs/papercusp
@@ -23,20 +23,20 @@
 	path = libs/zero-harness
 	url = https://github.com/Papercusp/zero-harness.git
 [submodule "libs/sync"]
-	path = libs/sync
+	path = libs/generic/sync
 	url = https://github.com/Papercusp/sync.git
 [submodule "libs/token-kit"]
-	path = libs/token-kit
+	path = libs/generic/token-kit
 	url = https://github.com/Papercusp/token-kit.git
 [submodule "libs/sse"]
-	path = libs/sse
+	path = libs/generic/sse
 	url = https://github.com/Papercusp/sse.git
 [submodule "libs/rerank"]
-	path = libs/rerank
+	path = libs/generic/rerank
 	url = https://github.com/Papercusp/rerank.git
 [submodule "libs/search-core"]
-	path = libs/search-core
+	path = libs/generic/search-core
 	url = https://github.com/Papercusp/search-core.git
 [submodule "libs/chat-protocol"]
-	path = libs/chat-protocol
+	path = libs/generic/chat-protocol
 	url = https://github.com/Papercusp/chat-protocol.git
