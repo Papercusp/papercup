@@ -29,7 +29,7 @@ import { resolvePhasedProject, safeRead } from '@/lib/harness-core';
 import { type ProjectEntry } from '@/lib/harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '@/lib/harness-phases';
 import { expandGlobs } from '@/lib/testing-domain-glob';
-import { harnessTestingRegistryFor, ACCEPTANCE_DOMAIN_ID } from '@/lib/harness-testing-registry';
+import { harnessTestingRegistry, ACCEPTANCE_DOMAIN_ID } from '@/lib/harness-testing-registry';
 import { type TestDomain, type ChipStatus, type FileStatusEntry } from '@/lib/testing-domains';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -57,8 +57,8 @@ function readHarnessTests(project: ProjectEntry, phase: Phase): HarnessTestRow[]
   }
 }
 
-function findDomain(id: string, slug: string): TestDomain | undefined {
-  return harnessTestingRegistryFor(slug).find((d) => d.id === id);
+function findDomain(id: string): TestDomain | undefined {
+  return harnessTestingRegistry.find((d) => d.id === id);
 }
 
 function chipFromStatus(s: HarnessTestRow['status']): ChipStatus {
@@ -83,7 +83,7 @@ const domainDetail = defineTool({
   async handler(req, ctx) {
     const url = new URL(req.url);
     const domainId = url.searchParams.get('domainId') ?? '';
-    const domain = findDomain(domainId, ctx.params.slug as string);
+    const domain = findDomain(domainId);
     if (!domain) return Response.json({ error: 'unknown_domain', domainId }, { status: 404 });
 
     const resolved = await resolveCtx(ctx.params.slug as string, url.searchParams.get('phase'));
