@@ -649,16 +649,19 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   `state-channel.test`, `replay-buffer*.test`, `ask-user.test`, `publish-state.test`,
   `workspace-lifecycle.test`. These are the safety net proving the seam didn't move
   behavior. blocked-by: P-042
-- **P-051** `partial` The **in-process** form shipped early (2026-05-30):
-  `packages/tooldef/examples/standalone-inprocess.ts` registers a tool and dispatches
-  it through the full gate stack importing **only** `@papercusp/tooldef` — no
-  agent-mcp / host-platform / @restart / postgres / zod. Runs green via
-  `npx tsx examples/standalone-inprocess.ts` (`math.add(2,3) = 5`), exercising the
-  engine's generic defaults (role=`string`, quota=run/perRun, tier=`'low'`,
-  fail-closed gates). This is the falsifiable proof that Phase-2 decoupling achieved
-  standalone usability. The **HTTP+MCP-serving** form awaits the transport extraction
-  (Phase 4, P-030/P-031) — added then. blocked-by: P-050 (in-process form pulled
-  forward as the Phase-2 capstone)
+- **P-051** `done` Standalone proof across all three caller shapes, each importing only
+  the engine/adapter packages (no agent-mcp / host-platform / postgres / zod):
+  **in-process** — `packages/tooldef/examples/standalone-inprocess.ts` (registers + dispatches
+  through the full gate stack on the generic defaults; `math.add(2,3)=5`); **HTTP** —
+  `packages/tooldef-http/examples/standalone-http.ts` (serves a tool via
+  `handleHttpToolRequest` with an empty DI surface → `200 "5"`, 2026-05-31); **MCP** —
+  the result mapping is proven by `tooldef-mcp`'s `dispatchProjectedToolToMcp` test.
+  **Caught a real bug en route (2026-05-31):** the new `tooldef-http`/`tooldef-mcp`
+  package.jsons declared `"type": "module"` while the family they plug into (`tooldef`,
+  `agent-mcp`) is CJS — a CJS→ESM interop break that vitest (esbuild) masked but would have
+  broken the **operator's tsx Hono host** once it reloaded (agent-mcp re-exporting from an
+  ESM tooldef-http). Removed `type:module` from both → aligned to the CJS family; examples
+  now run + all suites green. blocked-by: P-050
 - **P-052** `done` (docs) `README.md` + `TESTING.md` (2026-05-30); `endpoint-system/overview.mdx`
   "How it's packaged" section (package table + host-injection seam table + standalone-example
   pointer); and a **path/symbol accuracy pass across all `endpoint-system/*` pages** —
