@@ -137,6 +137,18 @@ export { papercuspComputeQuotaWindow } from './quota-policy';
 export { papercuspGateBypass } from './gate-bypass';
 export type { GateBypass } from '@papercusp/tooldef';
 
+// Resource authorization (RFC tooldef-auth). The host supplies the decision
+// (an `authorize` hook / PolicyDecisionPoint) and wires `deps.auditAuth` to a
+// sink — Papercusp's is `apps/operator/lib/tool-authz-audit.ts`.
+export { ownerOnly } from '@papercusp/tooldef';
+export type {
+  AuthzQuery,
+  AuthDecision,
+  PolicyDecisionPoint,
+  AuthAuditEvent,
+  Authorizer,
+} from '@papercusp/tooldef';
+
 // HTTP transport adapter — extracted to @papercusp/tooldef-http (plan P-030).
 // Re-exported here so existing `@papercusp/agent-mcp` consumers are untouched.
 export {

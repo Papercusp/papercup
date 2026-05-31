@@ -27,6 +27,7 @@ import {
 } from '@papercusp/agent-mcp';
 
 import { getOverride } from './llm-testing/dispatch-override';
+import { recordToolAuthzEvent } from './tool-authz-audit';
 
 async function readQuotaStateImpl(
   toolName: string,
@@ -173,4 +174,8 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
   overrideTool: overrideToolImpl,
+  // RFC tooldef-auth Phase 1b: persist every authorize allow/deny + policy bypass.
+  auditAuth: (event) => {
+    void recordToolAuthzEvent(event);
+  },
 };
