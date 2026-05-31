@@ -1,13 +1,28 @@
 /**
- * Unit tests for escalations + handoffs (Phase C).
- * Pure filesystem (per-event files), no PG.
+ * Operator-level tests for the escalations + handoffs channels
+ * (openEscalation / resolveEscalation / openHandoff / acceptHandoff …).
+ *
+ * These exercise the real fold logic (append-only resolve, open↔acceptance
+ * grouping) against an in-memory CoordEventLog double — NO Postgres, NO live
+ * `harness_shared.coord_event_log`. (The PG backend itself is covered by the
+ * package's event-log conformance suite, run against PgCoordLog in
+ * `event-log-conformance.test.ts`.) Earlier this file claimed "pure
+ * filesystem, no PG" and set PAPERCUSP_COORD_DIR + read per-event `.json`
+ * files, but after the FS→PG cutover (coord-channels-pg-port) the channel
+ * modules route through `coordLog` (PgCoordLog), which ignored that env — so
+ * the tests failed AND wrote real escalations/handoffs into the live coord
+ * table. Injecting `InMemoryCoordLog` via the `configureCoordLog` seam is the
+ * fix; the append-only invariant is now asserted through the log itself
+ * instead of by reading files.
+ *
+ *   npx vitest run lib/agent-tools/coordination/__tests__/escalations-handoffs.test.ts
  */
 
-import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
+
+import { configureCoordLog, resetCoordLog, coordLog } from '../log';
 import {
   getEscalation,
   listEscalations,
@@ -32,21 +47,15 @@ function id(ownerId: string): AgentIdentity {
   };
 }
 
-let tmp = '';
-let prev: string | undefined;
-beforeEach(async () => {
-  tmp = await fs.mkdtemp(join(tmpdir(), 'coord-c-'));
-  prev = process.env.PAPERCUSP_COORD_DIR;
-  process.env.PAPERCUSP_COORD_DIR = tmp;
+beforeEach(() => {
+  configureCoordLog(new InMemoryCoordLog());
 });
-afterEach(async () => {
-  if (prev === undefined) delete process.env.PAPERCUSP_COORD_DIR;
-  else process.env.PAPERCUSP_COORD_DIR = prev;
-  await fs.rm(tmp, { recursive: true, force: true });
+afterEach(() => {
+  resetCoordLog();
 });
 
 describe('escalations', () => {
-  it('openEscalation writes a per-event file with resolved=null', async () => {
+  it('openEscalation writes a per-event record with resolved=null', async () => {
     const A = id('A');
     const rec = await openEscalation(A, {
       severity: 'question',
@@ -93,11 +102,9 @@ describe('escalations', () => {
     expect(round?.resolved?.choice).toBe('first');
   });
 
-  it('resolveEscalation appends an escalation_resolved sibling and leaves the open file immutable', async () => {
+  it('resolveEscalation appends an escalation_resolved sibling and leaves the open record immutable', async () => {
     const A = id('A');
     const e = await openEscalation(A, { severity: 'blocker', summary: 'need a call' });
-    const openPath = join(tmp, 'escalations', `${e.msg_id}.json`);
-    const openBytesBefore = await fs.readFile(openPath, 'utf8');
 
     const out = await resolveEscalation({
       msg_id: e.msg_id,
@@ -110,21 +117,18 @@ describe('escalations', () => {
     expect(out.resolved?.note).toBe('approved');
     expect(out.resolved?.by).toBe('human');
 
-    // Append-only: the open escalation file is byte-for-byte unchanged.
-    const openBytesAfter = await fs.readFile(openPath, 'utf8');
-    expect(openBytesAfter).toBe(openBytesBefore);
-    expect(JSON.parse(openBytesAfter).resolved).toBeNull();
+    // Append-only: the stored open escalation record is never mutated — read
+    // it raw from the log and confirm it still carries resolved=null.
+    const rawOpen = await coordLog.getEvent('escalations', e.msg_id);
+    expect(rawOpen?.kind).toBe('escalation');
+    expect(rawOpen?.resolved).toBeNull();
 
     // A single sibling escalation_resolved event exists, linked by related_msg_id.
-    const files = await fs.readdir(join(tmp, 'escalations'));
-    const events: Array<Record<string, unknown>> = [];
-    for (const f of files) {
-      const rec = JSON.parse(await fs.readFile(join(tmp, 'escalations', f), 'utf8'));
-      if (rec.kind === 'escalation_resolved') events.push(rec);
-    }
-    expect(events).toHaveLength(1);
-    expect(events[0]?.related_msg_id).toBe(e.msg_id);
-    expect(events[0]?.choice).toBe('go');
+    const events = await coordLog.readEvents('escalations');
+    const resolvedEvents = events.filter((r) => r.kind === 'escalation_resolved');
+    expect(resolvedEvents).toHaveLength(1);
+    expect(resolvedEvents[0]?.related_msg_id).toBe(e.msg_id);
+    expect(resolvedEvents[0]?.choice).toBe('go');
 
     // Read-time fold reflects the resolution.
     const round = await getEscalation(e.msg_id);
