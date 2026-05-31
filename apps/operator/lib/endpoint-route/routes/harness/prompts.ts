@@ -20,6 +20,8 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { harnessPath } from '@/lib/harness-paths';
 import { getKnownRoles } from '@/lib/known-roles';
 import type { ProjectEntry } from '@/lib/harness-registry';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { setPromptOverride, deletePromptOverride } from '@/lib/harness-prompt-overrides';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function phaseFromReq(req: Request) {
@@ -101,6 +103,16 @@ const putPrompt = defineTool({
     cfg.promptOverrides[role] = `prompts/${role}.md`;
     await writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf8');
 
+    // Dual-write to the workspace-owned PG store (D-7 transition): the file +
+    // config.json remain the orchestrator's current read path (no regression),
+    // and the store is populated for the read-side cutover. Best-effort — a
+    // store failure must not fail the file-based write.
+    try {
+      await setPromptOverride(activeWorkspaceId(), project.slug, role, body.content);
+    } catch (e) {
+      console.warn('[prompts] PG override dual-write failed (file write succeeded):', e);
+    }
+
     return Response.json({ ok: true, role });
   },
 });
@@ -124,6 +136,12 @@ const deletePrompt = defineTool({
       delete cfg.promptOverrides[role];
       if (Object.keys(cfg.promptOverrides).length === 0) delete cfg.promptOverrides;
       await writeFile(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+    }
+    // Mirror the removal into the workspace-owned PG store (D-7). Best-effort.
+    try {
+      await deletePromptOverride(activeWorkspaceId(), project.slug, role);
+    } catch (e) {
+      console.warn('[prompts] PG override dual-delete failed (file delete succeeded):', e);
     }
     return Response.json({ ok: true });
   },
