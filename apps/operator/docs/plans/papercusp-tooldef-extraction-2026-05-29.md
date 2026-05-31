@@ -591,8 +591,12 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   standalone usability. The **HTTP+MCP-serving** form awaits the transport extraction
   (Phase 4, P-030/P-031) — added then. blocked-by: P-050 (in-process form pulled
   forward as the Phase-2 capstone)
-- **P-052** `todo` `README.md` + `TESTING.md` for `@papercusp/tooldef`; update
-  `/internal/docs/endpoint-system/*` to point at the package boundary. blocked-by: P-050
+- **P-052** `partial` `README.md` (rewritten for the completed Phases 1–3: seam table,
+  quickstart, standalone example, Standard-Schema reality + the events/routes-stay-Zod
+  scoping, the mirror/carry discipline) + `TESTING.md` (new) shipped 2026-05-30 — extra
+  timely now that the package is mirrored to `Papercusp/tooldef` for external consumers.
+  **Remaining:** update `/internal/docs/endpoint-system/*` to point at the package
+  boundary (a larger cross-doc pass). blocked-by: P-050
 - **P-053** `todo` `npm run test:affected:integration` + `npm run lint:knip` clean.
   blocked-by: P-050
 - **P-054** `needs-human` Decide whether to promote `@papercusp/tooldef` to a separate
