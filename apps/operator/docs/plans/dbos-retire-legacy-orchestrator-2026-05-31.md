@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase F (close the coverage gaps) is essentially COMPLETE + committed: P-001/P-002 finalization (curator/documenter/archive/afterDone on DONE; on-escalate+curator on ESCALATE) via a pure planFinalization + injected executor; P-003 full verb coverage via pure classifyDecision (fixed NEXT_SECURITY→security-reviewer; global-only verbs→unsupported); P-006 all-harnesses dispatch via '*' + listAllHarnesses; P-004 cost-cap as a dispatcher gate (D-002). P-005 (director prompt) + P-007 (per-turn hooks) resolved as deliberate no-build decisions (D-003/D-004). 58 dbos unit tests green, tsc clean. Live rollout levers still untouched (DISPATCH_HARNESSES blank).
+**State:** Phase F COMPLETE + committed (58 dbos unit tests, tsc clean): DBOS is code-complete as a full replacement for the legacy per-feature loop (finalization, full verb coverage, all-harnesses dispatch, cost-cap gate). P-008 live run on sheets VALIDATED the DBOS mechanism end-to-end against real DBOS (workflow ran, dispatched the director, ERRORed cleanly on empty output — the false-SUCCESS fix working), but a FULL green run (→ DONE → curator+documenter) is blocked by the pre-existing "empty claude output under concurrent load" wall (D-005): claude -p returns empty when spawned via invoke-once in the live pipeline though it works standalone — a shared invoke→claude issue affecting the legacy loop too, not Phase F code. Cleanup done (host restarted, workspace pin reverted, nothing auto-runs).
 
-**Next:** P-008: restart papercup-dev-api to load the new lib/dbos code (no hot-reload), then controlled live validation on the sheets harness — manually trigger ONE sheets feature via POST /api/admin/dbos/pipeline/start and watch it reach DONE → curator + documenter → SUCCESS in /admin/dbos. Gate for P-009 (flip default-all + delete legacy).
+**Next:** Human/infra: diagnose the operator-wide "empty claude output under concurrent load" issue (reduce concurrent claude instances, or give the pipeline's claude an isolated CLAUDE_CONFIG_DIR) — it blocks legacy + DBOS equally. Once claude reliably emits output, re-run the sheets validation (POST /admin/dbos/pipeline/start), confirm DONE→curator+documenter→SUCCESS, then do P-009 (flip default-all + retire legacy). Optional: implement P-010 (don't cache empty invokes) so retries recover.
 
 ## Background
 
@@ -69,6 +69,11 @@ single id, status token, free text, optional blocked-by.)
 
 - **P-009** `todo` Retire the legacy loop: make PAPERCUSP_DBOS_ORCHESTRATOR default-on (or remove the gate), stand down the legacy autoloop ticker, remove the now-moot carve-out (durableOwnedFeatureIdsPg/readFeaturesPg filter), and delete/retire main-loop.ts + bin/run.ts + pre-loop.ts + lanes.ts per the repo's retire-but-keep convention (or hard delete given pre-alpha). Only after Phase F green + P-007 live-validated. importance: high
 
+
+## Phase F — close the coverage gaps (DBOS = complete replacement)
+
+- **P-010** `todo` Idempotency-retry refinement (found in P-008): the decide-step's 3 retries reuse the cached empty director run (idempotent hit), so a transient empty/failed invoke can't recover and a re-trigger reuses the poisoned run. Fix: don't record an exit-0-but-empty agent run as a reusable run_output (or force re-spawn / fresh key on a decide-step retry). Add a unit test for "empty invoke is not cached as reusable".
+
 ## Decisions
 
 (Use plans:add-decision to append. Each decision is a third-level
@@ -96,3 +101,16 @@ Related: P-005
 Date: 2026-05-31
 P-007 resolved by audit: the finalizer fires the terminal hooks the legacy loop fires — `afterDone` (firePluginHook) on DONE and `on-escalate` (runHook) on ESCALATE. The per-turn hooks (onPostWorker/onPostValidator/onPostOrchestrator) are NOT ported: a grep of installed plugins (~/.papercusp/global-plugins/* + harness plugins: cloudflare-pages, jira-sync, linear-sync, notion-export, slack-notifier, …) found ZERO consumers of those hook names, and no harness ships the matching `.harness/hooks/onPost*.sh`. Porting unused per-turn hook plumbing would be speculative complexity (YAGNI). If a plugin later needs a per-turn hook, fire it inside the dispatch step in orchestrator-workflow.
 Related: P-007
+
+### D-005 — D-005 — P-008 live run: DBOS mechanism validated; full completion blocked by the "empty claude output" wall (env, not Phase F)
+Date: 2026-05-31
+Ran two controlled live pipelines on sheets (F-FIX-028, F-FIX-029) via POST /api/admin/dbos/pipeline/start, host restarted with the Phase F code + PAPERCUSP_WORKSPACE_ID=default pin (sheets features live in `default`).
+
+VALIDATED (mechanism works end-to-end against real DBOS): the trigger started the workflow (proving DBOS launched), the workflow ran decide-0 (director invoke), captured the result, and on empty output threw → retried 3× → ERRORed cleanly (NOT false-SUCCESS — the 714b79aa fix working in production). All Phase F code paths (classifier consumption, runner extras, the workflow loop, the terminal branch) executed correctly.
+
+BLOCKER (NOT Phase F): the director `claude -p` invoke returned EMPTY (exit 0, duration ~4.5s, out_body=0/jsonl_body=0/err_body=0 in harness_run_output) — claude produced nothing. Diagnosed thoroughly: `claude -p` works standalone (replied, logged in v2.1.159), works under the FULL hono-host env (incl NODE_OPTIONS), and invoke-once works STANDALONE (director/F-FIX-030 took ~70s and emitted `NEXT_WORKER F-FIX-030`). It ONLY goes empty when spawned through the live DBOS pipeline for sheets, alongside ~5 concurrent SU agents spawning many claude instances. This is the prior session's documented "empty agent output under concurrent load" wall (37 lingering claude procs) — shared `invoke→claude` contention on the shared `~/.claude` state, affecting the LEGACY loop equally. Pre-existing, operator-wide, out of this plan's scope.
+
+REFINEMENT FOUND (P-010): the decide-step's 3 retries hit the same idempotency key (slug:feature:role:t0) → invoke() short-circuits to the cached EMPTY run ("idempotent hit, reusing prior run") → retries are no-ops, and a re-trigger of the same feature reuses the poisoned empty run. Fix: invoke() should not cache an exit-0-but-empty agent run as reusable, OR the decide-step retry should bypass the idempotency cache (force re-spawn). Won't fix the empty output, but makes recovery possible once the backend is healthy.
+
+NOT DONE: P-009 (retire legacy + flip default-all) — gated on a GREEN sheets run, which needs the backend to reliably produce output. Cleanup done: host restarted, workspace pin reverted (papercusp-workspace restored), .env.local DISPATCH_HARNESSES still blank (nothing auto-runs).
+Related: P-008, P-009
