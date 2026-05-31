@@ -275,22 +275,37 @@ a surface → Save → reload → it persists, and that surface's brain uses it.
 
 ---
 
-## After the e2e passes — the two deferred follow-ups
+## Remaining follow-ups
 
-### A. P-032 — retire the legacy omp-only console-launch path
-Once Phase 4 e2e confirms claude/codex launches **and** the psu path reaches
-model/kickoff/resume parity with the omp builder: delete
-`buildEngineerOmpLaunchCommand` + the console-launch `mode:'omp'` branch and
-converge omp onto psu too (so all three agents share one launch path). Until
-then the omp builder stays as the default fallback behind `launchAgent` — do
-**not** delete it before the e2e is green. blocked-by: Phase 4 e2e.
+### B. codex interactive role sessions — ✅ DONE (commit `39902a89`, session 2)
+The 400 is lifted; `bootstrap-role` mints a per-session CODEX_HOME via
+`writeRoleCodexHome` and psu has a codex `roleLaunchArgs` branch. Only the
+interactive **TUI launch** itself is unverified (inherent human step). See the
+session-2 block above.
 
-### B. codex interactive role sessions
-`bootstrap-role.ts:122-123` currently returns `400 codex_role_unsupported`.
-The CODEX_HOME machinery from Phase 2 (`writeSignedSpawnCodexHome`) is reusable
-for interactive sessions. Once P-013 confirms the codex spawn path works live,
-lift the 400 and wire codex through the psu role flow the same way claude/omp
-go. blocked-by: P-013.
+### A. P-032 — retire the legacy omp console-launch path (STILL DEFERRED — precise work order)
+**Do NOT execute until the preconditions are met — confirmed UNMET as of
+2026-05-31.** This is NOT dead-code removal: traced the live call graph —
+`launchAgent('omp')` → `launchOmpAgent` (`native-omp-launch.ts`) → POST
+`/api/agent-mcp/console/launch {mode:'omp'}` → `buildConsoleEnvelope({mode:'omp'})`
+(`console-launcher.ts:208`) → `buildEngineerOmpLaunchCommand`. Every omp launch
+button rides this. The convergence blocker: `launchOmpAgent` forwards
+`model` + kickoff + resume, but `psu`/`launch-su` have **no `--model`/`--kickoff`
+passthrough** — flipping omp→psu now regresses omp launches.
+
+Work order, in order:
+1. Add `--model` / `--kickoff` (confirm `--resume`) passthrough to `launch-su`
+   + `psu-launcher.mjs`, and into the `omp-su` wrapper invocation.
+2. Repoint `launchOmpAgent` (or the dispatcher omp branch in `launch-agent.ts`)
+   at `launch-su` → psu.
+3. Phase-4 in-webview e2e of all three launch buttons (claude/omp/codex) —
+   drive a **fresh Xvfb Tauri instance**, NOT the user's live window (a hard
+   bridge `navigate` doesn't hydrate this SPA — use `location.reload()`; repeated
+   reloads can wedge a live bridge, as happened in session 2).
+4. Delete `buildEngineerOmpLaunchCommand` + the route's `mode:'omp'` branch, and
+   reconcile the `adv_sessions.mode==='omp'` resume-thread checks
+   (`adv/sessions.ts:105/159/169`).
+blocked-by: Phase 4 e2e + the model/kickoff parity (step 1).
 
 ---
 
