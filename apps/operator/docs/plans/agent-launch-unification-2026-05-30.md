@@ -30,11 +30,15 @@ live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
   worker-scoped tools, tracked in /adv.
 - **Phase 4 e2e** — the launch buttons on claude/codex.
 
+**P-041 consumption DONE (2026-05-31):** `surfaceModel()` is now wired into all
+8 brain surfaces (converse/oracle/scanner/delegate/architect/brainstorm/
+agent_chats/plans) — additive (`surfaceModel ?? existing`), a no-op until a
+per-surface model is set. Commit `6c9db80e`. Still optional: a per-surface
+model column in the `/settings/agent` UI (CLI/config can set it today).
+
 **Deferred follow-ups (gated on the e2e + parity):** P-032 (delete the legacy
 `buildEngineerOmpLaunchCommand` / console-launch `mode:'omp'`, converging omp
-onto psu); codex *interactive* role sessions (psu --role on codex); P-041
-consumption (wire `surfaceModel()` into the 8 brain call sites + `/settings/agent`
-per-surface model column).
+onto psu); codex *interactive* role sessions (psu --role on codex).
 
 **Decisions locked (2026-05-30):** unify the AgentBackend copies (yes), do
 codex pipeline agents now (yes, Phase 2), migrate legacy console-launch onto
