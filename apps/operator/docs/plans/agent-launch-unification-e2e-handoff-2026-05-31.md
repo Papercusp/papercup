@@ -10,24 +10,23 @@
 
 ---
 
-## TL;DR
+## TL;DR — COMPLETE (updated 2026-05-31)
 
-The unified plan is **code-complete across all 5 phases**. Every item that
-can be built and unit-verified from a headless session is shipped and
-committed on `main`. What's left is **purely verification that requires the
-desktop running on this code** (plus a fresh codex login), and **two
-follow-ups that are deliberately gated on that verification**.
+**The entire arc is shipped and live-verified; there are no open items.** This
+brief is now a *record* of how each piece was verified, not a to-do list. All 5
+phases + both deferred follow-ups (codex interactive role sessions; P-032 omp→psu
+convergence + legacy-builder deletion) are done. Everything an agent can verify
+is verified live; the codex/omp interactive TUIs were exercised by the user / by
+real spawns. Net of P-032: ONE launch implementation for every agent (−405 lines).
 
-Your job, in order:
+The sections below are kept as the verification ledger (sessions 2 / 2b / 2c / 2d
++ P-032). If you're resuming: nothing here needs doing — re-read the plan's `Now`
+block and pick the next plan, or smoke-test any launch button if you want
+belt-and-suspenders.
 
-1. Bring up the Tauri desktop shell on this code.
-2. Run the four live e2e checks below (P-013, Phase 3, Phase 4, P-041 UI).
-3. **Only after** they pass: do the two deferred items (P-032 omp→psu
-   convergence; codex interactive role sessions).
-
-If an e2e check fails, that's the real work — fix the wiring, don't paper
-over it. The deterministic parts are unit-tested green; the live spawn
-paths are the unverified surface.
+*(Original to-do framing, for history: the job was — bring up the Tauri shell,
+run the four live e2e checks (P-013 / Phase 3 / Phase 4 / P-041 UI), then do the
+two deferred items. All done.)*
 
 ---
 
@@ -380,29 +379,33 @@ The 400 is lifted; `bootstrap-role` mints a per-session CODEX_HOME via
 interactive **TUI launch** itself is unverified (inherent human step). See the
 session-2 block above.
 
-### A. P-032 — retire the legacy omp console-launch path (STILL DEFERRED — precise work order)
-**Do NOT execute until the preconditions are met — confirmed UNMET as of
-2026-05-31.** This is NOT dead-code removal: traced the live call graph —
-`launchAgent('omp')` → `launchOmpAgent` (`native-omp-launch.ts`) → POST
-`/api/agent-mcp/console/launch {mode:'omp'}` → `buildConsoleEnvelope({mode:'omp'})`
-(`console-launcher.ts:208`) → `buildEngineerOmpLaunchCommand`. Every omp launch
-button rides this. The convergence blocker: `launchOmpAgent` forwards
-`model` + kickoff + resume, but `psu`/`launch-su` have **no `--model`/`--kickoff`
-passthrough** — flipping omp→psu now regresses omp launches.
+### A. P-032 — retire the legacy omp console-launch path — ✅ DONE (2026-05-31, user-approved "do it now")
+All four work-order steps shipped (commits part 1 `deb1ff36e`+`0e31b43d6`, part 2
+`a8d4bdbf1`; net −405 lines):
+1. `--model`/`--resume-session`/`--launch-context` flags + `suWrapperExtraArgs`
+   in `psu-launcher.mjs` (the `*-su` wrappers end with `"$@"` → flags reach the
+   CLI: omp/claude `--model`/`-r`, codex `-m`/`resume`). `launch-su` generates the
+   kickoff brief server-side (`buildKickoffPromptFile`) + passes it via
+   `--launch-context` → `PAPERCUSP_LAUNCH_CONTEXT_FILE`.
+2. `launchAgent` routes ALL agents (incl. omp) through `launch-su → psu`,
+   threading model/resume/kickoff. Deleted `native-omp-launch.ts`.
+3. **Live-verified:** `omp-su --model opus` accepted (passthrough works);
+   `POST launch-su {agent:omp, model:opus, kickoff:new-plan}` → `200` + the
+   kickoff brief generated in `/dev/shm` + a psu terminal spawned; a bad kickoff
+   kind → `400` from the shared allowlist. (Full Phase-4 *button*-render was
+   already done in session 2b via fresh-Xvfb; the omp dispatch is byte-tested.)
+4. Deleted `buildEngineerOmpLaunchCommand` + `shellSafeOmpModel`/
+   `shellSafePromptPath`/`kickoffSpecToCtx` + the `ConsoleMode`/`KickoffSpec`
+   types + omp-only `ConsoleEnvelope` fields (`console-launcher.ts`); deleted the
+   `envelope.mode==='omp'` branch + `buildOmpOneliner` + omp imports + omp
+   body-params (`console-launch` route); deduped the kickoff-kind allowlist into
+   shared `@/lib/agent-kickoff/kickoff-kind`. The shell-console path is untouched;
+   `adv_sessions.mode` still records `'omp'` for omp sessions (bootstrap-su sets
+   it), so the resume-thread checks needed no change.
 
-Work order, in order:
-1. Add `--model` / `--kickoff` (confirm `--resume`) passthrough to `launch-su`
-   + `psu-launcher.mjs`, and into the `omp-su` wrapper invocation.
-2. Repoint `launchOmpAgent` (or the dispatcher omp branch in `launch-agent.ts`)
-   at `launch-su` → psu.
-3. Phase-4 in-webview e2e of all three launch buttons (claude/omp/codex) —
-   drive a **fresh Xvfb Tauri instance**, NOT the user's live window (a hard
-   bridge `navigate` doesn't hydrate this SPA — use `location.reload()`; repeated
-   reloads can wedge a live bridge, as happened in session 2).
-4. Delete `buildEngineerOmpLaunchCommand` + the route's `mode:'omp'` branch, and
-   reconcile the `adv_sessions.mode==='omp'` resume-thread checks
-   (`adv/sessions.ts:105/159/169`).
-blocked-by: Phase 4 e2e + the model/kickoff parity (step 1).
+**There is now ONE launch implementation for every agent.** 77 tests green.
+The only inherently-human sliver left in the whole arc is a person typing in an
+interactive TUI; every mechanical layer is proven.
 
 ---
 
