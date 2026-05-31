@@ -34,6 +34,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // Record the sender's harness when it's a real, harness-scoped agent
+    // (pipeline roles carry ctx.harnessSlug). '*'/empty = operator/SU/oracle
+    // wildcard ⇒ workspace-level (broadcast); leave harness unset there.
+    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const harnessSlug =
+      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
     const env = await sendMessage(identity, {
       to: args.to,
       summary: args.summary,
@@ -41,6 +47,7 @@ export default defineTool({
       files: args.files,
       plan_slug: args.plan_slug,
       related_msg_id: args.related_msg_id,
+      ...(harnessSlug ? { harnessSlug } : {}),
     });
     return {
       content: [

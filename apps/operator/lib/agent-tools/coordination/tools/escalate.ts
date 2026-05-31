@@ -37,12 +37,19 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // Record the escalating agent's harness (pipeline roles carry it) so the
+    // human inbox can open a chat scoped to it. '*'/empty = operator/SU/oracle
+    // wildcard ⇒ workspace-level escalation; leave harness unset there.
+    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const harnessSlug =
+      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
     const rec = await openEscalation(identity, {
       severity: args.severity,
       summary: args.summary,
       body: args.body,
       plan_slug: args.plan_slug,
       options: args.options,
+      ...(harnessSlug ? { meta: { harnessSlug } } : {}),
     });
     return {
       content: [

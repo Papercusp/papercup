@@ -32,6 +32,11 @@ export interface SendOptions {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
+  /** Originating harness slug, when the sender is a harness-scoped agent.
+   *  Lets the human inbox open a chat scoped to the right harness (most
+   *  agent→human messages are about a specific harness). Omitted for
+   *  workspace-level senders (operator/oracle/SU broadcasts). */
+  harnessSlug?: string;
   /** Default 'message'. Use other kinds for typed channel writes. */
   kind?: CoordKind;
 }
@@ -53,6 +58,7 @@ export async function sendMessage(
   if (opts.files !== undefined) env.files = opts.files;
   if (opts.plan_slug !== undefined) env.plan_slug = opts.plan_slug;
   if (opts.related_msg_id !== undefined) env.related_msg_id = opts.related_msg_id;
+  if (opts.harnessSlug !== undefined) env.harnessSlug = opts.harnessSlug;
   await coordLog.appendLine('messages', identity.ownerId, env);
   return env;
 }

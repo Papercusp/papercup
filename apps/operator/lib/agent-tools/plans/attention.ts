@@ -82,14 +82,31 @@ export default defineTool({
     const harnessFilter = args.harnessSlug ?? null;
     const includeArchived = args.includeArchived === true;
     const items: AttentionItem[] = [];
+    // plan-slug → harness, so coord escalations/messages that carry a plan_slug
+    // but no recorded harness can still be scoped (backfills items raised before
+    // coord:escalate/coord:send began recording the originating harness).
+    const planHarness = new Map<string, string>();
 
     // 1. Plan items — non-terminal (todo/wip/blocked/needs-human).
     try {
       const plans = await readAllPlans({ includeArchived, ...opts });
-      items.push(...planItemsToAttention(plans, harnessFilter));
+      const planItems = planItemsToAttention(plans, harnessFilter);
+      for (const it of planItems) {
+        if (it.planSlug && it.harnessSlug) planHarness.set(it.planSlug, it.harnessSlug);
+      }
+      items.push(...planItems);
     } catch {
       /* best-effort */
     }
+
+    // Resolve an attention item's harness: its own recorded harnessSlug (now
+    // stamped by coord:escalate / coord:send for harness-scoped agents), else
+    // derived from its plan_slug, else null — a genuinely workspace-level item
+    // (operator/SU/oracle broadcast) where a per-harness chat doesn't apply.
+    const resolveHarness = (recHarness: unknown, planSlug: string | null): string | null => {
+      if (typeof recHarness === 'string' && recHarness && recHarness !== '*') return recHarness;
+      return planSlug ? planHarness.get(planSlug) ?? null : null;
+    };
 
     // 2. Open coord escalations (workspace-level).
     try {
@@ -103,6 +120,7 @@ export default defineTool({
             summary: typeof e.summary === 'string' ? e.summary : '',
             body: typeof e.body === 'string' ? e.body : undefined,
             planSlug: typeof e.plan_slug === 'string' ? e.plan_slug : null,
+            harnessSlug: resolveHarness(e.harnessSlug, typeof e.plan_slug === 'string' ? e.plan_slug : null),
             options: Array.isArray(e.options) ? e.options : [],
           }),
         );
@@ -123,6 +141,7 @@ export default defineTool({
             body: typeof m.body === 'string' ? m.body : undefined,
             from: m.from,
             planSlug: typeof m.plan_slug === 'string' ? m.plan_slug : null,
+            harnessSlug: resolveHarness(m.harnessSlug, typeof m.plan_slug === 'string' ? m.plan_slug : null),
           }),
         );
       }
