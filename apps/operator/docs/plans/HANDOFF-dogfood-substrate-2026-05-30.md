@@ -24,7 +24,52 @@ harness's merged Autobase view back into Postgres, and (b) nothing wrote the
 session shipped both halves. What remains is frontend wiring + a live two-peer
 verification.
 
-## What shipped this session (verified present on disk + wired)
+## Session 2 (2026-05-31) update — TODOs 1-3 done, Option B binding system built
+
+Shipped (all verified: tsc location-diff = 0 new errors; tests green; per-turn commits):
+
+- **TODO 3 — BootHistoryKind drift** (`be200deb`). They were REAL TS2345 errors (not
+  "widening"). Added `peer_connected` + `swarm_join_failed` to BOTH unions
+  (boot-history.ts + BootHistoryTable.tsx) + the two `Record` maps; fixed the
+  pre-existing `boot-all.test.ts:25` fake handle missing `swarm`.
+- **TODO 2 — finalize re-boots the harness** (`bf25171b`). New `rebootHarness()` in
+  boot-all.ts (= closeBootedHarness + bootSingleHarness); finalize calls it
+  best-effort, flag-gated, surfaces a `swarm` field. **Process topology verified**:
+  the substrate boots in the :3070 hono-host (`bin/host-bootstrap.ts`), which ALSO
+  serves the finalize route → in-process reboot is safe (NOT a 2nd corestore). The
+  `instrumentation-node.ts:~341` boot block is retired/dead (Next :3055 has no flag).
+  Also hardened a pre-existing native-crash flake (the `83a12e90` real-boot test
+  core-dumped on vitest worker teardown; now deterministic via a throwing resolver).
+- **TODO 1 — binding/resolve route was ENTIRELY MISSING** (not stubbed). Confirmed via
+  live curl: 404 on both :3070 and :3055. The binding SERVICE (resolveRepoBinding,
+  createUnclaimedBinding) existed but was unexposed over HTTP. Built the full Option-B
+  binding system (user-chosen over the minimal route):
+  - `82d4891f` — exported `resolveRepoIdentity()` (returns the GitHub-resolved repo
+    id/owner/repo EVEN with no binding row; resolveRepoBinding is now a thin wrapper) +
+    stored `provisional_owner_github_login` on the binding cache (schema column + ALTER).
+  - `0a07f3b3` — `POST /api/harness/binding/resolve` route (wraps resolveRepoIdentity,
+    maps BindingServiceError→HTTP, registered in routes/index.ts).
+  - `abd6fb7d` — finalize now creates the unclaimed binding row (createUnclaimedBinding),
+    BINDING_EXISTS-safe, best-effort, surfaces a `binding` field.
+- `91b6afe4` — fixed a pre-existing red test (DOGFOOD_REACTIVE_TABLES count 13→14 from
+  another agent's `a6f30883`).
+
+End-to-end path now exists: wizard → `/binding/resolve` (real github_repository_id +
+existing_binding) → `/share/finalize` writes shared.json + creates binding row + reboots
+to join swarm. **ShareWizard needs NO frontend change** — it already POSTs both routes.
+
+### Still remaining
+1. **Live verification needs (a) a gh-token** (getOctokit; both binding routes return
+   GITHUB_API_DOWN→502 without one — not verified present here) **and (b) a :3070 host
+   restart** (the running host predates all these routes; no hot-reload).
+2. **Live two-peer (P-079)** — still needs Tauri + 2 peers (unchanged).
+3. **P-070 usage-events** — still types-only (no emitUsageEvent/rollupForContributor impl).
+4. **PG→Hyperbee backfill** — still the ShareWizard `defaultRunBackfill` setTimeout(200) stub.
+5. **Pre-existing, NOT mine**: auth-posture (D3) test flags several `/admin/*` routes
+   (plans, locks, dogfood-substrate-*) as `auth:'public'` vs expected verified/trusted
+   (confirmed 'public' on HEAD). Worth a separate auth pass.
+
+## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
    (subject: "feat(dogfood/substrate): Hyperbee→PG read-loop — make the substrate round-trip (P-031 read side)").
