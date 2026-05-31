@@ -287,6 +287,9 @@ export default defineTool({
           mcpConfig,
           allowedTools: [...allowedTools],
           permissionMode: 'bypassPermissions',
+          // Lean mode: the operator orchestrates purely through MCP, so
+          // drop omp's built-in coding tools (~26k tokens of base prompt).
+          disableBuiltinTools: leanMode,
           signal: ctx.signal,
         })) {
           if (ctx.signal.aborted) break;
