@@ -37,12 +37,19 @@ import {
   lookupByMcpName,
   listMcpProjections,
   applyToolManifest,
-  dispatchProjectedTool,
   papercuspGateBypass,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
-import { withWorkspace } from '@restart/db-org';
+// Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
+// assembly below stays host-side; only the reusable, host-agnostic glue moved.
+import {
+  bearerFromExtra,
+  urlFromExtra,
+  headersFromExtra,
+  dispatchProjectedToolToMcp,
+} from '@papercusp/tooldef-mcp';
+import { withWorkspace } from '@papercusp/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
 import { verifyAccessToken } from '@/lib/power-user-token';
@@ -58,36 +65,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /* ─── Helpers ────────────────────────────────────────────────────────── */
-
-function bearerFromExtra(extra: unknown): string {
-  const e = extra as { requestInfo?: { headers?: Record<string, string | string[] | undefined> } };
-  const raw = e?.requestInfo?.headers?.authorization;
-  const auth = Array.isArray(raw) ? raw[0] : raw;
-  if (!auth) return '';
-  return auth.startsWith('Bearer ') ? auth.slice(7) : auth;
-}
-
-function urlFromExtra(extra: unknown): URL | null {
-  const e = extra as { requestInfo?: { url?: unknown } };
-  const raw = e?.requestInfo?.url;
-  if (!raw) return null;
-  try {
-    return new URL(raw as string);
-  } catch {
-    return null;
-  }
-}
-
-function headersFromExtra(extra: unknown): Headers {
-  const raw = (extra as { requestInfo?: { headers?: Record<string, string | string[] | undefined> } })
-    ?.requestInfo?.headers ?? {};
-  const h = new Headers();
-  for (const [k, v] of Object.entries(raw)) {
-    const flat = Array.isArray(v) ? v.join(', ') : v;
-    if (typeof flat === 'string') h.set(k, flat);
-  }
-  return h;
-}
+// `bearerFromExtra` / `urlFromExtra` / `headersFromExtra` are imported from
+// `@papercusp/tooldef-mcp` (P-031) — generic mcp-handler `extra` extractors.
 
 /**
  * Parse the seven per-spawn URL params and return a partial
@@ -720,16 +699,17 @@ const handler = createMcpHandler(
             spawnRes.ctx.isSuperuser &&
             spawnRes.ctx.workspaceId &&
             spawnRes.ctx.workspaceId !== '*';
-          const runDispatch = async (ctx: UnifiedToolContext) => {
-            const r = await dispatchProjectedTool(projected, toolName, dispatchArgs, ctx, PROJECTED_DEPS);
-            if (!r.ok) {
-              return {
-                isError: true,
-                content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
-              };
-            }
-            return { content: r.result!.content as never };
-          };
+          // Generic projected-dispatch → MCP-result mapping (P-031,
+          // @papercusp/tooldef-mcp). Same shape/behavior as before: success →
+          // { content }, failure → { isError, content:["<code>: <message>"] }.
+          // tooldef-mcp returns an SDK-neutral McpToolCallResult; cast it to the
+          // mutable shape the MCP SDK's setRequestHandler accepts (same shape the
+          // legacy branch below returns) at this host boundary.
+          const runDispatch = (ctx: UnifiedToolContext) =>
+            dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, ctx, PROJECTED_DEPS) as Promise<{
+              content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+              isError?: boolean;
+            }>;
           if (needsTx) {
             return await withWorkspace(spawnRes.ctx.workspaceId, async (tx) => {
               const ctx: UnifiedToolContext = {

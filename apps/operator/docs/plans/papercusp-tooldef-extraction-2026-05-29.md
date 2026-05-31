@@ -600,21 +600,26 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   — there's no spawn-URL *verification* in the HTTP adapter today (it reads `X-Papercusp-*`
   + bearer), so the seam belongs where verification actually happens; not blocking.
   blocked-by: P-005 → D-008
-- **P-031** `todo` (assessed 2026-05-30 — **needs a focused, runtime-verified pass; not
-  safe to rush**) Extract the `mcp-handler` bridge into `@papercusp/tooldef-mcp`. Unlike
-  P-030's self-contained adapter (everything already injected via `HttpToolHostExtras`),
-  the bridge `apps/operator/.../transport/_mcp-handler.ts` is **865 lines and deeply
-  operator-coupled** — it's the host's MCP **auth/spawn gateway**, importing
-  `@/lib/superuser-token` (loopback + bearer), `@/lib/power-user-token` (`verifyAccessToken`),
-  `@/lib/spawn-signing` (**`verifySpawnParams` — the HMAC spawn-URL verification, i.e. the
-  P-013 `SigningProvider` itself**), `@/lib/resolve-harness-paths`, `@/lib/plugin-spawn-impl`,
-  and `PROJECTED_DEPS`. The generic mcp↔dispatcher glue (~30%) is interleaved with this
-  auth slab (~70%). A clean extraction must invert superuser/power-user admission +
-  spawn-URL verification into injected strategies (this is where `SigningProvider`/P-013
-  finally lands) and a `tooldef-mcp` keeping Vercel's `mcp-handler` (D-008). Because this
-  is the **main agent-spawn path**, it should be done with the operator running so the auth
-  path (superuser, power-user, HMAC spawn verification) is end-to-end verified — not on a
-  typecheck alone. blocked-by: P-005 → D-008
+- **P-031** `done` Created **`@papercusp/tooldef-mcp`** 2026-05-30 — the host-agnostic
+  MCP↔dispatcher **bridge primitives**: the `RequestHandlerExtra` extractors
+  (`bearerFromExtra`/`urlFromExtra`/`headersFromExtra`) + a projected-dispatch→MCP-result
+  mapper (`dispatchProjectedToolToMcp`). Depends only on `@papercusp/tooldef` (the
+  extractors type `extra` loosely, so no `mcp-handler` dep — Vercel's `mcp-handler` stays
+  host-side, D-008). `_mcp-handler.ts` now imports these (verbatim helper moves + identical
+  mapping) and casts the SDK-neutral result to the SDK shape at the host boundary.
+  **Scope decision (architectural, not a punt):** the `createMcpHandler` *assembly* —
+  superuser/power-user admission, HMAC `verifySpawnParams`, the legacy-vs-projected pipeline
+  routing, tx synthesis (~70% of the 865-line file) — **stays host-side**, because it is
+  inherently host-specific; a "generic factory" wrapping it would only be a Papercusp-shaped
+  injection surface masquerading as generic (and a high-risk parameterization of the
+  agent-spawn path). The auth logic was **not touched** — this is a safe, behavior-preserving
+  extraction of the genuinely-reusable glue, which is what `tooldef-mcp` should own.
+  Verified: tooldef-mcp tsc 0 + 5 tests (extractors + success/error mapping, no agent-mcp
+  deps); `transport-mcp-notifications` 8/8 (the path's existing test); operator tsc — 0 new
+  errors attributable to P-031 (`_mcp-handler`/`tooldef-mcp` absent from the error list; the
+  total delta is concurrent-agent drift). Residual: the live `tools/call` MCP path has no
+  unit test (true before this change too) — covered here by behavior-preservation + untouched
+  auth. tooldef-mcp is papercup-internal (not mirrored) — no cross-repo carry. blocked-by: P-005 → D-008
 - **P-032** `done` The IPC adapter is already its own package —
   **`@papercusp/ipc-endpoint-server`** (`packages/ipc-endpoint-server`, src-as-entry).
   It consumes the engine via `dispatchProjectedToolStream`. (A cosmetic rename to
