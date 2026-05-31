@@ -81,6 +81,12 @@ export async function startDbos(): Promise<void> {
     // scheduled workflows; their legacy setInterval workers stand down.
     await import('./periodic-workflows');
   }
+  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR === '1') {
+    // Phase 3: the agent pipeline as a durable workflow (default off; the legacy
+    // main loop is the A/B fallback). Registration only — the operator wires the
+    // real invoke runner + routes feature dispatch separately.
+    await import('./orchestrator-workflow');
+  }
 
   await DBOS.launch();
   G.__papercuspDbosStarted = true;
