@@ -16,11 +16,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { toast } from 'sonner';
 import PlanEditor from './PlanEditor';
 import { usePlan } from './plans-api';
 import { InboxItemActions } from './PlanItemsList';
-import { launchAgent } from '@/lib/launch-agent';
+import PlanChatModal from './PlanChatModal';
 import { scrollPlanTarget, stripFrontmatter } from './plan-renderers';
 
 interface Props {
@@ -45,7 +44,7 @@ export default function PlanItemPreview({
 }: Props) {
   const { data, loading, error } = usePlan(planSlug);
   const scopeRef = useRef<HTMLDivElement | null>(null);
-  const [launching, setLaunching] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
 
   const raw = data?.raw ?? data?.prose ?? '';
 
@@ -69,30 +68,6 @@ export default function PlanItemPreview({
     };
   }, [itemId, raw, planSlug]);
 
-  // Launch the plan-context agent (the same interactive OMP agent the plan
-  // pages' "Launch agent" uses). Plan-scoped → it reads the plan, this item,
-  // the Now block, and decisions via its papercusp-su tools; the item id is
-  // in the session label so it's identifiable in /adv Sessions.
-  const handleChat = async () => {
-    if (!planSlug || !itemId || launching) return;
-    setLaunching(true);
-    try {
-      const result = await launchAgent({ slug: null, planSlug, label: `${planSlug} · ${itemId}` });
-      if (result.ok) {
-        toast.success(`Launched a plan-context agent to chat about ${itemId}.`, { duration: 4000 });
-      } else if (result.installCmd) {
-        toast.error(
-          `${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`,
-          { duration: 12000 },
-        );
-      } else {
-        toast.error(`Chat launch failed: ${result.error ?? 'unknown error'}`, { duration: 10000 });
-      }
-    } finally {
-      setLaunching(false);
-    }
-  };
-
   if (!planSlug || !itemId) {
     return (
       <aside className="pc-items__detail">
@@ -109,6 +84,12 @@ export default function PlanItemPreview({
 
   return (
     <aside className="pc-items__detail">
+      <PlanChatModal
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        harnessSlug={harnessSlug}
+        label={`${planSlug} · ${itemId}`}
+      />
       <div className="pc-items__detail-toolbar">
         <span className="pc-items__id">{itemId}</span>
         <div className="pc-items__detail-actions">
@@ -123,11 +104,10 @@ export default function PlanItemPreview({
           <button
             type="button"
             className="pc-items__action-btn pc-items__action-btn--chat"
-            onClick={handleChat}
-            disabled={launching}
-            title="Chat with a plan-context agent about this item (interactive agent session scoped to the plan)"
+            onClick={() => setChatOpen(true)}
+            title="Open an in-app, plan-context agent chat about this item"
           >
-            {launching ? 'Launching…' : '💬 Chat with agent'}
+            💬 Chat
           </button>
         </div>
         <button

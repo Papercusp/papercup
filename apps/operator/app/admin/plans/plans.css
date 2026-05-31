@@ -250,6 +250,19 @@
   flex-shrink: 0;
 }
 
+/* In-app chat modal (PlanChatModal) — hosts the standalone ChatPanel; give
+   it a sized box so the transcript scrolls and the composer stays put. */
+.pc-plan-chat-modal {
+  width: min(840px, 94vw);
+  max-width: 94vw;
+}
+.pc-plan-chat-modal__panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: min(70vh, 640px);
+}
+
 .pc-plans__overview {
   display: flex;
   align-items: center;
