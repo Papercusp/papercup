@@ -15,6 +15,17 @@
  * behavior (what runs, in what order, under which gates) testable without I/O.
  */
 
+/**
+ * Build the harness-scoped needs-human DONE-gate URL (P-008 fix). The plans:items
+ * tool scopes by the `harness` param (defaulting to 'all' = operator plans); the
+ * old `harness_slugs` param was silently ignored, so the gate over-returned
+ * operator-level needs-human items and blocked EVERY harness's finalization.
+ * Using `harness=<slug>` returns only THIS harness's own plans' needs-human items.
+ */
+export function needsHumanGateUrl(substrateBase: string, harnessSlug: string): string {
+  return `${substrateBase}/api/admin/plans/items?needsHuman=true&harness=${encodeURIComponent(harnessSlug)}`;
+}
+
 export type FinalizationStep =
   | { kind: 'invoke'; role: string; extras: string[] }
   | { kind: 'postCuratorOutputs' }

@@ -37,7 +37,7 @@ import {
   type PipelineInvokeRunner,
   type PipelineFinalizer,
 } from './orchestrator-workflow';
-import { planFinalization } from './orchestrator-finalize';
+import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
@@ -124,10 +124,10 @@ function substrateBase(): string {
   );
 }
 
-/** True iff the harness has an open needs-human plan item (blocks DONE). */
+/** True iff the harness has an open needs-human plan item for ITS OWN plans (blocks DONE). */
 async function needsHumanOpen(slug: string): Promise<boolean> {
   try {
-    const url = `${substrateBase()}/api/admin/plans/items?needsHuman=true&harness_slugs=${encodeURIComponent(slug)}`;
+    const url = needsHumanGateUrl(substrateBase(), slug);
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return false;
     const body = (await res.json()) as { items?: unknown[] };

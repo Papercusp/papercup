@@ -1,5 +1,23 @@
 import { describe, test, expect } from 'vitest';
-import { planFinalization } from './orchestrator-finalize';
+import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
+
+describe('needsHumanGateUrl — harness-scoped needs-human DONE gate (P-008 gate fix)', () => {
+  test('scopes by the `harness` param (the plans:items tool key), NOT the ignored `harness_slugs`', () => {
+    const url = needsHumanGateUrl('http://localhost:3070', 'sheets');
+    expect(url).toContain('needsHuman=true');
+    expect(url).toContain('harness=sheets');
+    // The bug: harness_slugs was silently ignored → the tool defaulted to
+    // harness='all' (operator plans), so unrelated operator needs-human items
+    // blocked every harness's finalization.
+    expect(url).not.toContain('harness_slugs');
+  });
+
+  test('url-encodes the slug + uses the given base', () => {
+    const url = needsHumanGateUrl('http://h:3070', 'a/b');
+    expect(url.startsWith('http://h:3070/api/admin/plans/items?')).toBe(true);
+    expect(url).toContain('harness=a%2Fb');
+  });
+});
 
 describe('planFinalization — DONE (porting legacy handleDone)', () => {
   const base = {
