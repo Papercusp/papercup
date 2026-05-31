@@ -57,6 +57,15 @@ export interface AgentConfig {
       .harness/config.json `aiBackend.roles`. Optional: legacy rows/literals
       omit it; `readAgentConfig` always populates it from `parseBackends`. */
   backends?: Partial<Record<SurfaceKey, AgentBackend>>;
+  /** Per-surface MODEL overrides — the companion to `backends` (OQ3). A
+      surface that runs on a non-default backend needs a model id that
+      backend can resolve (the operator brain's default
+      `anthropic/claude-opus-4-7` won't resolve on codex). A surface absent
+      from the map inherits whatever the surface's own default model logic
+      picks. Resolved per-call via `surfaceModel()` and passed as
+      RunAgentChatOptions.model. Distinct from `models` above, which is the
+      per-ROLE map forwarded to the orchestrator pipeline via env. */
+  surfaceModels?: Partial<Record<SurfaceKey, string>>;
 }
 
 /** The in-app brain surfaces that support a per-surface backend override.
@@ -79,6 +88,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   cmd: '',
   models: {},
   backends: {},
+  surfaceModels: {},
 };
 
 export async function readAgentConfig(): Promise<AgentConfig> {
@@ -95,6 +105,7 @@ export async function readAgentConfig(): Promise<AgentConfig> {
         )
       : {},
     backends: parseBackends(raw.backends),
+    surfaceModels: parseSurfaceModels(raw.surfaceModels),
   };
 }
 
@@ -107,6 +118,19 @@ export function parseBackends(raw: unknown): Partial<Record<SurfaceKey, AgentBac
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if ((SURFACE_KEYS as readonly string[]).includes(k) && (v === 'omp' || v === 'claude-code' || v === 'codex')) {
       out[k as SurfaceKey] = v;
+    }
+  }
+  return out;
+}
+
+/** Validate the per-surface model map (OQ3): known surface keys mapped to
+    non-empty string model ids. Unknown keys / non-string values dropped. */
+export function parseSurfaceModels(raw: unknown): Partial<Record<SurfaceKey, string>> {
+  const out: Partial<Record<SurfaceKey, string>> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if ((SURFACE_KEYS as readonly string[]).includes(k) && typeof v === 'string' && v.trim()) {
+      out[k as SurfaceKey] = v.trim();
     }
   }
   return out;
@@ -222,6 +246,18 @@ export async function surfaceBackend(surface: SurfaceKey): Promise<AgentBackend 
   try {
     const cfg = await readAgentConfig();
     return cfg.backends?.[surface];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Per-surface model override (OQ3 companion to surfaceBackend). Returns
+    the configured model id for the surface, or undefined to inherit the
+    surface's own default. Pass straight to RunAgentChatOptions.model. */
+export async function surfaceModel(surface: SurfaceKey): Promise<string | undefined> {
+  try {
+    const cfg = await readAgentConfig();
+    return cfg.surfaceModels?.[surface];
   } catch {
     return undefined;
   }

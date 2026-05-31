@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { effectiveBackend, type AgentConfig } from './agent-config';
+import { effectiveBackend, parseSurfaceModels, parseBackends, type AgentConfig } from './agent-config';
 
 function cfg(partial: Partial<AgentConfig>): AgentConfig {
   return { backend: 'auto', cmd: '', models: {}, ...partial };
@@ -23,5 +23,37 @@ describe('effectiveBackend', () => {
 
   it("defaults 'auto' with an unrecognized binary to omp", () => {
     expect(effectiveBackend(cfg({ backend: 'auto', cmd: 'wrapper.sh' }))).toBe('omp');
+  });
+});
+
+describe('parseSurfaceModels (OQ3)', () => {
+  it('keeps known surfaces mapped to non-empty model ids, trimmed', () => {
+    expect(parseSurfaceModels({ operator: ' gpt-5.5 ', oracle: 'claude-opus-4-7' })).toEqual({
+      operator: 'gpt-5.5',
+      oracle: 'claude-opus-4-7',
+    });
+  });
+
+  it('drops unknown surface keys + empty/non-string values', () => {
+    expect(parseSurfaceModels({ nope: 'x', operator: '', scanner: '  ', plans: 42 as unknown as string })).toEqual({});
+  });
+
+  it('returns {} for non-object input', () => {
+    expect(parseSurfaceModels(null)).toEqual({});
+    expect(parseSurfaceModels(['a'])).toEqual({});
+  });
+});
+
+describe('parseBackends (drift guard for the SurfaceKey set)', () => {
+  it('keeps known surfaces mapped to concrete subprocess backends', () => {
+    expect(parseBackends({ operator: 'codex', oracle: 'claude-code', plans: 'omp' })).toEqual({
+      operator: 'codex',
+      oracle: 'claude-code',
+      plans: 'omp',
+    });
+  });
+
+  it("drops 'auto' / unknown backends + unknown surfaces", () => {
+    expect(parseBackends({ operator: 'auto', nope: 'omp', scanner: 'gemini' })).toEqual({});
   });
 });
