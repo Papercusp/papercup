@@ -9,17 +9,21 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Design plan, needs review before implementation. Investigated why
-moving a harness between workspaces is hard and why a harness can't currently
-live in two workspaces. Root finding: a harness's *identity* is its **slug**,
-which is assumed **globally unique** and resolved against the **process-global
-active workspace** — so "one harness, many workspaces" and "move a harness" both
-fight the grain. This plan proposes reframing identity around the **project
-(the folder, referenced by link not copy)** and making the **(workspace × project)
-pair** the thing that owns data/settings.
+**State:** Design plan. Two load-bearing decisions are now LOCKED by the owner
+(2026-05-31): **D-1 = SHARED results** (a harness's run data is one set, shared
+across workspaces — no per-harness-schema fork) and **config becomes fully
+workspace-owned** (the per-harness `.harness/` overrides move into workspace PG,
+keyed by `(workspace, harness, role)`; the harness folder holds only code). The
+model: a **project** is a folder referenced by link; a **workspace** owns all
+config (3-tier: repo base → workspace default → per-(workspace,harness) override)
+and is the config/settings boundary; **results are shared** by slug. This
+collapses the hardest migration (no per-harness data fork) and makes "different
+prompts per workspace on the same harness" fall out of the workspace-owned config.
 
-**Next:** Owner to weigh in on the open decisions in §4 — especially D-1
-(shared vs forked per-workspace data) — before any migration is written.
+**Next:** Confirm the one remaining sub-decision (D-6: seed-from-repo vs pure
+workspace state for per-harness prompt overrides), then build per §6. The
+slug-identity blockers (§3.1) + workspace addressing (§3.4) are still required
+regardless.
 
 ---
 
@@ -129,18 +133,39 @@ runtime can't address a harness except via the one active workspace.**
 
 ### Decisions (need owner sign-off)
 
-- **D-1 — Per-workspace data: shared or forked? (THE load-bearing decision.)**
-  When the same Project is in workspaces A and B, are its features/issues/runs
-  shared (one set) or independent (per instance)?
-  - **Recommendation: forked / per-instance.** It's what the "test different
-    prompts and compare" use case requires (each workspace = an isolated
-    experiment on shared code), and it matches the desktop per-workspace-PG model
-    (§5). Implication: the per-harness schema must become
-    `(workspace, project)`-scoped — either schema-per-instance
-    (`harness_<ws>_<slug>`) or add `workspace_id` to the per-harness tables.
-  - *Counter-option:* shared feature **definitions** (the spec) but forked
-    **runs/results**. Cleaner conceptually but splits the schema into
-    definition (shared) + execution (per-instance) layers — more work.
+- **D-1 — Per-workspace data: shared or forked? → LOCKED: SHARED (2026-05-31).**
+  The per-harness `harness_<slug>` schema stays **one shared data set** (features,
+  issues, runs) across all workspaces that reference the slug. NO per-harness
+  schema fork. Rationale: the "different prompts per workspace" use case is served
+  by workspace-owned **config** (D-7), not by forking results; the user is fine
+  observing different agent behavior against one shared work-data set. This
+  removes the single largest migration from the plan.
+
+- **D-7 — Config is workspace-owned; the harness folder holds only code → LOCKED
+  (2026-05-31).** Move the per-harness overrides out of the harness folder
+  (`.harness/config.json promptOverrides`, `.harness/prompts/<role>.md`) into
+  workspace PG, keyed by `(workspace_id, harness_slug, role)`. Final resolution
+  is 3-tier: **repo base role prompt** (`apps/operator/prompts/<role>.md`, global)
+  → **workspace default** (`operator_agent_config`) → **per-(workspace,harness)
+  override** (new PG store). Feasible because these overrides are consumed
+  **orchestrator-side** at prompt-build time (`prompt-build.ts` /
+  `role-prompt-from-slug.ts` / `invoke.ts:129`), not by the agent subprocess — so
+  the orchestrator reads them from workspace PG instead of the folder. Effect: the
+  same harness in two workspaces gets independent overrides; linking a folder into
+  N workspaces no longer shares its prompt tuning.
+
+- **D-6 — Per-harness prompt overrides: seed-from-repo or pure workspace state?
+  (OPEN — last sub-decision.)** When D-7 moves live config to workspace PG, what
+  happens to a harness that *ships* `.harness/prompts/<role>.md` in its repo?
+  - **Recommendation: seed-from-repo.** Treat repo `.harness/prompts/` +
+    `config.json promptOverrides` as **default seeds**: on install/link into a
+    workspace, import them into that workspace's `(workspace,harness,role)` store;
+    thereafter the workspace owns the live config (edits are per-workspace, never
+    touch the repo). Preserves "a harness can ship recommended prompts" while
+    keeping live tuning workspace-scoped. Matters for the publish plan: a published
+    harness carries seed defaults, not the publisher's workspace tuning.
+  - *Counter-option:* pure workspace state — prompts never travel with a harness;
+    `.harness/prompts/` is ignored/removed. Simpler, but loses shippable defaults.
 
 - **D-2 — Identity key.** Make `projects` unique on `(workspace_id, slug)` (drop
   the global `projects_slug_idx`), and `token_index` unique on
@@ -184,17 +209,28 @@ the code straddles both*. Picking one (D-4) is a prerequisite for a clean design
 
 ## 6. Phased plan (after decisions)
 
-**Phase 0 — Decisions.** Lock D-1..D-5 with the owner. Nothing below is safe to
-build until D-1 (shared vs forked) and D-4 (topology) are fixed.
+**Phase 0 — Decisions.** D-1 (shared) + D-7 (workspace-owned config) LOCKED.
+Remaining: D-6 (seed vs pure) + D-4 (topology). D-4 still needs a call but no
+longer gates Phase 1 the way forked-data would have.
 
 **Phase 1 — Identity + constraints (schema).**
 - Add `project_id` (stable) to `projects`; make uniqueness `(workspace_id, slug)`;
   drop global `projects_slug_idx`. Migration + backfill.
 - Make `token_index` unique `(workspace_id, harness_slug)`; fix
   `readSystemPrincipal`/provision to be workspace-scoped + idempotent (this also
-  fixes the operator-principal bug we hit). 
-- If D-1 = forked: re-scope the per-harness schema to `(workspace, project)`
-  (schema-per-instance or workspace_id column). Largest migration.
+  fixes the operator-principal bug we hit).
+- **D-1 = shared → the per-harness `harness_<slug>` schema is NOT re-scoped.**
+  The largest migration is OFF the table. Run data stays shared by slug.
+
+**Phase 1b — Workspace-owned config (D-7).**
+- New PG store for per-(workspace, harness, role) overrides (prompt + aiBackend).
+- Repoint `prompt-build.ts` / `role-prompt-from-slug.ts` / `invoke.ts` override
+  reads from `.harness/config.json`+`.harness/prompts/` → the workspace PG store
+  (3-tier resolution). Keep the on-disk read as the D-6 seed path / fallback.
+- `/api/harness/:slug/prompts/*` (PromptsTab) writes to the workspace store
+  instead of the folder.
+- D-6 seed: on install/link, import repo `.harness/prompts/` into the workspace
+  store for that harness.
 
 **Phase 2 — Runtime addressing.**
 - `resolveProject(workspace, slug)`; thread workspace through harness routes
