@@ -70,3 +70,6 @@
 [submodule "libs/generic/tooldef"]
 	path = libs/generic/tooldef
 	url = https://github.com/Papercusp/tooldef.git
+[submodule "libs/generic/tooldef-http"]
+	path = libs/generic/tooldef-http
+	url = https://github.com/Papercusp/tooldef-http.git

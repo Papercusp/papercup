@@ -36,6 +36,7 @@
     "libs/generic/rate-limit",
     "libs/generic/ipc-framing",
     "libs/generic/tooldef",
+    "libs/generic/tooldef-http",
     "libs/generic/ipc-endpoint-server",
     "libs/generic/desktop-ipc",
     "libs/generic/search",
