@@ -274,6 +274,20 @@ Two real fixes the live-boot forced:
 2. **`e65b863c` — wired into the wrong (retired) file.** DBOS was only in `instrumentation-node.ts`, which `host-bootstrap.ts` itself labels the **"(retired) Next instrumentation"**. The live boot path is the Hono host calling `runBootstrap()` in `bin/host-bootstrap.ts` (where `startAutoLoopOnce()` actually boots). Added the flag-gated `startDbos()` there; it's globalThis-idempotent so the leftover instrumentation-node block is a harmless no-op. (Note: the maintenance timers I migrated — telemetry/scratch-gc/etc. — live in the retired instrumentation-node, so they may be dormant in the current architecture; the DBOS `TIMERS` path would actually *restore* them. AutoLoop is the one timer host-bootstrap boots live.)
 Related: P-001
 
+
+### D-021 — P-007 live-verified through the Tauri shell: DBOS is booted in the live operator; the admin tab needed an operator-vite mirror (was Next-only)
+Date: 2026-05-31
+Live-tested the DBOS work through the running Tauri desktop shell (bridge-driven via `tauri-agent-tools`, per `testing/agent-e2e`).
+
+**Positive confirmation — DBOS is booted in the live operator.** `GET /api/admin/dbos/status` issued from inside the webview returns `{ httpStatus:200, enabled:true, counts:[], workflows:[], queues:[] }`. So the `dbos` schema exists in the live embedded PG and the status endpoint works; idle as designed (`.env.local` sets only `PAPERCUSP_DBOS_ENABLE=1`, no TIMERS/AUTOLOOP/ORCHESTRATOR). The route's `auth:{trust:['verified','trusted']}` passes from the webview's trusted context — only a plain-loopback `curl` is rejected (`unverified-loopback`).
+
+**Bug the live test caught — the admin tab was unreachable.** The P-007 DBOS tab was wired into the **Next** AdminShell (`apps/operator/app/admin/`), but the desktop renders the **operator-vite** shell on :3070 — so `/admin` showed only Run/Features/Testing/Docs/Substrate, no DBOS. The `project_adv_live_in_operator_vite` gotcha: admin tabs need the operator-vite mirror, not just the Next page.
+
+**Fix (commit 5e173588).** Added `apps/operator-vite/src/routes/admin/dbos.tsx` — a thin mirror reusing the self-fetching `DbosClient` via the `@/app` alias (same pattern as `dogfood-substrate`) — plus the `{ href:'/admin/dbos', label:'DBOS' }` AdminShell tab. The running `vite build --watch` regenerated `routeTree.gen.ts` + `dist/` (both gitignored); only source was committed.
+
+**Re-verified live after the fix:** `/admin` now shows 6 tabs, `/admin/dbos` resolves (no 404), the panel renders the enabled+idle state (counts row + the WORKFLOW/NAME/STATUS/… table with "no workflows for this filter"), **no console errors**, and nuqs works under operator-vite's TanStack-Router adapter.
+Related: P-007
+
 ## Phase 0 — Spike & validation (GATE)
 
 Prove the two things the plan rests on before anything else: DBOS runs on the embedded PG, and it resumes a
