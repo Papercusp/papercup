@@ -31,6 +31,35 @@ paths are the unverified surface.
 
 ---
 
+## Already verified live (2026-05-31, do NOT redo)
+
+The build session's desktop was up on this exact code (host PID started
+*after* every relevant commit — confirmed by start-time vs commit-time). The
+following were checked live against `:3070`/`:3055` and need no repeat:
+
+- **18 guardrail unit tests green** — `agent-backend-sync` (4), `launch-agent`
+  (5), `role-launch-spec` (3), `bootstrap-role` (6).
+- **P-041 backend round-trip** — POST `surfaceModels.oracle` to
+  `/api/agent-config` → GET returns it → reset to `{}`. The route +
+  `parseSurfaceModels` + storage + snapshot all work. **Still pending:** the
+  `/settings/agent` *widget* driving this in the actual webview (data path
+  behind it is proven).
+- **bootstrap-role route is mounted + principal-gated**, and 4 validation/gating
+  paths return correctly: invalid-role → 400; **codex → 400
+  `codex_role_unsupported`** (the deferred gate is in place); **worker without a
+  feature → 400 `feature_required`** (proves `roleConsumes('worker')` =
+  `feature:'required'` against the live registry); missing harness_slug → 400.
+
+**NOT yet verified (still your job — needs terminal / codex auth / Tauri UI):**
+the bootstrap-role *happy path* against a real harness was deliberately skipped
+(it writes a signed `.mcp.json` into a shared-checkout harness cwd — risky to do
+casually; the happy path is unit-tested with a temp cwd). The genuinely-live
+gaps remain: an actual interactive launch, **tool-scoping enforcement at
+dispatch** (the D-001 core claim — confirm a non-worker tool is rejected for a
+role=worker session), codex (P-013 + codex role), and the UI widgets.
+
+---
+
 ## Step 0 — bring the app up (REQUIRED; do not skip)
 
 Per repo rules, the **only** supported run/test surface is the Tauri shell.

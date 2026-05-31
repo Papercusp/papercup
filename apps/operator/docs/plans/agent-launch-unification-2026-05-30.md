@@ -22,13 +22,25 @@ live e2e.** Unified the agent-backend refactor handoff + psu role sessions:
 - **Phase 5** (surfacing + coupling + docs): P-040 /adv role+feature chips;
   P-041 `surfaceModels` foundation (OQ3); P-042 docs + memory note.
 
-**Outstanding (the verification debt — needs the desktop running on this code
-+ authed codex):**
+**Partial live verification DONE (2026-05-31, desktop up on this code):**
+18 guardrail unit tests green; **P-041 backend round-trip** confirmed via
+`/api/agent-config` (set `surfaceModels.oracle` → GET → reset); **bootstrap-role
+route mounted + principal-gated** with all negative gates live — invalid-role
+400, codex→400 `codex_role_unsupported`, worker-no-feature→400 `feature_required`
+(proves `roleConsumes('worker')`=required on the live registry), missing-harness
+400. Full notes in the e2e handoff brief
+(`agent-launch-unification-e2e-handoff-2026-05-31.md`, "Already verified live").
+
+**Outstanding (the verification debt — needs terminal / authed codex / Tauri UI
+driving; the data paths behind these are proven):**
 - **P-013** — live codex worker e2e (a codex pipeline agent streams a result +
-  fires an MCP tool_call).
+  fires an MCP tool_call). Needs codex re-auth (token was revoked).
 - **Phase 3 e2e** — `psu --role=worker --feature=F` opens a worker session with
-  worker-scoped tools, tracked in /adv.
-- **Phase 4 e2e** — the launch buttons on claude/codex.
+  **worker-scoped tools** (the D-001 claim: confirm a non-worker tool is rejected
+  at dispatch), tracked in /adv. Server gates verified; interactive launch +
+  tool-scoping not yet.
+- **Phase 4 e2e** — the launch buttons on claude/codex (in the webview).
+- **P-041 UI** — the `/settings/agent` model widget driving the (proven) round-trip.
 
 **P-041 consumption DONE (2026-05-31):** `surfaceModel()` is now wired into all
 8 brain surfaces (converse/oracle/scanner/delegate/architect/brainstorm/
