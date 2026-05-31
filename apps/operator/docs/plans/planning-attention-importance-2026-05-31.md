@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phases 1 + most of 2 landed (commits 6e5b6715, d237f7b3). Importance (urgent|high|normal|low) is a first-class item axis end to end: parser keyword + default + lint (P-002/P-003), plan-format spec (P-001), `plans:add-item` requires it with both callers updated (UI +Item modal has a picker; architect handler passes normal pending P-006), the new `plans:set-importance` verb (P-004), and the authoring rubric in the scoper + architect prompts (P-005; orchestrator gets it in code at P-006, operator is consumption-side at P-018). Tests green: plan-parser 13, write-mutators 34, lint 4, tools-md-sync 42, prompt-assembly 17; operator tsc clean for all touched files. Remaining in Phase 2: P-006 (orchestrator sets importance on auto-created needs-human items; urgent for stuck-after-debugger) + P-007 (enforcement test).
+**State:** Phases 1 + 2 COMPLETE (commits 6e5b6715, d237f7b3, 7f5e64eb + submodule a5c34aa / pointer 24991dc0). Importance (urgent|high|normal|low) is wired end to end: parser keyword/default/lint (P-002/P-003), spec (P-001), `plans:add-item` requires it with both callers updated and a new `plans:set-importance` verb + `/api/admin/plans/set-importance` route (P-004), the authoring rubric in scoper + architect operator-side prompts (P-005), and the harness orchestrator + architect prompts now set importance on needs-human escalations (urgent when a feature is stuck after the debugger threshold) — closing the "3-failed-attempts" gap (P-006). Enforcement unit-tested (P-007). All green: plan-parser 13, write-mutators 37, lint 4, tools-md-sync 42, prompt-assembly 17; operator tsc clean for touched files. NOTE: the spec docs static mirror (apps/operator/public/internal/docs) still needs a `cd apps/operator-docs && npm run build` (auto on prod build).
 
-**Next:** P-006 — orchestrator sets importance when it auto-creates needs-human items (urgent for a feature still failing after the debugger threshold), then P-007, then Phase 3 (AttentionItem read-model + coord/smoke/plan-review adapters).
+**Next:** Phase 3 — define the generic `AttentionItem` read-model (P-008), the adapters (plan-item P-009, coord-escalation P-010, smoke-fail P-025, plan-review P-026, coord-message P-027), and the grouped/importance-sorted cross-harness reader (P-011) preserving the orchestrator needs-human gate (P-012).
 
 ## Background
 
@@ -56,8 +56,8 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 ## Phase 2 — Rubric + agent enforcement
 
 - **P-005** `done` Author the importance rubric (see the "Rubric" section below) and add it to the scoper, architect, orchestrator, and operator persona/tools prompts under `apps/operator/prompts/`. References D-002. (rubric in scoper+architect tools.md; orchestrator=code via P-006; operator is consumption-side P-018)
-- **P-006** `todo` Orchestrator — when it auto-creates a `needs-human` item (ESCALATE→item per shipped P-011; architect-REVIEW→item per shipped P-012) it must set `importance` from the rubric; set `urgent` for a feature still failing after the debugger threshold (closes the "3-failed-attempts alert" gap, which today lands as a plain needs-human item with no urgency). blocked-by: P-004
-- **P-007** `todo` `tools-md-sync` + prompt-assembly tests green; verify `plans:add-item` enforcement with a unit test.
+- **P-006** `done` Orchestrator — when it auto-creates a `needs-human` item (ESCALATE→item per shipped P-011; architect-REVIEW→item per shipped P-012) it must set `importance` from the rubric; set `urgent` for a feature still failing after the debugger threshold (closes the "3-failed-attempts alert" gap, which today lands as a plain needs-human item with no urgency). blocked-by: P-004 (harness orchestrator+architect prompts set importance via set-importance route on needs-human flips; urgent when stuck)
+- **P-007** `done` `tools-md-sync` + prompt-assembly tests green; verify `plans:add-item` enforcement with a unit test.
 
 ## Phase 3 — Generic AttentionItem read-model + adapters + reader
 
