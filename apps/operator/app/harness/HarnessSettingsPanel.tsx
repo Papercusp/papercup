@@ -374,7 +374,9 @@ export default function HarnessSettingsPanel({
     if (!l.every((s) => s.length > 0 && s.length <= 32)) {
       return { ok: false, msg: 'Labels must be non-empty and ≤32 characters' };
     }
-    if (Buffer.byteLength?.(parallel.adaptive.rubric, 'utf8') > RUBRIC_MAX_BYTES) {
+    // UTF-8 byte length the browser-safe way — `Buffer` is a Node global and
+    // doesn't exist in the Tauri WebKit renderer ("Can't find variable: Buffer").
+    if (new TextEncoder().encode(parallel.adaptive.rubric).length > RUBRIC_MAX_BYTES) {
       return { ok: false, msg: `Rubric exceeds ${RUBRIC_MAX_BYTES} bytes` };
     }
     return { ok: true, msg: '' };
