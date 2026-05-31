@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phases 1+2 complete; Phase 3 backend underway. DONE this pass (commit pending in apps/operator/lib/attention/): P-008 the `AttentionItem` read-model type (nullable planSlug/itemRef, discriminated `ref`, importanceRank/sortByImportance, severityToImportance) and the five pure adapters — P-009 plan-item, P-010 coord-escalation, P-025 smoke-fail, P-026 plan-review, P-027 coord-message — each declaring its kind's title/body/status/importance/action-buttons. 11 adapter unit tests green. (Note: severityToImportance maps question→high, a reasoned refinement of D-003's draft question→normal — an escalated question means the agent is paused.) REMAINING in Phase 3: P-011 the reader that fetches real records from each source (plans, coord event log, harness_smoke_test, harness_plan_review), maps them through the adapters, and returns them grouped by plan (+ synthetic per-harness "Alerts" bucket for unattached), importance-sorted, harness-filtered, cross-harness union; P-012 preserve the orchestrator needs-human DONE-gate. Then Phase 4 (UI) + Phase 5 (push/consumption).
+**State:** Phases 1, 2, and the Phase 3 BACKEND are complete. Phase 3 (P-008–P-012, P-025–P-027 all done): the generic AttentionItem read-model + 5 pure adapters (apps/operator/lib/attention/) + buildAttentionGroups (group by plan + synthetic per-harness Alerts bucket, importance-sorted) + the `plans:attention` reader tool that unions all five live sources (plan items, open coord escalations, coord messages-to-human, failing smoke tests, plans-awaiting-review), best-effort each, exposed at GET /api/admin/plans/attention. The orchestrator needs-human DONE-gate (plans:items?needsHuman) is untouched (P-012). Tests: attention adapters 11 + group 5, tools-md-sync 42, all green; tsc clean for the new files. So the entire BACKEND + abstraction is done — only UI and delivery remain.
 
-**Next:** P-011 — build the attention reader (union the five sources via the adapters, group by plan + Alerts bucket, importance-sort, harness filter / cross-harness), keeping the orchestrator needs-human gate (P-012) working.
+**Next:** Phase 4 (UI) — consume plans:attention in the Planning tab: rename the todo filter "Needs Decision"→"ToDos" (P-013), add the "Other" filter for non-plan-item kinds (P-013/D-008), importance badges (P-014), the detail pane per-kind action buttons (P-015), cross-harness selector (P-016), and action wiring (P-017). Then Phase 5 (push-over-IPC + operator/orchestrator consumption).
 
 ## Background
 
@@ -61,14 +61,14 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 
 ## Phase 3 — Generic AttentionItem read-model + adapters + reader
 
-- **P-008** `todo` Define a shared `AttentionItem` type with `id`, `kind`, `source`, `harnessSlug`, nullable `planSlug` + `itemRef` (P-NNN), `title`, `body`, `status`, `importance`, `needsHuman`, a typed `actions[]` each kind declares, and a `ref` back to the backend. An unattached item (an escalation with no plan, a smoke-fail) carries only a `body` message. References D-004, D-008.
-- **P-009** `todo` Adapter `planItem → AttentionItem` (actions: Chat, Resolve = mark-done). References D-004.
-- **P-010** `todo` Adapter `coordEscalation → AttentionItem`; map `severity` → importance (blocker→urgent or high, question→normal, advisory→low); actions: Chat, Resolve = `coord:resolve(choice)` using the escalation's options. Reads the coord event log (single source of truth); `/coord` stays. References D-004, D-006, D-008.
-- **P-011** `todo` Reader — extend `/api/admin/plans/items` (or add `/api/admin/plans/attention`) to return `AttentionItem`s grouped by plan, importance-sorted, harness-filtered; unattached items (no `planSlug`) group under a synthetic per-harness "Alerts" bucket; cross-harness UNION when "all harnesses" is selected (fan-out via the `harness_slugs` arg `plans:items` already supports). References D-005, D-008.
-- **P-012** `todo` Preserve the orchestrator needs-human DONE-gate (today GET `/api/admin/plans/items?needsHuman=true`) against the new reader shape. blocked-by: P-011
-- **P-025** `todo` Adapter `smokeFail → AttentionItem` — kind `smoke-fail`, no plan link, `body` = failure summary, actions: Chat, View log, Resolve (ack). References D-008.
-- **P-026** `todo` Adapter `planReviewReady → AttentionItem` — kind `plan-review`, from `harness_plan_review`, actions: Open/Review, Chat. References D-008.
-- **P-027** `todo` Adapter `coordMessageToHuman → AttentionItem` — kind `coord-message`, coord messages `to:['human']`, actions: Chat, Ack. References D-008.
+- **P-008** `done` Define a shared `AttentionItem` type with `id`, `kind`, `source`, `harnessSlug`, nullable `planSlug` + `itemRef` (P-NNN), `title`, `body`, `status`, `importance`, `needsHuman`, a typed `actions[]` each kind declares, and a `ref` back to the backend. An unattached item (an escalation with no plan, a smoke-fail) carries only a `body` message. References D-004, D-008.
+- **P-009** `done` Adapter `planItem → AttentionItem` (actions: Chat, Resolve = mark-done). References D-004.
+- **P-010** `done` Adapter `coordEscalation → AttentionItem`; map `severity` → importance (blocker→urgent or high, question→normal, advisory→low); actions: Chat, Resolve = `coord:resolve(choice)` using the escalation's options. Reads the coord event log (single source of truth); `/coord` stays. References D-004, D-006, D-008.
+- **P-011** `done` Reader — extend `/api/admin/plans/items` (or add `/api/admin/plans/attention`) to return `AttentionItem`s grouped by plan, importance-sorted, harness-filtered; unattached items (no `planSlug`) group under a synthetic per-harness "Alerts" bucket; cross-harness UNION when "all harnesses" is selected (fan-out via the `harness_slugs` arg `plans:items` already supports). References D-005, D-008.
+- **P-012** `done` Preserve the orchestrator needs-human DONE-gate (today GET `/api/admin/plans/items?needsHuman=true`) against the new reader shape. blocked-by: P-011
+- **P-025** `done` Adapter `smokeFail → AttentionItem` — kind `smoke-fail`, no plan link, `body` = failure summary, actions: Chat, View log, Resolve (ack). References D-008.
+- **P-026** `done` Adapter `planReviewReady → AttentionItem` — kind `plan-review`, from `harness_plan_review`, actions: Open/Review, Chat. References D-008.
+- **P-027** `done` Adapter `coordMessageToHuman → AttentionItem` — kind `coord-message`, coord messages `to:['human']`, actions: Chat, Ack. References D-008.
 - **P-028** `dropped` Adapters for operator recommendations + design reviews as "Other" kinds — DROPPED per P-022 (they stay importance-aware in their own surfaces). References D-008.
 
 ## Phase 4 — Planning tab UI (rename + Other filter + master-detail + cross-harness)
