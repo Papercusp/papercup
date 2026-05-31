@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences } from './parser';
+import { parsePlan, maskFences, IMPORTANCE_LEVELS, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -44,6 +44,12 @@ const argsSchema = z.object({
     .array(z.string().regex(/^P-\d{3,}$/))
     .optional()
     .describe('Item IDs that must complete before this one can effectively start.'),
+  importance: z
+    .enum([...IMPORTANCE_LEVELS] as [string, ...string[]])
+    .optional()
+    .describe(
+      'Item importance — urgent|high|normal|low (default normal). urgent = interrupt the human now / pick up first; high = should be seen today; normal = usual cadence; low = safe to defer. Set it deliberately per the importance rubric. (Becomes required once the rubric ships to agent prompts — P-005.)',
+    ),
   rationale: z
     .string()
     .optional()
@@ -83,10 +89,18 @@ function parsePlanLazy(body: string): ReturnType<typeof parsePlan> {
   return parsePlan(body);
 }
 
-export function buildItemLine(itemId: string, text: string, blockedBy: string[]): string {
+export function buildItemLine(
+  itemId: string,
+  text: string,
+  blockedBy: string[],
+  importance: Importance = 'normal',
+): string {
   const bbSuffix = blockedBy.length > 0 ? ` blocked-by: ${blockedBy.join(', ')}` : '';
+  // Emit the importance keyword only when it departs from the parser
+  // default (`normal`) — keeps routine lines clean, mirrors blocked-by.
+  const impSuffix = importance !== 'normal' ? ` importance: ${importance}` : '';
   // Single-line form — preserves the ASCII-canonical examples in the spec.
-  return `- **${itemId}** \`todo\` ${text.trim()}${bbSuffix}`;
+  return `- **${itemId}** \`todo\` ${text.trim()}${bbSuffix}${impSuffix}`;
 }
 
 /**
@@ -197,7 +211,12 @@ export default defineTool({
           return { newBody: null, value: { ok: false, code: 'legacy_plan' } };
         }
         const itemId = allocateNextItemId(current);
-        const itemLine = buildItemLine(itemId, args.text, args.blockedBy ?? []);
+        const itemLine = buildItemLine(
+          itemId,
+          args.text,
+          args.blockedBy ?? [],
+          (args.importance as Importance | undefined) ?? 'normal',
+        );
         const { newBody, createdPhase } = appendItemToBody(current, args.phase, itemLine);
         const final = bumpUpdatedDate(newBody);
         return {

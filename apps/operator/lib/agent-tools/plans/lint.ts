@@ -26,6 +26,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, type PlanSourceOpts } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus } from './effective-status';
+import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
 import * as fs from 'node:fs/promises';
 
@@ -192,6 +193,19 @@ export async function lintParsed(
         level: 'error',
         code: 'malformed_item_id',
         message: `Item id ${it.id} is not in P-NNN form.`,
+        itemId: it.id,
+      });
+    }
+    // An `importance:` value the parser didn't recognise was degraded to
+    // `normal` (silently — a parseWarning would become an error above).
+    // Surface it here as a soft WARNING so a typo'd level is visible
+    // without failing CI. Mirrors the parser's `[a-z]+` token boundary.
+    const impRaw = /\bimportance\s*:\s*([a-z]+)/i.exec(it.rawLine);
+    if (impRaw && !(IMPORTANCE_LEVELS as readonly string[]).includes((impRaw[1] ?? '').toLowerCase())) {
+      report.warnings.push({
+        level: 'warning',
+        code: 'unknown_importance',
+        message: `Item ${it.id} has importance: ${impRaw[1]} which isn't one of ${IMPORTANCE_LEVELS.join('/')} — treated as normal.`,
         itemId: it.id,
       });
     }

@@ -19,7 +19,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { readAllPlans, readPlanBySlug } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { resolveEffectiveStatus, type ResolvedItem } from './effective-status';
-import { ITEM_STATUSES } from './parser';
+import { ITEM_STATUSES, IMPORTANCE_LEVELS } from './parser';
 
 const ALL_ROLES = [
   'scoper',
@@ -117,6 +117,16 @@ export default defineTool({
         });
       }
     }
+
+    // Sort by importance (urgent→low); the array index in IMPORTANCE_LEVELS
+    // is the rank. Array.sort is stable, so equal-importance rows keep their
+    // collection order (≈ age within a plan) — the "then age" tiebreaker.
+    const normalRank = IMPORTANCE_LEVELS.indexOf('normal');
+    const impRank = (it: ResolvedItem): number => {
+      const r = IMPORTANCE_LEVELS.indexOf(it.importance);
+      return r === -1 ? normalRank : r;
+    };
+    rows.sort((a, b) => impRank(a.item) - impRank(b.item));
 
     ctxAny.metadata?.({
       count: rows.length,

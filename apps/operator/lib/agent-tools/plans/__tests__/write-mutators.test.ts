@@ -293,6 +293,18 @@ describe('item id allocation + append', () => {
     expect(createdPhase).toBe(false);
     expect(newBody).toContain('- **P-009** `todo` After numbered phase');
   });
+
+  it('omits the importance keyword for the default (normal)', () => {
+    expect(buildItemLine('P-004', 'Fourth item', [])).toBe('- **P-004** `todo` Fourth item');
+    expect(buildItemLine('P-004', 'Fourth item', [], 'normal')).toBe('- **P-004** `todo` Fourth item');
+  });
+
+  it('emits importance after blocked-by for a non-default level', () => {
+    expect(buildItemLine('P-004', 'Fourth item', ['P-002'], 'urgent')).toBe(
+      '- **P-004** `todo` Fourth item blocked-by: P-002 importance: urgent',
+    );
+    expect(buildItemLine('P-005', 'Solo', [], 'high')).toBe('- **P-005** `todo` Solo importance: high');
+  });
 });
 
 describe('bumpUpdatedDate', () => {
