@@ -88,9 +88,25 @@ deliberately not attempted autonomously to avoid risking the running system):**
      ANY failure (no pg / table absent / error / empty). In-app spawns (ctx.pg
      present) read PG; standalone/CLI (no pg) read the file. 4 unit tests; 0 new
      tsc errors.
-   - **STILL PENDING: a live harness-run e2e** (spawn a real pipeline agent,
-     confirm it gets the workspace's override) — the one thing unit tests can't
-     cover. User-gated (won't spawn agents asleep-user).
+   - **✅ SECOND PROMPT PATH closed + LIVE-VERIFIED (2026-05-31).** Found a second
+     harness-prompt path — `assembleRolePrompt` (orchestrator `role-prompt-from-slug`,
+     used by role-launch / pm-dispatch / agent-chats) — that read config.json
+     directly and missed the PG override. Added a caller-resolved
+     `promptOverrideText` param (submodule `98a9138`); wired all three callers
+     (`role-launch-spec`, `pm-dispatch`, `agent-chats`) to resolve the
+     per-(workspace,harness,role) PG override and pass it. **Live-verified
+     end-to-end on the running server WITHOUT spawning an agent**: set a PG
+     override for papercup/scoper → `POST /api/agent-mcp/console/bootstrap-role`
+     (builds the launch prompt, no spawn) → the written launch-context prompt
+     file contained the override marker under "Droid specialization". So the
+     workspace override provably flows into the real assembled role prompt that
+     feeds a spawned agent.
+   - The pipeline path (`invoke.ts` `resolvePromptOverrideWithStore`) reads the
+     same store with the same pattern (4 unit tests); a full pipeline-agent run
+     would just re-confirm the same store read — no longer the critical gap.
+   - Minor cosmetic follow-up: the assembled section header still reads
+     "(from .harness/config.json → promptOverrides.<role>)" even when the source
+     was the PG store — a label in orchestrator `buildPrompt`; harmless.
    - **OPEN DESIGN FORK (D-6 reset semantics):** dual-write makes the on-disk
      `.harness/prompts/<role>.md` a *live mirror*, not an immutable seed — so
      "reset to default" has no clean default source. Options: (a) git-committed
