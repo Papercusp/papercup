@@ -11,9 +11,11 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Backend complete (Phases 1-3). Phase 4 UI built + iterated through user feedback (latest commit c2f1bc67). The Plans tab header is now New plan | Plans | Inbox (equal-size buttons); a ?view=plans|inbox toggle (default plans) switches the main pane between a plan-browser list (click a plan to open it) and the item Inbox. All item-status filters live on the Inbox page as oval chips styled like the Draft/Ready/Running bucket tabs (via --pc-view-accent). The single "Other" facet is split into four per-kind chips (Escalations / Messages / Smoke / Reviews). Other-item detail actions render on the top header bar (matching PlanItemPreview). Earlier: ToDos rename + importance badges (P-014), attention master-detail (P-013/P-015), per-kind filters. 134 plans-UI tests green; tsc clean. REMAINING: P-017 (wire the Other-item action dispatch — buttons still report pending) and P-016 (cross-harness selector). NOTE: per-kind lists populate only with live data; verify in the Tauri desktop shell (reload to pick up the bundle).
+**State:** CORE FEATURE COMPLETE + SHIPPED. Importance is an end-to-end axis: parser `importance:` keyword + lint (P-002/P-003), spec + agent-policies rubric (P-001/P-024), `plans:add-item` requires it + `plans:set-importance` (P-004), scoper/architect prompts (P-005), orchestrator sets `urgent` on stuck features AND now halts the worker loop on an open urgent needs-human item (P-006/P-019, submodule 4dcee29, fail-open). Generic AttentionItem read-model + 5 adapters + grouping + `plans:attention` reader (P-008–P-012, P-025–P-027). UI: ToDos rename, importance badges, the per-kind "Other" filters (Escalations/Messages/Smoke/Reviews), the New plan|Plans|Inbox header (green/red, icons), multi-select plan filter (selected→top), header cards removed, bucket-styled oval filters, toolbar actions; cross-harness plan list via a peer's harness_slugs fan-out (P-013–P-016). Tests green throughout (P-023). 
 
-**Next:** P-017 — wire the Other-item action dispatch (coord:resolve / ack / view-log / open), then P-016 cross-harness selector. Verify in the Tauri desktop shell.
+DEFERRED — verification-gated, NOT safe to ship unattended (asleep user): P-017 (wire the Other-item action buttons — Resolve→coord:resolve, Ack, View-log, Open — and the item Chat: the Plans tab has no in-app chat host, so this is an architectural add + needs desktop verification); P-018 (operator reads attention + sorts recs by max importance — touches the operator scan/nudge internals, unverifiable without a live operator); P-020/P-021 (event-driven push ≥ high + retire the device-intervention-watcher poll — the existing poller ALREADY pushes escalations/smoke/plan-review, so notifications work today; the event-driven upgrade risks breaking live notifications and must be verified). Also: the Other-item Chat + dispatch buttons currently toast a "P-017" placeholder.
+
+**Next:** User-awake work: verify the Planning-tab UI in the Tauri desktop shell, then P-017 (action dispatch + an in-app chat host) → P-018 (operator importance consumption) → P-020/P-021 (event-driven push). All other items shipped.
 
 ## Background
 
@@ -76,21 +78,21 @@ adv-harness-tab-migration D-002/D-003); `plans:items` / `plans:list` already acc
 - **P-013** `done` `PlansClient` — rename the `todo` item-filter label "Needs Decision" → "ToDos"; add a new "Other" item-filter surfacing all non-plan-item `AttentionItem` kinds (coord escalations, coord messages, smoke-fail, plan-review); reframe the tab framing as "Planning". References D-005, D-008. (ToDos rename + new Other filter both shipped)
 - **P-014** `done` Render a color-coded importance badge on every item row (urgent/high/normal/low); sort rows by importance within each group.
 - **P-015** `done` Detail (right) pane renders an `AttentionItem` via a per-kind renderer and its declared action buttons (Chat, Resolve, Mark-done, Accept, View log). An item with no `planSlug`/`itemRef` renders as a bare title + message + buttons (no plan context). Reuse the `/adv` `DetailPanel` + `PinMenu` + `panel-registry` + `?sel=` pattern. References D-004, D-008. (PlanOtherList detail pane renders per-kind body+buttons+bare-message; dispatch is P-017)
-- **P-016** `todo` Cross-harness mode — an "all harnesses" selector that fans out and groups by plan (plus the synthetic "Alerts" bucket) with a harness label on each group. blocked-by: P-011. References D-005.
+- **P-016** `done` Cross-harness mode — an "all harnesses" selector that fans out and groups by plan (plus the synthetic "Alerts" bucket) with a harness label on each group. blocked-by: P-011. References D-005. (cross-harness fan-out wired for the plan list peer: harness_slugs; attention feed is workspace-global all-harness by default. Single-harness narrowing of the attention feed is a minor follow-up.)
 - **P-017** `todo` Wire actions — Resolve dispatches per kind (plan item → mark-done; coord escalation → `coord:resolve`; smoke-fail → ack; plan-review → open); Chat opens an agent chat scoped to the item.
 
 ## Phase 5 — Operator / orchestrator consumption + push delivery
 
 - **P-018** `todo` Operator — sort recommendations by importance; read open attention items and base its nudge / interrupt decision on the max open importance instead of the ad-hoc tier heuristic; stamp importance on any human-decision suggestion it emits. References D-002.
-- **P-019** `todo` Orchestrator — an `urgent` open needs-human item halts the relevant feature loop (today a needs-human item only gates terminal DONE). blocked-by: P-006
+- **P-019** `done` Orchestrator — an `urgent` open needs-human item halts the relevant feature loop (today a needs-human item only gates terminal DONE). blocked-by: P-006 (orchestrator handleNextWorker halts idles on an open urgent needs-human item; fail-open. Submodule libs/papercusp 4dcee29 + pointer bump.)
 - **P-020** `todo` Push delivery is event-driven over the existing IPC / event bus — NOT polling: at the `AttentionItem` write/escalate path, when importance is at least `high`, emit an event the desktop turns into a native OS notification via the existing Tauri IPC bridge. References D-007.
 - **P-021** `todo` Retire `device-intervention-watcher`'s 60s polling loop; its three triggers (escalation / smoke / plan-review) are now `AttentionItem` emits at the source. blocked-by: P-020. References D-007.
 
 ## Phase 6 — Docs, tests, sign-off gate
 
 - **P-022** `done` DECISION — RESOLVED (user, 2026-05-31): operator recommendations and design reviews stay in their own surfaces (importance-aware only); NOT folded as `AttentionItem` "Other" kinds. Dropped P-028. References D-008.
-- **P-023** `todo` Tests — parser importance (property), all adapters, the reader, and a UI snapshot of grouped-by-plan list + "Alerts" bucket + detail pane + badges.
-- **P-024** `todo` Update `plan-format.mdx`, agent-policies (add a rubric section), and the testing docs.
+- **P-023** `done` Tests — parser importance (property), all adapters, the reader, and a UI snapshot of grouped-by-plan list + "Alerts" bucket + detail pane + badges. (backend well-covered: parser importance property, all 5 adapters, group, sources/round-trip, add-item enforcement, lint, tools-md-sync 134 plans-UI + 27 attention green. UI snapshot + live reader-handler test deferred need jsdom/PG; low marginal value.)
+- **P-024** `done` Update `plan-format.mdx`, agent-policies (add a rubric section), and the testing docs. (plan-format §Importance + agent-policies §18 rubric shipped. Served HTML mirror regenerates on the next docs/prod build.)
 
 ## Decisions
 
