@@ -18,9 +18,10 @@
  * the wire spec and trust model.
  */
 
+import os from 'node:os';
+import path from 'node:path';
 import {
   startEndpointIpcServer as startEndpointIpcServerCore,
-  defaultSocketPath,
   type EndpointIpcServer,
   type IpcEndpointHost,
   type StartEndpointIpcServerOptions as CoreStartEndpointIpcServerOptions,
@@ -48,16 +49,38 @@ export type StartEndpointIpcServerOptions = Omit<
   'host'
 >;
 
-export { defaultSocketPath };
 export type { EndpointIpcServer };
+
+/**
+ * Operator socket path: `~/.papercusp/sockets/<pid>.sock` (Linux/macOS)
+ * or `\\.\pipe\papercusp-<pid>` (Windows). The generic package defaults
+ * to a neutral tmpdir path; the operator brand lives here so the Rust
+ * sidecar bootstrap finds the socket where it expects.
+ */
+export function defaultSocketPath(pid: number = process.pid): string {
+  if (process.platform === 'win32') return `\\\\.\\pipe\\papercusp-${pid}`;
+  return path.join(os.homedir(), '.papercusp', 'sockets', `${pid}.sock`);
+}
 
 /**
  * Start the endpoint IPC server bound to the operator host. Thin wrapper
  * over `@papercusp/ipc-endpoint-server` that injects the operator's
- * registry lookup/dispatch + active-workspace resolution.
+ * registry lookup/dispatch + active-workspace resolution, plus the
+ * operator-branded handshake token, socket path, and upstream base — the
+ * package itself stays project-agnostic.
  */
 export function startEndpointIpcServer(
   options: StartEndpointIpcServerOptions = {},
 ): Promise<EndpointIpcServer> {
-  return startEndpointIpcServerCore({ ...options, host: operatorHost });
+  return startEndpointIpcServerCore({
+    ...options,
+    host: operatorHost,
+    // The Rust client (papercusp-desktop) strips this exact prefix.
+    readyToken: options.readyToken ?? 'PAPERCUSP_IPC_READY',
+    socketPath: options.socketPath ?? defaultSocketPath(),
+    upstreamBaseUrl:
+      options.upstreamBaseUrl ??
+      process.env.PAPERCUSP_OPERATOR_BASE ??
+      `http://127.0.0.1:${process.env.PORT ?? 3055}`,
+  });
 }
