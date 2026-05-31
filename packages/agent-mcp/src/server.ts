@@ -27,7 +27,7 @@ import {
 import { z } from 'zod';
 import { withWorkspace } from '@restart/db-org';
 import { resolveBearer } from './auth';
-import { getCatalog, lookup } from '@papercusp/tooldef';
+import { getCatalog, lookup, standardValidate, formatIssues } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import {
   getResourceCatalog,
@@ -81,12 +81,12 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
       },
     };
   }
-  // Validate args via Zod.
-  const parsed = tool.args.safeParse(opts.args);
-  if (!parsed.success) {
+  // Validate args via the tool's Standard Schema validator.
+  const parsed = await standardValidate(tool.args, opts.args);
+  if (!parsed.ok) {
     return {
       ok: false,
-      error: { code: 'invalid_args', message: parsed.error.message },
+      error: { code: 'invalid_args', message: formatIssues(parsed.issues) },
     };
   }
 
@@ -104,7 +104,7 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
           );
         },
       };
-      return await tool.handler(parsed.data, ctx);
+      return await tool.handler(parsed.value, ctx);
     });
     return { ok: true, response };
   } catch (err) {

@@ -26,10 +26,10 @@
  *   });
  */
 
-import type { ZodTypeAny } from 'zod';
 import { createUIResource } from '@mcp-ui/server';
 import { defineTool } from '@papercusp/tooldef';
 import type {
+  StandardSchemaV1,
   ToolDefinition,
   ToolDefinitionInput,
   ToolResponse,
@@ -53,10 +53,10 @@ export interface UIToolHandlerResult<T = unknown> {
   nextCursor?: string;
 }
 
-export interface UIToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny>
+export interface UIToolDefinitionInput<TArgs extends StandardSchemaV1 = StandardSchemaV1>
   extends Omit<ToolDefinitionInput<TArgs>, 'handler'> {
   handler: (
-    args: import('zod').z.infer<TArgs>,
+    args: StandardSchemaV1.InferOutput<TArgs>,
     ctx: import('@papercusp/tooldef').ToolContext,
   ) => Promise<UIToolHandlerResult>;
 }
@@ -65,7 +65,7 @@ function rand(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-export function defineUITool<TArgs extends ZodTypeAny>(
+export function defineUITool<TArgs extends StandardSchemaV1>(
   input: UIToolDefinitionInput<TArgs>,
 ): ToolDefinition<TArgs> {
   return defineTool({

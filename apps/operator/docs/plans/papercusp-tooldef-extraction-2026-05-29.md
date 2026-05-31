@@ -31,28 +31,75 @@ Verified across all four: tooldef typecheck clean + **191** tests; agent-mcp typ
 19 errors (pre-existing baseline — **0 new, 0 lost**) + **111 pass / 1 pre-existing
 fail**. See the **Progress log** (2026-05-30) for design rationale + follow-ups.
 
-**Phase 3 started 2026-05-30:** **P-021 + P-022 shipped** — schema→JSON-Schema is now
-pluggable (`schema-adapter.ts`: `setJsonSchemaAdapter`/`toJsonSchema`, default Zod),
-and all five core conversion callsites route through it; the `import { z }` value-import
-is gone from four core files (only `safeParse` method-calls remain). **P-020** — the
-atomic type-constraint + validation swap (`ZodTypeAny`→`StandardSchemaV1`,
-`safeParse`→`~standard.validate`) — is the remaining Phase-3 core change and the one
-that actually makes the core non-Zod-locked; it's intricate (async validate, the
-`classifyEventWire` binary probe) and deserves a focused pass.
+**Phase 3 is COMPLETE as of 2026-05-30 — the core is no longer Zod-locked (D-002).**
+- **P-021 + P-022**: schema→JSON-Schema is pluggable (`schema-adapter.ts`:
+  `setJsonSchemaAdapter`/`toJsonSchema`, default Zod); all five core conversion
+  callsites route through it.
+- **P-020**: tool `args`/`input`, card `dataSchema`, and `state` are now typed
+  `StandardSchemaV1` (any validator — Zod 3.24+, Valibot, ArkType) and validated via
+  `~standard.validate`, not `.safeParse`. New `standard-schema.ts` (`standardValidate`
+  async / `validateSync` Promise-guard for `publishState` / `formatIssues`). Zod schemas
+  satisfy `StandardSchemaV1` and `InferOutput ≡ z.infer`, so the ~96 host tools compile
+  unchanged. **Scoped exceptions (documented):** `RouteDefinition` stays Zod (routes are
+  validated host-side by `registerRoute`, which P-020 doesn't touch) and `EventsSchema`
+  stays Zod (event wire-classification needs schema introspection — `classifyEventWire`'s
+  `_def`/binary probe — that Standard Schema's `validate()` can't expose).
+- **P-023**: the host keeps Zod for all its tools (zero churn) — satisfied by default.
 
-**Next:** **P-020** (finish Phase 3); **Phase 5** (re-home the host adapter, P-040+) is
-unblocked — all DI seams exist; **Phase 4** (transport extraction) carries the formal
-`SigningProvider`/`contextSchema` (was P-013). Follow-up: generic `Tx` on
-`UnifiedToolContext` (only the legacy `ToolContext` got it in P-010); `isSuperuser`/
-`isPowerUser` remain host ctx *metadata*, no longer read by engine gates.
+**Verified (whole arc + P-020):** tooldef tsc **0** + **202 tests** (incl. a hand-rolled
+non-Zod `StandardSchemaV1` validator proof — `standard-schema.test.ts`); agent-mcp tsc
+**19 = baseline** + **113 tests**; operator tsc **0 new errors** (proven via a targeted
+stash baseline — the 3 `routes/index.ts` cast errors are pre-existing, identical at HEAD);
+standalone example still runs.
 
-> ⚠️ **Pre-existing baseline note:** commit `4a5ac215` (another agent's Phase-6
-> chat-protocol adoption) added `import … from '@papercusp/chat-protocol'` to
-> `tooldef/src/types.ts`, but that package doesn't exist yet — so tooldef `tsc`
-> currently reports **2 errors** unrelated to this arc. P-021's own files are clean
-> (verified) and the 191 tooldef tests pass. Not reverted (intentional WIP).
+**Next:** **Phase 4** (transport extraction → `tooldef-http`/`-mcp`/`-ipc`, carrying the
+formal `SigningProvider`/`contextSchema` that was P-013) and **Phase 5** (re-home the
+host adapter, P-040+ — now mostly consolidation; all DI seams exist). **Phase 6**
+(verification + docs). Follow-up: generic `Tx` on `UnifiedToolContext` (only the legacy
+`ToolContext` got it in P-010); `isSuperuser`/`isPowerUser` remain host ctx *metadata*.
+
+> ℹ️ **Resolved 2026-05-30:** the `@papercusp/chat-protocol` build break (from commit
+> `4a5ac215`) was the submodule's `package.json` declaring its entry only via `exports`
+> (no top-level `main`/`types`), unresolvable under classic `moduleResolution: node`.
+> Fixed by adding `main`/`types` to the submodule (pushed `916861f`) + bumping the pin
+> (`f41566f5`). tooldef tsc is back to 0 baseline errors.
 
 ## Progress log
+
+### 2026-05-30 — P-020 shipped (Standard Schema; Phase 3 complete, core not Zod-locked)
+
+Files: `packages/tooldef/src/{standard-schema.ts (new),standard-schema.test.ts (new),
+types,define-tool,tool-projection,dispatch-stack,card-correlator,index}.ts` +
+`package.json`; host: `packages/agent-mcp/src/{define-ui-tool,server}.ts`.
+
+**De-risked first.** A throwaway type probe confirmed the make-or-break: a Zod schema
+satisfies `StandardSchemaV1` and `StandardSchemaV1.InferOutput<ZodSchema> ≡ z.infer` —
+so swapping `args: ZodTypeAny` → `args: StandardSchemaV1` wouldn't break the ~96 host
+tools' handler-arg inference. (`@standard-schema/spec` is installed; Zod 4.4 implements
+`~standard`.)
+
+**Shipped:** tool `args`/`input`, card `dataSchema`, and `state` are typed
+`StandardSchemaV1` and validated via `~standard.validate`. `standard-schema.ts` adds
+`standardValidate` (async; for the already-async define-tool fn wrappers + agent-mcp
+`server.ts`), `validateSync` (a Promise-guard for the fire-and-forget `publishState`
+and the sync card-response handler — throws loudly if a host plugs in an async
+validator on those paths), and `formatIssues`. Host adapters `define-ui-tool.ts` +
+`server.ts` adopted the same. Two internal storage callsites needed an explicit
+cast-through-`unknown` (`register`, the card map) because a specific `TArgs` isn't
+assignable to the `unknown`-output base under Standard Schema's variance — this
+worked under Zod only because `z.infer<ZodTypeAny>` is `any`.
+
+**Scoped exceptions (deliberate, documented in the Now block):** `RouteDefinition`
+(host-validated routes) and `EventsSchema` (wire-classification needs Zod `_def`/binary
+introspection) stay Zod.
+
+**Verified:** tooldef tsc 0 + 202 tests (the new `standard-schema.test.ts` proves a
+hand-rolled non-Zod validator works end-to-end through `standardValidate`/`validateSync`
+— sync, async, and the Promise-guard); agent-mcp tsc 19 = baseline + 113 tests; operator
+tsc **0 new** — confirmed rigorously by stashing only the P-020 files and re-running the
+full operator typecheck: the 3 `routes/index.ts` cast errors are present identically at
+HEAD (pre-existing; P-020 only renamed the displayed type param), and the operator total
+actually fell 615→599 from other agents' concurrent fixes.
 
 ### 2026-05-30 — P-021 + P-022 shipped (pluggable JSON-Schema adapter; Phase 3 begun)
 
@@ -481,8 +528,12 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 ## Phase 3 — Standard Schema adoption
 
-- **P-020** `todo` Replace `ZodTypeAny` constraints on `args` / `input` / `events` /
-  `state` with `StandardSchemaV1`; validate via `~standard.validate`. blocked-by: P-002 → D-002
+- **P-020** `done` Replaced `ZodTypeAny` with `StandardSchemaV1` on tool `args`/`input`,
+  card `dataSchema`, and `state`; validation via `~standard.validate` (`standardValidate`
+  / `validateSync`), not `.safeParse`. Zod schemas satisfy the interface +
+  `InferOutput ≡ z.infer`, so the host's tools are unchanged. `events` + `RouteDefinition`
+  kept on Zod (documented exceptions — wire-classification / host-side route validation).
+  Proven non-Zod-locked via a hand-rolled validator test. Shipped 2026-05-30. blocked-by: P-002 → D-002
 - **P-021** `done` Pluggable `toJsonSchema` registry shipped 2026-05-30 (pulled ahead
   of P-020 — it's cleanly separable and a prerequisite enabler). `schema-adapter.ts`:
   `setJsonSchemaAdapter` + `toJsonSchema`, default = Zod 4's `toJSONSchema`
@@ -492,8 +543,9 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   `classifyEventWire` (`tool-projection.ts`), `card-correlator` open-card snapshots,
   and `openapi-fragments`. The core's `import { z }` value-import is gone from those
   four files (only `safeParse` method-calls remain, which P-020 swaps). blocked-by: P-021
-- **P-023** `todo` Keep Zod as the Papercusp host's chosen validator (no churn for the
-  ~96 existing tools); only the *core* becomes schema-agnostic. blocked-by: P-020
+- **P-023** `done` The host keeps Zod for all ~96 tools (zero churn) — satisfied by
+  construction: Zod schemas satisfy `StandardSchemaV1` and the default `toJsonSchema`
+  adapter is Zod, so only the *core* became schema-agnostic. Shipped 2026-05-30. blocked-by: P-020
 
 ## Phase 4 — Transport adapters (can run after Phase 1)
 
