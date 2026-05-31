@@ -49,8 +49,9 @@ export interface RoleCodexHome {
 
 // ── Shared codex-home internals (role + su) ───────────────────────────
 
-/** codex edits via apply_patch / write_file / edit_file — NOT Edit/Write. */
-const CODEX_LOCK_MATCHER = 'apply_patch|write_file|edit_file';
+/** codex's file-edit tool is `apply_patch` (canonical); `Edit`/`Write` are
+ *  documented matcher aliases. (developers.openai.com/codex/hooks, PR #18391) */
+const CODEX_LOCK_MATCHER = 'apply_patch|Edit|Write';
 
 /** Escape a value for a TOML double-quoted basic string. */
 function tomlEscape(s: string): string {
@@ -86,13 +87,24 @@ function freshCodexHome(codexHome: string): string {
 }
 
 /**
- * Write a fresh `settings.json` into a per-session CODEX_HOME carrying ONLY
- * the SU-locks Pre/PostToolUse hooks (P-030). The home is recreated each
- * launch, so there is nothing to merge — we write our two entries verbatim
- * (the bytes `merge_lock_hooks` in install-standalone-mcp.sh §4f produces
- * for a codex home). No-op (returns false) when the shared hook scripts
- * aren't installed at `~/.papercusp/hooks/cc/`. The launcher must exec codex
- * with `--dangerously-bypass-hook-trust` (the only hooks here are ours).
+ * Write a fresh `hooks.json` into a per-session CODEX_HOME carrying ONLY the
+ * SU-locks Pre/PostToolUse hooks (P-030). The home is recreated each launch,
+ * so there is nothing to merge — we write our two entries verbatim. No-op
+ * (returns false) when the shared hook scripts aren't installed at
+ * `~/.papercusp/hooks/cc/`. The launcher must exec codex with
+ * `--dangerously-bypass-hook-trust` (the only hooks here are ours).
+ *
+ * FILE NAME (D-010): codex discovers hooks at `$CODEX_HOME/hooks.json` or
+ * `config.toml [[hooks.PreToolUse]]` — NOT `settings.json` (the Claude path
+ * the installer §4f + an earlier version of this wrote, which codex silently
+ * ignored). We write `hooks.json`.
+ *
+ * CURRENTLY INERT (D-011): codex 0.135/0.136-alpha do NOT actually fire
+ * PreToolUse for `apply_patch` OR `Bash` in practice (upstream openai/codex
+ * #20204 / #16732 — open). So this config is *correct + ready* but enforces
+ * nothing until codex's hook emission is fixed upstream. codex coordination is
+ * SOFT meanwhile (the playbook instructs voluntary `locks:*` calls). claude's
+ * user-level hooks DO fire — only codex is affected.
  */
 export function writeCodexLockHooks(codexHome: string): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
@@ -100,7 +112,7 @@ export function writeCodexLockHooks(codexHome: string): boolean {
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
   const root = shellSingleQuote(resolveWorkspaceRoot());
-  const settings = {
+  const hooks = {
     hooks: {
       PreToolUse: [
         { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${pre}` }] },
@@ -110,7 +122,7 @@ export function writeCodexLockHooks(codexHome: string): boolean {
       ],
     },
   };
-  writeFileSync(join(codexHome, 'settings.json'), JSON.stringify(settings, null, 2), { mode: 0o600 });
+  writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify(hooks, null, 2), { mode: 0o600 });
   return true;
 }
 

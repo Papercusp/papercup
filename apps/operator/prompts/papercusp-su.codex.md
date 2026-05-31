@@ -23,9 +23,19 @@ authority for presence, handoffs, escalations, and file claims. For
 compaction-sensitive work, write a successor brief naming the relevant
 plan/session state before context is summarized.
 
-File-lock enforcement is **automatic here**: a `PreToolUse` hook in this
-codex-su `CODEX_HOME` claims a lock before each `apply_patch` and
-**blocks it (with the holder's intent) when another agent holds the
-file**. When blocked, pivot/retry/yield — don't route around it. Hand-
-call `locks:acquire` only for a multi-file change held across the commit
-(see the base playbook's "File locking is ENFORCED" section).
+File-lock enforcement is **NOT automatic on Codex** (unlike Claude, whose
+edits a `PreToolUse` hook locks for it). Current Codex builds don't fire
+hooks on `apply_patch` (upstream openai/codex #20204), so **nothing claims
+locks for you** — the cooperative discipline is on you. Before editing any
+file another agent could touch, **call `locks:acquire` yourself**:
+
+```
+locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wait: { max_sec: 300 } }
+```
+
+then edit → commit → `locks:release { lock_id }`. If it returns `busy`,
+pivot/yield to the holder — don't route around it. This is what keeps you
+from clobbering concurrent Claude/OMP agents (whose edits ARE hook-locked
+the same way). See the base playbook's "File locking is ENFORCED" section
+for the mechanics — but on Codex, treat **every** edit as needing the
+explicit claim, not just multi-file changes.

@@ -104,21 +104,23 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('url = "http://x/?a=\\"b\\"\\\\c"');
   });
 
-  it('P-030: installs the SU-locks settings.json (codex matcher) when hooks are present', async () => {
+  it('P-030/D-010: installs the SU-locks hooks.json (codex discovery file) when hooks are present', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 7, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
-    const settings = JSON.parse(readFileSync(join(out.codexHome, 'settings.json'), 'utf8'));
-    expect(settings.hooks.PreToolUse[0].matcher).toBe('apply_patch|write_file|edit_file');
-    expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
-    expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
-    expect(settings.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
+    // D-010: codex reads hooks.json (NOT settings.json, which it ignores).
+    expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.PreToolUse[0].matcher).toBe('apply_patch|Edit|Write');
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+    expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
   });
 
-  it('writeCodexLockHooks no-ops (no settings.json) when the hook scripts are absent', async () => {
+  it('writeCodexLockHooks no-ops (no hooks.json) when the hook scripts are absent', async () => {
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({ sessionKey: 8, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
-    expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
+    expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
   });
 });
 
@@ -169,10 +171,11 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(second.configPath, 'utf8')).toContain('client=s2');
   });
 
-  it('installs the SU-locks settings.json when hooks are present', async () => {
+  it('installs the SU-locks hooks.json when hooks are present', async () => {
     await installFakeHooks();
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({ sessionKey: 6, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
-    expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(true);
+    expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(true);
+    expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
   });
 });
