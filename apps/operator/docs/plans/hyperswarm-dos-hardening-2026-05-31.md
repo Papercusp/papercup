@@ -1,7 +1,7 @@
 ---
 title: Hyperswarm DoS / abuse hardening — connection caps, firewall ban-gate, flood rate-limits
 slug: hyperswarm-dos-hardening-2026-05-31
-status: ready
+status: shipped
 created: 2026-05-31
 updated: 2026-05-31
 owner: aviynw3@gmail.com
@@ -11,18 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Ready for review. The substrate joins Hyperswarm with **zero**
-DoS protection — `lib/sync/hyperbee/swarm.ts` does `new Swarm()` with no
-options and its `connection` handler replicates to **every** peer
-unconditionally (it doesn't even read the `info`/publicKey second arg). No
-connection caps, no `firewall`, no `ban`, no rate-limits. This is the gap
-recorded in `papercusp-trust-model-2026-05-31` §12 ("Anti-flood / DDoS — the
-funnel (and a current gap)"). It is **independent of the per-op-authentication
-trust model** and needed regardless: the trust model decides *who may write*;
-this decides *how much any connected peer can consume*.
+**State:** **Shipped (connection-layer).** Phases 1-3 + 5 are implemented, unit-tested, and committed (`ebc96fba4`, `7604029d2`, `d52444580`). The substrate now joins Hyperswarm with: a `maxPeers` cap (P-001), the peer Noise key surfaced from `PeerInfo` (P-002), a sync `firewall(remotePublicKey)` ban-gate on the constructor (P-003), a TTL ban-list + `socket.destroy()` on live banned peers (P-004), a per-(IP|key) connection-rate limit via `@papercusp/rate-limit` over a new in-memory `BucketStore` (P-005), and `peer_rejected`/`peer_rate_limited` boot-history observability (P-007). New module: `lib/sync/hyperbee/swarm-guard.ts` (process-global guard, injectable for the security layer). 43/43 swarm+guard unit tests green, tsc-clean. **P-006 dropped from this plan** — the per-writer op/byte cap is reshaped into the model-B substrate rewrite (per `papercusp-trust-model-2026-05-31` Addendum C.4(c)), since model B replaces the multi-writer Autobase projection that P-006 targeted. The whole connection layer is model-independent and survives the A→B rewrite unchanged.
 
-**Next:** greenlight Phase 1 (built-in connection caps — no policy decisions),
-then proceed through the firewall ban-gate + rate-limits.
+**Next:** Live multi-peer verification (two desktop peers, confirm a flooding peer is firewall-rejected + appears in boot-history) — deferred until the model-B rewrite plan is underway, since that's when the substrate is next exercised end-to-end. No code work remains in this plan.
 
 ## Background
 
@@ -63,13 +54,13 @@ the other; this lands first.
 
 ## Phase 1 — Built-in connection caps (pure resource ceiling, no policy)
 
-- **P-001** `todo` Pass `maxPeers` / `maxClientConnections` / `maxServerConnections`
+- **P-001** `done` Pass `maxPeers` / `maxClientConnections` / `maxServerConnections` (— maxPeers cap default 256, PAPERCUSP_SWARM_MAX_PEERS in getSharedSwarm; commit ebc96fba4)
   to the Hyperswarm constructor in `getSharedSwarm()` (`swarm.ts`). Env-overridable
   (`PAPERCUSP_SWARM_MAX_PEERS`, …) with conservative defaults. No trust decision —
   a hard ceiling on concurrent connections so one attacker can't exhaust sockets/FDs.
   Acceptance: the swarm factory receives the caps; unit-test via the injected
   factory recording the opts (no network).
-- **P-002** `todo` Surface `PeerInfo` in the `connection` handler — read the
+- **P-002** `done` Surface `PeerInfo` in the `connection` handler — read the (— extractPublicKeyHex threads the peer Noise key hex to onPeerConnected + the guard; commit ebc96fba4)
   ignored second arg, extract `remotePublicKey`, thread it to `onPeerConnected(key)`
   and the rate-limit/ban path. Prerequisite for everything per-peer.
   Acceptance: the handler receives + logs the remote key; `joinHarnessSwarm` unit
@@ -77,20 +68,20 @@ the other; this lands first.
 
 ## Phase 2 — Firewall ban-gate (DoS bans, NOT GitHub admission)
 
-- **P-003** `todo` Add a `firewall(remotePublicKey)` hook to the Hyperswarm
+- **P-003** `done` Add a `firewall(remotePublicKey)` hook to the Hyperswarm (— swarm-guard.firewallremotePublicKey wired into new Swarm{firewall}; injectable guard seam for the security layer's allow-list; commit 7604029d2)
   constructor backed by a runtime ban-list (TTL map of banned keys); return `true`
   (deny) for a banned key — Hyperswarm drops it pre-handshake. Build the hook to take
   an **injected predicate** so the security layer can later compose a GitHub-collaborator
   allow-list into the same hook (this plan only supplies the DoS ban-list). blocked-by: P-002
   Acceptance: a banned key is rejected at connect; unit-test the firewall predicate.
-- **P-004** `todo` Ban-on-abuse wiring: when a peer trips a limiter (Phase 3/4),
+- **P-004** `done` Ban-on-abuse wiring: when a peer trips a limiter (Phase 3/4), (— ban-list key+IP, TTL auto-unban feeds the firewall + a handler sync-drop that calls socket.destroy D-003: ban alone won't close a live conn; commit 7604029d2)
   add its key to the ban-list with a TTL cooldown (auto-unban) + call `PeerInfo.ban()`
   to drop the live connection. blocked-by: P-003
   Acceptance: a flooding peer is banned for the cooldown, then allowed back after TTL.
 
 ## Phase 3 — Per-peer connection rate-limiting (ours)
 
-- **P-005** `todo` Per-remote-key connection-rate limiter via `@papercusp/rate-limit`:
+- **P-005** `done` Per-remote-key connection-rate limiter via `@papercusp/rate-limit`: (— recordConnection: per-IP|key soft bucket via @papercusp/rate-limit + new in-memory BucketStore D-004; over-limit bans key+IP; keyed on IP when available D-003; commit 7604029d2)
   more than N connects per window from one key → add it to the ban-list (P-004) for a
   cooldown. Stops reconnect/churn storms that slip under the static cap. blocked-by: P-004
   Acceptance: a key opening > N connects/window is temp-banned; unit-test the limiter
@@ -98,7 +89,7 @@ the other; this lands first.
 
 ## Phase 4 — Per-writer op/byte flood rate-limiting at the projection (ours)
 
-- **P-006** `todo` At the Hyperbee→PG apply/projection (`applyHyperbeeOpToPg` / the
+- **P-006** `dropped` At the Hyperbee→PG apply/projection (`applyHyperbeeOpToPg` / the (— reshaped → per-author replication/ingest cap, folded into the model-B substrate rewrite separate plan per papercusp-trust-model-2026-05-31 Addendum C.4c. Not done in THIS plan.)
   substrate read-loop), cap ops/sec + bytes/sec **per writer-key**; over-limit → drop the
   op + log + optionally feed the ban-list. Bounds the flood-into-log/PG even from an
   admitted peer (memo §12: "per-writer op-rate-limiting is ours"). Build the rate-limit as
@@ -109,7 +100,7 @@ the other; this lands first.
 
 ## Phase 5 — Observability
 
-- **P-007** `todo` Emit `peer_rejected` / `peer_banned` / `rate_limited` boot-history
+- **P-007** `done` Emit `peer_rejected` / `peer_banned` / `rate_limited` boot-history (— peer_rejected / peer_rate_limited boot-history events + BootHistoryTable kinds; recordConnection returns a reason; per-harness callbacks in swarm.ts; commit d52444580. Renamed from peer_banned/rate_limited; firewall pre-handshake rejects are not observable here — documented.)
   events (alongside the existing `peer_connected`) and surface the counts on
   `/admin/dogfood-substrate`. blocked-by: P-003
   Acceptance: a banned / rate-limited peer appears in `boot_history` + the substrate
