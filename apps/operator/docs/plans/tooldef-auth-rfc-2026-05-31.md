@@ -12,9 +12,9 @@ related: [papercusp-tooldef-extraction-2026-05-29, BRIEF-tooldef-shared-repo-202
 
 ## Now
 
-**State:** §8 audit done (design vs the field — aligned on every major axis; 2 conditional divergences D1/D2 + 1 gap G1, all with verdicts). Phase 1a contract + Phase 1b enforcement BOTH shipped (commit a96bcd55): the `authorize` dispatch gate runs fail-closed after the coarse gates; `GateBypass.policy` (default off, not implied by the other bypasses) is the only skip and it is audited. tsc 0 new errors, 208/208.
+**State:** §8 audit + Phase 1a contract + Phase 1b enforcement + item-2 host-wiring all SHIPPED. tooldef: authorize dispatch gate (fail-closed, audited GateBypass.policy), 208/208. operator: deps.auditAuth → tool_authz_log (migration 090). Census done: 221 capability-only tools, 0 with auth/'public'/authorize.
 
-**Next:** (1) Peer syncs authz.ts + the `authorizeStep`/`GateBypass.policy` changes to the shared `Papercusp/tooldef` repo (peer owns that sync). (2) Host wiring: route `deps.auditAuth` → `apps/operator/lib/auth-audit.ts` `recordAuthEvent`. (3) Phase 2: generic `Principal<TKind>` + reconcile principal RBAC roles ↔ agent `tool.roles` (D-E rename). (4) Phase 3 (per §8 D1): committed default-deny migration — audit every capability-only tool → `auth`/`'public'` + telemetry for unguarded tools.
+**Next:** BLOCKED on peer: (item 1) sync Phase 1b authz.ts + authorizeStep + GateBypass.policy to Papercusp/tooldef (peer-owned; entangled with P-054 fork). THEN, in order: (item 3 / Phase 2) make Principal generic `<TKind>` (contained, backward-compat) → rename `tool.roles`→`tool.agentRoles` across 189 callsites; (item 4 / Phase 3) per-tool default-deny triage — give each of the 221 tools an `auth`/`'public'`, add per-tool reachability telemetry, then flip the dispatcher to deny tools with neither. Phase 2 deliberately gated on the Phase-1b sync to avoid widening the P-054 in-tree-vs-mirror fork.
 
 ## 1. Framing (honest)
 
@@ -272,3 +272,15 @@ Oso "Authorization Patterns in GraphQL" · Permit.io "OPA vs OpenFGA vs Cedar" �
 ### D-001 — D-F resolved + shipped (Phase 1b): authorize is a separate, audited decision
 Date: 2026-05-31
 The resource-`authorize` gate is NOT implied by the role/capability/quota `GateBypass`es. A new `GateBypass.policy` (default OFF) is the only thing that skips it, and even then the skip emits an `AuthAuditEvent` (gate:'authorize', decision:'allow', reason:'gateBypass.policy'). Rationale: the §8 audit against break-glass best practice — a privileged bypass must be policy-governed AND mandatorily logged; a bypassed check that isn't logged is the "silent super-admin" the standard forbids. The framework EMITS the event via the optional `deps.auditAuth` sink; the host wires persistence (papercup → `apps/operator/lib/auth-audit.ts` `recordAuthEvent`). Shipped in packages/tooldef commit a96bcd55; tsc 0 new errors, 208/208 tests.
+
+### D-002 — Items 3 & 4 sized + sequenced (census 2026-05-31); item 2 host-wiring shipped
+Date: 2026-05-31
+Item 2 (host wiring) SHIPPED: `deps.auditAuth` → `recordToolAuthzEvent` → `harness_shared.tool_authz_log` (migration 090, in the libs/papercusp submodule). agent-mcp re-exports the authz surface. tsc 0 new errors. Commits: main 9291d21d, submodule bbfda24, pointer 6aa06d35.
+
+Item 1 (Papercusp/tooldef sync): NOT mine to execute — it's a push to a peer-owned shared remote AND entangled with the open needs-human in-tree-vs-mirror fork (extraction-plan P-054, owner pandawamble@gmail.com). Routed via coord broadcast; needs the peer/human.
+
+Census (tools in apps/operator/lib/agent-tools + packages/agent-mcp/src/tools): 216 defineTool sites, 221 `capability:` gates, 0 `auth:`, 0 `auth:'public'`, 0 `authorize:`. So 100% of first-party tools use the legacy capability-only gate and NONE declare the modern auth/'public'.
+
+Item 4 (Phase 3 default-deny): confirms §8 D1 — a blind flip breaks all 221. It is a per-tool triage migration (assign each tool an `auth` PrincipalRequirements or `'public'`, THEN flip the dispatcher to deny tools with neither), its own phase. tool_authz_log is part of the telemetry foundation.
+
+Item 3 (Phase 2): Principal not yet generic; the D-E rename `tool.roles`→`tool.agentRoles` touches 189 callsites. SEQUENCING: defer Phase 2 until the peer syncs Phase 1b to Papercusp/tooldef — more packages/tooldef divergence now compounds the P-054 fork the peer is reconciling. Order: peer syncs Phase 1b → then Phase 2 (generic Principal, then the 189-site rename) → then Phase 3 (default-deny triage + flip).
