@@ -58,10 +58,25 @@ End-to-end path now exists: wizard → `/binding/resolve` (real github_repositor
 existing_binding) → `/share/finalize` writes shared.json + creates binding row + reboots
 to join swarm. **ShareWizard needs NO frontend change** — it already POSTs both routes.
 
+### LIVE-VERIFIED (after a `systemctl --user restart papercup-dev-api.service`)
+- gh-token: the operator uses `gh auth token` = the active `gh` account (**papercupai**,
+  scope `repo`); confirmed it resolves `Papercusp/papercup` → id **1223568103**.
+- `POST /api/harness/binding/resolve {github_remote:".../Papercusp/papercup.git"}` →
+  **200** `{github_repository_id:1223568103, github_owner:"Papercusp", github_repo:"papercup",
+  existing_binding:null}`. Unparseable remote → **400**.
+- `POST /api/harness/:slug/share/finalize` → live (unregistered-slug probe returns the
+  handler's JSON 404, zero side effects). A *real* finalize writes a git-committed
+  shared.json + creates a binding + joins a swarm = a deliberate share; not exercised.
+- **Live-fix `976c95ee`**: first real call 500'd — `shared_repo_binding_cache` didn't
+  exist because the hono-host never runs the dogfood schema-ensure
+  (`ensureAllDogfoodTables`/`wireDogfoodTriggers` have NO runtime callers; projections
+  don't self-ensure). binding-service now self-ensures its LOCAL-only table.
+  **Broader gap (NOT fixed, worth a pass):** wire `ensureAllDogfoodTables()` +
+  `wireDogfoodTriggers()` into `bin/host-bootstrap.ts` — the read-loop's projection
+  writers will also hit missing tables once a harness has ops to replay.
+
 ### Still remaining
-1. **Live verification needs (a) a gh-token** (getOctokit; both binding routes return
-   GITHUB_API_DOWN→502 without one — not verified present here) **and (b) a :3070 host
-   restart** (the running host predates all these routes; no hot-reload).
+1. ~~Live verification~~ DONE (above). A real share of papercup is the user's call.
 2. **Live two-peer (P-079)** — still needs Tauri + 2 peers (unchanged).
 3. **P-070 usage-events** — still types-only (no emitUsageEvent/rollupForContributor impl).
 4. **PG→Hyperbee backfill** — still the ShareWizard `defaultRunBackfill` setTimeout(200) stub.
