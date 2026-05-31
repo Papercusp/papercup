@@ -3,7 +3,7 @@ title: Production-readiness test coverage — audit + phased plan to a real, exe
 slug: production-readiness-test-coverage-2026-05-30
 status: ready
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-05-31
 owner: aviynw3@gmail.com
 companion-to: [admin-testing-tab-restructure-2026-05-24]
 ---
@@ -157,7 +157,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   test exists today. Assert in-flight runs/lanes/worktrees are cleaned on
   cancel/crash. blocked-by: P-008.
 
-- **P-011** `todo` RLS-actually-isolates test: real PG with two `app.workspace_id`
+- **P-011** `done` RLS-actually-isolates test: real PG with two `app.workspace_id` (workspace RLS isolation proven via dual superuser/harness_app connections commit 5b4fbf71; 4/4 green)
   session settings; assert cross-workspace reads/writes are blocked (today only the
   existence of RLS is regex-asserted). blocked-by: P-002.
 
