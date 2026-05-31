@@ -10,9 +10,9 @@ updated: 2026-05-31
 
 ## Now
 
-**State:** Phases 0-1 done.
+**State:** Phase 3 partial. su raw-CLI verified.
 
-**Next:** P-020: psu su-flow to builder; codex gated.
+**Next:** P-053: solve codex lock; Phase 4 blocked.
 
 ## Background
 
@@ -69,16 +69,17 @@ role launches + `writeRoleCodexHome` work). Key code:
 
 ## Phase 2 — psu SU flow → spec + raw-CLI launch
 
-- **P-020** `wip` psu: route the plain-SU flow through `buildLaunchSpec({kind:'su'})` + raw-CLI launch args (mirror `roleLaunchArgs`), dropping the `SU_WRAPPER_BIN` exec — claude `--append-system-prompt-file <playbook+ctx> --mcp-config <superuser.json> --dangerously-skip-permissions --permission-mode bypassPermissions` (D-004: maybe NOT `--strict-mcp-config`); omp `--approval-mode yolo --append-system-prompt <file> -e <coord.ts>`; codex CODEX_HOME (AGENTS.md=playbook+ctx, config.toml=superuser MCP, +lock hooks, +auth symlink) `--dangerously-bypass-approvals-and-sandbox`. blocked-by: P-012, P-002 (Pure suLaunchArgsbackend,{promptFile,mcpJsonPath,coordExtPath} landed + 5 tests D-005 resolves D-004: no --strict-mcp-config. REMAINS: bootstrap-su returns buildLaunchSpecsu spec, psu execs raw CLI not wrapper, codex CODEX_HOME P-030 gate — these flip the LIVE launch + need P-031/P-032 live verification; held for a supervised session.)
-- **P-021** `todo` Carry the omp coordination extension (`-e ~/.papercusp/papercusp-coord.ts`) into psu's omp launch args for BOTH su and role omp launches (role omp currently lacks it — pre-existing gap this closes). blocked-by: P-020
-- **P-022** `todo` Mint `PAPERCUSP_SID` per psu launch (su + role) and export it in `envelopeEnv` so coord/lock owner identity is per-session (replaces the wrapper's SID minting). blocked-by: P-020
+- **P-020** `done` psu: route the plain-SU flow through `buildLaunchSpec({kind:'su'})` + raw-CLI launch args (mirror `roleLaunchArgs`), dropping the `SU_WRAPPER_BIN` exec — claude `--append-system-prompt-file <playbook+ctx> --mcp-config <superuser.json> --dangerously-skip-permissions --permission-mode bypassPermissions` (D-004: maybe NOT `--strict-mcp-config`); omp `--approval-mode yolo --append-system-prompt <file> -e <coord.ts>`; codex CODEX_HOME (AGENTS.md=playbook+ctx, config.toml=superuser MCP, +lock hooks, +auth symlink) `--dangerously-bypass-approvals-and-sandbox`. blocked-by: P-012, P-002 (Pure suLaunchArgsbackend,{promptFile,mcpJsonPath,coordExtPath} landed + 5 tests D-005 resolves D-004: no --strict-mcp-config. REMAINS: bootstrap-su returns buildLaunchSpecsu spec, psu execs raw CLI not wrapper, codex CODEX_HOME P-030 gate — these flip the LIVE launch + need P-031/P-032 live verification; held for a supervised session.) (bootstrap-su → buildLaunchSpecsu + raw-CLI exec via suLaunchArgs; live-verified claude+codex reach MCP superuser. eb11ecf8d.)
+- **P-021** `done` Carry the omp coordination extension (`-e ~/.papercusp/papercusp-coord.ts`) into psu's omp launch args for BOTH su and role omp launches (role omp currently lacks it — pre-existing gap this closes). blocked-by: P-020 (omp -e coordExtPath carried in suLaunchArgs su + bootstrap-su returns it. Role omp gap remains separate.)
+- **P-022** `done` Mint `PAPERCUSP_SID` per psu launch (su + role) and export it in `envelopeEnv` so coord/lock owner identity is per-session (replaces the wrapper's SID minting). blocked-by: P-020 (PAPERCUSP_SID minted per launch in bootstrap-su + bootstrap-role, exported in envelopeEnv; claude url env-expands it, codex bakes &client=sid.)
 - **P-023** `todo` `psu --profile=engineer|power` (default = a stored default) now that the playbook is assembled per-launch — replaces the per-install `--profile` choice for su sessions. blocked-by: P-011
 
 ## Phase 3 — Coordination / lock-hook preservation (HARD GATE)
 
-- **P-030** `todo` Extend the codex per-session CODEX_HOME builder (`writeRoleCodexHome` + the su equivalent) to install the SU-locks Pre/PostToolUse hooks (`settings.json` in the CODEX_HOME) + `--dangerously-bypass-hook-trust`, so per-session codex keeps the lock enforcement the static `codex-su` home provided. blocked-by: P-002
-- **P-031** `todo` GATE — verify lock enforcement live on all three agents launched via psu (no wrapper): edit a locked file from a psu claude/omp/codex session and confirm the PreToolUse lock hook acquires/blocks exactly as before. NO wrapper deletion until green. blocked-by: P-030, P-020, P-021
-- **P-032** `todo` GATE — verify coord identity: a psu su session appears in `coord:presence` with a per-session `PAPERCUSP_SID` owner, and two concurrent psu sessions get distinct owners (no self-contention — the bug the per-session SID originally fixed). blocked-by: P-022
+- **P-030** `done` Extend the codex per-session CODEX_HOME builder (`writeRoleCodexHome` + the su equivalent) to install the SU-locks Pre/PostToolUse hooks (`settings.json` in the CODEX_HOME) + `--dangerously-bypass-hook-trust`, so per-session codex keeps the lock enforcement the static `codex-su` home provided. blocked-by: P-002 (Per-session codex home su+role installs lock-hook settings.json + hook-trust bypass — install is correct. But D-007: codex 0.135 file_change isn't PreToolUse-hookable so the hooks never fire separate gap, new item.)
+- **P-031** `blocked` GATE — verify lock enforcement live on all three agents launched via psu (no wrapper): edit a locked file from a psu claude/omp/codex session and confirm the PreToolUse lock hook acquires/blocks exactly as before. NO wrapper deletion until green. blocked-by: P-030, P-020, P-021 (PARTIAL: claude lock = user-level Edit|Write hooks unchanged, fire. codex lock = RED — D-007: codex 0.135 file_change not PreToolUse-hookable, hooks never fire verified with catch-all matcher. omp -e not re-verified. Blocks Phase 4 wrapper deletion until codex lock solved.)
+- **P-032** `wip` GATE — verify coord identity: a psu su session appears in `coord:presence` with a per-session `PAPERCUSP_SID` owner, and two concurrent psu sessions get distinct owners (no self-contention — the bug the per-session SID originally fixed). blocked-by: P-022 (PAPERCUSP_SID minted per-session + in envelopeEnv verified in bootstrap-su responses; distinct su-<uuid> per call. Full coord:presence two-session distinctness check still owed.)
+- **P-053** `todo` Solve codex 0.135 lock enforcement (D-007): codex edits via a native `file_change` item that is NOT PreToolUse-hookable (verified — a catch-all `.*` matcher never fired), so the SU-locks Pre/PostToolUse hooks are dead for codex. Options: (a) a codex edit/patch-approval hook event that fires on file_change, (b) route codex edits through a hookable tool, (c) accept no hard locks for codex and coordinate via `coord:declare-intent`. Until resolved, codex su has NO lock enforcement and Phase 4 stays blocked for all three (the gate is a set). blocked-by: P-030
 
 ## Phase 4 — Retire the wrappers + shrink the installer
 
@@ -91,6 +92,7 @@ role launches + `writeRoleCodexHome` work). Key code:
 - **P-050** `todo` Delete now-dead wrapper helpers (`omp-su-wrapper.ts`, the codex-su-home installer bits, and `ensure-omp-su` IF only the wrapper used it — keep boot-used pieces); knip-check. blocked-by: P-040
 - **P-051** `todo` Unit tests: `buildLaunchSpec` su variant (playbook prompt + superuser MCP); psu su-flow launch args per agent; resume args; update/retire wrapper-specific tests. blocked-by: P-020
 - **P-052** `todo` Docs + memory: rewrite `agent-spawning/terminal-wrappers.mdx` (psu is the only launcher; su is the operator role at superuser tier; per-launch playbook + profile); update install docs; memory note that the `*-su` wrappers are retired and there's one `psu`/`buildLaunchSpec` path. blocked-by: P-040
+
 
 ## Decisions
 
@@ -135,3 +137,24 @@ This preserves the prior `claude-su` wrapper behavior (it carried no --mcp-confi
 
 Codified in `suLaunchArgs` in psu-launcher.mjs + a test asserting the args do NOT contain --strict-mcp-config. Revisit only if a superuser session must be hard-isolated to the papercusp server (it currently should not be).
 Related: P-020
+
+### D-006 — D-006: codex su bearer must be baked as http_headers, not bearer_token_env_var
+Date: 2026-05-31
+Verified live on codex 0.135: a per-session SU CODEX_HOME whose config.toml uses `bearer_token_env_var = "PAPERCUSP_SU_TOKEN"` connects to the streamable_http MCP but does NOT deliver a valid bearer — the server sees no superuser auth (agent_tools:list → isSuperuser:false). Baking the bearer instead as `http_headers = { Authorization = "Bearer <tok>" }` works: isSuperuser:true, the full 217-tool superuser surface. (Reproduced both ways against the live operator; the env-var form is what install-standalone-mcp.sh §4f + chat-stream.ts use, so the static codex-su wrapper shares this latent bug.)
+
+So writeSuCodexHome bakes the bearer via http_headers, reading the token server-side (readSuperuserToken) — the home is mode-0600 + ephemeral (rebuilt each launch), exactly like claude's ~/.claude.json header, so writing the secret there is acceptable. psu no longer exports PAPERCUSP_SU_TOKEN for codex.
+
+Shipped in eb11ecf8d.
+Related: P-030
+
+### D-007 — D-007 (GATE FINDING): codex 0.135 file edits are NOT PreToolUse-hookable → lock enforcement broken
+Date: 2026-05-31
+The P-031 lock gate surfaced a real, pre-existing gap. codex 0.135 performs file edits via a native `file_change` turn item, NOT a tool/function call. Verified: with a per-session CODEX_HOME settings.json carrying a PreToolUse hook with a CATCH-ALL matcher `.*`, codex edited a file and the hook NEVER fired (empty hook log; file created). So the SU-locks Pre/PostToolUse hooks cannot intercept codex edits at all — no matcher fixes it. The matcher `apply_patch|write_file|edit_file` (installer §4f + writeSuCodexHome) only ever matched an OLDER codex that exposed apply_patch as a tool.
+
+Consequences:
+- codex su lock enforcement does NOT work (and never did for the static codex-su on 0.135). MCP superuser works fine; only the lock hook is dead.
+- The D-003 hard gate is therefore RED for codex → wrappers must NOT be retired (Phase 4 stays blocked) until codex lock enforcement is solved by a DIFFERENT mechanism (a codex edit/patch-approval hook event if one exists, routing edits through a hookable tool, or coordinating codex via coord:declare-intent without hard locks).
+- claude lock enforcement is unaffected (user-level Edit|Write|MultiEdit hooks; claude edits ARE tool calls). omp uses a module extension (-e) — not re-verified this session.
+
+New work item added for the codex lock mechanism.
+Related: P-030, P-031
