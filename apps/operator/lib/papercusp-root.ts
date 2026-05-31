@@ -21,12 +21,15 @@
  * workspace served data from it until the operator was restarted.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { workspacesRoot } from '@/lib/workspace-registry';
+import { workspacesRoot, activeWorkspaceId } from '@/lib/workspace-registry';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 interface CacheKey {
   env: string | undefined;
+  /** The request-scoped active workspace — so two concurrent windows on
+   *  different workspaces don't share one cached root (P-052). */
+  workspace: string;
   registryMtime: number;
   registryContent: string | null;
 }
@@ -40,11 +43,21 @@ function currentKey(): CacheKey {
     mtime = statSync(idx).mtimeMs;
     content = readFileSync(idx, 'utf8');
   } catch { /* missing/unreadable — both fields stay zero/null */ }
-  return { env: process.env.PAPERCUSP_HOME, registryMtime: mtime, registryContent: content };
+  return {
+    env: process.env.PAPERCUSP_HOME,
+    workspace: activeWorkspaceId(),
+    registryMtime: mtime,
+    registryContent: content,
+  };
 }
 
 function keysEqual(a: CacheKey, b: CacheKey): boolean {
-  return a.env === b.env && a.registryMtime === b.registryMtime && a.registryContent === b.registryContent;
+  return (
+    a.env === b.env &&
+    a.workspace === b.workspace &&
+    a.registryMtime === b.registryMtime &&
+    a.registryContent === b.registryContent
+  );
 }
 
 export function papercuspRoot(): string {
@@ -63,15 +76,14 @@ export function _resetPapercuspRootForTests(): void {
 function resolve(): string {
   if (process.env.PAPERCUSP_HOME) return process.env.PAPERCUSP_HOME;
 
-  const wsIndex = join(workspacesRoot(), 'registry.json');
-  if (existsSync(wsIndex)) {
-    try {
-      const parsed = JSON.parse(readFileSync(wsIndex, 'utf8')) as { current?: string };
-      if (parsed.current) {
-        const cand = join(workspacesRoot(), parsed.current, '.papercusp');
-        if (existsSync(cand)) return cand;
-      }
-    } catch { /* fall through */ }
+  // Resolve against the REQUEST workspace (activeWorkspaceId → request-scoped
+  // ALS, falling back to the global outside a request), NOT the registry
+  // `current` directly — otherwise a request on workspace B reads A's
+  // ~/.papercusp under the shared-operator model (P-052).
+  const ws = activeWorkspaceId();
+  if (ws) {
+    const cand = join(workspacesRoot(), ws, '.papercusp');
+    if (existsSync(cand)) return cand;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires

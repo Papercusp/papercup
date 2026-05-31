@@ -28,6 +28,17 @@ const ALLOW = new Set([
 // Match the conventional ways code reads the active workspace off the registry.
 const OFFENSE = [/\breg\.current\b/, /\bregistry\.current\b/, /readRegistry\(\)[^;\n]*\.current\b/];
 
+/**
+ * Broader catch: any file that reads the registry FILE directly AND accesses
+ * `.current` is resolving the active workspace by hand under a non-conventional
+ * var name (e.g. `JSON.parse(readFileSync('registry.json')).current`). Inside a
+ * file that touches registry.json, `.current` is the active workspace, not a ref.
+ */
+function readsRegistryCurrentByHand(code: string): boolean {
+  const readsRegistryFile = /registry\.json/.test(code) && /readFileSync|existsSync|statSync/.test(code);
+  return readsRegistryFile && /\.current\b/.test(code);
+}
+
 function walk(dir: string, out: string[]): void {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === '.next' || name === 'dist') continue;
@@ -56,7 +67,9 @@ describe('P-061: no direct reg.current reads in request-path code', () => {
       const suffix = relative(LIB_ROOT, file);
       if (ALLOW.has(suffix)) continue;
       const code = stripComments(readFileSync(file, 'utf8'));
-      if (OFFENSE.some((re) => re.test(code))) offenders.push(suffix);
+      if (OFFENSE.some((re) => re.test(code)) || readsRegistryCurrentByHand(code)) {
+        offenders.push(suffix);
+      }
     }
     expect(
       offenders,
@@ -76,5 +89,18 @@ describe('P-061: no direct reg.current reads in request-path code', () => {
     expect(hits('inputRef.current?.focus();')).toBe(false);
     expect(hits('// resolve against reg.current historically')).toBe(false);
     expect(hits('const reg = readRegistry(); return reg.workspaces;')).toBe(false);
+  });
+
+  it('the broader detector catches a by-hand registry.json current read (e.g. parsed.current)', () => {
+    const byHand =
+      `const parsed = JSON.parse(readFileSync(join(root, 'registry.json'), 'utf8'));\n` +
+      `if (parsed.current) return parsed.current;`;
+    expect(readsRegistryCurrentByHand(byHand)).toBe(true);
+    // A registry read for enumeration (.workspaces) is fine:
+    expect(
+      readsRegistryCurrentByHand(`const r = JSON.parse(readFileSync('registry.json')); return r.workspaces;`),
+    ).toBe(false);
+    // A plain ref read with no registry file is fine:
+    expect(readsRegistryCurrentByHand(`scrollRef.current.scrollTop = 0;`)).toBe(false);
   });
 });
