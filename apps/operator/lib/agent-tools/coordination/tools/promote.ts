@@ -138,6 +138,10 @@ const FEATURE_INPUT = z.object({
   from_items: z
     .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
     .optional(),
+  // Per-feature hints (promote-policy-and-waves) — carried into metadata for the orchestrator/director.
+  assigned_role: z.string().optional(),
+  blocked_by: z.array(z.string()).optional(),
+  order: z.number().int().optional(),
 });
 
 /** Resolve the operator's own base URL (in-process http for now). */
@@ -174,6 +178,7 @@ async function postFeaturesImport(
     claims?: string[];
     source_plan_slug?: string;
     source_plan_item_ids?: string[];
+    wave?: string;
   }>,
 ): Promise<{
   ids: string[];
@@ -242,6 +247,10 @@ export default defineTool({
       .optional()
       .default(true)
       .describe('Apply-only: when true (default) flip each from_items item to status=done.'),
+    wave: z
+      .string()
+      .optional()
+      .describe('Promote-policy wave these features belong to — stamped on each feature (consolidated.wave) for the deterministic wave-drain advance.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -371,6 +380,10 @@ export default defineTool({
       if (f.from_items && f.from_items.length > 0) {
         metadata.from_plan_items = f.from_items;
       }
+      // Per-feature hints → metadata (the orchestrator/director reads these).
+      if (f.assigned_role) metadata.assigned_role = f.assigned_role;
+      if (f.blocked_by && f.blocked_by.length > 0) metadata.blocked_by = f.blocked_by;
+      if (f.order != null) metadata.order = f.order;
       const featureClaims = (f.from_items ?? []).flatMap(
         (id) => assertionsByItem.get(id) ?? [],
       );
@@ -382,12 +395,14 @@ export default defineTool({
         claims?: string[];
         source_plan_slug: string;
         source_plan_item_ids: string[];
+        wave?: string;
       } = {
         title: f.title,
         metadata,
         source_plan_slug: args.slug,
         source_plan_item_ids: f.from_items ?? [],
         ...(featureClaims.length > 0 && { claims: featureClaims }),
+        ...(args.wave && { wave: args.wave }),
       };
       if (f.body) out.summary = f.body;
       if (args.feature_ids && args.feature_ids[idx]) {

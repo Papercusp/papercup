@@ -16,8 +16,11 @@ migration `089-promote-waves.sql` — `wave` column on consolidated (back-writte
 `current_wave` cursor on `harness_plan_status`. First real dogfood is the `restart`
 `universal-schema-2026-05-30` plan (§9a), blocked on this mechanism.
 
-**Next:** Phase C — extend `plans:promote` + `/features/import` to carry `wave` / `assigned_role` /
-`blocked_by` / `order`, and add the policy-driven promote (static + generative expansion).
+Phase C started: **P-005 done** — `/features/import` + `plans:promote` now carry `wave` + per-feature
+`assigned_role`/`blocked_by`/`order` (the `wave` back-writes to `consolidated.wave` for the drain-check).
+
+**Next:** P-006 — the policy-driven promote: `plans:promote { slug, wave }` reads the `## Promote` policy,
+builds the wave's static features and/or expands its generative `for_each` template, then applies.
 
 **Follow-up (small):** `yaml` is imported by the parser but is an undeclared (stable, lockfile-present,
 already-bundled) transitive dep — declare it as a direct operator dep when the lockfile is next reconciled
@@ -108,9 +111,11 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase C — extend `plans:promote` (payload + policy execution)
 
-- **P-005** `todo` Extend the import payload + `/api/harness/<slug>/features/import` handler to accept optional
-  per-feature `wave`, `assigned_role`, `agent_hint`, `blocked_by`, `order`; persist to `wave` column +
-  `metadata`. Extend `plans:promote` args (`promote.ts`) to carry them.
+- **P-005** `done` (a) `/features/import` (`features.ts`) accepts + back-writes `wave` to consolidated,
+  mirroring `source_plan_slug` (ProvenanceFeature.wave + updater `SET wave` + the withProvenance mapping);
+  10 provenance tests. (b) `plans:promote` (`promote.ts`) carries a top-level `wave` (stamped on each import
+  entry) + per-feature `assigned_role`/`blocked_by`/`order` hints (→ `metadata`); 20 existing promote tests
+  still green, tsc clean. Additive — existing callers unaffected (wave/hints optional).
 - **P-006** `todo` Policy-driven promote mode: `plans:promote { slug, wave }` reads `parsed.promote`, resolves
   the named wave — static → build `features[]` from the listed defs; generative → expand `for_each` against a
   provided/queried runtime set (e.g. the universal type axis) into `features[]` via the template — then runs
