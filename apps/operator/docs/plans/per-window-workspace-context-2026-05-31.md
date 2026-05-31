@@ -11,41 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Design plan (not started), **revised 2026-05-31 after a code-verified
-peer review** (findings folded in below). Captures the fix for a fragility
-surfaced dogfooding the papercup harness Tests tab: harness data resolves against
-a single **process-global active workspace** (`reg.current`), so two desktop
-windows on different workspaces collide, and anything that flips `reg.current`
-(a workspace switch, or a concurrent agent) silently corrupts a window's data.
+**State:** **Phase A core SHIPPED + tested (2026-05-31), commits d5604fb98 + 6bdca2265.** D-006 is settled (→ D-008: one shared operator+PG; creds isolated via per-spawn `HOME`; no per-workspace standing memory). The request/fetch path now resolves per-window: a new `workspace-als.ts` (`runWithWorkspace`/`currentRequestWorkspaceId`), `activeWorkspaceId()` prefers the request scope (ALS > process pin > `reg.current`), `workspaceContextMiddleware` reads `x-papercusp-workspace` (missing→fallback, unknown→400 per D-007, known→ALS) mounted on the inner Hono app + allowed through CORS, and the frontend `installWorkspaceHeaderFetch()` stamps the header from `getBrowserWorkspaceId()`. 26/26 new unit tests green; touched files typecheck clean. Because `resolveProject` + `routeWithWorkspace` already call `activeWorkspaceId()`, harness resolution AND PG scoping became per-request with ~zero call-site changes (D-002 confirmed working in the middleware test: a request with a header resolves its workspace while `reg.current` differs — the exact flapping fix).
 
-**Concrete symptom (2026-05-31):** the papercup harness lives in
-`papercusp-workspace`. While `reg.current` was `default` (flipped by concurrent
-org-harness work), `GET /api/harness/papercup/testing/domains` could not resolve
-papercup → the Tests tab fell back to the generic 6-domain set (and on reload
-the `/adv` window flipped to `default`'s `sheets` harness). The window's URL said
-`?ws=papercusp-workspace`, but the backend ignored it.
-
-**Next action:** **DECIDED by the owner (2026-05-31) — D-006 is settled (→ D-008);
-Phase A is in progress.** The architecture is fully determined:
-
-- **One shared operator process + one shared embedded-PG** for *all* workspaces
-  (the locked "shared results" model from `harnesses-across-workspaces`). **No
-  per-workspace standing memory** — same footprint as today regardless of how many
-  windows/workspaces are open (vs the naive "N sidecars + N PGs" that the owner
-  explicitly ruled out).
-- **Credential isolation is preserved via per-spawn `HOME`, not per-process
-  `HOME`** (D-008): the operator stamps each child it spawns (`claude`/`git`/pty)
-  with `HOME=~/.papercusp-workspaces/<ws>/`, so workspace creds stay isolated on
-  the per-task children you already pay for — zero extra heap.
-- **Each window/request carries its workspace** (`x-papercusp-workspace` header →
-  ALS) so harness resolution + PG scoping become per-request.
-
-Building **Phase A** now — the dev-mode resolution core that fixes the symptom
-above: workspace ALS (P-010) + inner-Hono middleware (P-011) + `activeWorkspaceId()`
-flip (P-012) + frontend header (P-013). Settled sub-decisions: D-001 stream
-transport = extend `IpcEventSource` with a `headers` option; D-004 authz =
-loopback-fine for now; D-007 = hard-error on an unknown header. The packaged
-child-`HOME` migration is Phase E.
+**Next:** An agent does P-015 — the stream transport (extend `IpcEventSource` with a `headers` option + carry the workspace on SSE/WS connect) so live `/api/zero-harness/sse` + voice/Zero WS invalidations also resolve per-window; without it the fetch fix is a half-fix (D-001). Then P-014 live-verify in the Tauri shell (needs a `:3070` host restart — no hot-reload).
 
 ## Background
 
@@ -293,18 +261,18 @@ owner thread: today 1×, naive-concurrent N×, **this 1× + transient children**
 > with RLS, so this phase fixes the dev flapping on its own. Only packaged's
 > concurrent-multi-workspace outcome (Phase E) waits on the D-006 go/no-go.
 
-- **P-010** `todo` Add the workspace ALS — **match the existing
+- **P-010** `done` Add the workspace ALS — **match the existing
   `runWithPluginExecCtx`/`currentPluginExecCtx` precedent** (`lib/log-events.ts:54`)
   for naming/shape; decide whether workspace is a sibling field on that context or
   a second ALS instance. Export `runWithWorkspace(id, fn)` +
   `currentRequestWorkspaceId()`.
-- **P-011** `todo` One middleware on the **inner Hono app** (covers `:3055` +
+- **P-011** `done` One middleware on the **inner Hono app** (covers `:3055` +
   `:3070`): read `x-papercusp-workspace`; **missing → empty ALS (global fallback);
   present-but-unknown → 400/409 (D-007)**; valid → wrap handler in
   `runWithWorkspace`.
-- **P-012** `todo` `activeWorkspaceId()` → `currentRequestWorkspaceId() ??
+- **P-012** `done` `activeWorkspaceId()` → `currentRequestWorkspaceId() ??
   readRegistry().current`. Single change; everything downstream inherits it.
-- **P-013** `todo` Frontend fetch: inject `x-papercusp-workspace` from
+- **P-013** `done` Frontend fetch: inject `x-papercusp-workspace` from
   `getBrowserWorkspaceId()` in the operator-vite `fetch` wrapper (trivial —
   `ipcFetch` already forwards headers).
 - **P-015** `todo` **Stream transport (D-001/P-002):** implement the chosen option
