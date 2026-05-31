@@ -12,9 +12,9 @@ related: [agent-action-registry-plan-2026-05-03, tooldef-auth-rfc-2026-05-31, pa
 
 ## Now
 
-**State:** ACTIVE — Phase 1 mostly done. Shipped + verified (20 unit tests green, tsc clean modulo pre-existing repo errors): the Capability contract (P-002 ✓), both adapters (P-003 ✓), the palette safety filter (P-011 ✓ — getPalettePrincipal dropped per D-005), and P-004's read side — `getServerCapabilities` + `GET /api/agent-mcp/capabilities` (principal-gated, §3-filtered, wired into routes/index.ts). D-004/D-005 settle the principal: the palette uses the standard request-resolved principal (loopback on desktop, caps `*`, unverified-loopback trust); authority is re-checked at dispatch.
+**State:** ACTIVE — Phase 1 server side complete; only the palette UI client + verify remain. Shipped + verified (21 unit tests green; tsc clean modulo the 2 known pre-existing index.ts errors): the Capability contract (P-002 ✓), both adapters (P-003 ✓), the safety filter (P-011 ✓), and P-004's full server side — `GET /api/agent-mcp/capabilities` (principal-gated, §3-filtered catalog) + `POST /api/agent-mcp/run-tool` (loopback-only, full dispatch-stack gating with NO bypass, server-side §3 re-check, confirm-for-destructive, audited). Security posture documented in the invoke commit.
 
-**Next:** Finish P-004: (1) a gated invoke endpoint `POST /api/agent-mcp/run-tool` that re-enforces the §3 filter server-side (reject excluded; require a confirm flag for destructive/high) and dispatches through the full tooldef stack as the request principal (audited); (2) wire GlobalCommandPalette to fetch the catalog, render it, confirm-gate destructive/high, execute + toast. Then P-005 verify. P-009 (end-state) stays needs-human.
+**Next:** Finish P-004 client: wire GlobalCommandPalette to fetch /capabilities, merge with the Action-Registry palette commands, render grouped + searchable, confirm-gate destructive/high (409 round-trip), execute server caps via POST /run-tool and toast the result. Then P-005 verify (rebuild operator-vite dist; smoke the endpoints). P-009 (end-state) stays needs-human.
 
 ## 1. Problem (grounded in code)
 
