@@ -59,7 +59,7 @@ describe('getRoleStyle', () => {
   it('non-canonical roles do not collide with canonical role colors', () => {
     // Verify hash-derived HSL never accidentally produces a hex string
     // identical to a canonical override (would cause visual ambiguity).
-    const canonical = new Set(Object.values(ROLE).map((r) => r.solid));
+    const canonical = new Set<string>(Object.values(ROLE).map((r) => r.solid));
     for (const role of ['reviewer', 'scoper', 'architect', 'expert', 'feedback', 'curator', 'debugger']) {
       const { solid } = getRoleStyle(role);
       expect(canonical.has(solid)).toBe(false);
