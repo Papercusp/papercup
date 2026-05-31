@@ -17,9 +17,34 @@
  * response shape is identical so the UI doesn't change.
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveProject } from '@/lib/harness-core';
 import { createGitHubPrHost } from '@/lib/pr-host/github';
+
+const execFileP = promisify(execFile);
+
+/**
+ * #5: harness projects frequently carry no `remote` in their metadata, so the
+ * PR pane silently returned an empty list. Derive a `github.com/<owner>/<repo>`
+ * remote (the format parseRemote expects) from the checkout's git origin so the
+ * pane works for ANY harness whose project is a GitHub clone. Best-effort:
+ * returns null when the path isn't a git repo or origin isn't a github remote.
+ */
+async function gitOriginRemote(projectPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP(
+      'git',
+      ['-C', projectPath, 'config', '--get', 'remote.origin.url'],
+      { timeout: 3000 },
+    );
+    const m = /github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(stdout.trim());
+    return m ? `github.com/${m[1]}/${m[2]}` : null;
+  } catch {
+    return null;
+  }
+}
 import {
   tryAutoApprove,
   type AutoApproveContext,
@@ -67,10 +92,17 @@ const listPrs = defineTool({
       return Response.json({ prs: [], pollingFailedAt: new Date().toISOString() });
     }
 
-    // Read remote from project metadata.
-    const remote = (project as unknown as { remote?: string }).remote ?? '';
+    // Read remote from project metadata; fall back to the checkout's git origin
+    // (#5) so a harness with no `remote` field still lists PRs.
+    let remote = (project as unknown as { remote?: string }).remote ?? '';
     if (!remote) {
-      return Response.json({ prs: [] });
+      const projectPath = (project as unknown as { path?: string }).path ?? '';
+      if (projectPath) remote = (await gitOriginRemote(projectPath)) ?? '';
+    }
+    if (!remote) {
+      // Explicit signal so the UI shows an actionable message rather than a
+      // silent empty "no PRs" pane (which read as "broken").
+      return Response.json({ prs: [], noRemote: true });
     }
 
     const result = await host.listOpenPrs({ remote });

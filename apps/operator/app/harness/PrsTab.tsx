@@ -30,6 +30,8 @@ interface Props {
 interface PrsResponse {
   prs: PrRowData[];
   pollingFailedAt?: string | null;
+  /** #5: server couldn't resolve a GitHub remote for this harness. */
+  noRemote?: boolean;
 }
 
 async function fetchPrs(harnessSlug: string): Promise<PrsResponse> {
@@ -64,6 +66,7 @@ export function PrsTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [pollingFailed, setPollingFailed] = useState(false);
+  const [noRemote, setNoRemote] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -77,6 +80,7 @@ export function PrsTab({
       }));
       setPrs(enriched);
       setPollingFailed(!!resp.pollingFailedAt);
+      setNoRemote(!!resp.noRemote);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -143,7 +147,11 @@ export function PrsTab({
         ) : error ? (
           <div className="pc-adv-prs__msg pc-adv-prs__msg--err">{error}</div>
         ) : displayed.length === 0 ? (
-          <div className="pc-adv-prs__msg">No PRs match this filter.</div>
+          <div className="pc-adv-prs__msg">
+            {noRemote
+              ? 'No GitHub remote configured for this harness — link a GitHub repo to see its pull requests.'
+              : 'No PRs match this filter.'}
+          </div>
         ) : (
           displayed.map((pr) => (
             <PrRow
