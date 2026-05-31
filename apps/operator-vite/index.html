@@ -114,6 +114,42 @@
       })();
     </script>
     <!--
+      Visual-effects mode (pre-paint).
+
+      Mirrors apps/operator/app/layout.tsx's visualEffectsBootstrapScript.
+      Sets data-visual-effects + data-visual-effects-mode on <html> before
+      React mounts, so intro/ambient animations don't flash on at full
+      strength when the saved mode is 'minimal' (or 'system' under
+      prefers-reduced-motion). Reads the wsLocalKey-scoped value
+      (pc:ws:<id>:papercusp.visualEffectsMode) with the same
+      getBrowserWorkspaceId() resolution lib/visual-effects.ts uses, so this
+      read and the React lib always agree on the key. 'full' is the fallback.
+    -->
+    <script>
+      (() => {
+        const KEY = 'papercusp.visualEffectsMode';
+        const REDUCED = '(prefers-reduced-motion: reduce)';
+        const wsId = () => {
+          try { if (window.__PAPERCUSP_WS__ && String(window.__PAPERCUSP_WS__).trim()) return window.__PAPERCUSP_WS__; } catch (e) {}
+          try { const ws = new URL(window.location.href).searchParams.get('ws'); if (ws && ws.trim()) return ws; } catch (e) {}
+          return 'default';
+        };
+        try {
+          let mode = window.localStorage.getItem('pc:ws:' + wsId() + ':' + KEY);
+          if (mode !== 'system' && mode !== 'full' && mode !== 'minimal') mode = 'system';
+          const reduced = mode === 'system'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia(REDUCED).matches;
+          const effective = mode === 'minimal' || reduced ? 'minimal' : 'full';
+          document.documentElement.dataset.visualEffects = effective;
+          document.documentElement.dataset.visualEffectsMode = mode;
+        } catch (e) {
+          document.documentElement.dataset.visualEffects = 'full';
+          document.documentElement.dataset.visualEffectsMode = 'system';
+        }
+      })();
+    </script>
+    <!--
       Operator-chat sidebar width reservation (pre-paint).
 
       The steady-state copy of these rules lives in OperatorChatSidebar's

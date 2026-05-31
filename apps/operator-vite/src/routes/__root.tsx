@@ -55,14 +55,15 @@ import '@/app/harness/harness.css';
  * NOT YET PORTED (Phase D/E — no SSR in a Vite SPA):
  *   - `await getAllFlags()` SSR flag resolution → `window.__PAPERCUSP_FLAGS__`.
  *     Until ported, flag-gated UI falls back to its default branch.
- *   - The visual-effects-mode `<head>` bootstrap script (sets
- *     `data-visual-effects` pre-paint) → move to `apps/operator-vite/index.html`.
  *
- * PORTED: the op-chat width bootstrap (reserves the sidebar column before
- * React mounts) now lives in `apps/operator-vite/index.html` — a body-start
- * classic script plus a `<head>` `<style id="op-chat-width-reserve">`, since
- * the reservation CSS is otherwise component-scoped and absent pre-paint in
- * this client-rendered SPA.
+ * PORTED to `apps/operator-vite/index.html` (the pre-paint `<head>`/body-start
+ * bootstraps that Next ran from layout.tsx; each is client-rendered-SPA-safe
+ * and reads the same wsLocalKey-scoped keys the React libs use):
+ *   - Color theme — `data-theme` + cached custom-theme CSS.
+ *   - Visual-effects mode — `data-visual-effects` / `data-visual-effects-mode`.
+ *   - Op-chat width — a body-start classic script plus a `<head>`
+ *     `<style id="op-chat-width-reserve">`, since that reservation CSS is
+ *     otherwise component-scoped and absent pre-paint.
  */
 export const Route = createRootRoute({
   component: RootComponent,
