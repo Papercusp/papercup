@@ -7,8 +7,10 @@ import { type Phase } from '@/lib/harness-phases';
 import {
   harnessTestingRegistry,
   HARNESS_TESTING_TIER_LABELS,
+  ACCEPTANCE_DOMAIN_ID,
 } from '@/lib/harness-testing-registry';
 import { makeHarnessTestingDataSource } from './harness-testing-data-source';
+import AcceptancePanel from './AcceptancePanel';
 
 /**
  * <AdvTestsPanel> — the harness "Tests" tab, an /adv dock panel.
@@ -33,6 +35,13 @@ export default function AdvTestsPanel({ params }: PanelComponentProps) {
     () => makeHarnessTestingDataSource(slug, phase),
     [slug, phase],
   );
+  // Acceptance (Project) tab is bespoke: it lists VAL assertions with their
+  // status + a requires_test toggle (P-062/P-063), not a glob/test file list.
+  // The Built-in (generalized) tabs still render via <DomainTestPanel>.
+  const customTabs = useMemo(
+    () => ({ [ACCEPTANCE_DOMAIN_ID]: () => <AcceptancePanel slug={slug} /> }),
+    [slug],
+  );
 
   if (!slug) return <div className="pc-adv-ov__empty">No harness slug in params.</div>;
 
@@ -41,6 +50,7 @@ export default function AdvTestsPanel({ params }: PanelComponentProps) {
       tabs={tabs}
       tierLabels={HARNESS_TESTING_TIER_LABELS}
       dataSource={dataSource}
+      customTabs={customTabs}
       defaultTabId={tabs[0]?.id}
       sectionLabel="Tests"
       queryKey="testsTab"

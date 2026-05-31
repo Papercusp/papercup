@@ -27,6 +27,9 @@ import { type Phase, phasePhaseLabel, phasePath } from '@/lib/harness-phases';
 import { expandGlobs } from '@/lib/testing-domain-glob';
 import { harnessTestingRegistry, ACCEPTANCE_DOMAIN_ID } from '@/lib/harness-testing-registry';
 import { type TestDomain, type ChipStatus, type FileStatusEntry } from '@/lib/testing-domains';
+import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 
 async function phasesEnabled(): Promise<boolean> {
   const { getFlag } = await import('@papercusp/flags/server');
@@ -231,4 +234,72 @@ const run = defineTool({
   },
 });
 
-export default [domainDetail, fileStatus, healthStrip, run];
+// ── Assertions (VALs) — the Acceptance tab's data (P-062 / P-063) ──────────
+// harness_plan_assertions is keyed by (workspace, harness_slug), not phase.
+
+interface AssertionListRow {
+  val_id: string;
+  plan_slug: string;
+  item_id: string;
+  verify_text: string;
+  status: string;
+  requires_test: boolean;
+}
+
+const listAssertions = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/testing/assertions',
+  auth: 'public',
+  async handler(req, ctx) {
+    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
+    const slug = ctx.params.slug as string;
+    const planSlug = new URL(req.url).searchParams.get('plan');
+    try {
+      await ensureHarnessPlanAssertionsTable();
+      const { sql } = getOrgPg();
+      const ws = activeWorkspaceId();
+      const rows = planSlug
+        ? await sql<AssertionListRow[]>`
+            SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
+              FROM harness_shared.harness_plan_assertions
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND plan_slug = ${planSlug}
+             ORDER BY val_id`
+        : await sql<AssertionListRow[]>`
+            SELECT val_id, plan_slug, item_id, verify_text, status, requires_test
+              FROM harness_shared.harness_plan_assertions
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+             ORDER BY val_id`;
+      return Response.json({ assertions: rows });
+    } catch {
+      // Table absent / PG unreachable — empty is a valid "no assertions yet".
+      return Response.json({ assertions: [] });
+    }
+  },
+});
+
+const patchAssertion = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/testing/assertions/:valId',
+  auth: 'public',
+  async handler(req, ctx) {
+    if (!(await phasesEnabled())) return new Response('Not Found', { status: 404 });
+    const slug = ctx.params.slug as string;
+    const valId = ctx.params.valId as string;
+    const body = (await req.json().catch(() => ({}))) as { requires_test?: unknown };
+    if (typeof body.requires_test !== 'boolean') {
+      return Response.json({ error: 'requires_test (boolean) required' }, { status: 400 });
+    }
+    await ensureHarnessPlanAssertionsTable();
+    const { sql } = getOrgPg();
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ val_id: string; requires_test: boolean }[]>`
+      UPDATE harness_shared.harness_plan_assertions
+         SET requires_test = ${body.requires_test}
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${valId}
+       RETURNING val_id, requires_test`;
+    if (rows.length === 0) return Response.json({ error: 'assertion_not_found' }, { status: 404 });
+    return Response.json({ ok: true, val_id: rows[0].val_id, requires_test: rows[0].requires_test });
+  },
+});
+
+export default [domainDetail, fileStatus, healthStrip, run, listAssertions, patchAssertion];
