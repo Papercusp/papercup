@@ -673,7 +673,7 @@ The gate must sit at the transition from **untrusted replicated content** to
 | Gate | Seam | Insertion point (`file:line`) | State today |
 |---|---|---|---|
 | **G1 — Provenance** | projection: replicated op → local PG | `apps/operator/lib/sync/hyperbee/projection.ts:58` (`applyHyperbeeOpToPg`); the 8 writers under `projections/` | `op.writerPubkey` is **available at `projection.ts:75`** but only used for clobber-detection then discarded. No actionable table (`feature_queue`, `harness_features_consolidated`, `issues`) carries an author or `origin: local\|remote` column. **The foundation: thread `writerPubkey` through, stamp `author_pubkey` + `origin`.** This is the one piece of the old op-auth work that stays load-bearing — for *attribution*, not rejection. |
-| **G2 — Work-admission** (PRIMARY) | orchestrator feature-pick | `packages/orchestrator/src/state-pg.ts:82-94` (`readFeaturesPg` — the hard SQL eligibility filter; pick→spawn chain `main-loop.ts:569 → handleNextWorker:970 → setFeatureStatus in_progress:1114 → invoke worker:1127 → spawn invoke.ts:1160`) | Eligibility = started-plan only; **zero authorship gate**. `created_by_github_user_id` exists (migration 080) but is unused here. **Gate: remote-authored actionable content is *advisory* — it may be proposed but can never auto-spawn a local agent without local-human admission.** Maps onto the existing `needs-human` / approval-gate model. |
+| **G2 — Auditor-admission** (PRIMARY) | orchestrator feature-pick | `packages/orchestrator/src/state-pg.ts:82-94` (`readFeaturesPg` — the hard SQL eligibility filter; pick→spawn chain `main-loop.ts:569 → handleNextWorker:970 → setFeatureStatus in_progress:1114 → invoke worker:1127 → spawn invoke.ts:1160`) | Eligibility = started-plan only; **zero authorship gate**. **Gate: a new read-only `auditor` role screens every feature NOT written by the current user's own device key (`origin=remote`) → `admit \| reject`; only `origin=local` OR auditor-admitted features reach the pick loop.** No human-admission for the common case; every *reject* auto-escalates to a human (reuse `needs-human`). The bypass keys on the unforgeable `writerPubkey`/`origin`, never the forgeable `created_by_github_user_id`. |
 | **G3 — Untrusted-data framing** | prompt assembly | `packages/orchestrator/src/prompt-build.ts:218-221` (feature notes / debugger findings / inter-agent messages interpolated **verbatim**), joined `:299` | Remote-writable vectors (messages from any harness → any feature, debugger findings, feature notes) become plain prompt instructions with **no untrusted-data delimiter**. **Gate: wrap remote-authored content as clearly-delimited third-party DATA, never instructions.** |
 | **G4 — Spawn least-privilege** (last line) | local agent spawn | `apps/operator/lib/harness-launch.ts:45-76` + `harness-invoke-once.ts:48-69`; spawn `invoke.ts:1073-1078` | Child inherits **`...process.env` (all secrets) + the admin `DATABASE_URL` + decrypted search-provider keys**, and **no sandbox**. MCP tool catalog *is* role-gated server-side (`spawn-mcp.ts` signed URL → `verifySpawnParams`). **Gate: hand the child only the env/tokens its role needs; tighten the tool/shell permission surface.** |
 
@@ -686,9 +686,13 @@ local-human admission.**
 ## D.5 — What this means for the build (retargets §7 + the "security layer" task)
 
 The implementation pivots away from `addWriter` / op-signing-for-merge and toward
-the four-gate user-protection model: **G1 provenance** (the prerequisite),
-**G2 work-admission** (the primary gate, the cheapest high-leverage win — one
-predicate at `readFeaturesPg`), **G3 untrusted-data framing**, **G4 spawn
-least-privilege**. G1+G2 are model-independent (they apply whether the substrate
-is Autobase-A or per-peer-logs-B), so they can land **before** the B rewrite.
-Full sequencing in the plan: `papercusp-user-protection-gate-2026-05-31`.
+the four-gate user-protection model: **G1 provenance** (the prerequisite —
+records the unforgeable `writerPubkey`/`origin`), **G2 auditor-admission** (the
+primary gate — a new read-only `auditor` role screens remote-authored features →
+`admit | reject`, rejects auto-escalate to a human; gated at `readFeaturesPg`),
+**G3 untrusted-data framing**, **G4 spawn least-privilege** (the backstop that
+bounds damage if the auditor is fooled). G1+G2 are model-independent (they apply
+whether the substrate is Autobase-A or per-peer-logs-B), so they can land
+**before** the B rewrite. Full sequencing + decisions (incl. D-006 unforgeable
+origin, D-007 G4-backstop / local-compromise-out-of-scope) in the plan:
+`papercusp-user-protection-gate-2026-05-31`.
