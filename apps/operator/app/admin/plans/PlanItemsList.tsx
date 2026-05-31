@@ -39,11 +39,9 @@ interface Props {
 
 // The items view groups by EFFECTIVE status, so the row pill surfaces that
 // (not stored) — otherwise a blocked item (stored 'todo', effective 'blocked')
-// would show a "todo" pill instead of "blocked". Effective 'todo' in this
-// inbox = "needs decision" (ready to pick up, all blockers cleared), so it gets
-// its own pill rather than the generic todo one.
+// would show a "todo" pill instead of "blocked".
 function itemPillStatus(item: { effectiveStatus: string }): string {
-  return item.effectiveStatus === 'todo' ? 'needs-decision' : item.effectiveStatus;
+  return item.effectiveStatus;
 }
 
 export default function PlanItemsList({
@@ -157,6 +155,14 @@ export default function PlanItemsList({
               <span className={`pc-count pc-count--${itemPillStatus(r.item)}`}>
                 {itemPillStatus(r.item)}
               </span>
+              {r.item.importance && r.item.importance !== 'normal' ? (
+                <span
+                  className={`pc-imp pc-imp--${r.item.importance}`}
+                  title={`Importance: ${r.item.importance}`}
+                >
+                  {r.item.importance}
+                </span>
+              ) : null}
               <span className="pc-items__text">{r.item.text}</span>
             </button>
           </li>

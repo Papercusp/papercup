@@ -7,7 +7,7 @@
  * plan is open (`?plan=` → PlanDetail) or a search is active (`?q=` →
  * PlanSearchResults to find/open a plan). Two multi-select filter facets
  * combine to narrow the item list:
- *   - item-status (`?istatus=`): Needs Human / Needs Decision / Blocked,
+ *   - item-status (`?istatus=`): Needs Human / ToDos / Blocked,
  *     OR within the facet. Empty = all three.
  *   - plan-status (`?pBuckets=`): Draft … Superseded, OR within. Empty =
  *     all plans. Scopes which plans' items show.
@@ -58,13 +58,13 @@ const ITEM_STATUS_IDS = ['needs-human', 'todo', 'blocked'] as const;
 /** Item-status filter toggles — the "Items" group. */
 const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
   { id: 'needs-human', label: 'Needs Human', hint: 'Items waiting on a human decision.' },
-  { id: 'todo', label: 'Needs Decision', hint: 'Items ready to pick up now — effective todo, all blockers cleared.' },
+  { id: 'todo', label: 'ToDos', hint: 'Agent-actionable work — effective todo, all blockers cleared. Sorted by importance.' },
   { id: 'blocked', label: 'Blocked', hint: 'Items stuck on unresolved blockers or external waits.' },
 ];
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'needs-human': 'Needs Human',
-  todo: 'Needs Decision',
+  todo: 'ToDos',
   blocked: 'Blocked',
 };
 

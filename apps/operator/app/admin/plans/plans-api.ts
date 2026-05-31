@@ -91,6 +91,8 @@ export interface PlanItem {
   storedStatus: ItemStatus;
   effectiveStatus: ItemStatus;
   text: string;
+  /** 4th axis — urgent|high|normal|low. Surfaced as a row badge + sort key. */
+  importance?: Importance;
   blockedBy?: string[];
   decisionRefs?: string[];
   phase?: string | null;

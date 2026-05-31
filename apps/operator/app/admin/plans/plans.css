@@ -780,6 +780,24 @@
 .pc-count--dropped      { background: rgba(168, 162, 158, 0.15); color: #d6d3d1; }
 .pc-count--unknown      { background: rgba(255, 255, 255, 0.05); color: rgba(255, 255, 255, 0.55); }
 
+/* Importance badge — a 4th axis, orthogonal to the status pill. Only
+   rendered for non-normal items (normal is the default, kept quiet to
+   avoid badge fatigue). urgent = interrupt now / pick up first. */
+.pc-imp {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9.5px;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.pc-imp--urgent { background: rgba(244, 63, 94, 0.24);  color: #fecdd3; font-weight: 600; }
+.pc-imp--high   { background: rgba(250, 204, 21, 0.18); color: #fef3c7; }
+.pc-imp--low    { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; }
+
 .pc-plans__placeholder--error {
   display: grid;
   gap: 6px;
