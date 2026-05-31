@@ -52,11 +52,22 @@ non-Zod `StandardSchemaV1` validator proof — `standard-schema.test.ts`); agent
 stash baseline — the 3 `routes/index.ts` cast errors are pre-existing, identical at HEAD);
 standalone example still runs.
 
-**Next:** **Phase 4** (transport extraction → `tooldef-http`/`-mcp`/`-ipc`, carrying the
-formal `SigningProvider`/`contextSchema` that was P-013) and **Phase 5** (re-home the
-host adapter, P-040+ — now mostly consolidation; all DI seams exist). **Phase 6**
-(verification + docs). Follow-up: generic `Tx` on `UnifiedToolContext` (only the legacy
-`ToolContext` got it in P-010); `isSuperuser`/`isPowerUser` remain host ctx *metadata*.
+**Phase 4 (transports) is substantially done 2026-05-30:** **P-030** extracted HTTP →
+`@papercusp/tooldef-http`; **P-032** was already a package (`@papercusp/ipc-endpoint-server`).
+**P-031** (the MCP bridge) is the one remaining item and is **runtime-gated** — its source
+(`_mcp-handler.ts`) is the 865-line auth/spawn gateway (superuser/power-user admission +
+HMAC `verifySpawnParams`, the P-013 `SigningProvider`); it's the main agent-spawn path, so
+extraction must be done with the operator running to verify the auth path, not on a
+typecheck alone (see P-031).
+
+**Phase 5 (re-home) is already satisfied:** P-040 done (deps already wired from real impls —
+`PROJECTED_DEPS` + route-site `HttpToolHostExtras`); P-041/P-042 are `optional` per D-010
+(the agent-mcp re-export is a fine permanent arrangement).
+
+**Next / remaining:** **P-031** (runtime-gated, above); **Phase 6** wrap-up — P-052 docs
+(overview done; other endpoint-system pages are low-priority touch-ups), P-053 (knip /
+affected-integration clean), P-054 (needs-human: the in-tree-vs-mirror fork). Follow-up:
+generic `Tx` on `UnifiedToolContext`; `isSuperuser`/`isPowerUser` remain host ctx *metadata*.
 
 > ℹ️ **Resolved 2026-05-30:** the `@papercusp/chat-protocol` build break (from commit
 > `4a5ac215`) was the submodule's `package.json` declaring its entry only via `exports`
@@ -612,17 +623,19 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
 
 ## Phase 5 — Re-home the Papercusp host adapter
 
-- **P-040** `todo` In `packages/agent-mcp`, construct the `DispatchProjectedDeps` +
-  `HttpToolHostExtras` from the real impls: `withWorkspace`/`tx`, `recordInvocation`
-  → `tool_invocations`, role config, tier map, `computeQuotaWindow`, `gateBypass`,
-  harness path resolver. (Several of these — quota windowing, tier resolver, gate
-  bypass — already landed incrementally in P-011/P-012/P-014's host wiring; P-040 is
-  now mostly consolidation.) The HMAC `SigningProvider` rides with P-030, not here.
-  blocked-by: P-010, P-011, P-012, P-014
-- **P-041** `todo` Repoint `bootstrap.ts`, `server-entry.ts`, `provisioning.ts`,
-  `auth.ts` at `@papercusp/tooldef`. blocked-by: P-040
-- **P-042** `todo` Update `apps/operator` import sites (`@papercusp/agent-mcp` →
-  `@papercusp/tooldef` for the engine surface; host surface unchanged). blocked-by: P-041
+- **P-040** `done` (already satisfied — assessed 2026-05-30) The real-impl
+  `DispatchProjectedDeps` (`apps/operator/lib/projected-tool-deps.ts` → `PROJECTED_DEPS`:
+  PG `readQuotaState`/`recordInvocation`, `computeQuotaWindow`, `overrideTool`) and the
+  `HttpToolHostExtras` (constructed at the route sites — catchall, plugins, plans,
+  locks-queue — with `resolvePrincipalAndTx`/`withWorkspace`/`resolveHarnessPaths`) are
+  already wired from real impls; role config, tier resolver, and gate-bypass landed
+  incrementally in P-010/P-012/P-014. Nothing left to construct. blocked-by: P-010, P-011, P-012, P-014
+- **P-041** `optional` (D-010) `bootstrap.ts`/`server-entry.ts`/`provisioning.ts`/`auth.ts`
+  resolve the engine through `@papercusp/agent-mcp`'s own re-export, which is a fine
+  permanent arrangement (a bundle re-exporting its engine, not a shim). Repointing them
+  directly at `@papercusp/tooldef` is cosmetic; deferred. blocked-by: P-040
+- **P-042** `optional` (D-010) Same: operator import sites use the `@papercusp/agent-mcp`
+  re-export. No functional need to repoint; cosmetic churn, deferred. blocked-by: P-041
 
 ## Phase 6 — Verification + proof-of-genericity
 
@@ -641,12 +654,14 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   standalone usability. The **HTTP+MCP-serving** form awaits the transport extraction
   (Phase 4, P-030/P-031) — added then. blocked-by: P-050 (in-process form pulled
   forward as the Phase-2 capstone)
-- **P-052** `partial` `README.md` (rewritten for the completed Phases 1–3: seam table,
-  quickstart, standalone example, Standard-Schema reality + the events/routes-stay-Zod
-  scoping, the mirror/carry discipline) + `TESTING.md` (new) shipped 2026-05-30 — extra
-  timely now that the package is mirrored to `Papercusp/tooldef` for external consumers.
-  **Remaining:** update `/internal/docs/endpoint-system/*` to point at the package
-  boundary (a larger cross-doc pass). blocked-by: P-050
+- **P-052** `partial` `README.md` + `TESTING.md` (2026-05-30) + the canonical docs-site
+  **`endpoint-system/overview.mdx`** now has a "How it's packaged" section: the package
+  table (`@papercusp/tooldef` engine / `tooldef-http` / `ipc-endpoint-server` / `agent-mcp`
+  host adapter) + the host-injection seam table + the standalone-example pointer.
+  **Remaining:** the other `endpoint-system/*` pages (gating, transports, writing-a-tool,
+  …) still read as if the system is monolithic — but they describe *behavior* that the
+  extraction preserved, so they're lower-priority touch-ups (mostly s/agent-mcp's endpoint
+  system/the engine/). blocked-by: P-050
 - **P-053** `todo` `npm run test:affected:integration` + `npm run lint:knip` clean.
   blocked-by: P-050
 - **P-054** `needs-human` Decide whether to promote `@papercusp/tooldef` to a separate
