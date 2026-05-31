@@ -231,15 +231,18 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.45);
 }
 
-/* Bucket tabs (Draft/Ready/Running/…) are flex rows [label · count]. Render the
-   active ✓ as a reserved right-most flex slot — NOT an absolute corner badge,
-   which overlapped the count — so it sits AFTER the count and never covers the
-   label/count text. The label grows to keep count + ✓ grouped on the right. */
-.pc-plans__view-label { margin-right: auto; }
+/* Bucket tabs (Draft/Ready/Running/…) are flex rows [label · count]. The active
+   ✓ sits in a reserved right gutter, ABSOLUTELY positioned (out of flow) so it
+   never overlaps the count AND never grows/reflows the card — it just fills the
+   empty space to the right of the count. `.pc-plans__view` is position:relative. */
+.pc-plans__view.is-active { padding-right: 26px; }
 .pc-plans__view.is-active::after {
   content: "✓";
-  flex: 0 0 auto;
-  display: inline-grid;
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  transform: translateY(-50%);
+  display: grid;
   place-items: center;
   width: 15px;
   height: 15px;
