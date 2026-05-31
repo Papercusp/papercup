@@ -37,6 +37,7 @@ export interface PipelineInput {
  * re-spawned — P-015); tests inject a stub.
  */
 export type PipelineInvokeRunner = (
+  harnessSlug: string,
   role: string,
   featureId: string,
   idempotencyKey: string,
@@ -77,7 +78,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     // Step: the orchestrator agent decides the next action (checkpointed).
     const decision = await DBOS.runStep(
-      () => runner()(orchestratorRole, input.featureId, key(input.harnessSlug, input.featureId, orchestratorRole, turn)),
+      () => runner()(input.harnessSlug, orchestratorRole, input.featureId, key(input.harnessSlug, input.featureId, orchestratorRole, turn)),
       { name: `decide-${turn}` },
     );
     const parsed = parseDecision(decision.output);
@@ -95,7 +96,7 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
     const feature = parsed.arg ?? input.featureId;
     // Step: run the dispatched role as an idempotent agent run (checkpointed).
     await DBOS.runStep(
-      () => runner()(role, feature, key(input.harnessSlug, feature, role, turn)),
+      () => runner()(input.harnessSlug, role, feature, key(input.harnessSlug, feature, role, turn)),
       { name: `invoke-${role}-${turn}` },
     );
     lastVerb = parsed.verb;

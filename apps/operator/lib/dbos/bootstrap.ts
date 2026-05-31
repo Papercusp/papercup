@@ -83,9 +83,11 @@ export async function startDbos(): Promise<void> {
   }
   if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR === '1') {
     // Phase 3: the agent pipeline as a durable workflow (default off; the legacy
-    // main loop is the A/B fallback). Registration only — the operator wires the
-    // real invoke runner + routes feature dispatch separately.
+    // main loop is the A/B fallback). Register the workflow + wire the real
+    // invoke runner (spawns invoke-once with IDEMPOTENCY_KEY).
     await import('./orchestrator-workflow');
+    const { wireOrchestratorInvokeRunner } = await import('./orchestrator-runner');
+    wireOrchestratorInvokeRunner();
   }
 
   await DBOS.launch();
