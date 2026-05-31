@@ -57,8 +57,11 @@ export const DEFAULT_VAD_PARAMS: VadParams = {
   floorAttack: 0.05,
   triggerMult: 3.0,
   releaseMult: 1.8,
-  absoluteFloor: 0.004,
-  startFrames: 2,        // ~190ms of speech to start
+  absoluteFloor: 0.005,
+  // 3 sustained frames (~280ms) to start — real speech easily clears this,
+  // but transient clicks/taps/keystrokes (1 frame) don't, which is the main
+  // false-trigger source for energy VAD.
+  startFrames: 3,
   hangoverFrames: 8,     // ~750ms of silence to end
   maxUtteranceFrames: 320, // ~30s safety cap
 };
@@ -157,7 +160,9 @@ export function mergeFrames(frames: Float32Array[]): Float32Array {
 }
 
 const SCRIPT_BUFFER = 4096;
-const PREROLL_FRAMES = 2; // ~190ms kept before a confirmed start
+// Keep enough pre-trigger frames to recover the start-detection frames (so
+// the leading audio that confirmed speech isn't clipped) plus a little onset.
+const PREROLL_FRAMES = 3;
 
 export async function startEnergyVadCapture(
   callbacks: EnergyVadCallbacks,
