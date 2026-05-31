@@ -158,6 +158,31 @@ origin/main (no conflicts) but publishes that whole backlog, so it's a batched
 release action the team owns, not a "push-my-changes" step. Left for explicit
 human go-ahead.
 
+### 2026-05-31 — Resume: re-verified shipped state + stale-comment cleanup
+
+Picked the plan back up. Confirmed the shipped code is all still present and
+correct against HEAD (27 more `papercusp` / 5 more `papercup-shared` submodule
+commits had landed from other agents since the push): `claudeMcpArgs`,
+spawn-mcp `type:'http'`, `normalizeModelForBackend`/`normalizeModelForClaude`,
+`resolveStatelessTransport`, and the `invoke-once` port (scoper / expert /
+`/harness/:slug/invoke`) all intact; `run.sh` is gone from the submodule with
+no broken references (remaining mentions are inert historical-producer comments
++ process-detection needles). Re-ran the affected suites — **103 green**
+(orchestrator 70: invoke/env/spawn-mcp; chat-stream 3; operator ports 30:
+harness-invoke-once/expert-dispatcher/harness-spawn-routes).
+
+Fixed two stale docstrings the run.sh deletion left behind (superproject
+`fe1b70a87`, submodule `0ed4de0`): `harness-launch.ts` and
+`orchestrator/bin/run.ts` both still claimed run.sh "remains on disk" / is
+preserved for `PAPERCUSP_USE_TS_ORCHESTRATOR=0` rollback — both corrected (the
+env var is now only read to print a deprecation warning; there is no bash
+fallback left).
+
+**Still genuinely owed (both need the Tauri desktop, both flagged at ship):**
+P-006 gold-standard (orchestrator `invoke()` spawning a real claude worker
+doing real harness work, watched end-to-end) and P-009 wizard render. Optional:
+D-003 option B (per-role allowed-tools instead of blanket bypassPermissions).
+
 ## Background
 
 The user asked: "we made the agent backend selectable between omp and others like
