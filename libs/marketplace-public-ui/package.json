@@ -28,6 +28,7 @@
     "storybook": "storybook dev -p 6007",
     "build-storybook": "storybook build -o storybook-static",
     "lostpixel": "lost-pixel",
-    "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel"
+    "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel",
+    "test": "vitest run"
   }
 }
