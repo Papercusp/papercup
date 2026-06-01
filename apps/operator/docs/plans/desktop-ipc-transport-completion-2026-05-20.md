@@ -3,29 +3,15 @@ title: Desktop IPC transport — completion + extension to all webview traffic
 slug: desktop-ipc-transport-completion-2026-05-20
 status: active
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 ---
 
 ## Now
 
-**State:** **Date:** 2026-05-20 **Status:** Proposal — awaiting review **Supersedes:** `http2-sse-transport-2026-05-20.md`. The webapp is retired (desktop-only product), so HTTP/2's one advantage — fixing the browser surface too — no longer applies. IPC is now the right answer, and the foundation is already built and merged. **Builds on:** `desktop-native-transport-2026-05-12.md` (the shipped endpoint-system IPC transport) and `sse-typed-events-2026-05-12.md`.
+**State:** Phases 0–3 + the registry-driven IPC allowlist (E) are SHIPPED and wired: installDesktopIpcPolyfills() runs in RootSyncProvider at the operator-vite root (load-bearing invariant in __root.tsx), so every webview EventSource/fetch to /api/* rides IPC — the connection-pool bug is structurally fixed. Server-side replay buffer (libs/generic/tooldef/src/replay-buffer.ts) + HTTP Last-Event-ID reconnect (handleHttpToolRequestStreaming) exist; oracle:chat / agent_chats:chat / operator:scan all declare expose.ipc + replayBufferSize. 2026-05-31: fixed the last real streaming defect — ipcFetch buffered SSE POST responses to DONE, so the oracle/agent-chat bubbles (which read POST SSE via res.body.getReader(), not the GET-only IpcEventSource) rendered replies all-at-once on a packaged desktop build. ipcFetch now returns a streaming ReadableStream Response (submodule desktop-ipc acd651c, superproject 5a4bb9cf9; 51/51 + 19/19 green). DEFERRED: (a) D1 client-side resume cursor (Last-Event-ID/run-id) through the dispatchEndpointStream HTTP+IPC adapters — server buffer ready, low value for on-demand chats; (b) optional direct-dispatch migration of the 3 tools (1 hop vs sys:http's 2); (c) LIVE verification on a packaged desktop build — blocked by an unrelated embedded-PG adaptive_telemetry schema drift in the shared box.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
-
-
-# Desktop IPC transport — completion + extension to all webview traffic
-
-**Date:** 2026-05-20
-**Status:** Proposal — awaiting review
-**Supersedes:** `http2-sse-transport-2026-05-20.md`. The webapp is retired
-(desktop-only product), so HTTP/2's one advantage — fixing the browser
-surface too — no longer applies. IPC is now the right answer, and the
-foundation is already built and merged.
-**Builds on:** `desktop-native-transport-2026-05-12.md` (the shipped
-endpoint-system IPC transport) and `sse-typed-events-2026-05-12.md`.
-
----
+**Next:** Owner: decide whether to do D1 resumability + the optional direct-dispatch migration, or close the plan as "bug fixed (live-verify pending a bootable packaged build)"; lib owner to sync desktop-ipc acd651c to the org remote.
 
 ## Goal
 
