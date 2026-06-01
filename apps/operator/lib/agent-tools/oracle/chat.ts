@@ -125,6 +125,7 @@ async function oracleHandler(input: Args, ctx: ChatCtx) {
 
 export const oracleChat = defineTool({
   name: 'oracle:chat',
+  expose: { ipc: true },
   profile: 'engineer',
   description: 'Single-turn Oracle assistant chat. Streams delta/tool_call/cost events; returns final assistant text.',
   args: ArgsSchema,

@@ -109,6 +109,7 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
 
 export const agentChatsChat = defineTool({
   name: 'agent_chats:chat',
+  expose: { ipc: true },
   description:
     'Single-turn streaming chat against an already-assembled role prompt. Returns final text + token/cost rollup; the caller is expected to persist the assistant turn.',
   args: ArgsSchema,

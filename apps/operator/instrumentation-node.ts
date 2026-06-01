@@ -460,10 +460,23 @@ async function backfillGrantsOnce(): Promise<void> {
 async function maybeStartEndpointIpcServer(): Promise<void> {
   if (process.env.PAPERCUSP_IPC_ENABLE !== '1') return;
   try {
-    const [{ startEndpointIpcServer }, { PROJECTED_DEPS }] = await Promise.all([
-      import('./lib/endpoint-ipc/server'),
-      import('./lib/projected-tool-deps'),
-    ]);
+    const [{ startEndpointIpcServer }, { PROJECTED_DEPS }, { listAllProjectedTools }] =
+      await Promise.all([
+        import('./lib/endpoint-ipc/server'),
+        import('./lib/projected-tool-deps'),
+        import('@papercusp/tooldef'),
+      ]);
+    // Ensure every operator-side defineTool() side-effect has run so the
+    // projection registry is populated before we read expose.ipc off it.
+    await import('./lib/agent-tools');
+    // Registry-driven IPC allowlist (Phase E8): a tool is IPC-eligible iff it
+    // declares `expose: { ipc: true }`. `sys:http` — the privileged
+    // HTTP-over-IPC bridge, not a defineTool projection — is added explicitly.
+    const ipcEligible = listAllProjectedTools()
+      .filter((t) => t.expose?.ipc === true)
+      .map((t) => t.expose.mcp?.name)
+      .filter((n): n is string => typeof n === 'string');
+    const allowedTools = [...new Set([...ipcEligible, 'sys:http'])];
     await startEndpointIpcServer({
       // Default path: ~/.papercusp/sockets/<pid>.sock (Linux/macOS) or
       // \\\\.\\pipe\\papercusp-<pid> (Windows). The Rust client reads
@@ -513,15 +526,7 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       // operator's own loopback HTTP port. Allowlist entry is uniform
       // gating, not a tool resolution. See the sys:http bridge in
       // @papercusp/ipc-endpoint-server (packages/ipc-endpoint-server/src/sys-http.ts).
-      allowedTools: [
-        'dev:ipc_echo',
-        'operator:scan',
-        'architect:chat',
-        'brainstorm:chat',
-        'operator:delegate',
-        'operator:converse',
-        'sys:http',
-      ],
+      allowedTools,
     });
   } catch (err) {
     console.error('[endpoint-ipc] failed to start:', err);

@@ -134,6 +134,7 @@ function readSuperuserToken(): string {
 
 export default defineTool({
   name: 'operator:converse',
+  expose: { ipc: true },
   profile: 'engineer',
   description:
     'Operator brain conversation turn. Self-contained: builds the prompt (role+memory+history+trigger), gates on budget, runs the LLM with agentmcp tools, records spend, post-turn mem0.add, dispatches <spawn> tags. Streams deltas + tool_calls.',

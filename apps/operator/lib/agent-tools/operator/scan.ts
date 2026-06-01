@@ -84,6 +84,7 @@ function extractScanSummary(text: string): string | null {
 
 export default defineTool({
   name: 'operator:scan',
+  expose: { ipc: true },
   profile: 'engineer',
   description:
     'Operator workspace scanner: acquires the per-workspace lock, runs the scanner LLM, parses + emits suggestion blocks, merges plugin-emitted suggestions, persists everything to scan history + idle snapshot, and releases the lock. Self-contained — safe to call from any transport.',

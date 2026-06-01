@@ -172,6 +172,7 @@ async function brainstormHandler(
 
 export const architectChat = defineTool({
   name: 'architect:chat',
+  expose: { ipc: true },
   profile: 'engineer',
   description:
     'Architect-mode chat turn: clarify spec, propose patches. Streams deltas; returns the assembled final text.',
@@ -191,6 +192,7 @@ export const architectChat = defineTool({
 
 export const brainstormChat = defineTool({
   name: 'brainstorm:chat',
+  expose: { ipc: true },
   profile: 'engineer',
   description:
     'Brainstorm partner chat turn: expand ideas, suggest analogues, challenge assumptions. Streams deltas; returns the assembled final text.',

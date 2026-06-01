@@ -36,6 +36,7 @@ const ArgsSchema = z.object({
 
 export default defineTool({
   name: 'dev:ipc_echo',
+  expose: { ipc: true },
   profile: 'engineer',
   description:
     'IPC transport verification — echoes the message back as a small typed event stream.',
