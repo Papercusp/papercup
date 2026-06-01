@@ -79,6 +79,17 @@ describe('DBOS happy-path smoke — real-PG reads do not throw (D-008/D-014 regr
         status TEXT NOT NULL,
         PRIMARY KEY (workspace_id, harness_slug, plan_slug)
       );
+      -- G2 auditor-admission gate: readFeaturesPg LEFT JOINs this for origin +
+      -- audit_verdict. Seeded EMPTY so the join yields NULL hfc → every feature is
+      -- treated as local/pickable (matches the pre-G1 "no consolidated row" path).
+      CREATE TABLE harness_shared.harness_features_consolidated (
+        workspace_id TEXT,
+        harness_slug TEXT NOT NULL,
+        feature_id TEXT NOT NULL,
+        origin TEXT,
+        audit_verdict TEXT,
+        PRIMARY KEY (harness_slug, feature_id)
+      );
       CREATE TABLE harness_shared.harness_chunk_plans (
         workspace_id TEXT NOT NULL,
         harness_slug TEXT NOT NULL,
