@@ -261,6 +261,27 @@ export interface BootHarnessOpts {
    * D-002 decision seam.
    */
   loadRevokedOverride?: () => Promise<Set<string>>;
+  /**
+   * Slow re-verify interval (ms). At this cadence, every admitted peer's
+   * channel-2 binding is re-checked via `verifyBinding`. A conclusive `'fail'`
+   * drops the peer from the admitted set (but does NOT add it to the published
+   * `revoked` blocklist — a deleted GitHub branch may be re-published later;
+   * normal admission re-admits it if the binding returns). `'pending'` / a thrown
+   * error keeps the peer (fail-open per D-004).
+   *
+   * The re-verify runs INSIDE `mergeNow` under the `merging` lock, throttled so
+   * it only actually fires at most once per `reverifyIntervalMs` — this avoids
+   * racing a concurrent merge mutating `admitted` without a separate lock.
+   *
+   * Channel-2 reads hit the GitHub API; keep this cadence slow (default
+   * 15 min). With small dogfood peer counts this is negligible load; at scale
+   * consider staggering per-peer calls (a comment in `reverifyAdmitted` notes
+   * this).
+   *
+   * Set to `0` to disable the automatic throttle-in-mergeNow trigger entirely
+   * (tests drive `reverifyAdmitted()` by hand via the handle). Default 15 min.
+   */
+  reverifyIntervalMs?: number;
 }
 
 export interface BootedHarnessHandle {
@@ -315,6 +336,25 @@ export interface BootedHarnessHandle {
    * `device_pubkey`), NOT the hypercore `log_core_key`.
    */
   revoke(devicePubkey: string): Promise<void>;
+  /**
+   * Re-verify all admitted peers' channel-2 bindings (rev-v2 Component A).
+   * Exposed for testing so `reverifyIntervalMs: 0` tests can drive it by hand.
+   *
+   * For each admitted peer EXCEPT the own log, calls `verifyBinding` with the
+   * peer's recorded `{devicePubkey, githubLogin, githubUserId}`:
+   *   - `'fail'` (conclusive) → drops the peer from `admitted` +
+   *     `admittedIdentities` (does NOT add to the published `revoked` set —
+   *     a GitHub-deleted binding may be re-published; normal admission re-admits
+   *     if it returns). Records a `peer_revoked` boot-history event noting
+   *     channel-2 revocation.
+   *   - `'pending'` / thrown error → keeps the peer (fail-open per D-004).
+   *
+   * IMPORTANT: callers MUST hold the `merging` flag or otherwise guarantee
+   * single-threaded access to `admitted` while this runs. The
+   * throttled-in-mergeNow path guarantees this; direct test calls should use
+   * `reverifyIntervalMs: 0` and drive this while no concurrent merge is running.
+   */
+  reverifyAdmitted(): Promise<void>;
   /** Swarm handle. Null when this boot didn't join a swarm
    *  (private harness OR swarmBinding omitted). */
   swarm: SwarmHandle | null;
@@ -418,6 +458,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const revoked = new Set<string>();
   const pubkeyToLogKey = new Map<string, string>();
 
+  // ── Per-admitted-peer identity store (rev-v2 Component A) ── populated at
+  // admit time from the SignedAnnounce frame so `reverifyAdmitted()` can
+  // re-call `verifyBinding(devicePubkey, githubLogin, githubUserId)` without
+  // the original frame. Keyed by `log_core_key` (same key as `admitted`).
+  // Cleaned up in every drop path: `revoke()`, `applyRevocationRefresh()`, and
+  // the channel-2 re-verify drop inside `reverifyAdmitted()`.
+  const admittedIdentities = new Map<
+    string,
+    { devicePubkey: string; githubLogin: string; githubUserId: number }
+  >();
+
   // ── Startup revocation seed (D-002) ── load PUBLISHED revocations BEFORE the
   // swarm is joined so any already-revoked peer is refused on first contact.
   //
@@ -477,6 +528,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         if (logKey) {
           admitted.delete(logKey);
           pubkeyToLogKey.delete(pk);
+          admittedIdentities.delete(logKey);
           recordBootEvent(
             opts.workspaceId,
             opts.harnessSlug,
@@ -486,6 +538,118 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
     }
+  }
+
+  // ── Channel-2 re-verify for admitted peers (rev-v2 Component A) ──
+  //
+  // Design: throttled inside mergeNow under the `merging` lock (mirrors
+  // rev-v1's applyRevocationRefresh pattern). This avoids a separate timer
+  // racing a concurrent merge mutating `admitted`. The slow cadence is enforced
+  // by `lastReverifyAt` — mergeNow calls `maybeReverifyAdmitted()` every pass,
+  // but the actual per-peer GitHub calls only fire when >= reverifyIntervalMs has
+  // elapsed since the last run.
+  //
+  // Re-admit path: a channel-2-fail drop does NOT add the pubkey to the published
+  // `revoked` set. A GitHub-deleted binding is a GitHub-side revocation, not a
+  // permanent blocklist entry — if the binding is re-published the peer can
+  // re-announce and be admitted through normal admission. This differs from
+  // revoke() (which adds to `revoked` so a re-announce is permanently refused)
+  // and is intentional: let normal admission re-verify rather than blocklisting.
+  //
+  // Scaling note: with N admitted peers each `reverifyAdmitted()` pass makes N
+  // GitHub API calls. For small dogfood peer counts (< ~20) at 15 min cadence
+  // this is negligible. At larger scale, consider staggering calls across passes
+  // (e.g. pick one peer per pass in round-robin) to spread the GitHub API load.
+  // That optimisation is deferred to a later component.
+
+  /** Timestamp of the last successful `reverifyAdmitted` run (ms). 0 = never. */
+  let lastReverifyAt = 0;
+
+  const DEFAULT_REVERIFY_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+  const reverifyIntervalMs = Number.isFinite(opts.reverifyIntervalMs as number)
+    ? (opts.reverifyIntervalMs as number)
+    : DEFAULT_REVERIFY_INTERVAL_MS;
+
+  // The `verifyBinding` function used for re-verification: the same one wired
+  // into the admission decider (verifyBindingOverride in tests; real adapter in
+  // production). Captured here as a stable reference.
+  const verifyBinding =
+    opts.verifyBindingOverride ??
+    buildVerifyBindingAdapter({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      workspaceRoot: opts.workspaceRoot,
+    });
+
+  /**
+   * Re-verify every admitted peer's channel-2 binding. Drops peers whose
+   * binding returns a conclusive `'fail'`. Keeps peers on `'pending'` or
+   * thrown error (fail-open per D-004). Does NOT add dropped peers to the
+   * published `revoked` set — a channel-2 drop is a GitHub-side removal, not
+   * a permanent blocklist (normal admission re-admits if the binding returns).
+   *
+   * MUST be called while holding the `merging` flag (or when no merge is
+   * running) — it mutates `admitted` / `admittedIdentities` / `pubkeyToLogKey`
+   * synchronously after each await, the same way `applyRevocationRefresh` does.
+   */
+  async function reverifyAdmitted(): Promise<void> {
+    // Snapshot the log keys to iterate safely while the map mutates.
+    const logKeys = [...admitted.keys()];
+    for (const logKey of logKeys) {
+      // Never re-verify the own log (can't revoke yourself via GitHub-side removal).
+      if (logKey === ownLog.keyHex) continue;
+
+      const identity = admittedIdentities.get(logKey);
+      if (!identity) continue; // own log or peer admitted before identity tracking
+
+      let result: 'verified' | 'pending' | 'fail';
+      try {
+        result = await verifyBinding(identity.devicePubkey, identity.githubLogin, identity.githubUserId);
+      } catch (e) {
+        // Transient / network error — keep the peer (fail-open per D-004).
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_error',
+          `reverify transient error for ${peerLabel(logKey)}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        continue;
+      }
+
+      if (result === 'fail') {
+        // Conclusive channel-2 revocation: drop from admitted set.
+        // Do NOT add to `revoked` — this is a GitHub-side deletion, not a
+        // permanent self-revocation. The peer can re-announce and be re-admitted
+        // if the binding is re-published.
+        admitted.delete(logKey);
+        admittedIdentities.delete(logKey);
+        // Clean up the pubkey→logKey reverse mapping.
+        if (identity.devicePubkey) {
+          pubkeyToLogKey.delete(identity.devicePubkey);
+        }
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_revoked',
+          `channel-2 revoked ${peerLabel(logKey)}`,
+        );
+      }
+      // 'pending' or 'verified': keep the peer (fail-open; only conclusive fail drops).
+    }
+  }
+
+  /**
+   * Run `reverifyAdmitted()` if the slow cadence has elapsed. Intended to be
+   * called inside `mergeNow` under the `merging` lock. A no-op when
+   * `reverifyIntervalMs <= 0` (disabled — tests drive it directly via the
+   * handle).
+   */
+  async function maybeReverifyAdmitted(): Promise<void> {
+    if (reverifyIntervalMs <= 0) return;
+    const now = Date.now();
+    if (now - lastReverifyAt < reverifyIntervalMs) return;
+    lastReverifyAt = now;
+    await reverifyAdmitted();
   }
 
   // ── Read-merge driver ── replaces the old Autobase read-loop. A pass:
@@ -556,6 +720,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // admitted/pubkeyToLogKey/pendingPeers — no re-entrancy into mergeNow.
       await applyRevocationRefresh();
 
+      // ── Channel-2 re-verify (rev-v2 Component A): run inside the same
+      // serialized merge block so it cannot race a concurrent merge mutating
+      // `admitted`. `maybeReverifyAdmitted` is a no-op when:
+      //   (a) reverifyIntervalMs <= 0 (disabled; tests drive reverifyAdmitted directly), or
+      //   (b) the slow cadence hasn't elapsed since the last run.
+      // When it does fire, it re-checks every admitted peer's channel-2 binding
+      // via verifyBinding, dropping any whose binding conclusively fails. Kept
+      // under the merging lock for the same reason applyRevocationRefresh is.
+      await maybeReverifyAdmitted();
+
       return applied;
     } catch (e) {
       recordBootEvent(
@@ -606,13 +780,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // 'verified'|'pending'|'fail'. Fail-closed: a private harness / no-gh-auth
   // context admits nothing, so only the own log is merged.
   const admit = makeAdmissionDecider({
-    verifyBinding:
-      opts.verifyBindingOverride ??
-      buildVerifyBindingAdapter({
-        workspaceId: opts.workspaceId,
-        harnessSlug: opts.harnessSlug,
-        workspaceRoot: opts.workspaceRoot,
-      }),
+    // Reuse the same `verifyBinding` adapter captured above for the re-verify
+    // path — one adapter instance shared by admission and re-verify (so the
+    // override seam in tests is a single assignment that affects both).
+    verifyBinding,
     // D-004: the live revocation set. The decider checks it FIRST (a revoked
     // pubkey is denied regardless of sig/binding), so a revoked peer's
     // re-announce is refused with reason 'revoked'. The set is mutated by
@@ -681,6 +852,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can find
       // and drop the right admitted log (admitted is keyed by log_core_key).
       pubkeyToLogKey.set(frame.device_pubkey, frame.log_core_key);
+      // Record the full identity for this admitted peer so `reverifyAdmitted()`
+      // can re-call verifyBinding without needing the original frame (rev-v2 A).
+      admittedIdentities.set(frame.log_core_key, {
+        devicePubkey: frame.device_pubkey,
+        githubLogin: frame.github_login,
+        githubUserId: frame.github_user_id,
+      });
       if (!admitted.has(frame.log_core_key)) {
         const remote = await openRemoteLog(store, frame.log_core_key);
         admitted.set(frame.log_core_key, remote);
@@ -722,6 +900,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (logKey) {
       admitted.delete(logKey);
       pubkeyToLogKey.delete(devicePubkey);
+      admittedIdentities.delete(logKey);
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
@@ -907,6 +1086,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     mergeNow,
     onAnnounce,
     revoke,
+    reverifyAdmitted,
     swarm: swarmHandle,
     async close() {
       stopped = true;
