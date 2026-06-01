@@ -35,9 +35,56 @@ export interface AdmittedLog {
   get(i: number): Promise<PeerLogOp | null>;
 }
 
+/** Default per-op read timeout. A connected-but-withholding peer's
+ *  `get(i, {wait:true})` can block forever; bounding it keeps the merge lock
+ *  from being held hostage (the op is skipped + retried on the next pass). */
+export const DEFAULT_GET_TIMEOUT_MS = 5000;
+
 export interface MergeOpts {
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). For tests. */
   applyImpl?: (op: OpEnvelope) => Promise<boolean>;
+  /**
+   * Per-op `log.get(i)` timeout (ms). A `get` that doesn't resolve within this
+   * window is treated as "block not available yet" → the op is skipped (NOT an
+   * error). Bounds a withholding remote peer so it can't hold the merge lock.
+   * Defaults to `DEFAULT_GET_TIMEOUT_MS`. Pass `0` / a non-positive value to
+   * disable the timeout (e.g. tests over instant fakes).
+   */
+  getTimeoutMs?: number;
+}
+
+/**
+ * Race a `log.get(i)` against a timeout. Resolves to the op on success, or
+ * `null` when the read rejects OR doesn't resolve in time (both are "skip this
+ * op"). Never rejects — a misbehaving peer's read can't abort the merge pass.
+ */
+async function readOpBounded(
+  log: AdmittedLog,
+  i: number,
+  timeoutMs: number,
+): Promise<PeerLogOp | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const get = Promise.resolve(log.get(i));
+    if (timeoutMs <= 0) {
+      // Timeout disabled — still guard the rejection (caller wants per-op
+      // isolation regardless of the timeout).
+      return await get;
+    }
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+      // Don't keep the event loop alive on the timeout alone.
+      if (typeof (timer as { unref?: () => void }).unref === 'function') {
+        (timer as { unref: () => void }).unref();
+      }
+    });
+    return await Promise.race([get, timeout]);
+  } catch {
+    // A rejected read (peer stream closed / decode error) skips just this op.
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -65,13 +112,21 @@ function toEnvelope(op: PeerLogOp): OpEnvelope {
  */
 export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): Promise<number> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
+  const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
 
   // 1+2. Read every op of every log (skip nulls) and map to OpEnvelope.
   // 3. Fold into per-(table, hbKey) LWW winners as we go.
+  //
+  // Each `get(i)` is BOUNDED + per-op isolated (readOpBounded): a read that
+  // rejects OR doesn't resolve within `getTimeoutMs` is skipped (treated as
+  // "block not available yet"), NOT allowed to bubble and abort the whole
+  // pass. This keeps one connected-but-withholding peer from starving the own
+  // log + other peers while the caller holds the merge lock — the skipped op
+  // is retried on the next pass once the block downloads.
   const winners = new Map<string, OpEnvelope>();
   for (const log of logs) {
     for (let i = 0; i < log.length; i++) {
-      const op = await log.get(i);
+      const op = await readOpBounded(log, i, getTimeoutMs);
       if (!op) continue;
       const env = toEnvelope(op);
       const groupKey = `${env.table}::${env.hbKey}`;
