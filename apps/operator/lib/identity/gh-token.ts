@@ -34,7 +34,11 @@
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const execFile = promisify(_execFile);
+// Lazy promisify — import-safe in the operator-vite SPA bundle (node:util is
+// browser-stubbed; a top-level promisify() call crashes at import → blank page).
+// Deferred to first call; never invoked in the browser.
+const execFile: (...a: unknown[]) => Promise<{ stdout: string; stderr: string }> = (...a) =>
+  (promisify(_execFile) as (...x: unknown[]) => Promise<{ stdout: string; stderr: string }>)(...a);
 
 const GH_AUTH_TOKEN_TIMEOUT_MS = 3_000;
 const GH_AUTH_STATUS_TIMEOUT_MS = 5_000;

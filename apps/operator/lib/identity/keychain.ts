@@ -27,8 +27,13 @@ import { join } from 'node:path';
 import { homedir, hostname as getHostname, userInfo } from 'node:os';
 import { promisify } from 'node:util';
 
-const execFile = promisify(_execFile);
-const pbkdf2Async = promisify(pbkdf2);
+// Lazy promisify — import-safe in the operator-vite SPA bundle (node:util is
+// browser-stubbed; a top-level promisify() call crashes at import → blank page).
+// Deferred to first call; never invoked in the browser.
+const execFile: (...a: unknown[]) => Promise<{ stdout: string; stderr: string }> = (...a) =>
+  (promisify(_execFile) as (...x: unknown[]) => Promise<{ stdout: string; stderr: string }>)(...a);
+const pbkdf2Async: (...a: unknown[]) => Promise<Buffer> = (...a) =>
+  (promisify(pbkdf2) as (...x: unknown[]) => Promise<Buffer>)(...a);
 
 const SERVICE_NAME = 'papercusp-device-keypair';
 const IDENTITY_DIR = join(homedir(), '.papercusp', 'identity');

@@ -10,8 +10,10 @@
  * Step list sourced from JOIN_STEP_IDS (canonical — cannot drift from orchestrator).
  */
 
-import { JOIN_STEP_IDS } from '../../lib/harness/join-shared-harness';
-import type { JoinStepId, JoinStepState, JoinStepStatus } from '../../lib/harness/join-shared-harness';
+// Import the step vocabulary from the dependency-free leaf, NOT join-shared-harness
+// (which pulls node:child_process/fs/os + the identity chain into the SPA bundle).
+import { JOIN_STEP_IDS } from '../../lib/harness/join-steps';
+import type { JoinStepId, JoinStepState, JoinStepStatus } from '../../lib/harness/join-steps';
 
 // ─── step metadata ─────────────────────────────────────────────────────────
 

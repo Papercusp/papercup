@@ -48,8 +48,22 @@ import {
   type EnsureBindingResult,
 } from './ensure-binding-published';
 import { signWithDeviceKey } from '../identity/sign-with-device-key';
+// Pure step vocabulary lives in the dependency-free leaf ./join-steps (so the
+// client join UI imports it without this module's server fan-in). Imported for
+// local use + re-exported below for existing server consumers.
+import {
+  ALL_STEP_IDS,
+  JOIN_STEP_IDS,
+  type JoinStepId,
+  type JoinStepStatus,
+  type JoinStepState,
+} from './join-steps';
 
-const execFile = promisify(_execFile);
+// Lazy promisify — import-safe in the operator-vite SPA bundle (node:util is
+// browser-stubbed; a top-level promisify() call crashes at import → blank page).
+// Deferred to first call; never invoked in the browser.
+const execFile: (...a: unknown[]) => Promise<{ stdout: string; stderr: string }> = (...a) =>
+  (promisify(_execFile) as (...x: unknown[]) => Promise<{ stdout: string; stderr: string }>)(...a);
 
 // ─── error class ─────────────────────────────────────────────────────────────
 
@@ -64,30 +78,9 @@ export class JoinStepError extends Error {
   }
 }
 
-// ─── step id + status types ───────────────────────────────────────────────────
+// ─── step id + status types (re-exported from the ./join-steps leaf) ──────────
 
-export type JoinStepId =
-  | 'oauth_attest'
-  | 'clone_repo'
-  | 'publish_binding'
-  | 'boot_federate'
-  | 'await_admission_merge'
-  | 'route_insights';
-
-export type JoinStepStatus =
-  | 'pending'
-  | 'running'
-  | 'done'
-  | 'error'
-  /** Phase-0-dependent stub: step not yet implemented; flow continues. */
-  | 'phase_0_pending';
-
-export interface JoinStepState {
-  id: JoinStepId;
-  status: JoinStepStatus;
-  errorCode?: string;
-  detail?: string;
-}
+export type { JoinStepId, JoinStepStatus, JoinStepState } from './join-steps';
 
 // ─── persisted join state ─────────────────────────────────────────────────────
 
@@ -114,17 +107,9 @@ export interface JoinState {
   githubLogin?: string;
 }
 
-export const ALL_STEP_IDS: JoinStepId[] = [
-  'oauth_attest',
-  'clone_repo',
-  'publish_binding',
-  'boot_federate',
-  'await_admission_merge',
-  'route_insights',
-];
-
-/** Alias for tests / callers that import by this name. */
-export const JOIN_STEP_IDS = ALL_STEP_IDS;
+// ALL_STEP_IDS / JOIN_STEP_IDS sourced from the ./join-steps leaf (imported
+// above for local use) and re-exported here for existing callers.
+export { ALL_STEP_IDS, JOIN_STEP_IDS };
 
 function initialSteps(): Record<JoinStepId, JoinStepState> {
   const out = {} as Record<JoinStepId, JoinStepState>;

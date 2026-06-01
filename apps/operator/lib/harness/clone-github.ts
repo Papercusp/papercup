@@ -40,7 +40,13 @@ import { mkdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
-const execFileP = promisify(execFile);
+// Lazy: this server module is pulled into the operator-vite SPA bundle, where
+// node:util is browser-stubbed (promisify === undefined). Calling promisify at
+// module-eval would throw at import → blank page. Defer to first call; never
+// invoked in the browser. (Next-removal client/server split is in progress —
+// plan finish-next-removal-2026-06-01.)
+const execFileP: (...a: unknown[]) => Promise<{ stdout: string; stderr: string }> = (...a) =>
+  (promisify(execFile) as (...x: unknown[]) => Promise<{ stdout: string; stderr: string }>)(...a);
 
 /**
  * Accepted GitHub URL shapes:

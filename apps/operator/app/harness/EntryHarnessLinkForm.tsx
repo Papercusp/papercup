@@ -2,8 +2,10 @@
 
 import { useState, useCallback } from 'react';
 import { parseHarnessLink, formatParseError } from '../../lib/harness/harness-link-types';
-import { ALL_STEP_IDS } from '../../lib/harness/join-shared-harness';
-import type { JoinStepState, JoinStepStatus } from '../../lib/harness/join-shared-harness';
+// Import the step vocabulary from the dependency-free leaf, NOT join-shared-harness
+// (which pulls node:child_process/fs/os + the identity chain into the SPA bundle).
+import { ALL_STEP_IDS } from '../../lib/harness/join-steps';
+import type { JoinStepState, JoinStepStatus } from '../../lib/harness/join-steps';
 import { JoinProgress } from './JoinProgress';
 
 interface Props {
