@@ -10,7 +10,9 @@ status: shipped
 
 ## Now
 
-**State:** **🟢 CODE-COMPLETE.** Only P-051b deploy remains (user step).
+**State:** **🟢 CODE-COMPLETE + DEPLOYED.** `cupboard.papercusp.com` is live (`GET /harnesses` → 200; `PAPERCUSP_CUPBOARD_URL` set). Remaining is publishing real harnesses (user action), not engineering.
+
+Shipped 2026-05-31 (this loop): **operator moderation surface** (`/admin/*`) — closes the report black-hole flagged in P-051a-3 / D-023. See **D-002**. The only follow-up is an optional desktop-operator moderation UI on top of `/admin` (server side is complete + tested).
 
 Shipped 2026-05-24: P-052 (Cupboard UI), P-054 (Discord deep-link + webhook), P-055 (sync-with-main badge + dialog).
 
@@ -146,6 +148,20 @@ Date: 2026-05-25
 5. **Migration off:** D1 → PG is a one-week port if v1 ever justifies it (target volume: ≤10 publishes/day across the user base at launch). Easy to defer.
 
 The plan body's §10.1 prose is now historical — `apps/operator-public/README.md` documents the actual deploy.
+
+### D-002 — Cupboard operator moderation is a GitHub-id allowlist over `/admin`
+Date: 2026-05-31
+
+**Gap:** P-051a-4 shipped `POST /reports` (anyone GitHub-authed can file an abuse report) and P-051a-3 specified "unlist by Cupboard operator on resolved report" — but the operator side was never built. Reports landed in D1 (`reports.status` defaulting `pending`) with no way to list or resolve them, and `DELETE /harnesses/:id` only permitted the publisher/claimant. Moderation was write-only.
+
+**Resolution:** added an operator-gated `/admin` surface in `apps/operator-public/src/routes/admin.ts`:
+- `GET /admin/reports[?status=pending|resolved_unlist|resolved_dismiss|all]` — list reports joined with the reported harness.
+- `POST /admin/reports/:id/resolve {action:'unlist'|'dismiss', note?}` — resolve a pending report; `unlist` also takes the harness down (`unlisted_reason = report:<id>`). Guarded UPDATE (`WHERE status='pending'`) so a racing double-resolve is a no-op (409).
+- `POST /admin/harnesses/:id/unlist {reason?}` — proactive operator takedown (`unlisted_reason = by_operator`).
+
+**Operator identity = a GitHub-user-id allowlist** (`CUPBOARD_OPERATOR_GITHUB_IDS` var, comma-separated), checked via the existing `resolveGithubBearer` flow. Rationale: no new shared secret (GitHub ids are public, not secret); every moderation action is attributable to a real GitHub identity in the audit log; consistent with Cupboard's "GitHub is the anchor" model. **Empty allowlist ⇒ no operators ⇒ every `/admin` endpoint 403s**, so the change is inert until an operator deploys with the var set. The schema already supported all of this (`reports.status` / `resolved_at` / `resolved_by_operator_note`; `reports_pending_idx`; `harnesses.unlisted_reason='by_operator'`) — no migration. 12 tests; worker suite 59/59 green. (Commit `dd85fffb8`.)
+
+**Remaining (optional):** a desktop-operator moderation UI rendering `/admin/reports` with resolve/unlist buttons. The server side is complete; the UI is a thin client and a nice-to-have, not a blocker.
 
 ## Named fallback rollout
 

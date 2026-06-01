@@ -4,8 +4,10 @@
  * v5 §10.3 + addendum 1: GitHub-authed; reporter identity recorded.
  * Per-user rate limit 10/hr. Stores hashed reporter IP for dedupe.
  *
- * Operator-side resolution UI is out of scope here — that's a Cupboard
- * admin tool later. The endpoint just lands rows for review.
+ * Operator review/resolution is the /admin moderation surface
+ * (routes/admin.ts): GET /admin/reports + POST /admin/reports/:id/resolve.
+ * This endpoint just lands pending rows; an operator triages them there.
+ * (A desktop-operator moderation UI on top of /admin is the remaining piece.)
  */
 
 import { Hono } from 'hono';
