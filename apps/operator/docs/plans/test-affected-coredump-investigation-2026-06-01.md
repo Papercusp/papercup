@@ -75,11 +75,69 @@ pollute shared external state). **Both are out of THIS plan's scope (the
 core-dump); tracked here for the follow-up.** Status of the follow-up is the
 open decision below.
 
-### Open decision (with avi)
+### Pre-existing-failure FIX progress (avi: two-pass — retire outdated, then fix relevant)
 
-Genuine `lib/**` test-debt: rewrite the `db` mocks per-file, OR convert the
-Drizzle-querying units to real-PG integration tests, OR push one through fully
-as the reference pattern then fan out. Contamination: separate root-cause pass.
+**Authoritative classification** (per-file isolation sweep, `forks`):
+**38 genuine** failures (fail alone) out of 116 full-suite-failing files; the
+other **78 are contamination** (pass alone, fail only in the full suite — a
+separate root-cause).
+
+**Pass 1 (retire) result: ~ZERO whole-file retirements.** Every genuine failure
+tests a *live* feature whose test drifted from a recent refactor (P-054 tooldef
+extraction, raw-`sql`→Drizzle migration, the backup seam, UI/env changes). No
+test was found that tests a *removed* feature. (Outdated *assertions* inside
+otherwise-relevant tests — e.g. raw-SQL-string `.toContain('DELETE FROM…')` —
+are dropped as part of fixing each file.)
+
+**Proven fix patterns (Pass 2):**
+1. *Relocated import* → repoint. `@papercusp/agent-mcp/tool-projection` →
+   `@papercusp/agent-mcp` (barrel still re-exports `lookupByMcpName`).
+2. *db-org strict-export crash* → `vi.mock('@papercusp/db-org', async (orig) =>
+   ({ ...(await orig()), getOrgPg: … }))`. `importActual` is side-effect-free
+   (connection.ts is fully lazy — verified), so this keeps REAL
+   `generated`/`schemaOf`/`withWorkspace` (drizzle `eq`/`and` resolve real
+   columns) and only stubs the connection.
+3. *SUT migrated to Drizzle `db`/`tx`* → chainable thenable fake:
+   `thenable(r) = Proxy(fn,{get:(_,p)=> p==='then' ? res=>res(r) : ()=>thenable(r)})`;
+   `db.select` resolves a queued rows array, `insert/delete/update` resolve `[]`
+   and are recorded for behavioral assertions. Drop raw-SQL-string assertions.
+4. *Empty-mock artifact assertions* (e.g. `expect(tables).toEqual([])` because
+   `generated` was `{}`) → assert the real shape instead.
+
+**FIXED + committed so far (8 files, all green in isolation):**
+- tool-projection import (4): `ipc_echo`, `streaming-tools-migration`,
+  `chat-architect.e2e`, `chat-surfaces.e2e`.
+- db-org Drizzle: `voice-lease` (reference), `design`, `dev`.
+
+**REMAINING genuine (~30) — by cluster, with the pattern to apply:**
+- *Drizzle `db`/`tx` rewrite (pattern 2+3):* `device-pair-store`,
+  `device-harnesses` (uses `withWorkspace` tx), `operator-audit` (tx),
+  `operator-scan-lock` (still raw `sql` — likely just needs pattern 2 + a tx
+  fake), endpoint-route 500s likely db-org-rooted: `experts`,
+  `agent-tools-device-auth`, `operator-state-snapshot`, `agent-tools-catchall`.
+- *workspace-registry mock gap:* `power-user-routes` (`No "workspacesRoot"
+  export` — add to the `@/lib/workspace-registry` mock, like
+  agent-mcp-operator-converse already does).
+- *Relocated path:* `chat-surface-tools` (reads the retired
+  `app/api/agent-mcp/operator-converse/route.ts` — repoint to the relocated
+  endpoint-route module or drop the file-read).
+- *Assertion/expectation drift (verify NOT a real regression first):*
+  `subscriptions`, `projects`, `roles`, `agent-tools/misc`, `require-principal`,
+  `oauth/state`, `runner-aggregate`, `sync-resolver/table-to-query-names`,
+  `harness-testing-registry`, `steps`, `OperatorChatSidebar`, `AddPanelCatalog`
+  (UI text), `coord-hook`, `auth-posture`.
+- *Env-specific assumption:* `desktop` (`/home/…/claude` vs `claude`),
+  (similar `gh` path) — assert resolved-path behavior, not bare name.
+- *Possibly REAL code issues (don't just patch the test):* `css-tokens` (43
+  undefined CSS tokens), `perf-anti-patterns`, `un-hardcode-contract`
+  (console.warn), `branch-actions` (5s timeout + FileHandle-GC fd leak under
+  Node 25 — `ERR_INVALID_STATE`), `pty-ws`.
+- *`bumpPatch is not a function`:* `app/installed/snapshots/page` — import/export
+  drift in `InstalledSnapshotsClient`.
+
+**Contamination (78 files, pass alone): NOT yet root-caused.** Shared
+external-state bleed in the full suite (filesystem/CWD/`.harness` paths, real PG,
+an fd leak). Separate workstream; `test:affected` subsets mostly dodge it.
 ---
 
 ## Objective
