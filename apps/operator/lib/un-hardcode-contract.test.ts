@@ -57,8 +57,10 @@ describe('un-hardcode contract', () => {
     } catch { /* best-effort */ }
   });
 
-  it('scaffolds a new harness schema with views over consolidated tables', async () => {
-    if (skip) { console.warn('PG not reachable; skipping contract test'); return; }
+  it('scaffolds a new harness schema with views over consolidated tables', async (ctx) => {
+    // Properly skip (not console.warn — the global fail-on-console setup treats
+    // a warn as a failure) when no test PG is reachable.
+    if (skip) { ctx.skip(); return; }
 
     await scaffoldHarnessSchema(TEST_SLUG);
 
