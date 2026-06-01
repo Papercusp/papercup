@@ -56,4 +56,35 @@ describe('mergeAdmittedLogs', () => {
     const applied = await mergeAdmittedLogs(logs, { applyImpl: apply });
     expect(applied).toBe(2);
   });
+
+  it('returns 0 for empty logs (never calls apply)', async () => {
+    const apply = applyMock();
+    expect(await mergeAdmittedLogs([], { applyImpl: apply })).toBe(0);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('skips a null op (get returns null) and applies the real one', async () => {
+    const apply = applyMock();
+    // get() returns null for index 0, a real op for index 1.
+    const logs = [ fakeLog('a'.repeat(64), [
+      null,
+      { type:'put', table:'features_consolidated', hbKey:'F-1', value:{status:'done'}, ts:100, schema_version:1, author_pubkey:'A' },
+    ])];
+    const applied = await mergeAdmittedLogs(logs, { applyImpl: apply });
+    expect(applied).toBe(1);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0][0]).toMatchObject({ hbKey:'F-1', ts:100 });
+  });
+
+  it('LWW-folds multiple ops on one key WITHIN a single author log (ts:2 wins)', async () => {
+    const apply = applyMock();
+    const logs = [ fakeLog('a'.repeat(64), [
+      { type:'put', table:'features_consolidated', hbKey:'F-1', value:{status:'todo'}, ts:1, schema_version:1, author_pubkey:'A' },
+      { type:'put', table:'features_consolidated', hbKey:'F-1', value:{status:'done'}, ts:2, schema_version:1, author_pubkey:'A' },
+    ])];
+    const applied = await mergeAdmittedLogs(logs, { applyImpl: apply });
+    expect(applied).toBe(1);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0][0]).toMatchObject({ value:{status:'done'}, ts:2 });
+  });
 });
