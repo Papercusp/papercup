@@ -57,8 +57,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { useTransitionRouter } from 'next-transition-router';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { getOrCreateClientId } from '@/lib/ui/client-id';
 
 gsap.registerPlugin(useGSAP);
@@ -317,7 +316,7 @@ function defaultOracleTab(): ChatTab {
 }
 
 export function OracleDock() {
-  const router = useTransitionRouter();
+  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const reducedMotion = useReducedMotion() ?? false;

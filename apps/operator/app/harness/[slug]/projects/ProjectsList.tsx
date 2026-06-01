@@ -8,7 +8,7 @@
  * present in <slug>.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useTransitionRouter } from 'next-transition-router';
+import { useRouter } from 'next/navigation';
 import { Loader2, FolderKanban } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../theme';
@@ -31,7 +31,7 @@ interface ProjectRow {
 }
 
 export default function ProjectsList({ slug }: { slug: string }) {
-  const router = useTransitionRouter();
+  const router = useRouter();
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 

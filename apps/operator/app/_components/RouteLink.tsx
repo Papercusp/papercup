@@ -2,7 +2,7 @@
 
 import { useEffect, useSyncExternalStore, type MouseEvent } from 'react';
 import { usePathname } from 'next/navigation';
-import { Link as TransitionLink } from 'next-transition-router';
+import NextLink from 'next/link';
 import { useProgress } from '@bprogress/next';
 
 import {
@@ -15,7 +15,7 @@ import {
 } from './routePending';
 import { shouldStartRouteProgressForClick } from './route-link-progress';
 
-export type RouteLinkProps = React.ComponentProps<typeof TransitionLink>;
+export type RouteLinkProps = React.ComponentProps<typeof NextLink>;
 
 // Tuning notes (2026-05-03 perf audit):
 //   - FALLBACK_MS was 8000. That meant if Next.js compile / route resolve
@@ -84,7 +84,7 @@ export default function RouteLink({ className, onClickCapture, ...props }: Route
   const mergedClassName = [className, pending ? 'is-route-pending' : null].filter(Boolean).join(' ');
 
   return (
-    <TransitionLink
+    <NextLink
       {...props}
       aria-busy={pending || undefined}
       className={mergedClassName || undefined}

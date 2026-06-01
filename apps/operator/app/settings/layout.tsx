@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { usePathname } from 'next/navigation';
-import { useTransitionRouter } from 'next-transition-router';
+import { usePathname, useRouter } from 'next/navigation';
 import RouteLink from '../_components/RouteLink';
 import { Select } from '../harness/Select';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
@@ -80,7 +79,7 @@ const SETTINGS_LINKS = SETTINGS_GROUPS.flatMap((group) => group.links);
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? '';
-  const router = useTransitionRouter();
+  const router = useRouter();
   const [query, setQuery] = useState('');
   const [wizardProgress, setWizardProgress] = useState<{
     finishedAt: string | null;
