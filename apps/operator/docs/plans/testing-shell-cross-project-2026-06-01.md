@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Draft from investigation (2026-06-01). The testing **UI is already abstracted** — `@papercusp/testing-shell` (`libs/testing-shell/`) drives both `/admin/testing` and the `/adv` harness Tests tab off an injected `dataSource`, so a third consumer is a new adapter, not a rewrite. The Restart project (`localhost:3001/tests?project=…`, Next 16 / React 19) wants to adopt it. All Papercusp coupling is **backend-only**; Restart's ~74 tests are compatible with **no rewrites**. This plan promotes the lib to a borrowable submodule, decouples the "Universal" tier from hardcoded operator paths (fixing a latent bug where the tier is empty for any non-operator harness), adds the two missing primitives (k6 runner kind + JUnit-CI source), and wires Restart as the first external consumer.
+**State:** Executing in-place (D-006). Phase 2 lib primitives landed in commit e223b1875: the `k6` runner kind is in both runner unions + `runnerLabel`, and `parseRunnerStatus` (the per-runner result→ChipStatus contract for vitest/playwright/cargo/k6/node) is TDD'd (6 tests) and exported — testing-shell also gained its first test home (vitest 4). Verified: lib typecheck exit 0, new tests 6/6, operator consumer test 10/10. P-013 done; P-010 is partial (lib types done; VUs/duration UI controls + operator run-dispatch execution remain).
 
-**Next:** Human decisions needed on two gates — **D-002** (which "Universal" domains ship portable now vs. defer generalizing the desktop-bound ones) and **P-019** sign-off before any cross-repo wiring. Then an agent picks up **P-001**.
+**Next:** An agent picks up Phase 1 — P-005/P-006 (rename generalizedRegistry→universalDomains, strip the hardcoded apps/operator/** globs) — pending the human ratifying D-002 (option b assumed). P-001 (new repo + push) and all of Phase 3 (P-019 cross-repo gate) are held for the human.
 
 ## Background
 
@@ -56,10 +56,10 @@ So "one UI, two adapters" already works. Restart would be the third adapter.
 
 ## Phase 2 — Missing primitives (ports up from Restart)
 
-- **P-010** `todo` Add `{ kind: 'k6'; script; vus?; duration? }` to `TestRunner` (registry.ts) + `TestRunnerWire` (data-source.ts). Teach `DomainTestPanel` to render the k6 VUs/duration controls + the smoke/load/stress/spike/soak/browser category chips ported from Restart's `/load-tests` page. This makes "Load" a first-class universal domain both projects get.
+- **P-010** `wip` Add `{ kind: 'k6'; script; vus?; duration? }` to `TestRunner` (registry.ts) + `TestRunnerWire` (data-source.ts). Teach `DomainTestPanel` to render the k6 VUs/duration controls + the smoke/load/stress/spike/soak/browser category chips ported from Restart's `/load-tests` page. This makes "Load" a first-class universal domain both projects get. (lib type-level landed commit e223b1875: k6 added to TestRunner + TestRunnerWire + runnerLabel; testing-shell typecheck green. Remaining: DomainTestPanel VUs/duration controls + category chips, and operator run-dispatch k6 execution.)
 - **P-011** `todo` Add an optional **streaming run path**: generalize `startRun` to support an SSE log stream (porting Restart's `readSSEStream` live-terminal UX), with the existing `pollRun` as the fallback. importance: low
 - **P-012** `todo` Add a **JUnit-XML `'ci'` source**: port Restart's `aggregateJUnit` into the lib as a CI-results producer that feeds `fetchStatuses`/`fetchHistory` with `source:'ci'` (the wire type already reserves `'ci' | 'local' | 'admin-ui'`), plus a rollup + failing-cases panel. Fills a real gap — the shell has no "ingest CI output" view today.
-- **P-013** `todo` Define a **per-runner output→`ChipStatus` parser contract** so non-vitest runners report status; ship parsers for vitest (JSON), k6 (summary), and `node:test` (TAP). Needed because the harness run route currently hardcodes `npx vitest run`. blocked-by: P-010
+- **P-013** `done` Define a **per-runner output→`ChipStatus` parser contract** so non-vitest runners report status; ship parsers for vitest (JSON), k6 (summary), and `node:test` (TAP). Needed because the harness run route currently hardcodes `npx vitest run`. blocked-by: P-010 (parseRunnerStatus + 6 TDD tests landed in @papercusp/testing-shell commit e223b1875; covers vitest/playwright/cargo/k6/node + signal-kill + skip.)
 
 ## Phase 3 — Restart adoption (first external consumer)
 
@@ -102,6 +102,20 @@ Date: 2026-06-01
 ### D-005 — Unify `test-config` as a follow-up, separable from the shell
 Date: 2026-06-01
 The two `@papercusp/test-config` copies are drift-prone but the testing **shell** doesn't depend on unifying them; Phase 4 can proceed or be dropped independently. Folding it in is worthwhile because the JUnit-CI source (P-012/P-016) depends on consistent reporter config. Refs P-020.
+
+
+### D-006 — Sequence in-place generalization before submodule detachment; hold outward-facing + cross-repo steps for the human
+Date: 2026-06-01
+On "proceed with the plan" (2026-06-01) the agent began executing, with three sequencing calls:
+
+1. **Code-generalize the lib in-place (Phases 1–2) before detaching it (Phase 0/P-001).** The generalization code does not depend on the lib living in its own repo, and it is better to prove the lib is generic in-place than to extract-then-fix. So Phase 2 primitives land first (P-010/P-013 — done this turn), Phase 1 decoupling next, and the submodule detachment last.
+
+2. **P-001 (create github.com/papercupai/testing-shell + push) is held for the human.** It is outward-facing (new remote repo) and requires a `git push`, which is out of the agent's lane here. The agent gets the lib generic in-place; the human creates the repo when ready.
+
+3. **All of Phase 3 (Restart wiring) stays gated by P-019** (cross-repo sign-off on the shared `main`); the agent will not touch the Restart repo until then.
+
+The agent is treating "proceed" as **ratifying D-002 option (b)** — ship the portable Universal core, defer generalizing the desktop-bound chaos/ai/live — pending explicit confirmation. Refs P-001, P-010, P-019.
+Related: P-001, P-010, P-019
 
 ## Open questions / Deferred follow-ups
 
