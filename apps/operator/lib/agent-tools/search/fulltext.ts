@@ -26,6 +26,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'search:fulltext',
+  // P-062 Phase 4: reads `operator_turns` (a non-workspace-scoped global table)
+  // among its sources and scopes the ws-scoped sources by the explicit
+  // workspaceId arg, not RLS. Must run on the admin (rolbypassrls) handle — a
+  // workspace-scoped harness_app tx has no grant on operator_turns.
+  crossWorkspace: true,
   capability: 'search:read',
   description:
     'Search workspace prose (escalations, brainstorm notes, older operator turns) by keyword match (BM25-style). Ranked by relevance. Returns excerpts.',

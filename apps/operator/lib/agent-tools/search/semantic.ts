@@ -30,6 +30,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'search:semantic',
+  // P-062 Phase 4: same as search:fulltext — reads the non-workspace-scoped
+  // operator_turns source and scopes by the explicit workspaceId arg, so it
+  // runs on the admin (rolbypassrls) handle, not a workspace-scoped RLS tx.
+  crossWorkspace: true,
   capability: 'search:read',
   description:
     'Semantic recall over workspace prose using embedding similarity. mode=hybrid combines with BM25 (search:fulltext) via Reciprocal Rank Fusion for best of both keyword and meaning. Falls back to BM25 if embeddings unavailable.',

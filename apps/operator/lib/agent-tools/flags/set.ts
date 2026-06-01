@@ -22,6 +22,10 @@ const FlagKeySchema = z.enum(ALL_FLAG_KEYS as unknown as [FlagKey, ...FlagKey[]]
 export default defineTool({
   name: 'flags:set',
   profile: 'engineer',
+  // P-062 Phase 4: an operator-level action; its only PG write is to the
+  // operator audit_log (whose INSERT carries no workspace_id), so it runs on
+  // the admin (rolbypassrls) handle rather than a workspace-scoped RLS tx.
+  crossWorkspace: true,
   description:
     'Flip a Papercusp feature flag on or off in PostHog. High-risk: changes app-wide behavior. Provide a clear reason; it is recorded for audit.',
   capability: 'audit:write',
