@@ -238,7 +238,14 @@ export default function PlansClient() {
   const itemsError = itemsNeedsHuman.error ?? itemsActionable.error ?? itemsBlocked.error;
   // The "Other" facet: non-plan-item attention surfaces (coord escalations,
   // smoke-fails, plan reviews, messages) from the plans:attention reader.
-  const attention = usePlanAttention();
+  // Scope it to the active harness — otherwise OTHER harnesses' non-plan items
+  // leak into a single-harness inbox. Under "All harnesses" (scope=all) pass
+  // nothing so the whole workspace shows.
+  const attention = usePlanAttention(
+    scopeMode === 'all'
+      ? undefined
+      : { harnessSlug: harnessFilter ?? advActiveSlug ?? undefined },
+  );
   const refreshItems = () => {
     itemsNeedsHuman.refresh();
     itemsActionable.refresh();
