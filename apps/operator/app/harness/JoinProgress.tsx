@@ -1,72 +1,48 @@
 'use client';
 
 /**
- * JoinProgress — 9-step progress UI for Entry 4 harness-link join (P-009).
+ * JoinProgress — 6-step progress UI for Entry 4 harness-link join (P-009, D-005).
  *
  * Renders each step from the `join-shared-harness` orchestrator with
  * pending / running / done / error / phase_0_pending status indicators
  * and human-readable copy per step.
+ *
+ * Step list sourced from JOIN_STEP_IDS (canonical — cannot drift from orchestrator).
  */
 
+import { JOIN_STEP_IDS } from '../../lib/harness/join-shared-harness';
 import type { JoinStepId, JoinStepState, JoinStepStatus } from '../../lib/harness/join-shared-harness';
 
 // ─── step metadata ─────────────────────────────────────────────────────────
 
 const STEP_META: Record<JoinStepId, { label: string; detail: string }> = {
   oauth_attest: {
-    label: 'Verify GitHub identity',
+    label: 'Authenticating with GitHub',
     detail: 'Checking your OAuth token and device keypair.',
   },
   clone_repo: {
-    label: 'Clone repository',
+    label: 'Cloning repository',
     detail: 'Downloading the shared GitHub repository.',
   },
-  join_hyperswarm: {
-    label: 'Join peer network',
-    detail: 'Connecting to the Hyperswarm peer-to-peer topic.',
-  },
-  bootstrap_hyperbee: {
-    label: 'Sync harness data',
-    detail: 'Replicating the Autobase from connected peers.',
-  },
-  seed_pg: {
-    label: 'Seed local database',
-    detail: 'Writing the replicated state into local Postgres.',
-  },
-  create_user_branch: {
-    label: 'Create your branch',
-    detail: 'Setting up your user/<id> contributor branch.',
-  },
-  push_contributor_file: {
-    label: 'Publish contributor file',
-    detail: 'Signing and pushing .harness/contributors/<login>.json.',
-  },
   publish_binding: {
-    label: 'Announce to peers',
-    detail: 'Publishing your contributor binding to the shared log.',
+    label: 'Publishing your binding',
+    detail: 'Signing and publishing your contributor file via GitHub.',
   },
-  verify_binding: {
-    label: 'Verify binding',
-    detail: 'Confirming two-channel identity verification.',
+  boot_federate: {
+    label: 'Joining the swarm',
+    detail: 'Booting the Model B federation substrate.',
+  },
+  await_admission_merge: {
+    label: 'Syncing with peers',
+    detail: 'Waiting for a remote peer to admit and merge.',
   },
   route_insights: {
-    label: 'Done',
+    label: 'Opening insights',
     detail: 'Opening the Insights tab for your new harness.',
   },
 };
 
-const STEP_ORDER: JoinStepId[] = [
-  'oauth_attest',
-  'clone_repo',
-  'join_hyperswarm',
-  'bootstrap_hyperbee',
-  'seed_pg',
-  'create_user_branch',
-  'push_contributor_file',
-  'publish_binding',
-  'verify_binding',
-  'route_insights',
-];
+const STEP_ORDER: JoinStepId[] = JOIN_STEP_IDS;
 
 // ─── status icon ──────────────────────────────────────────────────────────────
 

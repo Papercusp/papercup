@@ -2,7 +2,8 @@
 
 import { useState, useCallback } from 'react';
 import { parseHarnessLink, formatParseError } from '../../lib/harness/harness-link-types';
-import type { JoinStepId, JoinStepState, JoinStepStatus } from '../../lib/harness/join-shared-harness';
+import { ALL_STEP_IDS } from '../../lib/harness/join-shared-harness';
+import type { JoinStepState, JoinStepStatus } from '../../lib/harness/join-shared-harness';
 import { JoinProgress } from './JoinProgress';
 
 interface Props {
@@ -11,19 +12,6 @@ interface Props {
 }
 
 type Phase = 'input' | 'preview' | 'joining' | 'done' | 'error';
-
-const ALL_STEP_IDS: JoinStepId[] = [
-  'oauth_attest',
-  'clone_repo',
-  'join_hyperswarm',
-  'bootstrap_hyperbee',
-  'seed_pg',
-  'create_user_branch',
-  'push_contributor_file',
-  'publish_binding',
-  'verify_binding',
-  'route_insights',
-];
 
 function initialSteps(): JoinStepState[] {
   return ALL_STEP_IDS.map((id) => ({ id, status: 'pending' as JoinStepStatus }));
@@ -64,14 +52,10 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
         body: JSON.stringify({
           slug,
           harnessLinkUrl: url.trim(),
-          // OAuth credentials not yet wired (Phase 1b OAuth plugin).
-          // Sending empty strings lets the API return a clean 400 that
-          // the UI surfaces as "GitHub authentication required."
-          // keychainId is no longer sent — the API derives it server-side
-          // from the verified githubUserId (canonical device keychain id).
-          token: '',
-          githubUserId: 0,
-          githubLogin: '',
+          // Identity (token, githubUserId, githubLogin) is resolved server-side
+          // by the endpoint from the local `gh` CLI auth state (Task 7, D-004).
+          // Do NOT send credentials from the UI — the server returns 401
+          // gh_auth_required when `gh` is not authenticated.
         }),
       });
 
@@ -82,10 +66,21 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
         const code: string = (body as { code?: string }).code ?? '';
         const errMsg: string = (body as { error?: string }).error ?? `HTTP ${res.status}`;
 
-        if (code === 'slug_conflict') {
+        if (res.status === 401 || code === 'gh_auth_required') {
+          setFatalError(
+            'GitHub authentication required. Run `gh auth login` in your terminal, then retry.',
+          );
+          setSteps((prev) =>
+            prev.map((s) =>
+              s.id === 'oauth_attest'
+                ? { id: s.id, status: 'error', detail: 'Not authenticated', errorCode: 'gh_auth_required' }
+                : s,
+            ),
+          );
+        } else if (code === 'slug_conflict') {
           setFatalError(`Harness slug '${slug}' is already registered in this workspace.`);
         } else if (!body.state) {
-          // Pre-step error (bad input, missing token, etc.)
+          // Pre-step error (bad input, etc.)
           setFatalError(errMsg);
           // Mark oauth_attest as error so user sees where it stopped.
           setSteps((prev) =>
