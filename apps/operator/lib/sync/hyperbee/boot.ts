@@ -34,7 +34,7 @@
  */
 
 import { getHarnessStore, type HarnessStoreOpts } from './corestore';
-import { openOwnLog, openRemoteLog, type PeerLogOp } from './peer-log';
+import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
 import {
   mergeAdmittedLogs,
   type AdmittedLog,
@@ -143,9 +143,11 @@ export interface BootedHarnessHandle {
   harnessSlug: string;
   /** The Corestore — for swarm replication wiring + introspection. */
   store: Corestore;
-  /** The peer's OWN writable single-writer log. Local appends go here;
-   *  Stage 5 rewrites the orchestrator claim wiring onto this. */
-  ownLog: AdmittedLog;
+  /** The peer's OWN writable single-writer log. Local appends go here
+   *  (incl. the orchestrator's LWW advisory feature claim — Stage 5). Typed
+   *  as the writable `OwnLog` (a superset of `AdmittedLog`) so the claim path
+   *  can `append` directly. */
+  ownLog: OwnLog;
   /**
    * Append a local put/del op to the peer's OWN log. Convenience over
    * `ownLog.append` for the per-table write helpers (write-contributor-row /
@@ -235,8 +237,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const slug = opts.harnessSlug;
 
   // ── Model B: the peer's OWN writable single-writer log. ──
-  // Replaces createAutobaseHarness. Local writes append here; the merge
-  // driver reads it (+ admitted remote logs) into PG.
+  // Replaces the retired Autobase. Local writes append here (incl. the
+  // orchestrator's LWW advisory feature claim); the merge driver reads it
+  // (+ admitted remote logs) into PG.
   const ownLog = await openOwnLog(store);
 
   // Wire the 8 per-table PG projection writers. Idempotent (re-running

@@ -1,140 +1,78 @@
 /**
- * get-claim-handle — Phase 6 P-037 lookup tests.
+ * get-claim-handle — Model B Stage-5 lookup tests.
+ *
+ * The own log IS the claim handle now (D-002). getClaimHandleForHarness
+ * returns the booted handle's ownLog, or null when not booted.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { getClaimHandleForHarness } from '../get-claim-handle';
 import {
   _resetHandleMapForTests,
   _setHandleForTests,
 } from '../../sync/hyperbee/boot-all';
-import type {
-  AutobaseHarnessHandle,
-  OpEnvelope,
-} from '../../sync/hyperbee/autobase-setup';
-import type { BootedHarnessHandle } from '../../sync/hyperbee/boot';
 import { makeFakeBootedHandle } from '../../sync/hyperbee/__tests__/fake-booted-handle';
 
-function fakeView(): { length: number; get(seq: number): Promise<OpEnvelope | null> } {
-  const log: OpEnvelope[] = [];
-  return {
-    get length() {
-      return log.length;
-    },
-    async get(seq) {
-      return log[seq] ?? null;
-    },
-  };
-}
-
-// STAGE-5: the claim adapter still reads `handle.base` (a retired Autobase
-// view). These fixtures attach a legacy base via the helper's `legacyBase`
-// seam; Stage 5 rewrites the claim path onto the own log + retires this.
-function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
-  const view = fakeView();
-  const base: AutobaseHarnessHandle = {
-    base: { view } as unknown as AutobaseHarnessHandle['base'],
-    append: vi.fn(async () => {}),
-    close: vi.fn(async () => {}),
-  };
-  return makeFakeBootedHandle({ workspaceId, harnessSlug, legacyBase: base }).handle;
+function fakeHandle(workspaceId: string, harnessSlug: string, keyHex?: string) {
+  return makeFakeBootedHandle({ workspaceId, harnessSlug, keyHex }).handle;
 }
 
 afterEach(() => {
   _resetHandleMapForTests();
 });
 
-describe('get-claim-handle — P-037 lookup', () => {
+describe('get-claim-handle — Stage-5 lookup', () => {
   it('returns null when no substrate is booted', () => {
     const result = getClaimHandleForHarness({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      myPubkey: 'aa',
     });
     expect(result).toBeNull();
   });
 
-  it('returns a ClaimAutobaseHandle when substrate is booted', () => {
-    _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
+  it('returns the own-log claim handle when substrate is booted', () => {
+    _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup', 'cd'.repeat(32)));
     const handle = getClaimHandleForHarness({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      myPubkey: 'aa',
     });
     expect(handle).not.toBeNull();
-    expect(handle!.myPubkey).toBe('aa');
-    expect(typeof handle!.appendClaim).toBe('function');
-    expect(typeof handle!.readClaimsForFeature).toBe('function');
+    expect(handle!.keyHex).toBe('cd'.repeat(32));
+    expect(typeof handle!.append).toBe('function');
+    expect(typeof handle!.length).toBe('number');
   });
 
-  it('returns null when adapter construction throws', () => {
-    // Build a fakeHandle whose base.view is missing a get() method —
-    // buildClaimAutobaseHandle throws, lookup catches and returns null.
-    const broken = makeFakeBootedHandle({
-      workspaceId: 'ws-1',
-      harnessSlug: 'broken',
-      legacyBase: {
-        base: { view: { length: 0 } } as unknown as AutobaseHarnessHandle['base'],
-        append: vi.fn(),
-        close: vi.fn(),
-      },
-    }).handle;
-    _setHandleForTests('ws-1', 'broken', broken);
-    expect(
-      getClaimHandleForHarness({
-        workspaceId: 'ws-1',
-        harnessSlug: 'broken',
-        myPubkey: 'aa',
-      }),
-    ).toBeNull();
-  });
-
-  it('threads claimTable override through to the adapter', () => {
-    _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
+  it('the returned handle appends to the booted own log', async () => {
+    const fake = makeFakeBootedHandle({ workspaceId: 'ws-1', harnessSlug: 'papercup' });
+    _setHandleForTests('ws-1', 'papercup', fake.handle);
     const handle = getClaimHandleForHarness({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      myPubkey: 'aa',
-      claimTable: 'custom_claims',
     });
     expect(handle).not.toBeNull();
-    // The override surfaces only on appendClaim via the OpEnvelope —
-    // call it and check the resulting append() args.
-    void handle!.appendClaim({
-      kind: 'feature_claim',
-      feature_id: 'F-1',
-      claimer_pubkey: 'aa',
-      claimer_github_user_id: 1,
+    await handle!.append({
+      type: 'put',
+      table: 'claims',
+      hbKey: 'F-1/0',
+      value: { feature_id: 'F-1' },
       ts: 100,
       schema_version: 1,
+      author_pubkey: handle!.keyHex,
     });
-    // No assertion target here without exposing the mock; rely on the
-    // adapter test for the per-field behavior. This test ensures the
-    // table flows through without throwing.
+    // The op flows through the booted handle's own log.
+    expect(fake.handle.ownLog.length).toBe(1);
   });
 
   it('keys per (workspace, harness)', () => {
     _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
     expect(
-      getClaimHandleForHarness({
-        workspaceId: 'ws-1',
-        harnessSlug: 'a',
-        myPubkey: 'aa',
-      }),
+      getClaimHandleForHarness({ workspaceId: 'ws-1', harnessSlug: 'a' }),
     ).not.toBeNull();
     expect(
-      getClaimHandleForHarness({
-        workspaceId: 'ws-1',
-        harnessSlug: 'b',
-        myPubkey: 'aa',
-      }),
+      getClaimHandleForHarness({ workspaceId: 'ws-1', harnessSlug: 'b' }),
     ).toBeNull();
     expect(
-      getClaimHandleForHarness({
-        workspaceId: 'ws-2',
-        harnessSlug: 'a',
-        myPubkey: 'aa',
-      }),
+      getClaimHandleForHarness({ workspaceId: 'ws-2', harnessSlug: 'a' }),
     ).toBeNull();
   });
 });

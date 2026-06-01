@@ -2,43 +2,16 @@
  * getClaimStrategy tests.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { getClaimStrategy } from '../get-claim-strategy';
 import {
   _resetHandleMapForTests,
   _setHandleForTests,
 } from '../../sync/hyperbee/boot-all';
-import type {
-  AutobaseHarnessHandle,
-  OpEnvelope,
-} from '../../sync/hyperbee/autobase-setup';
-import type { BootedHarnessHandle } from '../../sync/hyperbee/boot';
+import { makeFakeBootedHandle } from '../../sync/hyperbee/__tests__/fake-booted-handle';
 
-function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
-  const log: OpEnvelope[] = [];
-  const view = {
-    get length() {
-      return log.length;
-    },
-    async get(seq: number) {
-      return log[seq] ?? null;
-    },
-  };
-  const base: AutobaseHarnessHandle = {
-    base: { view, local: { key: Buffer.from('aa', 'hex') } } as unknown as AutobaseHarnessHandle['base'],
-    append: vi.fn(async () => {}),
-    close: vi.fn(async () => {}),
-  };
-  // STAGE-5: legacy Autobase `base` fixture (no longer a declared
-  // BootedHarnessHandle property); cast through `unknown`. getClaimStrategy
-  // only checks handle presence, so the shape is incidental.
-  return {
-    workspaceId,
-    harnessSlug,
-    store: {} as never,
-    base,
-    close: vi.fn(async () => {}),
-  } as unknown as BootedHarnessHandle;
+function fakeHandle(workspaceId: string, harnessSlug: string) {
+  return makeFakeBootedHandle({ workspaceId, harnessSlug }).handle;
 }
 
 afterEach(() => {

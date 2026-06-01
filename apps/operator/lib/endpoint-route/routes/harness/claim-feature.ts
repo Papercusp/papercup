@@ -1,24 +1,28 @@
 /**
- * Distributed-claim HTTP wrapper — Phase 6 P-037 production wiring.
+ * Distributed-claim HTTP wrapper — Model B Stage-5 production wiring.
  *
  *   POST /api/harness/:slug/claim-feature
  *     body: { feature_id: string, github_user_id: number }
  *     →
  *       { strategy: 'distributed' | 'single-writer',
- *         reason?: 'attempted' | 'substrate-not-booted' | 'pubkey-unresolved',
- *         won: boolean,
- *         winner_pubkey?: string,
+ *         reason?: 'attempted' | 'substrate-not-booted' | 'pubkey-unresolved'
+ *                 | 'single-writer-fallback' | 'manually-active',
+ *         claimed: boolean,
  *         my_pubkey?: string,
- *         audit_outcome?: 'won' | 'lost',
+ *         audit_outcome?: 'won' | 'lost' | 'timeout' | 'error',
  *         audit_recorded?: boolean,
  *         audit_error?: string }
  *
  * Purpose: the subprocess orchestrator can't access the operator's
  * in-process substrate handles directly. It calls this endpoint
- * before dispatching a worker on a feature; if `won` is false (or
- * strategy is 'single-writer' and the caller decides to fall back),
- * it drops the candidate and selects the next eligible feature
- * per v5 §0.6.
+ * before dispatching a worker on a feature.
+ *
+ * D-002: the claim is an LWW ADVISORY hint, not a race — appending it always
+ * succeeds (`claimed: true`). The orchestrator dispatches on `claimed`;
+ * contention (another peer's later claim clobbering this one) surfaces via
+ * the clobber toast + the orchestrator's backoff (P-037d), NOT a `won:false`
+ * here. The only `claimed:false` is `manually-active` (a human flipped the
+ * feature to working) — that still blocks pickup.
  *
  * Public (auth=public) — same tier as the rest of the harness API
  * during pre-alpha.
@@ -83,7 +87,7 @@ const post = defineTool({
       if (othersActive.length > 0) {
         return Response.json({
           strategy: 'distributed',
-          won: false,
+          claimed: false,
           reason: 'manually-active',
           active_users: othersActive.map((m) => m.github_user_id),
         });
@@ -101,7 +105,7 @@ const post = defineTool({
       // writer race-free because there's only one writer).
       return Response.json({
         strategy,
-        won: true,
+        claimed: true,
         reason: 'single-writer-fallback',
       });
     }
@@ -118,17 +122,16 @@ const post = defineTool({
       // fall back as if single-writer.
       return Response.json({
         strategy: 'single-writer',
-        won: true,
+        claimed: true,
         reason: r.reason,
       });
     }
-    // reason === 'attempted' — return the full claim result.
+    // reason === 'attempted' — the advisory claim was appended. claimed is
+    // always true; contention is resolved LWW downstream (clobber + backoff).
     return Response.json({
       strategy: 'distributed',
       reason: r.reason,
-      won: r.won,
-      claim_seq: r.claim_seq,
-      winner_pubkey: r.winner_pubkey,
+      claimed: r.claimed,
       my_pubkey: r.my_pubkey,
       audit_outcome: r.audit_outcome,
       audit_recorded: r.audit_recorded,

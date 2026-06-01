@@ -9,7 +9,7 @@
 
 import { vi } from 'vitest';
 import type { BootedHarnessHandle, LocalWriteOp } from '../boot';
-import type { PeerLogOp } from '../peer-log';
+import type { OwnLog, PeerLogOp } from '../peer-log';
 import type { AdmittedLog } from '../read-merge';
 import type { AdmissionResult } from '../read-admission';
 import type { SignedAnnounce } from '../announce';
@@ -24,14 +24,6 @@ export function makeFakeBootedHandle(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   keyHex?: string;
-  /**
-   * Optional retired-Autobase `base` shape. The orchestrator claim path
-   * (get-claim-handle / distributed-claim) still reads `handle.base` until the
-   * Stage-5 claim rewrite; those tests pass a legacy base here so the adapter
-   * finds it. Attached via an `unknown` cast so the (no-longer-declared) `base`
-   * property doesn't trip excess-property checks.
-   */
-  legacyBase?: unknown;
 } = {}): FakeBootedHandle {
   const workspaceId = opts.workspaceId ?? 'ws-1';
   const harnessSlug = opts.harnessSlug ?? 'papercup';
@@ -40,12 +32,17 @@ export function makeFakeBootedHandle(opts: {
   const appended: LocalWriteOp[] = [];
   const ops: PeerLogOp[] = [];
 
-  const ownLog: AdmittedLog = {
+  // Typed as the writable `OwnLog` (Stage 5): the claim path appends to it
+  // directly, so it exposes `append` alongside the read surface.
+  const ownLog: OwnLog = {
     get keyHex() {
       return keyHex;
     },
     get length() {
       return ops.length;
+    },
+    async append(op: PeerLogOp): Promise<void> {
+      ops.push(op);
     },
     async get(i: number): Promise<PeerLogOp | null> {
       return ops[i] ?? null;
@@ -81,10 +78,6 @@ export function makeFakeBootedHandle(opts: {
     swarm: null,
     close: vi.fn(async () => {}),
   };
-
-  if (opts.legacyBase !== undefined) {
-    (handle as unknown as { base: unknown }).base = opts.legacyBase;
-  }
 
   return { handle, appended };
 }

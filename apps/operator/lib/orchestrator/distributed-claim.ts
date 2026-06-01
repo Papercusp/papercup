@@ -1,36 +1,40 @@
 /**
- * distributed-claim — orchestrator entry point for distributed claims.
+ * distributed-claim — orchestrator entry point for the LWW advisory claim.
  *
- * Plan: papercusp-dogfood-phase6-orchestrator-claim-2026-05-24 P-037.
+ * Plan: papercusp-substrate-model-b-rewrite-2026-05-31 (Stage 5).
+ * Supersedes Phase-6 P-037's Autobase merge-order wiring.
  *
- * Single call orchestrator code makes to attempt a distributed claim:
+ * Single call orchestrator code makes to record a distributed claim:
  *
  *   const r = await attemptDistributedClaim({
  *     workspaceId, harnessSlug, feature_id, claimer_github_user_id,
  *   });
  *   if (r.reason === 'substrate-not-booted') {
  *     // fall back to legacy single-writer claim
- *   } else if (r.won) {
- *     // we won — schedule the worker
+ *   } else {
+ *     // r.claimed === true — schedule the worker (advisory; may be clobbered)
  *   }
+ *
+ * D-002: the claim is an LWW ADVISORY hint appended to the peer's OWN log
+ * (`boot.ts` `ownLog`), not a race. There is no won/lost arbitration —
+ * `claimFeature` appends + returns `{ claimed: true }`. Concurrent claims
+ * resolve LWW in the read-merge; contention surfaces via the clobber toast
+ * and the orchestrator backs off (P-037d).
  *
  * Composes:
  *   - getBootedHarness() to find the substrate handle
- *   - resolveMyPubkey() to extract our writer pubkey (hex)
- *   - buildClaimAutobaseHandle() to adapt to the orchestrator's interface
- *   - attemptClaimWithAudit() to run the claim + write audit
+ *   - resolveMyPubkey() to extract our own-log key hex (for the audit row +
+ *     sanity check that the log is ready)
+ *   - attemptClaimWithAudit() to append the claim + write the audit row
  *
- * If the substrate hasn't booted (flag off, boot failed, etc.) returns
- * a sentinel result with reason='substrate-not-booted' so the caller
- * can fall back cleanly. Validation errors propagate (caller bug).
+ * If the substrate hasn't booted (flag off, boot failed, etc.) returns a
+ * sentinel with reason='substrate-not-booted' so the caller can fall back to
+ * the legacy single-writer claim. Validation errors propagate (caller bug).
  *
  * Pure logic — fake handles in tests via boot-all's test hooks.
  */
 
 import { getBootedHarness } from '../sync/hyperbee/boot-all';
-import {
-  buildClaimAutobaseHandle,
-} from './claim-handle-adapter';
 import {
   attemptClaimWithAudit,
   type AttemptClaimResult,
@@ -42,8 +46,6 @@ export interface AttemptDistributedClaimOpts {
   harnessSlug: string;
   feature_id: string;
   claimer_github_user_id: number;
-  /** Override the table tag for claim ops. Default `'claims'`. */
-  claimTable?: string;
   /** Override for tests; defaults to Date.now(). */
   now_ms?: number;
 }
@@ -52,44 +54,32 @@ export type AttemptDistributedClaimResult =
   | (AttemptClaimResult & { reason: 'attempted'; my_pubkey: string })
   | {
       reason: 'substrate-not-booted';
-      won: false;
+      claimed: false;
       workspaceId: string;
       harnessSlug: string;
       feature_id: string;
     }
   | {
       reason: 'pubkey-unresolved';
-      won: false;
+      claimed: false;
       workspaceId: string;
       harnessSlug: string;
       feature_id: string;
     };
 
 /**
- * Best-effort pubkey extraction from the booted substrate handle.
+ * Resolve our own-log key hex from the booted substrate handle.
  *
- * Model B (Stage 4a): the local writer's hypercore key is the own log's
- * `keyHex` (64-hex). This is the same per-peer-log core key the wire claim
- * record keys on. Falls back to the retired Autobase `base.local.key` shape
- * for any not-yet-migrated handle. Defensive: returns null if neither resolves.
+ * Model B: the local writer's hypercore key is the own log's `keyHex`
+ * (64-hex). This is the claimer pubkey the wire claim record keys on.
+ * Defensive: returns null if the own log isn't present / has no key.
  */
 export function resolveMyPubkey(
   booted: BootedHarnessHandle,
 ): string | null {
   try {
-    // Model B: own-log key hex.
-    const ownKey = (booted as unknown as { ownLog?: { keyHex?: string } }).ownLog?.keyHex;
+    const ownKey = booted.ownLog?.keyHex;
     if (typeof ownKey === 'string' && ownKey.length > 0) return ownKey;
-    // Legacy Autobase handle (pre-Stage-4) — retained for safety.
-    const base = (booted as unknown as {
-      base?: { base?: { local?: { key?: Buffer | Uint8Array } } };
-    }).base;
-    const k = base?.base?.local?.key;
-    if (!k) return null;
-    if (typeof (k as Buffer).toString === 'function') {
-      const hex = Buffer.from(k as Uint8Array).toString('hex');
-      if (hex.length > 0) return hex;
-    }
     return null;
   } catch {
     return null;
@@ -103,7 +93,7 @@ export async function attemptDistributedClaim(
   if (!booted) {
     return {
       reason: 'substrate-not-booted',
-      won: false,
+      claimed: false,
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       feature_id: opts.feature_id,
@@ -113,45 +103,14 @@ export async function attemptDistributedClaim(
   if (!myPubkey) {
     return {
       reason: 'pubkey-unresolved',
-      won: false,
+      claimed: false,
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       feature_id: opts.feature_id,
     };
   }
-  // STAGE-5 TODO (papercusp-substrate-model-b-rewrite-2026-05-31): the claim
-  // adapter still expects an Autobase view. Model B handles no longer expose
-  // `base`; until Stage 5 rewrites the claim path onto the own log, fall back
-  // to substrate-not-booted (legacy single-writer claim) when `base` is absent.
-  const legacyBase = (booted as unknown as { base?: Parameters<typeof buildClaimAutobaseHandle>[0]['base'] }).base;
-  if (!legacyBase) {
-    return {
-      reason: 'substrate-not-booted',
-      won: false,
-      workspaceId: opts.workspaceId,
-      harnessSlug: opts.harnessSlug,
-      feature_id: opts.feature_id,
-    };
-  }
-  let claimHandle;
-  try {
-    claimHandle = buildClaimAutobaseHandle({
-      base: legacyBase,
-      myPubkey,
-      table: opts.claimTable,
-    });
-  } catch {
-    // Adapter construction failed (view shape unexpected). Treat as
-    // substrate-not-booted so callers fall back cleanly.
-    return {
-      reason: 'substrate-not-booted',
-      won: false,
-      workspaceId: opts.workspaceId,
-      harnessSlug: opts.harnessSlug,
-      feature_id: opts.feature_id,
-    };
-  }
-  const result = await attemptClaimWithAudit(claimHandle, {
+  // The own log IS the claim handle now — append the advisory claim + audit.
+  const result = await attemptClaimWithAudit(booted.ownLog, {
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
     feature_id: opts.feature_id,
