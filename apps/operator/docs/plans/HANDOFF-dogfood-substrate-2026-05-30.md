@@ -130,6 +130,40 @@ Bidirectional writes + auth (addWriter admission, op signing) is the larger gate
 Revert when done testing: remove `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` from `.env.local` +
 `rm /home/marsh-office/sheets-clone/.harness/shared.json` + restart.
 
+## Session 4 (2026-06-01) — Model B substrate Stages 0-7 implemented + two-peer test
+
+The Model B substrate rewrite (per `papercusp-substrate-model-b-rewrite-2026-05-31`)
+that the Session-3 finding above flagged as UNBUILT is now implemented through
+**Stage 7**: per-peer single-writer logs (`peer-log.ts`), the LWW read-merge
+(`read-merge.ts`), the signed peer-announce (`announce.ts`), the read-admission
+security gate (`read-admission.ts`), the advisory append-only feature claim
+(`orchestrator/feature-claim.ts` + `projections/feature-claims.ts`), and the boot
+wiring — all shipped with unit coverage in Stages 1-6.
+
+Stage 7 adds a **deterministic, Docker-free two-peer-on-one-box integration test**
+that composes the REAL modules across two Corestores + two own-logs and proves the
+four load-bearing claims at the read-merge → apply boundary (asserted via
+`mergeAdmittedLogs`'s injectable `applyImpl` spy, so NO Postgres/Docker is needed —
+the projection→PG final hop is already unit-tested per-table):
+- file: `apps/operator/lib/sync/hyperbee/__tests__/two-peer.test.ts` (4 tests, green).
+  Named `*.test.ts` (NOT `*.integration.test.ts`) so it RUNS in the normal unit
+  suite (`npx vitest run lib/sync/hyperbee/`) — the unit layer excludes the
+  integration glob and the integration layer's globalSetup wants Docker, which this
+  spy-asserted test does not.
+- (1) replication — peer A's write crosses the wire to peer B's merge → apply;
+  (2) admission refusal — a forged binding → `binding_invalid`, a tampered announce
+  → `bad_sig`, and the refused peer's ops never enter the merged set;
+  (3) revocation — a revoked peer → `revoked`, none of its ops apply;
+  (4) claims are APPEND-ONLY audit history (corrected Stage-5 semantics) — two
+  peers' claims for one feature land as SEPARATE `<feature_id>/<seq>` rows, NOT an
+  LWW-clobber (distinct seqs achieved by A's log carrying a prior op → A claims at
+  seq 1, B at seq 0; current-holder is a separate latest-`claimed_at` read).
+
+**The real two-MACHINE smoke (P-079) remains the user's manual acceptance step** —
+it still needs the Tauri desktop + two actual peers (see `/internal/docs/testing`);
+this single-box test proves the module composition + replication + gate logic, not
+the cross-machine Hyperswarm transport.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
