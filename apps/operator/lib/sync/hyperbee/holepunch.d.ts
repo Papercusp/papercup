@@ -12,8 +12,39 @@ declare module 'corestore' {
     ready(): Promise<void>;
     close(): Promise<void>;
     get(opts: { name?: string; key?: Buffer; valueEncoding?: string } | string): unknown;
-    replicate(initiator: boolean): unknown;
+    // `replicate(initiator: boolean)` returns a duplex stream to pipe by hand.
+    // `replicate(stream)` plugs into an EXTERNAL stream (a Hyperswarm
+    // connection / secret-stream) — it both replicates AND attaches the shared
+    // muxer at `stream.userData` (Model B announce channel rides that muxer).
+    replicate(initiatorOrStream: boolean | unknown): unknown;
   }
+}
+
+declare module 'protomux' {
+  // Minimal surface — the Model B announce channel rides the SAME muxer that
+  // corestore.replicate(socket) attaches at `socket.userData`. We open one
+  // extra channel + one JSON message on it.
+  export interface ProtomuxMessage<T = unknown> {
+    send(value: T): void;
+  }
+  export interface ProtomuxChannel {
+    addMessage<T = unknown>(opts: {
+      encoding: unknown;
+      onmessage: (value: T) => void;
+    }): ProtomuxMessage<T>;
+    open(): void;
+    close(): void;
+  }
+  export default class Protomux {
+    static from(stream: unknown): Protomux;
+    createChannel(opts: { protocol: string }): ProtomuxChannel;
+  }
+}
+
+declare module 'compact-encoding' {
+  // We only use the `json` codec for the announce frame.
+  const c: { json: unknown; [k: string]: unknown };
+  export default c;
 }
 
 declare module 'autobase' {

@@ -26,7 +26,14 @@
  */
 
 import type Corestore from 'corestore';
+import Protomux from 'protomux';
+import c from 'compact-encoding';
 import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
+import type { SignedAnnounce } from './announce';
+import type { AdmissionResult } from './read-admission';
+
+/** Protomux protocol id for the signed-announce exchange (Model B Stage 4b). */
+const ANNOUNCE_PROTOCOL = 'papercusp/announce';
 
 export interface SwarmHandle {
   /** Leave the topic + detach this harness's connection handler.
@@ -71,6 +78,55 @@ export interface JoinHarnessSwarmOpts {
   /** Fires when a connection trips the per-peer connection-rate limit and is
    *  banned + dropped (P-007 observability). */
   onPeerRateLimited?: (remotePublicKeyHex?: string, remoteIp?: string) => void;
+  /**
+   * OUR signed announce — sent to every (non-dropped) peer right after the
+   * `papercusp/announce` channel opens, binding our log core to our device
+   * identity. Omit on a swarm that only replicates (no announce exchange);
+   * then no announce is sent + inbound announces are ignored.
+   */
+  ourAnnounce?: SignedAnnounce;
+  /**
+   * Handle an inbound signed announce from a peer. Verifies the sig, runs the
+   * read-admission decision, and on admit opens + admits the peer's remote log
+   * and triggers a merge (boot.ts wires this to its `onAnnounce`). Required for
+   * the announce exchange to do anything; omit alongside `ourAnnounce`.
+   */
+  onAnnounce?: (frame: SignedAnnounce) => Promise<AdmissionResult> | void;
+}
+
+/** Open the `papercusp/announce` channel on the shared muxer for one peer
+ *  connection, wire inbound announces to `onAnnounce`, and send `ourAnnounce`.
+ *  Defensive: any protomux error is swallowed — a peer that can't speak the
+ *  announce protocol still replicates over the same connection. */
+function openAnnounceChannel(
+  socket: unknown,
+  opts: { ourAnnounce?: SignedAnnounce; onAnnounce?: JoinHarnessSwarmOpts['onAnnounce'] },
+): void {
+  if (!opts.onAnnounce && !opts.ourAnnounce) return;
+  try {
+    // Protomux.from REUSES socket.userData when corestore.replicate(socket)
+    // already attached it, so the announce shares the replication muxer.
+    const mux = Protomux.from(socket);
+    const channel = mux.createChannel({ protocol: ANNOUNCE_PROTOCOL });
+    const message = channel.addMessage<SignedAnnounce>({
+      encoding: c.json,
+      onmessage: (frame: SignedAnnounce) => {
+        if (!opts.onAnnounce) return;
+        try {
+          // onAnnounce may be async; never let a rejection crash the muxer.
+          void Promise.resolve(opts.onAnnounce(frame)).catch(() => {});
+        } catch {
+          // synchronous throw — swallow
+        }
+      },
+    });
+    channel.open();
+    if (opts.ourAnnounce) {
+      message.send(opts.ourAnnounce);
+    }
+  } catch {
+    // Announce channel is best-effort; replication still proceeds.
+  }
 }
 
 /**
@@ -174,21 +230,18 @@ export async function joinHarnessSwarm(
       .catch(() => {});
 
     try {
-      // corestore.replicate(stream) connects the corestore to the
-      // peer's stream. Returns a stream we pipe nothing else through;
-      // corestore.replicate handles the lifecycle.
-      const peerStream = socket as { pipe?: (s: unknown) => unknown };
-      const local = opts.store.replicate(true) as { pipe?: (s: unknown) => unknown };
-      if (
-        peerStream &&
-        typeof peerStream.pipe === 'function' &&
-        local &&
-        typeof local.pipe === 'function'
-      ) {
-        // Bidirectional pipe: local→peer, peer→local.
-        local.pipe(peerStream);
-        peerStream.pipe(local);
-      }
+      // corestore.replicate(socket) plugs the corestore into the peer's
+      // connection as an EXTERNAL stream (replaces the old replicate(true) +
+      // manual bidi pipe). This both starts Hypercore replication AND attaches
+      // the shared muxer at `socket.userData` — which the announce channel then
+      // rides (spike Step 5). corestore handles the stream lifecycle.
+      opts.store.replicate(socket);
+      // Open the announce channel on the SAME connection's muxer: exchange
+      // signed announces so admitted peer logs get aggregated (Model B Stage 4b).
+      openAnnounceChannel(socket, {
+        ourAnnounce: opts.ourAnnounce,
+        onAnnounce: opts.onAnnounce,
+      });
     } catch {
       // Replication failures shouldn't crash the swarm handler; the
       // peer will reconnect if relevant. Diagnostic counters could

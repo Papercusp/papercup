@@ -56,6 +56,7 @@ import {
   type SwarmHandle,
 } from './swarm';
 import {
+  buildAnnounce,
   verifyAnnounce,
   type SignedAnnounce,
 } from './announce';
@@ -64,6 +65,8 @@ import {
   type AdmissionInput,
   type AdmissionResult,
 } from './read-admission';
+import { resolveLocalAnnounceIdentity } from './local-announce-identity';
+import { signWithDeviceKey } from '@/lib/identity/sign-with-device-key';
 
 /** Short human label for a dropped peer, for the boot-history message field.
  *  Truncates the (long) Noise key to its first 8 hex chars. */
@@ -370,21 +373,40 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return decision;
   }
 
-  // ── Hyperswarm replication (4a: replication only) ──
-  // Joins the swarm topic + plugs corestore.replicate into every peer
-  // stream. The signed-announce channel + remote-log admission that drive
-  // `onAnnounce` land in 4b (swarm.ts). Only fires for harnesses that pass
-  // swarmBinding; `state: private` harnesses (no binding) stay local-only.
-  // Defensive: swarm join failures don't fail the boot.
+  // ── Hyperswarm replication + announce exchange (4b) ──
+  // Joins the swarm topic; the connection handler replicates the corestore
+  // AND opens the `papercusp/announce` channel — sending OUR signed announce
+  // and routing inbound announces to `onAnnounce` (admit → open remote log →
+  // merge). Only fires for harnesses that pass swarmBinding; `state: private`
+  // harnesses (no binding) stay local-only. Defensive: swarm join / identity
+  // resolution failures don't fail the boot — the harness still works as a
+  // single-peer substrate.
   let swarmHandle: SwarmHandle | null = null;
   if (opts.swarmBinding) {
     try {
       const swarm = opts.swarmOverride ?? (await getSharedSwarm());
       const topic = deriveSwarmTopic(opts.swarmBinding);
+      // Build OUR announce: bind our log core to our device identity. Throws
+      // (→ caught below) when gh-auth / keychain can't resolve, keeping the
+      // harness local-only rather than joining without an announce.
+      const identity = await resolveLocalAnnounceIdentity({
+        logCoreKeyHex: ownLog.keyHex,
+      });
+      const ourAnnounce = await buildAnnounce(
+        {
+          device_pubkey: identity.devicePubkeyBase64,
+          github_user_id: identity.githubUserId,
+          github_login: identity.githubLogin,
+          log_core_key: ownLog.keyHex,
+        },
+        (bytes) => signWithDeviceKey(identity.keychainId, bytes),
+      );
       swarmHandle = await joinHarnessSwarm({
         store,
         topic,
         swarm,
+        ourAnnounce,
+        onAnnounce,
         onPeerConnected: () => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
         },

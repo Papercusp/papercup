@@ -10,13 +10,79 @@ import {
 } from '../swarm';
 import { createSwarmGuard, _setSwarmGuardForTests } from '../swarm-guard';
 import type Corestore from 'corestore';
+import type { SignedAnnounce } from '../announce';
+
+// ── protomux fake (Model B Stage 4b announce channel) ──
+// The announce channel rides Protomux.from(socket). The real muxer needs a live
+// secret-stream; here a controllable fake captures the onmessage handler + sends
+// so tests can drive an inbound announce + assert our announce was sent. Keyed by
+// `socket.__muxId` so each connection gets its own channel state.
+interface FakeChannelState {
+  onmessage: ((frame: SignedAnnounce) => void) | null;
+  opened: boolean;
+  sent: SignedAnnounce[];
+}
+const fakeChannels = new Map<unknown, FakeChannelState>();
+
+vi.mock('protomux', () => {
+  return {
+    default: class FakeProtomux {
+      socket: unknown;
+      constructor(socket: unknown) {
+        this.socket = socket;
+      }
+      static from(socket: unknown): FakeProtomux {
+        return new FakeProtomux(socket);
+      }
+      createChannel(_opts: { protocol: string }) {
+        const socket = this.socket;
+        let state = fakeChannels.get(socket);
+        if (!state) {
+          state = { onmessage: null, opened: false, sent: [] };
+          fakeChannels.set(socket, state);
+        }
+        const st = state;
+        return {
+          addMessage(msgOpts: { encoding: unknown; onmessage: (f: SignedAnnounce) => void }) {
+            st.onmessage = msgOpts.onmessage;
+            return {
+              send(value: SignedAnnounce) {
+                st.sent.push(value);
+              },
+            };
+          },
+          open() {
+            st.opened = true;
+          },
+          close() {},
+        };
+      }
+    },
+  };
+});
+
+// compact-encoding is only used as an opaque encoding token; a trivial stub.
+vi.mock('compact-encoding', () => ({ default: { json: {} } }));
 
 afterEach(() => {
   _setSharedSwarmForTests(null);
   // Reset the process-global guard so each test gets a fresh ban-list +
   // rate-limit buckets (the connection handler defaults to the global guard).
   _setSwarmGuardForTests(null);
+  fakeChannels.clear();
 });
+
+/** A signed-announce fixture (shape only — verifyAnnounce is independent). */
+function announceFixture(over: Partial<SignedAnnounce> = {}): SignedAnnounce {
+  return {
+    device_pubkey: 'ZGV2cHVia2V5', // base64 placeholder
+    github_user_id: 42,
+    github_login: 'alice',
+    log_core_key: 'bb'.repeat(32),
+    sig: 'c2ln',
+    ...over,
+  };
+}
 
 interface FakeSwarmState {
   joins: Array<{ topic: Buffer; opts?: { server?: boolean; client?: boolean } }>;
@@ -59,15 +125,17 @@ function fakeSwarm(): { swarm: HyperswarmLike; state: FakeSwarmState; emit: (eve
   };
 }
 
-function fakeStore(): { store: Corestore; replicateCalls: boolean[] } {
-  const replicateCalls: boolean[] = [];
+// Model B Stage 4b: store.replicate is now called with the connection socket
+// (an external stream), NOT a boolean initiator. Capture whatever it's passed.
+function fakeStore(): { store: Corestore; replicateArgs: unknown[] } {
+  const replicateArgs: unknown[] = [];
   const store = {
-    replicate(initiator: boolean) {
-      replicateCalls.push(initiator);
+    replicate(arg: unknown) {
+      replicateArgs.push(arg);
       return { pipe: vi.fn() };
     },
   } as unknown as Corestore;
-  return { store, replicateCalls };
+  return { store, replicateArgs };
 }
 
 function topic32(): Buffer {
@@ -111,14 +179,16 @@ describe('joinHarnessSwarm — happy path', () => {
     expect(h.connectionCount).toBe(0);
   });
 
-  it('on connection, calls store.replicate(true) + bidi-pipes', async () => {
+  it('on connection, calls store.replicate(socket) (external stream)', async () => {
     const { swarm, emit } = fakeSwarm();
-    const { store, replicateCalls } = fakeStore();
+    const { store, replicateArgs } = fakeStore();
     await joinHarnessSwarm({ store, topic: topic32(), swarm });
-    const peer = { pipe: vi.fn() };
+    const peer = { __muxId: 'p1', pipe: vi.fn() };
     emit('connection', peer);
-    expect(replicateCalls).toEqual([true]);
-    expect(peer.pipe).toHaveBeenCalledTimes(1);
+    // The connection socket is passed straight to replicate (not a boolean).
+    expect(replicateArgs).toEqual([peer]);
+    // No manual pipe under the external-stream path — corestore handles it.
+    expect(peer.pipe).not.toHaveBeenCalled();
   });
 
   it('increments connectionCount on each peer', async () => {
@@ -177,7 +247,7 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
 
   it('drops a banned-key peer before replicating + destroys + fires onPeerRejected', async () => {
     const { swarm, emit } = fakeSwarm();
-    const { store, replicateCalls } = fakeStore();
+    const { store, replicateArgs } = fakeStore();
     const guard = createSwarmGuard();
     guard.banKey(BANNED_KEY);
     const onPeerRejected = vi.fn();
@@ -186,7 +256,7 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     const socket = { pipe: vi.fn(), destroy: vi.fn() };
     emit('connection', socket, { publicKey: Buffer.from(BANNED_KEY, 'hex') });
 
-    expect(replicateCalls).toEqual([]); // never replicated
+    expect(replicateArgs).toEqual([]); // never replicated
     expect(socket.pipe).not.toHaveBeenCalled();
     expect(socket.destroy).toHaveBeenCalledTimes(1);
     expect(onPeerRejected).toHaveBeenCalledWith(BANNED_KEY, undefined);
@@ -194,7 +264,7 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
 
   it('drops a banned-IP peer (the key-only firewall cannot see IPs)', async () => {
     const { swarm, emit } = fakeSwarm();
-    const { store, replicateCalls } = fakeStore();
+    const { store, replicateArgs } = fakeStore();
     const guard = createSwarmGuard();
     guard.banIp(BANNED_IP);
     const onPeerRejected = vi.fn();
@@ -203,7 +273,7 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     const socket = { pipe: vi.fn(), destroy: vi.fn(), rawStream: { remoteHost: BANNED_IP } };
     emit('connection', socket); // no peerInfo → no key, only the IP
 
-    expect(replicateCalls).toEqual([]);
+    expect(replicateArgs).toEqual([]);
     expect(socket.destroy).toHaveBeenCalledTimes(1);
     expect(onPeerRejected).toHaveBeenCalledWith(undefined, BANNED_IP);
   });
@@ -243,7 +313,7 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
 
   it('replicates a non-banned peer + does not destroy it', async () => {
     const { swarm, emit } = fakeSwarm();
-    const { store, replicateCalls } = fakeStore();
+    const { store, replicateArgs } = fakeStore();
     const guard = createSwarmGuard();
     await joinHarnessSwarm({ store, topic: topic32(), swarm, guard });
 
@@ -252,8 +322,93 @@ describe('joinHarnessSwarm — DoS guard (P-003/P-004/P-005)', () => {
     // Let the fire-and-forget rate-limit settle (in-memory → a few microtasks).
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(replicateCalls).toEqual([true]);
+    expect(replicateArgs).toEqual([socket]);
     expect(socket.destroy).not.toHaveBeenCalled();
+  });
+});
+
+describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
+  it('sends ourAnnounce + opens the channel on a non-banned connection', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const ourAnnounce = announceFixture({ log_core_key: 'aa'.repeat(32) });
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, ourAnnounce, onAnnounce: vi.fn() });
+
+    const socket = { __muxId: 's1', pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+
+    const ch = fakeChannels.get(socket)!;
+    expect(ch.opened).toBe(true);
+    expect(ch.sent).toEqual([ourAnnounce]);
+  });
+
+  it('a VALID inbound announce → onAnnounce admits, adds a remote log + merges', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    // Stand-in for boot.ts's onAnnounce: admit on a valid sig, track admitted.
+    const admitted = new Set<string>();
+    const mergeNow = vi.fn(async () => 1);
+    const onAnnounce = vi.fn(async (frame: SignedAnnounce) => {
+      // (verifyAnnounce + the real decider live in boot.ts; here we model the
+      // admit path: a valid frame is admitted, its log is added, a merge runs.)
+      admitted.add(frame.log_core_key);
+      await mergeNow();
+      return { admit: true as const };
+    });
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, ourAnnounce: announceFixture(), onAnnounce });
+
+    const socket = { __muxId: 's2', pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+
+    // Drive an inbound announce through the channel's onmessage.
+    const incoming = announceFixture({ log_core_key: 'cc'.repeat(32) });
+    fakeChannels.get(socket)!.onmessage!(incoming);
+    await new Promise((r) => setTimeout(r, 0)); // let the async onAnnounce settle
+
+    expect(onAnnounce).toHaveBeenCalledWith(incoming);
+    expect(admitted.has('cc'.repeat(32))).toBe(true);
+    expect(mergeNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('a FORGED announce (onAnnounce rejects) → not admitted, no merge', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const admitted = new Set<string>();
+    const mergeNow = vi.fn(async () => 0);
+    // Model the boot decider's reject path: verifyAnnounce false → not admitted.
+    const onAnnounce = vi.fn(async (_frame: SignedAnnounce) => {
+      return { admit: false as const, reason: 'bad_sig' as const };
+    });
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, ourAnnounce: announceFixture(), onAnnounce });
+
+    const socket = { __muxId: 's3', pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+
+    const forged = announceFixture({ sig: 'dGFtcGVyZWQ', log_core_key: 'dd'.repeat(32) });
+    fakeChannels.get(socket)!.onmessage!(forged);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(onAnnounce).toHaveBeenCalledWith(forged);
+    expect(admitted.size).toBe(0);
+    expect(mergeNow).not.toHaveBeenCalled();
+  });
+
+  it('a banned peer is dropped BEFORE the announce channel opens', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const guard = createSwarmGuard();
+    const BANNED = '11'.repeat(32);
+    guard.banKey(BANNED);
+    const onAnnounce = vi.fn();
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, guard, ourAnnounce: announceFixture(), onAnnounce });
+
+    const socket = { __muxId: 's4', pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from(BANNED, 'hex') });
+
+    // No channel opened for a dropped peer → nothing sent, onAnnounce unused.
+    expect(fakeChannels.get(socket)).toBeUndefined();
+    expect(onAnnounce).not.toHaveBeenCalled();
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
   });
 });
 
