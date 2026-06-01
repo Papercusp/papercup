@@ -19,7 +19,7 @@
  * formerly-dead `feature.search-global` binding; shortcut-bus also id-claims it
  * so the webview's native find never shows.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useHighlight } from 'react-css-highlight';
 import { useShortcutAction } from '../../lib/hotkeys';
@@ -43,7 +43,13 @@ export default function GlobalFindInPage() {
   const [activeIndex, setActiveIndex] = useState(-1);
   const [matchCount, setMatchCount] = useState(0);
 
-  const mainRef = useRef<HTMLElement | null>(null);
+  // <main> lives in state, not a ref: react-css-highlight's create-effect reads
+  // `targetRef.current` only when its deps ([targetRef, isSupported]) change, so a
+  // ref populated AFTER mount is never picked up. Holding the element in state and
+  // handing the lib a fresh ref object per target makes that effect re-run once
+  // <main> resolves.
+  const [mainEl, setMainEl] = useState<HTMLElement | null>(null);
+  const targetRef = useMemo(() => ({ current: mainEl }), [mainEl]);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const rangesRef = useRef<Range[]>([]);
   // Only scroll the page when the user acted (typed / next / prev) — never on a
@@ -80,7 +86,7 @@ export default function GlobalFindInPage() {
 
   const { isSupported, refresh } = useHighlight({
     search: open ? query : '',
-    targetRef: mainRef,
+    targetRef,
     highlightName: HIGHLIGHT_NAME,
     caseSensitive: false,
     maxHighlights: 2000,
@@ -111,8 +117,11 @@ export default function GlobalFindInPage() {
 
   // On open: resolve the <main> target and focus the input.
   useEffect(() => {
-    if (!open) return;
-    mainRef.current = document.querySelector<HTMLElement>(MAIN_SELECTOR);
+    if (!open) {
+      setMainEl(null);
+      return;
+    }
+    setMainEl(document.querySelector<HTMLElement>(MAIN_SELECTOR));
     const raf = requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.select();
@@ -123,9 +132,8 @@ export default function GlobalFindInPage() {
   // Re-run the search when the routed content changes (navigation, lazy loads)
   // so matches stay correct across route changes. Debounced; only while finding.
   useEffect(() => {
-    if (!open) return;
-    const main = mainRef.current;
-    if (!main || typeof MutationObserver === 'undefined') return;
+    if (!open || !mainEl || typeof MutationObserver === 'undefined') return;
+    const main = mainEl;
     let t: ReturnType<typeof setTimeout> | undefined;
     const obs = new MutationObserver(() => {
       if (!queryRef.current) return;
@@ -137,7 +145,7 @@ export default function GlobalFindInPage() {
       obs.disconnect();
       clearTimeout(t);
     };
-  }, [open]);
+  }, [open, mainEl]);
 
   const close = useCallback(() => {
     void setOpen(false);
