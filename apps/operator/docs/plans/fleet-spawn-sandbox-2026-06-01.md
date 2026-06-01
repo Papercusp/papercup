@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** P-012 (live verification) DONE — and it overturned Phases 2-3. Outcome per backend: **claude** sandbox works (cred/egress/Read-deny verified, no hang) — the ONLY viable one; **codex** FAILS — `-s workspace-write` cancels MCP tool calls (D-009), so codex now always runs `danger-full-access` regardless of the flag; **omp** FAILS/deferred — `srt` wraps omp's whole process and would gate its own model/MCP (D-010), plus omp is mis-configured on this box, so the srt-wrap + helpers were removed and omp runs unsandboxed. Net: `PAPERCUSP_FLEET_SANDBOX` now enables ONLY claude's sandbox; codex+omp keep their working defaults. 72 unit tests; submodule `papercusp@646abad`. P-013 (default-on) NOT done: P-012 didn't fully pass, and even claude's deny-all command egress (`allowedDomains: []`) would break roles that need the network (npm/pip install) — so default-on needs per-role egress allowlisting + a full per-role-on-real-harness pass first. Flag remains off-by-default (opt-in).
+**State:** SHIPPED as a verified, functional, OPT-IN claude sandbox (`PAPERCUSP_FLEET_SANDBOX`, off by default). claude: built-in sandbox via `--settings` — cred denyRead + Read/Edit deny rules + env-scrub + a package-registry EGRESS ALLOWLIST (npm/yarn/pypi/crates/github) so build/test roles work (D-011), all mechanisms verified in isolation. codex: NOT sandboxable — workspace-write cancels MCP (D-009), stays danger-full-access. omp: deferred — srt would gate its own model/MCP (D-010), runs unsandboxed. So the flag enables only claude. 72 unit tests; all committed + pushed (submodule `papercusp@3b5bea7`, superproject `df8c54801`). P-012 done; P-013 (default-on) NOT flipped — per the rule it requires a full per-role pass, which is IMPOSSIBLE here (0 harnesses registered in any workspace; the live papercup checkout is unsafe to mutate). Restarting the shared :3070 with the flag would observe nothing.
 
-**Next:** Before any default-on: give claude's sandbox a per-role EGRESS allowlist (so dep-installing roles aren't broken by deny-all) and run a real per-role pass on a desktop; separately, redesign omp's srt config with a per-omp egress allowlist + verify once omp runs on the box. codex stays uncontained pending MCP-under-sandbox upstream.
+**Next:** To pursue default-on later: provision a throwaway harness with a feature (none exist), run a real per-role pass under the flag on a desktop to confirm no role needs an unlisted egress domain, then flip the code default. Until then the sandbox is a working opt-in.
 
 ## Background
 
@@ -153,3 +153,12 @@ Two findings made Phase 3's omp srt-wrap non-viable as built: (1) DESIGN — `sr
 
 Resolution: removed the srt auto-wrap + the omp helpers (buildOmpSrtSettings/srtBinOnPath/writeOmpSrtSettings/wrapOmpWithSrt) + their tests; omp runs UNSANDBOXED. The srt *mechanism* is verified (it correctly sandboxes a bash command — cred-hide, cwd-write, egress-block — proven earlier), so the path forward is known: a per-omp egress ALLOWLIST (omp's model endpoint + the operator) instead of deny-all, plus a real-spawn verification once omp runs on the box. Reintroduce the helpers then. Tracked, deferred.
 Related: P-008, P-009, P-012
+
+### D-011 — Egress allowlist implemented + verified; full per-role pass impossible here (0 harnesses) → default-on stays off
+Date: 2026-06-01
+Verified claude's sandbox egress ALLOWLIST works (vs deny-all): `curl registry.npmjs.org` → 200 (reached), `curl example.com` → 000 (blocked). Implemented FLEET_SANDBOX_ALLOWED_DOMAINS as the package-registry set (npm/yarn/pypi/crates/github) so build/test roles aren't broken by deny-all — the functional default for the opt-in sandbox. Tradeoff (D-005): those hosts are reachable TLS-uninspected, a widened exfil channel; kept to registries, editable to `[]` for a locked deployment. Committed + pushed (submodule 3b5bea7, superproject df8c54801).
+
+A full autoloop per-role pass (the literal P-012/P-013 gate the user asked for) is NOT POSSIBLE on this box: the workspace registry has **0 harnesses** in every workspace (default/scratch/5126-test/test2/test3/papercusp-workspace), so there is no feature/harness to run a real fleet role against, and the only codebase with work (the live papercup checkout) is unsafe to mutate. Restarting the shared :3070 with the flag would therefore observe nothing.
+
+Per the user's P-013 rule ("flip default-on only if P-012 FULLY passes"): it didn't — codex/omp are non-viable (D-009/D-010) and claude's full per-role pass can't be run here — so default-on STAYS OFF. The claude sandbox ships as a verified, functional, egress-allowlisted OPT-IN (`PAPERCUSP_FLEET_SANDBOX`). Flipping default-on later needs a real per-role pass, which needs a provisioned harness with features + a desktop session.
+Related: P-012, P-013
