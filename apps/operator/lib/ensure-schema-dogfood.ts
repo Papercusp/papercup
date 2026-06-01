@@ -77,6 +77,8 @@ export async function ensureFeatureQueueTable(): Promise<void> {
       feature_id     TEXT   NOT NULL,
       queued_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
       removed_at     TIMESTAMPTZ,
+      author_pubkey  TEXT,
+      origin         TEXT   NOT NULL DEFAULT 'local',
       schema_version BIGINT NOT NULL DEFAULT 1,
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, feature_id)
     );
@@ -106,6 +108,8 @@ export async function ensureFeatureWorkingSetTable(): Promise<void> {
       feature_id     TEXT   NOT NULL,
       started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
       cleared_at     TIMESTAMPTZ,
+      author_pubkey  TEXT,
+      origin         TEXT   NOT NULL DEFAULT 'local',
       schema_version BIGINT NOT NULL DEFAULT 1,
       PRIMARY KEY (workspace_id, harness_slug, github_user_id, feature_id)
     );
