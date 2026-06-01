@@ -167,7 +167,10 @@ describe('lwwPick author tiebreak (Fix 3 — D-003 deterministic on a ts tie)', 
     const y = { type: 'put' as const, ts: 5, writerPubkey: 'y' };
     const z = { type: 'put' as const, ts: 5, writerPubkey: 'z' };
     // Fold in any order → the lexicographically-greatest pubkey ('z') wins.
-    const fold = (ops: typeof x[]) => ops.reduce((acc, op) => lwwPick(acc, op));
+    // `lwwPick` returns the wider `OpEnvelope`, so seed/annotate the reduce as
+    // `OpEnvelope` (the narrow inferred element type can't hold the result).
+    const fold = (ops: OpEnvelope[]) =>
+      ops.reduce<OpEnvelope>((acc, op) => lwwPick(acc, op), ops[0]!);
     expect(fold([x, y, z])).toBe(z);
     expect(fold([z, y, x])).toBe(z);
     expect(fold([y, z, x])).toBe(z);
