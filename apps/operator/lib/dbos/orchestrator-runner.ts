@@ -29,16 +29,19 @@ import {
   postArchiveEvent,
 } from '@papercusp/orchestrator';
 import { resolveProject } from '@/lib/harness-core';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { harnessPackageDir } from '@/lib/harness-paths';
 import { buildInvokeOnce } from '@/lib/harness-invoke-once';
 import {
   setPipelineInvokeRunner,
   setPipelineFinalizer,
+  setPipelineSettledHook,
   type PipelineInvokeRunner,
   type PipelineFinalizer,
 } from './orchestrator-workflow';
 import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
+import { refillHarnessOnSettle } from './orchestrator-dispatcher';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 
@@ -229,10 +232,16 @@ function archiveStateDir(stateDir: string, phase: string): void {
 }
 
 let _wired = false;
-/** Wire the real invoke runner + terminal finalizer into the durable pipeline. Idempotent. */
+/** Wire the real invoke runner + terminal finalizer + on-completion refill into
+ * the durable pipeline. Idempotent. */
 export function wireOrchestratorInvokeRunner(): void {
   if (_wired) return;
   _wired = true;
   setPipelineInvokeRunner(realRunner);
   setPipelineFinalizer(realFinalizer);
+  // #1: a finished feature immediately refills its harness's freed slot with the
+  // next queued feature, instead of waiting up to 30s for the periodic tick.
+  setPipelineSettledHook((slug, workspaceId) =>
+    refillHarnessOnSettle(slug, workspaceId ?? activeWorkspaceId()),
+  );
 }

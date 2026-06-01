@@ -97,6 +97,20 @@ export function setPipelineFinalizer(fn: PipelineFinalizer): void {
   _finalizer = fn;
 }
 
+/**
+ * On-completion refill seam (#1 — continuous dispatch). Fired when a feature's
+ * pipeline finishes successfully so the freed concurrency slot can be filled
+ * with the next queued feature IMMEDIATELY, instead of waiting up to 30s for the
+ * periodic tick. Wired by the operator to `refillHarnessOnSettle`; unset in tests
+ * (the hook is a no-op there). Deliberately NOT a checkpointed step — it's an
+ * idempotent external nudge, harmless if re-fired on workflow replay.
+ */
+export type PipelineSettledHook = (harnessSlug: string, workspaceId?: string) => void;
+let _settledHook: PipelineSettledHook | null = null;
+export function setPipelineSettledHook(fn: PipelineSettledHook): void {
+  _settledHook = fn;
+}
+
 const MAX_TURNS = Number(process.env.PAPERCUSP_DBOS_PIPELINE_MAX_TURNS ?? 200);
 
 const key = (slug: string, feature: string, role: string, turn: number): string =>
@@ -183,6 +197,15 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
         }),
       { name: `finalize-${outcome}` },
     );
+  }
+
+  // Refill the freed slot immediately on a successful finish (#1). Only on `done`:
+  // a done feature leaves the NEEDS_WORK set, so the refill picks the NEXT queued
+  // feature (never re-picks this one). escalate/idle/max-turns leave the feature
+  // re-pickable, so those fall back to the 30s backstop to avoid a tight re-dispatch
+  // loop. Fire-and-forget side effect (not a step) — idempotent if replayed.
+  if (terminal?.outcome === 'done') {
+    _settledHook?.(input.harnessSlug, input.workspaceId);
   }
 
   return `pipeline-complete (last=${lastVerb})`;

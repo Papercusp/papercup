@@ -3,6 +3,7 @@ import {
   selectFeaturesToDispatch,
   resolveDispatchHarnesses,
   shouldScheduleDispatch,
+  resolvePerHarnessCap,
 } from './orchestrator-dispatcher';
 
 const f = (id: string, status: string) => ({ id, status });
@@ -53,6 +54,43 @@ describe('shouldScheduleDispatch — when to arm the 30s tick (P-009: schedule b
   test('"none" / "off" → do NOT schedule (explicit opt-out)', () => {
     expect(shouldScheduleDispatch('none')).toBe(false);
     expect(shouldScheduleDispatch('off')).toBe(false);
+  });
+});
+
+describe('resolvePerHarnessCap — honor the harness parallelism settings (#1)', () => {
+  // The DBOS dispatcher must cap concurrent pipelines per harness from that
+  // harness's own `parallelWorkers` config — NOT a flat global. A default
+  // harness (no config) runs one feature at a time; a harness configured for
+  // N runs N concurrently, matching the legacy lane-pool behavior.
+
+  test('default harness (parallelMax=1, no maxFeaturesInFlight) → 1 (one feature at a time)', () => {
+    expect(resolvePerHarnessCap({ parallelMax: 1, maxFeaturesInFlight: null })).toBe(1);
+  });
+
+  test('parallelWorkers.max=2 → 2 concurrent pipelines', () => {
+    expect(resolvePerHarnessCap({ parallelMax: 2, maxFeaturesInFlight: null })).toBe(2);
+  });
+
+  test('maxFeaturesInFlight tightens below the worker budget', () => {
+    // 4 workers but only 2 distinct features at once → cap 2.
+    expect(resolvePerHarnessCap({ parallelMax: 4, maxFeaturesInFlight: 2 })).toBe(2);
+  });
+
+  test('maxFeaturesInFlight never widens past the worker budget', () => {
+    // 1 worker but maxFeaturesInFlight=5 → still bounded by the 1-worker budget.
+    expect(resolvePerHarnessCap({ parallelMax: 1, maxFeaturesInFlight: 5 })).toBe(1);
+  });
+
+  test('env ceiling clamps the per-harness cap (shared-dev-box safety)', () => {
+    expect(resolvePerHarnessCap({ parallelMax: 8, maxFeaturesInFlight: null, envCeiling: 4 })).toBe(4);
+  });
+
+  test('a high config under the ceiling is honored in full', () => {
+    expect(resolvePerHarnessCap({ parallelMax: 6, maxFeaturesInFlight: null, envCeiling: 16 })).toBe(6);
+  });
+
+  test('floors at 1 even with degenerate inputs', () => {
+    expect(resolvePerHarnessCap({ parallelMax: 0, maxFeaturesInFlight: 0, envCeiling: 0 })).toBe(1);
   });
 });
 
