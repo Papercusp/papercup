@@ -54,12 +54,14 @@ export type ChannelFailReason =
   | 'oauth_token_mismatch'
   | 'oauth_token_revoked'
   | 'oauth_user_id_mismatch'
-  // Channel 2 (signed commit on user branch)
+  // Channel 2 (signed file on user branch)
   | 'channel2_file_missing'
   | 'channel2_signature_invalid'
-  | 'channel2_commit_author_mismatch'
-  | 'channel2_commit_not_verified'
-  | 'channel2_branch_missing'
+  // Channel 2 (gist-ownership attestation — replaces commit-signing check)
+  /** Gist 404 — was never published, or was deleted (revocation signal). */
+  | 'channel2_attestation_missing'
+  /** Gist exists but owner/pubkey/signature mismatch — forgery indicator. */
+  | 'channel2_attestation_invalid'
   // Either
   | 'github_api_down'
   | 'unknown';

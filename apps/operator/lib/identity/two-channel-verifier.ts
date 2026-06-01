@@ -5,11 +5,12 @@
  *   Channel 1 — OAuth: `GET /user` must return a `id` matching the
  *               claimed `github_user_id`. Proves the caller holds a
  *               token issued for that user.
- *   Channel 2 — Signed commit: `.harness/contributors/<login>.json`
+ *   Channel 2 — Signed file + gist attestation: `.harness/contributors/<login>.json`
  *               on `user/<github_user_id>` branch must (a) exist,
  *               (b) carry a valid device-key signature over the JCS
- *               canonical body, and (c) have a GitHub-verified commit
- *               author whose login matches `github_login`.
+ *               canonical body, and (c) the `device_attestation_gist_id`
+ *               gist is owned by the claimed `github_user_id` and attests
+ *               `device_pubkey`, via `verifyAttestation`.
  *
  * `verifyBoth()` runs both channels and derives the composite
  * `BindingStatus` via `deriveBindingStatus()` from binding-verifier-types.
@@ -34,6 +35,7 @@ import {
   isContributorFileBody,
   stripSignatureForSigning,
 } from './contributor-file-types';
+import { verifyAttestation } from './attest';
 
 // ─── Channel 1 ────────────────────────────────────────────────────────────────
 
@@ -98,6 +100,16 @@ export interface VerifyChannel2Options {
   token?: string;
   /** Injectable fetch for tests. */
   fetchFn?: typeof fetch;
+  /**
+   * Injectable verifyAttestation implementation for tests.
+   * Defaults to the real `verifyAttestation` from `./attest`.
+   * Mirrors the `fetchFn` seam style.
+   */
+  verifyAttestationImpl?: (
+    gistId: string,
+    claimedPubkeyBase64: string,
+    claimedGithubUserId: number,
+  ) => Promise<{ valid: boolean; reason?: string }>;
 }
 
 /**
@@ -106,8 +118,10 @@ export interface VerifyChannel2Options {
  *   a) File exists at `.harness/contributors/<login>.json`.
  *   b) The file's `signature_by_device` is valid Ed25519 over the
  *      JCS-canonical body (fields ordered per CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER).
- *   c) The latest commit on the file has a GitHub-verified author
- *      whose login matches `githubLogin`.
+ *   c) The `device_attestation_gist_id` gist is owned by the claimed
+ *      `github_user_id` and attests `device_pubkey`, via `verifyAttestation`.
+ *      Gist 404 → `channel2_attestation_missing` (also the revocation signal
+ *      when a peer deletes their gist). Other mismatch → `channel2_attestation_invalid`.
  */
 export async function verifyChannel2(
   opts: VerifyChannel2Options,
@@ -120,6 +134,7 @@ export async function verifyChannel2(
     devicePubkeyBase64,
     token,
     fetchFn = fetch,
+    verifyAttestationImpl = verifyAttestation,
   } = opts;
 
   const branch = contributorBranchRef(githubUserId);
@@ -130,7 +145,7 @@ export async function verifyChannel2(
   };
   if (token) headers['Authorization'] = 'token ' + token;
 
-  // Step 1: fetch the file content via the Contents API
+  // Step (a): fetch the file content via the Contents API
   const contentsUrl =
     'https://api.github.com/repos/' +
     encodeURIComponent(repoOwner) +
@@ -142,11 +157,10 @@ export async function verifyChannel2(
     encodeURIComponent(branch);
 
   let fileBody: ContributorFileBody;
-  let commitSha: string;
   try {
     const resp = await fetchFn(contentsUrl, { headers });
     if (resp.status === 404) {
-      // Could be branch missing or file missing — both are channel2_file_missing
+      // Could be branch missing or file missing — both are channel2 propagating
       return { kind: 'pending', reason: 'just_joined_channel2_propagating' };
     }
     if (!resp.ok) {
@@ -155,7 +169,6 @@ export async function verifyChannel2(
     const data = (await resp.json()) as {
       content?: string;
       encoding?: string;
-      sha?: string;
     };
     if (!data.content || data.encoding !== 'base64') {
       return { kind: 'fail', reason: 'channel2_file_missing' };
@@ -171,47 +184,33 @@ export async function verifyChannel2(
       return { kind: 'fail', reason: 'channel2_file_missing' };
     }
     fileBody = parsed;
-    commitSha = data.sha ?? '';
   } catch {
     return { kind: 'fail', reason: 'github_api_down' };
   }
 
-  // Step 2: verify the device signature over the JCS canonical body
+  // Step (b): verify the device signature over the JCS canonical body
   const sigValid = verifyContributorFileSignature(fileBody, devicePubkeyBase64);
   if (!sigValid) {
     return { kind: 'fail', reason: 'channel2_signature_invalid' };
   }
 
-  // Step 3: verify the commit that added/updated the file has a
-  // GitHub-verified signature and the author login matches
-  if (!commitSha) {
-    return { kind: 'fail', reason: 'channel2_file_missing' };
-  }
-  const commitUrl =
-    'https://api.github.com/repos/' +
-    encodeURIComponent(repoOwner) +
-    '/' +
-    encodeURIComponent(repoName) +
-    '/commits/' +
-    encodeURIComponent(commitSha);
-
-  try {
-    const resp = await fetchFn(commitUrl, { headers });
-    if (!resp.ok) {
+  // Step (c): verify gist ownership — the device_attestation_gist_id gist
+  // must be owned by the claimed github_user_id and attest device_pubkey.
+  // Gist 404 is the revocation signal (peer deleted their gist).
+  const att = await verifyAttestationImpl(
+    fileBody.device_attestation_gist_id,
+    devicePubkeyBase64,
+    githubUserId,
+  );
+  if (!att.valid) {
+    if (att.reason === 'gist_not_found') {
+      return { kind: 'fail', reason: 'channel2_attestation_missing' };
+    }
+    if (att.reason === 'github_api_unavailable') {
       return { kind: 'fail', reason: 'github_api_down' };
     }
-    const data = (await resp.json()) as {
-      author?: { login?: string } | null;
-      commit?: { verification?: { verified?: boolean } };
-    };
-    if (data.author?.login !== githubLogin) {
-      return { kind: 'fail', reason: 'channel2_commit_author_mismatch' };
-    }
-    if (!data.commit?.verification?.verified) {
-      return { kind: 'fail', reason: 'channel2_commit_not_verified' };
-    }
-  } catch {
-    return { kind: 'fail', reason: 'github_api_down' };
+    // owner/pubkey/sig/body mismatch → attestation invalid (forgery indicator)
+    return { kind: 'fail', reason: 'channel2_attestation_invalid' };
   }
 
   return { kind: 'ok' };

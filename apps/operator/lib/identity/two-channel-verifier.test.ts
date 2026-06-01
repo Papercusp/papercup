@@ -68,6 +68,16 @@ function networkErrorFetch(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
+/** Build a mock verifyAttestationImpl that always returns `valid: true`. */
+function makeOkAttestation() {
+  return vi.fn(async () => ({ valid: true as const, verifiedAt: Date.now() }));
+}
+
+/** Build a mock verifyAttestationImpl that returns `valid: false` with a given reason. */
+function makeFailAttestation(reason: string) {
+  return vi.fn(async () => ({ valid: false as const, reason, verifiedAt: Date.now() }));
+}
+
 // ─── Channel 1 ────────────────────────────────────────────────────────────────
 
 describe('verifyChannel1', () => {
@@ -129,6 +139,7 @@ describe('verifyChannel2', () => {
   const LOGIN = 'alice';
   const REPO_OWNER = 'myorg';
   const REPO_NAME = 'myharness';
+  const GIST_ID = 'gist-abc';
 
   const commonOpts = {
     repoOwner: REPO_OWNER,
@@ -150,19 +161,12 @@ describe('verifyChannel2', () => {
     };
   }
 
-  const goodCommitResp = {
-    status: 200,
-    body: {
-      author: { login: LOGIN },
-      commit: { verification: { verified: true } },
-    },
-  };
-
-  it('passes when file exists, sig valid, commit verified', async () => {
-    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey });
+  it('passes when file exists, device sig valid, and attestation ok', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
     const result = await verifyChannel2({
       ...commonOpts,
-      fetchFn: makeFetch([makeContentsBody(fileBody), goodCommitResp]),
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeOkAttestation(),
     });
     expect(result).toEqual({ kind: 'ok' });
   });
@@ -171,68 +175,113 @@ describe('verifyChannel2', () => {
     const result = await verifyChannel2({
       ...commonOpts,
       fetchFn: makeFetch([{ status: 404, body: { message: 'Not Found' } }]),
+      verifyAttestationImpl: makeOkAttestation(),
     });
     expect(result).toEqual({ kind: 'pending', reason: 'just_joined_channel2_propagating' });
   });
 
-  it('returns channel2_signature_invalid when sig tampered', async () => {
-    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey });
+  it('returns channel2_signature_invalid when device sig tampered', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
     const tampered = { ...fileBody, signature_by_device: 'AAAA' };
     const result = await verifyChannel2({
       ...commonOpts,
-      fetchFn: makeFetch([makeContentsBody(tampered as ContributorFileBody), goodCommitResp]),
+      fetchFn: makeFetch([makeContentsBody(tampered as ContributorFileBody)]),
+      verifyAttestationImpl: makeOkAttestation(),
     });
     expect(result).toEqual({ kind: 'fail', reason: 'channel2_signature_invalid' });
   });
 
-  it('returns channel2_commit_author_mismatch when author login differs', async () => {
-    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey });
-    const wrongAuthorResp = {
-      status: 200,
-      body: {
-        author: { login: 'mallory' },
-        commit: { verification: { verified: true } },
-      },
-    };
+  it('returns channel2_attestation_missing when gist not found (gist_not_found)', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
     const result = await verifyChannel2({
       ...commonOpts,
-      fetchFn: makeFetch([makeContentsBody(fileBody), wrongAuthorResp]),
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeFailAttestation('gist_not_found'),
     });
-    expect(result).toEqual({ kind: 'fail', reason: 'channel2_commit_author_mismatch' });
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_attestation_missing' });
   });
 
-  it('returns channel2_commit_not_verified when GitHub did not verify the commit', async () => {
-    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey });
-    const unverifiedCommit = {
-      status: 200,
-      body: {
-        author: { login: LOGIN },
-        commit: { verification: { verified: false } },
-      },
-    };
+  it('returns channel2_attestation_invalid when gist owner/pubkey mismatch (github_user_id_mismatch)', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
     const result = await verifyChannel2({
       ...commonOpts,
-      fetchFn: makeFetch([makeContentsBody(fileBody), unverifiedCommit]),
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeFailAttestation('github_user_id_mismatch'),
     });
-    expect(result).toEqual({ kind: 'fail', reason: 'channel2_commit_not_verified' });
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_attestation_invalid' });
+  });
+
+  it('returns channel2_attestation_invalid when pubkey mismatch (pubkey_mismatch)', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+    const result = await verifyChannel2({
+      ...commonOpts,
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeFailAttestation('pubkey_mismatch'),
+    });
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_attestation_invalid' });
+  });
+
+  it('returns channel2_attestation_invalid when signature invalid (signature_invalid)', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+    const result = await verifyChannel2({
+      ...commonOpts,
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeFailAttestation('signature_invalid'),
+    });
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_attestation_invalid' });
+  });
+
+  it('returns channel2_attestation_invalid when gist body invalid (gist_body_invalid)', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+    const result = await verifyChannel2({
+      ...commonOpts,
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeFailAttestation('gist_body_invalid'),
+    });
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_attestation_invalid' });
+  });
+
+  it('returns github_api_down when attestation returns github_api_unavailable', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+    const result = await verifyChannel2({
+      ...commonOpts,
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: makeFailAttestation('github_api_unavailable'),
+    });
+    expect(result).toEqual({ kind: 'fail', reason: 'github_api_down' });
   });
 
   it('returns github_api_down on contents fetch network error', async () => {
     const result = await verifyChannel2({
       ...commonOpts,
       fetchFn: networkErrorFetch(),
+      verifyAttestationImpl: makeOkAttestation(),
     });
     expect(result).toEqual({ kind: 'fail', reason: 'github_api_down' });
   });
 
-  it('returns github_api_down when commit fetch fails', async () => {
-    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey });
-    const errorCommit = { status: 500, body: {} };
+  it('does not call verifyAttestationImpl when file fetch fails', async () => {
+    const mockAttest = makeOkAttestation();
     const result = await verifyChannel2({
       ...commonOpts,
-      fetchFn: makeFetch([makeContentsBody(fileBody), errorCommit]),
+      fetchFn: makeFetch([{ status: 500, body: {} }]),
+      verifyAttestationImpl: mockAttest,
     });
     expect(result).toEqual({ kind: 'fail', reason: 'github_api_down' });
+    expect(mockAttest).not.toHaveBeenCalled();
+  });
+
+  it('does not call verifyAttestationImpl when device sig fails (step b short-circuits)', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+    const tampered = { ...fileBody, signature_by_device: 'AAAA' };
+    const mockAttest = makeOkAttestation();
+    const result = await verifyChannel2({
+      ...commonOpts,
+      fetchFn: makeFetch([makeContentsBody(tampered as ContributorFileBody)]),
+      verifyAttestationImpl: mockAttest,
+    });
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_signature_invalid' });
+    expect(mockAttest).not.toHaveBeenCalled();
   });
 });
 
@@ -248,6 +297,7 @@ describe('verifyBoth', () => {
   const LOGIN = 'bob';
   const REPO_OWNER = 'testorg';
   const REPO_NAME = 'testharness';
+  const GIST_ID = 'gist-bob';
 
   const ch1Opts = {
     token: 'tok-ok',
@@ -266,19 +316,17 @@ describe('verifyBoth', () => {
   }
 
   function makeGoodContentsBody(): { status: number; body: unknown } {
-    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey });
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
     const encoded = Buffer.from(JSON.stringify(fileBody)).toString('base64');
     return { status: 200, body: { content: encoded + '\n', encoding: 'base64', sha: 'abc123' } };
   }
 
-  const goodCommit = { status: 200, body: { author: { login: LOGIN }, commit: { verification: { verified: true } } } };
-
   it('returns verified when both channels pass', async () => {
     const ch1Fetch = makeGoodCh1Fetch();
-    const ch2Fetch = makeFetch([makeGoodContentsBody(), goodCommit]);
+    const ch2Fetch = makeFetch([makeGoodContentsBody()]);
     const result = await verifyBoth({
       channel1: { ...ch1Opts, fetchFn: ch1Fetch },
-      channel2: { ...ch2Opts, fetchFn: ch2Fetch },
+      channel2: { ...ch2Opts, fetchFn: ch2Fetch, verifyAttestationImpl: makeOkAttestation() },
       nowMs: 1_000_000,
     });
     expect(result.status).toBe('verified');
@@ -288,10 +336,10 @@ describe('verifyBoth', () => {
 
   it('returns unverified when channel 1 fails', async () => {
     const ch1Fetch = makeFetch([{ status: 401, body: {} }]);
-    const ch2Fetch = makeFetch([makeGoodContentsBody(), goodCommit]);
+    const ch2Fetch = makeFetch([makeGoodContentsBody()]);
     const result = await verifyBoth({
       channel1: { ...ch1Opts, fetchFn: ch1Fetch },
-      channel2: { ...ch2Opts, fetchFn: ch2Fetch },
+      channel2: { ...ch2Opts, fetchFn: ch2Fetch, verifyAttestationImpl: makeOkAttestation() },
       nowMs: 1_000_000,
     });
     expect(result.status).toBe('unverified');
@@ -303,7 +351,7 @@ describe('verifyBoth', () => {
     const now = 1_000_000;
     const result = await verifyBoth({
       channel1: { ...ch1Opts, fetchFn: ch1Fetch },
-      channel2: { ...ch2Opts, fetchFn: ch2Fetch },
+      channel2: { ...ch2Opts, fetchFn: ch2Fetch, verifyAttestationImpl: makeOkAttestation() },
       nowMs: now,
     });
     expect(result.status).toBe('pending');
@@ -318,7 +366,7 @@ describe('verifyBoth', () => {
     const now = ch2PendingSince + graceWindowMs + 1;
     const result = await verifyBoth({
       channel1: { ...ch1Opts, fetchFn: ch1Fetch },
-      channel2: { ...ch2Opts, fetchFn: ch2Fetch },
+      channel2: { ...ch2Opts, fetchFn: ch2Fetch, verifyAttestationImpl: makeOkAttestation() },
       channel2PendingSince: ch2PendingSince,
       graceWindowMs,
       nowMs: now,
@@ -328,11 +376,11 @@ describe('verifyBoth', () => {
 
   it('checkedAt reflects the nowMs passed in', async () => {
     const ch1Fetch = makeGoodCh1Fetch();
-    const ch2Fetch = makeFetch([makeGoodContentsBody(), goodCommit]);
+    const ch2Fetch = makeFetch([makeGoodContentsBody()]);
     const nowMs = 9_999_999;
     const result = await verifyBoth({
       channel1: { ...ch1Opts, fetchFn: ch1Fetch },
-      channel2: { ...ch2Opts, fetchFn: ch2Fetch },
+      channel2: { ...ch2Opts, fetchFn: ch2Fetch, verifyAttestationImpl: makeOkAttestation() },
       nowMs,
     });
     expect(result.checkedAt).toBe(nowMs);
