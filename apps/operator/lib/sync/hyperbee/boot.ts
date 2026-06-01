@@ -358,7 +358,18 @@ export interface BootedHarnessHandle {
   /** Swarm handle. Null when this boot didn't join a swarm
    *  (private harness OR swarmBinding omitted). */
   swarm: SwarmHandle | null;
-  /** Cleanup. Idempotent. Tears down swarm + merge poller + Corestore. */
+  /**
+   * Register a teardown hook run (once) on `close()`, BEFORE the swarm + store
+   * tear down. The Stage-5 outbox wiring (boot-all.ts `wireOutboxForHarness`)
+   * registers the `startOutboxDrain` stopper here so the LISTEN connection +
+   * poll timer are released exactly once on shutdown without boot-all having to
+   * track a parallel Map. Returns an unregister function (clears the hook if the
+   * wiring is torn down independently of `close()`). Hooks are best-effort: a
+   * throwing hook is caught + logged, never blocking the rest of teardown.
+   */
+  registerCloseHook(hook: () => void | Promise<void>): () => void;
+  /** Cleanup. Idempotent. Runs close-hooks, then tears down swarm + merge
+   *  poller + Corestore. */
   close(): Promise<void>;
 }
 
@@ -665,6 +676,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // race a half-applied merge.
   let merging = false;
   let stopped = false;
+  // Teardown hooks (Stage 5 outbox drain stopper, etc.) run once on close().
+  const closeHooks = new Set<() => void | Promise<void>>();
   async function mergeNow(): Promise<number> {
     if (merging || stopped) return 0;
     merging = true;
@@ -1092,8 +1105,31 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     revoke,
     reverifyAdmitted,
     swarm: swarmHandle,
+    registerCloseHook(hook: () => void | Promise<void>): () => void {
+      closeHooks.add(hook);
+      return () => {
+        closeHooks.delete(hook);
+      };
+    },
     async close() {
       stopped = true;
+      // Run teardown hooks (e.g. the Stage-5 outbox drain stopper) FIRST, before
+      // the store/swarm tear down — a drain mid-flight should stop appending to
+      // an about-to-close store. Best-effort: a throwing hook is logged, not
+      // fatal, and each hook runs once (the Set is drained as we go).
+      const hooks = [...closeHooks];
+      closeHooks.clear();
+      for (const hook of hooks) {
+        try {
+          await hook();
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error(
+            `[boot.close] close-hook failed for ${opts.workspaceId}::${opts.harnessSlug}:`,
+            e instanceof Error ? e.message : String(e),
+          );
+        }
+      }
       // Stop the progress poller first so it doesn't read ownLog.length on
       // an about-to-close store.
       progressPoller.stop();

@@ -38,6 +38,7 @@ import {
 } from './boot';
 import type { SwarmBinding } from './derive-swarm-topic';
 import { loadSharedConfigFromProjectDir } from '../../harness/load-shared-config';
+import { wireOutboxForHarness } from './wire-outbox';
 
 const handles: Map<string, BootedHarnessHandle> = new Map();
 const inflight: Map<string, Promise<BootedHarnessHandle>> = new Map();
@@ -216,6 +217,23 @@ export async function bootSingleHarness(
   try {
     const handle = await bootPromise;
     handles.set(k, handle);
+    // Stage 5 (feature-content federation): bring the send-side online —
+    // one-time backfill of existing local rows + the outbox drain loop. The
+    // drain's stopper is registered as a close-hook on the handle, so
+    // closeBootedHarness/closeAllBootedHarnesses (which call handle.close())
+    // tear it down automatically — no parallel stopper Map needed. Best-effort:
+    // a wiring failure must NEVER block the boot result (federation is additive;
+    // PG-direct still works), so swallow + log.
+    try {
+      const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+      await wireOutboxForHarness(handle, sql);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[boot-all] outbox wiring failed for ${k} (boot still succeeded):`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
     return { workspaceId, harnessSlug, state: 'booted' };
   } catch (e) {
     return {

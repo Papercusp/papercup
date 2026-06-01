@@ -132,6 +132,60 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
     expect(applied).toBe(1);
     expect(writes).toEqual([{ id: 'F-1' }]);
   });
+
+  // ── registerCloseHook (Stage 5 outbox-drain teardown seam) ──────────────────
+  it('registerCloseHook: close() runs the hook once, before store teardown; unregister cancels it', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 's-hook',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+    });
+
+    let ran = 0;
+    handle.registerCloseHook(() => {
+      ran += 1;
+    });
+    // A second, unregistered hook must NOT run.
+    let cancelled = 0;
+    const off = handle.registerCloseHook(() => {
+      cancelled += 1;
+    });
+    off();
+
+    await handle.close();
+    expect(ran).toBe(1); // registered hook ran exactly once
+    expect(cancelled).toBe(0); // unregistered hook never ran
+
+    // close() is idempotent — a second close does not re-run the hook.
+    await handle.close();
+    expect(ran).toBe(1);
+  });
+
+  it('registerCloseHook: a throwing hook is swallowed (teardown still completes)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const handle = await bootHarnessSubstrate({
+        workspaceRoot: tmpWorkspaceRoot(),
+        workspaceId: 'ws-1',
+        harnessSlug: 's-hook-throw',
+        mergePollMs: 0,
+        loadRevokedOverride: async () => new Set(),
+      });
+      handle.registerCloseHook(() => {
+        throw new Error('hook boom');
+      });
+      // close() must resolve despite the throwing hook.
+      await expect(handle.close()).resolves.toBeUndefined();
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('close-hook failed'),
+        expect.anything(),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
 });
 
 describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)', () => {

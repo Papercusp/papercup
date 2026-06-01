@@ -39,6 +39,7 @@ type DogfoodFlags = {
   sharedRepoBindingCache: boolean;
   sharedPresence: boolean;
   substrateOutbox: boolean;
+  substrateMeta: boolean;
 };
 
 type _G = { __dogfoodEnsureFlags?: DogfoodFlags };
@@ -62,6 +63,7 @@ const flags: DogfoodFlags =
     sharedRepoBindingCache: false,
     sharedPresence: false,
     substrateOutbox: false,
+    substrateMeta: false,
   });
 
 /* ─── HYPERBEE-bucket (v5 §7.1) ───────────────────────────────────── */
@@ -567,6 +569,29 @@ export async function ensureSubstrateOutboxTable(): Promise<void> {
   flags.substrateOutbox = true;
 }
 
+/** harness_shared.substrate_meta — per-(workspace, harness) key/value marker
+ *  table used by the Stage-4 backfill (backfill-local-state.ts) to record that
+ *  the one-time backfill of existing local *_consolidated rows has run, so a
+ *  second boot doesn't re-enqueue the whole table. Mirrors migration 104.
+ *
+ *  Fresh-boot parity (the G1 lesson): re-ensured here so a fresh embedded-pg
+ *  boot has the table even if migration 104 has not been applied (the backfill
+ *  runs at boot, before any manual psql step on a native-PG dev box). */
+export async function ensureSubstrateMetaTable(): Promise<void> {
+  if (flags.substrateMeta) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.substrate_meta (
+      workspace_id TEXT NOT NULL,
+      harness_slug TEXT NOT NULL,
+      key          TEXT NOT NULL,
+      value        TEXT NOT NULL,
+      PRIMARY KEY (workspace_id, harness_slug, key)
+    );
+  `);
+  flags.substrateMeta = true;
+}
+
 /* ─── batch helper ───────────────────────────────────────────────── */
 
 /** Run all dogfood ensures in parallel. Cheap if flags are already set
@@ -621,6 +646,7 @@ export async function ensureAllDogfoodTables(): Promise<void> {
     ensureSharedRepoBindingCacheTable(),
     ensureSharedPresenceTable(),
     ensureSubstrateOutboxTable(),
+    ensureSubstrateMetaTable(),
   ]);
 }
 
