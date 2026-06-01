@@ -3,7 +3,7 @@ title: "Promote policy + staged/generative waves (fine-grained plan→feature co
 slug: promote-policy-and-waves-2026-05-30
 status: active
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 
@@ -252,7 +252,7 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
 
 ## Phase E — blocked-wave detection + surfacing (reuse scanner/issues)
 
-- **P-011** `todo` Per-`(plan, wave)` readers: extend `harness-readers.ts` to compute wave-scoped
+- **P-011** `done` Per-`(plan, wave)` readers: extend `harness-readers.ts` to compute wave-scoped (getWaveProgress wave-scoped readers in harness-readers.ts HEAD 2df9da841 + unit tests harness-readers-wave-progress.test.ts 5: grouping/null-wave/empty/unknown-status/error)
   `{total, passed, failing, inProgress, blocked}` + the `not_stuck`/blocked signal per wave.
 - **P-012** `done` (2026-05-31, `27c92f3`) Deterministic issue raise: `wave-advance-sweep-live.onBlocked`
   resolves a `ProjectEntry` from `harnessSlug` (active workspace), and via the FS-canonical issue store
@@ -264,7 +264,7 @@ See the consuming plan's §9a for the full dogfood narrative: `Restart/docs/plan
   a pre-existing unrelated Virtualizer error in that file). _Runtime raise not yet observed against a live
   blocked wave — the deterministic decision path that calls it is host-verified (see ## Now)._ The
   `attempt_count >= N` variant (vs the existing time-based ">7d" / voice-only 3-consecutive alert) is still open.
-- **P-013** `todo` Per-wave progress on the started plan: extend the promote-status line
+- **P-013** `done` Per-wave progress on the started plan: extend the promote-status line (per-wave promote-status line waveSummaries, HEAD 2df9da841 + 4 tests in promote-pipeline.test.ts; FOUND+FIXED multi-wave re-promote idempotency bug — strip regex only ate 2 lines, orphaning wave lines 2..N)
   (`upsertPromoteStatusLine` in `promote.ts`) to render per-wave counts; surface the same in the harness UI
   (plan detail).
 

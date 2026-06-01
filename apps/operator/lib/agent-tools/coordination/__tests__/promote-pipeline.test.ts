@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { upsertPromotedBlock, upsertPromoteStatusLine, buildPromotedRows } from '../tools/promote';
+import { upsertPromotedBlock, upsertPromoteStatusLine, buildPromotedRows, type WaveSummary } from '../tools/promote';
 
 const FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
 
@@ -170,6 +170,98 @@ status: active
     const noNow = `---\ntitle: t\n---\n\n## Phases\n\n- P-001 x\n`;
     const out = upsertPromoteStatusLine(noNow, 'h', { total: 1, inflight: 1, passed: 0 });
     expect(out).toBe(noNow);
+  });
+});
+
+/* ── upsertPromoteStatusLine per-wave breakdown (P-013) ───────────── */
+
+describe('upsertPromoteStatusLine — per-wave breakdown (P-013)', () => {
+  const PLAN = `---
+title: T
+slug: x
+status: active
+---
+
+## Now
+
+**State:** s
+
+**Next:** n
+
+## Phases
+
+- P-001
+`;
+
+  const w = (
+    wave: string,
+    total: number,
+    passed: number,
+    inflight: number,
+    blocked = 0,
+    failing = 0,
+  ): WaveSummary => ({ wave, total, passed, inflight, blocked, failing });
+
+  it('renders one line per wave when 2+ waves are present', () => {
+    const out = upsertPromoteStatusLine(
+      PLAN,
+      'h',
+      { total: 4, inflight: 2, passed: 2 },
+      [w('w1', 2, 2, 0), w('w2', 2, 0, 2)],
+    );
+    expect(out).toContain('**Promote-status:** 4 feature(s) in `h`: 2 in-flight · 2 passed');
+    expect(out).toContain('Wave **w1**: 2 total · 2 passed · 0 in-flight');
+    expect(out).toContain('Wave **w2**: 2 total · 0 passed · 2 in-flight');
+  });
+
+  it('suppresses the per-wave breakdown when there is only one wave', () => {
+    const out = upsertPromoteStatusLine(
+      PLAN,
+      'h',
+      { total: 2, inflight: 1, passed: 1 },
+      [w('w1', 2, 1, 1)],
+    );
+    expect(out).toContain('**Promote-status:**');
+    expect(out).not.toContain('Wave **w1**');
+  });
+
+  it('annotates blocked and failing counts on the wave line', () => {
+    const out = upsertPromoteStatusLine(
+      PLAN,
+      'h',
+      { total: 5, inflight: 3, passed: 0 },
+      [w('w1', 2, 0, 0, 2, 0), w('w2', 3, 0, 1, 0, 2)],
+    );
+    expect(out).toContain('Wave **w1**: 2 total · 0 passed · 0 in-flight · 2 blocked');
+    expect(out).toContain('Wave **w2**: 3 total · 0 passed · 1 in-flight ⚠ 2 failing');
+  });
+
+  it('re-promote with multiple waves replaces cleanly — one marker, no orphaned wave lines', () => {
+    const first = upsertPromoteStatusLine(
+      PLAN,
+      'h',
+      { total: 4, inflight: 2, passed: 2 },
+      [w('w1', 2, 2, 0), w('w2', 2, 0, 2)],
+    );
+    const second = upsertPromoteStatusLine(
+      first,
+      'h',
+      { total: 4, inflight: 0, passed: 4 },
+      [w('w1', 2, 2, 0), w('w2', 2, 2, 0)],
+    );
+    // Exactly one status marker survives the re-promote.
+    const markers = (second.match(/plan-pipeline-status/g) ?? []).length;
+    expect(markers).toBe(1);
+    // Exactly two wave lines (w1, w2) — NOT four. The pre-fix strip regex
+    // left wave lines 2..N orphaned, so a re-promote accumulated stale lines.
+    const waveLines = (second.match(/^  Wave \*\*/gm) ?? []).length;
+    expect(waveLines).toBe(2);
+    // Shows the fresh counts, not the stale first-promote ones.
+    expect(second).toContain('Wave **w2**: 2 total · 2 passed · 0 in-flight');
+    expect(second).not.toContain('Wave **w2**: 2 total · 0 passed · 2 in-flight');
+    // User-authored State/Next preserved verbatim.
+    expect(second).toContain('**State:** s');
+    expect(second).toContain('**Next:** n');
   });
 });
 

@@ -110,9 +110,14 @@ export function upsertPromoteStatusLine(
     totalsLine +
     (waveLines.length ? '\n' + waveLines.join('\n') : '');
 
-  // Strip any prior marker line + its content (idempotent re-promote).
+  // Strip any prior marker line + ALL of its content lines (idempotent
+  // re-promote). The status block is the marker, the totals line, and zero
+  // or more per-wave lines — so consume every non-blank line after the
+  // marker up to the trailing blank line. The old regex only ate the marker
+  // + two lines, which orphaned wave lines 2..N in a multi-wave breakdown on
+  // re-promote (the only case that renders, since waves require length > 1).
   const stripRe = new RegExp(
-    `\\n?${PROMOTE_STATUS_MARKER}\\n[^\\n]*(\\n[^\\n]*)?`,
+    `\\n?${PROMOTE_STATUS_MARKER}(?:\\n(?!\\n)[^\\n]*)*`,
     'g',
   );
   const stripped = body.replace(stripRe, '');
