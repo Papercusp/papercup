@@ -541,9 +541,14 @@ export default defineTool({
     let statusCounts: { total: number; inflight: number; passed: number } | null = null;
     try {
       const { sql } = getOrgPg();
+      // P-041: scope to the caller's workspace (already used for the assertion
+      // write above). The admin handle bypasses RLS, and post-091 neither
+      // source_plan_slug nor harness_slug is globally unique, so without this
+      // the status counts fold in a colliding workspace's features.
       const rows = await sql<{ status: string }[]>`
         SELECT status FROM harness_shared.harness_features_consolidated
-         WHERE source_plan_slug = ${args.slug}
+         WHERE workspace_id     = ${ctx.workspaceId ?? ''}
+           AND source_plan_slug = ${args.slug}
            AND harness_slug     = ${harnessSlug}
       `;
       let passed = 0;

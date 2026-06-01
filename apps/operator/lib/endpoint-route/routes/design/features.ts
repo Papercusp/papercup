@@ -28,18 +28,21 @@ export default defineTool({
     }
     try {
       const { sql } = getOrgPg();
-      const rows = await sql.begin(async (tx) => {
-        await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspace]);
-        return await tx`
-          SELECT
-            feature_id, title, summary, status, needs_design,
-            design_status, design_spec_id, discarded_design_work, updated_ts
-          FROM harness_shared.harness_features_consolidated
-          WHERE harness_slug = ${slug} AND needs_design = TRUE
-          ORDER BY updated_ts DESC NULLS LAST
-          LIMIT 500
-        `;
-      });
+      // P-041: scope to the request workspace with an EXPLICIT predicate.
+      // getOrgPg uses the admin role which BYPASSES RLS, so the prior
+      // `set_config('app.workspace_id', …)` inside the tx was a dead no-op and
+      // the query returned every workspace's needs-design features for any
+      // colliding harness_slug. The explicit `workspace_id` filter is the real
+      // scope.
+      const rows = await sql`
+        SELECT
+          feature_id, title, summary, status, needs_design,
+          design_status, design_spec_id, discarded_design_work, updated_ts
+        FROM harness_shared.harness_features_consolidated
+        WHERE workspace_id = ${workspace} AND harness_slug = ${slug} AND needs_design = TRUE
+        ORDER BY updated_ts DESC NULLS LAST
+        LIMIT 500
+      `;
       return Response.json({
         ok: true,
         features: rows.map((r) => ({

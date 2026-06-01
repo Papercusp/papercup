@@ -85,20 +85,22 @@ export async function loadYourPlace(
     runQuery,
     `SELECT COUNT(*) AS n
        FROM harness_shared.harness_features_consolidated
-      WHERE harness_slug = $1
-        AND taken_by = $2
+      WHERE workspace_id = $1
+        AND harness_slug = $2
+        AND taken_by = $3
         AND status IN ('claiming', 'working', 'wip')`,
-    [harness_slug, String(viewer_github_user_id)],
+    [workspace_id, harness_slug, String(viewer_github_user_id)],
   );
   const shipped_this_week = await safeCount(
     runQuery,
     `SELECT COUNT(*) AS n
        FROM harness_shared.harness_features_consolidated
-      WHERE harness_slug = $1
-        AND taken_by = $2
+      WHERE workspace_id = $1
+        AND harness_slug = $2
+        AND taken_by = $3
         AND status = 'shipped'
-        AND updated_ts >= $3`,
-    [harness_slug, String(viewer_github_user_id), windowStart],
+        AND updated_ts >= $4`,
+    [workspace_id, harness_slug, String(viewer_github_user_id), windowStart],
   );
 
   // ── role ──────────────────────────────────────────────────────────
@@ -157,10 +159,11 @@ export async function loadYourPlace(
     const rows = await runQuery<{ cents: string | number | null }>(
       `SELECT COALESCE(SUM(cost_microcents), 0) AS cents
          FROM harness_shared.tool_invocations
-        WHERE harness_slug = $1
-          AND user_id_text = $2
-          AND ts >= $3`,
-      [harness_slug, String(viewer_github_user_id), windowStart],
+        WHERE workspace_id = $1
+          AND harness_slug = $2
+          AND user_id_text = $3
+          AND ts >= $4`,
+      [workspace_id, harness_slug, String(viewer_github_user_id), windowStart],
     );
     const microcents = rows[0]?.cents;
     if (microcents != null) {

@@ -24,6 +24,7 @@ function makeRunQuery(
 describe('loadHarnessSpend', () => {
   it('zeros when no rows', async () => {
     const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
       runQuery: makeRunQuery([]),
@@ -47,6 +48,7 @@ describe('loadHarnessSpend', () => {
       return [];
     }) as unknown as RunQuery;
     const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
       runQuery,
@@ -57,6 +59,7 @@ describe('loadHarnessSpend', () => {
 
   it('threads explainer href through', async () => {
     const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
       proxyWitnessExplainerHref: '/internal/docs/proxy-witness-pattern',
@@ -69,6 +72,7 @@ describe('loadHarnessSpend', () => {
 
   it('per-source failures are swallowed', async () => {
     const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
       runQuery: makeRunQuery([
@@ -94,6 +98,7 @@ describe('loadHarnessSpend', () => {
       return [];
     }) as unknown as RunQuery;
     const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
       runQuery,
@@ -101,8 +106,31 @@ describe('loadHarnessSpend', () => {
     expect(out.harnessTotalUsdThisWeek).toBe(50);
   });
 
+  it('scopes every tool_invocations query by workspace_id as the first param (P-041)', async () => {
+    // Regression guard: tool_invocations is read through the RLS-bypassing
+    // admin handle, so the workspace must be an explicit predicate or spend
+    // sums fold in every other workspace sharing the harness_slug.
+    const calls: Array<{ query: string; params: unknown[] }> = [];
+    const runQuery = vi.fn(async (query: string, params: unknown[]) => {
+      calls.push({ query, params });
+      return [{ sum: 0 }];
+    }) as unknown as RunQuery;
+    await loadHarnessSpend({
+      workspace_id: 'ws-alpha',
+      harness_slug: 'papercup',
+      viewer_github_user_id: 42,
+      runQuery,
+    });
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) {
+      expect(c.query).toMatch(/workspace_id\s*=\s*\$1/);
+      expect(c.params[0]).toBe('ws-alpha');
+    }
+  });
+
   it('handles null sum (no rows in window)', async () => {
     const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
       runQuery: makeRunQuery([

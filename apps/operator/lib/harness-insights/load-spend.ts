@@ -18,6 +18,13 @@
 import type { SpendCardProps } from '../../app/harness/insights/SpendCard';
 
 export interface LoadHarnessSpendOpts {
+  /**
+   * Request workspace (per-window-workspace-context P-041). `tool_invocations`
+   * is RLS-scoped but read here through the admin (RLS-bypass) handle, so the
+   * predicate must be explicit — without it spend sums fold in every other
+   * workspace that shares this harness_slug.
+   */
+  workspace_id: string;
   harness_slug: string;
   viewer_github_user_id: number;
   windowMs?: number;
@@ -49,7 +56,7 @@ async function sumMicrocents(
 export async function loadHarnessSpend(
   opts: LoadHarnessSpendOpts,
 ): Promise<SpendCardProps> {
-  const { harness_slug, viewer_github_user_id, runQuery } = opts;
+  const { workspace_id, harness_slug, viewer_github_user_id, runQuery } = opts;
   const windowMs = opts.windowMs ?? 7 * 24 * 60 * 60 * 1000;
   const windowStart = Date.now() - windowMs;
 
@@ -57,18 +64,20 @@ export async function loadHarnessSpend(
     runQuery,
     `SELECT COALESCE(SUM(cost_microcents), 0) AS sum
        FROM harness_shared.tool_invocations
-      WHERE harness_slug = $1
-        AND ts >= $2`,
-    [harness_slug, windowStart],
+      WHERE workspace_id = $1
+        AND harness_slug = $2
+        AND ts >= $3`,
+    [workspace_id, harness_slug, windowStart],
   );
   const viewerMicro = await sumMicrocents(
     runQuery,
     `SELECT COALESCE(SUM(cost_microcents), 0) AS sum
        FROM harness_shared.tool_invocations
-      WHERE harness_slug = $1
-        AND user_id_text = $2
-        AND ts >= $3`,
-    [harness_slug, String(viewer_github_user_id), windowStart],
+      WHERE workspace_id = $1
+        AND harness_slug = $2
+        AND user_id_text = $3
+        AND ts >= $4`,
+    [workspace_id, harness_slug, String(viewer_github_user_id), windowStart],
   );
 
   return {

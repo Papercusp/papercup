@@ -23,6 +23,7 @@ import { unlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getOrgPg, listUnconsumedEvents, consumeEvents } from '@papercusp/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import {
   resolveProject,
   resolvePhasedProject,
@@ -189,7 +190,12 @@ const invoke = defineTool({
     if (role === 'orchestrator') {
       try {
         const { sql } = getOrgPg();
-        const events = await listUnconsumedEvents(sql, project.slug, { onlyDue: true, limit: 25 });
+        // P-041: scope the queue read/consume to the request workspace — the
+        // admin handle bypasses RLS and install_slug isn't workspace-unique, so
+        // an unscoped read would hand this orchestrator another workspace's
+        // events (and the consume would mark them handled).
+        const ws = activeWorkspaceId();
+        const events = await listUnconsumedEvents(sql, project.slug, { onlyDue: true, limit: 25, workspaceId: ws });
         const stateDir = join(project.path, '.harness');
         const eventsFile = join(stateDir, 'pending-events.jsonl');
         mkdirSync(stateDir, { recursive: true });
@@ -205,7 +211,7 @@ const invoke = defineTool({
             }))
             .join('\n');
           writeFileSync(eventsFile, jsonl + '\n', 'utf8');
-          await consumeEvents(sql, events.map((e) => e.id), `papercusp-invoke:${project.slug}`);
+          await consumeEvents(sql, events.map((e) => e.id), `papercusp-invoke:${project.slug}`, ws);
         } else {
           try { rmSync(eventsFile, { force: true }); } catch { /* ignore */ }
         }

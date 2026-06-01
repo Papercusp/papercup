@@ -117,13 +117,17 @@ const getFeature = defineTool({
     let pgVerif: PgVerifRow | null = null;
     try {
       const { sql } = getOrgPg();
+      // P-041: harness_features_consolidated is RLS-scoped but read here via the
+      // admin (RLS-bypass) handle, so scope by the request workspace explicitly —
+      // otherwise a same-slug harness in another workspace collides on (slug, id).
       const rows = await sql<PgVerifRow[]>`
         SELECT completion_ref,
                verified_done_at_remote_ts,
                verifier_last_error,
                verifier_last_checked_at
           FROM harness_shared.harness_features_consolidated
-         WHERE harness_slug = ${project.slug}
+         WHERE workspace_id = ${activeWorkspaceId()}
+           AND harness_slug = ${project.slug}
            AND feature_id = ${id}
       `;
       pgVerif = rows[0] ?? null;
@@ -442,13 +446,18 @@ const importFeatures = defineTool({
     if (withProvenance.length > 0) {
       try {
         const { sql } = getOrgPg();
+        // P-041: scope the provenance UPDATE to the request workspace. The admin
+        // handle bypasses RLS, so without this an import could overwrite a
+        // same-slug harness's feature rows in another workspace.
+        const ws = activeWorkspaceId();
         updater = async (f, slug) => {
           const r = await sql`
             UPDATE harness_shared.harness_features_consolidated
                SET source_plan_slug     = ${f.source_plan_slug}
                  , source_plan_item_ids = ${f.source_plan_item_ids}
                  , wave                  = ${f.wave ?? null}
-             WHERE harness_slug = ${slug}
+             WHERE workspace_id = ${ws}
+               AND harness_slug = ${slug}
                AND feature_id   = ${f.id}
             RETURNING feature_id
           `;

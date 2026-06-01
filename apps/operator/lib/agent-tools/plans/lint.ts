@@ -26,6 +26,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { listPlanFiles, readPlanBySlug, type PlanSourceOpts } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
@@ -73,10 +74,16 @@ async function countFeaturesFromPlan(planSlug: string): Promise<number> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
+    // P-041: scope to the caller's workspace (ALS-populated for tool calls,
+    // P-022). getOrgPg bypasses RLS, and post-091 a plan slug is unique only
+    // per (workspace_id, slug), so an unscoped count would fold in another
+    // workspace's features for a colliding slug.
+    const workspaceId = activeWorkspaceId();
     const rows = await sql<Array<{ n: number }>>`
       SELECT COUNT(*)::int AS n
         FROM harness_shared.harness_features_consolidated
-       WHERE source_plan_slug = ${planSlug}
+       WHERE workspace_id = ${workspaceId}
+         AND source_plan_slug = ${planSlug}
     `;
     return rows[0]?.n ?? 0;
   } catch {

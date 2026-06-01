@@ -108,11 +108,12 @@ export async function loadHarnessActivity(
     const shipped = await runQuery<ShippedRow>(
       `SELECT feature_id, title, updated_ts, taken_by
          FROM harness_shared.harness_features_consolidated
-        WHERE harness_slug = $1
+        WHERE workspace_id = $1
+          AND harness_slug = $2
           AND status = 'shipped'
         ORDER BY updated_ts DESC
-        LIMIT $2`,
-      [harness_slug, perSource],
+        LIMIT $3`,
+      [workspace_id, harness_slug, perSource],
     );
     for (const r of shipped) {
       const ts = asEpoch(r.updated_ts);

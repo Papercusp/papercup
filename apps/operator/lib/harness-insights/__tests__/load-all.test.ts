@@ -86,12 +86,13 @@ describe('loadHarnessInsights', () => {
     let capturedActivityLimit: unknown = null;
     let capturedPeopleLimit: unknown = null;
     const runQuery = vi.fn(async (query: string, params: unknown[]) => {
-      // activity-feed shipped query: ORDER BY updated_ts DESC LIMIT $2
+      // activity-feed shipped query: P-041 prepended workspace_id ($1), so the
+      // order is [workspace_id, harness_slug, limit] → LIMIT $3 = params[2].
       if (
         /harness_features_consolidated/.test(query) &&
         /ORDER BY updated_ts DESC/.test(query)
       ) {
-        capturedActivityLimit = params[1];
+        capturedActivityLimit = params[2];
       }
       // people loader: selects device_attestations (activity loader
       // does not).

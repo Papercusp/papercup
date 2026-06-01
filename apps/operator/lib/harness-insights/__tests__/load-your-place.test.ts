@@ -153,11 +153,13 @@ describe('loadYourPlace', () => {
       windowMs: customWindow,
       runQuery,
     });
-    // Find the shipped-this-week query in captured params; the 3rd
-    // param is the windowStart epoch — must be within 5s of now-1d.
+    // Find the shipped-this-week query in captured params. P-041 prepended
+    // workspace_id as $1, so the param order is now
+    // [workspace_id, harness_slug, viewer, windowStart] → windowStart is [3].
     const shipped = captured.find((c) => /status = 'shipped'/.test(c.query));
     expect(shipped).toBeTruthy();
-    const ts = shipped!.params[2] as number;
+    expect(shipped!.params[0]).toBe('ws-1'); // workspace-scoped (P-041)
+    const ts = shipped!.params[3] as number;
     const expected = Date.now() - customWindow;
     expect(Math.abs(ts - expected)).toBeLessThan(5_000);
   });

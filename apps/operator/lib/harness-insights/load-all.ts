@@ -128,6 +128,7 @@ export async function loadHarnessInsights(
         runQuery,
       }),
       loadHarnessSpend({
+        workspace_id,
         harness_slug,
         viewer_github_user_id,
         proxyWitnessExplainerHref: opts.proxyWitnessExplainerHref,

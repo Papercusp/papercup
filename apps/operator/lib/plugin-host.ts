@@ -55,6 +55,7 @@ import {
 } from '@papercusp/db-org';
 
 import { papercuspPath, papercuspRoot } from '@/lib/papercusp-root';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 function SECRETS_DIR() { return papercuspPath('secrets'); }
 
 class NotYetWiredError extends Error {
@@ -185,7 +186,11 @@ function realPendingEventsService(slug: string): PendingEventsService {
   const sql = orgHandle.sql;
   return {
     listUnconsumed: async () => {
-      const events = await listUnconsumedEvents(sql, slug);
+      // P-041: scope to the active workspace (resolved at call time from the
+      // request/exec ALS). getOrgPg bypasses RLS and install_slug isn't
+      // workspace-unique, so an unscoped read would surface other workspaces'
+      // events for a colliding slug.
+      const events = await listUnconsumedEvents(sql, slug, { workspaceId: activeWorkspaceId() });
       return events.map((e) => ({
         id: e.id,
         kind: e.kind,
