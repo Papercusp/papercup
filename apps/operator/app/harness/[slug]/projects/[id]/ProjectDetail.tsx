@@ -7,22 +7,21 @@
  * validating, failing, blocked) — the work ahead.
  * History = features with status in (passed, rejected, withdrawn) — the
  * work behind.
- * Spec = the project's curated operating context. Markdown viewer + edit
- * + revisions browser. Includes a "Regenerate (PM)" button that runs the
- * Project Manager role synchronously and updates the spec inline.
+ * Spec = the project's curated operating context. Markdown viewer + manual
+ * edit (PUT .../spec) + revisions browser. (The automatic "Regenerate (PM)"
+ * button was retired with the project_manager PM feature — D-020 / P-015.)
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useConfirmDialog } from '../../../useConfirmDialog';
 import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import {
-  ArrowLeft, Loader2, AlertTriangle, RefreshCw, Save, X, Pencil,
+  ArrowLeft, Loader2, AlertTriangle, Save, X, Pencil,
   Coins, Clock, Hammer, History as HistoryIcon, FileText,
 } from 'lucide-react';
 import { MarkdownView } from '@papercusp/ui-primitives';
 import { MarkdownEditor } from '../../../../_components/MarkdownEditor';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
-import { Tooltip } from '../../../Tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 
 interface FeatureCounts {
@@ -80,14 +79,13 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     parseAsStringEnum<Tab>(['roadmap', 'history', 'spec']).withDefault('roadmap'),
   );
 
-  // Spec edit + regenerate state
+  // Spec edit state
   const [editing, setEditing] = useState(false);
   const [draftSpec, setDraftSpec] = useState('');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | { error: string }>('idle');
-  const [regenState, setRegenState] = useState<'idle' | 'running' | { error: string; detail?: string } | { ok: true; summary: string }>('idle');
   const [showRevisions, setShowRevisions] = useQueryState('revisions', parseAsBoolean.withDefault(false));
   const [activeRevision, setActiveRevision] = useState<{ id: number; spec: string } | null>(null);
-  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { element: confirmEl } = useConfirmDialog();
 
   const loadProject = useCallback(async () => {
     try {
@@ -192,30 +190,6 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     }
   }, [slug, projectId, draftSpec, loadProject, loadRevisions]);
 
-  const regenerate = useCallback(async () => {
-    if (!await askConfirm({
-      title: 'Run Project Manager synchronously?',
-      body: 'This spawns claude (~30s) and writes a new spec revision.',
-      confirmLabel: 'Run PM',
-    })) return;
-    setRegenState('running');
-    try {
-      const r = await fetch(
-        `/api/harness/${encodeURIComponent(slug)}/projects/${encodeURIComponent(projectId)}/regenerate-spec`,
-        { method: 'POST' },
-      );
-      const data = await r.json().catch(() => ({} as Record<string, unknown>));
-      if (!r.ok) {
-        setRegenState({ error: (data.error as string) ?? `HTTP ${r.status}`, detail: data.detail as string | undefined });
-        return;
-      }
-      setRegenState({ ok: true, summary: (data.summary as string) ?? 'PM completed' });
-      await Promise.all([loadProject(), loadRevisions()]);
-    } catch (e) {
-      setRegenState({ error: (e as Error).message });
-    }
-  }, [slug, projectId, loadProject, loadRevisions, askConfirm]);
-
   const loadRevision = useCallback(async (revId: number) => {
     try {
       const r = await fetch(
@@ -318,16 +292,6 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
                 <button onClick={startEdit} style={btnSecondary}>
                   <Pencil size={12} /> Edit
                 </button>
-                <Tooltip label="Spawns claude with the project_manager prompt; ~30s">
-                  <button
-                    onClick={regenerate}
-                    disabled={regenState === 'running'}
-                    style={btnPrimary}
-                  >
-                    {regenState === 'running' ? <Loader2 size={12} className="op-note-spin" /> : <RefreshCw size={12} />}
-                    {regenState === 'running' ? 'Running PM…' : 'Regenerate (PM)'}
-                  </button>
-                </Tooltip>
                 <button onClick={() => setShowRevisions((v) => !v)} style={btnSecondary}>
                   <Clock size={12} /> {showRevisions ? 'Hide revisions' : 'Show revisions'} ({revisions.length})
                 </button>
@@ -346,18 +310,6 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
           </div>
 
           {/* Status indicators */}
-          {regenState !== 'idle' && regenState !== 'running' && (typeof regenState === 'object') && (
-            'error' in regenState ? (
-              <div style={statusBox('error')}>
-                <AlertTriangle size={12} /> PM failed: {regenState.error}
-                {regenState.detail && <pre style={{ marginTop: 6, fontSize: SIZES.xs, opacity: 0.8 }}>{regenState.detail.slice(0, 600)}</pre>}
-              </div>
-            ) : (
-              <div style={statusBox('success')}>
-                ✓ PM completed: {regenState.summary}
-              </div>
-            )
-          )}
           {typeof saveState === 'object' && 'error' in saveState && (
             <div style={statusBox('error')}><AlertTriangle size={12} /> Save failed: {saveState.error}</div>
           )}

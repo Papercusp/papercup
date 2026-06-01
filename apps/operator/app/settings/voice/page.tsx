@@ -41,7 +41,6 @@ const KNOWN_ROLES = [
   'debugger',
   'crosscheck',
   'ui-qa',
-  'project_manager',
   'director',
   'coordinator',
   'auditor',

@@ -8,16 +8,17 @@
  *   GET  /api/harness/:slug/projects/:id/spec/revisions
  *   GET  /api/harness/:slug/projects/:id/spec/revisions/:revId
  *   PUT  /api/harness/:slug/projects/:id/spec
- *   POST /api/harness/:slug/projects/:id/regenerate-spec
  *
  * `auth: 'public'` — the legacy `harness` sub-app gated none of these.
+ *
+ * (The PM auto-maintenance route POST .../regenerate-spec was retired with the
+ * projects→spec-revision project_manager feature — D-020 / P-015. Manual spec
+ * editing via PUT .../spec + revision viewing survive.)
  */
-import { randomUUID } from 'node:crypto';
 import { withWorkspaceLegacy } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { getProjectDetail, listProjectsForHarness } from '@/lib/projects-data';
-import { runProjectManager } from '@/lib/pm-dispatch';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -151,41 +152,4 @@ const putSpec = defineTool({
   },
 });
 
-const regenerateSpec = defineTool({
-  method: 'POST',
-  path: '/harness/:slug/projects/:id/regenerate-spec',
-  auth: 'public',
-  async handler(req, ctx) {
-    const { slug, id } = ctx.params;
-    const asyncMode = new URL(req.url).searchParams.get('async') === '1';
-    try {
-      const result = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
-        const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
-        if (!existing) return { found: false as const };
-        if (asyncMode) {
-          const eventId = randomUUID();
-          await db.prepare(`
-            INSERT INTO harness_shared.pending_events
-              (id, install_slug, kind, target_role, payload, due_at, workspace_id)
-            VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now(), ?)
-          `).run(eventId, slug, JSON.stringify({ project_id: id, source: 'manual' }), activeWorkspaceId());
-          return { found: true as const, asyncMode: true as const, eventId };
-        }
-        return { found: true as const, asyncMode: false as const };
-      });
-      if (!result.found) return Response.json({ error: 'project not found' }, { status: 404 });
-      if (result.asyncMode) {
-        return Response.json({ ok: true, mode: 'async', event_id: result.eventId });
-      }
-      const pmResult = await runProjectManager({ slug, projectId: id, bypassDebounce: true });
-      if (!pmResult.ok) {
-        return Response.json({ error: pmResult.error, detail: pmResult.detail }, { status: 500 });
-      }
-      return Response.json({ mode: 'sync', ...pmResult });
-    } catch (e) {
-      return Response.json({ error: `failed to run PM: ${(e as Error).message}` }, { status: 500 });
-    }
-  },
-});
-
-export default [listProjects, projectDetail, specRevisions, specRevision, putSpec, regenerateSpec];
+export default [listProjects, projectDetail, specRevisions, specRevision, putSpec];

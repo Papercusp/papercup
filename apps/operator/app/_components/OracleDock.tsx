@@ -28,7 +28,6 @@ import { OracleLogoMark } from './OracleLogoMark';
 import {
   Activity,
   Bot,
-  Briefcase,
   Bug,
   ChartNetwork,
   ClipboardCheck,
@@ -114,7 +113,6 @@ type AgentRole = string;
 const FALLBACK_AGENT_ROLES: string[] = [
   'worker', 'validator', 'scoper', 'reviewer', 'architect',
   'orchestrator', 'documenter', 'summarizer', 'curator', 'debugger',
-  'project_manager',
 ];
 
 type ChatTarget =
@@ -185,7 +183,6 @@ const ROLE_HINTS: Record<AgentRole, string> = {
   summarizer: 'condense progress and context',
   curator: 'organize relevant context',
   debugger: 'investigate failures',
-  project_manager: 'suggest priorities and next steps',
 };
 
 function roleLabel(role: AgentRole): string {
@@ -209,7 +206,6 @@ const ROLE_ICONS: Record<string, ChatIconComponent> = {
   summarizer: ScrollText,
   curator: Library,
   debugger: Bug,
-  'project-manager': Briefcase,
   auditor: ClipboardCheck,
   ceo: Crown,
   coordinator: Users,
@@ -1079,7 +1075,7 @@ export function OracleDock() {
     const selectedRole = pickerFocusRole && roles.includes(pickerFocusRole)
       ? pickerFocusRole
       : roles[0] ?? null;
-    const preferredRoleOrder = ['worker', 'architect', 'validator', 'scoper', 'project_manager', 'orchestrator'];
+    const preferredRoleOrder = ['worker', 'architect', 'validator', 'scoper', 'orchestrator'];
     const orderedRoles = [...roles].sort((a, b) => {
       if (selectedRole && a === selectedRole) return -1;
       if (selectedRole && b === selectedRole) return 1;

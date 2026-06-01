@@ -17,7 +17,7 @@ import { CommandError, type CommandDef } from '../types';
 
 const DispatchArgs = z.object({
   slug: z.string().describe('Harness slug (use harness.list / agents.across-workspace to find).'),
-  role: z.string().describe('Agent role (architect, orchestrator, scoper, worker, validator, reviewer, debugger, project_manager, …).'),
+  role: z.string().describe('Agent role (architect, orchestrator, scoper, worker, validator, reviewer, debugger, …).'),
   message: z.string().min(1).describe('First message to send the agent.'),
   featureId: z.string().optional().describe('Optional feature id to scope the chat (F-001, BRIEF-BRF-12).'),
 });

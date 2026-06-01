@@ -42,12 +42,13 @@ export const AGENT_ROLES = [
   'promote',
   'expert',
   'feedback',
-  'project_manager',
   'security-reviewer',
   'infra-reviewer',
-  // 'summarizer' — CUT (dbos-system-completion P-015): dead role, never
-  // dispatched, no subsystem; prompt deleted. (project_manager stays for now —
-  // it has a live pm-dispatch.ts subsystem that a separate cut must handle.)
+  // 'summarizer' + 'project_manager' — CUT (dbos-system-completion P-015).
+  // summarizer: dead role, never dispatched, no subsystem. project_manager:
+  // powered the projects→spec-revision PM-dispatch feature (regenerate-spec
+  // route + passed→pm_due reactive path); the whole feature was retired by
+  // product decision D-020, so the role + pm-dispatch.ts + its prompt are gone.
   'crosscheck',
   'ui-qa',
   // G2 user-protection gate (papercusp-user-protection-gate-2026-05-31 P-006):

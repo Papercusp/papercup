@@ -11,7 +11,7 @@
  *
  *   - prompt → `assembleRolePrompt` (`@papercusp/orchestrator/role-prompt`),
  *     the same shared assembler the operator's brain dispatchers
- *     (`pm-dispatch`, `agent-chats`) already use. `resolvePromptFile` +
+ *     (`agent-chats`) already use. `resolvePromptFile` +
  *     `buildPrompt` underneath — the same leaves `invoke()` uses.
  *   - MCP URL → the operator's `signSpawnParams` (HMAC key shared with
  *     the MCP handler's `verifySpawnParams`), over the SAME param set

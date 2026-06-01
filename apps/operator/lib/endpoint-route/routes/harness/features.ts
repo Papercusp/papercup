@@ -15,7 +15,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getLegacyClient, withWorkspaceLegacy, getOrgPg } from '@papercusp/db-org';
+import { getLegacyClient, getOrgPg } from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -301,24 +301,10 @@ const updateFeature = defineTool({
       }
     });
 
-    // Phase B+ — Project Manager hook. Transitions INTO 'passed' enqueue a
-    // pm_due pending_events row scoped to the active workspace.
+    // (The projects→spec-revision project_manager hook that enqueued a `pm_due`
+    // pending_events row on a transition into 'passed' was retired with the PM
+    // feature — D-020 / P-015.)
     const transitionedToPassed = updates.status === 'passed' && existing.status !== 'passed';
-    const projectIdForPm = (updates.project_id ?? existing.project_id) as string | null | undefined;
-    if (transitionedToPassed && projectIdForPm) {
-      try {
-        const eventId = `pm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        await withWorkspaceLegacy(project.slug, activeWorkspaceId(), async (db) => {
-          await db.prepare(`
-            INSERT INTO harness_shared.pending_events
-              (id, install_slug, kind, target_role, payload, due_at, workspace_id)
-            VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now(), ?)
-          `).run(eventId, project.slug, JSON.stringify({ project_id: projectIdForPm, feature_id: id, source: 'feature_passed' }), activeWorkspaceId());
-        });
-      } catch {
-        // best-effort; do not fail the PATCH over PM scheduling
-      }
-    }
 
     if (transitionedToPassed) {
       void firePluginLifecycle('onFeaturePassed', {
