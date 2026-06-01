@@ -14,6 +14,9 @@ vi.mock('@/lib/auth', () => ({
 }));
 vi.mock('@/lib/workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'ws-test'),
+  // configureBackup (pulled in transitively via lib/backup) reads workspacesRoot;
+  // omitting it broke this suite at import time after the @papercusp/backup seam landed.
+  workspacesRoot: vi.fn(() => '/tmp/papercusp-test-ws'),
 }));
 vi.mock('@/lib/operator-budget', () => ({
   checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),

@@ -19,6 +19,7 @@
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 import { dbosAutoloopActive } from './dbos/dbos-flags';
+import { loopbackFetch } from './loopback-fetch';
 
 const at = generated.autoloopStateInHarnessShared;
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -67,7 +68,7 @@ export async function listHarnesses(operatorBase: string): Promise<HarnessRow[]>
     // /projects/lite returns slug+path+harnessDir without the per-project
     // PG hits we don't need here (autoloop only checks director-config.json
     // on disk). Cuts the hot-path autoloop tick from ~5s to <50ms.
-    const r = await fetch(`${operatorBase}/api/harness/projects/lite`, { signal: AbortSignal.timeout(5000) });
+    const r = await loopbackFetch(`${operatorBase}/api/harness/projects/lite`, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return [];
     const d: any = await r.json();
     return Array.isArray(d?.projects) ? d.projects : [];
@@ -163,7 +164,7 @@ export async function readHarnessConfig(harnessPath: string): Promise<HarnessCon
 
 export async function fireDirector(operatorBase: string, slug: string, role: string): Promise<{ ok: boolean; detail?: string }> {
   try {
-    const r = await fetch(`${operatorBase}/api/harness/${encodeURIComponent(slug)}/invoke?role=${encodeURIComponent(role)}`, {
+    const r = await loopbackFetch(`${operatorBase}/api/harness/${encodeURIComponent(slug)}/invoke?role=${encodeURIComponent(role)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ timeoutMs: FIRE_TIMEOUT_MS }),
