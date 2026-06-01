@@ -13,10 +13,9 @@
  * Any client-side caller must go through `/api/agent-mcp/operator-scans`
  * (HTTP) instead of importing this module directly.
  */
-import { withWorkspace } from '@papercusp/db-org';
+import { withWorkspace, getOrgPg } from '@papercusp/db-org';
 import { ensureOperatorScansTable } from './ensure-schema';
 import { notifySyncInvalidate } from './sync-sse';
-import { DEFAULT_WORKSPACE_ID } from './workspace-registry';
 
 export interface OperatorScanRow {
   id: number;
@@ -83,34 +82,35 @@ export async function startOperatorScan(args: InsertScanArgs): Promise<number> {
 
 export async function completeOperatorScan(args: CompleteScanArgs): Promise<void> {
   await ensureOperatorScansTable();
-  // Resolve workspace from the row itself rather than asking the caller —
-  // the id is unique across workspaces.
-  await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-    await tx`
-      UPDATE harness_shared.operator_scans SET
-        ended_at         = ${args.endedAt.toISOString()},
-        summary          = ${args.summary},
-        suggestions      = ${JSON.stringify(args.suggestions)}::jsonb,
-        suggestion_count = ${args.suggestions.length},
-        cost_usd         = ${args.costUsd},
-        cached           = ${args.cached ?? false},
-        agent_session_id = COALESCE(${args.agentSessionId ?? null}, agent_session_id)
-      WHERE id = ${args.id}
-    `;
-  });
+  // By-id finalize: the id is unique across workspaces, so this targets exactly
+  // one row regardless of workspace. Run via the admin handle (rolbypassrls) — a
+  // withWorkspace() update would be RLS-scoped to one workspace (P-062 Phase 2),
+  // so finalizing a non-default-workspace scan would silently match 0 rows.
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.operator_scans SET
+      ended_at         = ${args.endedAt.toISOString()},
+      summary          = ${args.summary},
+      suggestions      = ${JSON.stringify(args.suggestions)}::jsonb,
+      suggestion_count = ${args.suggestions.length},
+      cost_usd         = ${args.costUsd},
+      cached           = ${args.cached ?? false},
+      agent_session_id = COALESCE(${args.agentSessionId ?? null}, agent_session_id)
+    WHERE id = ${args.id}
+  `;
   void notifySyncInvalidate('operatorScans.running').catch(() => {});
 }
 
 export async function failOperatorScan(args: FailScanArgs): Promise<void> {
   await ensureOperatorScansTable();
-  await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-    await tx`
-      UPDATE harness_shared.operator_scans SET
-        ended_at = ${args.endedAt.toISOString()},
-        error    = ${args.error}
-      WHERE id = ${args.id}
-    `;
-  });
+  // By-id finalize via the admin handle — see completeOperatorScan().
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.operator_scans SET
+      ended_at = ${args.endedAt.toISOString()},
+      error    = ${args.error}
+    WHERE id = ${args.id}
+  `;
   void notifySyncInvalidate('operatorScans.running').catch(() => {});
 }
 
