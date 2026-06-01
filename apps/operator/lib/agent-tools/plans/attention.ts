@@ -130,12 +130,22 @@ export default defineTool({
     }
 
     // 3. Coord messages addressed to the human (most recent, capped).
-    //    Acknowledged messages are dropped so the inbox "Acknowledge" dismisses.
+    //    Drop messages the VIEWER has acknowledged so "Acknowledge" dismisses —
+    //    scoped to the viewer's OWN acks (not global), so an agent acking a
+    //    broadcast can't suppress it from the human's inbox. No attributable
+    //    viewer ⇒ dismiss nothing (show all), never global.
     try {
       const { readInbox, readAckedMsgIds } = await import('../coordination/messages');
+      let viewerOwnerId = '';
+      try {
+        const { resolveAgentIdentity } = await import('../coordination/identity');
+        viewerOwnerId = resolveAgentIdentity(ctx).ownerId;
+      } catch {
+        /* no attributable viewer → don't dismiss anything */
+      }
       const [msgs, acked] = await Promise.all([
         readInbox('human', { kinds: ['message'] }),
-        readAckedMsgIds(),
+        viewerOwnerId ? readAckedMsgIds(viewerOwnerId) : Promise.resolve(new Set<string>()),
       ]);
       for (const m of msgs.slice(-50)) {
         if (acked.has(m.msg_id)) continue;

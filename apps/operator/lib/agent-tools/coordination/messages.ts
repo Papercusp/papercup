@@ -92,16 +92,25 @@ export async function readInbox(
 }
 
 /**
- * Msg-ids that have been acknowledged — every `ack` envelope's `related_msg_id`.
- * Acks were always written (appendAck) but never folded out of any view, so a
- * coord-message inbox "Acknowledge" had no visible effect. The Planning inbox
- * uses this to dismiss acked messages so the button actually clears them.
+ * Msg-ids that `ackerOwnerId` has acknowledged — the `related_msg_id` of every
+ * `ack` envelope THEY authored. Acks were always written (appendAck) but never
+ * folded out of any view, so a coord-message inbox "Acknowledge" had no visible
+ * effect. The Planning inbox uses this to dismiss acked messages.
+ *
+ * SECURITY: scoped to the acker's own acks (`l.from === ackerOwnerId`) — never
+ * global. A global set would let ANY agent's ack of a broadcast (to:['*'])
+ * suppress that message from the human's inbox even though the human never
+ * acked it (visibility suppression). Callers pass the principal whose inbox is
+ * being rendered, so only that principal's own acks dismiss their view.
  */
-export async function readAckedMsgIds(): Promise<Set<string>> {
-  const lines = await coordLog.readLines('messages');
+export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>> {
   const acked = new Set<string>();
+  if (!ackerOwnerId) return acked;
+  const lines = await coordLog.readLines('messages');
   for (const l of lines) {
-    if (l.kind === 'ack' && typeof l.related_msg_id === 'string') acked.add(l.related_msg_id);
+    if (l.kind === 'ack' && l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
+      acked.add(l.related_msg_id);
+    }
   }
   return acked;
 }
