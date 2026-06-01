@@ -36,15 +36,18 @@ export const AGENT_ROLES = [
   'oracle',
   // Coordinator + cross-cutting expert roles (built-in, fire on plan events).
   'orchestrator',
-  // Promotes one `## Promote` wave of a plan into the harness (launched by the
-  // wave-advance sweep / a human). promote-policy-and-waves-2026-05-30 (Phase F).
+  // Promotes a plan's `## Promote` policy into the harness, all waves up front
+  // (launched by a human/agent). promote-policy-and-waves-2026-05-30; the
+  // wave-advance sweep that used to drive it per-wave is retired (P-044).
   'promote',
   'expert',
   'feedback',
   'project_manager',
   'security-reviewer',
   'infra-reviewer',
-  'summarizer',
+  // 'summarizer' — CUT (dbos-system-completion P-015): dead role, never
+  // dispatched, no subsystem; prompt deleted. (project_manager stays for now —
+  // it has a live pm-dispatch.ts subsystem that a separate cut must handle.)
   'crosscheck',
   'ui-qa',
 ] as const;
