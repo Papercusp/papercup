@@ -25,6 +25,9 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'operator:multi_workspace',
   profile: 'engineer',
+  // P-062 Phase 4: aggregates every OTHER workspace's snapshot — inherently
+  // cross-workspace, so it must never be RLS-scoped to the caller's workspace.
+  crossWorkspace: true,
   description: 'Aggregation of every other workspace\'s last-scan snapshot (active workspace omitted).',
   capability: 'operator:read',
   guidance: {

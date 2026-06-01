@@ -25,11 +25,12 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { sseResponse } from '@papercusp/sse';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 
 // Side-effect: register operator-side first-party tools (defineTool calls).
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
+import { chooseScopedHandle, isWorkspaceIsolationEnabled } from './scoped-handle';
 import { principalFromDeviceJwt } from '@/lib/auth/principal/from-device-jwt';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -64,17 +65,20 @@ const HOST_EXTRAS: HttpToolHostExtras = {
       tx: sql,
     };
   },
-  runScoped: (_scope, run) => {
-    // P-062 Phase 3 — the scoping seam, landed behavior-neutral: every tool
-    // still runs on the admin (rolbypassrls) handle, exactly as the static
-    // resolvePrincipalAndTx tx did, so this is a no-op behavior change that
-    // simply routes all dispatch through the seam. Phase 4 (P-004) flips this
-    // to run inside withWorkspace(scope.workspaceId) for normal calls (so the
-    // dormant harness_app role + RLS isolate the tool to its workspace), while
-    // keeping this admin handle for superuser calls (scope.isSuperuser) and
-    // tools that declare themselves crossWorkspace.
-    const { sql } = getOrgPg();
-    return run(sql);
+  runScoped: (scope, run) => {
+    // P-062 Phase 4 — workspace isolation, rolled out behind a flag (default
+    // OFF; see isWorkspaceIsolationEnabled). The dispatch stack's own
+    // bookkeeping (tool_invocations + quota) runs on the admin handle inside
+    // PROJECTED_DEPS, NOT on ctx.tx, so this seam only changes the handle the
+    // tool HANDLER reads. The admin-vs-workspace decision matrix is the pure,
+    // unit-tested `chooseScopedHandle`; here we only wire it to the real PG.
+    //   admin     → getOrgPg() (rolbypassrls) — flag-off / superuser /
+    //               crossWorkspace tools / no concrete workspace.
+    //   workspace → withWorkspace(ws) (harness_app role + GUC) so RLS isolates
+    //               the tool to its own workspace.
+    const choice = chooseScopedHandle(scope, { isolationOn: isWorkspaceIsolationEnabled() });
+    if (choice.kind === 'admin') return run(getOrgPg().sql);
+    return withWorkspace(choice.workspaceId, (tx) => run(tx));
   },
   deps: PROJECTED_DEPS,
   log: (line, ctx: UnifiedToolContext) => {
