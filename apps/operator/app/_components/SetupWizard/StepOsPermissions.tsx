@@ -270,7 +270,13 @@ export function StepOsPermissions() {
   useEffect(() => () => stopMonitor(), [stopMonitor]);
 
   useEffect(() => {
-    if (micGranted && selectedInput) void startMonitor(selectedInput);
+    // Start the monitor as soon as the mic is granted, even before a device
+    // is picked — startMonitor('') opens the DEFAULT device. This is required
+    // on WebKitGTK, where enumerateDevices() reports blank deviceIds until a
+    // capture stream is live: opening the default stream populates the ids,
+    // which then surface real options in the input dropdown. Gating on
+    // selectedInput here deadlocked (no id → no selection → no stream → no id).
+    if (micGranted) void startMonitor(selectedInput);
   }, [selectedInput, micGranted, startMonitor]);
 
   // Apply sinkId to all rendered audio elements when the output changes.
