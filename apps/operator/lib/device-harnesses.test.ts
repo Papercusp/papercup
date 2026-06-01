@@ -5,24 +5,31 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const sqlQueue: unknown[][] = [];
+// `readHarnessRegistryFor` reads via Drizzle `getOrgPg().db.select(...)`; the
+// status rollups use a raw `tx\`\`` template inside `withWorkspace`. So the mock
+// feeds the registry read from `dbSelectQueue` (fake `db`) and the status reads
+// from `txQueue` (raw tx). Real `generated` is kept (importActual) so
+// `eq(hr.workspaceId, …)` resolves real columns.
+const dbSelectQueue: unknown[][] = [];
 const txQueue: unknown[][] = [];
-const sqlCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
-const txCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
-      sqlCalls.push({ strings, values });
-      return Promise.resolve(sqlQueue.shift() ?? []);
+function thenable(result: unknown): any {
+  return new Proxy(function () {}, {
+    get(_t, prop) {
+      if (prop === 'then') return (res: (v: unknown) => void) => res(result);
+      return () => thenable(result);
     },
-  }),
+  });
+}
+const fakeDb = { select: () => thenable(dbSelectQueue.shift() ?? []) };
+
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...((await orig()) as object),
+  getOrgPg: () => ({ db: fakeDb }),
   withWorkspace: vi.fn(async (workspaceId: string, fn: (tx: any) => Promise<unknown>) => {
     (globalThis as any).__lastWs = workspaceId;
-    const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
-      txCalls.push({ strings, values });
-      return Promise.resolve(txQueue.shift() ?? []);
-    };
+    const tx = (_strings: TemplateStringsArray, ..._values: unknown[]) =>
+      Promise.resolve(txQueue.shift() ?? []);
     return fn(tx);
   }),
 }));
@@ -30,39 +37,37 @@ vi.mock('@papercusp/db-org', () => ({
 import { harnessExistsInWorkspace, listHarnessesFor, harnessStatusFor } from './device-harnesses';
 
 beforeEach(() => {
-  sqlQueue.length = 0;
+  dbSelectQueue.length = 0;
   txQueue.length = 0;
-  sqlCalls.length = 0;
-  txCalls.length = 0;
 });
 
 describe('harnessExistsInWorkspace', () => {
   it('returns true when slug is in the registry', async () => {
-    sqlQueue.push([{ payload: { projects: [{ slug: 'foo', path: '/x' }, { slug: 'bar', path: '/y' }] } }]);
+    dbSelectQueue.push([{ payload: { projects: [{ slug: 'foo', path: '/x' }, { slug: 'bar', path: '/y' }] } }]);
     expect(await harnessExistsInWorkspace('ws-A', 'foo')).toBe(true);
   });
   it('returns false when slug is not present', async () => {
-    sqlQueue.push([{ payload: { projects: [{ slug: 'foo', path: '/x' }] } }]);
+    dbSelectQueue.push([{ payload: { projects: [{ slug: 'foo', path: '/x' }] } }]);
     expect(await harnessExistsInWorkspace('ws-A', 'bar')).toBe(false);
   });
   it('returns false on empty registry row', async () => {
-    sqlQueue.push([]);
+    dbSelectQueue.push([]);
     expect(await harnessExistsInWorkspace('ws-A', 'foo')).toBe(false);
   });
   it('returns false when payload.projects is null', async () => {
-    sqlQueue.push([{ payload: null }]);
+    dbSelectQueue.push([{ payload: null }]);
     expect(await harnessExistsInWorkspace('ws-A', 'foo')).toBe(false);
   });
 });
 
 describe('listHarnessesFor', () => {
   it('returns [] when registry has no projects', async () => {
-    sqlQueue.push([]);
+    dbSelectQueue.push([]);
     expect(await listHarnessesFor('ws-X')).toEqual([]);
   });
 
   it('merges status into project rows; missing status → has_state=false', async () => {
-    sqlQueue.push([{ payload: { projects: [
+    dbSelectQueue.push([{ payload: { projects: [
       { slug: 'a', path: '/a', harness_kind: 'next' },
       { slug: 'b', path: '/b' }, // no status row
     ] } }]);

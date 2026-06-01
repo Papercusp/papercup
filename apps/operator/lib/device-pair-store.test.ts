@@ -1,33 +1,83 @@
 /**
- * Tests for device-pair-store. Mocks @papercusp/db-org so the PG-backed
- * mint/consume contract is exercised without a live database.
+ * Tests for device-pair-store. Mocks @papercusp/db-org so the mint/consume
+ * contract is exercised without a live database.
+ *
+ * The SUT migrated from raw `sql\`\`` to Drizzle's `getOrgPg().db` query builder,
+ * so the mock provides a chainable fake `db`: `select`/`update…returning`
+ * resolve queued rows, `insert` captures its `.values()` payload, and ops are
+ * recorded for behavioral assertions. Real `generated` is kept (importActual)
+ * so drizzle's `eq`/`and`/`count` resolve real columns. The old raw-SQL-string
+ * assertions tested an implementation that no longer exists and were dropped.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const sqlCalls: { strings: TemplateStringsArray; values: unknown[] }[] = [];
-const sqlQueue: unknown[][] = [];
+// Rows returned by `db.select(...).from(...)` (the GC count), in order.
+const selectRows: unknown[][] = [];
+// Rows returned by `db.update(...).set(...).where(...).returning(...)`.
+const updateRows: unknown[][] = [];
+const ops: string[] = [];
+let lastInsert: Record<string, unknown> | null = null;
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
-      sqlCalls.push({ strings, values });
-      return Promise.resolve(sqlQueue.shift() ?? []);
+function thenable(result: unknown): any {
+  return new Proxy(function () {}, {
+    get(_t, prop) {
+      if (prop === 'then') return (res: (v: unknown) => void) => res(result);
+      return () => thenable(result);
     },
-  }),
+  });
+}
+
+const fakeDb = {
+  insert: () => {
+    ops.push('insert');
+    return {
+      values: (v: Record<string, unknown>) => {
+        lastInsert = v;
+        return thenable([]);
+      },
+    };
+  },
+  delete: () => {
+    ops.push('delete');
+    return thenable([]);
+  },
+  select: () => thenable(selectRows.shift() ?? []),
+  update: () => {
+    ops.push('update');
+    return new Proxy(function () {}, {
+      get(_t, prop) {
+        if (prop === 'then') return (res: (v: unknown) => void) => res(updateRows.shift() ?? []);
+        return () => (fakeDb.update as any)._chain();
+      },
+    });
+  },
+};
+// returning()/set()/where() all continue the same thenable chain
+(fakeDb.update as any)._chain = () =>
+  new Proxy(function () {}, {
+    get(_t, prop) {
+      if (prop === 'then') return (res: (v: unknown) => void) => res(updateRows.shift() ?? []);
+      return () => (fakeDb.update as any)._chain();
+    },
+  });
+
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...((await orig()) as object), // real `generated` so eq()/and()/count() resolve real columns
+  getOrgPg: () => ({ db: fakeDb }),
 }));
 
 import { mintPairToken, consumePairToken, newDeviceId } from './device-pair-store';
 
 beforeEach(() => {
-  sqlCalls.length = 0;
-  sqlQueue.length = 0;
+  selectRows.length = 0;
+  updateRows.length = 0;
+  ops.length = 0;
+  lastInsert = null;
 });
 
 describe('mintPairToken', () => {
   it('inserts a fresh row and returns token + expiresAt', async () => {
-    sqlQueue.push([]); // INSERT
-    sqlQueue.push([{ n: 0 }]); // count for GC
-
+    selectRows.push([{ n: 0 }]); // GC count
     const before = Date.now();
     const { pairToken, expiresAt } = await mintPairToken({
       workspaceId: 'ws-1',
@@ -39,43 +89,37 @@ describe('mintPairToken', () => {
     expect(pairToken.length).toBeGreaterThan(20);
     expect(expiresAt).toBeGreaterThanOrEqual(before + 5 * 60 * 1000 - 100);
 
-    expect(sqlCalls).toHaveLength(2);
-    const sqlText = sqlCalls[0].strings.join('?');
-    expect(sqlText).toContain('INSERT INTO harness_shared.mobile_pair_tokens');
-    expect(sqlText).toContain('false'); // consumed=false hard-coded in SQL, not a value
-    // values: pairToken, workspaceId, userEmail, desktopHost, expiresAt, createdAt
-    expect(sqlCalls[0].values[0]).toBe(pairToken);
-    expect(sqlCalls[0].values[1]).toBe('ws-1');
-    expect(sqlCalls[0].values[2]).toBe('a@b.com');
-    expect(sqlCalls[0].values[3]).toBe('localhost:3055');
-    expect(sqlCalls[0].values[4]).toBe(expiresAt);
+    expect(ops).toContain('insert');
+    expect(lastInsert).toMatchObject({
+      pairToken,
+      workspaceId: 'ws-1',
+      userEmail: 'a@b.com',
+      desktopHost: 'localhost:3055',
+      expiresAtMs: expiresAt,
+      consumed: false,
+    });
   });
 
   it('passes null when userEmail is omitted', async () => {
-    sqlQueue.push([]); // INSERT
-    sqlQueue.push([{ n: 0 }]); // count
+    selectRows.push([{ n: 0 }]);
     await mintPairToken({ workspaceId: 'w', desktopHost: 'h' });
-    expect(sqlCalls[0].values[2]).toBeNull();
+    expect(lastInsert!.userEmail).toBeNull();
   });
 
   it('triggers opportunistic GC sweep when row count > 1000', async () => {
-    sqlQueue.push([]); // INSERT
-    sqlQueue.push([{ n: 1500 }]); // count
-    sqlQueue.push([]); // DELETE
+    selectRows.push([{ n: 1500 }]);
     await mintPairToken({ workspaceId: 'w', desktopHost: 'h' });
-    expect(sqlCalls).toHaveLength(3);
-    expect(sqlCalls[2].strings.join('?')).toContain('DELETE FROM harness_shared.mobile_pair_tokens');
+    expect(ops).toContain('delete');
   });
 
   it('skips GC when row count <= 1000', async () => {
-    sqlQueue.push([]); // INSERT
-    sqlQueue.push([{ n: 999 }]); // count
+    selectRows.push([{ n: 999 }]);
     await mintPairToken({ workspaceId: 'w', desktopHost: 'h' });
-    expect(sqlCalls).toHaveLength(2); // no DELETE
+    expect(ops).not.toContain('delete');
   });
 
   it('mints unique tokens', async () => {
-    sqlQueue.push([], [{ n: 0 }], [], [{ n: 0 }]);
+    selectRows.push([{ n: 0 }], [{ n: 0 }]);
     const a = (await mintPairToken({ workspaceId: 'w', desktopHost: 'h' })).pairToken;
     const b = (await mintPairToken({ workspaceId: 'w', desktopHost: 'h' })).pairToken;
     expect(a).not.toBe(b);
@@ -84,13 +128,13 @@ describe('mintPairToken', () => {
 
 describe('consumePairToken', () => {
   it('returns parsed PendingPair on a successful UPDATE … RETURNING', async () => {
-    sqlQueue.push([
+    updateRows.push([
       {
-        pair_token: 'abc',
-        workspace_id: 'ws-1',
-        user_email: 'a@b.com',
-        desktop_host: 'h',
-        expires_at_ms: 9999999999999,
+        pairToken: 'abc',
+        workspaceId: 'ws-1',
+        userEmail: 'a@b.com',
+        desktopHost: 'h',
+        expiresAtMs: 9999999999999,
       },
     ]);
     const out = await consumePairToken('abc');
@@ -98,22 +142,17 @@ describe('consumePairToken', () => {
     expect(out!.workspaceId).toBe('ws-1');
     expect(out!.userEmail).toBe('a@b.com');
     expect(out!.desktopHost).toBe('h');
-
-    const sql = sqlCalls[0].strings.join('?');
-    expect(sql).toContain('UPDATE harness_shared.mobile_pair_tokens');
-    expect(sql).toContain('SET consumed = true');
-    expect(sql).toContain('consumed = false');
-    expect(sql).toContain('expires_at_ms');
+    expect(ops).toContain('update');
   });
 
   it('returns null when no row matched (unknown / expired / already consumed)', async () => {
-    sqlQueue.push([]);
+    updateRows.push([]);
     expect(await consumePairToken('missing')).toBeNull();
   });
 
   it('handles null user_email by returning undefined', async () => {
-    sqlQueue.push([
-      { pair_token: 'x', workspace_id: 'w', user_email: null, desktop_host: 'h', expires_at_ms: 9999999999999 },
+    updateRows.push([
+      { pairToken: 'x', workspaceId: 'w', userEmail: null, desktopHost: 'h', expiresAtMs: 9999999999999 },
     ]);
     const out = await consumePairToken('x');
     expect(out!.userEmail).toBeUndefined();
