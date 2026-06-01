@@ -343,7 +343,35 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
-### TALLY (end of round 6): **32 of 38 genuine tests green** (+ core dump). 6 remain.
+### TALLY (end of round 7): **34 of 38 genuine tests green** (+ core dump). 4 remain.
+
+**Round 7 fixes (committed):**
+- **auth-posture** (SECURITY) — gated 7 public `/admin/` routes (see round-6 note).
+- **subscriptions** — coordinated in-memory mocks of PgSubscriptionStore +
+  coordLog + readInbox (all PG-backed; getOrgPg crashes in vitest). 11/11.
+
+**branch-actions — CONFIRMED true hang (not slowness, not flake):** the "runs a
+simple script" test (first one; the only one writing to **stderr**) times out even
+at a 20s timeout — `handle.done` never resolves because `child.on('close')` never
+fires, while 30 other spawn tests pass. A genuine Node-25 spawn/stream-completion
+product bug (likely the stderr stream's EOF isn't reached so 'close' is withheld).
+Needs runtime instrumentation of the child exit/close/stream events — a product
+fix, not a test patch. (pty-ws, the other real-spawn test, was just flaky and now
+passes.)
+
+**experts — needs a STATEFUL mock or integration conversion (involved):** 500s
+because `lookupProjectDir`→`loadHarnessRegistry` is PG-backed (getOrgPg crashes),
+and the experts store is **PG-primary** (create writes PG, reads union PG+disk).
+So the create→read lifecycle the test exercises needs a *stateful* experts-PG mock
+(insert/select/update/turns/verdict shapes) + a `loadHarnessRegistry` mock — i.e.
+effectively rebuild the store in-memory, or convert to `.integration.test.ts` with
+seeded PG. Bigger than the oauth/subscriptions mocks.
+
+**4 REMAIN:** experts (stateful mock/integration — above), chat-surface-tools
+(audit rework — model obsolete), css-tokens (design-token migration — REAL),
+perf-anti-patterns (baseline/code — REAL).
+
+### (historical) end of round 6: 32 of 38 genuine tests green. 6 remained.
 
 **Round 6 — SECURITY fix landed (auth-posture 14/14):** gated 7 public `/admin/`
 routes to `{verified,trusted}` (coord/:verb POST, plans/:verb GET+POST,
