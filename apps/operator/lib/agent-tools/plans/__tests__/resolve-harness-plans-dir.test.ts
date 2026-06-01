@@ -22,6 +22,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('@/lib/harness-registry');
   vi.doUnmock('@/lib/harness/register-papercup');
+  vi.doUnmock('@/lib/workspace-registry');
 });
 
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
@@ -127,8 +128,28 @@ describe('resolveHarnessPlansDir', () => {
     mockPapercupDetection('/home/u/papercup');
     const mod = await import('../source');
     await expect(mod.resolveHarnessPlansDir('papercusp')).rejects.toThrow(
-      /harness 'papercusp' not registered\. Did you mean 'papercup'\?/,
+      /harness 'papercusp' not registered in any workspace\. Did you mean 'papercup'\?/,
     );
+  });
+
+  it('resolves a slug registered in a DIFFERENT workspace (cross-workspace fallback)', async () => {
+    // The active workspace has no harnesses; 'sheets' lives only in workspace B.
+    // resolveProject's cross-workspace scan (delegated to) must find it instead
+    // of hard-failing — the asymmetry the explicit-slug branch used to have.
+    vi.doMock('@/lib/harness-registry', () => ({
+      loadHarnessRegistry: vi.fn(async (wsId?: string) => ({
+        projects: wsId === 'B' ? [{ slug: 'sheets', path: '/b/sheets' }] : [],
+      })),
+    }));
+    vi.doMock('@/lib/workspace-registry', () => ({
+      readRegistry: () => ({ workspaces: [{ id: 'A' }, { id: 'B' }] }),
+      activeWorkspaceId: () => 'A',
+    }));
+    mockPapercupDetection(null);
+    const mod = await import('../source');
+    const result = await mod.resolveHarnessPlansDir('sheets'); // no pinned workspace → scans
+    expect(result.harnessSlug).toBe('sheets');
+    expect(result.plans).toContain('b/sheets');
   });
 
   it('P-014: papercup path mismatch with detection → throws', async () => {

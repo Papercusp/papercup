@@ -13,6 +13,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan } from './parser';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { resolveProject } from '@/lib/harness-core';
 import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '@/lib/harness/register-papercup';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
@@ -98,15 +99,21 @@ export async function resolveHarnessPlansDir(
     resolved = project.slug;
   } else {
     resolved = raw;
-    project = reg.projects.find((p) => p.slug === resolved);
+    // Cross-workspace fallback (mirrors every other harness route): a harness
+    // is registered in ONE workspace, but the active workspace flaps (multiple
+    // SU agents + the desktop switch it). resolveProject scans the other
+    // workspaces by slug when not pinned — so cross_harness:plans_* can reach a
+    // harness in any workspace instead of hard-failing on whichever happens to
+    // be active. A pinned workspace (opts.workspaceId) stays in it.
+    project = await resolveProject(resolved, opts.workspaceId);
     if (!project) {
       // 'papercusp' (the product/umbrella name) is the classic typo for the
       // 'papercup' harness — a recurring agent error in the failed-tool-call
       // data worth a targeted hint.
       const didYouMean = resolved === 'papercusp' ? ` Did you mean '${PAPERCUP_HARNESS_SLUG}'?` : '';
       throw new Error(
-        `resolveHarnessPlansDir: harness '${resolved}' not registered.${didYouMean} ` +
-          `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
+        `resolveHarnessPlansDir: harness '${resolved}' not registered in any workspace.${didYouMean} ` +
+          `Active-workspace harnesses: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
       );
     }
   }
