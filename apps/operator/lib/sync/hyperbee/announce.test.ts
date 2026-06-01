@@ -2,7 +2,7 @@
  * announce.test.ts — signed peer announce wire-format (Model B substrate, Stage 3).
  *
  * The announce binds a peer's Hypercore log to a device identity:
- *   { device_pubkey, github_user_id, github_login, log_core_key, sig }
+ *   { device_pubkey, github_user_id, github_login, log_core_key, ts, nonce?, sig }
  *
  * Crypto contract (Stage-0 spike, run-verified): Node-crypto Ed25519,
  * `sign(null, …)` / `verify(null, …)`, with the device pubkey represented as
@@ -15,7 +15,9 @@
  *  - device_pubkey in the body is the raw-32-byte-base64 form (binding convention);
  *  - tamper a signed field (log_core_key / github_login) → verifyAnnounce → false;
  *  - a sig that doesn't match the body → false;
- *  - bad-shape / malformed frames → false (never throws).
+ *  - bad-shape / malformed frames → false (never throws);
+ *  - D-007 freshness: stale ts, future-skew ts → false; fresh ts → true;
+ *  - D-007 tamper: tampering ts or nonce after signing → false (sig check).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -24,6 +26,7 @@ import {
   announceSigningBytes,
   buildAnnounce,
   verifyAnnounce,
+  DEFAULT_ANNOUNCE_WINDOW_MS,
   type AnnounceBody,
   type SignedAnnounce,
 } from './announce';
@@ -34,13 +37,27 @@ function rawPubkeyBase64(publicKey: ReturnType<typeof generateKeyPairSync>['publ
   return spkiDer.subarray(-32).toString('base64');
 }
 
+const FIXED_NOW_MS = 1_700_000_000_000; // deterministic epoch for tests
+
 function makeBody(pubkeyBase64: string): AnnounceBody {
   return {
     device_pubkey: pubkeyBase64,
     github_user_id: 4242,
     github_login: 'alice',
     log_core_key: 'a'.repeat(64), // 64-hex hypercore key shape
+    ts: FIXED_NOW_MS,
   };
+}
+
+/** Build an announce with the fixed test clock. */
+async function buildTestAnnounce(
+  body: Omit<AnnounceBody, 'ts'> & { ts?: number },
+  privateKey: ReturnType<typeof generateKeyPairSync>['privateKey'],
+  opts?: { nowMs?: number },
+): Promise<SignedAnnounce> {
+  return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey), {
+    nowMs: opts?.nowMs ?? FIXED_NOW_MS,
+  });
 }
 
 describe('announce', () => {
@@ -49,33 +66,36 @@ describe('announce', () => {
     const pubkeyBase64 = rawPubkeyBase64(publicKey);
     const body = makeBody(pubkeyBase64);
 
-    const frame = await buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+    const frame = await buildTestAnnounce(body, privateKey);
 
     // device_pubkey is the raw-32-byte-base64 form (matches the binding convention).
     expect(Buffer.from(frame.device_pubkey, 'base64').length).toBe(32);
     expect(frame.device_pubkey).toBe(pubkeyBase64);
     // sig is base64 of a 64-byte Ed25519 signature.
     expect(Buffer.from(frame.sig, 'base64').length).toBe(64);
+    // ts is stamped with the injected clock.
+    expect(frame.ts).toBe(FIXED_NOW_MS);
 
-    expect(verifyAnnounce(frame)).toBe(true);
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
   });
 
   it('signing bytes exclude sig and are deterministic + field-ordered', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const body = makeBody(rawPubkeyBase64(publicKey));
-    const frame = await buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+    const frame = await buildTestAnnounce(body, privateKey);
 
     // signing bytes of the body == signing bytes derived from the signed frame
     expect(announceSigningBytes(body).equals(announceSigningBytes(frame))).toBe(true);
     // they do not contain the signature
     expect(announceSigningBytes(frame).toString('utf8')).not.toContain('sig');
-    // fixed field order: device_pubkey, github_user_id, github_login, log_core_key
+    // fixed field order: device_pubkey, github_user_id, github_login, log_core_key, ts
     expect(announceSigningBytes(body).toString('utf8')).toBe(
       JSON.stringify({
         device_pubkey: body.device_pubkey,
         github_user_id: body.github_user_id,
         github_login: body.github_login,
         log_core_key: body.log_core_key,
+        ts: body.ts,
       }),
     );
   });
@@ -83,19 +103,19 @@ describe('announce', () => {
   it('rejects a tampered signed field (log_core_key)', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const body = makeBody(rawPubkeyBase64(publicKey));
-    const frame = await buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+    const frame = await buildTestAnnounce(body, privateKey);
 
     const tampered: SignedAnnounce = { ...frame, log_core_key: 'b'.repeat(64) };
-    expect(verifyAnnounce(tampered)).toBe(false);
+    expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
   });
 
   it('rejects a tampered signed field (github_login)', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const body = makeBody(rawPubkeyBase64(publicKey));
-    const frame = await buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+    const frame = await buildTestAnnounce(body, privateKey);
 
     const tampered: SignedAnnounce = { ...frame, github_login: 'mallory' };
-    expect(verifyAnnounce(tampered)).toBe(false);
+    expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
   });
 
   it('rejects a sig that does not match the body (different key)', async () => {
@@ -103,18 +123,22 @@ describe('announce', () => {
     const b = generateKeyPairSync('ed25519');
     const body = makeBody(rawPubkeyBase64(a.publicKey));
     // Sign the body with B's private key but claim A's pubkey in the frame.
-    const frame = await buildAnnounce(body, async (bytes) => nodeSign(null, bytes, b.privateKey));
+    const frame = await buildTestAnnounce(body, b.privateKey);
 
-    expect(verifyAnnounce(frame)).toBe(false);
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(false);
   });
 
   it('rejects a garbage / mismatched signature', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const body = makeBody(rawPubkeyBase64(publicKey));
-    const frame = await buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+    const frame = await buildTestAnnounce(body, privateKey);
 
-    expect(verifyAnnounce({ ...frame, sig: Buffer.alloc(64).toString('base64') })).toBe(false);
-    expect(verifyAnnounce({ ...frame, sig: 'not-base64-but-still-a-string!!' })).toBe(false);
+    expect(
+      verifyAnnounce({ ...frame, sig: Buffer.alloc(64).toString('base64') }, { nowMs: FIXED_NOW_MS }),
+    ).toBe(false);
+    expect(
+      verifyAnnounce({ ...frame, sig: 'not-base64-but-still-a-string!!' }, { nowMs: FIXED_NOW_MS }),
+    ).toBe(false);
   });
 
   it('returns false on bad-shape frames instead of throwing', () => {
@@ -123,13 +147,17 @@ describe('announce', () => {
 
     // device_pubkey that is not 32 raw bytes
     expect(
-      verifyAnnounce({
-        device_pubkey: Buffer.from('short').toString('base64'),
-        github_user_id: 1,
-        github_login: 'x',
-        log_core_key: 'a'.repeat(64),
-        sig: Buffer.alloc(64).toString('base64'),
-      }),
+      verifyAnnounce(
+        {
+          device_pubkey: Buffer.from('short').toString('base64'),
+          github_user_id: 1,
+          github_login: 'x',
+          log_core_key: 'a'.repeat(64),
+          ts: FIXED_NOW_MS,
+          sig: Buffer.alloc(64).toString('base64'),
+        },
+        { nowMs: FIXED_NOW_MS },
+      ),
     ).toBe(false);
 
     // missing fields entirely
@@ -138,5 +166,87 @@ describe('announce', () => {
     expect(
       verifyAnnounce({ device_pubkey: pubkeyBase64 } as unknown as SignedAnnounce),
     ).toBe(false);
+  });
+
+  // ── D-007: freshness / replay protection ──
+
+  it('D-007: a fresh announce (ts ≈ now) verifies true', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const nowMs = FIXED_NOW_MS;
+    const frame = await buildTestAnnounce(body, privateKey, { nowMs });
+    expect(verifyAnnounce(frame, { nowMs })).toBe(true);
+  });
+
+  it('D-007: a stale announce (ts far in the past) → false', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const buildMs = FIXED_NOW_MS;
+    const windowMs = DEFAULT_ANNOUNCE_WINDOW_MS;
+    // Build at buildMs; verify at buildMs + windowMs + 1ms → stale.
+    const frame = await buildTestAnnounce(body, privateKey, { nowMs: buildMs });
+    expect(verifyAnnounce(frame, { nowMs: buildMs + windowMs + 1, windowMs })).toBe(false);
+  });
+
+  it('D-007: a future-skew announce beyond the window → false', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const buildMs = FIXED_NOW_MS + DEFAULT_ANNOUNCE_WINDOW_MS + 1;
+    // Build with ts windowMs+1 ms in the future relative to verifier's nowMs.
+    const frame = await buildTestAnnounce(body, privateKey, { nowMs: buildMs });
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS, windowMs: DEFAULT_ANNOUNCE_WINDOW_MS })).toBe(false);
+  });
+
+  it('D-007: tampering ts after signing → sig check fails (ts is covered by sig)', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const nowMs = FIXED_NOW_MS;
+    const frame = await buildTestAnnounce(body, privateKey, { nowMs });
+    // Tamper ts to "now" from the verifier's perspective — would pass freshness
+    // if ts weren't signed, but sig check must fail because canonical bytes differ.
+    const tampered: SignedAnnounce = { ...frame, ts: nowMs + 1 };
+    expect(verifyAnnounce(tampered, { nowMs })).toBe(false);
+  });
+
+  it('D-007: nonce (when present) is covered by the sig — tamper nonce → false', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const pubkeyBase64 = rawPubkeyBase64(publicKey);
+    const bodyWithNonce: AnnounceBody = {
+      device_pubkey: pubkeyBase64,
+      github_user_id: 4242,
+      github_login: 'alice',
+      log_core_key: 'a'.repeat(64),
+      ts: FIXED_NOW_MS,
+      nonce: 'original-nonce',
+    };
+    const frame = await buildTestAnnounce(bodyWithNonce, privateKey, { nowMs: FIXED_NOW_MS });
+    // Valid with correct nonce.
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
+    // Tamper nonce → sig breaks.
+    const tampered: SignedAnnounce = { ...frame, nonce: 'attacker-nonce' };
+    expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+
+  it('D-007: signing bytes include ts and nonce (when present)', async () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const pubkeyBase64 = rawPubkeyBase64(publicKey);
+
+    // Without nonce: ts must appear in bytes; nonce key must NOT appear.
+    const bodyNoNonce: AnnounceBody = {
+      device_pubkey: pubkeyBase64,
+      github_user_id: 1,
+      github_login: 'x',
+      log_core_key: 'a'.repeat(64),
+      ts: FIXED_NOW_MS,
+    };
+    const bytesNoNonce = announceSigningBytes(bodyNoNonce).toString('utf8');
+    expect(bytesNoNonce).toContain(`"ts":${FIXED_NOW_MS}`);
+    expect(bytesNoNonce).not.toContain('"nonce"');
+
+    // With nonce: both ts and nonce must appear in bytes.
+    const bodyWithNonce: AnnounceBody = { ...bodyNoNonce, nonce: 'abc123' };
+    const bytesWithNonce = announceSigningBytes(bodyWithNonce).toString('utf8');
+    expect(bytesWithNonce).toContain(`"ts":${FIXED_NOW_MS}`);
+    expect(bytesWithNonce).toContain('"nonce":"abc123"');
   });
 });

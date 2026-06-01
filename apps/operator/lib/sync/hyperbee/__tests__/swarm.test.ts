@@ -90,6 +90,7 @@ function announceFixture(over: Partial<SignedAnnounce> = {}): SignedAnnounce {
     github_user_id: 42,
     github_login: 'alice',
     log_core_key: 'bb'.repeat(32),
+    ts: Date.now(),
     sig: 'c2ln',
     ...over,
   };

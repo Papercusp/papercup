@@ -4,7 +4,7 @@
  * Per-peer Hypercore logs replicate over the swarm. On connect, peers exchange
  * a signed announce that binds a peer's log core to its device identity:
  *
- *   { device_pubkey, github_user_id, github_login, log_core_key, sig }
+ *   { device_pubkey, github_user_id, github_login, log_core_key, ts, nonce?, sig }
  *
  *   - device_pubkey — the RAW 32-byte Ed25519 device public key, base64. This
  *     is the SAME string as the binding's `device_pubkey`
@@ -12,6 +12,12 @@
  *     a device whose binding the read-admission decision can then check.
  *   - log_core_key — the 64-hex Hypercore key of the peer's writable log
  *     (distinct from device_pubkey; one is identity, one is the core to read).
+ *   - ts — epoch-ms timestamp (Date.now()) at announce-build time. Covered by
+ *     the signature; `verifyAnnounce` rejects frames outside a ±windowMs
+ *     freshness window (default 5 min), closing the replay-announce attack
+ *     surface (D-007).
+ *   - nonce — optional random string for additional replay resistance. Also
+ *     covered by the signature.
  *   - sig — base64 Ed25519 signature over the canonical body (excluding `sig`).
  *
  * Crypto contract (Stage-0 spike, run-verified): Node-crypto Ed25519,
@@ -29,7 +35,8 @@
  *
  * Canonicalization: the body is all primitives (no nested objects), so a fixed
  * field-ordered `JSON.stringify` is equivalent to JCS (RFC 8785) for this
- * schema. Field order: device_pubkey, github_user_id, github_login, log_core_key.
+ * schema. Field order: device_pubkey, github_user_id, github_login, log_core_key,
+ * ts[, nonce].
  */
 
 import { verify as nodeVerify, createPublicKey } from 'node:crypto';
@@ -42,6 +49,11 @@ export interface AnnounceBody {
   github_login: string;
   /** 64-hex Hypercore key of the peer's writable log. */
   log_core_key: string;
+  /** Epoch-ms timestamp at announce-build time. Covered by sig; used for
+   *  freshness check in verifyAnnounce (D-007 replay hardening). */
+  ts: number;
+  /** Optional random nonce for additional replay resistance. Covered by sig. */
+  nonce?: string;
 }
 
 /** A full announce frame as sent on the wire. */
@@ -56,14 +68,21 @@ const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 /**
  * Canonical signing bytes for an announce: field-ordered JSON of the body
  * EXCLUDING `sig`. All values are primitives so this equals JCS for the schema.
+ * Field order: device_pubkey, github_user_id, github_login, log_core_key, ts[, nonce].
+ * nonce is only included in the canonical bytes when present (defined + string).
  */
 export function announceSigningBytes(body: AnnounceBody): Buffer {
-  const ordered = {
+  // Build ordered object — nonce only when present (undefined → omit key).
+  const ordered: Record<string, string | number> = {
     device_pubkey: body.device_pubkey,
     github_user_id: body.github_user_id,
     github_login: body.github_login,
     log_core_key: body.log_core_key,
+    ts: body.ts,
   };
+  if (typeof body.nonce === 'string') {
+    ordered.nonce = body.nonce;
+  }
   return Buffer.from(JSON.stringify(ordered), 'utf8');
 }
 
@@ -71,21 +90,40 @@ export function announceSigningBytes(body: AnnounceBody): Buffer {
  * Build a signed announce. The signer is injected so tests can use a generated
  * keypair and production passes `bytes => signWithDeviceKey(keychainId, bytes)`.
  * The signer returns the raw 64-byte Ed25519 signature; it's base64-encoded here.
+ *
+ * `opts.nowMs` overrides `Date.now()` for the `ts` field — useful in tests that
+ * need a deterministic timestamp or want to simulate stale/future announces.
+ * If `body` already contains `ts`, that value is REPLACED by the opts/default clock.
  */
 export async function buildAnnounce(
-  body: AnnounceBody,
+  body: Omit<AnnounceBody, 'ts'> & { ts?: number },
   sign: (bytes: Buffer) => Promise<Buffer>,
+  opts?: { nowMs?: number },
 ): Promise<SignedAnnounce> {
-  const sig = (await sign(announceSigningBytes(body))).toString('base64');
-  return { ...body, sig };
+  const stamped: AnnounceBody = { ...body, ts: opts?.nowMs ?? Date.now() };
+  const sig = (await sign(announceSigningBytes(stamped))).toString('base64');
+  return { ...stamped, sig };
 }
+
+/** Default freshness window for announce frames (±5 min, clock-skew tolerant). */
+export const DEFAULT_ANNOUNCE_WINDOW_MS = 5 * 60 * 1000;
 
 /**
  * Verify an announce frame's `sig` against its `device_pubkey` (raw-32-byte
  * base64 → SPKI rebuild → nodeVerify) over `announceSigningBytes(frame)`.
- * Returns false on any tamper, bad shape, or malformed input — never throws.
+ * Also checks that `frame.ts` is a number within `opts.windowMs` of
+ * `opts.nowMs` (defaults: `Date.now()` and `DEFAULT_ANNOUNCE_WINDOW_MS`).
+ * Returns false on any tamper, stale/future ts, bad shape, or malformed
+ * input — never throws.
+ *
+ * D-007: the `ts` (and optional `nonce`) are covered by the signature, so
+ * tampering either field breaks sig verification independently of the
+ * freshness check.
  */
-export function verifyAnnounce(frame: SignedAnnounce): boolean {
+export function verifyAnnounce(
+  frame: SignedAnnounce,
+  opts?: { nowMs?: number; windowMs?: number },
+): boolean {
   try {
     if (!frame || typeof frame !== 'object') return false;
     if (
@@ -97,6 +135,12 @@ export function verifyAnnounce(frame: SignedAnnounce): boolean {
     ) {
       return false;
     }
+
+    // D-007 freshness check: ts must be present and within the window.
+    if (typeof frame.ts !== 'number') return false;
+    const nowMs = opts?.nowMs ?? Date.now();
+    const windowMs = opts?.windowMs ?? DEFAULT_ANNOUNCE_WINDOW_MS;
+    if (Math.abs(nowMs - frame.ts) > windowMs) return false;
 
     const rawPubkey = Buffer.from(frame.device_pubkey, 'base64');
     if (rawPubkey.length !== 32) return false;

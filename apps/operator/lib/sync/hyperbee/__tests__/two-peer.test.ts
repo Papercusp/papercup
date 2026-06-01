@@ -173,15 +173,18 @@ describe('Model B substrate — two peers on one box', () => {
     const sA = makeStore('mb2-rA-'); await sA.ready();
     const ownA = await openOwnLog(sA);
 
+    const testNowMs = Date.now();
+
     // C builds a GENUINELY-signed announce (real keypair → verifyAnnounce true).
     const cBody: AnnounceBody = {
       device_pubkey: C.devicePubkey,
       github_user_id: C.githubUserId,
       github_login: C.githubLogin,
       log_core_key: ownA.keyHex, // any 64-hex; the announce sig is what's tested
+      ts: testNowMs,
     };
-    const cAnnounce = await buildAnnounce(cBody, C.sign);
-    expect(verifyAnnounce(cAnnounce)).toBe(true); // C's sig is real
+    const cAnnounce = await buildAnnounce(cBody, C.sign, { nowMs: testNowMs });
+    expect(verifyAnnounce(cAnnounce, { nowMs: testNowMs })).toBe(true); // C's sig is real
 
     // Only A's binding is valid; C's binding is forged/unknown.
     const admit = makeAdmissionDecider({
@@ -193,19 +196,19 @@ describe('Model B substrate — two peers on one box', () => {
       device_pubkey: C.devicePubkey,
       github_login: C.githubLogin,
       github_user_id: C.githubUserId,
-      sigValid: verifyAnnounce(cAnnounce),
+      sigValid: verifyAnnounce(cAnnounce, { nowMs: testNowMs }),
     });
     expect(cDecision).toEqual({ admit: false, reason: 'binding_invalid' });
 
     // A TAMPERED announce → verifyAnnounce false → bad_sig (sig short-circuits
     // before the binding check, so even A's valid binding can't rescue it).
     const tampered: SignedAnnounce = { ...cAnnounce, github_login: 'mallory' };
-    expect(verifyAnnounce(tampered)).toBe(false);
+    expect(verifyAnnounce(tampered, { nowMs: testNowMs })).toBe(false);
     const tamperedDecision = await admit({
       device_pubkey: A.devicePubkey, // even claim A's (valid-binding) identity…
       github_login: A.githubLogin,
       github_user_id: A.githubUserId,
-      sigValid: verifyAnnounce(tampered), // …the bad sig still denies it
+      sigValid: verifyAnnounce(tampered, { nowMs: testNowMs }), // …the bad sig still denies it
     });
     expect(tamperedDecision).toEqual({ admit: false, reason: 'bad_sig' });
 
@@ -213,13 +216,14 @@ describe('Model B substrate — two peers on one box', () => {
     const aAnnounce = await buildAnnounce(
       { device_pubkey: A.devicePubkey, github_user_id: A.githubUserId, github_login: A.githubLogin, log_core_key: ownA.keyHex },
       A.sign,
+      { nowMs: testNowMs },
     );
     expect(
       await admit({
         device_pubkey: A.devicePubkey,
         github_login: A.githubLogin,
         github_user_id: A.githubUserId,
-        sigValid: verifyAnnounce(aAnnounce),
+        sigValid: verifyAnnounce(aAnnounce, { nowMs: testNowMs }),
       }),
     ).toEqual({ admit: true });
 
