@@ -48,6 +48,7 @@ import {
 import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 import { refillHarnessOnSettle } from './orchestrator-loop';
+import { wireAuditorLane } from './auditor-lane-wiring';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 
@@ -376,8 +377,8 @@ function archiveStateDir(stateDir: string, phase: string): void {
 }
 
 let _wired = false;
-/** Wire the real invoke runner + terminal finalizer + on-completion refill into
- * the durable pipeline. Idempotent. */
+/** Wire the real invoke runner + terminal finalizer + on-completion refill +
+ * G2 auditor lane into the durable pipeline. Idempotent. */
 export function wireOrchestratorInvokeRunner(): void {
   if (_wired) return;
   _wired = true;
@@ -391,4 +392,7 @@ export function wireOrchestratorInvokeRunner(): void {
   setPipelineSettledHook((slug, workspaceId) =>
     refillHarnessOnSettle(slug, workspaceId ?? activeWorkspaceId()),
   );
+  // G2 P-007: wire the real auditor spawn + escalation functions so the
+  // orchestrator loop's audit lane can screen remote-pending features.
+  wireAuditorLane();
 }

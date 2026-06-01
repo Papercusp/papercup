@@ -45,7 +45,9 @@ import {
   evaluateCostCap,
   parallelMaxWorkers,
   maxFeaturesInFlight,
+  dispatchAuditorLane,
 } from '@papercusp/orchestrator';
+import type { AuditorSpawnFn, CreateEscalationFn } from '@papercusp/orchestrator';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import { activeWorkspaceId, readRegistry } from '@/lib/workspace-registry';
 import { runWithWorkspace } from '@/lib/workspace-als';
@@ -55,6 +57,23 @@ import { convertOpenIssuesToFeatures } from '@/lib/promote-issue';
 import { loadIssuesOrSeed, saveIssues } from '@/lib/harness-issues';
 import type { Issue } from '@/app/harness/issues/types';
 import { ensureFeaturePipeline } from './orchestrator-start';
+
+// ─── G2 Auditor lane injection seam (P-007) ──────────────────────────────────
+//
+// The operator wires the real spawn + escalation functions via
+// `setAuditorLaneFns`. Tests and the legacy path leave them null (no-op).
+// Both are best-effort: a missing wiring means the auditor lane is skipped,
+// which leaves remote features quarantined but never blocks dispatch.
+let _auditorSpawn: AuditorSpawnFn | null = null;
+let _createEscalation: CreateEscalationFn | null = null;
+
+export function setAuditorLaneFns(
+  spawnFn: AuditorSpawnFn,
+  escalationFn: CreateEscalationFn,
+): void {
+  _auditorSpawn = spawnFn;
+  _createEscalation = escalationFn;
+}
 
 /**
  * Feature statuses that warrant starting a durable pipeline. The live vocabulary
@@ -389,6 +408,25 @@ export async function dispatchOneHarness(
     // feature read, so a freshly-minted fix is eligible this same tick. Its own
     // try/catch guarantees a convert failure never sinks dispatch.
     await convertIssuesForHarness(slug, workspaceId).catch(() => {});
+    // G2 P-007: screen any remote+pending features through the auditor BEFORE the
+    // pick loop considers them. The P-008 gate already blocks them from being
+    // picked while pending; this lane resolves the verdict so admitted features
+    // become eligible this same tick. Best-effort: a missing wiring or failure
+    // leaves features quarantined (fail-safe) and never sinks dispatch.
+    if (_auditorSpawn && _createEscalation) {
+      await dispatchAuditorLane(
+        {
+          pg: pg as never,
+          workspaceId,
+          spawnAuditor: _auditorSpawn,
+          createEscalation: _createEscalation,
+          log: (m) => console.log(m),
+        },
+        slug,
+      ).catch((err) => {
+        console.warn(`[dbos-orchestrator] ${slug} auditor lane error (non-fatal):`, (err as Error).message);
+      });
+    }
     // P-042: the frontier reads the FULL gated feature set (incl. its blocked_by
     // edges + plan + order) from the consolidated source of truth — NOT the
     // carved-out view set — so an in-flight blocker correctly still blocks its
