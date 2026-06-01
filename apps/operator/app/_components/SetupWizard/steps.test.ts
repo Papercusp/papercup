@@ -19,9 +19,10 @@ describe('Setup Wizard steps', () => {
     ]);
   });
 
-  it('exactly 3 required steps (embedded-pg, workspace, agents)', () => {
+  it('exactly 4 required steps (embedded-pg, workspace, agents, logins)', () => {
     const required = SETUP_STEPS.filter((s) => s.required).map((s) => s.id);
-    expect(required).toEqual(['embedded-pg', 'workspace', 'agents']);
+    // `logins` is required — "agents cannot run without it" (steps.ts).
+    expect(required).toEqual(['embedded-pg', 'workspace', 'agents', 'logins']);
   });
 
   it('findStep returns the matching definition', () => {
