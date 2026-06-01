@@ -390,6 +390,20 @@ avi chose Option A ("go with P-020") + confirmed the architecture (one shared or
 **Gating (fleet-safe, D-009):** the all-workspaces sweep activates ONLY under `PAPERCUSP_SHARED_OPERATOR=1` (set only by the new packaged shell). Dev/legacy stay single-workspace — no behavior change. Dev box: 093 applied by hand; autoloop currently dormant (no `autoLoop:true` harness, newest fire-state row May 1), so no cutover hazard. Goes live on the next `:3070` restart (gated → no dev behavior change). Full multi-workspace autoloop/dispatch is packaged-runtime-verified.
 Related: P-020
 
+
+### D-017 — D-017 — P-050 release-boot VERIFIED; P-062 audit reframes it as a security-infra effort (grants + RLS rollout), not a choke-point flip
+Date: 2026-06-01
+**P-050 release-boot — VERIFIED.** Ran the 05:58 release binary (built from current main = has my P-050 code) under Xvfb with a fresh HOME + captured stdout (no rebuild needed — multiple procs can exec one binary). Log: `shared sidecar home: /tmp/p050-verify | shared state dir: /tmp/p050-verify/.papercusp-workspaces/.shared` then `spawning embedded-postgres-server ... data=.../.shared/embedded-pg-data`, and `.shared/embedded-pg-data/` was created. So in a real release build (`is_dev=false`) P-050 spawns ONE shared embedded-PG at the shared `.shared/` dir under a shared sidecar HOME — the change works. (embedded-PG `initdb` then timed out at 60s → fell back to pglite; that's an env/bundle/load issue orthogonal to P-050 — the same initdb ran per-workspace before; an older instance had embedded-PG up fine.) P-050 done.
+
+**P-062 audit (gating) — it's bigger than the plan's "choke point flip".** The HTTP dispatch `handleHttpToolRequest` lives in the `@papercusp/tooldef-http` submodule (`libs/generic/tooldef-http`), and `catchall.ts` HOST_EXTRAS.resolvePrincipalAndTx hands every tool the raw RLS-bypassing `getOrgPg()` (harness_admin) `sql`. Switching to harness_app needs:
+1. **Grant-expansion migration:** harness_app LACKS DML on ~40+ of 177 `harness_shared` tables that harness_admin has (feature_claims, feature_queue, harness_decisions, harness_feature_notes, coord_*, harness_status, harness_summaries, backup_*, …) → a naive switch breaks the 27-tool path. (harness_app DOES have USAGE on per-harness schemas — good.)
+2. **Exclude sensitive tables** from the grant: token_index, operator_credentials/secrets/*_credentials, oauth_nonces, system_principals, auth_audit_log, mobile_pair/push_tokens, trusted_authors — granting harness_app these would expose secrets.
+3. **RLS ROLLOUT (the real surprise):** RLS is OFF on many workspace-scoped tables (coord_event_log, feature_claims, harness_decisions = relrowsecurity=f); only some (tool_invocations, harness_features_consolidated, pending_events) have it ENABLE (none FORCE). So running tools as harness_app does NOT isolate them on the RLS-off tables — no deny-by-default benefit until RLS is enabled + policies added across the scoped set.
+4. tooldef-http framework change (run tools inside withWorkspace GUC tx, scoping seam in HttpToolHostExtras) + catchall host change + per-tool opt-out for cross-workspace tools + the 27-tool test.
+
+So P-062 = grant-expansion (minus secrets) + an RLS rollout + a generic-submodule auth-contract change + 27-tool test on the LIVE agent-tools path. Security-sensitive, high-blast-radius — warrants deliberate, focused execution, NOT a tail-of-session change. Gating audit done; implementation queued.
+Related: P-050, P-062
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)
