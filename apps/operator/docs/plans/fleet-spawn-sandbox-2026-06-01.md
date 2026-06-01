@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** COMPLETE. The fleet OS sandbox is SHIPPED and DEFAULT-ON (P-013/D-015): claude-code fleet spawns are sandboxed unless `PAPERCUSP_FLEET_SANDBOX=0`. Verified end-to-end via the real fleet pass (D-013) against a real toolchain — MCP survives the sandbox, egress allowlist works + is deployment-extensible/lockdownable (D-012), and the `npm install` EROFS showstopper is fixed (P-014, caches redirected into an allow-listed dir). Base allowlist covers registries + the common toolchain CDNs (Playwright, node-gyp) so e2e/native-addon projects work out-of-box. Failure mode is loud + recoverable. Submodule efde569; all committed. codex/omp stay uncontained (D-009/D-010); only claude-code is sandboxed.
+**State:** COMPLETE + default-on (live). The fleet OS sandbox is shipped, default-on, and now covers TWO backends: claude-code (native --settings sandbox) and codex (P-015/D-017 — the "way around" D-009: codex's native sandbox bypassed so MCP works, whole process wrapped in srt with an egress allowlist [operator+model+registries] + no_proxy cleared so MCP/model route through srt's proxy; writes→cwd+cache+CODEX_HOME, creds hidden via denyRead+allowRead). Both verified end-to-end on the real code path. npm-install EROFS fixed (P-014). Egress deployment-extensible + lockdownable (D-012). Only omp remains uncontained — its model-endpoint host is provider-dependent and omp is unrunnable on this box, so wrapping it is unverifiable (would risk severing omp's own model reach); the architecture (same srt-wrap) is proven, just not omp-verifiable here.
 
-**Next:** Done — no open build work. Takes effect on the next :3070 operator restart (no hot-reload; not force-restarted to avoid disrupting peers). Optional future hardening: P-011 enableWeakerNestedSandbox/container-fallback (only for a containerized operator under default-on); per-role egress narrowing (the reserved `role` seat); codex/omp containment if those backends gain MCP-under-sandbox support.
+**Next:** Done — no open build work. Default-on is live (:3070 restarted). Remaining optional: omp srt-wrap once its model host is known + a working omp exists to verify; P-011 enableWeakerNestedSandbox for a containerized operator; per-role egress narrowing.
 
 ## Background
 
@@ -79,6 +79,11 @@ AppArmor profile) covers every backend.
 ## Phase 4 — default-on viability (real fleet pass)
 
 - **P-014** `done` Fix `npm install` EROFS under the sandbox (D-013 showstopper): redirect pkg-manager caches (npm_config_cache/YARN_CACHE_FOLDER/PIP_CACHE_DIR/CARGO_HOME/GOCACHE/GOMODCACHE/XDG_CACHE_HOME) into a per-project subdir of a dedicated allow-listed dir (`~/.cache/papercusp-fleet-sandbox`), added to fleetSandboxSettingsForRole's filesystem.allowWrite; mkdir -p before spawn. Designed + validated (`--cache ./.npmcache` → 107 pkgs OK). GATED: invoke.ts locked by su-d6175 (per-spawn HOME, P-051) — must compose with their HOME relocation; coordinating (coord mpuw87kz) before editing. Affects opt-in too, not just default-on. Then re-run the pass to confirm. importance: high (landed + validated end-to-end submodule 673c41c: npm install under the sandbox → exit 0, 107 pkgs, cache in the allow-listed redirect dir, no EROFS. Composes with per-spawn HOME P-051. +5 tests, 82/82.)
+
+
+## Phase 5 — codex/omp containment (the way around)
+
+- **P-015** `done` codex containment via external srt-wrap (the way around D-009): keep codex's native sandbox bypassed (MCP works) + wrap the whole codex process in srt under PAPERCUSP_FLEET_SANDBOX (egress allowlist = operator+model+registries; writes→cwd+cache+CODEX_HOME; creds denyRead w/ allowRead for the ~/.papercusp CODEX_HOME; no_proxy cleared inside the srt shell). Helpers: srtBinOnPath/fleetSrtModelDomains/buildFleetSrtSettings/writeFleetSrtSettings/wrapSpawnWithSrt. Verified end-to-end on the real code path (MCP REACHED, cwd-write ok, $HOME-write BLOCKED, CODEX_HOME read ok, egress blocked). Fail-loud if srt absent. omp still NOT wrapped (model host provider-dependent + unverifiable here). Submodule e5dea02, +5 tests, 88/88. importance: high (shipped + verified end-to-end submodule e5dea02. codex now contained under default-on via srt-wrap. D-017 calls this "P-017" as a forward-ref; the actual item is P-015.)
 
 ## Decisions
 
@@ -238,3 +243,22 @@ omp: UNCHANGED from D-010 — still not containable here. (1) omp is mis-configu
 
 NET: default-on contains the default claude-code path; codex/omp stay uncontained, now re-confirmed against current versions. This is the correct end state until the respective upstreams change.
 Related: P-005, P-006
+
+### D-017 — BREAKTHROUGH (overturns D-009/D-010): codex (and omp) ARE containable via external srt-wrap with native-sandbox OFF — verified end-to-end for codex
+Date: 2026-06-01
+Date: 2026-06-01 (resume session). Pushed past "blocked upstream" and found a verified way around. D-009 concluded codex isn't containable because its NATIVE sandbox cancels MCP. The escape: DON'T use codex's native sandbox — run codex with it OFF (`--dangerously-bypass-approvals-and-sandbox -s danger-full-access`, so MCP is NOT cancelled) and instead wrap the WHOLE codex process in an EXTERNAL sandbox we control — `srt` (@anthropic-ai/sandbox-runtime, bubblewrap+proxy) — with an egress ALLOWLIST.
+
+The obstacle I had to solve: srt uses `bwrap --unshare-net` (fully isolated netns) + a host-side socat HTTP/SOCKS proxy that enforces a domain allowlist. The operator (loopback/LAN) was unreachable NOT because srt blocks it but because srt's injected `no_proxy` excludes loopback + RFC1918 (127.0.0.1, 192.168/16, 10/8, 172.16/12) — so the request bypassed the proxy and tried a direct connect inside the isolated netns → "Network is unreachable". FIX: clear `no_proxy` in the spawn env → the request routes through srt's proxy (localhost:3128, which runs on the HOST and CAN reach the operator) → if the host is allowlisted, it connects. Verified: with `no_proxy=''` + `127.0.0.1` allowlisted, `http://127.0.0.1:3070` → reached the operator (HTTP 404 via proxy); `api.openai.com` → 401 (reached).
+
+END-TO-END PROOF (codex 0.135 exec under `srt -s <settings>`, own sandbox bypassed, no_proxy cleared, allowedDomains = 127.0.0.1 + api.openai.com/chatgpt.com/*.openai.com + registry):
+- **MCP: REACHED** — `harness:list` reached the operator (server-side response, NOT the "user cancelled MCP tool call" of D-009). MCP works because codex's own sandbox is OFF.
+- model worked — codex reached gpt-5.5 (api.openai.com via srt's proxy).
+- **WRITE-IN ok / WRITE-OUT BLOCKED** — write to cwd allowed; write to $HOME blocked (host-verified: no escape file created).
+- **EGRESS 000** — curl to non-allowlisted example.com blocked.
+So codex gets full containment (writes→cwd, egress→allowlist, creds hidden) WITH working MCP+model. The native-sandbox MCP-cancel is bypassed; srt is the containment layer.
+
+IMPLICATIONS:
+- codex IS containable. The current orchestrator behavior (codex always danger-full-access, uncontained) can be UPGRADED: keep the bypass (for MCP) but srt-wrap the spawn under PAPERCUSP_FLEET_SANDBOX. Implementing in P-017.
+- omp: the SAME architecture applies (D-002's original srt plan, but with the allowlist + no_proxy fix instead of D-010's deny-all). Still can't be VERIFIED here (omp mis-configured → local ollama 400s), and omp's model-endpoint host is provider-dependent (unknown vs codex's stable openai hosts), so omp stays deferred pending a working omp — but the path is now proven, not theoretical.
+- Tradeoff (D-005): the allowlist (operator + model + registries) is TLS-uninspected — same exfil surface as claude's sandbox. Acceptable, defense-in-depth.
+Related: P-005, P-008
