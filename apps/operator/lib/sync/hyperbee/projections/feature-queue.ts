@@ -15,7 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface FeatureQueueRow {
   harness_slug: string;
@@ -62,21 +62,30 @@ function decodeValue(raw: unknown): FeatureQueueRow | null {
   return isFeatureQueueRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: FeatureQueueProjectionOpts, row: FeatureQueueRow): Promise<void> {
+async function writeToPg(
+  opts: FeatureQueueProjectionOpts,
+  row: FeatureQueueRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const { sql } = getOrgPg();
+  const authorPubkey = provenance?.authorPubkey ?? null;
+  const origin = provenance?.origin ?? 'local';
   await sql`
     INSERT INTO harness_shared.feature_queue
-      (workspace_id, harness_slug, github_user_id, feature_id, queued_at, removed_at, schema_version)
+      (workspace_id, harness_slug, github_user_id, feature_id, queued_at, removed_at, schema_version,
+       author_pubkey, origin)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.feature_id},
        to_timestamp(${row.queued_at} / 1000.0),
        ${row.removed_at == null ? null : sql`to_timestamp(${row.removed_at} / 1000.0)`},
-       ${row.schema_version})
+       ${row.schema_version}, ${authorPubkey}, ${origin})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, feature_id) DO UPDATE SET
       queued_at = EXCLUDED.queued_at,
       removed_at = EXCLUDED.removed_at,
-      schema_version = EXCLUDED.schema_version
+      schema_version = EXCLUDED.schema_version,
+      author_pubkey = EXCLUDED.author_pubkey,
+      origin = EXCLUDED.origin
   `;
 }
 
@@ -105,7 +114,7 @@ export function buildFeatureQueueProjection(
     tableTag: 'queue',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

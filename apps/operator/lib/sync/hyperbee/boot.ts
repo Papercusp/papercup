@@ -437,11 +437,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // silently dropped by the projections' `harness_slug` guard. This scoped apply
   // is bound to THIS harness's own projection set, so `mergeNow` applies each
   // harness's ops to its own projections with no cross-harness interference.
+  //
+  // G1 Provenance (P-002): pass ownLogKeyHex so the apply path can determine
+  // origin from log-source (own log → 'local', admitted remote log → 'remote').
   const scopedApply =
     opts.applyOverride ??
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
+      ownLogKeyHex: ownLog.keyHex,
     });
 
   // ── Admitted-set ── keyHex → log. Seeded with the own log (which is

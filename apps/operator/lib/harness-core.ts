@@ -321,6 +321,11 @@ export function rowToFeature(r: any): any {
     needs_human_review: !!r.needs_human_review,
     ts: r.ts == null ? undefined : (typeof r.ts === 'bigint' ? Number(r.ts) : r.ts),
     deprecation_reason: r.deprecation_reason ?? undefined,
+    // G1 Provenance (P-004): expose origin + author_pubkey so G2 (auditor) and
+    // the UI can read the "is this mine?" signal. Rows inserted before migration
+    // 097 have origin='local' by default (via column DEFAULT).
+    origin: (r.origin as 'local' | 'remote') ?? 'local',
+    author_pubkey: r.author_pubkey ?? null,
   };
 }
 

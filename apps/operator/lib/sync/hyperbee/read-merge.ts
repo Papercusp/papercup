@@ -117,8 +117,12 @@ async function readOpBounded(
  * Map a single-writer `PeerLogOp` to a projection-layer `OpEnvelope`. The
  * writer's `author_pubkey` becomes `writerPubkey` so the clobber-event hook in
  * `applyHyperbeeOpToPg` fires with the right author.
+ *
+ * G1 Provenance (P-002): `sourceLogKeyHex` is set to the source log's `keyHex`
+ * so the apply path can determine `origin` by comparing against the own log's
+ * `keyHex` — the log-source approach is authoritative + unforgeable.
  */
-function toEnvelope(op: PeerLogOp): OpEnvelope {
+function toEnvelope(op: PeerLogOp, sourceLogKeyHex: string): OpEnvelope {
   return {
     type: op.type,
     table: op.table,
@@ -127,6 +131,7 @@ function toEnvelope(op: PeerLogOp): OpEnvelope {
     ts: op.ts,
     schema_version: op.schema_version,
     writerPubkey: op.author_pubkey,
+    sourceLogKeyHex,
   };
 }
 
@@ -174,7 +179,7 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
     for (let i = 0; i < upper; i++) {
       const op = await readOpBounded(log, i, getTimeoutMs);
       if (!op) continue;
-      const env = toEnvelope(op);
+      const env = toEnvelope(op, log.keyHex);
       const groupKey = `${env.table}::${env.hbKey}`;
       const prev = winners.get(groupKey);
       winners.set(groupKey, prev ? lwwPick(prev, env) : env);

@@ -32,4 +32,13 @@ export interface OpEnvelope {
    * override of a recent local write surfaces as a toast. v5 D-012.
    */
   writerPubkey?: string;
+  /**
+   * G1 Provenance (P-002): hex-encoded keyHex of the admitted log this op
+   * came from. Set by the read-merge `toEnvelope` to the source log's
+   * `keyHex`. The apply path compares this against the own log's `keyHex`
+   * to determine `origin` ('local' | 'remote') without relying on the
+   * self-declared `writerPubkey` alone. Absent on synthetic / test ops
+   * that are built outside the merge path.
+   */
+  sourceLogKeyHex?: string;
 }

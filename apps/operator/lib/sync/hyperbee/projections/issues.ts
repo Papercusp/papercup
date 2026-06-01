@@ -12,7 +12,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface HarnessIssueRow {
   harness_slug: string;
@@ -75,22 +75,28 @@ function decodeValue(raw: unknown): HarnessIssueRow | null {
   return isHarnessIssueRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: IssuesProjectionOpts, row: HarnessIssueRow): Promise<void> {
+async function writeToPg(
+  opts: IssuesProjectionOpts,
+  row: HarnessIssueRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const { sql } = getOrgPg();
+  const authorPubkey = provenance?.authorPubkey ?? null;
+  const origin = provenance?.origin ?? 'local';
   await sql`
     INSERT INTO harness_shared.harness_issues_consolidated
       (harness_slug, issue_id, title, severity, source, status,
        found_at, found_during, repro, evidence, suggested_fix,
        code_pointer, linked_feature_id, attempts, notes,
-       created_ts, updated_ts)
+       created_ts, updated_ts, author_pubkey, origin)
     VALUES
       (${row.harness_slug}, ${row.issue_id}, ${row.title}, ${row.severity}, ${row.source}, ${row.status},
        to_timestamp(${row.found_at} / 1000.0),
        ${row.found_during}, ${row.repro}, ${row.evidence}, ${row.suggested_fix},
        ${row.code_pointer}, ${row.linked_feature_id}, ${row.attempts},
        ${sql.json(row.notes as unknown as Parameters<typeof sql.json>[0])},
-       ${row.created_ts}, ${row.updated_ts})
+       ${row.created_ts}, ${row.updated_ts}, ${authorPubkey}, ${origin})
     ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
       title = EXCLUDED.title,
       severity = EXCLUDED.severity,
@@ -105,7 +111,9 @@ async function writeToPg(opts: IssuesProjectionOpts, row: HarnessIssueRow): Prom
       linked_feature_id = EXCLUDED.linked_feature_id,
       attempts = EXCLUDED.attempts,
       notes = EXCLUDED.notes,
-      updated_ts = EXCLUDED.updated_ts
+      updated_ts = EXCLUDED.updated_ts,
+      author_pubkey = EXCLUDED.author_pubkey,
+      origin = EXCLUDED.origin
   `;
   void opts.workspaceId;
 }
@@ -125,7 +133,7 @@ export function buildIssuesProjection(opts: IssuesProjectionOpts): TableProjecti
     tableTag: 'issues',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

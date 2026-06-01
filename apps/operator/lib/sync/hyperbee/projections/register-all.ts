@@ -24,6 +24,7 @@ import {
   applyOpVia,
   type TableProjection,
   type ProjectionLookup,
+  type ApplyOpOpts,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
 import { buildContributorsProjection } from './contributors';
@@ -39,6 +40,15 @@ import { buildUsageProjection } from './usage';
 export interface RegisterAllOpts {
   workspaceId: string;
   harnessSlug: string;
+  /**
+   * G1 Provenance (P-002): the own log's hex keyHex. When provided,
+   * `buildHarnessProjectionApply` threads it into `applyOpVia` so ops from
+   * the own log are stamped `origin='local'` and ops from admitted remote
+   * logs are stamped `origin='remote'`. The global-registry path
+   * (`registerAllHarnessProjections`) does not use this field because it
+   * dispatches through `applyHyperbeeOpToPg`, not the scoped apply.
+   */
+  ownLogKeyHex?: string;
 }
 
 /**
@@ -108,5 +118,8 @@ export function buildHarnessProjectionApply(
   const scoped = new Map<string, TableProjection<unknown>>();
   for (const p of buildHarnessProjections(opts)) scoped.set(p.tableTag, p);
   const lookup: ProjectionLookup = (tableTag) => scoped.get(tableTag) ?? null;
-  return (op: OpEnvelope) => applyOpVia(lookup, op);
+  // G1 Provenance (P-002): thread ownLogKeyHex so the apply path can determine
+  // origin via log-source (own log → 'local', admitted remote log → 'remote').
+  const applyOpts: ApplyOpOpts = opts.ownLogKeyHex ? { ownLogKeyHex: opts.ownLogKeyHex } : {};
+  return (op: OpEnvelope) => applyOpVia(lookup, op, applyOpts);
 }

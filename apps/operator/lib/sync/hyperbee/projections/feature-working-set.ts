@@ -22,7 +22,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface FeatureWorkingSetRow {
   harness_slug: string;
@@ -76,21 +76,27 @@ function decodeValue(raw: unknown): FeatureWorkingSetRow | null {
 async function writeToPg(
   opts: FeatureWorkingSetProjectionOpts,
   row: FeatureWorkingSetRow,
+  provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const { sql } = getOrgPg();
+  const authorPubkey = provenance?.authorPubkey ?? null;
+  const origin = provenance?.origin ?? 'local';
   await sql`
     INSERT INTO harness_shared.feature_working_set
-      (workspace_id, harness_slug, github_user_id, feature_id, started_at, cleared_at, schema_version)
+      (workspace_id, harness_slug, github_user_id, feature_id, started_at, cleared_at, schema_version,
+       author_pubkey, origin)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.feature_id},
        to_timestamp(${row.started_at} / 1000.0),
        ${row.cleared_at == null ? null : sql`to_timestamp(${row.cleared_at} / 1000.0)`},
-       ${row.schema_version})
+       ${row.schema_version}, ${authorPubkey}, ${origin})
     ON CONFLICT (workspace_id, harness_slug, github_user_id, feature_id) DO UPDATE SET
       started_at = EXCLUDED.started_at,
       cleared_at = EXCLUDED.cleared_at,
-      schema_version = EXCLUDED.schema_version
+      schema_version = EXCLUDED.schema_version,
+      author_pubkey = EXCLUDED.author_pubkey,
+      origin = EXCLUDED.origin
   `;
 }
 
@@ -122,7 +128,7 @@ export function buildFeatureWorkingSetProjection(
     tableTag: 'working-set',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }

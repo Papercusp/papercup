@@ -15,7 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 /**
  * Wire-shape of a feature row in Hyperbee. Mirrors the PG columns
@@ -94,14 +94,21 @@ function decodeValue(raw: unknown): HarnessFeatureRow | null {
   return isHarnessFeatureRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: HarnessFeaturesProjectionOpts, row: HarnessFeatureRow): Promise<void> {
+async function writeToPg(
+  opts: HarnessFeaturesProjectionOpts,
+  row: HarnessFeatureRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const { sql } = getOrgPg();
+  const authorPubkey = provenance?.authorPubkey ?? null;
+  const origin = provenance?.origin ?? 'local';
   await sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (harness_slug, feature_id, title, summary, status, attempts, claims, notes,
        metadata, kind, project_id, expected_cost_cents, tags, needs_human_review,
-       ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at)
+       ts, created_ts, updated_ts, parent_id, goal_id, taken_by, taken_at, expires_at,
+       author_pubkey, origin)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
        ${row.metadata == null ? null : sql.json(row.metadata as unknown as Parameters<typeof sql.json>[0])},
@@ -110,7 +117,8 @@ async function writeToPg(opts: HarnessFeaturesProjectionOpts, row: HarnessFeatur
        ${row.needs_human_review},
        ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},
-       ${row.expires_at == null ? null : sql`to_timestamp(${row.expires_at} / 1000.0)`})
+       ${row.expires_at == null ? null : sql`to_timestamp(${row.expires_at} / 1000.0)`},
+       ${authorPubkey}, ${origin})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
       summary = EXCLUDED.summary,
@@ -131,7 +139,9 @@ async function writeToPg(opts: HarnessFeaturesProjectionOpts, row: HarnessFeatur
       goal_id = EXCLUDED.goal_id,
       taken_by = EXCLUDED.taken_by,
       taken_at = EXCLUDED.taken_at,
-      expires_at = EXCLUDED.expires_at
+      expires_at = EXCLUDED.expires_at,
+      author_pubkey = EXCLUDED.author_pubkey,
+      origin = EXCLUDED.origin
   `;
 }
 
@@ -155,7 +165,7 @@ export function buildHarnessFeaturesProjection(
     tableTag: 'features-by-id',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }
