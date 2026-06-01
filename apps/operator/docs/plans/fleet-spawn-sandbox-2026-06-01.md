@@ -262,3 +262,17 @@ IMPLICATIONS:
 - omp: the SAME architecture applies (D-002's original srt plan, but with the allowlist + no_proxy fix instead of D-010's deny-all). Still can't be VERIFIED here (omp mis-configured → local ollama 400s), and omp's model-endpoint host is provider-dependent (unknown vs codex's stable openai hosts), so omp stays deferred pending a working omp — but the path is now proven, not theoretical.
 - Tradeoff (D-005): the allowlist (operator + model + registries) is TLS-uninspected — same exfil surface as claude's sandbox. Acceptable, defense-in-depth.
 Related: P-005, P-008
+
+### D-018 — omp containment: tried local models — omp can't run locally for omp-INTERNAL reasons (not containment/model); mechanism codex-proven, but omp stays unwrapped (unverifiable → unsafe to ship)
+Date: 2026-06-01
+Date: 2026-06-01 (resume session). Acted on "just pick a local model for testing." Local models available via ollama :11434 (qwen2.5-coder:14b, qwen3.5, kimi-k2.5, gemma4). Finding: omp cannot complete — or even cleanly reach its model for — an agentic task on this box, for a STACK of omp-internal reasons, NONE containment-related and NONE fixable by model choice:
+
+1. **omp↔ollama tool-schema 400** — omp sends ~238 tool schemas (its built-ins + the auto-loaded papercusp-su MCP surface); ollama's strict tool-parameter parser rejects one (`cannot unmarshal bool into ToolFunctionParameters.properties`). Reproduces on EVERY ollama model + even with `--tools=bash` (MCP tools aren't filtered by `--tools`). An omp/ollama schema-serialization incompat, independent of model.
+2. **meridian bridge (:3456)** — omp's `anthropic` provider routes through a local Meridian bridge at 127.0.0.1:3456, which is DOWN (000); and omp's `pi-claude-bridge` extension fails to load (`getModels` export mismatch vs the installed pi-coding-agent).
+3. No cloud API keys (and local was requested).
+4. **omp startup writes under srt** — wrapped under srt, omp gets PAST srt's network setup and dies in its OWN startup: `SQLiteError: attempt to write a readonly database` (pi-ai auth-storage), at a DB path not covered even by a broad allowWrite ([~/.omp, ~/.config, ~/.local, ~/.bun, ~/.cache]).
+
+CONTAINMENT verdict: the MECHANISM is proven for omp's class — srt-wrap + allowlist + no_proxy-clear is exactly what worked end-to-end for codex (D-017), srt is backend-agnostic, and omp-under-srt reached its OWN startup (so srt did NOT sever omp at the network layer). omp's model endpoint here is loopback (ollama :11434), the SAME loopback-through-srt's-proxy transport already PROVEN reachable for the operator (127.0.0.1:3070) + api.openai.com. So "srt severs omp's model" (the original D-010 worry) is effectively disproven by transitivity.
+
+DECISION: omp stays NOT wrapped. I can't end-to-end verify omp FUNCTIONS under srt (omp can't run a task here at all), and couldn't map omp's required writable data-dirs under srt — so a shipped omp srt-wrap under default-on would likely break omp's startup (readonly-DB) where omp actually runs. Shipping unverifiable security code that could silently break omp is worse than leaving it uncontained (the D-010 principle). Recipe is ready (extend wrapSpawnWithSrt to 'omp' + map omp's writable dirs [~/.omp + auth-store path + PI_CODING_AGENT_DIR] + allowlist its model host); reintroduce when omp is task-runnable locally (a tool-capable local server, or a fixed meridian bridge) so it can be verified.
+Related: P-008
