@@ -29,6 +29,13 @@ export function buildPipelineExtraEnv(input: PipelineSpawnEnvInput): Record<stri
     // Force the registry slug so invoke-once's pg-bootstrap uses harness_<slug>
     // (correct schema), never basename(projectDir).
     HARNESS_SLUG: input.harnessSlug,
+    // P-040: this spawn is under the DBOS orchestrator (cross-feature concurrency),
+    // so the worker chunk-loop routes its file claims through the PG-backed
+    // SuLocksCoordinator (the same backend locks:* uses) instead of the in-process
+    // FileLockQueue. Only set on pipeline spawns — the single-feature / manual /
+    // test path stays in-process. invoke-once also requires DATABASE_URL (set by
+    // buildInvokeOnce) before it actually uses the PG backend.
+    PAPERCUSP_CHUNK_LOCK_PG: '1',
   };
   if (input.idempotencyKey) env.IDEMPOTENCY_KEY = input.idempotencyKey;
   if (input.workspaceId) env.PAPERCUSP_WORKSPACE_ID = input.workspaceId;

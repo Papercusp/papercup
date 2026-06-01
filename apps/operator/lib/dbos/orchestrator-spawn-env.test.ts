@@ -42,6 +42,12 @@ describe('buildPipelineExtraEnv — invoke-once spawn env for the durable pipeli
       HARNESS_SLUG: 'sheets',
       IDEMPOTENCY_KEY: 'k',
       PAPERCUSP_WORKSPACE_ID: 'default',
+      // P-040: pipeline spawns route the worker chunk-loop through the PG lock backend.
+      PAPERCUSP_CHUNK_LOCK_PG: '1',
     });
+  });
+
+  test('always sets PAPERCUSP_CHUNK_LOCK_PG=1 (pipeline spawn → PG lock backend, P-040)', () => {
+    expect(buildPipelineExtraEnv({ harnessSlug: 'sheets' }).PAPERCUSP_CHUNK_LOCK_PG).toBe('1');
   });
 });
