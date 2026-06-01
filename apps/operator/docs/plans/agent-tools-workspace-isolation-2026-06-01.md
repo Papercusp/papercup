@@ -113,3 +113,16 @@ Located superuser access (postgres_app / password `postgres`, found in a project
 - So Phase 2 = audit the ~10 withWorkspace app read/write sites, apply the standard `workspace_id = current_setting('app.workspace_id', true)` policy to the workspace-scoped tables EXCEPT the cross-workspace-access ones, and ensure app writes set workspace_id. Incremental + verified per group; run as postgres_app (owns 48). The existing 22 RLS tables are the policy template.
 
 Conclusion: P-062 is unblocked + Phases 1+1b done. Phase 2 is the careful crux (now doable); Phase 3 (tooldef-http seam) + Phase 4 (host flip + 27-tool test) follow. The remaining is execution-heavy, not blocked.
+
+### D-006 — Phase-4 reality: the seam governs only 3/27 tools; scoping them hits grant/RLS gaps → the RLS backstop is the real win, not the flip
+Date: 2026-06-01
+Audited how the built-in HTTP tools obtain their DB handle (2026-06-01): only 3 use `ctx.tx` (the seam the Phase-3 runScoped governs) — search/fulltext, search/semantic, flags/set. 14 call `getOrgPg()` (admin, rolbypassrls) DIRECTLY in their handler (coordination/*, ui/*, memory/remember, plans/attention|lint|expand-generators, generators/publish, dev/dogfood) — legitimately cross-workspace by nature; they bypass the seam entirely. 9 call `withWorkspace()` directly (operator/decisions, operator/voice_spend_summary, plans/get|list|pause|revisions|runs|set-priority|start) — already workspace-scoped, correct. So flipping catchall.runScoped to withWorkspace(scope.workspaceId) would scope ONLY the 3 ctx.tx tools, not "all 27+" as P-004 assumed.
+
+Worse, scoping even those 3 is unsafe today (verified against PG as postgres_app):
+- operator_turns (a search source) is NOT workspace_id-bearing, NOT RLS'd, and harness_app has NO SELECT on it (Phase-1 grants only covered ws-scoped tables). Search as harness_app → permission denied on the 'turns' scope.
+- audit_log IS ws-scoped + RLS'd + harness_app has INSERT, BUT flags/set's INSERT omits workspace_id (cols: ts,actor,action,subject,details) → under a scoped handle WITH CHECK(workspace_id=GUC) rejects it (works today only because the admin handle bypasses RLS).
+
+Conclusion: the substantive, durable isolation win is the RLS + revoke backstop (Phase 1b revokes harness_app on the 14 sensitive tables; Phase 2 RLS-isolates all 134 ws-scoped tables) — harness_app can NEVER read sensitive/cross-workspace rows even if a tool used ctx.tx. The Phase-3 seam is the forward-looking mechanism (future ctx.tx tools auto-scope). A blanket P-004 flip is low-value (governs 3 tools, all needing fixes) and full deny-by-default would require migrating the 14 getOrgPg tools to ctx.tx — a large refactor with little marginal gain over RLS.
+
+Phase-4 options (needs avi's call): A — descope the blanket flip; treat RLS+revoke as the isolation, seam as forward-looking; P-062 substantive work done at Phase 3 (RECOMMENDED). B — do the grant/fix work (grant harness_app SELECT on operator_turns + other non-ws search sources, add workspace_id to flags/set's audit INSERT) then scope the 3 via the gated runScoped + crossWorkspace opt-out. C — full deny-by-default: migrate the 14 getOrgPg tools to ctx.tx + per-tool crossWorkspace opt-outs (largest).
+Related: P-004
