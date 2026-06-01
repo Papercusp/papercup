@@ -5,6 +5,7 @@ import { installDesktopIpcPolyfills } from '../../lib/transport-adapters/desktop
 import { installWorkspaceHeaderFetch } from '../../lib/transport-adapters/workspace-header-fetch';
 import { installWorkspaceParamEventSource } from '../../lib/transport-adapters/workspace-eventsource';
 import { installCallToolResolver } from '../../lib/call-tool-resolver';
+import { installIpcInspector } from '../../lib/dev/ipc-inspector-client';
 
 /**
  * Root sync provider. Wraps the app in `HarnessZeroProvider` and, on
@@ -31,6 +32,10 @@ import { installCallToolResolver } from '../../lib/call-tool-resolver';
  * opens a stream — module-eval ordering guarantees that.
  */
 if (typeof window !== 'undefined') {
+  // Dev-only IPC-traffic recorder. Installs FIRST so it captures every dispatch
+  // from the very first one; no-op in production. Exposes window.__ipcInspector
+  // (.churn()/.summary()/.events()) — Plan: calltool-endpoint-seam (Phase C).
+  installIpcInspector();
   installDesktopIpcPolyfills();
   installWorkspaceHeaderFetch();
   installWorkspaceParamEventSource();
