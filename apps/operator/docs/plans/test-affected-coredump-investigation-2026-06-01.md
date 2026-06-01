@@ -343,7 +343,29 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
-### TALLY (end of round 5): **31 of 38 genuine tests now green** (+ core dump). 7 remain:
+### TALLY (end of round 6): **32 of 38 genuine tests green** (+ core dump). 6 remain.
+
+**Round 6 — SECURITY fix landed (auth-posture 14/14):** gated 7 public `/admin/`
+routes to `{verified,trusted}` (coord/:verb POST, plans/:verb GET+POST,
+plans/git/:op, locks/queue, dogfood-substrate status/health/boot-history) — all
+verified-admin-UI-called, so safe + closes the exposure; `dbos/pipeline/start`
+kept stricter `trusted`-only via a test exception. No route-handler tests touch
+these (no collateral). Commit cae9c2bbe.
+
+**chat-surface-tools — REWORK confirmed (not a repoint):** the audited MCP-wiring
+strings (`/api/mcp?superuser=1`, `mcp-remote`, `mcp__agentmcp__agent_chats:create`)
+**relocated/centralized** — they're now in `agent-mcp/spawn-pi.ts` +
+`agent-tools/oracle/prompts.ts`, not per-surface route files. The test's
+per-surface `SURFACES` audit model is obsolete; it needs rewriting against the
+new (centralized) wiring, or retiring if the concern is now covered structurally.
+
+**6 REMAIN (all involved / product / design):** subscriptions (coord-store
+stateful mock — many query shapes), experts (PG+FS fixture rewrite),
+chat-surface-tools (audit rework, above), css-tokens (design-token migration —
+REAL), perf-anti-patterns (baseline/code — REAL), branch-actions (1 stderr
+spawn-completion hang — product debug).
+
+### (historical) end of round 5: 31 of 38 genuine tests green. 7 remained:
 oauth/state (FIXED 6/6 via in-memory nonce mock), pty-ws (was flake, passes).
 Remaining: **subscriptions** (coord-store stateful mock — many query shapes, involved),
 **experts** (PG+FS fixture rewrite), **chat-surface-tools** (audit-path repoint+revalidate),
