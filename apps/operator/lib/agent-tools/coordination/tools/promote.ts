@@ -36,12 +36,19 @@ import { findUnknownFromItems, type PromoteFeatureInput } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
 import { parsePromotePolicy, buildWaveFeatures, type BuiltFeature } from '../../plans/promote-policy';
+import {
+  resolveForEach,
+  isForEachResolver,
+  ForEachFanoutError,
+  type ResolveForEachCtx,
+} from '../../plans/for-each-resolver';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
 import { ensureHarnessPlanAssertionsTable } from '../../../ensure-schema';
 import { loopbackFetch } from '../../../loopback-fetch';
-import { getOrgPg } from '@papercusp/db-org';
+import { resolveProject } from '../../../harness-core';
+import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
 
@@ -194,6 +201,31 @@ const FEATURE_INPUT = z.object({
 function operatorBase(): string {
   const port = process.env.PORT ?? '3055';
   return process.env.INTERNAL_API_BASE ?? `http://127.0.0.1:${port}`;
+}
+
+/**
+ * Build the injected runners for a `for_each` glob/sql resolver (P-043): glob
+ * over the harness repo via fast-glob; sql against the harness PG (SELECT-only —
+ * a resolver reads, never mutates). Resolved lazily so an `items` resolver pays
+ * for neither.
+ */
+function buildForEachCtx(harnessSlug: string, workspaceId: string | undefined): ResolveForEachCtx {
+  return {
+    runGlob: async (pattern) => {
+      const project = await resolveProject(harnessSlug, workspaceId);
+      if (!project) throw new Error(`unknown harness '${harnessSlug}'`);
+      const fg = (await import('fast-glob')).default;
+      return fg(pattern, { cwd: project.path, dot: false, onlyFiles: true });
+    },
+    runSql: async (sql) => {
+      if (!/^\s*select\b/i.test(sql)) {
+        throw new Error('a for_each sql resolver must be a read-only SELECT');
+      }
+      const dbc = getLegacyClient(harnessSlug);
+      const rows = (await dbc.prepare(sql).all()) as Array<Record<string, unknown>>;
+      return rows.map((r) => String(Object.values(r)[0] ?? '')).filter(Boolean);
+    },
+  };
 }
 
 interface FeaturesImportResponse {
@@ -354,12 +386,29 @@ export default defineTool({
       }
       const w = policy.waves.find((x) => x.id === waveId);
       if (!w) return fail('unknown_wave', `wave "${waveId}" is not in the \`## Promote\` policy`);
-      const built = buildWaveFeatures(w, { generateItems: args.generate_items });
+      // The resolver's glob/sql need the target harness — resolve it first.
+      harnessSlug = harnessSlug ?? policy.target_harness;
+      // P-043: if the wave's `for_each` is a system-run resolver (items/glob/sql),
+      // resolve the item-set by QUERY; else the agent passes `generate_items`
+      // (legacy named set). A fan-out over the cap or a resolver failure escalates
+      // (the whole promote fails loudly) rather than silently truncating/zeroing.
+      let generateItems = args.generate_items;
+      if (w.generate && isForEachResolver(w.generate.for_each)) {
+        if (!harnessSlug) {
+          return fail('harness_slug_required', 'a for_each glob/sql resolver needs a target harness (set harness_slug or target_harness)');
+        }
+        try {
+          generateItems = await resolveForEach(w.generate.for_each, buildForEachCtx(harnessSlug, ctx.workspaceId));
+        } catch (e) {
+          const code = e instanceof ForEachFanoutError ? 'for_each_fanout' : 'for_each_resolver_error';
+          return fail(code, e instanceof Error ? e.message : String(e));
+        }
+      }
+      const built = buildWaveFeatures(w, { generateItems });
       if (built.features.length === 0) {
         return fail('empty_wave', `wave "${waveId}" resolved to 0 features${built.warnings.length ? ': ' + built.warnings.join('; ') : ''}`);
       }
       promoteFeatures = built.features;
-      harnessSlug = harnessSlug ?? policy.target_harness;
     }
     if (!harnessSlug) return fail('harness_slug_required', 'harness_slug is required (or set target_harness in the `## Promote` policy)');
 
@@ -474,6 +523,9 @@ export default defineTool({
       if (f.assigned_role) metadata.assigned_role = f.assigned_role;
       if (f.blocked_by && f.blocked_by.length > 0) metadata.blocked_by = f.blocked_by;
       if (f.order != null) metadata.order = f.order;
+      // P-043: stamp generative provenance on resolver-produced children (the
+      // completion-time replay-dedup key + audit trail).
+      if (f.generated) metadata.generated_by = { plan: args.slug, wave: waveId ?? null };
       const featureClaims = (f.from_items ?? []).flatMap(
         (id) => assertionsByItem.get(id) ?? [],
       );

@@ -50,10 +50,27 @@ export const StaticFeatureSchema = z.object({
 });
 export type StaticFeature = z.infer<typeof StaticFeatureSchema>;
 
+/**
+ * A deterministic resolver for a generative wave's item-set (P-043 / D-012a):
+ * the set is produced by RUNNING A QUERY, not an LLM generator and not the
+ * promote agent hand-passing it. `.strict()` so an ambiguous multi-key spec
+ * (e.g. `{glob, sql}`) is rejected loudly.
+ *   - items: an inline explicit set
+ *   - glob:  repo files matching a glob (e.g. `app/api/​**​/route.ts`)
+ *   - sql:   the first column of each row from the harness PG
+ */
+export const ForEachResolverSchema = z.union([
+  z.object({ items: z.array(z.string().min(1)).min(1) }).strict(),
+  z.object({ glob: z.string().min(1) }).strict(),
+  z.object({ sql: z.string().min(1) }).strict(),
+]);
+export type ForEachResolver = z.infer<typeof ForEachResolverSchema>;
+
 /** A generative rule: one feature per item in a runtime-resolved set. */
 export const GenerateRuleSchema = z.object({
-  /** Named runtime set the promote step resolves (e.g. 'universal_type'). */
-  for_each: z.string().min(1),
+  /** EITHER a named set the promote agent resolves (legacy — pass `generate_items`),
+   *  OR a deterministic resolver the system runs as a query (P-043: items/glob/sql). */
+  for_each: z.union([z.string().min(1), ForEachResolverSchema]),
   feature_template: z.object({
     /** May contain `{item}` placeholders, substituted per generated feature. */
     title: z.string().min(1),
@@ -182,6 +199,9 @@ export interface BuiltFeature {
   assigned_role?: string;
   blocked_by?: string[];
   order?: number;
+  /** True for features produced by a generative `for_each` rule (P-043) — the
+   *  promote step stamps `metadata.generated_by` on these. */
+  generated?: boolean;
 }
 
 export interface BuildWaveResult {
@@ -227,6 +247,7 @@ export function buildWaveFeatures(
         ...(t.acceptance && { acceptance: t.acceptance.map((a) => sub(a, item)) }),
         ...(bodyParts.length > 0 && { body: bodyParts.join('\n\n') }),
         ...(t.assigned_role && { assigned_role: t.assigned_role }),
+        generated: true,
       });
     }
   }
