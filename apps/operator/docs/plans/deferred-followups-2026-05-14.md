@@ -3,28 +3,15 @@ title: Deferred follow-ups — 2026-05-14
 slug: deferred-followups-2026-05-14
 status: active
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 ---
 
 ## Now
 
-**State:** Things we've parked, why, and what would unpause them. One doc for everything that's not in flight.
+**State:** A deliberate parking-lot doc — everything deferred, why, and the trigger that would unpause it. Current state: **Section B fully CLOSED** (B1 worker-thread embedder, B2 battery-aware pause, B3 pgvector wizard, B4 plugin-lifecycle E2E — all shipped 2026-05-14). **Section A**: A1 is `permanent` (the thin-tool + per-route-shim pattern is correct, not debt); A2 (flag stream as a `scope:'global'` tool) + A3 (mobile log stream + dispatcher principal RFC) stay deferred pending a *second consumer*. **Section V (voice)**: V7-A + V8 resolved; V1–V7/V7-C/V7-D engineering-deferred, most gated on real-user telemetry that **can't fire pre-alpha** (no users yet). Stale refs to note: A1/A3's `_hono` paths (the `_hono` dir was eliminated) and A3's principal RFC overlaps host-architecture Phase 3b.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
-
-
-# Deferred follow-ups — 2026-05-14
-
-Things we've parked, why, and what would unpause them. One doc for everything that's not in flight.
-
-**Status legend:**
-- `permanent` — not deferred work; this IS the right shape. Listed so future readers don't re-litigate.
-- `engineering deferred` — pure engineering call, parked until a trigger justifies the effort.
-- `RFC deferred` — needs a framework-level design decision before any concrete migration.
-- `code-verified deferred` — fix is in code; live verification or follow-up environment needed.
-
----
+**Next:** Owner — this is a living backlog; keep it as reference. Nothing is actionable now: the pre-alpha user-signal triggers (V2–V6) can't fire and A2/A3 await a second consumer. Revisit only when a named trigger actually fires.
 
 ## Section A: Projection follow-ups
 

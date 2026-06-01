@@ -3,18 +3,15 @@ title: Un-hardcode the Harness System — Tracking Doc
 slug: un-hardcode-plan-2026-05-10
 status: active
 created: 2026-05-10
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 ---
 
 ## Now
 
-**State:** A new harness installed via template registers in the DB and *every* surface (Zero subscriptions, dashboards, schemas, sweepers, watchers, prompts, plugins) picks it up — zero code changes required. No hardcoded slug lists. No hardcoded paths. No "edit this TypeScript and restart" steps.
+**State:** Two distinct goals. (1) **Un-hardcoding** (no hardcoded harness slugs/paths in code) — effectively MET (a `project_un_hardcode_arc_complete` marker exists). (2) **Full table-consolidation** (drop the per-harness schema model; move all 11 per-harness tables to `harness_slug`-partitioned consolidated tables) — only PARTIAL: `harness_features_consolidated`, `harness_issues_consolidated`, `harness_snapshots_consolidated` exist, but `libs/papercusp/libs/db/sql/002-per-harness-template.sql` STILL scaffolds 11 per-harness tables (agent_runs, feature_audit, agent_chats, messages, supervisor_notes, …) and `bin/scaffold-harness-schema.sh` is still the live scaffolding path. The system runs a HYBRID: 3 consolidated + 8 still per-harness. Phase 1's remaining verticals, items 12–13 (drop the per-harness model), and Phase 4 (ESLint rule / e2e / docs) are unshipped and parked since 2026-05.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
-
-
-# Un-hardcode the Harness System — Tracking Doc
+**Next:** Owner decision — either (a) resume full consolidation (the 8 remaining per-harness tables → consolidated, then drop the per-harness template), a large migration with no current driver, OR (b) accept the hybrid as the end state and mark this shipped. The hardcoded-slug goal itself is already met.
 
 ## Goal
 

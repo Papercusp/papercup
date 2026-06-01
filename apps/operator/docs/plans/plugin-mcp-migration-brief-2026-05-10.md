@@ -1,9 +1,9 @@
 ---
 title: Brief: migrating components to the projected-tool MCP framework
 slug: plugin-mcp-migration-brief-2026-05-10
-status: active
+status: shipped
 created: 2026-05-10
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 ---
 

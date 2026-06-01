@@ -3,17 +3,16 @@ title: "Plan→Feature Pipeline Unification (v2)"
 slug: plan-feature-pipeline-unification-2026-05-24
 status: active
 created: 2026-05-24
-updated: 2026-05-24
+updated: 2026-06-01
 owner: aviynw3@gmail.com
 ---
 
 ## Now
 
-**State:** Phases A–F complete (P-001–P-031). P-032 soak **started 2026-05-25**: `scoper.outputMode: 'plan'` enabled in `sheets-clone/.harness/config.json`. Waiting for 1 week of live scoper proposal runs before flipping the default and retiring the legacy path (P-033–P-038).
+**State:** Phases A–E shipped: scoper proposals + `plans:promote` unified; ProposalsPanel renders draft plans; plan-context injected into agent prompts. The P-032 soak started 2026-05-25 on the `sheets-clone` harness with a ~2026-06-01 target — **that window has now elapsed**. P-033–P-038 (flip scoper default to `plan`, retire `harness_proposals_shared`, legacy cleanup) are gated on the soak being declared good; they're ~1 day of mechanical work once confirmed.
 
-**Next:** P-033–P-038 are blocked on the P-032 soak completing (~2026-06-01). Human review required: check `sheets-clone/.harness/proposals/` is empty (no new files) and that plan drafts appear in ProposalsPanel with `source: scoper` after the next scoper proposal run.
+**Next:** Owner — make the soak call: confirm `sheets-clone/.harness/proposals/` has no new files AND scoper proposals appear as `source: scoper` plan drafts in ProposalsPanel. If good, run P-033–P-038 (mechanical legacy retirement). If scoper never actually ran during the window, kick one scoper proposal first, then judge.
 
----
 ## Background
 
 ### The current state (verified from code)

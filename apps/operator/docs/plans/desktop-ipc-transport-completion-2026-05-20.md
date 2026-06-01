@@ -1,7 +1,7 @@
 ---
 title: Desktop IPC transport — completion + extension to all webview traffic
 slug: desktop-ipc-transport-completion-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
 updated: 2026-06-01
 owner: pandawamble@gmail.com

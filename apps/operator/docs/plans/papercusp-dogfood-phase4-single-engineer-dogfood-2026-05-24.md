@@ -3,7 +3,7 @@ title: Papercusp dogfood — Phase 4 (single-engineer dogfood — papercup as st
 slug: papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24
 status: active
 created: 2026-05-24
-updated: 2026-05-30
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 
@@ -11,34 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** **P-024 + P-025 DONE. Registry-drift blocker RESOLVED 2026-05-31; P-026 now blocked only on `papercup-coding` not being a registered harness (must be created).**
+**State:** Single-engineer behavioral dogfood: register papercup as a private harness, run a feature end-to-end (orchestrator pick → worker → PR → merge → `shipped`) and observe scale pain. P-024/P-025 shipped against real infra; **P-026 (the actual end-to-end run) has never been done**, and the phase now lags its successors (Phase 11 multi-engineer work moved ahead of it). NOT superseded by the Model B substrate rewrite — this phase is `state:private` (no Hyperbee/peer-mirror) — EXCEPT P-026a's orchestrator-claim path now rides Model B's LWW advisory claim, not the old Autobase merge-order claim.
 
-**2026-05-31 update (verified live).** Fix-path #1 (bounce the hono-host) fired — `papercup-dev-api.service` was restarted, which re-ran `register-papercup.ts`. Confirmed against the running host:
-- `/api/harness/projects/lite` now returns a populated list (was `{projects:[]}`): `sheets`, `restart`, `papercup-org` (+ org sub-harnesses), `dbosroll`, `sheets-from-template-e2e`.
-- `resolveProject` resolves registered slugs: `GET /api/harness/sheets/spec` + `/api/harness/restart/spec` → **200** (the P-026 root-cause drift is gone).
-- BUT `GET /api/harness/papercup-coding/spec` → **404**: `papercup-coding` is NOT a registered harness in the active `default` workspace, NOT in `papercusp-workspace` (which has no projects dir), and has no project dir anywhere. It only ever existed as a substrate `boot_history` entry — i.e. the "booted but never registered" half of the original drift. **So Phase 4's self-dogfood target must be CREATED** (register papercup's own repo as a coding harness), or the e2e runs on an already-registered coding harness (`sheets` / `restart`).
-- Substrate is `enabled:false` on this host (`.env.local`/unit env set no `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE`); the restart did not change that — single-engineer Phase 4 doesn't need the substrate anyway.
-
-**Next (user's call — spawns real agents):** decide the dogfood target — (a) create `papercup-coding` and run the loop on papercup itself, or (b) first-smoke the loop on a registered harness (`sheets`) — then kick off a feature per the runbook (commit `6ff3db32`).
-
----
-*Original 2026-05-26 blocker (now resolved, kept for lineage):*
-
-First P-026 attempt 2026-05-26 surfaced this:
-- `/api/admin/dogfood-substrate-status` shows 83 booted harnesses incl. `papercup-coding` + `papercup-org`, all healthy.
-- `/api/harness/projects/lite` returns `{projects:[]}` for same operator.
-- `/api/harness/papercup-coding/invoke?role=director` → 404 `{"error":"unknown project"}`. Same for /launch, /features, /spec.
-
-**Root cause:** substrate's `getBootedHarness` reads boot_history + Hyperbee state; `resolveProject(slug)` reads `harness_registry` per-workspace. Two have drifted: registry empty, substrate full. Either boot wiring landed today without backfilling harness_registry, OR the operator session is on a workspace where papercup was never registered (per insight `dogfood-bootstrap` it was `papercusp-workspace`, but booted entries report `workspaceId: default`).
-
-**Fix paths (pick one before re-attempting P-026):**
-1. Bounce hono-host so `register-papercup.ts` re-fires.
-2. Manually INSERT into harness_registry.
-3. Switch operator's active workspace to `papercusp-workspace`.
-
-Cupboard live at https://cupboard.papercusp.com (P-051b shipped today) — separate path, not blocking P-026.
-
-**Next:** Hydrate harness_registry via one of the 3 fix paths above, then re-run P-026 per the runbook (commit 6ff3db32).
+**Next:** Owner decision — either do the P-026 single-engineer run now (it's the stated behavioral gate; needs the `papercup`/`papercup-coding` harness registered + targeted), or formally drop the phase as overtaken by Phase 11. P-027 (scale observation) + P-028 (decision gate) follow P-026.
 
 ## Background
 
