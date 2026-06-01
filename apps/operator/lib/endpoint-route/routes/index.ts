@@ -295,6 +295,7 @@ import adminDogfoodSubstrateStatus from './admin/dogfood-substrate-status';
 import adminDogfoodSubstrateHealth from './admin/dogfood-substrate-health';
 import adminDogfoodSubstrateBootHistory from './admin/dogfood-substrate-boot-history';
 import adminSubstrateRevokeSelfDevice from './admin/substrate-revoke-self-device';
+import adminSubstrateRevokeContributor from './admin/substrate-revoke-contributor';
 import advSessions from './adv/sessions';
 import advLaunchSu from './adv/launch-su';
 import adminPlanGit from './admin/plan-git';
@@ -668,6 +669,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDogfoodSubstrateHealth as AnyRoute[]),
   ...flatten(adminDogfoodSubstrateBootHistory as AnyRoute[]),
   ...flatten(adminSubstrateRevokeSelfDevice as AnyRoute[]),
+  ...flatten(adminSubstrateRevokeContributor as AnyRoute[]),
   ...flatten(advSessions as unknown as AnyRoute[]),
   ...flatten(advLaunchSu as unknown as AnyRoute[]),
   ...flatten(adminPlanGit as AnyRoute),
