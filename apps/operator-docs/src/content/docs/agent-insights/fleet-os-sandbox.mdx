@@ -4,9 +4,10 @@ description: >-
   The headless claude-code fleet runs inside claude's built-in OS sandbox by
   DEFAULT (PAPERCUSP_FLEET_SANDBOX, default-on). It confines Bash-subprocess
   writes to the cwd + an allow-listed cache dir, hides credential dirs, and
-  allowlists egress. MCP/model connections are OUTSIDE the sandbox (unaffected).
-  codex/omp are NOT sandboxed. How to opt out, extend the egress allowlist, the
-  npm-install cache gotcha, and the bwrap fail-loud mode.
+  allowlists egress. claude's MCP/model connections are OUTSIDE its sandbox.
+  codex is contained too — via an external srt-wrap (its native sandbox cancels
+  MCP); omp is not. How to opt out, extend the egress allowlist, the npm-install
+  cache gotcha, and the bwrap fail-loud mode.
 discovered: 2026-06-01
 tags: [claude-code, sandbox, fleet, orchestrator, security, egress, bubblewrap, npm]
 status: active
@@ -41,15 +42,34 @@ What it confines (the **Bash tool + its children only** — see the boundary not
 
 ## The boundary that matters
 
-The sandbox wraps the **Bash tool and its child processes — nothing else.** The
-agent's own **MCP, model, WebFetch and WebSearch** connections run in claude's
-main process, **outside** the sandbox, so they are unaffected. This was verified
-live: a papercusp MCP call from inside a sandboxed spawn reached the server
-normally. (Contrast codex, whose sandbox gates the MCP transport itself and
-cancels tool calls — which is exactly why **codex and omp are NOT sandboxed**:
-`codexSandboxArgs` always runs codex `danger-full-access`, and omp runs
-unwrapped. Default-on therefore contains only the default claude-code path;
-switching `AGENT_BACKEND` to codex/omp silently loses containment.)
+For **claude-code**, the sandbox wraps the **Bash tool and its child processes —
+nothing else.** The agent's own **MCP, model, WebFetch and WebSearch**
+connections run in claude's main process, **outside** the sandbox, so they are
+unaffected (verified live: a papercusp MCP call from inside a sandboxed spawn
+reached the server normally).
+
+**codex** is different and needs a different mechanism. codex's *native* sandbox
+gates the MCP transport itself — under `-s workspace-write`/`read-only` it
+client-cancels MCP tool calls (re-verified on codex 0.135; `network_access`
+doesn't help; no MCP-trust knob exists), so codex can't self-sandbox. The way
+around (P-015/D-017): run codex with its native sandbox **bypassed**
+(`codexSandboxArgs` keeps `--dangerously-bypass-approvals-and-sandbox`, so MCP
+works) and wrap the **whole** codex process in **`srt`**
+(`@anthropic-ai/sandbox-runtime`: bubblewrap `--unshare-net` + a host-side
+allowlisting proxy) via `wrapSpawnWithSrt`. srt confines codex's shell commands
+(writes → cwd+cache+CODEX_HOME, egress → an allowlist of operator + model
+endpoints + registries, creds hidden) while codex's MCP+model traffic routes
+**through** srt's proxy. One gotcha baked into the impl: srt injects a `no_proxy`
+that excludes loopback + RFC1918, which would send the operator MCP directly into
+the isolated netns (unreachable) — the wrap clears `no_proxy` inside the srt
+shell so it goes through the proxy. So under `PAPERCUSP_FLEET_SANDBOX`, **both
+claude-code and codex are contained.**
+
+**omp** is still NOT wrapped: its model-endpoint host is provider-dependent
+(unknown, vs codex's stable OpenAI hosts) and omp can't be run on the dev box to
+verify, so wrapping it could sever omp's own model reach. The srt architecture is
+proven (via codex); reintroduce omp once its model host is known + verifiable.
+Switching `AGENT_BACKEND` to **omp** therefore still loses containment.
 
 ## Knobs (env, read per-spawn from the trusted orchestrator env)
 
