@@ -20,7 +20,12 @@ import { randomBytes } from 'node:crypto';
 const FIXED_KEY_B64 = randomBytes(32).toString('base64');
 const FIXED_ROTATED_AT = new Date('2026-05-20T00:00:00.000Z');
 
-vi.mock('@/lib/ensure-schema', () => ({
+// ensure-schema is a flat module of `ensure*Table()` DDL helpers; the routes
+// mounted here pull in a subset. Keep the real (no-op against the mocked
+// getOrgPg) module so any current/future ensure* import resolves, while
+// overriding the two this suite asserts on as spies.
+vi.mock('@/lib/ensure-schema', async (orig) => ({
+  ...((await orig()) as object),
   ensureOperatorSecretsTable: vi.fn(async () => {}),
   ensurePowerUserSessionsTable: vi.fn(async () => {}),
 }));
@@ -59,7 +64,12 @@ vi.mock(import('@papercusp/db-org'), async (importOriginal) => {
           }),
           insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
         },
-        sql: ((..._args: unknown[]) => Promise.resolve([])) as unknown as {
+        sql: Object.assign((..._args: unknown[]) => Promise.resolve([]), {
+          // ensure*Table() DDL helpers (kept real via the ensure-schema spread)
+          // issue `sql.unsafe(...)` / `sql.begin(...)` — no-op them.
+          unsafe: () => Promise.resolve([]),
+          begin: async (cb: (tx: unknown) => Promise<unknown>) => cb({ unsafe: () => Promise.resolve([]) }),
+        }) as unknown as {
           <T>(strings: TemplateStringsArray, ...vals: unknown[]): Promise<T>;
         },
       }) as never,
@@ -91,6 +101,9 @@ vi.mock('@/lib/workspace-registry', () => ({
       : undefined,
   ),
   DEFAULT_WORKSPACE_ID: 'workspace-active',
+  // Pulled in transitively via lib/backup (the @papercusp/backup seam reads
+  // workspacesRoot); omitting it crashes the suite at import time.
+  workspacesRoot: vi.fn(() => '/tmp/papercusp-test-ws'),
 }));
 
 /* ─── FS mocks for /agent-bundle ──────────────────────────────────────── */
