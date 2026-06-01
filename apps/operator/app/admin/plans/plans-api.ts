@@ -224,6 +224,7 @@ const BASE = '/api/admin/plans';
 async function getJson<T>(
   verb: string,
   params?: Record<string, string | boolean | readonly string[] | undefined>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const url = new URL(`${BASE}/${verb}`, window.location.origin);
   if (params) {
@@ -240,7 +241,7 @@ async function getJson<T>(
       }
     }
   }
-  const r = await fetch(url.toString());
+  const r = await fetch(url.toString(), signal ? { signal } : undefined);
   if (!r.ok) {
     const text = await r.text().catch(() => '');
     throw new Error(`plans:${verb} → ${r.status}: ${text.slice(0, 200)}`);
@@ -271,12 +272,12 @@ export function fetchPlanList(params?: {
   includeLegacy?: boolean;
   /** P-029: fan out across multiple harnesses. */
   harness_slugs?: readonly string[];
-}) {
-  return getJson<{ plans: PlanListRow[] }>('list', params);
+}, signal?: AbortSignal) {
+  return getJson<{ plans: PlanListRow[] }>('list', params, signal);
 }
 
-export function fetchPlan(slug: string) {
-  return getJson<PlanGetResult>('get', { slug });
+export function fetchPlan(slug: string, signal?: AbortSignal) {
+  return getJson<PlanGetResult>('get', { slug }, signal);
 }
 
 export function fetchPlanItems(params?: {
@@ -334,28 +335,38 @@ export interface AsyncResult<T> {
   setData?: Dispatch<SetStateAction<T | null>>;
 }
 
-function useAsyncJson<T>(fetcher: () => Promise<T>, deps: unknown[]): AsyncResult<T> {
+function useAsyncJson<T>(fetcher: (signal: AbortSignal) => Promise<T>, deps: unknown[]): AsyncResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    // Abort the in-flight request when deps change or the component unmounts.
+    // Without this, rapidly switching plans/items leaves superseded fetches
+    // holding open connections; under the webview's ~6-per-origin HTTP/1.1 cap
+    // they pile up and the next plan GET queues indefinitely — the "loading
+    // plan forever (until refresh)" wedge. Aborting frees the connection at once.
+    const controller = new AbortController();
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetcher()
+    fetcher(controller.signal)
       .then((d) => {
         if (!cancelled) setData(d);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        // An aborted fetch (superseded selection / unmount) is expected, not an error.
+        if (!cancelled && (e as { name?: string })?.name !== 'AbortError') {
+          setError(e instanceof Error ? e.message : String(e));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
@@ -375,14 +386,14 @@ export function usePlanList(params?: {
   // re-trigger the fetch every render.
   const harnessSlugsKey = params?.harness_slugs?.slice().sort().join('|') ?? '';
   return useAsyncJson(
-    () => fetchPlanList(params),
+    (signal) => fetchPlanList(params, signal),
     [params?.status, params?.includeArchived, params?.includeLegacy, harnessSlugsKey],
   );
 }
 
 export function usePlan(slug: string | null) {
   return useAsyncJson<PlanGetResult | null>(
-    () => (slug ? fetchPlan(slug) : Promise.resolve(null)),
+    (signal) => (slug ? fetchPlan(slug, signal) : Promise.resolve(null)),
     [slug],
   );
 }
