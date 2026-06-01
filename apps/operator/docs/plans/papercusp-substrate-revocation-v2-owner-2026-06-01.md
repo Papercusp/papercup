@@ -11,10 +11,20 @@ relates_to: papercusp-substrate-revocation-v1-2026-06-01, papercusp-phase1b-bidi
 
 ## Now
 
-**State:** DESIGN SPEC. The trust-model authority decision (Approach A — GitHub-anchored)
-was MADE by the agent under the user's standing "use your judgement / continue with what
-you recommend" delegation, transparently, with the rejected alternatives recorded below
-(D-001). If the owner disagrees with A, re-plan before building. No code yet.
+**State:** **Component A SHIPPED** (commit `68f308798`, reviewed + approved): the substrate
+now re-verifies admitted peers' channel-2 on a slow cadence (throttled inside `mergeNow`,
+default 15 min) and drops any whose binding conclusively fails — so a repo admin deleting a
+contributor's `user/<id>` branch (the owner-revocation action) is enforced within a cycle.
+Fail-open on transient API errors (D-004); a channel-2-fail drop does NOT blocklist (a
+re-published binding is re-admitted). The trust-model authority decision (Approach A —
+GitHub-anchored) was MADE by the agent under the user's standing delegation, transparently,
+with rejected alternatives recorded (D-001).
+
+**HELD — Component B (in-app owner trigger):** an endpoint/MCP tool that DELETES a
+contributor's `user/<id>` branch via the GitHub API. This is a **destructive, outward-facing
+GitHub action** + the trust-model-specific surface — held for the owner's explicit go-ahead
+before building (a repo admin can already trigger revocation by deleting the branch directly;
+Component A enforces it). If A is the wrong authority model, re-plan instead.
 
 **Problem (the gap, code-verified 2026-06-01):** Model B admission verifies a peer's
 channel-2 binding ONCE (at admission) + re-checks only PENDING peers (the pending-retry).
