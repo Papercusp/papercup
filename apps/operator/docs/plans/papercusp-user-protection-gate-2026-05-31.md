@@ -63,10 +63,17 @@ human. The current user's own features bypass it entirely; no middle tier.
   Docker. Anti-tautology verified: with the gate clause removed the live read
   returns all rows (the fail-open the test would catch).
 
-**Next:** **Phase 5 P-014 (unit-tests for the gate predicates).** G1–G4 + the
-P-013 composed acceptance are all shipped + verified. Original Phase-1 next-step
-(now done): greenlight Phase 1 (G1 provenance) — thread `op.writerPubkey`
-through projection.
+**State update (2026-06-01): P-014 (gate-predicate unit tests) DONE — COMPLETE.**
+All four gates + verification shipped: G1 provenance, G2 auditor-admission
+(primary), G3 untrusted-data framing, G4 spawn least-privilege, P-013 composed
+adversarial acceptance, P-014 unit coverage. **One documented deferral remains:**
+P-012's per-role egress tightening (the reserved `fleetSandboxSettingsForRole`
+role param) is deferred pending a real-spawn pass — see the "P-012 — sandbox
+posture (chosen)" subsection; the floor posture (egress allowlist + write
+confinement + cred-hiding + no-push + P-011 env-scoping) is already enforced.
+
+**Next:** Nothing — plan complete. (Optional future: P-012 per-role egress, if a
+real-spawn pass shows a role needs a tighter egress policy than the uniform floor.)
 
 ## Background
 
@@ -300,9 +307,15 @@ limit). (4) A *compromised local machine* is explicitly out of scope (D-007).
   (d) `scopeSpawnEnvForRole` drops PG/DB secrets for every role and all
   search-provider keys for the auditor, retains them for the worker, keeps
   PATH+HOME (G4). blocked-by: P-007, P-008, P-009, P-011
-- **P-014** `todo` Unit tests: the auditor-admission predicate at `readFeaturesPg`
-  (G2), the prompt-framing (G3), and origin determination from `writerPubkey`
-  (G1/D-006 — own-key→local, peer-key→remote, forged author field ignored).
+- **P-014 — DONE** (covered by tests written during the gate implementation; not
+  duplicated). Auditor-admission predicate (G2): `state-pg-auditor-gate.test.ts`
+  (22 tests — `isAutoPickable` truth table + the `readFeaturesPg` SQL gate clause).
+  Prompt-framing (G3): `prompt-build.test.ts` (30 tests — remote→wrapped,
+  local→unwrapped, delimiter-escape neutralization, nonce). Origin determination
+  from `writerPubkey` (G1/D-006): `provenance-g1.test.ts` (own-key→local,
+  peer-key→remote, **forged author field ignored** `:180`, `rowToFeature` mappers).
+  The live DBOS pick-path gate (`readFrontierFeatures`) is additionally pinned by
+  P-013's tier-1 integration test.
 
 ## Decisions
 
