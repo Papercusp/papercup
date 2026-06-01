@@ -22,15 +22,32 @@ The deterministic offline proof (module + transport, gate stubbed) already exist
 covers what that test *can't*: the real GitHub publish→verify loop with two real
 identities.
 
-<Aside type="caution" title="R-1 — the thing this test exists to confirm">
-Channel-2 admission requires the contributor-file commit to be **GitHub-verified**
-(`commit.verification.verified === true`) and authored by the claimed login. We
-publish contributor files via the **GitHub Contents API**
-(`repos.createOrUpdateFileContents`), which produces a web-flow-signed → *verified*
-commit. **This guarantee is by-design and unprovable offline.** If, in your real
-gh-token context, those commits come back **unverified**, channel-2 step (c) fails
-for **every** peer and no one is admitted. Confirming `verified === true` on a real
-commit (Step 2/3 below) is the primary purpose of this run.
+<Aside type="tip" title="Verified live 2026-06-01 (gist-level)">
+The **channel-2 publish→verify loop** — the offline-impossible crux — was run live
+with two genuinely distinct GitHub accounts (`papercupai` + `aviynw`): each created
+a real attestation **gist** under its own account, and the **real**
+`verifyAttestation` / `verifyChannel2` accepted each peer for the correct identity
+**bidirectionally**, while a *forged* identity claim (one account's gist claimed as
+the other's id) was rejected with `github_user_id_mismatch` (D-006 holds live). That
+run also surfaced + fixed a real bug: the attestation **gist filename** used a raw
+base64 pubkey prefix, but a gist filename can't contain `/` (~11% of device keys) —
+fixed in `attestationGistFilename` (commit `ae5e25be3`). What remains for a *full*
+Mode-A pass is the two-Tauri-instance swarm/transport half (steps 4–7), which the
+offline `two-peer-swarm-bidi` test already proves at the module level.
+</Aside>
+
+<Aside type="caution" title="R-1 — RESOLVED: channel-2(c) anchors on gist ownership, not a verified commit">
+**Historical:** the original design required the contributor-file *commit* to be
+GitHub-**verified** (`commit.verification.verified === true`). A live probe found
+Contents-API commits come back **unverified** (`reason: unsigned`) in the real
+gh-token context, so that check was unsatisfiable and would have blocked **all**
+admission. **R-1 is resolved** by re-anchoring channel-2 step (c) on **gist
+ownership**: the contributor file embeds a `device_attestation_gist_id`, and
+`verifyAttestation` checks that gist is **owned by the claimed `github_user_id`**
+(GitHub reports `gist.owner.id`), attests the announced `device_pubkey`, and carries
+a valid device Ed25519 signature. No commit-verification is required anywhere. The
+2026-06-01 live run above confirms the gist-ownership anchor works with two real
+identities.
 </Aside>
 
 ## Two modes
@@ -43,8 +60,9 @@ commit (Step 2/3 below) is the primary purpose of this run.
 
 The **decision rule** (from `papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-26`):
 **P-079 PASSES when ≥5 of the 7 walkthrough steps land within 30 s of the user
-action** — AND the two hard gates hold: (i) both contributor-file commits are
-GitHub-**verified**, (ii) data flows **both** directions.
+action** — AND the two hard gates hold: (i) both peers' attestation **gists** are
+owned by their claimed GitHub id (channel-2(c) holds), (ii) data flows **both**
+directions.
 
 ## Prerequisites (both modes)
 
@@ -97,27 +115,34 @@ what makes "data crossed the wire" verifiable.
 
 1. **Alice shares the harness.** In Alice's Tauri shell, open the harness's
    **Share** wizard (ShareWizard) and finalize. This writes
-   `.harness/shared.json`, **publishes Alice's contributor file** (verified commit,
-   via the Contents API), boots Alice's substrate (joins the swarm topic derived
+   `.harness/shared.json`, **publishes Alice's attestation gist + contributor file**
+   (the file via the Contents API, embedding the gist id), boots Alice's substrate (joins the swarm topic derived
    from the repo id) and announces. Note the **join link** the wizard shows
    ("Send this link to contributors…").
 
-2. **Confirm Alice's binding is a *verified* commit (R-1 gate).** On the shared
-   repo, the `user/<alice_id>` branch should now have
-   `.harness/contributors/<alice_login>.json`. Confirm the commit is verified:
+2. **Confirm Alice's binding: contributor file + an owned attestation gist
+   (channel-2 gate).** On the shared repo, the `user/<alice_id>` branch should now
+   have `.harness/contributors/<alice_login>.json`. That file embeds a
+   `device_attestation_gist_id`; confirm the gist exists and is **owned by Alice's
+   account** (the channel-2(c) anchor — no commit-verification is involved):
 
    ```sh
-   gh api repos/<owner>/<repo>/commits/<sha> --jq '.commit.verification.verified, .author.login'
-   # expect:  true   <alice_login>
+   # gist id from the contributor file
+   gh api repos/<owner>/<repo>/contents/.harness/contributors/<alice_login>.json?ref=user/<alice_id> \
+     --jq '.content' | base64 -d | jq -r '.device_attestation_gist_id'
+   # confirm that gist's owner id === Alice's github user id
+   gh api gists/<gist_id> --jq '.owner.id, .owner.login'
+   # expect:  <alice_id>   <alice_login>
    ```
-   (Get `<sha>` from `gh api repos/<owner>/<repo>/commits?sha=user/<alice_id>\&path=.harness/contributors/<alice_login>.json --jq '.[0].sha'`, or read the "Verified" badge in the GitHub UI.) **If `verified` is `false`, STOP — this is the R-1 failure;** see *Escalation* below.
+   **If the gist is missing or owned by a different id, channel-2 won't admit** —
+   see *Troubleshooting*.
 
 3. **Bob joins via the link.** In Bob's shell, open the create-harness picker →
    **Entry 4 (harness link)**, paste Alice's link, and join. Bob's identity is
    resolved server-side from his `gh` auth (no creds typed). Watch the join
    progress through the 6 steps: `oauth_attest → clone_repo → publish_binding →
    boot_federate → await_admission_merge → route_insights`. After `publish_binding`,
-   repeat the Step-2 verified-commit check for **Bob's** file on `user/<bob_id>`.
+   repeat the Step-2 gist-ownership check for **Bob's** file on `user/<bob_id>`.
    - If join returns **"GitHub authentication required"**, Bob's `gh` isn't
      authenticated in that instance's `GH_CONFIG_DIR` — fix and retry.
 
@@ -141,8 +166,10 @@ what makes "data crossed the wire" verifiable.
 
 ## Pass criteria
 
-- **Hard gate 1 — R-1:** both contributor-file commits (Steps 2 + 3) are
-  `verification.verified === true`. *Non-negotiable.*
+- **Hard gate 1 — channel-2 anchor:** both contributors' attestation **gists**
+  (Steps 2 + 3) exist and are **owned by the claimed `github_user_id`** (so
+  `verifyAttestation` returns valid). *Non-negotiable.* (This replaces the obsolete
+  "verified commit" gate — see the R-1 Aside; no commit-verification is required.)
 - **Hard gate 2 — bidirectional:** Steps 6 **and** 7 both succeed (data crosses
   in *both* directions, into *separate* PGs).
 - **Soft gate:** ≥5 of the 7 steps land within 30 s of the triggering action.
@@ -164,10 +191,11 @@ Phase-11 plan).
 ## Troubleshooting
 
 - **`announce_rejected` with `binding_invalid`** → channel-2 couldn't verify the
-  peer's contributor file. Most likely the commit isn't GitHub-verified (R-1), the
-  file is missing on the `user/<id>` branch, or the `device_pubkey` in the file
-  doesn't match the announced key (e.g. a multi-device collision — same login on
-  two machines).
+  peer's binding. Most likely the peer's **attestation gist is missing or owned by a
+  different GitHub id** (channel-2(c)), the contributor file is missing on the
+  `user/<id>` branch (a+b), or the `device_pubkey` in the file/gist doesn't match the
+  announced key (e.g. a multi-device collision — same login on two machines). Note:
+  a deleted gist is *also the revocation signal* (`channel2_attestation_missing`).
 - **Stuck `announce_pending`** → GitHub hasn't propagated the just-pushed file yet;
   it self-heals within the 30-min grace. If it never clears, the file/branch is
   missing or the API read is failing.
@@ -175,22 +203,26 @@ Phase-11 plan).
   the DHT port). Confirm both booted with a non-null `swarm` and the **same**
   `topicHex`.
 - **Federation only one way** → the silent side's binding isn't verifiable by the
-  other (re-check that side's Step-2 verified-commit + that its file exists).
+  other (re-check that side's Step-2 gist-ownership + that its contributor file
+  exists, AND that the *reading* peer can actually read the shared repo — a private
+  repo the other peer can't access reads as 404 → stuck `pending`).
 
-## Escalation — if R-1 fails (commits not `verified`)
+## Escalation — channel-2 gist anchor (R-1 history)
 
-If the Contents-API commits come back **unverified** in your real token context,
-channel-2(c) blocks all admission. Options, in order of preference:
+R-1 was the worry that channel-2(c) required a GitHub-**verified commit**, which a
+live probe showed is unsatisfiable (Contents-API commits return `verified:false /
+reason:unsigned`). **That risk is closed:** channel-2(c) now anchors on **gist
+ownership** (`verifyAttestation`: `gist.owner.id === claimed github_user_id` +
+device-pubkey match + Ed25519 sig), which needs no commit verification and is
+confirmed live (2026-06-01, two real identities). If a future change reintroduced a
+commit-verification dependency, the same escalation ladder would apply (GitHub App
+commit signing → registered GPG/SSH key → documented relaxation) — but it does not
+apply today.
 
-1. **GitHub App with commit signing** — publish contributor files as an App
-   installation whose commits GitHub marks verified. Most robust.
-2. **Register the device's signing key on the account** — have the publish path
-   sign commits with a GPG/SSH key registered to the GitHub account so GitHub
-   verifies them. More setup per user.
-3. **Relax channel-2(c)** — only as a last resort and only with an explicit,
-   documented trust-model decision: dropping the "verified commit" requirement
-   weakens the channel-2 identity anchor to "whoever could push to `user/<id>`,"
-   which leans harder on repo write-access as the gate. Do **not** do this silently.
+A reliability gotcha the live run found: the attestation **gist filename** must use
+the URL/filename-safe base64 alphabet — a raw base64 pubkey prefix contains `/`
+(~11% of keys), which GitHub rejects as a gist filename. Fixed in
+`attestationGistFilename` (`ae5e25be3`); the regression test pins it.
 
 After this passes, the longer **P-080 soak** (Alice + Bob each use Papercusp for
 ≥5 consecutive working days on the harness) is the next acceptance milestone.
