@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isTauri, wslStatus, type WslStatus } from '@/lib/wsl-tauri';
 import { Select } from '@/app/harness/Select';
-import { f32ToWav } from '../voice/f32-to-wav';
 
 type PermState = 'unknown' | 'granted' | 'denied' | 'prompt' | 'unsupported';
 
@@ -113,7 +112,11 @@ export function StepOsPermissions() {
   const [selectedInput, setSelectedInput] = useState<string>('');
   const [selectedOutput, setSelectedOutput] = useState<string>('');
   const [level, setLevel] = useState(0);
-  const [recordings, setRecordings] = useState<{ url: string; createdAt: number }[]>([]);
+  // Keep the raw PCM (not a blob URL) so playback can go through Web Audio →
+  // ctx.destination, the only output path that's audible on WebKitGTK (a plain
+  // <audio> element is silent there, same as the test speaker).
+  const [recordings, setRecordings] = useState<{ samples: Float32Array; rate: number; createdAt: number }[]>([]);
+  const [playingAt, setPlayingAt] = useState<number | null>(null);
   const [recording, setRecording] = useState(false);
   // Diagnostic readout for the test recording (shown on-page) so capture
   // failures on WebKitGTK are observable end-to-end.
@@ -132,7 +135,7 @@ export function StepOsPermissions() {
   const recStopRef = useRef<null | (() => { samples: Float32Array; rate: number; frames: number; ctxState: string })>(null);
   const recTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toneCtxRef = useRef<AudioContext | null>(null);
-  const audioElsRef = useRef<HTMLAudioElement[]>([]);
+  const playbackRef = useRef<{ ctx: AudioContext; src: AudioBufferSourceNode } | null>(null);
 
   const micGranted = states['microphone'] === 'granted';
 
@@ -281,15 +284,12 @@ export function StepOsPermissions() {
     if (micGranted) void startMonitor(selectedInput);
   }, [selectedInput, micGranted, startMonitor]);
 
-  // Apply sinkId to all rendered audio elements when the output changes.
-  useEffect(() => {
-    if (!sinkIdSupported || !selectedOutput) return;
-    audioElsRef.current.forEach((el) => {
-      if (el && typeof el.setSinkId === 'function') {
-        el.setSinkId(selectedOutput).catch(() => {/* device gone — ignore */});
-      }
-    });
-  }, [selectedOutput, sinkIdSupported, recordings]);
+  // Stop any in-flight Web Audio playback on unmount.
+  useEffect(() => () => {
+    const p = playbackRef.current;
+    playbackRef.current = null;
+    if (p) { try { p.src.stop(); } catch { /* ignore */ } try { void p.ctx.close(); } catch { /* ignore */ } }
+  }, []);
 
   const startRecording = async () => {
     setRecInfo('opening mic…');
@@ -358,12 +358,50 @@ export function StepOsPermissions() {
         setRecInfo(`No audio captured — frames=${frames}, samples=${samples.length}, peak=${peak.toFixed(4)}, ctx=${ctxState}, rate=${rate}. (Check the mic isn't muted / right device selected.)`);
         return;
       }
-      const url = URL.createObjectURL(f32ToWav(samples, rate));
-      setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
-      setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved.`);
+      setRecordings((prev) => [{ samples, rate, createdAt: Date.now() }, ...prev].slice(0, 3));
+      setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved. Press play to hear it.`);
     } catch (e) {
       // Never fail silently again — surface whatever broke in the save path.
       setRecInfo(`Save failed: ${(e as { message?: string })?.message ?? String(e)}`);
+    }
+  };
+
+  const stopPlayback = () => {
+    const p = playbackRef.current;
+    playbackRef.current = null;
+    if (p) {
+      try { p.src.onended = null; } catch { /* ignore */ }
+      try { p.src.stop(); } catch { /* ignore */ }
+      try { void p.ctx.close(); } catch { /* ignore */ }
+    }
+    setPlayingAt(null);
+  };
+
+  const playRecording = async (rec: { samples: Float32Array; rate: number; createdAt: number }) => {
+    stopPlayback();
+    try {
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctx();
+      if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
+      const buffer = ctx.createBuffer(1, rec.samples.length, rec.rate);
+      buffer.getChannelData(0).set(rec.samples);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      // Straight to ctx.destination — the only path that produces sound on the
+      // WebKitGTK desktop webview (an <audio> element / setSinkId is silent).
+      src.connect(ctx.destination);
+      src.onended = () => {
+        if (playbackRef.current?.src === src) {
+          playbackRef.current = null;
+          setPlayingAt(null);
+          try { void ctx.close(); } catch { /* ignore */ }
+        }
+      };
+      src.start();
+      playbackRef.current = { ctx, src };
+      setPlayingAt(rec.createdAt);
+    } catch {
+      setPlayingAt(null);
     }
   };
 
@@ -585,16 +623,16 @@ export function StepOsPermissions() {
           )}
 
           {recordings.length > 0 && (
-            <div className="pc-rec-list">
-              {recordings.map((r, i) => (
-                <audio
+            <div className="pc-rec-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {recordings.map((r) => (
+                <button
                   key={r.createdAt}
-                  ref={(el) => {
-                    if (el) audioElsRef.current[i] = el;
-                  }}
-                  controls
-                  src={r.url}
-                />
+                  type="button"
+                  className="pc-btn"
+                  onClick={() => (playingAt === r.createdAt ? stopPlayback() : void playRecording(r))}
+                >
+                  {playingAt === r.createdAt ? '⏹ Stop' : '▶ Play recording'} ({(r.samples.length / r.rate).toFixed(1)}s)
+                </button>
               ))}
             </div>
           )}
