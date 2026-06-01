@@ -73,6 +73,18 @@ export function classifyDecision(
       return { kind: 'dispatch', role: 'test-writer', feature, extras: [] };
     case 'NEXT_MONITOR':
       return { kind: 'dispatch', role: 'monitor', feature, extras: [] };
+    // P-013/P-014 — opt-in quality gates. The classifier recognizes + dispatches
+    // them; they are DORMANT by default because a harness's director only emits
+    // them when it opts in (crosscheck: config-gated; ui-qa: config + a VAL-UI-*
+    // claim on the feature). "Wiring ≠ forcing cost" — no consumer, no emission.
+    case 'NEXT_CROSSCHECK':
+      // A different-model second opinion after a validator PASS; on a `disagree`
+      // verdict the feature is reverted passed→failing (handled by the director
+      // next turn, per crosscheck.md).
+      return { kind: 'dispatch', role: 'crosscheck', feature, extras: [`FEATURE_ID=${feature}`] };
+    case 'NEXT_UI_QA':
+      // A verdict-tool visual/interaction check on a UI feature (a VAL-UI-* claim).
+      return { kind: 'dispatch', role: 'ui-qa', feature, extras: [`FEATURE_ID=${feature}`] };
     case 'NEXT_EXPERT': {
       if (!arg) return STOP_IDLE; // malformed (legacy logs + idles)
       return { kind: 'dispatch', role: 'expert', feature: arg, extras: [`FEATURE_ID=${arg}`, `EXPERT_ID=${arg}`] };

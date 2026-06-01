@@ -83,6 +83,26 @@ describe('classifyDecision — per-feature lifecycle dispatch', () => {
     });
   });
 
+  // P-013/P-014 — opt-in quality gates (recognized + classified; dormant until a
+  // harness's director opts in to emitting them).
+  test('NEXT_CROSSCHECK → dispatch crosscheck with FEATURE_ID', () => {
+    expect(classifyDecision(parseDecision('NEXT_CROSSCHECK F-1'), DEFAULT)).toEqual({
+      kind: 'dispatch',
+      role: 'crosscheck',
+      feature: 'F-1',
+      extras: ['FEATURE_ID=F-1'],
+    });
+  });
+
+  test('NEXT_UI_QA → dispatch ui-qa with FEATURE_ID', () => {
+    expect(classifyDecision(parseDecision('NEXT_UI_QA F-1'), DEFAULT)).toEqual({
+      kind: 'dispatch',
+      role: 'ui-qa',
+      feature: 'F-1',
+      extras: ['FEATURE_ID=F-1'],
+    });
+  });
+
   test('NEXT_SCOPER → dispatch scoper with FEATURE_ID', () => {
     expect(classifyDecision(parseDecision('NEXT_SCOPER F-1'), DEFAULT)).toMatchObject({
       kind: 'dispatch',
