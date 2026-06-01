@@ -261,6 +261,38 @@ recorded-not-built limitations: one verifiable device per GitHub login
 (share creates a fresh attestation gist each finalize). See
 `agent-insights/phase1b-federation-limitations.mdx`.
 
+## Session 7 (2026-06-01) — substrate revocation v1 SHIPPED
+
+Spec/plan: `papercusp-substrate-revocation-v1-2026-06-01` (+ `-impl-`). Subagent-driven,
+3 tasks, two-stage review each. Closes a **latent security gap** the Phase-1b work
+exposed: the admission `revoked` Set was seeded EMPTY at boot and the published
+`revoked_pubkeys` (a `TEXT[]` already on `harness_shared.contributors`) were NEVER
+enforced — a contributor who revoked a lost/compromised device was ignored and the
+device still admitted.
+
+- **T1** `load-revoked-pubkeys.ts` — read the union of published `revoked_pubkeys`.
+- **T2** boot now ENFORCES them: seeds the `revoked` Set at startup (unconditional,
+  before swarm join, fail-open) AND refreshes inside every `mergeNow` (under the merge
+  lock), dropping a newly-revoked admitted peer mid-session. An opus security review +
+  the automated commit-review both caught an initial version that skipped the
+  production startup seed (conditional on a test override) → fixed to unconditional
+  (commit `1330db8e8`); fail-open-on-load-failure is documented as the intentional
+  tradeoff (D-006: advisory substrate + GitHub-is-authority; visible via `merge_error`
+  events; self-healing via the per-merge refresh).
+- **T3** `revokeSelfDevice` core + `POST /api/admin/substrate/revoke-self-device`
+  (auth `{trust:['verified','trusted']}`) + MCP tool `substrate:revoke_self_device` —
+  **SELF-revocation only**: appends your updated contributor row (`revoked_pubkeys +=`
+  the target) via `publishContributorRow` + calls the live `handle.revoke()`. A
+  `not_your_key` guard refuses revoking any pubkey not among the local identity's own
+  `device_attestations` (no side effects on refusal).
+
+Trigger→enforcement loop verified closed (T3 writes `revoked_pubkeys` → contributors
+projection → the column T1 reads → T2 enforces). Suites green.
+
+**DEFERRED to v2 (needs the owner's trust-model decision):** owner-revokes-OTHERS
+(kicking a bad actor — an authority-model question, same class as the no-collaborator-gate
+decision); un-revoke; a revocation UI.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
