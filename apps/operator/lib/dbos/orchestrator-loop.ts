@@ -476,7 +476,7 @@ export async function dispatchOneHarness(
  * with no plan are always eligible; plan features only when their plan is
  * 'started'). No carve-out here — the caller passes `owned` to the frontier.
  */
-async function readFrontierFeatures(
+export async function readFrontierFeatures(
   pg: ReturnType<typeof postgres>,
   workspaceId: string,
   slug: string,

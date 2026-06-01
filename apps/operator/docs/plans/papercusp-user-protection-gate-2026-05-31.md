@@ -51,9 +51,22 @@ human. The current user's own features bypass it entirely; no middle tier.
   env (which legitimately needs `DATABASE_URL`) — G4 scopes only the child
   `spawnEnv`, not those.
 
-**Next:** **Phase 5 (P-013 adversarial end-to-end + P-014 unit-tests).** Original
-Phase-1 next-step (now done): greenlight Phase 1 (G1 provenance) — thread
-`op.writerPubkey` through projection.
+**State update (2026-06-01): Phase 5 P-013 (adversarial end-to-end) SHIPPED.**
+- **P-013 — DONE**: `apps/operator/test/user-protection-gate.integration.test.ts`
+  (6 tests, all green). Closes the real coverage hole — the **live DBOS pick path
+  `readFrontierFeatures`** (orchestrator-loop.ts ~514, now exported), which
+  previously shipped fail-OPEN (gate missing; fixed `dce922ccc`) with NO
+  integration test. Tier 1 pins the live G2 gate against a real testcontainer PG
+  (picked set EXACTLY `{F-LOCAL, F-ADMITTED}`; rejected/pending/forged-author
+  remote features quarantined — D-006); tier 2 composes G3 framing (`wrapUntrusted`)
+  + G4 spawn least-privilege (`scopeSpawnEnvForRole`), pure so it runs without
+  Docker. Anti-tautology verified: with the gate clause removed the live read
+  returns all rows (the fail-open the test would catch).
+
+**Next:** **Phase 5 P-014 (unit-tests for the gate predicates).** G1–G4 + the
+P-013 composed acceptance are all shipped + verified. Original Phase-1 next-step
+(now done): greenlight Phase 1 (G1 provenance) — thread `op.writerPubkey`
+through projection.
 
 ## Background
 
@@ -265,14 +278,28 @@ limit). (4) A *compromised local machine* is explicitly out of scope (D-007).
 
 ## Phase 5 — Verification
 
-- **P-013** `todo` Adversarial end-to-end test (the "user is protected"
-  acceptance): plant a malicious remote-authored feature (`origin='remote'`) whose
-  text is an attack, and assert (a) the auditor rejects it and it auto-escalates
-  to a human and is never auto-picked (G2), (b) a benign remote feature is
-  auto-admitted and picked, (c) remote content surfaced to an agent is delimited
-  as untrusted (G3), (d) the spawn env carries no extra secrets (G4). Also assert
-  a forged `created_by_github_user_id` on a remote op does NOT bypass the auditor
-  (D-006). blocked-by: P-007, P-008, P-009, P-011
+- **P-013** `done` Adversarial end-to-end test (the "user is protected"
+  acceptance) — SHIPPED in `apps/operator/test/user-protection-gate.integration.test.ts`.
+  Its UNIQUE coverage is the **live DBOS pick path `readFrontierFeatures`**
+  (orchestrator-loop.ts ~514) — the path that actually picks features in
+  production, which previously shipped **fail-OPEN** (gate missing entirely;
+  fixed in `dce922ccc`) and had NO integration test (only the legacy
+  `readFeaturesPg` was unit-tested against a mock pg). Tier 1 (real testcontainer
+  PG, `readFrontierFeatures` exported for the test): seeds F-LOCAL (origin=local),
+  F-ADMITTED (remote/admit), F-MALICIOUS (remote/reject), F-PENDING (remote/null),
+  all `status='todo'` + NULL source_plan, and asserts the picked set is EXACTLY
+  `{F-LOCAL, F-ADMITTED}` — the rejected + un-screened remote features are
+  quarantined (the assertion the fail-open would have violated; verified by an
+  anti-tautology check + a one-off gate-removed run that returns all rows).
+  Also seeds F-FORGED (remote/null with a forged `created_by_github_user_id` +
+  `author_pubkey`) and asserts it is STILL excluded — the gate keys on `origin`
+  (G1-derived from the unforgeable log source), not the self-declared author
+  (D-006). Tier 2 (pure, runs without Docker): (c) `wrapUntrusted` frames a
+  prompt-injection payload inside `<untrusted-peer-content>` with the
+  treat-as-DATA preamble and neutralizes an injected closing delimiter (G3);
+  (d) `scopeSpawnEnvForRole` drops PG/DB secrets for every role and all
+  search-provider keys for the auditor, retains them for the worker, keeps
+  PATH+HOME (G4). blocked-by: P-007, P-008, P-009, P-011
 - **P-014** `todo` Unit tests: the auditor-admission predicate at `readFeaturesPg`
   (G2), the prompt-framing (G3), and origin determination from `writerPubkey`
   (G1/D-006 — own-key→local, peer-key→remote, forged author field ignored).
