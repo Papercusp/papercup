@@ -1,7 +1,7 @@
 ---
 title: Reconcile substrate role prompts to DBOS — preserve legacy capabilities except the intentional cuts
 slug: dbos-pipeline-prompt-reconciliation-2026-06-01
-status: draft
+status: superseded
 created: 2026-06-01
 updated: 2026-06-01
 owner: avi@storewolf.com
@@ -11,14 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Draft for review before any code. **Governing directive (avi, 2026-06-01):** use the DBOS engine, but do **NOT** deprecate any capability the old roles had — *except* the ones the DBOS-retirement plan (`dbos-retire-legacy-orchestrator-2026-05-31`) explicitly records as your intentional cuts. So this is **not** a "document current reality + delete what DBOS doesn't do" pass (that was this plan's original, wrong framing). It's a **parity** pass: where a legacy capability is missing from DBOS and is NOT on the cut list, the gap gets **FILLED** (engine work), not reframed away in the prompt.
+**State:** SUPERSEDED by dbos-system-completion-2026-06-01. This plan's scope (orchestrator.md retire/merge, the pre-loop gap, CONVERT_ISSUES) was a subset of what the full legacy-system audit surfaced. All of it is carried forward into the umbrella plan: orchestrator.md → D-006/P-021; pre-loop → D-003/P-010; CONVERT_ISSUES → D-004/P-011. Do not work this plan; work dbos-system-completion-2026-06-01.
 
-This is the controlling distinction for every item below:
-- **Intentionally cut → remove from prompts** (only these): `NEXT_HARNESS`, `NEXT_WORKER_CEO_MODE`, parallel `NEXT_WORKER N=k` (D-001 of the retire plan); competition / adaptive-tiers / synthesizer (D-009/D-012; **flag-gated, not deleted** per D-011).
-- **Preserved-by-DBOS → make the prompt accurate** (already works, prompt just describes it via the retired engine): all lifecycle + quality/expert verbs, DONE/ESCALATE finalization, cost-cap, chunk-loop, concurrency.
-- **Legacy-only, NOT on the cut list → FILL the gap** (the part my earlier draft got wrong): the **pre-loop** (scoper `MODE=initial` auto-populate; reviewer `MODE=plan` plan-gate) and **`CONVERT_ISSUES`** global issue→feature promotion. Per the directive these are *accidental* losses to be ported, not deprecated.
-
-**Next:** human confirms D-001 (orchestrator.md fate) and D-002 (pre-loop = gap to FILL — my recommendation now flipped). Then the work splits into a prompt-accuracy track (P-003…P-006, no behavior change) and an engine-parity track (P-011/P-012, fills the gaps) before the prompts can truthfully describe those capabilities.
+**Next:** Work dbos-system-completion-2026-06-01 instead.
 
 ## Background — what DBOS already preserves vs. what you cut (from the retire plan's own decisions)
 
