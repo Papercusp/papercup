@@ -81,6 +81,22 @@ describe('cc PreToolUse hook — operator-independent paths', () => {
     expect(JSON.parse(fs.readFileSync(marker, 'utf8')).handler).toBe('pretooluse');
   });
 
+  it('connection-refused is retried (bounded) before failing open — rides over a restart window', () => {
+    // port 1 → ECONNREFUSED on every attempt. A single-shot urlopen fails open
+    // near-instantly (refused is immediate); the bounded retry must elapse its
+    // ~2.4s budget first. The > 1.5s lower bound reliably distinguishes the two
+    // without depending on cross-process server timing.
+    const t0 = Date.now();
+    const r = run(
+      payload({ tool_name: 'Edit', tool_input: { file_path: join(repo, 'sub', 'r.ts') }, tool_use_id: 'tu2', session_id: 's', cwd: repo }),
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' },
+    );
+    const elapsed = Date.now() - t0;
+    expect(r.status).toBe(0); // still fails open after the retries
+    expect(r.stdout).toBe(''); // no deny decision
+    expect(elapsed).toBeGreaterThan(1500); // proves the retry loop ran
+  }, 15000);
+
   it('not installed (no token) → bail out, allow', () => {
     const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'cchook-bare-'));
     const r = spawnSync('bash', [HOOK], {

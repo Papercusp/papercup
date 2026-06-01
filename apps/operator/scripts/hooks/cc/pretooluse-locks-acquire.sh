@@ -277,12 +277,39 @@ req = urllib.request.Request(
     },
     method='POST',
 )
-try:
-    resp = urllib.request.urlopen(req, timeout=10)
-    raw_resp = resp.read().decode('utf-8', errors='replace')
-except Exception as e:
-    mark_error('connect', e)
-    print(f'[locks] operator unreachable ({e}); allowing edit (fail-open)',
+def _is_conn_refused(exc):
+    # The :3070 host has no hot-reload, so picking up a lib/** edit means a
+    # RESTART; during that few-second boot the port REFUSES connections. That
+    # is the one transient worth retrying — distinguish it from a genuinely
+    # down operator (which should still fail open promptly).
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    if isinstance(getattr(exc, 'reason', None), ConnectionRefusedError):
+        return True
+    s = str(exc)
+    return 'Connection refused' in s or 'Errno 111' in s
+
+# Bounded retry on connection-refused so a short restart window doesn't drop
+# lock protection for every concurrent agent (single-shot used to fail open
+# instantly). ~2.4s max added delay, then fail open as before. Any non-refused
+# error fails open immediately (no point waiting on a 500 / parse error).
+raw_resp = None
+last_exc = None
+RETRY_BACKOFFS = (0.4, 0.8, 1.2)
+for _attempt in range(len(RETRY_BACKOFFS) + 1):
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        raw_resp = resp.read().decode('utf-8', errors='replace')
+        break
+    except Exception as e:
+        last_exc = e
+        if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
+            time.sleep(RETRY_BACKOFFS[_attempt])
+            continue
+        break
+if raw_resp is None:
+    mark_error('connect', last_exc)
+    print(f'[locks] operator unreachable ({last_exc}); allowing edit (fail-open)',
           file=sys.stderr)
     allow()
 
