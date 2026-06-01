@@ -20,9 +20,12 @@ Then drive the **Tauri window** it opens (for agent-driven UI checks see
   standalone site — a browser view is the **retired** webapp and gives a
   broken/misleading result. A `PreToolUse` hook blocks browser navigation to them
   and points you back here.
-- **Never start `apps/operator` as a standalone server** (`next dev` / `next start`
-  / `bin/dev` / `bin/prod`). That standalone webapp is **retired** — `bin/dev` and
-  `bin/prod` are gone, and a `PreToolUse` hook blocks browser nav to its ports.
+- **Never start `apps/operator` as a standalone *Next* server** (`next dev` /
+  `next start`). That Next standalone path is **retired** (`next.config.js` guards
+  against it), and a `PreToolUse` hook blocks browser nav to its ports. (Note:
+  `bin/dev` / `bin/prod` still exist and are NOT the forbidden thing — they boot the
+  Vite SPA `:3055` + Hono host `:3070` stack and invoke no Next; what's retired is
+  running/browsing the old Next webapp, not those launchers.)
   (Older docs say it "fails loud because native PG was renamed `papercusp_legacy`";
   that mechanism is stale — see the Database-topology section: native `papercusp`
   is alive on `:5432` and is what the dev box uses.)
@@ -68,7 +71,7 @@ See `apps/operator/docs/nuqs-audit-2026-05-11.md` for the rationale + the 46+ pa
 
 **Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19** (the "Transport selection by deployment context" doc-comment).
 
-The shipping target is the **Tauri desktop app**, and it is also the only supported test surface. The old `next dev` / `bin/prod` standalone webapp path (running `apps/operator` directly and opening `localhost:3055` in a browser) is **retired as of 2026-05-14** — `bin/dev`/`bin/prod` are gone and a `PreToolUse` hook blocks browser nav to its ports. (Older text says native PG was renamed `papercusp_legacy` to make boots fail loudly; that mechanism is **stale** — native `papercusp` on `:5432` is alive and is this dev box's substrate. See the Database-topology section.)
+The shipping target is the **Tauri desktop app**, and it is also the only supported test surface. The old `next dev` / `bin/prod` standalone webapp path (running `apps/operator` directly and opening `localhost:3055` in a browser) is **retired as of 2026-05-14** — the `apps/operator/bin/{dev,prod}` standalone entrypoints are gone (the root `bin/dev`/`bin/prod`, which boot the Vite SPA + Hono host and invoke no Next, remain), and a `PreToolUse` hook blocks browser nav to its ports. (Older text says native PG was renamed `papercusp_legacy` to make boots fail loudly; that mechanism is **stale** — native `papercusp` on `:5432` is alive and is this dev box's substrate. See the Database-topology section.)
 
 **To run / test the app, launch the Tauri dev shell:**
 
@@ -80,7 +83,7 @@ npm run dev
 That single command boots embedded Postgres (writes `~/.papercusp/embedded-pg.json` discovery file), starts the operator sidecar against it, applies pending SQL migrations, and opens the Tauri webview. There is no longer a "just the webapp" mode.
 
 Ports you may see internally (do not open these in a browser; let the desktop drive them):
-- `:3055` — the operator's **Vite** dev server (TanStack-Router SPA, `@papercusp/operator-vite`) consumed by the Tauri webview as its content source. **Next.js is retired** for the operator (`next dev`/`next start` blocked; `apps/operator/app/**` is dead code).
+- `:3055` — the operator's **Vite** dev server (TanStack-Router SPA, `@papercusp/operator-vite`) consumed by the Tauri webview as its content source. **Next.js is retired** for the operator (`next dev`/`next start` blocked). ⚠ But `apps/operator/app/**` is **NOT** dead code — operator-vite still imports its live page implementations from there via the `@/app` alias + `next/*` compat shims (verified 2026-06-01; see plan `finish-next-removal-2026-06-01`). Only running it as a standalone Next app is retired; the actual `next/*` removal is still pending.
 - `:3070` — operator harness sidecar API + internal engineering docs at `/internal/docs` (Starlight static output; only when the desktop is up).
 
 **Implications for any agent making transport / persistence / sync decisions:**

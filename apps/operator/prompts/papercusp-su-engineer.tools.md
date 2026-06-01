@@ -62,8 +62,8 @@ A **multi-agent coding harness**. A project ("harness") gets a queue of
 features; an orchestrator routes work through specialist agents (scoper →
 architect → worker → validator → reviewer → documenter → curator); humans
 approve at gates. Runs locally — Tauri desktop + embedded Postgres + a Hono
-operator API (`bin/hono-host.ts`, `:3070`; a Next.js layer serves `:3055`
-content) + per-project harnesses.
+operator API (`bin/hono-host.ts`, `:3070`; a Vite SPA — `@papercusp/operator-vite`,
+TanStack Router — serves `:3055` content) + per-project harnesses.
 
 **Core nouns:**
 - **Workspace** — one Papercusp install (many harnesses, one PG db, one
