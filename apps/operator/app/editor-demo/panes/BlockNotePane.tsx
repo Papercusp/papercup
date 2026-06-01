@@ -28,7 +28,8 @@ export default function BlockNotePane({ value, onChange }: { value: string; onCh
         theme="dark"
         onChange={() => {
           if (!seeded.current) return;
-          editor.blocksToMarkdownLossy(editor.document).then(md => onChangeRef.current(md));
+          // BlockNote 0.51: blocksToMarkdownLossy is now synchronous (returns string).
+          onChangeRef.current(editor.blocksToMarkdownLossy(editor.document));
         }}
       />
     </div>
