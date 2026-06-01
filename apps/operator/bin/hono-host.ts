@@ -39,4 +39,24 @@ process.env.PORT = String(port);
 
 serve({ fetch: handler, port, hostname }, (info) => {
   console.log(`[hono-host] listening on http://${hostname}:${info.port}`);
+
+  // Guardrail (2026-06-01): PAPERCUSP_WORKSPACE_ID pins activeWorkspaceId() for
+  // EVERY non-request path on this host — background work, the spawn envelope, and
+  // the harness-list/features tools whenever a request didn't stamp
+  // `x-papercusp-workspace`. The :3070 host is inherently MULTI-workspace (it
+  // serves every desktop window), so a pin here silently makes all of them resolve
+  // to the pinned workspace: a leftover `=default` once made papercusp-workspace
+  // surface default's entire harness registry. A bare `# TEMPORARY` comment in
+  // .env.local was not enough to stop it surviving — so warn loudly at boot.
+  // Legitimate only for a deliberately single-workspace host; otherwise unset it.
+  const wsPin = process.env.PAPERCUSP_WORKSPACE_ID?.trim();
+  if (wsPin) {
+    console.warn(
+      `[hono-host] ⚠ PAPERCUSP_WORKSPACE_ID=${wsPin} is set — this PINS workspace ` +
+        `resolution to '${wsPin}' for every non-request path on this multi-workspace ` +
+        `host. Any window/tool that doesn't carry the x-papercusp-workspace header ` +
+        `will see '${wsPin}'s harnesses/features/registry, regardless of the active ` +
+        `workspace. Unset it unless this host is intentionally single-workspace.`,
+    );
+  }
 });
