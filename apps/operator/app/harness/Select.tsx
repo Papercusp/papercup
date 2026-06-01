@@ -133,18 +133,23 @@ export function Select({
           style={{ ...CONTENT_STYLE, ...contentStyle }}
         >
           <RS.Viewport>
+            {/* Radix throws ("must have a value prop that is not an empty
+                string") if any Item value is '', taking the whole subtree
+                down with it. Drop empty-value options defensively so a bad
+                caller can't crash the page — an empty value isn't selectable
+                anyway (the empty string is reserved for "no selection"). */}
             {options.map((entry, idx) =>
               isGroup(entry) ? (
                 <RS.Group key={`grp-${idx}`}>
                   <RS.Label style={GROUP_LABEL_STYLE}>{entry.label}</RS.Label>
-                  {entry.options.map((opt) => (
+                  {entry.options.filter((opt) => opt.value !== '').map((opt) => (
                     <RS.Item key={opt.value} value={opt.value} disabled={opt.disabled} style={ITEM_STYLE} className="h-select-item">
                       <RS.ItemText>{opt.label}</RS.ItemText>
                       <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>
                     </RS.Item>
                   ))}
                 </RS.Group>
-              ) : (
+              ) : entry.value === '' ? null : (
                 <RS.Item key={entry.value} value={entry.value} disabled={entry.disabled} style={ITEM_STYLE} className="h-select-item">
                   <RS.ItemText>{entry.label}</RS.ItemText>
                   <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>

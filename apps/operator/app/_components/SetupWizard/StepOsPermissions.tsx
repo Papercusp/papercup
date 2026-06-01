@@ -192,8 +192,13 @@ export function StepOsPermissions() {
   const enumerate = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices) return;
     const all = await navigator.mediaDevices.enumerateDevices();
-    const ins = all.filter((d) => d.kind === 'audioinput');
-    const outs = all.filter((d) => d.kind === 'audiooutput');
+    // Drop devices with an empty deviceId. WebKitGTK reports audioinputs with
+    // a blank deviceId until a capture stream is live (right after the grant,
+    // before the monitor opens) — and an empty id becomes a <Select.Item
+    // value="">, which Radix throws on, crashing the whole step into the error
+    // boundary. They reappear with real ids once the monitor stream is up.
+    const ins = all.filter((d) => d.kind === 'audioinput' && d.deviceId);
+    const outs = all.filter((d) => d.kind === 'audiooutput' && d.deviceId);
     setInputs(ins);
     setOutputs(outs);
     setSelectedInput((cur) => cur || ins[0]?.deviceId || '');
