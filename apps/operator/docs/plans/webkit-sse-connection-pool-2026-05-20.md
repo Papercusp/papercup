@@ -1,7 +1,7 @@
 ---
 title: WebKitGTK connection-pool exhaustion — diagnosis & fix plan
 slug: webkit-sse-connection-pool-2026-05-20
-status: active
+status: superseded
 created: 2026-05-20
 updated: 2026-06-01
 owner: pandawamble@gmail.com
