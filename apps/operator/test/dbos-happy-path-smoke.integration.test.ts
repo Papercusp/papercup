@@ -22,8 +22,8 @@
  *        `files` string (the `paths.map is not a function` crash).
  *   2. The decision-loop wiring (pure) classifies a full director script
  *      NEXT_WORKER → NEXT_VALIDATOR → DONE to dispatch/dispatch/terminal with no
- *      `unsupported` dead-end, selectFeaturesToDispatch picks the ready feature,
- *      and planFinalization(done) yields the curator+documenter finalize steps.
+ *      `unsupported` dead-end, the dispatch frontier (computeFrontier) picks the
+ *      ready feature, and planFinalization(done) yields the curator+documenter steps.
  *
  * Tier 2 has no PG dependency and lives in its own describe (no beforeAll), so it
  * runs even if Docker/testcontainers is unavailable; tier 1 is gated on the
@@ -35,7 +35,7 @@ import { readFeaturesPg, parseDecision, type PgStateContext } from '@papercusp/o
 // eslint-disable-next-line import/no-relative-packages -- exercise the real durable modules
 import { readPlan, type ChunkPlanPgCtx } from '../../../libs/papercusp/packages/orchestrator/src/chunk-plan-pg';
 import { classifyDecision } from '../lib/dbos/orchestrator-decide';
-import { selectFeaturesToDispatch } from '../lib/dbos/orchestrator-loop';
+import { computeFrontier } from '../lib/dbos/orchestrator-loop';
 import { planFinalization } from '../lib/dbos/orchestrator-finalize';
 
 const WS = 'ws_smoke';
@@ -158,8 +158,14 @@ describe('DBOS happy-path smoke — real-PG reads do not throw (D-008/D-014 regr
   });
 
   it('the dispatch frontier selects ready features from the real read', async () => {
-    const eligible = (await readFeaturesPg(stateCtx())).map((f) => ({ id: f.id, status: f.status }));
-    const toStart = selectFeaturesToDispatch(eligible, 0, 4);
+    const features = (await readFeaturesPg(stateCtx())).map((f) => ({
+      id: f.id,
+      status: f.status,
+      blockedBy: [] as string[],
+      sourcePlan: null,
+      order: null,
+    }));
+    const { toStart } = computeFrontier(features, new Map(), new Set(), 4);
     expect(toStart).toContain('F-001');
     expect(toStart).toContain('F-002');
     expect(toStart).not.toContain('F-004'); // passed is terminal, not NEEDS_WORK

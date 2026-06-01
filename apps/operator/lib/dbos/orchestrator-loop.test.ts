@@ -11,14 +11,22 @@ vi.mock('@/lib/workspace-registry', () => ({
 }));
 
 import {
-  selectFeaturesToDispatch,
+  computeFrontier,
   resolveOrchestratorHarnesses,
   shouldScheduleOrchestrator,
   resolvePerHarnessCap,
   orchestratorWorkspaceIds,
+  type FrontierFeature,
 } from './orchestrator-loop';
 
-const f = (id: string, status: string) => ({ id, status });
+/** Frontier-feature factory: defaults to an unblocked, no-plan, unordered feature. */
+const f = (
+  id: string,
+  status: string,
+  over: Partial<FrontierFeature> = {},
+): FrontierFeature => ({ id, status, blockedBy: [], sourcePlan: null, order: null, ...over });
+const NO_PLANS = new Map<string, number>();
+const NONE = new Set<string>();
 
 describe('resolveOrchestratorHarnesses — all-harnesses default + allowlist override (P-006)', () => {
   const all = ['papercup', 'sheets', 'restart'];
@@ -135,13 +143,16 @@ describe('orchestratorWorkspaceIds — which workspaces a sweep covers (Phase E 
   });
 });
 
-describe('selectFeaturesToDispatch', () => {
-  test('empty eligible → nothing', () => {
-    expect(selectFeaturesToDispatch([], 0, 4)).toEqual([]);
+describe('computeFrontier — frontier dispatch (P-042)', () => {
+  const start = (features: FrontierFeature[], slots: number, planPriority = NO_PLANS, owned = NONE) =>
+    computeFrontier(features, planPriority, owned, slots).toStart;
+
+  test('empty → nothing', () => {
+    expect(computeFrontier([], NO_PLANS, NONE, 4)).toEqual({ toStart: [], stuck: false });
   });
 
   test('picks only needs-work statuses (todo/failing + pending/failed aliases)', () => {
-    const eligible = [
+    const features = [
       f('F-1', 'todo'),
       f('F-2', 'in_progress'),
       f('F-3', 'failing'),
@@ -151,33 +162,108 @@ describe('selectFeaturesToDispatch', () => {
       f('F-7', 'failed'),
       f('F-8', 'deprecated'),
     ];
-    expect(selectFeaturesToDispatch(eligible, 0, 10)).toEqual(['F-1', 'F-3', 'F-6', 'F-7']);
+    // deterministic feature_id order within the (single, no-plan) group.
+    expect(start(features, 10)).toEqual(['F-1', 'F-3', 'F-6', 'F-7']);
   });
 
-  test('bounded by free slots (cap - liveCount)', () => {
-    const eligible = [f('F-1', 'pending'), f('F-2', 'pending'), f('F-3', 'failed')];
-    expect(selectFeaturesToDispatch(eligible, 0, 2)).toEqual(['F-1', 'F-2']); // 2 free slots
-    expect(selectFeaturesToDispatch(eligible, 1, 2)).toEqual(['F-1']); // 1 free slot
+  test('bounded by free slots', () => {
+    const features = [f('F-1', 'pending'), f('F-2', 'pending'), f('F-3', 'failed')];
+    expect(start(features, 2)).toEqual(['F-1', 'F-2']);
+    expect(start(features, 1)).toEqual(['F-1']);
   });
 
-  test('cap already reached → nothing started', () => {
-    const eligible = [f('F-1', 'pending')];
-    expect(selectFeaturesToDispatch(eligible, 4, 4)).toEqual([]);
-    expect(selectFeaturesToDispatch(eligible, 5, 4)).toEqual([]); // over cap
+  test('no free slots (cap full / over cost cap) → nothing started', () => {
+    const features = [f('F-1', 'pending')];
+    expect(start(features, 0)).toEqual([]);
+    expect(start(features, -1)).toEqual([]);
   });
 
-  test('preserves order, slices to slots', () => {
-    const eligible = [f('F-9', 'failed'), f('F-1', 'pending'), f('F-5', 'pending')];
-    expect(selectFeaturesToDispatch(eligible, 0, 2)).toEqual(['F-9', 'F-1']);
+  test('orders within a group by (order ASC NULLS LAST, feature_id)', () => {
+    const features = [
+      f('F-9', 'failed', { order: 1 }),
+      f('F-1', 'pending'), // no order → last
+      f('F-5', 'pending', { order: 2 }),
+    ];
+    expect(start(features, 3)).toEqual(['F-9', 'F-5', 'F-1']);
   });
 
-  test('over cost cap → dispatch nothing, regardless of eligible work (P-004)', () => {
-    const eligible = [f('F-1', 'todo'), f('F-2', 'failing')];
-    expect(selectFeaturesToDispatch(eligible, 0, 4, /* overCostCap */ true)).toEqual([]);
+  // ── blocked_by frontier ──────────────────────────────────────────────────
+  test('a feature blocked by a non-terminal blocker stays out of the frontier', () => {
+    const features = [f('F-1', 'todo'), f('F-2', 'todo', { blockedBy: ['F-1'] })];
+    expect(start(features, 4)).toEqual(['F-1']); // F-2 waits for F-1
   });
 
-  test('under cost cap → unchanged selection', () => {
-    const eligible = [f('F-1', 'todo')];
-    expect(selectFeaturesToDispatch(eligible, 0, 4, /* overCostCap */ false)).toEqual(['F-1']);
+  test('a feature whose blocker is PASSED (terminal) is ready', () => {
+    const features = [f('F-1', 'passed'), f('F-2', 'todo', { blockedBy: ['F-1'] })];
+    expect(start(features, 4)).toEqual(['F-2']);
+  });
+
+  test('a FAILING blocker is non-terminal → dependent stays blocked', () => {
+    const features = [f('F-1', 'failing'), f('F-2', 'todo', { blockedBy: ['F-1'] })];
+    // F-1 itself is needs-work + ready; F-2 blocked by the non-terminal F-1.
+    expect(start(features, 4)).toEqual(['F-1']);
+  });
+
+  test('a blocked_by id absent from the set is treated as satisfied (no deadlock)', () => {
+    const features = [f('F-2', 'todo', { blockedBy: ['F-GONE'] })];
+    expect(start(features, 4)).toEqual(['F-2']);
+  });
+
+  // ── plan grouping + priority ─────────────────────────────────────────────
+  test('orders groups by plan priority (lower first), filling greedily', () => {
+    const features = [
+      f('A-1', 'todo', { sourcePlan: 'plan-a' }),
+      f('B-1', 'todo', { sourcePlan: 'plan-b' }),
+      f('A-2', 'todo', { sourcePlan: 'plan-a' }),
+    ];
+    const prio = new Map([['plan-b', 1], ['plan-a', 2]]); // plan-b higher priority
+    expect(start(features, 2, prio)).toEqual(['B-1', 'A-1']); // drain plan-b, then plan-a
+  });
+
+  test('manual / no-plan features sort after all plans', () => {
+    const features = [
+      f('M-1', 'todo'), // no plan
+      f('A-1', 'todo', { sourcePlan: 'plan-a' }),
+    ];
+    const prio = new Map([['plan-a', 5]]);
+    expect(start(features, 2, prio)).toEqual(['A-1', 'M-1']);
+  });
+
+  test('a high-priority plan blocked lets a lower plan fill the gap', () => {
+    const features = [
+      f('A-1', 'todo', { sourcePlan: 'plan-a', blockedBy: ['A-0'] }), // blocked (A-0 not terminal)
+      f('A-0', 'failing', { sourcePlan: 'plan-a' }),
+      f('B-1', 'todo', { sourcePlan: 'plan-b' }),
+    ];
+    const prio = new Map([['plan-a', 1], ['plan-b', 2]]);
+    // plan-a's A-1 is blocked; A-0 (failing) is ready; B-1 fills remaining slot.
+    expect(start(features, 2, prio)).toEqual(['A-0', 'B-1']);
+  });
+
+  // ── owned (carve-out) + stuck signal ─────────────────────────────────────
+  test('an owned (in-flight) feature is excluded from candidates but still blocks dependents', () => {
+    const features = [
+      f('F-1', 'todo'), // in-flight
+      f('F-2', 'todo', { blockedBy: ['F-1'] }),
+    ];
+    const owned = new Set(['F-1']);
+    const r = computeFrontier(features, NO_PLANS, owned, 4);
+    expect(r.toStart).toEqual([]); // F-1 owned, F-2 blocked by non-terminal F-1
+  });
+
+  test('stuck = work remains but nothing is ready (all blocked/failing)', () => {
+    const features = [
+      f('F-1', 'failing'),
+      f('F-2', 'todo', { blockedBy: ['F-1'] }),
+    ];
+    // F-1 is ready (failing = needs-work, unblocked) → NOT stuck.
+    expect(computeFrontier(features, NO_PLANS, NONE, 0).stuck).toBe(false);
+    // Now F-1 in-flight (owned) and F-2 blocked by it → nothing ready, work remains.
+    expect(computeFrontier(features, NO_PLANS, new Set(['F-1']), 4).stuck).toBe(true);
+  });
+
+  test('not stuck when ready features exist but slots are full', () => {
+    const features = [f('F-1', 'todo')];
+    expect(computeFrontier(features, NO_PLANS, NONE, 0).stuck).toBe(false);
   });
 });

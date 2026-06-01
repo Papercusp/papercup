@@ -27,17 +27,20 @@
  * that picks up newly-filed work) and `refillHarnessOnSettle` (a finished feature
  * immediately refills its freed slot — continuous dispatch rather than ≤30s lag).
  *
- * The carve-out (`readFeaturesPg` → `durableOwnedFeatureIdsPg`) already excludes
- * features a live pipeline owns, so a re-scan only ever picks NEW work; combined
- * with `ensureFeaturePipeline`'s dedup, the tick is idempotent and safe to re-run
- * wholesale on recovery (we WANT a fresh re-scan, not a cached replay — hence the
- * scheduled workflow calls the tick directly rather than through steps).
+ * The frontier (P-042) reads the full plan-gated feature set + each feature's
+ * `blocked_by` edges from the consolidated source of truth, and the carve-out
+ * (`durableOwnedFeatureIdsPg`) excludes features a live pipeline owns from the
+ * dispatch CANDIDATES (while keeping them in the dependency graph so an in-flight
+ * blocker still blocks its dependents). So a re-scan only ever picks NEW, ready
+ * work; combined with `ensureFeaturePipeline`'s dedup, the tick is idempotent and
+ * safe to re-run wholesale on recovery (we WANT a fresh re-scan, not a cached
+ * replay — hence the scheduled workflow calls the tick directly, not via steps).
  */
 import { join } from 'node:path';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import postgres from 'postgres';
 import {
-  readFeaturesPg,
+  durableOwnedFeatureIdsPg,
   readConfig,
   evaluateCostCap,
   parallelMaxWorkers,
@@ -94,26 +97,87 @@ export function resolvePerHarnessCap(opts: {
   return Math.max(1, Math.min(base, ceiling));
 }
 
+/** Statuses that make a feature TERMINAL — a blocker in this set is satisfied. */
+const TERMINAL = new Set(['passed', 'deprecated']);
+
+/** A feature as the frontier sees it (P-042): status + resolved blocked_by edges
+ *  + which plan it belongs to + its within-plan order. */
+export interface FrontierFeature {
+  id: string;
+  status: string;
+  /** Resolved canonical blocker ids (P-046). Empty when unblocked. */
+  blockedBy: readonly string[];
+  /** metadata.source_plan — null for manual/legacy features. */
+  sourcePlan: string | null;
+  /** feature_order — null when unset (ordered last within its plan group). */
+  order: number | null;
+}
+
 /**
- * Pure selection (exported for unit testing): from the eligible (already
- * carve-out-filtered, non-owned) features, pick those needing work, bounded by
- * the free pipeline slots (`cap - liveCount`).
+ * The frontier dispatch selection (P-042 / D-012 / D-013), replacing the old
+ * flat `eligible.filter(NEEDS_WORK).slice(slots)`. One pass, O(V+E):
+ *   1. terminal = features that are passed/deprecated.
+ *   2. ready    = needs-work, not already in-flight (`owned`), and every
+ *                 blocked_by SATISFIED — a blocker is satisfied iff it is
+ *                 terminal OR absent from the set (an absent id never deadlocks;
+ *                 a `failing` blocker is non-terminal, so its dependents
+ *                 correctly stay blocked).
+ *   3. group ready by plan; order groups by `planPriority` (lower first; a plan
+ *      with no resolved priority, and the manual/no-plan group, sort LAST),
+ *      tie-break by plan slug; within a group by (order ASC NULLS LAST, id).
+ *   4. fill greedily up to `slots`: a higher-priority plan monopolizes the
+ *      harness until its ready features can't fill the cap, then the next plan
+ *      fills the gap (avi's strict-priority spec) — the blocked_by frontier
+ *      naturally lets a lower plan fill when a higher plan's features are all
+ *      blocked. `slots <= 0` (cap full, or over the cost cap) → start nothing.
+ * Also returns `stuck`: work remains but nothing is ready (all remaining are
+ * blocked/failing) — the P-044 stuck-wave signal the retired sweep used to raise.
  */
-export function selectFeaturesToDispatch(
-  eligible: ReadonlyArray<{ id: string; status: string }>,
-  liveCount: number,
-  cap: number,
-  overCostCap = false,
-): string[] {
-  // Cost-cap gate (P-004): a harness over its configured maxCostUsd starts NO new
-  // pipelines (in-flight ones finish). Mirrors the legacy loop's spend ceiling.
-  if (overCostCap) return [];
-  const slots = Math.max(0, cap - liveCount);
-  if (slots <= 0) return [];
-  return eligible
-    .filter((f) => NEEDS_WORK.has(f.status))
-    .slice(0, slots)
-    .map((f) => f.id);
+export function computeFrontier(
+  features: readonly FrontierFeature[],
+  planPriority: ReadonlyMap<string, number>,
+  owned: ReadonlySet<string>,
+  slots: number,
+): { toStart: string[]; stuck: boolean } {
+  const present = new Set(features.map((f) => f.id));
+  const terminal = new Set(features.filter((f) => TERMINAL.has(f.status)).map((f) => f.id));
+  const satisfied = (blockerId: string): boolean => !present.has(blockerId) || terminal.has(blockerId);
+
+  const ready = features.filter(
+    (f) => NEEDS_WORK.has(f.status) && !owned.has(f.id) && f.blockedBy.every(satisfied),
+  );
+
+  // Group ready by plan ('' = manual / no source_plan).
+  const groups = new Map<string, FrontierFeature[]>();
+  for (const f of ready) {
+    const key = f.sourcePlan ?? '';
+    const g = groups.get(key);
+    if (g) g.push(f);
+    else groups.set(key, [f]);
+  }
+  const prioOf = (key: string): number =>
+    key === '' ? Number.POSITIVE_INFINITY : planPriority.get(key) ?? Number.POSITIVE_INFINITY;
+  const orderedGroups = [...groups.keys()].sort((a, b) => {
+    const pa = prioOf(a);
+    const pb = prioOf(b);
+    if (pa !== pb) return pa - pb;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+
+  const ordered: string[] = [];
+  for (const key of orderedGroups) {
+    const g = groups.get(key)!.slice().sort((x, y) => {
+      const ox = x.order ?? Number.POSITIVE_INFINITY;
+      const oy = y.order ?? Number.POSITIVE_INFINITY;
+      if (ox !== oy) return ox - oy;
+      return x.id < y.id ? -1 : x.id > y.id ? 1 : 0;
+    });
+    for (const f of g) ordered.push(f.id);
+  }
+
+  const toStart = slots > 0 ? ordered.slice(0, slots) : [];
+  const pendingWork = features.some((f) => NEEDS_WORK.has(f.status) && !owned.has(f.id));
+  return { toStart, stuck: pendingWork && ready.length === 0 };
 }
 
 /** Explicit opt-out sentinels (e.g. the shared dev box, to avoid flooding it). */
@@ -276,16 +340,27 @@ export async function dispatchOneHarness(
     // feature read, so a freshly-minted fix is eligible this same tick. Its own
     // try/catch guarantees a convert failure never sinks dispatch.
     await convertIssuesForHarness(slug, workspaceId).catch(() => {});
-    const eligible = await readFeaturesPg({ pg: pg as never, workspaceId, harnessSlug: slug });
+    // P-042: the frontier reads the FULL gated feature set (incl. its blocked_by
+    // edges + plan + order) from the consolidated source of truth — NOT the
+    // carved-out view set — so an in-flight blocker correctly still blocks its
+    // dependents. The carve-out (`owned`) is applied to dispatch CANDIDATES, not
+    // to the dependency graph.
+    const [features, owned, planPriority] = await Promise.all([
+      readFrontierFeatures(pg, workspaceId, slug),
+      durableOwnedFeatureIdsPg({ pg: pg as never, workspaceId, harnessSlug: slug }),
+      readPlanPriority(pg, workspaceId, slug),
+    ]);
     const liveCount = await liveCountFor(slug);
     const { cap, overCostCap } = await resolveHarnessDispatchGate(slug, workspaceId);
-    const toStart = selectFeaturesToDispatch(
-      eligible.map((f) => ({ id: f.id, status: f.status })),
-      liveCount,
-      cap,
-      overCostCap,
-    );
+    const slots = overCostCap ? 0 : Math.max(0, cap - liveCount);
+    const { toStart, stuck } = computeFrontier(features, planPriority, owned, slots);
     if (overCostCap) console.log(`[dbos-orchestrator] ${slug} over maxCostUsd — skipping new pipelines`);
+    if (stuck) {
+      console.warn(
+        `[dbos-orchestrator] ${slug} frontier STUCK — work remains but nothing is ready ` +
+          `(all remaining features are blocked or failing)`,
+      );
+    }
     const started: string[] = [];
     for (const fid of toStart) {
       const r = await ensureFeaturePipeline(slug, fid);
@@ -298,6 +373,79 @@ export async function dispatchOneHarness(
   } finally {
     await pg.end({ timeout: 2 }).catch(() => {});
   }
+}
+
+/**
+ * Read the full plan-gated feature set for the frontier (P-042) from the
+ * consolidated source of truth: each feature's status + `blocked_by` (P-046) +
+ * `feature_order` + `source_plan`. Reads consolidated directly (not the
+ * SELECT*-frozen per-harness view, which doesn't expose blocked_by/feature_order
+ * — D-017), applying the same started-plan gate `readFeaturesPg` uses (features
+ * with no plan are always eligible; plan features only when their plan is
+ * 'started'). No carve-out here — the caller passes `owned` to the frontier.
+ */
+async function readFrontierFeatures(
+  pg: ReturnType<typeof postgres>,
+  workspaceId: string,
+  slug: string,
+): Promise<FrontierFeature[]> {
+  const rows = await pg<
+    Array<{
+      feature_id: string;
+      status: string;
+      blocked_by: string[] | null;
+      feature_order: number | null;
+      source_plan: string | null;
+    }>
+  >`
+    SELECT feature_id, status, blocked_by, feature_order,
+           metadata->>'source_plan' AS source_plan
+      FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${slug}
+       AND (
+         (metadata->>'source_plan') IS NULL
+         OR (metadata->>'source_plan') IN (
+           SELECT plan_slug
+             FROM harness_shared.harness_plan_status
+            WHERE workspace_id = ${workspaceId}
+              AND harness_slug = ${slug}
+              AND status = 'started'
+         )
+       )
+  `;
+  return rows.map((r) => ({
+    id: r.feature_id,
+    status: r.status,
+    blockedBy: r.blocked_by ?? [],
+    sourcePlan: r.source_plan,
+    order: r.feature_order,
+  }));
+}
+
+/**
+ * Resolve each started plan's effective cross-plan dispatch priority (P-042 step
+ * 4 / D-013): the explicit `priority` column (P-045's drag order) when set, else
+ * a large base + a `started_at` rank so unset plans fall AFTER all explicit ones
+ * in started-order. Lower number = dispatched first.
+ */
+async function readPlanPriority(
+  pg: ReturnType<typeof postgres>,
+  workspaceId: string,
+  slug: string,
+): Promise<Map<string, number>> {
+  const rows = await pg<Array<{ plan_slug: string; eff_priority: number | bigint }>>`
+    SELECT plan_slug,
+           COALESCE(
+             priority,
+             1000000 + (ROW_NUMBER() OVER (ORDER BY started_at ASC NULLS LAST, plan_slug))::int
+           ) AS eff_priority
+      FROM harness_shared.harness_plan_status
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${slug}
+       AND status = 'started'
+  `;
+  return new Map(rows.map((r) => [r.plan_slug, Number(r.eff_priority)]));
 }
 
 /**
