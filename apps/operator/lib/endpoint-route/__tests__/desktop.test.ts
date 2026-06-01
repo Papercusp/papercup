@@ -101,25 +101,36 @@ describe('buildInstallSpec', () => {
 });
 
 describe('buildLoginSpec', () => {
-  it('claude: spawns `claude /login`', () => {
-    const spec = buildLoginSpec('claude', '/home/u');
-    expect(spec.command).toBe('claude');
+  // buildLoginSpec resolves the binary to an ABSOLUTE path (the Tauri PTY child
+  // has no inherited PATH, so a bare `claude` would resolve wrong). Pass the
+  // path explicitly to assert the resolved-binary branch deterministically.
+  it('claude: spawns `<resolved binary> /login`', () => {
+    const spec = buildLoginSpec('claude', '/home/u', '/opt/bin/claude');
+    expect(spec.command).toBe('/opt/bin/claude');
     expect(spec.args).toEqual(['/login']);
     expect(spec.cwd).toBe('/home/u');
   });
 
-  it('omp: spawns `omp /login`', () => {
-    expect(buildLoginSpec('omp', '/home/u').command).toBe('omp');
+  it('omp: spawns `<resolved binary> /login`', () => {
+    const spec = buildLoginSpec('omp', '/home/u', '/opt/bin/omp');
+    expect(spec.command).toBe('/opt/bin/omp');
+    expect(spec.args).toEqual(['/login']);
   });
 });
 
 describe('buildGithubLoginSpec', () => {
   it('spawns `gh auth login` (not /login like claude/omp)', () => {
     const spec = buildGithubLoginSpec('/home/u');
-    expect(spec.command).toBe('gh');
-    expect(spec.args).toEqual(['auth', 'login']);
     expect(spec.cwd).toBe('/home/u');
     expect(spec.env).toEqual({});
+    // gh resolves to an absolute path when installed (the PTY child has no PATH);
+    // otherwise it falls back to `bash -lc 'gh auth login'`. Accept either form.
+    if (spec.command === 'bash') {
+      expect(spec.args).toEqual(['-lc', 'gh auth login']);
+    } else {
+      expect(spec.command.endsWith('gh')).toBe(true);
+      expect(spec.args).toEqual(['auth', 'login']);
+    }
   });
 });
 
@@ -166,10 +177,13 @@ describe('desktop route ports', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.installRuntime.command).toBeTruthy();
-    expect(body.loginClaude.command).toBe('claude');
-    expect(body.loginOmp.command).toBe('omp');
-    expect(body.loginGithub.command).toBe('gh');
-    expect(body.loginGithub.args).toEqual(['auth', 'login']);
+    // Commands are resolved to absolute binary paths (or a `bash -lc` fallback)
+    // because the PTY child has no inherited PATH — assert the binary/intent,
+    // not a bare name.
+    const endsWithOrBash = (cmd: string, bin: string) => cmd === 'bash' || cmd.endsWith(bin);
+    expect(endsWithOrBash(body.loginClaude.command, 'claude')).toBe(true);
+    expect(endsWithOrBash(body.loginOmp.command, 'omp')).toBe(true);
+    expect(endsWithOrBash(body.loginGithub.command, 'gh')).toBe(true);
   });
 
   it('OPTIONS /desktop/preflight answers the CORS preflight with 204', async () => {
