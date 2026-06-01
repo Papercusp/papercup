@@ -20,10 +20,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getGhAuthToken } from '@/lib/identity/gh-token';
 import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
 
-const CUPBOARD_URL =
-  process.env.NEXT_PUBLIC_CUPBOARD_URL ??
-  process.env.PAPERCUSP_CUPBOARD_URL ??
-  '';
+// Base URL for the external Cupboard worker. Single source of truth is
+// resolveCupboardBaseUrl() (PAPERCUSP_CUPBOARD_URL or the canonical default) —
+// the same resolver the publish + admin proxies use. NOTE: the systemd dev unit
+// sources .env.local, NOT ~/.papercusp/env, so reading process.env directly here
+// (the old behavior) yielded an empty URL and a silently-empty listing
+// (`cupboard_url_missing`); the resolver's hardcoded default fixes that.
 
 // ─── GET /cupboard/listings ───────────────────────────────────────
 
@@ -32,14 +34,10 @@ const listCupboardListings = defineTool({
   path: '/cupboard/listings',
   auth: 'public',
   async handler(req) {
-    if (!CUPBOARD_URL) {
-      return Response.json({ listings: [], cupboard_url_missing: true });
-    }
-
     const url = new URL(req.url);
     // The Cupboard worker serves /harnesses (NOT /api/harnesses — that 404s)
     // and returns { results, next_cursor }.
-    const upstream = new URL(`${CUPBOARD_URL}/harnesses`);
+    const upstream = new URL(`${resolveCupboardBaseUrl()}/harnesses`);
     // Forward query params (q, claim_status, cursor, limit).
     url.searchParams.forEach((v, k) => upstream.searchParams.set(k, v));
 
@@ -72,12 +70,8 @@ const getCupboardListing = defineTool({
   auth: 'public',
   async handler(_req, ctx) {
     const id = ctx.params.id as string;
-    if (!CUPBOARD_URL) {
-      return Response.json({ error: 'Cupboard URL not configured' }, { status: 503 });
-    }
-
     try {
-      const res = await fetch(`${CUPBOARD_URL}/harnesses/${encodeURIComponent(id)}`, {
+      const res = await fetch(`${resolveCupboardBaseUrl()}/harnesses/${encodeURIComponent(id)}`, {
         headers: { 'User-Agent': 'papercusp-operator/1' },
         signal: AbortSignal.timeout(10_000),
       });
