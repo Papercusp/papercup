@@ -4,6 +4,7 @@ import { HarnessZeroProvider } from '../../providers/HarnessZeroProvider';
 import { installDesktopIpcPolyfills } from '../../lib/transport-adapters/desktop-bootstrap';
 import { installWorkspaceHeaderFetch } from '../../lib/transport-adapters/workspace-header-fetch';
 import { installWorkspaceParamEventSource } from '../../lib/transport-adapters/workspace-eventsource';
+import { installCallToolResolver } from '../../lib/call-tool-resolver';
 
 /**
  * Root sync provider. Wraps the app in `HarnessZeroProvider` and, on
@@ -33,6 +34,10 @@ if (typeof window !== 'undefined') {
   installDesktopIpcPolyfills();
   installWorkspaceHeaderFetch();
   installWorkspaceParamEventSource();
+  // Register the callTool seam's transport resolver (tool name → canonical route
+  // + Phase-E eligibility). No runtime change yet — nothing calls callTool until
+  // the Phase B migration. Plan: calltool-endpoint-seam-2026-06-01.
+  installCallToolResolver();
 }
 
 export function RootSyncProvider({ children }: { children: ReactNode }) {
