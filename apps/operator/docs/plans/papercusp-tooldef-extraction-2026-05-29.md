@@ -3,7 +3,7 @@ title: Extract the endpoint system into @papercusp/tooldef — a standalone, sch
 slug: papercusp-tooldef-extraction-2026-05-29
 status: active
 created: 2026-05-29
-updated: 2026-05-31
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 companion-to: [endpoint-unification-2026-05-21, endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026-05-12, principal-rfc-2026-05-20]
 ---
@@ -825,6 +825,8 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   Execution steps + preconditions in D-011 + the BRIEF. Gated on: (1) shared repo synced to
   in-tree HEAD (currently diverged — auth-RFC Phase 1-3 + `agentRoles` rename owed); (2) a
   tree-quiet focused pass coordinated with the active tooldef dev. blocked-by: P-051 → D-001 D-011
+- **P-054** `done` Execute D-011 distribution (Option B): packages/tooldef → libs/generic/tooldef submodule (Papercusp/tooldef @60d6cc38, commit 5d5c4a464) + packages/tooldef-http → NEW repo Papercusp/tooldef-http, libs/generic/tooldef-http submodule (commit 2c2f3c719). Verified: resolves from root/agent-mcp/tooldef-mcp/tooldef-http/operator; tooldef-mcp tsc=0 + 5/5 tests; CI does submodules:recursive; package.json workspaces + node_modules symlinks updated; the 4 build configs needed no edits (symlink resolution). BORROWABLE catalog + docs path pass done. Restart libs/tooldef pin bump flagged to Restart owner (checkout not local here). (executed 2026-05-31: tooldef 5d5c4a464 + tooldef-http new repo, 2c2f3c719 submodules verified; BORROWABLE efbca4662 + docs path pass b440f1e9d done; Restart pin flagged to owner)
+
 
 ## Open questions
 
