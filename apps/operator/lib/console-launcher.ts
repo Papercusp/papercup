@@ -21,7 +21,7 @@ import { join, resolve as resolvePath } from 'node:path';
 
 import { resolveAgentBin, resolveBackend } from '@papercusp/papercup-shared/agent';
 
-import { papercuspPath } from '@/lib/papercusp-root';
+import { papercuspPathForWorkspace } from '@/lib/papercusp-root';
 import {
   resolveContextEnv,
   resolveProjectDir,
@@ -122,7 +122,9 @@ export async function buildConsoleEnvelope(
     cwd = projectDir;
     stateDir = await resolveStateDir(opts.slug, opts.workspaceId);
   } else {
-    cwd = papercuspPath();
+    // Workspace-only launch: open at the SELECTED workspace's root, not the
+    // global active one (opts.workspaceId may differ from activeWorkspaceId()).
+    cwd = papercuspPathForWorkspace(opts.workspaceId);
   }
 
   // 2. Build env — same shape as the Pi pty (PI_CODING_AGENT_DIR if
@@ -137,7 +139,10 @@ export async function buildConsoleEnvelope(
     }),
     PAPERCUSP_WORKSPACE: opts.workspaceId,
     PAPERCUSP_OPERATOR_URL: opts.operatorBaseUrl,
-    PAPERCUSP_HOME: papercuspPath(),
+    // Scope HOME to the SELECTED workspace — using the global papercuspPath()
+    // here was the latent bug that let a spawned agent carry
+    // PAPERCUSP_WORKSPACE=<picked> alongside PAPERCUSP_HOME=<active>.
+    PAPERCUSP_HOME: papercuspPathForWorkspace(opts.workspaceId),
   };
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
   // that — empty value is worse than absent for "is this harness-scoped?".

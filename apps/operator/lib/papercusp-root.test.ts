@@ -9,7 +9,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWithWorkspace } from './workspace-als';
-import { papercuspRoot, _resetPapercuspRootForTests } from './papercusp-root';
+import {
+  papercuspRoot,
+  papercuspRootForWorkspace,
+  _resetPapercuspRootForTests,
+} from './papercusp-root';
 
 let root: string;
 let prevRoot: string | undefined;
@@ -70,5 +74,31 @@ describe('papercuspRoot — request-scoped (P-052)', () => {
     } finally {
       delete process.env.PAPERCUSP_HOME;
     }
+  });
+});
+
+describe('papercuspRootForWorkspace — targets a SPECIFIC workspace', () => {
+  it('resolves the named workspace, NOT the active one', () => {
+    // active workspace is ws-a (registry.current); ask for ws-b explicitly.
+    expect(papercuspRootForWorkspace('ws-b')).toBe(
+      join(root, 'ws-b', '.papercusp'),
+    );
+    expect(papercuspRootForWorkspace('ws-a')).toBe(
+      join(root, 'ws-a', '.papercusp'),
+    );
+  });
+
+  it('does not follow a different REQUEST workspace (it is explicit)', () => {
+    // Even inside a ws-a request, asking for ws-b returns ws-b.
+    const p = runWithWorkspace('ws-a', () => papercuspRootForWorkspace('ws-b'));
+    expect(p).toBe(join(root, 'ws-b', '.papercusp'));
+  });
+
+  it('falls back to papercuspRoot() for an unprovisioned/empty workspace', () => {
+    // no such dir → fall back to the active root (ws-a) rather than a
+    // non-existent path. This is what prevents the "PAPERCUSP_HOME=<active>"
+    // mismatch from becoming a broken HOME for a not-yet-created workspace.
+    expect(papercuspRootForWorkspace('never-created')).toBe(papercuspRoot());
+    expect(papercuspRootForWorkspace('')).toBe(papercuspRoot());
   });
 });

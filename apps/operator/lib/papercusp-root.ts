@@ -98,3 +98,34 @@ function resolve(): string {
 export function papercuspPath(...parts: string[]): string {
   return join(papercuspRoot(), ...parts);
 }
+
+/**
+ * The Papercusp root for a **specific** workspace — NOT the active one.
+ *
+ * Use this when you build state/env that targets a workspace other than the
+ * request's active one. The canonical case is the console/spawn envelope, which
+ * sets `PAPERCUSP_HOME` for the *selected* workspace (`opts.workspaceId`) — which
+ * is not necessarily `activeWorkspaceId()`. Resolving that via the global
+ * {@link papercuspRoot} is the latent bug behind a spawned agent getting
+ * `PAPERCUSP_WORKSPACE=<picked>` but `PAPERCUSP_HOME=<active>` (e.g. launching a
+ * console for workspace B while `registry.current` is A). See the agent-insight
+ * `workspace-id-pin-and-harness-membership`.
+ *
+ * Falls back to {@link papercuspRoot} when the workspace's dir isn't provisioned
+ * yet, so a not-yet-created workspace never yields a non-existent home.
+ */
+export function papercuspRootForWorkspace(workspaceId: string): string {
+  if (workspaceId) {
+    const cand = join(workspacesRoot(), workspaceId, '.papercusp');
+    if (existsSync(cand)) return cand;
+  }
+  return papercuspRoot();
+}
+
+/** Convenience for "give me a path under a specific workspace's papercusp root". */
+export function papercuspPathForWorkspace(
+  workspaceId: string,
+  ...parts: string[]
+): string {
+  return join(papercuspRootForWorkspace(workspaceId), ...parts);
+}
