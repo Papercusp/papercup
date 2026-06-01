@@ -239,12 +239,36 @@ required step `logins`), #20 OperatorChatSidebar (MIN_WIDTH→56), #21
 AddPanelCatalog ("Open panel"), #22 snapshots/page (bumpPatch import). Plus
 sync-resolver (registry 56→57).
 
-**Status: 21 of 38 genuine fixed (committed). 17 still need your call** — the
-real-bug suspects (A: #1–9), test-isolation (B: #10–11), the genuinely-ambiguous
-behavior ones (#15 misc snapshots shape, #16 require-principal, #17
-runner-aggregate scenario-registry 30→37, #18 desktop binary path-resolution),
-and the rework (#23 chat-surface-tools). Tell me per-item (or per-category)
-whether to fix the test, fix the product code, rework, or skip — and I'll execute.
+**Also resolved this round (verified test-only):** #17 runner-aggregate (registered
+new oracle O4–O6 + architect A3–A6 scenarios), #18 desktop (assert resolved binary
+path — buildLoginSpec deliberately resolves the binary; PTY child has no PATH).
+#1 oauth/state was a missing-`await` bug (signState/verify went async) — fixed
+0→5/6; the residual is now a refined item below.
+
+**Status: 23 of 38 fully fixed + oauth/state at 5/6 (all committed). 14 still
+need your call:**
+- **Real-bug suspects (verify code):** #2 branch-actions (fd leak), #3 css-tokens
+  (43 undefined tokens), #4 perf-anti-patterns, #5 un-hardcode-contract
+  (console.warn), #6 auth-posture (auth-tier drift — security), #7 experts (route
+  500 / data migration), #8 agent-tools-device-auth + agent-tools-catchall (route
+  500s), #9 pty-ws.
+- **#1b oauth/state residual:** the `round-trips` test hits **real PG**
+  (`harness_shared.oauth_nonces` via getOrgPg) and the cold drizzle construct
+  intermittently throws `Cannot read properties of null (reading 'constructor')`
+  in relations extraction. Either mock the nonce store / make it an
+  `.integration.test.ts`, OR it's a real drizzle-schema cold-construct bug worth a
+  look (it lives in `getOrgPg`, so could affect other suites).
+- **Test-isolation (mock the store):** #10 subscriptions (reads 376 real coord
+  watches; coord went FS→PG, test still sets `PAPERCUSP_COORD_DIR`), #11
+  coord-hook (reads real coord inbox).
+- **Ambiguous behavior:** #15 misc (snapshots tool returns `{ok:false}` despite
+  mocked data), #16 require-principal (resolves "no principal" where a 403
+  cap-error was expected).
+- **Rework:** #23 chat-surface-tools (audits retired `app/api/**/route.ts` source
+  paths; repoint to relocated `lib/endpoint-route/routes/**`).
+
+Tell me per-item (or per-category) whether to fix the test, fix the product code,
+rework, or skip — and I'll execute.
 ---
 
 ## Objective
