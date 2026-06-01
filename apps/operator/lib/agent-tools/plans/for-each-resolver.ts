@@ -57,6 +57,18 @@ export function isForEachResolver(forEach: string | ForEachResolver): forEach is
   return typeof forEach === 'object' && forEach !== null;
 }
 
+/**
+ * True when a `for_each` resolver is COMPLETION-TIME (`from_feature`) — its
+ * item-set is published by a producing feature's worker and is NOT known at
+ * promote time, so the wave is deferred and expanded when that feature publishes
+ * (D-019). The promote-time kinds (items/glob/sql) return false.
+ */
+export function isCompletionTimeForEach(
+  forEach: string | ForEachResolver,
+): forEach is { from_feature: string } {
+  return isForEachResolver(forEach) && 'from_feature' in forEach;
+}
+
 export interface ResolveForEachCtx {
   /** Run a glob against the harness repo, returning matching paths. Injected. */
   runGlob?: (pattern: string) => Promise<string[]>;
@@ -80,6 +92,13 @@ export async function resolveForEach(
   const cap = ctx.cap ?? DEFAULT_FOR_EACH_FANOUT_CAP;
   let raw: string[];
   try {
+    if ('from_feature' in spec) {
+      // Completion-time: expanded when the producing feature publishes, not here.
+      throw new ForEachResolverError(
+        `for_each.from_feature (${spec.from_feature}) is a completion-time resolver — ` +
+          `it is expanded when that feature publishes its items, not at promote time`,
+      );
+    }
     if ('items' in spec) {
       raw = spec.items;
     } else if ('glob' in spec) {

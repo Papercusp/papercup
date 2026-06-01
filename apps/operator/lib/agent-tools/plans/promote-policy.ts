@@ -51,18 +51,26 @@ export const StaticFeatureSchema = z.object({
 export type StaticFeature = z.infer<typeof StaticFeatureSchema>;
 
 /**
- * A deterministic resolver for a generative wave's item-set (P-043 / D-012a):
- * the set is produced by RUNNING A QUERY, not an LLM generator and not the
- * promote agent hand-passing it. `.strict()` so an ambiguous multi-key spec
- * (e.g. `{glob, sql}`) is rejected loudly.
+ * A deterministic resolver for a generative wave's item-set (P-043 / D-012a /
+ * D-019): the set is produced by RUNNING A QUERY (or reading a producing
+ * feature's published items), not an LLM generator and not the promote agent
+ * hand-passing it. `.strict()` so an ambiguous multi-key spec (e.g. `{glob,sql}`)
+ * is rejected loudly.
+ *
+ * PROMOTE-TIME (the set exists now → expand up front):
  *   - items: an inline explicit set
  *   - glob:  repo files matching a glob (e.g. `app/api/​**​/route.ts`)
  *   - sql:   the first column of each row from the harness PG
+ * COMPLETION-TIME (the set derives from a feature's discovery work → deferred):
+ *   - from_feature: the feature id/title whose worker PUBLISHES the item-set via
+ *     the `generators:publish` tool. The wave is NOT expanded at promote; when
+ *     that feature publishes, one child per item is minted `blocked_by` it.
  */
 export const ForEachResolverSchema = z.union([
   z.object({ items: z.array(z.string().min(1)).min(1) }).strict(),
   z.object({ glob: z.string().min(1) }).strict(),
   z.object({ sql: z.string().min(1) }).strict(),
+  z.object({ from_feature: z.string().min(1) }).strict(),
 ]);
 export type ForEachResolver = z.infer<typeof ForEachResolverSchema>;
 

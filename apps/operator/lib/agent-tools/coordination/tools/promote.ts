@@ -39,6 +39,7 @@ import { parsePromotePolicy, buildWaveFeatures, type BuiltFeature } from '../../
 import {
   resolveForEach,
   isForEachResolver,
+  isCompletionTimeForEach,
   ForEachFanoutError,
   type ResolveForEachCtx,
 } from '../../plans/for-each-resolver';
@@ -388,27 +389,52 @@ export default defineTool({
       if (!w) return fail('unknown_wave', `wave "${waveId}" is not in the \`## Promote\` policy`);
       // The resolver's glob/sql need the target harness — resolve it first.
       harnessSlug = harnessSlug ?? policy.target_harness;
-      // P-043: if the wave's `for_each` is a system-run resolver (items/glob/sql),
-      // resolve the item-set by QUERY; else the agent passes `generate_items`
-      // (legacy named set). A fan-out over the cap or a resolver failure escalates
-      // (the whole promote fails loudly) rather than silently truncating/zeroing.
-      let generateItems = args.generate_items;
-      if (w.generate && isForEachResolver(w.generate.for_each)) {
-        if (!harnessSlug) {
-          return fail('harness_slug_required', 'a for_each glob/sql resolver needs a target harness (set harness_slug or target_harness)');
+      if (w.generate && isCompletionTimeForEach(w.generate.for_each)) {
+        // P-043 / D-019: a COMPLETION-TIME wave (`for_each: { from_feature }`) is
+        // NOT expanded at promote — it expands when its producing feature
+        // publishes its items (generators:publish → children blocked_by it). Mint
+        // only any STATIC features it also declares; a pure generative
+        // completion-time wave promotes nothing now (deferred, not an error).
+        const staticOnly = buildWaveFeatures({ ...w, generate: undefined }, {}).features;
+        if (staticOnly.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  mode: 'deferred',
+                  wave: waveId,
+                  reason: `wave "${waveId}" is a completion-time generative wave (for_each.from_feature=${w.generate.for_each.from_feature}); it expands when that feature publishes via generators:publish — nothing promoted now`,
+                }),
+              },
+            ],
+          };
         }
-        try {
-          generateItems = await resolveForEach(w.generate.for_each, buildForEachCtx(harnessSlug, ctx.workspaceId));
-        } catch (e) {
-          const code = e instanceof ForEachFanoutError ? 'for_each_fanout' : 'for_each_resolver_error';
-          return fail(code, e instanceof Error ? e.message : String(e));
+        promoteFeatures = staticOnly;
+      } else {
+        // P-043: a promote-time resolver (items/glob/sql) resolves the item-set by
+        // QUERY now; else the agent passes `generate_items` (legacy named set). A
+        // fan-out over the cap or a resolver failure escalates (the whole promote
+        // fails loudly) rather than silently truncating/zeroing.
+        let generateItems = args.generate_items;
+        if (w.generate && isForEachResolver(w.generate.for_each)) {
+          if (!harnessSlug) {
+            return fail('harness_slug_required', 'a for_each glob/sql resolver needs a target harness (set harness_slug or target_harness)');
+          }
+          try {
+            generateItems = await resolveForEach(w.generate.for_each, buildForEachCtx(harnessSlug, ctx.workspaceId));
+          } catch (e) {
+            const code = e instanceof ForEachFanoutError ? 'for_each_fanout' : 'for_each_resolver_error';
+            return fail(code, e instanceof Error ? e.message : String(e));
+          }
         }
+        const built = buildWaveFeatures(w, { generateItems });
+        if (built.features.length === 0) {
+          return fail('empty_wave', `wave "${waveId}" resolved to 0 features${built.warnings.length ? ': ' + built.warnings.join('; ') : ''}`);
+        }
+        promoteFeatures = built.features;
       }
-      const built = buildWaveFeatures(w, { generateItems });
-      if (built.features.length === 0) {
-        return fail('empty_wave', `wave "${waveId}" resolved to 0 features${built.warnings.length ? ': ' + built.warnings.join('; ') : ''}`);
-      }
-      promoteFeatures = built.features;
     }
     if (!harnessSlug) return fail('harness_slug_required', 'harness_slug is required (or set target_harness in the `## Promote` policy)');
 

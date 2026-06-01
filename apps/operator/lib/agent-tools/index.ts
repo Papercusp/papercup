@@ -193,6 +193,9 @@ import './coordination/tools/watermark-set';
 import './coordination/tools/plan-events';
 // Plan → harness on-ramp (Phase E v0.5 — preview only)
 import './coordination/tools/promote';
+// Completion-time for_each: a producing feature publishes its discovered items
+// (P-043 / D-019) → generative children minted blocked_by it.
+import './generators/publish';
 
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';
