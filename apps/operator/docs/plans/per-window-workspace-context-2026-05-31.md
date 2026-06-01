@@ -355,6 +355,28 @@ Ran the P-014 integration verification (user authorized churning the box).
 **P-050 release-BOOT run-check — NOT done (blocked, not forced):** verifying the `is_dev=false` shared-sidecar boot needs a release build. `cargo build --release` failed at link with `Text file busy` — the release binary inode (+ its `deps/papercusp_desktop-*` hardlink) is held by OTHER running release desktop instances (started 04:34–04:55 on `/tmp/p4-fresh-home`/`/tmp/p4h` test homes — a peer's or earlier test runs, on the pre-P-050 binary). Per repo policy ("never route around a block — that's the other agent's in-flight work"), I did NOT kill them. P-050 is cargo-check-clean and the dev `:3070` already demonstrates the shared-operator topology (one operator, many windows, per-workspace scoping). Run-verifying the release boot is a clean-box follow-up: build release + run under Xvfb + tail for the `shared sidecar home / shared state dir` log line + embedded-PG at `.shared/embedded-pg-data`.
 Related: P-014, P-050, P-053
 
+
+### D-015 — D-015 — P-020 scoped: core is a cost/design decision (background work for ALL workspaces vs active-only), not a mechanical edit
+Date: 2026-06-01
+Mapped every background reader (no request scope) for the shared-operator model. Conclusion: P-020's substance is a DESIGN/COST decision, and the status quo is a valid choice needing no code.
+
+**The core (the part that matters):** the background orchestrator/autoloop dispatch picks work for ONE workspace per tick:
+- `orchestrator-loop.ts:281` `runOrchestratorTick()` → `const workspaceId = activeWorkspaceId()` once, then dispatches only that workspace's harnesses (`resolveTickHarnesses(workspaceId)` → `listAllHarnesses([workspaceId])`; `readFeaturesPg({workspaceId})`).
+- autoloop (legacy `autoloop.ts` stood down by default; DBOS `autoloop-workflow.ts` is live via `dbosAutoloopActive()`) fires directors for one workspace; `recordFire` stamps `activeWorkspaceId()`.
+- `orchestrator-start.ts:86` captures `activeWorkspaceId()` at pipeline start.
+
+**THE DECISION (avi's — cost implications):** in the shared operator serving N workspaces, should background agent work run for ALL workspaces or only the active/global one?
+- **Option A (iterate-all):** every workspace's harnesses get directors fired + features dispatched each tick → agent/LLM spend × N workspaces. Needs a PER-WORKSPACE concurrency/cost cap + workspace-keyed dedup (`autoloop:<ws>:<slug>:<role>`). Matches "every workspace makes progress in the background."
+- **Option B (active-only = STATUS QUO):** background work serves registry.current / the env-pinned workspace only; other workspaces are quiet until foregrounded. NO code change. Cheap. The original DBOS design.
+
+**Peripheral background readers** (independent of the decision):
+- OK as-is: scratch-GC (already loops registry.workspaces), memory-cleanup (mem0 global), embed-backfill (global), operator-scan-lock (request-scoped).
+- Cheap/correct to iterate-all regardless: telemetry-flush (HTTP POSTs).
+- Correctness (no cost mult): harness-fs-watcher stamps `activeWorkspaceId()` at upsert (`upsertSummary`:247 / `upsertReview`:296) — should stamp each harness's OWN workspace (derivable from the file path under the workspace home), not the global; but only manifests if it watches multiple workspace homes (watch-root setup unverified).
+
+**Recommendation:** Option B (status quo) is the safe default — P-020 needs NO code under it. Only do Option A if you want all-workspaces background progress, and then it must ship WITH per-workspace cost caps. I will NOT implement Option A unilaterally (it multiplies LLM spend). Helper for either: `runWithWorkspace(id, fn)` (workspace-als.ts) + `readRegistry().workspaces`.
+Related: P-020
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)
