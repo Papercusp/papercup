@@ -90,6 +90,29 @@ export async function checkRepoPermission(
   return { has_permission: !!perm.admin || !!perm.maintain, permission: perm.admin ? 'admin' : (perm.maintain ? 'maintain' : '') };
 }
 
+/**
+ * Cupboard-operator allowlist. Operators are identified by GitHub user id
+ * (public, not secret) listed in the `CUPBOARD_OPERATOR_GITHUB_IDS` var. An
+ * operator still authenticates with a normal GitHub bearer (`resolveGithubBearer`);
+ * this just gates whether their resolved id may use the /admin moderation surface.
+ * Empty / unset ⇒ no operators ⇒ /admin is closed.
+ */
+export function parseOperatorIds(env: { CUPBOARD_OPERATOR_GITHUB_IDS?: string }): Set<number> {
+  return new Set(
+    (env.CUPBOARD_OPERATOR_GITHUB_IDS ?? '')
+      .split(',')
+      .map((s) => parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n > 0),
+  );
+}
+
+export function isCupboardOperator(
+  userId: number,
+  env: { CUPBOARD_OPERATOR_GITHUB_IDS?: string },
+): boolean {
+  return parseOperatorIds(env).has(userId);
+}
+
 /** Lift the raw bearer back out of the request (for forwarded perm checks). */
 export function extractBearer(req: Request): string {
   const auth = req.headers.get('authorization') ?? '';

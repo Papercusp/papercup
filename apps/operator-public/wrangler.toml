@@ -29,6 +29,11 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "production"
 CUPBOARD_HOST = "cupboard.papercusp.com"
+# Comma-separated GitHub user ids allowed to use the /admin moderation surface.
+# GitHub user ids are public (not secret), so this is a var. Empty ⇒ no
+# operators ⇒ /admin endpoints all 403. Set to the maintainers' GitHub numeric
+# ids (e.g. "583231,1223568103") before relying on moderation, then redeploy.
+CUPBOARD_OPERATOR_GITHUB_IDS = ""
 RATE_PER_USER_PUBLISH_HOURLY = "5"
 RATE_PER_USER_REPORT_HOURLY = "10"
 RATE_PER_IP_LIST_PER_MINUTE = "60"

@@ -218,6 +218,72 @@ export async function insertReport(db: D1Database, r: Omit<ReportRow, 'status' |
     .run();
 }
 
+/** A report joined with a thin summary of its target harness, for the
+ *  operator moderation list (avoids an N+1 fetch per report). */
+export interface ReportWithHarness extends ReportRow {
+  harness_title: string | null;
+  harness_github_url: string | null;
+  harness_unlisted_at: number | null;
+}
+
+/**
+ * List reports for the operator moderation surface, newest-pending-first.
+ * `status` filters to one lifecycle state; omit (or pass 'all') for every
+ * report. Joined with the harness so the operator sees what's being reported
+ * without a second round-trip.
+ */
+export async function listReports(
+  db: D1Database,
+  opts: { status?: ReportRow['status'] | 'all'; limit?: number } = {},
+): Promise<ReportWithHarness[]> {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const filterStatus = opts.status && opts.status !== 'all';
+  const sql =
+    `SELECT r.*,
+            h.title AS harness_title,
+            h.github_url AS harness_github_url,
+            h.unlisted_at AS harness_unlisted_at
+       FROM reports r
+       LEFT JOIN harnesses h ON h.id = r.harness_id` +
+    (filterStatus ? ` WHERE r.status = ?` : ``) +
+    ` ORDER BY r.created_at ASC LIMIT ?`;
+  const binds: unknown[] = filterStatus ? [opts.status, limit] : [limit];
+  const stmt = db.prepare(sql);
+  const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(...binds);
+  const res = await bound.all<ReportWithHarness>();
+  return res.results ?? [];
+}
+
+export async function getReportById(db: D1Database, id: string): Promise<ReportRow | null> {
+  const row = await db
+    .prepare('SELECT * FROM reports WHERE id = ?')
+    .bind(id)
+    .first<ReportRow>();
+  return row ?? null;
+}
+
+/**
+ * Resolve a pending report. Idempotency guard: the WHERE pins `status =
+ * 'pending'`, so resolving an already-resolved report changes 0 rows — the
+ * caller treats `changes === 0` as "already handled / not found". Returns the
+ * number of rows changed.
+ */
+export async function resolveReport(
+  db: D1Database,
+  id: string,
+  opts: { status: 'resolved_unlist' | 'resolved_dismiss'; note: string | null; now_ms: number },
+): Promise<number> {
+  const res = await db
+    .prepare(
+      `UPDATE reports
+          SET status = ?, resolved_at = ?, resolved_by_operator_note = ?
+        WHERE id = ? AND status = 'pending'`,
+    )
+    .bind(opts.status, opts.now_ms, opts.note, id)
+    .run();
+  return (res as { meta?: { changes?: number } }).meta?.changes ?? 0;
+}
+
 export async function audit(
   db: D1Database,
   ts: number,
