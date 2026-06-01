@@ -186,16 +186,16 @@ describe('D-004b — 401 gh_auth_required error message', () => {
     expect(allText).not.toMatch(/\bHTTP 401\b/);
   });
 
-  it('also triggers on a 200 body with code gh_auth_required (defense-in-depth)', async () => {
-    // The endpoint may send 401 directly, or wrap in a non-ok status.
-    // Verify the code path triggers even when only checking `code`.
+  it('triggers on a non-401 response carrying code gh_auth_required (the OR arm)', async () => {
+    // The endpoint normally sends 401, but the message must ALSO fire when the
+    // code arrives under any other non-ok status — this exercises the
+    // `body.code === 'gh_auth_required'` arm, NOT the `res.status === 401` arm.
     const user = userEvent.setup();
 
-    // Actually send 401 to hit the `res.status === 401` branch.
     mockFetch.mockResolvedValueOnce(
       new Response(
-        JSON.stringify({ code: 'gh_auth_required' }),
-        { status: 401 },
+        JSON.stringify({ code: 'gh_auth_required', error: 'Not authenticated' }),
+        { status: 422 },
       ),
     );
 
