@@ -1,7 +1,7 @@
 ---
 title: Fleet spawn containment: native per-backend OS sandboxing
 slug: fleet-spawn-sandbox-2026-06-01
-status: ready
+status: shipped
 created: 2026-06-01
 updated: 2026-06-01
 owner: avi@storewolf.com
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Sandbox is SHIPPED + now actually usable opt-in (`PAPERCUSP_FLEET_SANDBOX`), affecting only claude-code Bash subprocesses (codex/omp uncontained, D-009/D-010). The real per-role fleet pass ran (D-013) and its one showstopper — `npm install` EROFS because pkg managers cache in $HOME — is FIXED + validated (P-014/D-014, submodule 673c41c): caches redirect into an allow-listed dir; npm install under the sandbox now exits 0. The pass also confirmed MCP survives the sandbox and egress is deployment-extensible (D-012). So default-on is now TECHNICALLY VIABLE. P-013 is the sole open item and is now purely a user posture decision (needs-human), no technical blocker.
+**State:** COMPLETE. The fleet OS sandbox is SHIPPED and DEFAULT-ON (P-013/D-015): claude-code fleet spawns are sandboxed unless `PAPERCUSP_FLEET_SANDBOX=0`. Verified end-to-end via the real fleet pass (D-013) against a real toolchain — MCP survives the sandbox, egress allowlist works + is deployment-extensible/lockdownable (D-012), and the `npm install` EROFS showstopper is fixed (P-014, caches redirected into an allow-listed dir). Base allowlist covers registries + the common toolchain CDNs (Playwright, node-gyp) so e2e/native-addon projects work out-of-box. Failure mode is loud + recoverable. Submodule efde569; all committed. codex/omp stay uncontained (D-009/D-010); only claude-code is sandboxed.
 
-**Next:** User posture decision on P-013: (a) flip default-on (recommended — recoverable + loud failures) vs keep opt-in (only claude-code is contained); and (b) whether common CDNs (Playwright cdn.playwright.dev/prss, node-gyp nodejs.org) join the BASE allowlist for out-of-box e2e/native-addon support vs stay deployment-opt-in via PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS. Optional residual: P-011 enableWeakerNestedSandbox/container-fallback (only matters for a containerized operator under default-on).
+**Next:** Done — no open build work. Takes effect on the next :3070 operator restart (no hot-reload; not force-restarted to avoid disrupting peers). Optional future hardening: P-011 enableWeakerNestedSandbox/container-fallback (only for a containerized operator under default-on); per-role egress narrowing (the reserved `role` seat); codex/omp containment if those backends gain MCP-under-sandbox support.
 
 ## Background
 
@@ -73,7 +73,7 @@ AppArmor profile) covers every backend.
 - **P-010** `done` Shared policy module: one source of truth for the credential-deny list + egress allowlist, mapped onto each backend's config shape (claude settings / codex toml / srt json). Avoids drift across the three. (FLEET_SANDBOX_DENY_READ/ALLOWED_DOMAINS are the shared source mapped onto claude settings + srt schema)
 - **P-011** `wip` Host dependency check + docs: `bubblewrap` + `socat` + seccomp helper present; Ubuntu 24.04+ `bwrap` AppArmor profile; `enableWeakerNestedSandbox` when the spawn runs inside a container; fallback-safe + Linux/macOS only (no native Windows). (deps installed on this box srt+ripgrep; bwrap/socat present + documented in D-008; formal dep-check/docs page TODO)
 - **P-012** `done` Per-role real-spawn verification pass (the `#1` gold-standard gate): run each pipeline role under the sandbox against a real harness; catalogue tool breakage (watchman, Go-CLI TLS, docker, etc.) and add per-tool `excludedCommands`/`allowWrite` exceptions. Only after this passes do we flip default-on. blocked-by: P-004, P-007, P-009 (verification done — revealed codex+omp non-viable D-009/D-010; claude viable for no-network roles)
-- **P-013** `needs-human` Flip `PAPERCUSP_FLEET_SANDBOX` default-on once P-012 is green; keep `failIfUnavailable` opt-in for managed/CI deployments. blocked-by: P-012 (not flipped — P-012 didn't fully pass; needs claude per-role egress allowlist + full per-role pass first) (gated not an item-dep: needs claude per-role egress allowlist + a full per-role real-spawn pass before default-on) (real fleet pass D-013 found default-on breaks `npm install` EROFS — blocked on P-014 cache fix landing first; then an egress-defaults decision; then the flip) (technical blocker cleared P-014 done; MCP survives, egress extensible, npm install works. Remaining is the user's posture call: flip default-on recommended — recoverable + loud vs keep opt-in only claude-code is contained, AND whether common CDNs Playwright join the base allowlist vs stay deployment-opt-in.)
+- **P-013** `done` Flip `PAPERCUSP_FLEET_SANDBOX` default-on once P-012 is green; keep `failIfUnavailable` opt-in for managed/CI deployments. blocked-by: P-012 (not flipped — P-012 didn't fully pass; needs claude per-role egress allowlist + full per-role pass first) (gated not an item-dep: needs claude per-role egress allowlist + a full per-role real-spawn pass before default-on) (real fleet pass D-013 found default-on breaks `npm install` EROFS — blocked on P-014 cache fix landing first; then an egress-defaults decision; then the flip) (technical blocker cleared P-014 done; MCP survives, egress extensible, npm install works. Remaining is the user's posture call: flip default-on recommended — recoverable + loud vs keep opt-in only claude-code is contained, AND whether common CDNs Playwright join the base allowlist vs stay deployment-opt-in.) (EXECUTED D-015, submodule efde569: fleetSandboxEnabled default-on opt out =0/false/off; Playwright + node-gyp CDNs added to base allowlist. Takes effect next :3070 restart. 83/83 tests.)
 
 
 ## Phase 4 — default-on viability (real fleet pass)
@@ -206,3 +206,18 @@ VALIDATED end-to-end through the real emitted policy (dumped fleetSandboxSetting
 
 NET STATE: the sandbox is now actually usable opt-in (the EROFS bug is gone), and default-on is TECHNICALLY VIABLE — the real fleet pass confirmed MCP survives the sandbox, egress is deployment-extensible (D-012), and the basic install step works. The only thing left for P-013 is the USER'S POSTURE DECISION (now needs-human): (1) flip default-on (recommended — recoverable via the allowlist env knobs + loud failures, fits "pick the right default now"; caveat: only claude-code is contained, codex/omp uncontained per D-009/D-010) vs keep opt-in; and (2) whether common toolchain CDNs (Playwright's cdn.playwright.dev + playwright.download.prss.microsoft.com; node-gyp's nodejs.org for native addons) join the BASE allowlist for out-of-the-box e2e/native-addon support, or stay deployment-opt-in via PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS.
 Related: P-013, P-014
+
+### D-015 — P-013 EXECUTED: PAPERCUSP_FLEET_SANDBOX flipped default-on + common toolchain CDNs (Playwright, node-gyp) added to the base allowlist
+Date: 2026-06-01
+Date: 2026-06-01 (resume session). Per the user's decision ("flip on + add common CDNs"), the D-003 gate is now satisfied (real pass green after P-014) and the flip is done (submodule efde569).
+
+CHANGES:
+- `fleetSandboxEnabled()` is now DEFAULT-ON: returns true unless `PAPERCUSP_FLEET_SANDBOX` is explicitly `0`/`false`/`off` (case-insensitive, trimmed). Read per-spawn, so it takes effect on the next :3070 operator restart (no hot-reload — NOT force-restarted, to avoid disrupting peers/the autoloop; activates naturally or on demand).
+- Base `FLEET_SANDBOX_ALLOWED_DOMAINS` gained the common toolchain CDNs the real pass surfaced: `cdn.playwright.dev` + `playwright.download.prss.microsoft.com` (Playwright browser binaries) and `nodejs.org` (node-gyp headers) — so e2e + native-addon projects work out-of-box under default-on. Still strippable via `PAPERCUSP_FLEET_SANDBOX_DENY_ALL_EGRESS=1`.
+- `failIfUnavailable:true` kept strict: a host without bubblewrap opts out explicitly with `=0` rather than silently degrading to unsandboxed (don't weaken the guarantee by default).
+- Docstrings updated (section header, allowlist tradeoff, fleetSandboxEnabled, failIfUnavailable). +1 test (default-on semantics); 83/83 invoke.test.ts green.
+
+SCOPE/CAVEATS (unchanged, restated): default-on contains ONLY claude-code Bash subprocesses — the default fleet backend — but codex/omp stay uncontained (D-009/D-010), so switching AGENT_BACKEND to those silently loses containment. P-011 container-fallback (`enableWeakerNestedSandbox`) remains unwired: a CONTAINERIZED operator without bwrap would fail-loud on every claude spawn under default-on until it sets `=0` — only relevant for that deployment shape, not this native dev box (bwrap/socat verified present). 3 pre-existing orchestrator unit failures (state.test.ts harnessSlug, pre-loop.test.ts x2) are UNRELATED (fail identically with `=0`; part of the threads→forks-unmasked batch su-2f904 flagged).
+
+Plan COMPLETE: the sandbox is shipped, default-on, verified end-to-end against a real toolchain, with a recoverable + loud failure mode and deployment-extensible/lockdownable egress.
+Related: P-013
