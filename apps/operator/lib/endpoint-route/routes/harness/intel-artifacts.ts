@@ -30,35 +30,37 @@ export default defineTool({
 
     try {
       const { sql } = getOrgPg();
-      const rows = await sql.begin(async (tx) => {
-        await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ws]);
-        return await tx<Array<{
-          id: number;
-          plugin_name: string;
-          tool_name: string;
-          role: string;
-          feature_id: string | null;
-          run_id: string | null;
-          spawn_id: string;
-          invoked_at: Date;
-          duration_ms: number | null;
-          output_ref: string | null;
-          output_size: number | null;
-        }>>`
-          SELECT id, plugin_name, tool_name, role,
-                 feature_id, run_id, spawn_id,
-                 invoked_at, duration_ms, output_ref, output_size
-            FROM harness_shared.tool_invocations_artifacts
-           WHERE harness_slug = ${slug}
-             AND invoked_at >= to_timestamp(${sinceMs}::double precision / 1000.0)
-             AND (
-               (${includePack}::boolean AND tool_name LIKE '%.pack')
-               OR (${includeDiff}::boolean AND tool_name LIKE '%.diff')
-             )
-           ORDER BY invoked_at DESC
-           LIMIT ${limit}
-        `;
-      });
+      // P-041: scope by workspace_id EXPLICITLY (the view exposes it). getOrgPg
+      // is the admin role (bypasses RLS) and tool_invocations_artifacts is not a
+      // security_invoker view, so the prior set_config('app.workspace_id') was a
+      // dead no-op — the query spanned every workspace for a colliding slug.
+      const rows = await sql<Array<{
+        id: number;
+        plugin_name: string;
+        tool_name: string;
+        role: string;
+        feature_id: string | null;
+        run_id: string | null;
+        spawn_id: string;
+        invoked_at: Date;
+        duration_ms: number | null;
+        output_ref: string | null;
+        output_size: number | null;
+      }>>`
+        SELECT id, plugin_name, tool_name, role,
+               feature_id, run_id, spawn_id,
+               invoked_at, duration_ms, output_ref, output_size
+          FROM harness_shared.tool_invocations_artifacts
+         WHERE workspace_id = ${ws}
+           AND harness_slug = ${slug}
+           AND invoked_at >= to_timestamp(${sinceMs}::double precision / 1000.0)
+           AND (
+             (${includePack}::boolean AND tool_name LIKE '%.pack')
+             OR (${includeDiff}::boolean AND tool_name LIKE '%.diff')
+           )
+         ORDER BY invoked_at DESC
+         LIMIT ${limit}
+      `;
       return Response.json({
         rows: rows.map((r) => ({
           id: r.id,

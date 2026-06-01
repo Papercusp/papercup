@@ -5,6 +5,7 @@
 import { listAllProjectedTools, type ProjectedTool } from '@papercusp/agent-mcp';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface SerializedTool {
@@ -64,13 +65,19 @@ export default defineTool({
     if (includeStats) {
       try {
         const { sql } = getOrgPg();
+        // P-041: the tool catalog is global, but its health counts are shown in
+        // a per-window panel — scope them to the active workspace. getOrgPg
+        // bypasses RLS, so without this the counts aggregate every workspace's
+        // invocations (a cross-workspace info leak into a per-window UI).
         const rows = await sql.unsafe(
           `SELECT tool_name,
                   count(*) FILTER (WHERE status = 'ok')::int AS ok_count,
                   count(*) FILTER (WHERE status != 'ok')::int AS err_count
              FROM harness_shared.tool_invocations
-            WHERE invoked_at > now() - interval '24 hours'
+            WHERE workspace_id = $1
+              AND invoked_at > now() - interval '24 hours'
             GROUP BY tool_name`,
+          [activeWorkspaceId()],
         );
         const byName = new Map<string, { ok: number; err: number }>();
         for (const row of rows as unknown as Array<{ tool_name: string; ok_count: number; err_count: number }>) {

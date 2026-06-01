@@ -28,41 +28,44 @@ export default defineTool({
 
     try {
       const { sql } = getOrgPg();
-      const rows = await sql.begin(async (tx) => {
-        await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ws]);
-        return await tx<Array<{
-          id: number;
-          tool_name: string;
-          plugin_name: string;
-          role: string;
-          feature_id: string | null;
-          chunk_id: string | null;
-          run_id: string | null;
-          spawn_id: string;
-          parent_spawn_id: string | null;
-          window_key: string;
-          invoked_at: Date;
-          duration_ms: number | null;
-          status: string;
-          output_ref: string | null;
-          output_size: number | null;
-          error_message: string | null;
-          depth: number;
-          root_spawn_id: string;
-        }>>`
-          SELECT id, tool_name, plugin_name, role,
-                 feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
-                 window_key, invoked_at, duration_ms, status,
-                 output_ref, output_size, error_message,
-                 depth, root_spawn_id
-            FROM harness_shared.tool_invocations_spawn_tree
-           WHERE harness_slug = ${slug}
-             AND invoked_at >= to_timestamp(${sinceMs}::double precision / 1000.0)
-             AND (${status}::text IS NULL OR status = ${status})
-           ORDER BY invoked_at DESC
-           LIMIT ${limit}
-        `;
-      });
+      // P-041: the view exposes workspace_id, so scope it EXPLICITLY. getOrgPg
+      // uses the admin role (bypasses RLS) and tool_invocations_spawn_tree is
+      // not a security_invoker view, so the prior set_config('app.workspace_id')
+      // in a tx was a dead no-op — the query returned every workspace's
+      // spawn-tree rows for a colliding harness_slug.
+      const rows = await sql<Array<{
+        id: number;
+        tool_name: string;
+        plugin_name: string;
+        role: string;
+        feature_id: string | null;
+        chunk_id: string | null;
+        run_id: string | null;
+        spawn_id: string;
+        parent_spawn_id: string | null;
+        window_key: string;
+        invoked_at: Date;
+        duration_ms: number | null;
+        status: string;
+        output_ref: string | null;
+        output_size: number | null;
+        error_message: string | null;
+        depth: number;
+        root_spawn_id: string;
+      }>>`
+        SELECT id, tool_name, plugin_name, role,
+               feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
+               window_key, invoked_at, duration_ms, status,
+               output_ref, output_size, error_message,
+               depth, root_spawn_id
+          FROM harness_shared.tool_invocations_spawn_tree
+         WHERE workspace_id = ${ws}
+           AND harness_slug = ${slug}
+           AND invoked_at >= to_timestamp(${sinceMs}::double precision / 1000.0)
+           AND (${status}::text IS NULL OR status = ${status})
+         ORDER BY invoked_at DESC
+         LIMIT ${limit}
+      `;
       return Response.json({
         rows: rows.map((r) => ({
           id: r.id,
