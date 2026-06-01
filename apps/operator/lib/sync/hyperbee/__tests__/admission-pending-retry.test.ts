@@ -15,13 +15,13 @@
  * lands there without requiring timers/sleeps longer than a few hundred ms.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bootHarnessSubstrate } from '../boot';
-import { buildAnnounce, type SignedAnnounce } from '../announce';
+import { buildAnnounce, verifyAnnounce, DEFAULT_ANNOUNCE_WINDOW_MS, type SignedAnnounce } from '../announce';
 import { _resetCacheForTests } from '../corestore';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
@@ -177,6 +177,135 @@ describe('boot pending-retry loop (D-006)', () => {
       expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
     },
     3000,
+  );
+
+  it(
+    'verifyAnnounce: a stale frame (ts 6 min old) passes when nowMs is anchored to arrival time',
+    async () => {
+      // Unit-level regression test for the fix in the pending-retry loop.
+      //
+      // The fix changes the retry call from:
+      //   verifyAnnounce(entry.frame)               ← uses Date.now() as nowMs
+      // to:
+      //   verifyAnnounce(entry.frame, { nowMs: entry.since })  ← anchored to arrival
+      //
+      // This test verifies the semantics that the fix relies on:
+      //   (a) verifyAnnounce(frame) returns false when 6 min have elapsed (stale clock)
+      //   (b) verifyAnnounce(frame, { nowMs: frame.ts }) returns true (arrival-anchored)
+      //
+      // Together these prove that passing { nowMs: entry.since } (where entry.since ≈
+      // frame.ts at arrival time) is what makes the pending-retry robust across the
+      // full 30-min BOOT_PENDING_GRACE_MS window. The bug caused (b) to use (a)'s
+      // semantics, so any peer pending >5 min was conclusively rejected as bad_sig.
+      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+      const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
+        .subarray(-32)
+        .toString('base64');
+
+      // Build announce with ts anchored to exactly 6 minutes ago (past the 5-min window).
+      const arrivalMs = Date.now();
+      const staleTs = arrivalMs - DEFAULT_ANNOUNCE_WINDOW_MS - 60_000; // 6 min before now
+      const frame = await buildAnnounce(
+        { device_pubkey: rawPub, github_user_id: 1, github_login: 'alice', log_core_key: 'dd'.repeat(32) },
+        async (bytes) => nodeSign(null, bytes, privateKey),
+        { nowMs: staleTs },
+      );
+
+      // (a) Without nowMs override → stale relative to Date.now() → false.
+      // This is what the bugged code did at retry time.
+      expect(verifyAnnounce(frame), 'should be false against live clock (6 min stale)').toBe(false);
+
+      // (b) With nowMs = frame.ts (simulating entry.since ≈ ts at arrival) → fresh → true.
+      // This is what the fix does: { nowMs: entry.since }, where entry.since ≈ frame.ts.
+      expect(
+        verifyAnnounce(frame, { nowMs: frame.ts }),
+        'should be true when nowMs is anchored to arrival time',
+      ).toBe(true);
+
+      // Also verify that nowMs = arrivalMs (the actual Date.now() at arrival moment) passes,
+      // since entry.since = Date.now() at the moment pendingPeers.set() is called, and
+      // frame.ts is set from opts.nowMs during buildAnnounce. Both are ≈ the arrival epoch.
+      // Here staleTs === frame.ts, so we test both the same value and a value within window.
+      expect(
+        verifyAnnounce(frame, { nowMs: staleTs + 1 }),
+        'should be true when nowMs is within window of ts',
+      ).toBe(true);
+    },
+  );
+
+  it(
+    'pending-retry admits a peer whose announce was built >5 min before retry fires (behavioral)',
+    async () => {
+      // Behavioral regression test: a peer that stays in 'pending' while the live
+      // clock advances past DEFAULT_ANNOUNCE_WINDOW_MS must still be admitted when
+      // the binding flips. This uses fake timers to control Date.now() so the retry
+      // tick observes a 6-minute-old announce.
+      //
+      // The fix under test: verifyAnnounce(entry.frame, { nowMs: entry.since })
+      // anchors freshness to the arrival time stored in pendingPeers, not the
+      // current wall-clock. Without the fix, sigValid=false at retry time → bad_sig
+      // → conclusive reject; with the fix, sigValid=true → binding checked →
+      // admitted.
+      //
+      // Timer note: vi.advanceTimersByTimeAsync fires setInterval callbacks and
+      // also lets the async I/O inside admitPeer (Hypercore core.ready / mergeNow)
+      // run via the microtask queue. We advance past the raceWithTimeout(5000)
+      // inside mergeNow to let the merge complete even without a network peer.
+
+      vi.useFakeTimers();
+      try {
+        let callCount = 0;
+        const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
+          callCount++;
+          return callCount === 1 ? 'pending' : 'verified';
+        };
+
+        const handle = await bootHarnessSubstrate({
+          workspaceRoot: tmpDir('mb-pend-stale2-'),
+          workspaceId: 'ws-pend-stale2',
+          harnessSlug: 'pend-stale2',
+          mergePollMs: 0,
+          pendingRetryMs: 50,
+          verifyBindingOverride,
+        });
+        cleanups.push(() => handle.close());
+
+        const logCoreKey = 'ee'.repeat(32);
+        // Build announce at fake T=0. Both frame.ts and entry.since will be T.
+        const frame = await validAnnounce(logCoreKey);
+
+        // First announce: pending.
+        const decision = await handle.onAnnounce(frame);
+        expect(decision).toEqual({ admit: false, reason: 'pending' });
+
+        // Advance fake clock by 6 minutes (> DEFAULT_ANNOUNCE_WINDOW_MS 5 min).
+        // Then advance past pendingRetryMs (50ms) to fire the retry tick.
+        // Also advance past DEFAULT_GET_TIMEOUT_MS (5000ms) to let raceWithTimeout
+        // inside mergeNow complete so admitPeer can finish.
+        await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 50 + 6000);
+
+        // With the fix: verifyAnnounce(entry.frame, { nowMs: entry.since=T }) → pass
+        // → binding 'verified' → admitPeer → admitted.set(logCoreKey, ...).
+        // With the bug: verifyAnnounce(entry.frame) nowMs=T+6min → stale → sigValid=false
+        // → bad_sig → deleted from pendingPeers → never admitted.
+        expect(
+          handle.admitted.has(logCoreKey),
+          'peer should be admitted even after 6 min elapsed since announce',
+        ).toBe(true);
+
+        // No rejection event should be recorded.
+        const rejected = listBootHistory({
+          workspaceId: 'ws-pend-stale2',
+          harnessSlug: 'pend-stale2',
+          kinds: ['announce_rejected'],
+          limit: 5,
+        });
+        expect(rejected).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    15000,
   );
 
   it(

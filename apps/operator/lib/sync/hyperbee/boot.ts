@@ -667,8 +667,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               continue;
             }
             // Re-verify: re-build the AdmissionInput from the stored frame.
+            // Pass { nowMs: entry.since } so freshness is checked relative to
+            // the arrival timestamp, NOT the current wall-clock. The announce
+            // was fresh when it arrived (validated in onAnnounce). Re-running
+            // freshness against Date.now() would cap the effective retry window
+            // at DEFAULT_ANNOUNCE_WINDOW_MS (5 min), defeating the 30-min
+            // BOOT_PENDING_GRACE_MS grace window that the pending-retry exists for.
             try {
-              const sigValid = verifyAnnounce(entry.frame);
+              const sigValid = verifyAnnounce(entry.frame, { nowMs: entry.since });
               const input: AdmissionInput = {
                 device_pubkey: entry.frame.device_pubkey,
                 github_login: entry.frame.github_login,
