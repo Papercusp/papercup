@@ -1,7 +1,7 @@
 ---
 title: Extract the endpoint system into @papercusp/tooldef — a standalone, schema-agnostic tool framework
 slug: papercusp-tooldef-extraction-2026-05-29
-status: active
+status: shipped
 created: 2026-05-29
 updated: 2026-06-01
 owner: pandawamble@gmail.com
@@ -79,14 +79,17 @@ to the extraction (all touched packages green; 0 tooldef resolution/export error
 red suite is headless-env timeouts + a peer's `@papercusp/db-org` rename + today's
 `libs/generic` submodule regroup).
 
-**Remaining:** **P-054** `decided 2026-05-31` — the user chose **Option B: mirror
-`tooldef` (+`tooldef-http`) to a `libs/generic/*` standalone submodule** (the borrowable-lib
-pattern; see D-011 + the 2026-05-31 Progress entry). Execution is a focused follow-up gated on
-two preconditions (shared `Papercusp/tooldef` synced to in-tree HEAD; run when no peer is
-mid-edit in `packages/tooldef`) — not yet performed.
-**P-015** `deferred` — a persistence seam for card-correlator/state-channel/replay-buffer;
-YAGNI (no consumer; in-memory defaults already make the core standalone-usable), revisit
-when a host needs durable cards/state. **The extraction itself is complete.**
+**SHIPPED 2026-06-01.** Every numbered item P-000…P-054 is `done`; the engine is
+extracted, distributed as standalone submodules (`Papercusp/tooldef` @16bd467a +
+`Papercusp/tooldef-http`), and both cross-repo consumers are on the current tip
+(papercup HEAD + Restart `feat/scout-unify` e218cb39, shop-api verified 84/84). The two
+open questions are resolved (Q2 = leave telemetry to consumers; Q3 = keep `workspaceId`)
+— see § Open questions. Plan status flipped `active → shipped`.
+
+**Deliberate non-items (YAGNI, not deferred work):** **P-015** — a persistence seam for
+card-correlator/state-channel/replay-buffer; no consumer, in-memory defaults already make
+the core standalone-usable; revisit only when a host needs durable cards/state. Same for
+the declined generic `Tx` (below). **The extraction itself is complete.**
 
 **Assessed + declined 2026-05-31 (won't-do, YAGNI):** generic `Tx` on
 `UnifiedToolContext`. `ToolContext<Tx = any>` is *already* generic, yet a repo-wide
@@ -837,10 +840,21 @@ supplies the concrete one), `http-projection.ts` (→ eventually `tooldef-http`)
   core ships nothing. Should we publish an optional `@papercusp/tooldef-telemetry-pg`
   with the `tool_invocations` DDL, or leave persistence entirely to consumers?
   Deferred to the publish decision (P-054).
+  → **RESOLVED 2026-06-01: leave persistence to consumers.** Option B (P-054) shipped
+  with no telemetry-pg package; the core ships zero DDL and `recordInvocation` stays a
+  host-supplied callback (the Papercusp host writes its own `tool_invocations`). A
+  `@papercusp/tooldef-telemetry-pg` will only be cut if a borrower actually asks — same
+  YAGNI bar as P-015.
 - **Q3 — Principal shape.** The core `principal` is currently
   `{ slug, workspaceId, capabilities }`. For a generic lib, is `workspaceId`
   core or host? Lean: keep a generic `tenantId?` slot in core, map
   `workspaceId → tenantId` in the adapter. Resolve during P-014.
+  → **RESOLVED 2026-06-01: keep `workspaceId` in core.** It's a plain field name, not a
+  dependency, so D-007 ("zero `@papercusp`/`@restart`/PG deps") still holds and the lib
+  stays borrowable as-is. P-014 shipped the auth-tier de-baking without needing a
+  principal-shape change, and shop-api (Restart) consumes the engine unmodified. A host
+  wanting different tenancy semantics maps `workspaceId` in its own adapter. No `tenantId`
+  rename performed (YAGNI — same call as P-015 / generic-`Tx`).
 
 ## Decisions
 
