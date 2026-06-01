@@ -455,7 +455,9 @@ export async function dispatchOneHarness(
     if (!overCostCap) await raiseOrClearStuckSignal(slug, workspaceId, stuck).catch(() => {});
     const started: string[] = [];
     for (const fid of toStart) {
-      const r = await ensureFeaturePipeline(slug, fid);
+      // Pass the tick's own workspaceId so the pipeline pins THIS workspace rather
+      // than the volatile active one (which can differ from the harness's home).
+      const r = await ensureFeaturePipeline(slug, fid, workspaceId);
       if (r.started) started.push(fid);
     }
     return { harness: slug, started };

@@ -13,6 +13,7 @@
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { workspacesForHarness } from '@/lib/harness-membership';
 import { startFeaturePipeline } from './orchestrator-workflow';
 
 /** DBOS statuses that mean a pipeline still OWNS its feature (in-flight). */
@@ -66,9 +67,29 @@ export interface EnsurePipelineResult extends PipelineDecision {
  * ownership. Lists prior pipeline lifetimes from DBOS, reuses a live one if
  * present, else starts a fresh epoch. Idempotent under concurrency.
  */
+/** The workspace to PIN a pipeline to: the active one when the harness is a
+ *  member there (the common case — preserves prior behavior), else the harness's
+ *  first home workspace, else active. A harness lives in exactly one workspace, so
+ *  this lets a manual trigger (or a tick for a non-active workspace) resolve any
+ *  harness instead of nulling `resolveProject` against the volatile active one. */
+async function resolveHomeWorkspace(harnessSlug: string): Promise<string> {
+  const active = activeWorkspaceId();
+  try {
+    const members = await workspacesForHarness(harnessSlug);
+    if (members.includes(active)) return active;
+    if (members.length > 0) return members[0];
+  } catch {
+    /* registry unreadable → fall back to active */
+  }
+  return active;
+}
+
 export async function ensureFeaturePipeline(
   harnessSlug: string,
   featureId: string,
+  /** Explicit workspace to pin (the dispatch loop already knows it). When omitted,
+   *  the harness's home workspace is resolved — see `resolveHomeWorkspace`. */
+  workspaceId?: string,
 ): Promise<EnsurePipelineResult> {
   // `:e` suffix on the prefix disambiguates F-1 from F-12 (F-12's id continues
   // with `2:e…`, not `:e…`), so this returns only THIS feature's pipelines.
@@ -83,11 +104,14 @@ export async function ensureFeaturePipeline(
   if (decision.action === 'start') {
     // Capture the workspace NOW so the whole pipeline resolves in it, immune to a
     // later active-workspace switch (which would otherwise null `resolveProject`).
+    // An explicit caller (the dispatch loop) wins; otherwise pin the harness's home
+    // workspace so a manual trigger works regardless of the active workspace.
+    const captureWs = workspaceId ?? (await resolveHomeWorkspace(harnessSlug));
     await startFeaturePipeline({
       harnessSlug,
       featureId,
       epoch: decision.epoch,
-      workspaceId: activeWorkspaceId(),
+      workspaceId: captureWs,
     });
   }
   return { ...decision, started: decision.action === 'start' };
