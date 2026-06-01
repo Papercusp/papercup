@@ -13,18 +13,38 @@
  * merge poll-timer disabled so the test drives `mergeNow()` by hand.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { bootHarnessSubstrate, onSchemaVersionAlert } from '../boot';
 import { schemaVersionEvents, type SchemaVersionAlert, CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { _resetCacheForTests } from '../corestore';
+import { buildAnnounce, type SignedAnnounce } from '../announce';
 import {
   registerProjection,
   _clearRegistryForTests,
   type TableProjection,
 } from '../projection';
+
+/** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
+ *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
+ *  true for this frame. log_core_key is a real 64-hex key boot can openRemoteLog. */
+async function validAnnounce(over: Partial<SignedAnnounce> = {}): Promise<SignedAnnounce> {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
+    .subarray(-32)
+    .toString('base64');
+  const body = {
+    device_pubkey: rawPub,
+    github_user_id: 4242,
+    github_login: 'alice',
+    log_core_key: 'cc'.repeat(32),
+    ...over,
+  };
+  return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -114,6 +134,100 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
     const applied = await handle.mergeNow();
     expect(applied).toBe(1);
     expect(writes).toEqual([{ id: 'F-1' }]);
+  });
+});
+
+describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-ann-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  it('a VALID + admitted announce → remote log lands in admitted + mergeNow runs', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 'ann-1',
+      mergePollMs: 0, // disable the poll so the only merge is onAnnounce's
+      // binding check returns true → a valid-sig announce is admitted.
+      verifyBindingOverride: async () => true,
+    });
+    cleanups.push(() => handle.close());
+
+    const beforeKeys = [...handle.admitted.keys()];
+    expect(beforeKeys).toEqual([handle.ownLog.keyHex]); // only the own log
+
+    const frame = await validAnnounce({ log_core_key: 'cc'.repeat(32) });
+    const decision = await handle.onAnnounce(frame);
+
+    expect(decision.admit).toBe(true);
+    // The peer's remote log is now in the admitted set, keyed by its log_core_key.
+    expect(handle.admitted.has('cc'.repeat(32))).toBe(true);
+    const remote = handle.admitted.get('cc'.repeat(32))!;
+    expect(remote.keyHex).toBe('cc'.repeat(32));
+    expect(remote).not.toBe(handle.ownLog);
+  });
+
+  it('a REJECTED announce (binding fails) → not added, admit:false', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 'ann-2',
+      mergePollMs: 0,
+      // binding check returns false → not admitted (reason binding_invalid).
+      verifyBindingOverride: async () => false,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({ log_core_key: 'dd'.repeat(32) });
+    const decision = await handle.onAnnounce(frame);
+
+    expect(decision.admit).toBe(false);
+    expect(handle.admitted.has('dd'.repeat(32))).toBe(false);
+    // Only the own log remains admitted.
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+  });
+
+  it('a FORGED announce (bad sig) → reason bad_sig, binding never consulted', async () => {
+    const verifyBinding = vi.fn(async () => true);
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 'ann-3',
+      mergePollMs: 0,
+      verifyBindingOverride: verifyBinding,
+    });
+    cleanups.push(() => handle.close());
+
+    // Tamper the sig so verifyAnnounce (real crypto) fails.
+    const frame = await validAnnounce({ log_core_key: 'ee'.repeat(32) });
+    const forged: SignedAnnounce = { ...frame, sig: Buffer.from('tampered').toString('base64') };
+    const decision = await handle.onAnnounce(forged);
+
+    expect(decision).toMatchObject({ admit: false, reason: 'bad_sig' });
+    // The sig check short-circuits before the binding check.
+    expect(verifyBinding).not.toHaveBeenCalled();
+    expect(handle.admitted.has('ee'.repeat(32))).toBe(false);
+  });
+
+  it('admitting the same announce twice is idempotent (one remote log)', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 'ann-4',
+      mergePollMs: 0,
+      verifyBindingOverride: async () => true,
+    });
+    cleanups.push(() => handle.close());
+
+    const frame = await validAnnounce({ log_core_key: 'ab'.repeat(32) });
+    await handle.onAnnounce(frame);
+    const first = handle.admitted.get('ab'.repeat(32));
+    await handle.onAnnounce(frame);
+    const second = handle.admitted.get('ab'.repeat(32));
+    expect(second).toBe(first); // same handle, not re-opened
+    expect(handle.admitted.size).toBe(2); // own + the one peer
   });
 });
 

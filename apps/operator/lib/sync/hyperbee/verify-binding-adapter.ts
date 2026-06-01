@@ -92,6 +92,11 @@ export function buildVerifyBindingAdapter(opts: VerifyBindingAdapterOpts): Verif
     githubLogin: string,
     githubUserId: number,
   ): Promise<boolean> => {
+    // Boot-scoped cache: {repoOwner, repoName, token} is resolved once and held
+    // for the boot's lifetime. ASSUMPTION (acceptable for alpha): the gh token
+    // doesn't expire mid-boot. If it does, this adapter keeps using the stale
+    // token and rejects otherwise-valid peers until the harness reboots —
+    // there is no in-boot token refresh. A non-null ctx is never re-resolved.
     if (!ctxPromise) ctxPromise = resolveContext();
     const ctx = await ctxPromise;
     if (!ctx) {

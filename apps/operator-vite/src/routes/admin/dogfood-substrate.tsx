@@ -23,7 +23,6 @@ export const Route = createFileRoute('/admin/dogfood-substrate')({
 });
 
 interface HealthResponse {
-  flagEnabled?: boolean;
   summary?: {
     enabled: boolean;
     totalHarnesses: number;
@@ -77,16 +76,13 @@ function DogfoodSubstratePage() {
         <SubstrateSummaryCardClient diagnosticHref={undefined} />
 
         <p style={{ fontSize: 13, color: 'var(--fg-dim, #888)', margin: 0 }}>
-          Hyperbee substrate boot state for this operator process. Gated by
-          {' '}<code>PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1</code>. With the flag off
-          the operator runs in PG-only mode.
+          Hyperbee substrate boot state for this operator process. The substrate
+          always boots — each shared harness joins its swarm in-process.
         </p>
 
         {rows.length === 0 ? (
           <div style={{ padding: 16, fontSize: 13, color: 'var(--fg-dim, #888)' }} data-testid="dogfood-substrate-empty">
-            {resp?.flagEnabled
-              ? 'Flag enabled but no harnesses have booted yet.'
-              : 'Flag disabled — set PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 and restart.'}
+            No shared harnesses booted yet.
           </div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }} data-testid="dogfood-substrate-table">

@@ -56,9 +56,11 @@ export interface FinalizeShareInput {
   discord_channel?: string;
 }
 
-/** Outcome of the post-write substrate reboot (when the flag is on). */
+/** Outcome of the post-write substrate reboot. */
 export interface FinalizeShareSwarm {
-  /** True if a reboot was actually attempted (substrate enabled). */
+  /** True if a reboot was attempted. With `realDeps` the substrate always
+   *  boots (Stage 4d removed the opt-in gate), so this is always true; a
+   *  custom `deps` that omits `reboot` leaves `swarm` undefined instead. */
   rebooted: boolean;
   /** The (re)boot state — 'booted' | 'already-booted' | 'failed'. */
   state?: 'booted' | 'already-booted' | 'failed';
@@ -106,8 +108,9 @@ export interface FinalizeShareDeps {
    * Optional: re-boot the harness substrate after the file is written so an
    * already-booted (swarm: null) harness joins the swarm without a host
    * restart. Best-effort — a throw is caught and reported as
-   * `{ rebooted: false, error }`. Omit to skip (realDeps's impl no-ops when
-   * the substrate flag is off, returning `{ rebooted: false }`).
+   * `{ rebooted: false, error }`. Omit to skip the reboot entirely (then no
+   * `swarm` is returned). `realDeps` always provides it — the substrate
+   * always boots (Stage 4d), so the reboot is unconditional there.
    */
   reboot?: (slug: string) => Promise<FinalizeShareSwarm>;
   /**

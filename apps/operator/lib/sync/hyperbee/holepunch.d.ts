@@ -37,7 +37,14 @@ declare module 'protomux' {
   }
   export default class Protomux {
     static from(stream: unknown): Protomux;
-    createChannel(opts: { protocol: string }): ProtomuxChannel;
+    /**
+     * Open a channel. `onopen` (when supplied) fires once the channel is fully
+     * paired — i.e. the REMOTE peer has opened the matching protocol — which is
+     * the only safe point to send a message that must not be dropped on a
+     * fresh connection (a `message.send()` synchronously after `open()` can be
+     * lost before the peer's channel exists).
+     */
+    createChannel(opts: { protocol: string; onopen?: () => void }): ProtomuxChannel;
   }
 }
 

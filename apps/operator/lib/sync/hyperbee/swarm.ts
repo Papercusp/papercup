@@ -107,8 +107,29 @@ function openAnnounceChannel(
     // Protomux.from REUSES socket.userData when corestore.replicate(socket)
     // already attached it, so the announce shares the replication muxer.
     const mux = Protomux.from(socket);
-    const channel = mux.createChannel({ protocol: ANNOUNCE_PROTOCOL });
-    const message = channel.addMessage<SignedAnnounce>({
+    // Send OUR announce from the channel's `onopen` — Protomux invokes onopen
+    // only once the channel is fully paired (the remote opened the matching
+    // protocol). Sending synchronously after `open()` can DROP the first
+    // announce on a fresh connection (the peer's channel isn't open yet), and
+    // announces aren't re-sent → the peer would never be admitted. Sending on
+    // onopen guarantees delivery. Guard `sent` so a duplicate onopen (or a
+    // re-pair) can't double-send.
+    let message: { send(value: SignedAnnounce): void } | null = null;
+    let sent = false;
+    const sendOurAnnounce = (): void => {
+      if (sent || !opts.ourAnnounce || !message) return;
+      sent = true;
+      try {
+        message.send(opts.ourAnnounce);
+      } catch {
+        // best-effort — replication still proceeds
+      }
+    };
+    const channel = mux.createChannel({
+      protocol: ANNOUNCE_PROTOCOL,
+      onopen: sendOurAnnounce,
+    });
+    message = channel.addMessage<SignedAnnounce>({
       encoding: c.json,
       onmessage: (frame: SignedAnnounce) => {
         if (!opts.onAnnounce) return;
@@ -121,9 +142,6 @@ function openAnnounceChannel(
       },
     });
     channel.open();
-    if (opts.ourAnnounce) {
-      message.send(opts.ourAnnounce);
-    }
   } catch {
     // Announce channel is best-effort; replication still proceeds.
   }

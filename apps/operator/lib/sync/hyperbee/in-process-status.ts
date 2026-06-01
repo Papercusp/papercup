@@ -39,7 +39,14 @@ export interface InProcessHarnessHealth {
 }
 
 export interface InProcessSubstrateStatus {
-  flagEnabled: boolean;
+  /**
+   * Whether the substrate is active. At runtime this is ALWAYS `true` — the
+   * Model B substrate always boots (the PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE
+   * opt-in gate was removed in Stage 4d). This is NOT a feature gate; it is
+   * `false` ONLY when a test forces the disabled-rendering path via
+   * `forceDisabledForTest`. Treat it as "substrate active", not "flag on".
+   */
+  substrateActive: boolean;
   bootedCount: number;
   summary: WorkspaceSubstrateSummary;
   harnesses: InProcessHarnessHealth[];
@@ -47,11 +54,12 @@ export interface InProcessSubstrateStatus {
 
 export interface GetInProcessStatusOpts {
   /**
-   * Override for tests. Defaults to `true` — the Model B substrate always
-   * boots now (the PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE opt-in gate was removed
-   * in Stage 4d). Tests still pass `false` to exercise the disabled rendering.
+   * TEST SEAM ONLY — not a real gate. The Model B substrate always boots
+   * (the PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE opt-in gate was removed in
+   * Stage 4d), so production NEVER sets this. Tests pass `true` to exercise
+   * the disabled-rendering path (`substrateActive: false`).
    */
-  envFlag?: boolean;
+  forceDisabledForTest?: boolean;
   /**
    * Per-harness claim stats fetcher — defaulted to a zero-stats
    * shape because the in-process path doesn't have PG and we don't
@@ -69,9 +77,10 @@ const ZERO_STATS = { total: 0, won: 0, lost: 0, error: 0 } as const;
 export function getInProcessSubstrateStatus(
   opts: GetInProcessStatusOpts = {},
 ): InProcessSubstrateStatus {
-  // Stage 4d: the substrate always boots; `flagEnabled` is now constant true
-  // (the `envFlag` override is retained as a test seam for disabled-rendering).
-  const flagEnabled = opts.envFlag !== undefined ? opts.envFlag : true;
+  // Stage 4d: the substrate always boots; `substrateActive` is constant true
+  // at runtime. `forceDisabledForTest` is a TEST-ONLY seam for exercising the
+  // disabled-rendering path — production never passes it.
+  const substrateActive = !opts.forceDisabledForTest;
   const booted = listBootedHandles();
   const progress = listBootstrapProgress();
   const progressByKey = new Map<
@@ -87,7 +96,9 @@ export function getInProcessSubstrateStatus(
     const stats = resolveStats(h.workspaceId, h.harnessSlug);
     const bp = progressByKey.get(`${h.workspaceId}::${h.harnessSlug}`);
     const { verdict, reasons } = assessHarnessSubstrateHealth({
-      flagEnabled,
+      // health.ts's `flagEnabled` is its real "is the substrate active" input
+      // (drives the 'disabled' verdict); feed it `substrateActive`.
+      flagEnabled: substrateActive,
       handlePresent: true,
       claimStats: stats,
       bootstrapProgress: bp ?? null,
@@ -100,10 +111,10 @@ export function getInProcessSubstrateStatus(
     };
   });
 
-  const summary = summariseWorkspaceSubstrate(flagEnabled, harnesses);
+  const summary = summariseWorkspaceSubstrate(substrateActive, harnesses);
 
   return {
-    flagEnabled,
+    substrateActive,
     bootedCount: booted.length,
     summary,
     harnesses,

@@ -19,6 +19,7 @@ import type { SignedAnnounce } from '../announce';
 // `socket.__muxId` so each connection gets its own channel state.
 interface FakeChannelState {
   onmessage: ((frame: SignedAnnounce) => void) | null;
+  onopen: (() => void) | null;
   opened: boolean;
   sent: SignedAnnounce[];
 }
@@ -34,14 +35,15 @@ vi.mock('protomux', () => {
       static from(socket: unknown): FakeProtomux {
         return new FakeProtomux(socket);
       }
-      createChannel(_opts: { protocol: string }) {
+      createChannel(opts: { protocol: string; onopen?: () => void }) {
         const socket = this.socket;
         let state = fakeChannels.get(socket);
         if (!state) {
-          state = { onmessage: null, opened: false, sent: [] };
+          state = { onmessage: null, onopen: null, opened: false, sent: [] };
           fakeChannels.set(socket, state);
         }
         const st = state;
+        st.onopen = opts.onopen ?? null;
         return {
           addMessage(msgOpts: { encoding: unknown; onmessage: (f: SignedAnnounce) => void }) {
             st.onmessage = msgOpts.onmessage;
@@ -53,6 +55,15 @@ vi.mock('protomux', () => {
           },
           open() {
             st.opened = true;
+            // Real Protomux fires onopen only once the channel is fully paired
+            // (the remote opened the matching protocol). Default: model an
+            // immediately-paired peer (fire onopen synchronously on open()) so
+            // the onopen-gated announce send is exercised. A socket flagged
+            // `__deferOpen` does NOT auto-fire — the test fires st.onopen() by
+            // hand to model a peer that pairs later (Fix 5).
+            if (!(socket as { __deferOpen?: boolean })?.__deferOpen) {
+              st.onopen?.();
+            }
           },
           close() {},
         };
@@ -339,6 +350,32 @@ describe('joinHarnessSwarm — announce channel (Stage 4b)', () => {
 
     const ch = fakeChannels.get(socket)!;
     expect(ch.opened).toBe(true);
+    expect(ch.sent).toEqual([ourAnnounce]);
+  });
+
+  it('sends ourAnnounce from the channel onopen — NOT before the channel pairs (Fix 5)', async () => {
+    const { swarm, emit } = fakeSwarm();
+    const { store } = fakeStore();
+    const ourAnnounce = announceFixture({ log_core_key: 'ee'.repeat(32) });
+    await joinHarnessSwarm({ store, topic: topic32(), swarm, ourAnnounce, onAnnounce: vi.fn() });
+
+    // `__deferOpen` makes the fake protomux NOT auto-fire onopen on open(),
+    // modeling Protomux only invoking onopen once the REMOTE peer opens the
+    // matching protocol.
+    const socket = { __muxId: 'deferred', __deferOpen: true, pipe: vi.fn(), destroy: vi.fn() };
+    emit('connection', socket, { publicKey: Buffer.from('22'.repeat(32), 'hex') });
+
+    const ch = fakeChannels.get(socket)!;
+    // open() ran but the peer hasn't paired → nothing sent yet (the bug Fix 5
+    // guards against: a synchronous post-open() send would be dropped here).
+    expect(ch.opened).toBe(true);
+    expect(ch.sent).toEqual([]);
+
+    // Peer pairs → Protomux fires onopen → the announce is sent exactly once.
+    ch.onopen!();
+    expect(ch.sent).toEqual([ourAnnounce]);
+    // A duplicate onopen must not double-send.
+    ch.onopen!();
     expect(ch.sent).toEqual([ourAnnounce]);
   });
 

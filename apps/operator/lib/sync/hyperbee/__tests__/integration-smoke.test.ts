@@ -42,9 +42,9 @@ function fakeHandle(
 
 describe('substrate integration smoke', () => {
   it('disabled state — composer → formatter → exit 0', () => {
-    const status = getInProcessSubstrateStatus({ envFlag: false });
+    const status = getInProcessSubstrateStatus({ forceDisabledForTest: true });
     const out = formatSubstrateStatus({
-      enabled: status.flagEnabled,
+      enabled: status.substrateActive,
       bootedCount: status.bootedCount,
       harnesses: status.harnesses,
       summary: status.summary,
@@ -54,9 +54,9 @@ describe('substrate integration smoke', () => {
   });
 
   it('booting state — flag on + no handles → composer says booting → formatter exit 1', () => {
-    const status = getInProcessSubstrateStatus({ envFlag: true });
+    const status = getInProcessSubstrateStatus();
     const out = formatSubstrateStatus({
-      enabled: status.flagEnabled,
+      enabled: status.substrateActive,
       bootedCount: status.bootedCount,
       harnesses: status.harnesses,
       summary: status.summary,
@@ -69,11 +69,11 @@ describe('substrate integration smoke', () => {
     _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
     recordBootEvent('ws-1', 'papercup', 'boot_start');
     recordBootEvent('ws-1', 'papercup', 'boot_ok');
-    const status = getInProcessSubstrateStatus({ envFlag: true });
+    const status = getInProcessSubstrateStatus();
     expect(status.bootedCount).toBe(1);
     expect(status.summary.worstVerdict).toBe('healthy');
     const out = formatSubstrateStatus({
-      enabled: status.flagEnabled,
+      enabled: status.substrateActive,
       bootedCount: status.bootedCount,
       harnesses: status.harnesses,
       summary: status.summary,
@@ -85,7 +85,6 @@ describe('substrate integration smoke', () => {
   it('unhealthy state — flag on + claim errors > 25% → exit 1', () => {
     _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
     const status = getInProcessSubstrateStatus({
-      envFlag: true,
       resolveClaimStats: () => ({
         total: 100,
         won: 60,
@@ -95,7 +94,7 @@ describe('substrate integration smoke', () => {
     });
     expect(status.summary.worstVerdict).toBe('unhealthy');
     const out = formatSubstrateStatus({
-      enabled: status.flagEnabled,
+      enabled: status.substrateActive,
       bootedCount: status.bootedCount,
       harnesses: status.harnesses,
       summary: status.summary,
@@ -107,7 +106,7 @@ describe('substrate integration smoke', () => {
   it('bootstrap-progress feeds into the snapshot', () => {
     _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
     recordMergedOps('ws-1', 'a', 7);
-    const status = getInProcessSubstrateStatus({ envFlag: true });
+    const status = getInProcessSubstrateStatus();
     // Healthy because progress is fresh + no claim errors.
     expect(status.harnesses[0]?.verdict).toBe('healthy');
   });
@@ -117,7 +116,7 @@ describe('substrate integration smoke', () => {
     _setHandleForTests('ws-1', 'b', fakeHandle('ws-1', 'b'));
     recordBootEvent('ws-1', 'a', 'boot_ok');
     recordBootEvent('ws-1', 'b', 'boot_fail', 'stale lock');
-    const status = getInProcessSubstrateStatus({ envFlag: true });
+    const status = getInProcessSubstrateStatus();
     expect(status.harnesses).toHaveLength(2);
     // Both are 'healthy' from the composer's POV — boot-history doesn't
     // feed verdict yet, only diagnostic surfaces. Asserts the two
@@ -130,7 +129,6 @@ describe('substrate integration smoke', () => {
     _setHandleForTests('ws-1', 'b', fakeHandle('ws-1', 'b'));
     _setHandleForTests('ws-1', 'c', fakeHandle('ws-1', 'c'));
     const status = getInProcessSubstrateStatus({
-      envFlag: true,
       resolveClaimStats: (_w, slug) =>
         slug === 'b'
           ? { total: 100, won: 60, lost: 5, error: 35 } // unhealthy

@@ -21,7 +21,7 @@ export default defineTool({
   name: 'dev:dogfood_substrate_status',
   profile: 'engineer',
   description:
-    'Hyperbee substrate diagnostic: flag state, booted harnesses, per-row health verdict, workspace summary. Mirrors /api/admin/dogfood-substrate-health.',
+    'Hyperbee substrate diagnostic: booted harnesses, per-row health verdict, workspace summary. The substrate is always active (no flag gate). Mirrors /api/admin/dogfood-substrate-health.',
   capability: 'intel:read',
   guidance: {
     when: `Investigating substrate boot state, claim error rates, or workspace-level dogfood health. The substrate always boots, so run this any time after the operator has started.`,

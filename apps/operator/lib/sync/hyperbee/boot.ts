@@ -125,6 +125,17 @@ export interface BootHarnessOpts {
    * timer and drive `mergeNow()` by hand. Default 1000.
    */
   mergePollMs?: number;
+  /**
+   * Test seam — override the read-admission binding check. Production leaves
+   * this undefined and the real `buildVerifyBindingAdapter` (verifyBoth over
+   * the local harness's shared.json + gh-token) is used. Tests inject a pure
+   * predicate so `onAnnounce` admit/reject can be exercised without network.
+   */
+  verifyBindingOverride?: (
+    devicePubkeyBase64: string,
+    githubLogin: string,
+    githubUserId: number,
+  ) => Promise<boolean>;
 }
 
 export interface BootedHarnessHandle {
@@ -313,11 +324,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // Fail-closed: a private harness / no-gh-auth context admits nothing, so only
   // the own log is merged. Admits only on status === 'verified'.
   const admit = makeAdmissionDecider({
-    verifyBinding: buildVerifyBindingAdapter({
-      workspaceId: opts.workspaceId,
-      harnessSlug: opts.harnessSlug,
-      workspaceRoot: opts.workspaceRoot,
-    }),
+    verifyBinding:
+      opts.verifyBindingOverride ??
+      buildVerifyBindingAdapter({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        workspaceRoot: opts.workspaceRoot,
+      }),
   });
 
   /**

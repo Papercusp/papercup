@@ -28,25 +28,25 @@ function fakeHandle(
 }
 
 describe('getInProcessSubstrateStatus', () => {
-  it('flag off + no handles → disabled summary, 0 harnesses', () => {
-    const r = getInProcessSubstrateStatus({ envFlag: false });
-    expect(r.flagEnabled).toBe(false);
+  it('forceDisabledForTest + no handles → disabled summary, 0 harnesses', () => {
+    const r = getInProcessSubstrateStatus({ forceDisabledForTest: true });
+    expect(r.substrateActive).toBe(false);
     expect(r.bootedCount).toBe(0);
     expect(r.harnesses).toEqual([]);
     expect(r.summary.worstVerdict).toBe('disabled');
   });
 
-  it('flag on + no handles → booting summary', () => {
-    const r = getInProcessSubstrateStatus({ envFlag: true });
-    expect(r.flagEnabled).toBe(true);
+  it('active (default) + no handles → booting summary', () => {
+    const r = getInProcessSubstrateStatus();
+    expect(r.substrateActive).toBe(true);
     expect(r.bootedCount).toBe(0);
     expect(r.harnesses).toEqual([]);
     expect(r.summary.worstVerdict).toBe('booting');
   });
 
-  it('flag on + one healthy handle', () => {
+  it('active + one healthy handle', () => {
     _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
-    const r = getInProcessSubstrateStatus({ envFlag: true });
+    const r = getInProcessSubstrateStatus();
     expect(r.bootedCount).toBe(1);
     expect(r.harnesses).toHaveLength(1);
     expect(r.harnesses[0]?.verdict).toBe('healthy');
@@ -57,7 +57,6 @@ describe('getInProcessSubstrateStatus', () => {
   it('resolveClaimStats threads through to verdict', () => {
     _setHandleForTests('ws-1', 'papercup', fakeHandle('ws-1', 'papercup'));
     const r = getInProcessSubstrateStatus({
-      envFlag: true,
       resolveClaimStats: () => ({
         total: 100,
         won: 70,
@@ -74,7 +73,6 @@ describe('getInProcessSubstrateStatus', () => {
     _setHandleForTests('ws-1', 'b', fakeHandle('ws-1', 'b'));
     _setHandleForTests('ws-1', 'c', fakeHandle('ws-1', 'c'));
     const r = getInProcessSubstrateStatus({
-      envFlag: true,
       resolveClaimStats: (_w, slug) =>
         slug === 'b'
           ? { total: 100, won: 60, lost: 0, error: 40 }
@@ -95,24 +93,24 @@ describe('getInProcessSubstrateStatus', () => {
     // 5min, which won't be the case here. Instead just confirm the
     // progress data threads through and renders as healthy when fresh.
     recordMergedOps('ws-1', 'a', 5);
-    const r = getInProcessSubstrateStatus({ envFlag: true });
+    const r = getInProcessSubstrateStatus();
     expect(r.harnesses[0]?.verdict).toBe('healthy');
   });
 
   it('default resolveClaimStats yields zero stats', () => {
     _setHandleForTests('ws-1', 'a', fakeHandle('ws-1', 'a'));
-    const r = getInProcessSubstrateStatus({ envFlag: true });
+    const r = getInProcessSubstrateStatus();
     // No claim stats provided + handle present → healthy by default.
     expect(r.harnesses[0]?.verdict).toBe('healthy');
   });
 
-  it('envFlag:false override forces the disabled rendering (test seam)', () => {
-    const r = getInProcessSubstrateStatus({ envFlag: false });
-    expect(r.flagEnabled).toBe(false);
+  it('forceDisabledForTest forces the disabled rendering (test seam only)', () => {
+    const r = getInProcessSubstrateStatus({ forceDisabledForTest: true });
+    expect(r.substrateActive).toBe(false);
   });
 
-  it('defaults to enabled when envFlag undefined (substrate always boots, Stage 4d)', () => {
+  it('substrate is active by default (always boots, Stage 4d — no flag gate)', () => {
     const r = getInProcessSubstrateStatus();
-    expect(r.flagEnabled).toBe(true);
+    expect(r.substrateActive).toBe(true);
   });
 });
