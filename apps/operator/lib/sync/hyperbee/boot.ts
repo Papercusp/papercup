@@ -37,11 +37,16 @@ import { getHarnessStore, type HarnessStoreOpts } from './corestore';
 import { openOwnLog, openRemoteLog, type OwnLog, type PeerLogOp } from './peer-log';
 import {
   mergeAdmittedLogs,
+  DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
 } from './read-merge';
+import type { OpEnvelope } from './op-envelope-types';
 import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
-import { registerAllHarnessProjections } from './projections/register-all';
+import {
+  registerAllHarnessProjections,
+  buildHarnessProjectionApply,
+} from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
@@ -85,6 +90,33 @@ const MERGE_POLL_MS = 1000;
 // single author per pass. A noisy/Sybil peer bloats only its OWN log, so this
 // bounds per-pass ingest rather than mitigating a shared-structure flood.
 const MAX_OPS_PER_AUTHOR = 50_000;
+// Fix 4: bound each per-remote `core.update({wait:true})` inside `mergeNow` so a
+// connected-but-stalled peer can't hold the `merging` lock forever (which would
+// stall own-log progress + every other remote). Reuse the same few-second bound
+// the read-merge uses for its per-op `get` (DEFAULT_GET_TIMEOUT_MS).
+const UPDATE_TIMEOUT_MS = DEFAULT_GET_TIMEOUT_MS;
+
+/**
+ * Race a promise against a timeout. Resolves with the promise's value, or
+ * REJECTS with a timeout error once `ms` elapses (the caller's `try/catch`
+ * treats a timed-out update as "merge at last-known length"). The timer is
+ * `unref`'d so it never keeps the event loop alive on its own, and cleared as
+ * soon as either side settles. A non-positive `ms` disables the bound (awaits
+ * the promise directly — used by tests over instant fakes).
+ */
+function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  if (ms <= 0) return p;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('update timed out')), ms);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
 
 /**
  * A local write the per-table helpers append to the own log. Mirrors the
@@ -140,6 +172,14 @@ export interface BootHarnessOpts {
     githubLogin: string,
     githubUserId: number,
   ) => Promise<boolean>;
+  /**
+   * Test seam — override the projection apply sink. Production leaves this
+   * undefined and the per-harness scoped apply (`buildHarnessProjectionApply`,
+   * which routes ops to THIS harness's own projection set) is used. Tests
+   * inject a capturing apply to assert which ops merge, without the real PG
+   * projections or the (collision-prone) global registry.
+   */
+  applyOverride?: (op: OpEnvelope) => Promise<boolean>;
 }
 
 export interface BootedHarnessHandle {
@@ -180,6 +220,20 @@ export interface BootedHarnessHandle {
    * triggers a merge.
    */
   onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult>;
+  /**
+   * Revoke a device pubkey (D-004). Revocation = drop the pubkey from the
+   * admitted set + stop reading its log:
+   *   (a) add the pubkey to the `revoked` set so a re-announce is refused
+   *       (`reason:'revoked'`);
+   *   (b) look up the pubkey's `log_core_key` and remove that log from the
+   *       admitted set (so the next merge no longer reads it);
+   *   (c) re-merge so the merge set reflects the removal immediately.
+   * Best-effort + idempotent: revoking an unknown / already-revoked pubkey is a
+   * no-op (the pubkey is still added to `revoked` so a future announce is
+   * refused). Takes the RAW base64 device pubkey (the announce's
+   * `device_pubkey`), NOT the hypercore `log_core_key`.
+   */
+  revoke(devicePubkey: string): Promise<void>;
   /** Swarm handle. Null when this boot didn't join a swarm
    *  (private harness OR swarmBinding omitted). */
   swarm: SwarmHandle | null;
@@ -246,17 +300,42 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // (+ admitted remote logs) into PG.
   const ownLog = await openOwnLog(store);
 
-  // Wire the 8 per-table PG projection writers. Idempotent (re-running
+  // Wire the per-table PG projection writers into the GLOBAL registry too —
+  // some non-Model-B callers (CLI introspection, single-harness contexts) still
+  // read the global registry via `applyHyperbeeOpToPg`. Idempotent (re-running
   // overwrites by tableTag).
   registerAllHarnessProjections({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
   });
 
+  // ── Per-harness scoped projection apply (D-021 collision fix). ──
+  // The global registry is keyed by `tableTag`, so with 2+ booted harnesses the
+  // LAST `registerAllHarnessProjections` wins and the global `applyHyperbeeOpToPg`
+  // dispatches all ops to that one harness's projections — the others' ops are
+  // silently dropped by the projections' `harness_slug` guard. This scoped apply
+  // is bound to THIS harness's own projection set, so `mergeNow` applies each
+  // harness's ops to its own projections with no cross-harness interference.
+  const scopedApply =
+    opts.applyOverride ??
+    buildHarnessProjectionApply({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+    });
+
   // ── Admitted-set ── keyHex → log. Seeded with the own log (which is
   // structurally an AdmittedLog). Remote logs are added on admit (4b).
   const admitted = new Map<string, AdmittedLog>();
   admitted.set(ownLog.keyHex, ownLog);
+
+  // ── Revocation (D-004) ── the only blocklist. `revoked` holds device pubkeys
+  // (base64) the read-admission decider refuses; `pubkeyToLogKey` records the
+  // device_pubkey → log_core_key mapping at admit time so `revoke()` can find
+  // and drop the corresponding admitted log. `admitted` is keyed by
+  // `log_core_key`, but a revoke names a `device_pubkey`, so the mapping is the
+  // bridge between the two.
+  const revoked = new Set<string>();
+  const pubkeyToLogKey = new Map<string, string>();
 
   // ── Read-merge driver ── replaces the old Autobase read-loop. A pass:
   //   1. update() every REMOTE log first (the spike found remote `length`
@@ -280,16 +359,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           const maybeRemote = log as Partial<{ update(): Promise<void> }>;
           if (typeof maybeRemote.update === 'function') {
             try {
-              await maybeRemote.update();
+              // Bound the per-remote update() the same way read-merge bounds its
+              // per-op get(): a connected-but-stalled peer's core.update({wait})
+              // can block forever, and we hold the `merging` lock across the
+              // whole pass — so an unbounded await here would stall own-log
+              // progress AND every other remote. Race it against a timeout;
+              // a timed-out remote is merged at its last-known length (the
+              // catch already tolerates a failed update), and the next pass
+              // retries. Per-remote so one stalled peer doesn't block others.
+              await raceWithTimeout(maybeRemote.update(), UPDATE_TIMEOUT_MS);
             } catch {
-              // A remote that can't refresh (peer offline / stream closed)
-              // is merged at its last-known length; the next pass retries.
+              // A remote that can't refresh (peer offline / stream closed /
+              // timed out) is merged at its last-known length; next pass retries.
             }
           }
         }
         logs.push(versionGatedLog(slug, log));
       }
       return await mergeAdmittedLogs(logs, {
+        // D-021: route through THIS harness's scoped projection apply, not the
+        // global registry (which the last-booted harness would own).
+        applyImpl: scopedApply,
         maxOpsPerAuthor: MAX_OPS_PER_AUTHOR,
         // Surface a capped author in boot-history (best-effort observability).
         onCapped: (keyHex, total, cap) => {
@@ -353,6 +443,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         harnessSlug: opts.harnessSlug,
         workspaceRoot: opts.workspaceRoot,
       }),
+    // D-004: the live revocation set. The decider checks it FIRST (a revoked
+    // pubkey is denied regardless of sig/binding), so a revoked peer's
+    // re-announce is refused with reason 'revoked'. The set is mutated by
+    // `revoke()` below; the decider closes over the same Set instance.
+    revoked,
   });
 
   /**
@@ -391,6 +486,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
     // Admitted: open the remote log + add to the admitted-set + merge.
     try {
+      // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can find
+      // and drop the right admitted log (admitted is keyed by log_core_key).
+      pubkeyToLogKey.set(frame.device_pubkey, frame.log_core_key);
       if (!admitted.has(frame.log_core_key)) {
         const remote = await openRemoteLog(store, frame.log_core_key);
         admitted.set(frame.log_core_key, remote);
@@ -411,6 +509,32 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       );
     }
     return decision;
+  }
+
+  /**
+   * Revoke a device pubkey (D-004). Adds it to the `revoked` set (so a future
+   * announce is refused), drops its admitted log (so the next merge stops
+   * reading it), and re-merges so the removal takes effect immediately.
+   * Best-effort + idempotent: an unknown / already-revoked pubkey still gets
+   * added to `revoked` (a no-op for the set) and skips the log drop.
+   */
+  async function revoke(devicePubkey: string): Promise<void> {
+    // (a) Block future admits + re-announces (decider checks `revoked` first).
+    revoked.add(devicePubkey);
+    // (b) Drop the already-admitted log for this pubkey, if any.
+    const logKey = pubkeyToLogKey.get(devicePubkey);
+    if (logKey) {
+      admitted.delete(logKey);
+      pubkeyToLogKey.delete(devicePubkey);
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'peer_revoked',
+        peerLabel(logKey),
+      );
+    }
+    // (c) Re-merge so the merge set no longer includes the revoked log.
+    await mergeNow();
   }
 
   // ── Hyperswarm replication + announce exchange (4b) ──
@@ -502,6 +626,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     admitted,
     mergeNow,
     onAnnounce,
+    revoke,
     swarm: swarmHandle,
     async close() {
       stopped = true;

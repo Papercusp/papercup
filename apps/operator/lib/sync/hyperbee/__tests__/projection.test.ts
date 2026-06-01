@@ -1,0 +1,178 @@
+/**
+ * projection.test.ts — Model B projection-apply seam + LWW tiebreak.
+ *
+ * Two cross-stage gaps from the holistic review are covered here:
+ *
+ *   Fix 2 (per-harness projection apply) — the GLOBAL registry is keyed by
+ *   `tableTag`, so two booted harnesses registering the same tag overwrite each
+ *   other and the global `applyHyperbeeOpToPg` dispatches to whoever registered
+ *   LAST → the other harness's ops are silently dropped. The fix is a
+ *   PER-HARNESS scoped apply (`buildHarnessProjectionApply`) bound to that
+ *   harness's own projection set, dispatching through the shared `applyOpVia`
+ *   core. These tests prove a scoped apply for harness A routes an A-row to A's
+ *   writer (not B's) and vice-versa — no cross-harness drop — and contrast it
+ *   with the global registry's last-writer-wins collision.
+ *
+ *   Fix 3 (deterministic LWW author tiebreak, D-003) — on an exact `ts` tie
+ *   with the same op type, `lwwPick` breaks the tie on `writerPubkey` so the
+ *   winner is identical on every peer regardless of fold order.
+ */
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  applyOpVia,
+  applyHyperbeeOpToPg,
+  registerProjection,
+  getProjection,
+  lwwPick,
+  _clearRegistryForTests,
+  type ProjectionLookup,
+  type TableProjection,
+} from '../projection';
+import type { OpEnvelope } from '../op-envelope-types';
+
+afterEach(() => _clearRegistryForTests());
+
+/** A capturing projection for one harness: spy writers + a per-harness guard
+ *  mirroring the real projections (`if (row.harness_slug !== ours) return`). */
+function spyProjection(tableTag: string, harnessSlug: string) {
+  const writes: Array<{ id: string; harness_slug: string }> = [];
+  const deletes: string[] = [];
+  const proj: TableProjection<{ id: string; harness_slug: string }> = {
+    tableTag,
+    composeKey: (row) => row.id,
+    decodeValue: (raw) =>
+      raw && typeof raw === 'object' ? (raw as { id: string; harness_slug: string }) : null,
+    writeToPg: async (row) => {
+      if (row.harness_slug !== harnessSlug) return; // the real guard
+      writes.push(row);
+    },
+    deleteFromPg: async (key) => { deletes.push(key); },
+  };
+  return { proj, writes, deletes };
+}
+
+/** A scoped apply over a private one-projection set — exactly what
+ *  `buildHarnessProjectionApply` does (a `Map` lookup → `applyOpVia`). */
+function scopedApplyOver(proj: TableProjection<unknown>): (op: OpEnvelope) => Promise<boolean> {
+  const set = new Map<string, TableProjection<unknown>>([[proj.tableTag, proj]]);
+  const lookup: ProjectionLookup = (tag) => set.get(tag) ?? null;
+  return (op) => applyOpVia(lookup, op);
+}
+
+describe('per-harness scoped apply (Fix 2 — no cross-harness drop)', () => {
+  it('a scoped apply for harness A routes an A-row to A\'s writer, not B\'s', async () => {
+    const A = spyProjection('presence', 'harness-A');
+    const B = spyProjection('presence', 'harness-B');
+
+    const applyA = scopedApplyOver(A.proj as TableProjection<unknown>);
+    const applyB = scopedApplyOver(B.proj as TableProjection<unknown>);
+
+    const aRow = { id: 'row-A', harness_slug: 'harness-A' };
+    const bRow = { id: 'row-B', harness_slug: 'harness-B' };
+
+    // A-row through A's scoped apply → A's writer sees it.
+    expect(
+      await applyA({ type: 'put', table: 'presence', hbKey: 'row-A', value: aRow }),
+    ).toBe(true);
+    // B-row through B's scoped apply → B's writer sees it.
+    expect(
+      await applyB({ type: 'put', table: 'presence', hbKey: 'row-B', value: bRow }),
+    ).toBe(true);
+
+    // Each writer saw ONLY its own harness's row — no cross-harness drop, no
+    // cross-harness leak.
+    expect(A.writes).toEqual([aRow]);
+    expect(B.writes).toEqual([bRow]);
+
+    // And the inverse: an A-row sent through B's scoped apply is dropped by B's
+    // own harness_slug guard (proving the sets are truly independent — B would
+    // NOT have silently swallowed A's op in place of A).
+    A.writes.length = 0;
+    B.writes.length = 0;
+    await applyB({ type: 'put', table: 'presence', hbKey: 'row-A', value: aRow });
+    expect(B.writes).toEqual([]); // guarded out
+    expect(A.writes).toEqual([]); // never reached A either
+  });
+
+  it('contrast: the GLOBAL registry collides (last registration wins, the earlier harness is dropped)', async () => {
+    // This is the bug the per-harness apply fixes: registering two harnesses'
+    // SAME tag into the global registry overwrites — only the last one's writer
+    // is reachable via the global applyHyperbeeOpToPg.
+    const A = spyProjection('presence', 'harness-A');
+    const B = spyProjection('presence', 'harness-B');
+    registerProjection(A.proj);
+    registerProjection(B.proj); // overwrites A by tableTag
+
+    // The global registry now resolves 'presence' to B only.
+    expect(getProjection('presence')).toBe(B.proj as unknown as TableProjection<unknown>);
+
+    // An A-row through the GLOBAL apply hits B's projection, whose guard drops
+    // it → A's op is silently lost. (Scoped apply above avoids exactly this.)
+    const aRow = { id: 'row-A', harness_slug: 'harness-A' };
+    await applyHyperbeeOpToPg({ type: 'put', table: 'presence', hbKey: 'row-A', value: aRow });
+    expect(A.writes).toEqual([]); // dropped — the collision the fix removes
+    expect(B.writes).toEqual([]); // B's guard rejected A's slug
+  });
+
+  it('applyOpVia dispatches del to the deleter and tolerates unknown tables / bad shapes', async () => {
+    const A = spyProjection('presence', 'harness-A');
+    const apply = scopedApplyOver(A.proj as TableProjection<unknown>);
+    expect(await apply({ type: 'del', table: 'presence', hbKey: 'k1' })).toBe(true);
+    expect(A.deletes).toEqual(['k1']);
+    // Unknown table → false (dropped).
+    expect(await apply({ type: 'put', table: 'nope', hbKey: 'k', value: {} })).toBe(false);
+    // addWriter (retired) / missing table → false.
+    expect(await apply({ type: 'addWriter' as never })).toBe(false);
+  });
+});
+
+describe('lwwPick author tiebreak (Fix 3 — D-003 deterministic on a ts tie)', () => {
+  it('later ts wins regardless of author', () => {
+    const a = { type: 'put' as const, ts: 100, writerPubkey: 'zzz' };
+    const b = { type: 'put' as const, ts: 200, writerPubkey: 'aaa' };
+    expect(lwwPick(a, b)).toBe(b);
+    expect(lwwPick(b, a)).toBe(b);
+  });
+
+  it('on a ts tie, del still beats put (type decides before author)', () => {
+    const put = { type: 'put' as const, ts: 100, writerPubkey: 'zzz' };
+    const del = { type: 'del' as const, ts: 100, writerPubkey: 'aaa' };
+    expect(lwwPick(put, del)).toBe(del);
+    expect(lwwPick(del, put)).toBe(del);
+  });
+
+  it('on a ts tie + same type, the GREATER writerPubkey wins — order-independent', () => {
+    const lo = { type: 'put' as const, ts: 100, writerPubkey: 'aaa' };
+    const hi = { type: 'put' as const, ts: 100, writerPubkey: 'bbb' };
+    // hi wins regardless of which arg is first → identical on every peer.
+    expect(lwwPick(lo, hi)).toBe(hi);
+    expect(lwwPick(hi, lo)).toBe(hi);
+  });
+
+  it('treats a missing writerPubkey as \'\' (stable, total order)', () => {
+    const none = { type: 'put' as const, ts: 100 };                 // pubkey undefined ⇒ ''
+    const some = { type: 'put' as const, ts: 100, writerPubkey: 'a' };
+    // 'a' > '' so the op WITH a pubkey wins, both orders.
+    expect(lwwPick(none, some)).toBe(some);
+    expect(lwwPick(some, none)).toBe(some);
+    // Two missing pubkeys: '' >= '' → first arg (deterministic, never throws).
+    const n1 = { type: 'put' as const, ts: 100 };
+    const n2 = { type: 'put' as const, ts: 100 };
+    expect(lwwPick(n1, n2)).toBe(n1);
+  });
+
+  it('is fold-order independent for three same-ts same-type ops (the divergence the fix prevents)', () => {
+    const x = { type: 'put' as const, ts: 5, writerPubkey: 'x' };
+    const y = { type: 'put' as const, ts: 5, writerPubkey: 'y' };
+    const z = { type: 'put' as const, ts: 5, writerPubkey: 'z' };
+    // Fold in any order → the lexicographically-greatest pubkey ('z') wins.
+    const fold = (ops: typeof x[]) => ops.reduce((acc, op) => lwwPick(acc, op));
+    expect(fold([x, y, z])).toBe(z);
+    expect(fold([z, y, x])).toBe(z);
+    expect(fold([y, z, x])).toBe(z);
+    expect(fold([y, x, z])).toBe(z);
+  });
+});
+
+void vi; // (vi imported for parity with sibling tests; spies are inline above)

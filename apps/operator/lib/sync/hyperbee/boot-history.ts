@@ -28,6 +28,8 @@
  *                           cap; the merge ingested only the first N ops this
  *                           pass (DoS Phase-4 reshape — a noisy peer bloats only
  *                           its own tail, not the whole merge).
+ *   - 'peer_revoked'      — an admitted peer was revoked (D-004): its log was
+ *                           dropped from the admitted set + its pubkey blocklisted.
  *   - 'announce_admitted' — an inbound signed announce passed read-admission and
  *                           its per-peer log was added to the admitted set (Model B).
  *   - 'announce_rejected' — an inbound announce failed the read-admission decision
@@ -51,6 +53,7 @@ export type BootHistoryKind =
   | 'peer_rejected'
   | 'peer_rate_limited'
   | 'peer_capped'
+  | 'peer_revoked'
   | 'announce_admitted'
   | 'announce_rejected'
   | 'announce_error'

@@ -75,6 +75,7 @@ export function makeFakeBootedHandle(opts: {
         reason: 'binding_invalid',
       }),
     ),
+    revoke: vi.fn(async (_devicePubkey: string): Promise<void> => {}),
     swarm: null,
     close: vi.fn(async () => {}),
   };

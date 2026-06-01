@@ -14,6 +14,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,12 +22,9 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { bootHarnessSubstrate, onSchemaVersionAlert } from '../boot';
 import { schemaVersionEvents, type SchemaVersionAlert, CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { _resetCacheForTests } from '../corestore';
+import { openOwnLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
-import {
-  registerProjection,
-  _clearRegistryForTests,
-  type TableProjection,
-} from '../projection';
+import { _clearRegistryForTests } from '../projection';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
@@ -102,22 +100,19 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
   });
 
   it('single-peer: own writes flow through mergeNow into the projection sink', async () => {
-    // Register a capturing projection for a test table.
+    // Capture applied ops via the applyOverride seam. The scoped per-harness
+    // apply (buildHarnessProjectionApply) deliberately does NOT consult the
+    // global registry (D-021 collision fix), so tests inject their own sink.
     const writes: unknown[] = [];
-    const proj: TableProjection<{ id: string }> = {
-      tableTag: 'mb_test_table',
-      composeKey: (row) => row.id,
-      decodeValue: (raw) => (raw && typeof raw === 'object' ? (raw as { id: string }) : null),
-      writeToPg: async (row) => { writes.push(row); },
-      deleteFromPg: async () => {},
-    };
-    registerProjection(proj);
-
     const handle = await bootHarnessSubstrate({
       workspaceRoot: tmpWorkspaceRoot(),
       workspaceId: 'ws-1',
       harnessSlug: 's2',
       mergePollMs: 0,
+      applyOverride: async (op) => {
+        if (op.table === 'mb_test_table') writes.push(op.value);
+        return true;
+      },
     });
     cleanups.push(() => handle.close());
 
@@ -228,6 +223,155 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
     const second = handle.admitted.get('ab'.repeat(32));
     expect(second).toBe(first); // same handle, not re-opened
     expect(handle.admitted.size).toBe(2); // own + the one peer
+  });
+});
+
+describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end (D-004, Fix 1)', () => {
+  function tmpDir(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  /** A real device identity + an injectable Ed25519 signer (stable across calls,
+   *  so a re-announce uses the SAME device_pubkey that was revoked). */
+  function makeDevice(githubLogin: string, githubUserId: number) {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const devicePubkey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
+      .subarray(-32)
+      .toString('base64');
+    return {
+      devicePubkey,
+      githubUserId,
+      githubLogin,
+      sign: async (bytes: Buffer) => nodeSign(null, bytes, privateKey),
+    };
+  }
+
+  /** Pipe two Corestores' replication streams both ways (Stage-0 verified). */
+  function replicate(s1: Corestore, s2: Corestore): void {
+    type Pipeable = { pipe<T extends Pipeable>(dest: T): T };
+    const a = s1.replicate(true) as unknown as Pipeable;
+    const b = s2.replicate(false) as unknown as Pipeable;
+    a.pipe(b).pipe(a);
+  }
+
+  it('admit a remote peer (its op merges) → revoke → its NEW ops stop merging + a re-announce is refused', async () => {
+    // Capture applied ops via the applyOverride seam (the scoped per-harness
+    // apply doesn't consult the global registry — D-021), so we see exactly
+    // which of the peer's ops merge before vs. after revocation.
+    const writes: Array<{ id: string }> = [];
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-revoke-host-'),
+      workspaceId: 'ws-1',
+      harnessSlug: 'revoke-1',
+      mergePollMs: 0,                       // drive mergeNow by hand
+      verifyBindingOverride: async () => true,
+      applyOverride: async (op) => {
+        if (op.table === 'mb_revoke_table') writes.push(op.value as { id: string });
+        return true;
+      },
+    });
+    cleanups.push(() => handle.close());
+
+    // ── A real remote peer P: its own store + writable log, replicated into the
+    // host's store so P's ops actually cross to the host and merge. ──
+    const peerDir = tmpDir('mb-revoke-peer-');
+    const peerStore = new Corestore(peerDir);
+    cleanups.push(() => { void peerStore.close(); });
+    await peerStore.ready();
+    const peerOwn = await openOwnLog(peerStore);
+    const P = makeDevice('peer-alice', 4242);
+
+    // P writes its FIRST op, then we replicate P's store into the host's store.
+    await peerOwn.append({
+      type: 'put', table: 'mb_revoke_table', hbKey: 'P-1',
+      value: { id: 'P-1' }, ts: 100, schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: P.devicePubkey,
+    });
+    replicate(peerStore, handle.store);
+
+    // P announces (valid sig + binding-true) → admitted; merge applies P's op #0.
+    const announce = await buildAnnounce(
+      {
+        device_pubkey: P.devicePubkey,
+        github_user_id: P.githubUserId,
+        github_login: P.githubLogin,
+        log_core_key: peerOwn.keyHex,
+      },
+      P.sign,
+    );
+    const admitDecision = await handle.onAnnounce(announce);
+    expect(admitDecision.admit).toBe(true);
+    expect(handle.admitted.has(peerOwn.keyHex)).toBe(true);
+
+    // onAnnounce already merged; P's first op is in PG.
+    expect(writes).toEqual([{ id: 'P-1' }]);
+
+    // ── REVOKE P. ── Drops its log from the admitted set + re-merges.
+    await handle.revoke(P.devicePubkey);
+    // The peer's log is no longer in the admitted set.
+    expect(handle.admitted.has(peerOwn.keyHex)).toBe(false);
+    // Only the host's own log remains admitted.
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+
+    // ── P writes a NEW op after revocation. ── It must NOT merge: the log is
+    // out of the admitted set, so mergeNow never reads it.
+    await peerOwn.append({
+      type: 'put', table: 'mb_revoke_table', hbKey: 'P-2',
+      value: { id: 'P-2' }, ts: 200, schema_version: CURRENT_SCHEMA_VERSION,
+      author_pubkey: P.devicePubkey,
+    });
+    const appliedAfter = await handle.mergeNow();
+    expect(appliedAfter).toBe(0);                       // nothing in the admitted set newly applied
+    expect(writes).toEqual([{ id: 'P-1' }]);            // P-2 never reached PG
+
+    // ── A re-announce from the revoked pubkey is refused with reason 'revoked'. ──
+    const reAnnounce = await buildAnnounce(
+      {
+        device_pubkey: P.devicePubkey,
+        github_user_id: P.githubUserId,
+        github_login: P.githubLogin,
+        log_core_key: peerOwn.keyHex,
+      },
+      P.sign,
+    );
+    const reDecision = await handle.onAnnounce(reAnnounce);
+    expect(reDecision).toMatchObject({ admit: false, reason: 'revoked' });
+    // Still not re-admitted.
+    expect(handle.admitted.has(peerOwn.keyHex)).toBe(false);
+  });
+
+  it('revoking an unknown pubkey is a no-op (idempotent) but still blocks a future announce', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-revoke-unknown-'),
+      workspaceId: 'ws-1',
+      harnessSlug: 'revoke-2',
+      mergePollMs: 0,
+      verifyBindingOverride: async () => true,
+    });
+    cleanups.push(() => handle.close());
+
+    const P = makeDevice('never-admitted', 7);
+    // Revoke a pubkey we never admitted → no throw, admitted set unchanged.
+    await expect(handle.revoke(P.devicePubkey)).resolves.toBeUndefined();
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+    // Revoking again is still a no-op (idempotent).
+    await expect(handle.revoke(P.devicePubkey)).resolves.toBeUndefined();
+
+    // A subsequent (valid-sig) announce from that revoked pubkey is refused.
+    const announce = await buildAnnounce(
+      {
+        device_pubkey: P.devicePubkey,
+        github_user_id: P.githubUserId,
+        github_login: P.githubLogin,
+        log_core_key: 'fe'.repeat(32),
+      },
+      P.sign,
+    );
+    const decision = await handle.onAnnounce(announce);
+    expect(decision).toMatchObject({ admit: false, reason: 'revoked' });
+    expect(handle.admitted.has('fe'.repeat(32))).toBe(false);
   });
 });
 
