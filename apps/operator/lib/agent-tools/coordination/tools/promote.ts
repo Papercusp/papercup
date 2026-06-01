@@ -133,6 +133,50 @@ export function upsertPromotedBlock(body: string, newRows: string[]): string {
   return body + block;
 }
 
+/** A promoted feature whose realized structure is recorded in `## Promoted`. */
+export interface PromotedRowFeature {
+  title?: string;
+  from_items?: string[];
+  blocked_by?: string[];
+  order?: number;
+}
+
+/**
+ * Build the `## Promoted` checkbox rows, recording the REALIZED wave/parallelism
+ * structure the promoting agent emitted (P-041): each row carries its allocated
+ * id, title, and — when present — `wave`, `order`, and `blocked_by` (the durable,
+ * reviewable, reproducible shape, consistent with plans-central). A `blocked_by`
+ * ref that points at another feature in the SAME promote batch is rewritten to
+ * that feature's allocated id (canonical); a ref to an existing feature is kept
+ * verbatim. `ids[i]` is the server-allocated id for `features[i]`.
+ */
+export function buildPromotedRows(
+  features: ReadonlyArray<PromotedRowFeature>,
+  ids: readonly string[],
+  waveId?: string,
+): string[] {
+  // batch title (normalized) → allocated id, so blocked_by refs to batch peers
+  // are recorded as canonical ids.
+  const idByTitle = new Map<string, string>();
+  features.forEach((f, i) => {
+    const t = f.title?.trim().toLowerCase();
+    if (t && ids[i]) idByTitle.set(t, ids[i]);
+  });
+  return ids.map((fid, idx) => {
+    const f = features[idx] ?? {};
+    const itemRef = f.from_items?.[0] ? ` <!-- ${f.from_items[0]} -->` : '';
+    const bits: string[] = [];
+    if (waveId) bits.push(`wave ${waveId}`);
+    if (typeof f.order === 'number') bits.push(`order ${f.order}`);
+    if (f.blocked_by && f.blocked_by.length > 0) {
+      const refs = f.blocked_by.map((ref) => idByTitle.get(ref.trim().toLowerCase()) ?? ref);
+      bits.push(`blocked_by ${refs.join(', ')}`);
+    }
+    const struct = bits.length > 0 ? ` — ${bits.join(' · ')}` : '';
+    return `- [ ] ${fid} — ${f.title ?? fid}${struct}${itemRef}`;
+  });
+}
+
 const FEATURE_INPUT = z.object({
   title: z.string().min(1).max(200),
   body: z.string().optional(),
@@ -586,11 +630,9 @@ export default defineTool({
       { slug: args.slug, intent: 'plans:promote → write ## Promoted block + Now status + activate' },
       async (current): Promise<{ newBody: string | null; value: null }> => {
         if (current === null) return { newBody: null, value: null };
-        const featureRows = importRes.ids.map((fid, idx) => {
-          const feat = promoteFeatures[idx];
-          const itemRef = feat?.from_items?.[0] ? ` <!-- ${feat.from_items[0]} -->` : '';
-          return `- [ ] ${fid} — ${feat?.title ?? fid}${itemRef}`;
-        });
+        // P-041: record the REALIZED wave/parallelism structure (wave/order/
+        // blocked_by) the promoting agent emitted, not just the bare id+title.
+        const featureRows = buildPromotedRows(promoteFeatures, importRes.ids, waveId);
         let newBody = upsertPromotedBlock(current, featureRows);
         if (statusCounts) {
           newBody = upsertPromoteStatusLine(newBody, harnessSlug, statusCounts);

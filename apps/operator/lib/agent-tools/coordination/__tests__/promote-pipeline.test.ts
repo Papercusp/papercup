@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { upsertPromotedBlock, upsertPromoteStatusLine } from '../tools/promote';
+import { upsertPromotedBlock, upsertPromoteStatusLine, buildPromotedRows } from '../tools/promote';
 
 const FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
 
@@ -223,5 +223,51 @@ Something about draft.
 `;
     const out = body.replace(/^(status:\s*)draft\b/m, '$1active');
     expect(out).toBe(body);
+  });
+});
+
+describe('buildPromotedRows — record the realized parallelism structure (P-041)', () => {
+  it('records a bare id + title when no structure is present', () => {
+    const rows = buildPromotedRows([{ title: 'Build API' }], ['F-AUTO-1']);
+    expect(rows).toEqual(['- [ ] F-AUTO-1 — Build API']);
+  });
+
+  it('preserves the from_items provenance comment', () => {
+    const rows = buildPromotedRows([{ title: 'X', from_items: ['P-001'] }], ['F-1']);
+    expect(rows[0]).toBe('- [ ] F-1 — X <!-- P-001 -->');
+  });
+
+  it('records wave + order + blocked_by structure', () => {
+    const rows = buildPromotedRows(
+      [{ title: 'UI', blocked_by: ['F-API'], order: 2, from_items: ['P-009'] }],
+      ['F-UI'],
+      'w2',
+    );
+    expect(rows[0]).toBe('- [ ] F-UI — UI — wave w2 · order 2 · blocked_by F-API <!-- P-009 -->');
+  });
+
+  it('rewrites a blocked_by ref that points at a batch peer → its allocated id', () => {
+    // F-200 (UI) is blocked_by the batch peer titled "API" → recorded as F-100.
+    const rows = buildPromotedRows(
+      [
+        { title: 'API' },
+        { title: 'UI', blocked_by: ['API'] },
+      ],
+      ['F-100', 'F-200'],
+    );
+    expect(rows[1]).toBe('- [ ] F-200 — UI — blocked_by F-100');
+  });
+
+  it('keeps a blocked_by ref to an existing (non-batch) feature verbatim', () => {
+    const rows = buildPromotedRows([{ title: 'UI', blocked_by: ['F-EXISTING'] }], ['F-1']);
+    expect(rows[0]).toBe('- [ ] F-1 — UI — blocked_by F-EXISTING');
+  });
+
+  it('still matches the upsertPromotedBlock dedup id regex', () => {
+    const rows = buildPromotedRows([{ title: 'UI', blocked_by: ['F-A'], order: 1 }], ['F-AUTO-XY1'], 'w1');
+    // The dedup in upsertPromotedBlock keys on `^- [ ] (F-...)`; round-trip it.
+    const out = upsertPromotedBlock(BASE_PLAN, rows);
+    const again = upsertPromotedBlock(out, rows);
+    expect(again).toBe(out); // second promote of the same id is a no-op
   });
 });
