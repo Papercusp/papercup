@@ -393,7 +393,7 @@ Related: P-050, P-051, P-053, P-062, P-020, P-014
   per-`HOME` per-workspace PG split and the switch=restart model
   (`main.rs:1016`). One source of truth; multiple workspaces open at once; aligns
   with `harnesses-across-workspaces`. blocked-by: P-051
-- **P-051** `todo` **Per-spawn `HOME` (D-008):** every operator-spawned child
+- **P-051** `todo` **Per-spawn `HOME` (D-008):** every operator-spawned child (Foundation shipped papercusp-desktop 0882935, cargo-check clean: link_workspace_credentials now symlinks ~/.gitconfig into each workspace HOME was claude-only. GATE: must be LIVE rebuild desktop + reprovision homes before the HOME flip invoke.ts:1284 + plugin-spawn-impl + harness-launch + pty is fleet-safe. Verify the flip via tauri-agent-tools bridge live on the running shell.)
   (`claude`/`codex`/`git`/pty/orchestrator agent spawns) gets
   `HOME = workspace_dir(jobWorkspace)` from the job/request workspace, not the
   inherited process `HOME`. Touchpoints: orchestrator spawn-env, `harness-launch`,
