@@ -1,7 +1,7 @@
 ---
 title: Ctrl+F find-in-page for the desktop (operator Vite SPA)
 slug: find-in-page-ctrl-f-2026-06-01
-status: draft
+status: active
 created: 2026-06-01
 updated: 2026-06-01
 owner: aviynw3@gmail.com
@@ -11,21 +11,21 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Draft — design settled, awaiting greenlight. Approach: a browser-style
-find bar built on the **CSS Custom Highlight API**, using **`react-css-highlight`**
-as the highlighting *engine* plus a small in-house find-bar + match-navigation
-*wrapper*. Research confirmed there is **no** Tauri/wry/plugin native find API and
-**no** drop-in find-in-page widget library on the Custom Highlight API — native
-webview find is inconsistent (WebView2 yes; WKWebView + WebKitGTK no). Live surfaces
-mapped: mount in `apps/operator-vite/src/routes/__root.tsx` beside
-`<GlobalCommandPalette/>`; reuse the shared shortcut registry
-(`apps/operator/lib/shortcut-registry.ts` + `hotkeys.ts`). **Key unlock:**
-`feature.search-global` (Mod+F) is a registered-but-unimplemented no-op, so Ctrl+F
-can be claimed with zero conflict.
+**State:** Implemented P-000..P-008 in commit `df8c54801` (9 files, +586). A
+browser-style find bar on the **CSS Custom Highlight API** using
+**`react-css-highlight`** as the engine + an in-house bar/navigation wrapper.
+Vitest green (engine 11 + bus claim 13 + registry 9); `vite build` green
+(resolution + named imports bundle). **Two things are NOT yet done and are
+owed:** (1) **P-009 manual Tauri-shell verification** — could not run the
+desktop GUI headlessly; this is the real "does it actually work" check.
+(2) **The Playwright e2e is written but not executed** (needs the running dev
+stack). Plus a follow-up: **root `package-lock.json` was not updated** for the
+new dep (P-010 / D-006), and **two runtime assumptions** need eyeballing in the
+manual pass (D-007).
 
-**Next:** Human greenlights → **P-000** spike (confirm `react-css-highlight` honours
-a stable `highlightName` and that `CSS.highlights.get(name)` yields iterable ranges
-for navigation), then P-001..P-009 in order.
+**Next:** Run the Tauri shell (`cd papercusp-desktop && npm run dev`), press
+Ctrl+F, confirm D-007's highlight-name + paint-timing assumptions, then run the
+e2e against the live server (P-008/P-009). Resolve the lockfile follow-up (P-010).
 
 ## Background
 
@@ -89,36 +89,36 @@ and build the find bar + active-match navigation ourselves. See D-001..D-005.
 
 ## Design
 
-### Components (3 new units + 2 edits)
+### Components (as built)
 
-1. **`GlobalFindInPage.tsx`** (new, `apps/operator/app/_components/`, beside
-   `GlobalCommandPalette.tsx`) — the find bar overlay + controller. Open-state via
-   nuqs `?find` (boolean); query + `activeIndex` + `matchCount` in `useState`.
-   Drives the engine; renders the bar; owns keyboard inside the input.
-2. **`find-in-page-engine.ts`** (new, beside the component) — framework-free
-   navigation logic layered on the highlight the engine registers:
-   - `collectOrderedRanges(name)` → read `CSS.highlights.get(name)`, spread to an
-     array, sort by document order via `a.compareBoundaryPoints(Range.START_TO_START, b)`.
-   - `setActiveRange(ranges, i)` → register a second highlight `find-active`
-     containing only `ranges[i]`, then `scrollRangeIntoView(ranges[i])`.
-   - `scrollRangeIntoView(range)` → from `range.getBoundingClientRect()`; if out of
-     view, scroll (anchor-element approach finalised in P-000).
-   - `nextIndex/prevIndex(i, len)` → wrap-around.
-   - `clearHighlights()` → `CSS.highlights.delete('find-all'|'find-active')`.
-3. **Global `::highlight()` CSS** — `::highlight(find-all)` and a stronger
-   `::highlight(find-active)`, using theme surface/accent **tokens** (not literals).
-   Must live in a document-level stylesheet (pseudo can't be CSS-module-scoped).
+1. **`apps/operator/app/_components/GlobalFindInPage.tsx`** — the find bar overlay +
+   controller. Open-state via nuqs `?find` (boolean); query + `activeIndex` +
+   `matchCount` in `useState`. Drives `useHighlight` (engine) via `onPaint`; renders
+   the bar; owns keyboard inside the input. Scrolls only on a user action
+   (type / next / prev), never on a background repaint.
+2. **`apps/operator/lib/find-in-page/engine.ts`** — framework-free helpers. Pure
+   (unit-tested): `nextIndex`/`prevIndex`/`formatMatchLabel`/`orderRanges`. DOM:
+   `collectOrderedRanges` (reads `CSS.highlights.get('papercup-find')`),
+   `setActiveHighlight` (the `papercup-find-active` highlight),
+   `clearActiveHighlight`/`clearHighlight`, `scrollRangeIntoView`,
+   `isHighlightApiSupported`. (Plan originally said `find-in-page-engine.ts` beside
+   the component; as built it's a `lib/` module — logic in `lib/`, UI in `app/`.)
+3. **`apps/operator/app/find-in-page.css`** — `::highlight(papercup-find)` +
+   stronger `::highlight(papercup-find-active)` (theme tokens), plus the `.pc-find*`
+   bar chrome. Imported in `__root.tsx` beside `command-palette.css` (a `::highlight()`
+   pseudo cannot be CSS-module-scoped).
 
-Edits: `__root.tsx` (mount `<GlobalFindInPage/>`); `shortcut-registry.ts` (repurpose
-`feature.search-global` → `find.open`).
+Edits: `__root.tsx` (mount `<GlobalFindInPage/>` + css import); `shortcut-registry.ts`
++ `shortcut-bus.ts` (repurpose `feature.search-global` → `find.open`).
 
 ### Data flow
 
 `Ctrl+F` → dispatcher → `find.open` handler → `setOpen(true)`, focus input →
-type (debounced) → `react-css-highlight` re-registers `CSS.highlights['find-all']`
-within `<main>` → engine `collectOrderedRanges` → `activeIndex=0` → `setActiveRange`
-+ scroll → `matchCount` shown → Enter/Shift+Enter step `activeIndex` → Esc/close →
-`clearHighlights()` + reset + restore focus. Route change resets find.
+type (debounced) → `react-css-highlight` re-registers `CSS.highlights['papercup-find']`
+within `<main>` → `onPaint` → engine `collectOrderedRanges` → `activeIndex=0` →
+`setActiveHighlight` + scroll → `matchCount` shown → Enter/Shift+Enter step
+`activeIndex` → Esc/close → clear highlights + reset + restore focus. Content change
+(navigation/lazy load) re-runs the search via a debounced MutationObserver on `<main>`.
 
 ### Decisions baked in
 
@@ -131,63 +131,64 @@ within `<main>` → engine `collectOrderedRanges` → `activeIndex=0` → `setAc
 
 ## Phase 1 — Build
 
-- **P-000** `todo` Spike (½ day): add `react-css-highlight` in a throwaway route;
-  confirm (a) it honours a stable `highlightName`, (b) `CSS.highlights.get(name)`
-  returns iterable ranges we can order, (c) the robust `scrollRangeIntoView` variant
-  (anchor element vs nearest-scrollable). Output: a 1-paragraph note appended here +
-  the chosen scroll approach. Gates the rest.
-- **P-001** `todo` Add `react-css-highlight` to `apps/operator-vite/package.json`;
-  pin a version; `npm i`. Confirm it bundles under Vite (ESM) and `isSupported` is
-  true in the Tauri webview. blocked-by: P-000.
-- **P-002** `todo` Add the global `::highlight(find-all)` / `::highlight(find-active)`
-  rules to the SPA's global stylesheet (confirm whether that is a `main.tsx` CSS
-  import or inline in `index.html`); use theme tokens. blocked-by: P-000.
-- **P-003** `todo` Write `find-in-page-engine.ts` (`collectOrderedRanges`,
-  `setActiveRange`, `scrollRangeIntoView`, `nextIndex/prevIndex`, `clearHighlights`)
-  per the P-000 findings. blocked-by: P-000.
-- **P-004** `todo` Write `GlobalFindInPage.tsx`: nuqs `?find` open-state,
-  `useShortcutAction('find.open', …)`, debounced query→engine, bar UI (input, count
-  "N / M", up/down/×), input keydown (Enter/Shift+Enter/Esc), aria-live count,
-  focus-restore on close. Mirror xterm find UX. blocked-by: P-001, P-002, P-003.
-- **P-005** `todo` Repurpose `feature.search-global` → `find.open` in
-  `shortcut-registry.ts` (keep `mod+f`; description "Find in page"; category
-  navigation; keep `enableOnFormTags`). Grep + update any references. blocked-by: P-004.
-- **P-006** `todo` Mount `<GlobalFindInPage/>` in `__root.tsx` beside
-  `<GlobalCommandPalette/>`. Reset find state on TanStack-Router location change.
-  blocked-by: P-004.
-- **P-007** `todo` Vitest unit tests `find-in-page-engine.test.ts`: `nextIndex/prevIndex`
-  wrap-around, query normalization, range ordering against mock ranges. blocked-by: P-003.
-- **P-008** `todo` Playwright e2e `apps/operator/e2e/find-in-page.spec.ts`: Ctrl+F →
-  type known term on a content route → assert count text + `CSS.highlights.get('find-all').size`
-  via `page.evaluate` → Enter cycles + scrolls → Shift+Enter reverses + wraps → Esc
-  closes + highlights cleared. blocked-by: P-006.
-- **P-009** `todo` Manual verify in the **Tauri shell**
-  (`cd papercusp-desktop && npm run dev`) on docs viewer + chat transcript + a long
-  list — NOT a browser at :3055. Run `npm run test:affected`. blocked-by: P-006.
+- **P-000** `done` Spike via library source-inspection (headless, not a running
+  route): `react-css-highlight` registers via `CSS.highlights.set(highlightName, …)`
+  with OUR controllable name, and exposes `onPaint`/`onHighlightChange` — so we read
+  ranges back from `CSS.highlights.get('papercup-find')`. Zero runtime deps. Scroll
+  approach chosen: `range.startContainer.parentElement.scrollIntoView({block:'center'})`
+  (walks every scroll ancestor). The two assumptions this could not confirm headlessly
+  are tracked in D-007.
+- **P-001** `done` Declared `react-css-highlight@^3.1.0` in
+  `apps/operator-vite/package.json`. **Placed in `node_modules` via `npm pack` +
+  extract** because `npm install` is broken repo-wide (D-006). `vite build` green.
+- **P-002** `done` `apps/operator/app/find-in-page.css` with the two `::highlight()`
+  rules (theme tokens) + `.pc-find*` chrome; imported in `__root.tsx`.
+- **P-003** `done` `apps/operator/lib/find-in-page/engine.ts` (pure + DOM helpers).
+- **P-004** `done` `apps/operator/app/_components/GlobalFindInPage.tsx` (nuqs `?find`,
+  `find.open` shortcut, debounced `useHighlight`, bar UI, Enter/Shift+Enter/Esc,
+  aria-live count, focus-restore, scroll-only-on-user-action, MutationObserver re-run).
+- **P-005** `done` Renamed `feature.search-global` → `find.open` in
+  `shortcut-registry.ts` (category navigation, desc "Find in page") + the id-claim in
+  `shortcut-bus.ts` (+ its test). Grep confirmed no other references.
+- **P-006** `done` Mounted `<GlobalFindInPage/>` in `__root.tsx` beside the palette.
+  Content-change re-run via a debounced MutationObserver on `<main>` (chosen over a
+  hard location-change reset so find keeps working across navigation).
+- **P-007** `done` `apps/operator/lib/find-in-page/engine.test.ts` — 11 Vitest tests
+  green (index wrap-around, label, real-jsdom document-order range sort). Plus the bus
+  claim test in `shortcut-bus.test.ts` (13 green).
+- **P-008** `done (written, NOT executed)` `apps/operator/e2e/find-in-page.spec.ts` —
+  derives a guaranteed-present term from `<main>`, asserts the count, the
+  `papercup-find` / `papercup-find-active` highlight sizes, Enter nav, and Esc
+  teardown. Needs the running dev stack; not run headlessly this session. OWED: run it.
+- **P-009** `todo` **Manual verify in the Tauri shell** (`cd papercusp-desktop &&
+  npm run dev`) on docs viewer + chat transcript + a long list — NOT a browser at
+  :3055. Confirm D-007's two assumptions. OWED.
+- **P-010** `todo` Install/lockfile follow-up (D-006): once `npm install` works again,
+  run a proper install so root `package-lock.json` records `react-css-highlight`,
+  otherwise a clean `npm ci` will miss it.
 
 ## Risks & open questions
 
-- **Range access for navigation** — the lib's JS API returns only `matchCount`.
-  Mitigation: read ranges from the global `CSS.highlights.get(highlightName)`
-  registry directly. P-000 confirms this is viable; if the lib mangles or rotates
-  the name, fall back to running our own `TreeWalker` (the lib then only saves the
-  bar UI — still net-positive, re-decide at P-000).
-- **Scroll-into-view from a `Range`** is fiddly across nested scroll containers —
-  P-000 picks the robust approach.
+- **Range access for navigation** — RESOLVED: the lib's JS API returns only
+  `matchCount`, but we read ranges from `CSS.highlights.get('papercup-find')`. (The
+  name-suffix risk is the open half — D-007.)
+- **Scroll-into-view from a `Range`** — chosen approach is parent-element
+  `scrollIntoView({block:'center'})`; confirm it centres correctly in nested scroll
+  containers during P-009.
 - **Canvas content** (xterm terminal) is unsearchable by DOM find — acceptable; the
-  terminal keeps its own `Ctrl+Shift+F`. Document.
+  terminal keeps its own `Ctrl+Shift+F`.
 - **Hidden / virtualized content** — `display:none`, closed `<details>`, and
   virtualized rows aren't in the live DOM, so matches there won't highlight/scroll.
-  Known limitation; note in UI copy if cheap.
-- **Browser support** — all three target webviews support the API; guard with the
-  lib's `isSupported` and degrade gracefully.
+  Known limitation.
+- **Browser support** — all three target webviews support the API; the bar shows
+  "Find isn’t supported in this webview" via the lib's `isSupported` otherwise.
 
 ## Testing
 
 Per the four-framework rule (`testing/index.mdx` §1.0a): **Vitest** unit for the
-pure engine math (P-007); **Playwright** spec in `apps/operator/e2e/` for the real
-find flow (P-008, the Custom Highlight API needs a real browser); plus **manual**
-Tauri-shell verification (P-009). No Cargo / LLM-scenario coverage applies.
+pure engine math + the bus claim (green); **Playwright** spec in `apps/operator/e2e/`
+for the real find flow (written; run pending a dev stack); plus **manual**
+Tauri-shell verification (P-009, owed). No Cargo / LLM-scenario coverage applies.
 
 ## Decisions
 
@@ -235,3 +236,26 @@ later enhancement could lift the term into nuqs for full agent-driven find; not 
 Date: 2026-06-01
 Find-in-page is core, always-on UX, not one of the cut-for-V1 surfaces the flag
 system gates. Gating it would add a kill-switch for something we will never cut.
+
+### D-006 — Dependency placed via tarball; root lockfile NOT updated
+Date: 2026-06-01
+Every form of `npm install` fails repo-wide with `EUNSUPPORTEDPROTOCOL` on the
+`workspace:*` dep in `packages/agent-mcp/package.json` (npm 11 doesn't support that
+protocol; `--workspaces=false` doesn't help — npm still reads the tree). To unblock,
+`react-css-highlight@3.1.0` (zero runtime deps; React 19 peer already present) was
+fetched with `npm pack` OUTSIDE the workspace and extracted into
+`node_modules/react-css-highlight`, and declared in `apps/operator-vite/package.json`.
+The dev build + tests work, but **root `package-lock.json` was not updated**, so a
+clean `npm ci` would miss it (P-010). This doesn't regress an otherwise-green install:
+`npm ci` is already broken by the same `workspace:*` issue.
+
+### D-007 — Two runtime assumptions to confirm in the manual pass (P-009)
+Date: 2026-06-01
+P-000 was source-inspection (headless), not a running webview. Two things must be
+eyeballed in the Tauri shell: (1) **Highlight name** — we assume the lib registers
+under exactly `highlightName`, so `::highlight(papercup-find)` styling +
+`CSS.highlights.get('papercup-find')` both match; if the lib suffixes the name,
+matches won't render → adjust the CSS name / read-back. (2) **Paint timing** — we
+read ranges in `onPaint`, assuming the registry is written by then (the lib defers
+painting via `requestIdleCallback`); if navigation lags a keystroke, switch to
+`onHighlightChange` or re-read on a microtask.
