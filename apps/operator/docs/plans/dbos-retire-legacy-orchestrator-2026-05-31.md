@@ -190,3 +190,12 @@ UI CLEANUP (commit 29671aa08): the deprecated controls were live (HarnessSetting
 
 NOT TOUCHED (genuinely dead, not imported by the Vite app): the lanes-viz stat card (HarnessTopBar.tsx) + "active competitions" counters (AdvOverviewPanel/RealHarnessOverviewPanel) — they live in the retired Next app (apps/operator/app/**, not served) and will go with its wholesale removal. The legacy backend code (lanes.ts/synthesizer.ts/branch-iso.ts/competition) is kept (instant-revert per useChunkLoop:false + parent D-006).
 Related: P-009
+
+### D-011 — D-011 — reversed the UI removal: lane controls restored behind FLAGS.TESTING (not deleted)
+Date: 2026-06-01
+User decision (supersedes the D-010 removal): instead of removing the deprecated parallelism controls from the settings UI, RESTORE them and gate behind the testing feature flag — hidden in V1, available to testers.
+
+Commit 00accc288: restored HarnessSettingsPanel.tsx from 29671aa08~1 (all controls + state/load/save/helpers back), then gated the deprecated controls behind `useFlag(FLAGS.TESTING)` (papercusp-testing, default false; pattern copied from ChromeShell.tsx:99). Gated regions: the workers/feature MODE dropdown, N-per-feature (workersPerFeature), features-cap (maxFeaturesInFlight), the SYNTHESIZER toggle (synthesizeSingle), the Worker-count-TIERS section + rubric, the adaptive "recent worker decisions" telemetry grid, and the branchIso/mode-aware summary line (falls back to a simple summary when the flag is off). Kept ALWAYS-visible (live under chunk-loop): max workers, the chunk-loop subsection (useChunkLoop/workingStateCheck/replanStrikes/escalateToRole), debugger threshold, AI backend. The config state/save are fully preserved, so a harness with these set keeps working; the form just hides the controls unless the testing flag is on. tsc-clean for the file.
+
+Reminder of the verified merit context (D-009/D-010): these features are the superseded worktree-competition model (gated behind useChunkLoop:false; the DBOS pipeline uses chunk-loop). Flag-gating keeps them reachable for testing without surfacing them in the default ship state. The dead-Next lanes-viz/competition-counters were not touched.
+Related: P-009
