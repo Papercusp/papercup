@@ -12,6 +12,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface HarnessIssueRow {
@@ -37,6 +38,14 @@ export interface HarnessIssueRow {
 export interface IssuesProjectionOpts {
   workspaceId: string;
   harnessSlug: string;
+  /**
+   * Test/multi-peer seam — write to THIS postgres-js client instead of the
+   * process-global `getOrgPg().sql`. See `HarnessFeaturesProjectionOpts.sql`:
+   * the Stage-6 federation acceptance test injects a per-peer client so two
+   * peers in one process project into two separate databases. Defaults to
+   * `getOrgPg().sql`.
+   */
+  sql?: postgres.Sql;
 }
 
 function composeKey(row: HarnessIssueRow): string {
@@ -81,7 +90,7 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   await sql`
@@ -120,7 +129,7 @@ async function writeToPg(
 
 async function deleteFromPg(opts: IssuesProjectionOpts, key: string): Promise<void> {
   if (!key) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     DELETE FROM harness_shared.harness_issues_consolidated
     WHERE harness_slug = ${opts.harnessSlug}

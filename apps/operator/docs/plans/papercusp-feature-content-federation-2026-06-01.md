@@ -1,6 +1,6 @@
 ---
 title: Feature-content + issue federation (PG→Hyperbee write-side, task #14)
-status: approved-building
+status: done
 created: 2026-06-01
 ---
 
@@ -75,11 +75,13 @@ The read-side projections (`projections/harness-features.ts:107`, `issues.ts:88`
 - [ ] **Step 1:** In `boot-all.ts` post-boot (~line 200), after `getBootedHarness` is live: `await backfillLocalState(handle, pg)` then `const stop = startOutboxDrain(handle, pg)`; store `stop` for teardown. In `boot.ts` `close()`, call `stop()`.
 - [ ] **Step 2:** Run the existing hyperbee boot/boot-all tests → green (no regression). **Step 3: Commit.**
 
-## Stage 6 — End-to-end federation integration test (the acceptance)
+## Stage 6 — End-to-end federation integration test (the acceptance) — DONE
 
-- [ ] **Step 1:** `feature-content-federation.integration.test.ts` — two substrate instances on one box over the real in-process swarm (mirror `two-peer-swarm-bidi.test.ts`'s harness, real `verifyAnnounce`, channel-2 gate stood in for by `verifyBindingOverride` since that's offline-proven). Peer A: INSERT a local feature into A's consolidated → trigger → outbox → drain → A's log. Assert it appears in **B's** `harness_features_consolidated` (via admit → merge → projection) within the test's merge window. Symmetric B→A. Assert a remote-origin feature in A does NOT re-enqueue (echo-loop guard holds). 
-- [ ] **Step 2: Run → PASS.** This is the test that proves features actually federate.
-- [ ] **Step 3:** Update `agent-insights/phase1b-federation-limitations.mdx` to remove the "feature content doesn't federate" limitation (if listed) and note the CDC-outbox mechanism. **Step 4: Commit.**
+- [x] **Step 1:** `apps/operator/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts` — two substrate instances on one box over the real in-process swarm (mirrors `two-peer-swarm-bidi.test.ts`'s harness, real `verifyAnnounce`, channel-2 gate stood in for by `verifyBindingOverride`). Each peer has its OWN throwaway Postgres database (`createFreshPgDb`); the features/issues projections are bound to that peer's `sql` via a new `HarnessFeaturesProjectionOpts.sql` / `IssuesProjectionOpts.sql` seam, so A writes only to A's DB and B's projection writes only to B's DB (asserted: distinct `current_database()`). Peer A: INSERT a local feature into A's consolidated → real migration-102 trigger → outbox → `drainOutboxOnce` → A's log → real swarm replication → B admits A → B's read-merge → B's REAL projection writes it into B's `harness_features_consolidated`. Asserts the actual row (title/status/origin='remote'/workspace_id) lands in B. Symmetric B→A. Issue A→B too (exercises the migration-103 workspace_id fill — asserted the issue row's workspace_id is the real value, not ''). Echo-loop guards: (3a) B does NOT re-enqueue A's received `origin='remote'` rows; (3b) a direct `origin='remote'` insert on A enqueues nothing; (3c) the outbox reaches a FIXED POINT under repeated merge+drain (no unbounded intra-peer self-amplification).
+- [x] **Step 1a (send-side fix surfaced by the test):** the read-merge re-applies the OWN log every pass, re-UPSERTing local rows with identical values → without a guard the capture trigger re-enqueued them forever (verified 1→2 growth). Fixed migration 102: split the capture trigger into `AFTER INSERT OR DELETE` (unconditional) + `AFTER UPDATE … WHEN (OLD.* IS DISTINCT FROM NEW.*)`, so a no-op self-merge-back re-upsert does not enqueue. (libs/papercusp submodule.)
+- [x] **Step 2: Run → PASS** (testcontainer PG, Docker up; 429 hyperbee/projection tests green, no regression). Anti-tautology verified: disabling `drainOutboxOnce` makes the A→B acceptance fail (`F-fed-1` never reaches B's PG), confirming the test depends on the real outbox send-side and the two peers use genuinely separate databases.
+- [x] **Step 3:** Updated `agent-insights/phase1b-federation-limitations.mdx` with a "Resolved — feature content + issues now federate (CDC-outbox)" section + the echo-guard note. (Docs rebuild deferred — prose-only edit.)
+- [x] **Step 4: Commit.**
 
 ## Decisions
 - **D-1** CDC-outbox over dual-write — scatter (25 sites) + submodule split makes dual-write fragile; trigger-capture is complete + zero-touch.

@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
 /**
@@ -83,6 +84,16 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
 export interface HarnessFeaturesProjectionOpts {
   workspaceId: string;
   harnessSlug: string;
+  /**
+   * Test/multi-peer seam — write to THIS postgres-js client instead of the
+   * process-global `getOrgPg().sql`. Production leaves this undefined (the
+   * single embedded-pg / native-pg connection). The Stage-6 federation
+   * acceptance test injects a per-peer client so two peers in ONE process
+   * project into two SEPARATE databases — without it, both peers would write
+   * to the same global connection and the "did the row land in B?" assertion
+   * would be vacuous. Defaults to `getOrgPg().sql`.
+   */
+  sql?: postgres.Sql;
 }
 
 function composeKey(row: HarnessFeatureRow): string {
@@ -100,7 +111,7 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance?.origin ?? 'local';
   await sql`
@@ -147,7 +158,7 @@ async function writeToPg(
 
 async function deleteFromPg(opts: HarnessFeaturesProjectionOpts, key: string): Promise<void> {
   if (!key) return;
-  const { sql } = getOrgPg();
+  const sql = opts.sql ?? getOrgPg().sql;
   await sql`
     DELETE FROM harness_shared.harness_features_consolidated
     WHERE harness_slug = ${opts.harnessSlug}
