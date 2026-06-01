@@ -261,7 +261,7 @@ function verifySignatureOffline(
     );
     const ordered: Record<string, unknown> = {};
     for (const f of signingFields) {
-      ordered[f] = (body as Record<string, unknown>)[f];
+      ordered[f] = (body as unknown as Record<string, unknown>)[f];
     }
     const payload = Buffer.from(JSON.stringify(ordered), 'utf8');
     const sig = Buffer.from(body.signature_by_device, 'base64');
