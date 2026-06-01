@@ -27,6 +27,7 @@
     "libs/papercusp/libs/db",
     "libs/papercusp/packages/harness",
     "libs/papercusp/packages/orchestrator",
+    "libs/papercusp/packages/locks",
     "libs/papercusp/packages/embedded-postgres-server",
     "libs/test-config",
     "libs/generic/papergrid/bloom-grid",

@@ -92,7 +92,7 @@
     "@papercusp/harness": "file:../../libs/papercusp/packages/harness",
     "@papercusp/ipc-endpoint-server": "file:../../libs/generic/ipc-endpoint-server",
     "@papercusp/ipc-framing": "file:../../libs/generic/ipc-framing",
-    "@papercusp/locks": "file:../../packages/locks",
+    "@papercusp/locks": "file:../../libs/papercusp/packages/locks",
     "@papercusp/memory": "file:../../libs/generic/memory",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
     "@papercusp/plan-parser": "file:../../libs/generic/plan-parser",
