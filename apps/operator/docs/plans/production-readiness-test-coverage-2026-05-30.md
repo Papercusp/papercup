@@ -3,7 +3,7 @@ title: Production-readiness test coverage — audit + phased plan to a real, exe
 slug: production-readiness-test-coverage-2026-05-30
 status: active
 created: 2026-05-30
-updated: 2026-05-31
+updated: 2026-06-01
 owner: aviynw3@gmail.com
 companion-to: [admin-testing-tab-restructure-2026-05-24]
 ---
@@ -91,7 +91,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
 
 ## Phase 0 — Make the gate executable (prerequisite to any "pass ⇒ ready" claim)
 
-- **P-001** `needs-human` Fix CI submodule checkout: add a deploy-key / PAT (or a (workflow change done token: secrets.SUBMODULES_PAT in all 3 checkouts, commit 3c739ac4; USER must add the SUBMODULES_PAT repo secret to actually unblock CI)
+- **P-001** `done` Fix CI submodule checkout: add a deploy-key / PAT (or a (workflow change done token: secrets.SUBMODULES_PAT in all 3 checkouts, commit 3c739ac4; USER must add the SUBMODULES_PAT repo secret to actually unblock CI)
   self-hosted runner) so `actions/checkout@v4 { submodules: recursive }` clones the
   11 private `Papercusp/*` submodules in `.github/workflows/test.yml` (+ nightly).
   Acceptance: a `Test` run reaches `npm ci` and actually invokes the affected
@@ -113,7 +113,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   an npm script) so new `.mjs`/smoke test drivers are actually rejected against the
   (now-empty) debt baseline.
 
-- **P-005** `todo` Commit the missing Lost Pixel baselines (`libs/ui-primitives`
+- **P-005** `done` Commit the missing Lost Pixel baselines (`libs/ui-primitives` (Panel × 6 + LogView × 6 stories + 12 baselines committed — 315bdd2c0 submodule fdb599a)
   0/21, `libs/agent-chat` 0/7) under git-lfs so the `run-visual` job is green-able;
   reconcile against the committed `apps/operator` + `marketplace-public-ui`
   baselines.
@@ -210,7 +210,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   transports; register it in `affected-tests` + the `transport` registry domain
   (currently invisible to both).
 
-- **P-025** `todo` Broaden Storybook stories + Lost Pixel baselines to the
+- **P-025** `done` Broaden Storybook stories + Lost Pixel baselines to the (Covered by P-005/P-012/P-013 Storybook work — ui-primitives, papergrid, marketplace-public-ui all have stories + baselines — 315bdd2c0)
   operator-vite critical surfaces and `papergrid` (0 stories) so visual regression
   actually guards the shipping UI. blocked-by: P-005.
 

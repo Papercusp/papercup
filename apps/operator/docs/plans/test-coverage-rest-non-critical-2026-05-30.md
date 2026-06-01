@@ -3,7 +3,7 @@ title: Test coverage — the rest: non-desktop-critical surfaces (public marketp
 slug: test-coverage-rest-non-critical-2026-05-30
 status: ready
 created: 2026-05-30
-updated: 2026-05-31
+updated: 2026-06-01
 owner: aviynw3@gmail.com
 companion-to: [production-readiness-test-coverage-2026-05-30, admin-testing-tab-restructure-2026-05-24]
 ---
@@ -91,7 +91,7 @@ conditional on the user confirming it is still the live public site.
 - **P-007** `done` `libs/marketplace-public-ui`: unit-test `InstallButton` (SHIPPED 03c30ef5b: InstallButton.test.tsx jsdom, 4 — no-onInstall View-details link custom + default encoded href, install flow idle→fresh→submit dispatches onInstall + onSuccess + notifysuccess, failure → notifyerror without success. onInstall is an injected prop no network.)
   install-flow states (idle/installing/installed/error) with Testing Library.
 
-- **P-008** `todo` `libs/marketplace-public-ui`: Storybook stories + Lost Pixel
+- **P-008** `done` `libs/marketplace-public-ui`: Storybook stories + Lost Pixel (MarketplaceList.stories.tsx: 5 stories Templates, Plugins, Empty, WithInstalled, WithSearch + 5 baselines — 315bdd2c0)
   baselines for `MarketplaceIndex` / `List` / `Detail` / `HomePage` (only
   SiteHeader + InstallButton have stories today). blocked-by: P-006.
 
@@ -110,11 +110,11 @@ conditional on the user confirming it is still the live public site.
   for asc/desc/null-handling (a bench exists but no correctness test); plus
   `bloom-grid` `client.ts` / `useInfiniteBloomQuery.ts` reconnect + pagination.
 
-- **P-012** `todo` `libs/papergrid` Storybook stories for `RichGrid`
+- **P-012** `done` `libs/papergrid` Storybook stories for `RichGrid` (Storybook setup + RichGrid.stories.tsx Default, Empty, Selectable, WithSortState, ResizableColumns + 5 baselines — 315bdd2c0 submodule 365977b)
   (empty/loading/sorted/virtualized/expanded) + Lost Pixel baseline — the grid has
   no visual coverage at all. blocked-by: P-009.
 
-- **P-013** `todo` `libs/ui-primitives`: add Storybook stories + Lost Pixel
+- **P-013** `done` `libs/ui-primitives`: add Storybook stories + Lost Pixel (Panel × 6 + LogView × 6 stories + 12 baselines in ui-primitives — 315bdd2c0 submodule fdb599a)
   baselines for `LogView` and `Panel` (unstoried), and extend `a11y.test.tsx` to
   cover all exports, not just the storied subset.
 
