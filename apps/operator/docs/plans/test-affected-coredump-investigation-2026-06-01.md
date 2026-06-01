@@ -143,6 +143,98 @@ DDL helpers — spread the real module + harden the getOrgPg `sql` stub with
 **Contamination (78 files, pass alone): NOT yet root-caused.** Shared
 external-state bleed in the full suite (filesystem/CWD/`.harness` paths, real PG,
 an fd leak). Separate workstream; `test:affected` subsets mostly dodge it.
+
+### JUDGMENT CALLS — recorded for avi's review (do NOT auto-fix product code)
+
+Per avi: where a fix is a judgment call (real code bug vs test drift, or a design
+rework), I record it here instead of deciding, and surface the list at the end.
+Clear test-drift I fix directly.
+
+Legend — **REAL?** = suspected product bug (verify, don't patch the test);
+**BEHAVIOR** = SUT behavior changed, test must endorse it as correct;
+**ISOLATION** = test reads real external state (PG/coord/fs) and needs mocking;
+**REWORK** = test design no longer fits; **STALE** = looks like a safe
+expectation update but I want your ok.
+
+**A. Suspected REAL product issues (don't auto-patch):**
+1. `lib/oauth/state.test.ts` — ALL tests fail; `token.slice is not a function`,
+   sign/verify return `undefined`. The OAuth **state-token format likely changed**
+   (sign no longer returns a string?). Security-sensitive → verify the SUT, not
+   the test. [REAL?]
+2. `lib/branch-actions.test.ts` — 5s timeout + `A FileHandle object was closed
+   during garbage collection` (`ERR_INVALID_STATE`). A **real fd leak** the SUT
+   exposes under Node 25 (unclosed `.harness/action-runs/*.log` handle). [REAL?]
+3. `app/_lints/css-tokens.test.ts` — `Found 43 undefined CSS token(s)`. Either 43
+   genuinely-undefined CSS tokens in the app (real debt) or a stale token
+   allowlist. [REAL?]
+4. `lib/perf-anti-patterns.test.ts` — the perf-anti-pattern scanner fires; may be
+   flagging a real anti-pattern introduced in product code. [REAL?]
+5. `lib/un-hardcode-contract.test.ts` — `vitest-fail-on-console: expected test not
+   to call console.warn()`; a real `console.warn` now fires in the covered path.
+   [REAL?]
+6. `lib/endpoint-route/__tests__/auth-posture.test.ts` — "auth-tier drift under
+   /admin/:" — an auth-tier assertion changed; could be a **real auth-posture
+   regression**. Security-sensitive → verify. [REAL?]
+7. `lib/endpoint-route/__tests__/experts.test.ts` — route 500s: `exps is not
+   iterable`, `ENOENT …/.harness/experts/EXP-001/SPEC.md`. The experts route
+   **migrated its data source** (PG/generated) but the test seeds file fixtures;
+   route correctness is unverified. [REAL?/REWORK]
+8. `lib/endpoint-route/__tests__/agent-tools-device-auth.test.ts` &
+   `…/agent-tools-catchall.test.ts` — routes 500; catchall also has an SSE
+   `event: delta` ordering assertion. Trace the thrown error → mock-gap (fix) vs
+   real route bug. [REAL?]
+9. `lib/pty-ws.test.ts` — `expected '' to contain 'PTYWS_TEST_MARKER'`; the pty
+   websocket produced no output — possible real pty/stream regression. [REAL?]
+
+**B. Test-ISOLATION failures (read real external state):**
+10. `lib/agent-tools/coordination/__tests__/subscriptions.test.ts` — reads **376
+    real coord watches** from PG (`expected [Array(376)] to deeply equal []`); not
+    isolated. Needs a clean schema / mocked coord store. [ISOLATION]
+11. `scripts/hooks/omp/__tests__/coord-hook.test.ts` — reads the **real coord
+    inbox** and finds an actual peer broadcast (`expected [] …got [message from
+    su-3a9fa0aa…]`). Needs the coord read mocked. [ISOLATION]
+
+**C. BEHAVIOR changes — test must endorse as correct (recommend fix, want ok):**
+12. `lib/agent-tools/projects/__tests__/projects.test.ts` — tool now **returns an
+    `{isError:true}` envelope instead of throwing** (the canonical MCP tool error
+    contract). Recommend: assert the envelope. [BEHAVIOR→likely fix]
+13. `lib/__tests__/harness-testing-registry.test.tsx` — tier label renamed
+    **`Built-in` → `Universal`** (`generalized` field). Recommend: update labels if
+    the rename is intended. [BEHAVIOR→likely fix]
+14. `lib/agent-tools/roles/__tests__/roles.test.ts` — roles tool output
+    shape/wrapping changed (`expected false to be true`). [BEHAVIOR]
+15. `lib/agent-tools/__tests__/misc.test.ts` — `snapshots:list/get` output shape
+    changed (`{ok:false,…}` vs expected snapshot object). [BEHAVIOR]
+16. `lib/auth/require-principal.test.ts` — `PrincipalCheckError` shape/match
+    changed. [BEHAVIOR]
+17. `lib/llm-testing/__tests__/runner-aggregate.test.ts` — aggregate now yields 37
+    rows vs 30 expected; verify the extra scenarios are intended. [BEHAVIOR/STALE]
+18. `lib/endpoint-route/__tests__/desktop.test.ts` — `buildLoginSpec` now
+    **resolves the agent binary to an absolute env-specific path**
+    (`/home/…/claude`) instead of bare `claude`/`omp`/`gh` (+ `setup-pty-commands`).
+    Intended path-resolution (then assert `endsWith`) or a portability regression?
+    [BEHAVIOR]
+
+**D. UI-expectation drift (verify intended):**
+19. `app/_components/SetupWizard/steps.test.ts` — wizard step list changed
+    (`['embedded-pg','workspace',…]` vs expected 3). [STALE/BEHAVIOR]
+20. `app/_components/__tests__/OperatorChatSidebar.test.ts` — a dimension constant
+    changed (`expected 225 to be 360`); layout change or regression? [BEHAVIOR]
+21. `app/harness/dock/AddPanelCatalog.test.tsx` — UI text "Open new panel" /
+    "Built-in" not found (catalog labels changed). [STALE/BEHAVIOR]
+22. `app/installed/snapshots/page.test.ts` — `bumpPatch is not a function`:
+    import/export drift in `InstalledSnapshotsClient` (snapshots is a flag-cut V1
+    surface — confirm it's still live). [STALE/REWORK]
+
+**E. Design REWORK:**
+23. `lib/__tests__/chat-surface-tools.test.ts` — source-auditing test hardcoded
+    against the **retired** `app/api/agent-mcp/**/route.ts` paths (ENOENT). Intent
+    (chat surfaces wire tools consistently) still valid; needs repointing to the
+    relocated `lib/endpoint-route/routes/**` modules or an audit rework. [REWORK]
+
+**Status: 14 of 38 genuine fixed (committed). The 24 above are recorded for your
+review.** Tell me per-item (or per-category) whether to: fix the test, fix the
+product code, rework, or skip — and I'll execute.
 ---
 
 ## Objective
