@@ -269,6 +269,61 @@ need your call:**
 
 Tell me per-item (or per-category) whether to fix the test, fix the product code,
 rework, or skip — and I'll execute.
+
+### ROUND 3 (avi: "do all in whichever order you think best") — investigated each
+
+**FIXED this round (committed):** coord-hook (unset operator-URL env → deterministic
+detached), un-hardcode-contract (ctx.skip() not console.warn for the PG-unreachable
+skip). → **25 of 38 fully green + oauth/state 5/6.**
+
+**CONFIRMED REAL (test is correct; needs a product/design fix — did NOT patch the test):**
+- **css-tokens** — 43 CSS custom-properties (`--surface`, `--text`,
+  `--pc-color-success`, `--bg-warning`, …) are used across ~30 components but
+  defined in NO `app/**.css`. Real CSS debt — needs a design-token migration to
+  the tier-token scale (read the design docs + design-phase token registry
+  first; see `theme-surface-tier-scale` memory). Sizeable, design-sensitive.
+- **perf-anti-patterns** — NEW A1–A14 perf anti-patterns exist in app/lib beyond
+  the grandfathered BASELINE, AND some baseline entries are stale. Fix the new
+  anti-patterns in product code OR regenerate the baseline (read
+  `performance.mdx` A1–A14 first).
+
+**Needs investigation → likely product fix:**
+- **branch-actions** — the test runs a REAL `bash` spawn (not mocked) and times
+  out at 5s; the "FileHandle closed during GC" is collateral from the kill.
+  Determine whether the stdout-stream read loop can hang (product — bound it) or
+  5s is just too tight for a real spawn here (test — raise timeout / mock spawn).
+- **auth-posture** — "auth-tier drift under /admin/:". Security-sensitive: verify
+  whether an /admin route's required auth tier genuinely regressed (product fix)
+  or the test's tier expectation is stale (test fix). Do NOT loosen the test
+  without confirming the route is correctly gated.
+- **experts** — route 500 (`exps is not iterable`, ENOENT
+  `.harness/experts/EXP-001/SPEC.md`). The test seeds filesystem fixtures whose
+  layout no longer matches `experts-data.ts`'s read paths. Align the fixtures to
+  the current read paths (test) or fix the route's listing (product) — confirm
+  which by reading `experts-data.ts:listExperts`.
+- **agent-tools-device-auth + agent-tools-catchall** — routes 500; trace the
+  thrown error (likely the same db-org/ensure-schema/workspace-registry mock-gap
+  pattern already fixed elsewhere → test fix). catchall also asserts SSE
+  `event: delta` ordering — verify the stream contract.
+
+**Test-rework (test-only, but involved):**
+- **subscriptions** — coord watches are PG-backed (`getOrgPg().sql`); mock it with
+  an in-memory watch store (the raw-SQL queries make this fiddly) OR convert to
+  `.integration.test.ts`.
+- **oauth/state residual** — same shape: mock the `oauth_nonces` store
+  (getOrgPg sql) in-memory, OR make it integration. (The cold-drizzle-construct
+  `null constructor` crash in `getOrgPg` is worth a separate look — it could
+  affect other suites that touch real PG.)
+- **chat-surface-tools** — repoint the `SURFACES` audit list from
+  `app/api/agent-mcp/**/route.ts` (retired) to the relocated
+  `lib/endpoint-route/routes/**` modules, then re-validate the audited
+  MCP-wiring strings still exist there.
+
+**Ambiguous behavior (verify intended vs regression):**
+- **misc** — `snapshots:list/get` returns `{ok:false}` despite mocked data; the
+  tool likely no longer reads via the mocked seam (gated/migrated). Confirm intent.
+- **require-principal** — resolves "no principal" where a 403 missing-capability
+  error was expected; the principal-resolution order changed. Verify intended.
 ---
 
 ## Objective
