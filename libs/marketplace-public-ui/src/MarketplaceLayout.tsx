@@ -1,7 +1,4 @@
-'use client';
-
 import type { ReactNode } from 'react';
-import { usePathname } from 'next/navigation';
 
 const TABS: Array<{ href: string; label: string; hint: string }> = [
   { href: '/marketplace', label: 'Overview', hint: 'How it works' },
@@ -10,8 +7,14 @@ const TABS: Array<{ href: string; label: string; hint: string }> = [
   { href: '/marketplace/snapshots', label: 'Snapshots', hint: 'Saved setups' },
 ];
 
-export function MarketplaceLayout({ children }: { children: ReactNode }) {
-  const pathname = usePathname() ?? '';
+export function MarketplaceLayout({
+  children,
+  pathname = '',
+}: {
+  children: ReactNode;
+  /** Current path, injected by the host router (was next/navigation's usePathname). */
+  pathname?: string;
+}) {
   return (
     <div className="pc-marketplace-frame">
       <nav className="pc-marketplace-tabs pc-tabs" role="tablist" aria-label="Marketplace sections">

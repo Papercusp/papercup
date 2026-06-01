@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet } from '@tanstack/react-router';
+import { createFileRoute, Outlet, useRouterState } from '@tanstack/react-router';
 import { MarketplaceLayout } from '@papercup/marketplace-public-ui';
 
 /**
@@ -10,8 +10,9 @@ export const Route = createFileRoute('/marketplace')({
 });
 
 function MarketplaceLayoutRoute() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   return (
-    <MarketplaceLayout>
+    <MarketplaceLayout pathname={pathname}>
       <Outlet />
     </MarketplaceLayout>
   );
