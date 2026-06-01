@@ -1,10 +1,56 @@
 ---
 title: "Investigation brief: `npm run test:affected` core-dumps (Node 25 + vitest worker pool)"
 slug: test-affected-coredump-investigation-2026-06-01
-status: draft
+status: done
 created: 2026-06-01
-owner: unassigned
+owner: claude (su-2f904)
 tags: [test-infra, vitest, node-version, ci]
+---
+
+## RESOLVED 2026-06-01 — `pool: 'forks'` (commit c09cf6b1b)
+
+**Root cause (corrected):** the shared config was **not** "no pool override"
+as the brief guessed — `libs/test-config/src/vitest-config.ts` set the unit +
+browser layers to **`pool: 'threads'`** (worker_threads). worker_threads share
+one libuv loop, which aborts mid-run under Node ≥25 on this kernel (io_uring is
+a symptom on *some* runs, not the cause — `UV_USE_IO_URING=0` alone is
+insufficient, as the brief already found).
+
+**Fix (candidate #2, chosen over the Node-22 pin #1):**
+`pool: layer === 'browser' ? 'threads' : 'forks'`. `forks` is vitest's own
+default; it runs each file in its own child process, is stable across Node
+versions, and removes the dependency on which Node the runner's PATH resolves.
+Chosen over the Node-22 pin because a pool change is robust on every runner
+(CI + each box), whereas PATH-based Node pinning re-breaks the moment a runner
+resolves a different Node. Wall-clock for the full operator suite ≈ 29s
+parallel — no meaningful slowdown, so #2's "slower" caveat did not materialize.
+
+**Verification:** full `npm test --workspace apps/operator` (661 files /
+6820 tests) now runs **to completion** on Node 25.9.0 — exit 1 from real test
+results, **never** code 134 / "Aborted (core dumped)". Acceptance criteria met.
+Insight written: `agent-insights/vitest-threads-pool-node25-coredump`.
+
+### Two findings the fix REVEALS but does not cause (both PRE-EXISTING)
+
+Proven not-introduced: identical failures under the old `threads` pool when a
+file is run in isolation (e.g. `distributed-claim.test.ts` → 7 failed under
+both pools; `subscriptions.test.ts` → 7 under both).
+
+1. **~60–110 pre-existing unit-test failures** the perpetual crash had masked
+   (genuine broken/stale tests, not flake). `test:affected` runs only the
+   changed-file closure, and `origin/main` on this box is hundreds of commits
+   behind, so these rarely all ran at once before. **Out of scope for this
+   infra plan — needs an explicit decision (see below).**
+2. **~60 spurious `Test timed out in 5000ms` failures** that appear ONLY at
+   full parallelism (forks `maxForks` = CPU count) and **vanish to 0 when
+   serialized** (`--no-file-parallelism`). Worst-case-only CPU contention when
+   running all 661 files at once; normal `test:affected` subsets don't hit it.
+
+### Open decision (deferred pending avi)
+
+Whether to (a) fix the ~60–110 pre-existing unit-test failures now, (b) file a
+separate plan/issue for them, or (c) leave for later. They are a distinct
+problem from this core-dump and were not in this plan's scope.
 ---
 
 ## Objective
