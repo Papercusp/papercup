@@ -60,6 +60,24 @@ type ElevenLabsKeyState = ApiKeyState;
 interface ElevenLabsConnTest { ok: boolean; tier?: string; characterCount?: number; characterLimit?: number; email?: string | null; error?: string }
 interface ElevenLabsVoice { id: string; name: string; lang?: string }
 
+/**
+ * Full-agent engines that require a cloud key. Maps the engine enum value
+ * to the credential it needs so the option can (a) stay selectable even when
+ * the key is missing and (b) reveal an inline key-entry box below on select.
+ */
+const FULL_AGENT_KEY: Record<string, {
+  service: keyof CloudCredentialsSnapshot;
+  field: 'openaiApiKey' | 'googleApiKey' | 'elevenlabsApiKey';
+  label: string;
+  placeholder: string;
+  helpUrl: string;
+}> = {
+  'openai-realtime':           { service: 'openai',     field: 'openaiApiKey',     label: 'OpenAI',    placeholder: 'sk-…',  helpUrl: 'https://platform.openai.com/api-keys' },
+  'gemini-live':               { service: 'google',     field: 'googleApiKey',     label: 'Google AI', placeholder: 'AIza…', helpUrl: 'https://aistudio.google.com/app/apikey' },
+  'elevenlabs-conv':           { service: 'elevenlabs', field: 'elevenlabsApiKey', label: 'ElevenLabs', placeholder: 'sk_…', helpUrl: 'https://elevenlabs.io/app/settings/api-keys' },
+  'elevenlabs-conversational': { service: 'elevenlabs', field: 'elevenlabsApiKey', label: 'ElevenLabs', placeholder: 'sk_…', helpUrl: 'https://elevenlabs.io/app/settings/api-keys' },
+};
+
 export default function VoiceSettingsPage() {
   const [voices, setVoices] = useState<Array<{ name: string; lang: string }>>([]);
   const [config, setConfig] = useState(() => getVoiceConfig());
@@ -234,6 +252,28 @@ export default function VoiceSettingsPage() {
     }
   }, [keyDraft]);
 
+  // Save an arbitrary cloud voice key (used by the inline full-agent key box).
+  // Round-trips the full snapshot so allCreds + the ElevenLabs-specific state
+  // both reflect the new value immediately.
+  const onSaveCloudKey = useCallback(async (field: string, value: string): Promise<boolean> => {
+    const v = value.trim();
+    if (!v) return false;
+    const r = await fetch('/api/agent-mcp/operator-credentials', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ [field]: v }),
+    });
+    if (!r.ok) {
+      toast.error(`Save failed: HTTP ${r.status}`);
+      return false;
+    }
+    const snap = (await r.json()) as CloudCredentialsSnapshot;
+    setAllCreds(snap);
+    if (snap.elevenlabs) setCredentials(snap.elevenlabs);
+    toast.success('API key saved');
+    return true;
+  }, []);
+
   const onClearKey = useCallback(async () => {
     const ok = await askConfirm({
       title: 'Clear the ElevenLabs API key?',
@@ -328,17 +368,22 @@ export default function VoiceSettingsPage() {
       <section className="pc-settings-section">
         <h2>Engines</h2>
         {(() => {
-          const fullAgentOn = (prefs?.fullAgentEngine ?? 'off') !== 'off';
+          const fullAgentVal = prefs?.fullAgentEngine ?? 'off';
+          const fullAgentOn = fullAgentVal !== 'off';
           const sttTtsDisabled = savingPrefs || fullAgentOn;
           const sttTtsDimStyle: React.CSSProperties = fullAgentOn
             ? { opacity: 0.5, pointerEvents: 'none' as const }
             : {};
+          // Selected full-agent engine needs a cloud key that isn't set yet →
+          // keep the option selectable and reveal an inline key-entry box.
+          const keyCfg = FULL_AGENT_KEY[fullAgentVal];
+          const needsKey = !!keyCfg && !allCreds?.[keyCfg.service]?.configured;
           return (
             <>
               <div style={{ marginBottom: 16 }}>
                 <label style={lbl}>Full-agent engine</label>
                 <Select
-                  value={prefs?.fullAgentEngine ?? 'off'}
+                  value={fullAgentVal}
                   onChange={(v) => savePrefsPatch({ fullAgentEngine: v as VoicePrefs['fullAgentEngine'] })}
                   ariaLabel="Full-agent engine"
                   disabled={savingPrefs}
@@ -348,17 +393,14 @@ export default function VoiceSettingsPage() {
                     {
                       value: 'openai-realtime',
                       label: `OpenAI Realtime (gpt-4o-realtime)${!allCreds?.openai?.configured ? ' — needs OpenAI key' : ''}`,
-                      disabled: !allCreds?.openai?.configured,
                     },
                     {
                       value: 'gemini-live',
                       label: `Google Gemini Live (multimodal)${!allCreds?.google?.configured ? ' — needs Google AI key' : ''}`,
-                      disabled: !allCreds?.google?.configured,
                     },
                     {
                       value: 'elevenlabs-conv',
                       label: `ElevenLabs Conversational AI (Claude Haiku)${!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}`,
-                      disabled: !allCreds?.elevenlabs?.configured,
                     },
                   ]}
                 />
@@ -368,6 +410,24 @@ export default function VoiceSettingsPage() {
                   delegates complex tasks to Claude. OpenAI Realtime is a working fallback.
                 </p>
               </div>
+
+              {/* ── CLOUD API KEYS POINTER ────────────────────────────────
+                  Sits directly under the full-agent engine selector, whose
+                  options reference the keys it points to. Full catalog lives
+                  on the dedicated /settings/api-keys page. */}
+              <div style={{ marginBottom: 16, padding: 12, border: '1px dashed var(--border)', borderRadius: 4 }}>
+                <p style={{ ...hint, margin: 0 }}>
+                  Cloud API keys (OpenAI, ElevenLabs, Cartesia, Deepgram, Picovoice, Google AI) live on
+                  the dedicated <RouteLink href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</RouteLink> page.
+                </p>
+              </div>
+
+              {/* Inline key entry — the selected full-agent engine needs a cloud
+                  key that isn't configured yet. The option stays selectable; picking
+                  it reveals this box instead of being disabled. */}
+              {needsKey && keyCfg && (
+                <CloudKeyInline cfg={keyCfg} onSave={onSaveCloudKey} />
+              )}
 
               {(prefs?.fullAgentEngine === 'elevenlabs-conv' ||
                 prefs?.fullAgentEngine === 'elevenlabs-conversational') && (
@@ -450,16 +510,6 @@ export default function VoiceSettingsPage() {
             Toggle voice mode (mic icon in the header) to enable announcements during normal use.
           </p>
         </div>
-      </section>
-
-      {/* ── CLOUD API KEYS POINTER ────────────────────────────────
-          Keys live on the dedicated /settings/api-keys page so users
-          have one place to manage all credentials (LLM + voice). */}
-      <section style={{ marginBottom: 24, padding: 12, border: '1px dashed var(--border)', borderRadius: 4 }}>
-        <p style={{ ...hint, margin: 0 }}>
-          Cloud API keys (OpenAI, ElevenLabs, Cartesia, Deepgram, Picovoice, Google AI) live on
-          the dedicated <RouteLink href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</RouteLink> page.
-        </p>
       </section>
 
       {/* ── ELEVENLABS SUB-SECTION ───────────────────────────────── */}
@@ -1119,6 +1169,54 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div>
       <div style={{ fontSize: 11, opacity: 0.6, textTransform: 'uppercase' }}>{label}</div>
       <strong style={{ fontSize: 18 }}>{value}</strong>
+    </div>
+  );
+}
+
+/**
+ * Inline cloud-key entry shown directly under the full-agent engine selector
+ * when the chosen engine needs a key that isn't configured yet. Saves through
+ * the same /operator-credentials endpoint as the dedicated API-keys page, so
+ * the user can pick an engine and supply its key without leaving voice settings.
+ */
+function CloudKeyInline({
+  cfg, onSave,
+}: {
+  cfg: { field: string; label: string; placeholder: string; helpUrl: string };
+  onSave: (field: string, value: string) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const doSave = async () => {
+    if (!draft.trim() || busy) return;
+    setBusy(true);
+    const ok = await onSave(cfg.field, draft);
+    setBusy(false);
+    if (ok) setDraft('');
+  };
+  return (
+    <div style={{ marginBottom: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+        <label style={{ ...lbl, marginBottom: 0 }}>{cfg.label} API key — required for this engine</label>
+        <a href={cfg.helpUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, opacity: 0.7, flex: '0 0 auto' }}>get key →</a>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <input
+          type="password"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void doSave(); }}
+          placeholder={cfg.placeholder}
+          style={{ flex: 1, padding: '6px 10px', fontSize: 13, fontFamily: 'monospace' }}
+        />
+        <Button variant="primary" onClick={() => void doSave()} disabled={busy || !draft.trim()}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+      <p style={hint}>
+        Stored locally in <code>~/.papercusp/credentials.json</code>. You can also manage it on the{' '}
+        <RouteLink href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</RouteLink> page.
+      </p>
     </div>
   );
 }
