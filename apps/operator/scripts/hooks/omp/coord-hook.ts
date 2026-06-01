@@ -12,7 +12,10 @@
  *   turn_end         → persist the watermark pointers consumed.
  *   tool_call        → L2 file-lock enforcement — extract paths,
  *                      locks:acquire, block on busy.
- *   tool_result      → release the lock acquired for that toolCallId.
+ *   tool_result      → release the lock for that toolCallId, AND inject any
+ *                      coord messages that arrived since the last tool call
+ *                      (mid-turn delivery via pi.sendMessage steer — parity
+ *                      with the Claude/Codex PostToolUse coord hook).
  *   session_shutdown → defensive release of any locks still held.
  *
  * Runtime: the hook is loaded BY OMP, inside the OMP child process,
@@ -133,6 +136,34 @@ export function formatTurnStartReminder(input: ReminderInput): string {
   if (out.length === 0) return '';
 
   return `<system-reminder type="coord">\n${out.join('\n')}\n</system-reminder>`;
+}
+
+/**
+ * Format the MID-TURN delta reminder — the coord messages that arrived since
+ * the last tool call (parity with the Claude/Codex PostToolUse coord hook).
+ * Compact, newest-capped (the most recent matter most; older are summarized as
+ * a count), wrapped in the same `<system-reminder type="coord">` envelope as
+ * the turn-start reminder. Returns '' for an empty list (nothing injected).
+ */
+export function formatInboxDelta(entries: InboxEntry[]): string {
+  if (entries.length === 0) return '';
+  const MAX = 8;
+  const sorted = [...entries].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+  const overflow = sorted.length - MAX;
+  const shown = overflow > 0 ? sorted.slice(-MAX) : sorted;
+  const n = sorted.length;
+  const lines = [`${n} new coordination message${n === 1 ? '' : 's'} since your last tool call:`];
+  if (overflow > 0) {
+    lines.push(`  • …and ${overflow} older message${overflow === 1 ? '' : 's'}`);
+  }
+  for (const e of shown) {
+    const kind = e.kind && e.kind !== 'message' ? ` (${e.kind})` : '';
+    const raw = (e.summary ?? '').replace(/\s+/g, ' ').trim() || '(no summary)';
+    const summary = raw.length > 200 ? `${raw.slice(0, 199)}…` : raw;
+    lines.push(`  • ${e.from}${kind}: ${summary}`);
+  }
+  lines.push('Reply / hand off with coord:send; full thread via coord:inbox / coord:thread. Ignore if not relevant to your task.');
+  return `<system-reminder type="coord">\n${lines.join('\n')}\n</system-reminder>`;
 }
 
 /** Aggregate raw plan_event lines into one summary per plan_slug. */
@@ -453,6 +484,19 @@ export async function onSessionShutdown(): Promise<void> {
  */
 let _pendingWatermark: HookWatermark = {};
 
+/** Mid-turn delivery cursor — the newest message ts already surfaced this
+ *  turn (by turn_start or a prior tool_result). The tool_result poll fetches
+ *  coord:inbox SINCE this, so a message that arrives mid-turn reaches the
+ *  agent before its next step instead of only at the next turn_start. Seeded
+ *  each attached turn_start; undefined detached/pre-seed (→ no mid-turn poll,
+ *  so we never dump history on a missing baseline). */
+let _midTurnCursor: string | undefined;
+
+/** Test seam — reset the mid-turn cursor between cases. */
+export function _resetMidTurnCursorForTests(v?: string): void {
+  _midTurnCursor = v;
+}
+
 /** Largest ISO ts in a list of inbox entries, or '' if empty. */
 function maxTs(entries: InboxEntry[]): string {
   let max = '';
@@ -536,6 +580,15 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
         ...(planEventsMax.length > 0 ? { plan_events: planEventsMax } : {}),
       };
 
+  // Seed the mid-turn cursor at the newest position surfaced this turn, so the
+  // tool_result poll only injects messages that arrive AFTER turn start (no
+  // overlap with the reminder just built, no history dump on a fresh inbox).
+  _midTurnCursor = degraded
+    ? undefined
+    : inboxMax.length > 0
+      ? inboxMax
+      : (wm.messages ?? new Date().toISOString());
+
   return {
     reminder: formatTurnStartReminder({
       ownerId,
@@ -557,6 +610,7 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
  *  stderr notice. */
 function onTurnStartDetached(): TurnStartResult {
   _pendingWatermark = {};
+  _midTurnCursor = undefined; // no baseline → tool_result poll is a no-op
   return { reminder: '', degraded: false, mode: 'detached' };
 }
 
@@ -614,6 +668,33 @@ export async function onTurnEnd(): Promise<void> {
     ...(wm.messages !== undefined ? { messages_since_ts: wm.messages } : {}),
     ...(wm.plan_events !== undefined ? { plan_events_since_ts: wm.plan_events } : {}),
   });
+}
+
+/**
+ * Mid-turn coord delivery (parity with the Claude/Codex PostToolUse coord
+ * hook): on each tool_result, poll coord:inbox for messages that arrived since
+ * the last position surfaced this turn, and return a compact reminder for any
+ * new ones. Advances both the mid-turn cursor (so a message is never injected
+ * twice) and the staged watermark (so turn_end persists the progress).
+ *
+ * Attached-only + best-effort: returns '' when there's no baseline (detached
+ * or pre-seed — never dump history on a missing cursor) or on any transient
+ * failure (the next tool_result re-checks). The adapter injects the reminder
+ * via pi.sendMessage(deliverAs:'steer') so it lands in the running turn.
+ */
+export async function pollInboxDelta(): Promise<{ reminder: string }> {
+  const since = _midTurnCursor;
+  if (!since) return { reminder: '' };
+  const inboxResult = await callMcpTool('coord:inbox', { since_ts: since });
+  if (inboxResult === null) return { reminder: '' }; // transient failure — skip
+  const inbox = (inboxResult as { entries?: InboxEntry[] } | null)?.entries ?? [];
+  if (inbox.length === 0) return { reminder: '' };
+  const newMax = maxTs(inbox);
+  if (newMax.length > 0) {
+    _midTurnCursor = newMax;
+    _pendingWatermark = { ..._pendingWatermark, messages: newMax };
+  }
+  return { reminder: formatInboxDelta(inbox) };
 }
 
 /**
@@ -1216,7 +1297,19 @@ export default function register(pi: HookApi): void {
   });
 
   pi.on('tool_result', async (event) => {
+    // 1. Release the lock acquired for this tool (existing behavior).
     await safe(() => onToolResult(event), undefined);
+    // 2. Mid-turn coord delivery — surface messages that arrived since turn
+    //    start / the last tool call. `deliverAs: 'steer'` injects into the
+    //    running turn (vs only at the next turn_start). Parity with the
+    //    Claude/Codex PostToolUse coord hook.
+    const { reminder } = await safe(() => pollInboxDelta(), { reminder: '' });
+    if (reminder.length > 0) {
+      pi.sendMessage(
+        { customType: 'coord-reminder', content: reminder, display: false, attribution: 'agent' },
+        { deliverAs: 'steer' },
+      );
+    }
   });
 
   pi.on('session_shutdown', async () => {

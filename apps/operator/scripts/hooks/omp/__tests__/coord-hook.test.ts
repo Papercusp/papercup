@@ -14,6 +14,7 @@ import {
   detectSymlinkedPaths,
   extractPathsFromToolInput,
   formatBusyRefusal,
+  formatInboxDelta,
   formatSymlinkRefusal,
   formatTurnStartReminder,
   hookOwnerId,
@@ -23,8 +24,10 @@ import {
   onToolCall,
   onToolResult,
   onTurnStart,
+  pollInboxDelta,
   summarisePlanEvents,
   _resetHookOwnerIdForTests,
+  _resetMidTurnCursorForTests,
   _resetToolCallCacheForTests,
   type InboxEntry,
 } from '../coord-hook';
@@ -1207,5 +1210,113 @@ describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => 
     } finally {
       global.fetch = origFetch;
     }
+  });
+});
+
+describe('formatInboxDelta (mid-turn coord delivery)', () => {
+  const mk = (ts: string, from: string, summary: string, kind = 'message'): InboxEntry => ({
+    ts,
+    msg_id: ts,
+    from,
+    kind,
+    summary,
+  });
+
+  it('returns "" for an empty list', () => {
+    expect(formatInboxDelta([])).toBe('');
+  });
+
+  it('wraps a single message in a coord system-reminder', () => {
+    const out = formatInboxDelta([mk('2026-06-01T00:00:00Z', 'peer-A', 'grabbed feature-claim.ts')]);
+    expect(out).toContain('<system-reminder type="coord">');
+    expect(out).toContain('1 new coordination message since your last tool call');
+    expect(out).toContain('peer-A: grabbed feature-claim.ts');
+    expect(out).not.toContain('older message');
+  });
+
+  it('pluralizes and annotates non-message kinds', () => {
+    const out = formatInboxDelta([
+      mk('2026-06-01T00:00:00Z', 'a', 'm1'),
+      mk('2026-06-01T00:00:01Z', 'b', 'please take over', 'handoff'),
+    ]);
+    expect(out).toContain('2 new coordination messages');
+    expect(out).toContain('b (handoff): please take over');
+  });
+
+  it('caps to the NEWEST 8 and counts the older ones', () => {
+    const entries = Array.from({ length: 11 }, (_, i) =>
+      mk(`2026-06-01T00:00:${String(i).padStart(2, '0')}Z`, `p${i}`, `msg ${i}`),
+    );
+    const out = formatInboxDelta(entries);
+    expect(out).toContain('11 new coordination messages');
+    expect(out).toContain('…and 3 older messages'); // 11 - 8
+    expect(out).toContain('p10: msg 10'); // newest shown
+    expect(out).not.toContain('p0: msg 0'); // oldest hidden
+  });
+});
+
+describe('pollInboxDelta (mid-turn coord delivery)', () => {
+  const originalFetch = global.fetch;
+  const prevOp = process.env.PAPERCUSP_OPERATOR_URL;
+
+  // Local MCP-response mock (the onToolCall block's helper is private to it).
+  const mockMcp = (payload: unknown): typeof fetch =>
+    (async () => ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+    })) as unknown as typeof fetch;
+
+  beforeEach(() => {
+    _resetHookOwnerIdForTests();
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:3070';
+  });
+  afterEach(() => {
+    _resetHookOwnerIdForTests();
+    _resetMidTurnCursorForTests(undefined);
+    global.fetch = originalFetch;
+    if (prevOp === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = prevOp;
+  });
+
+  it('no baseline cursor → no-op, never fetches (no history dump)', async () => {
+    _resetMidTurnCursorForTests(undefined);
+    let called = false;
+    global.fetch = (async () => {
+      called = true;
+      throw new Error('should not fetch');
+    }) as unknown as typeof fetch;
+    const { reminder } = await pollInboxDelta();
+    expect(reminder).toBe('');
+    expect(called).toBe(false);
+  });
+
+  it('injects messages newer than the cursor, then dedupes once the cursor advances', async () => {
+    _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
+    global.fetch = mockMcp({
+      entries: [
+        { ts: '2026-06-01T00:05:00Z', msg_id: 'm1', from: 'peer-X', kind: 'message', summary: 'pausing operator soon' },
+      ],
+    });
+    const first = await pollInboxDelta();
+    expect(first.reminder).toContain('pausing operator soon');
+
+    // Cursor now past m1 → a poll with nothing newer injects nothing.
+    global.fetch = mockMcp({ entries: [] });
+    const second = await pollInboxDelta();
+    expect(second.reminder).toBe('');
+  });
+
+  it('returns "" when the operator call fails (best-effort, never throws)', async () => {
+    _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
+    global.fetch = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const { reminder } = await pollInboxDelta();
+    expect(reminder).toBe('');
   });
 });
