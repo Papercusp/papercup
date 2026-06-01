@@ -50,6 +50,7 @@ import {
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
+import { loadRoleCapabilities } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '@/lib/workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
@@ -706,14 +707,14 @@ const handler = createMcpHandler(
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected
-          // in packages/agent-mcp/src/define-tool.ts:198). For
-          // ?superuser=1 calls with a concrete workspace, synthesize a
-          // system principal and open a workspace tx so those tools
-          // run. workspaceId='*' (no workspace chosen) still fails
+          // in packages/agent-mcp/src/define-tool.ts:198). ANY concrete-
+          // workspace call — ?superuser=1 OR a signed role-scoped agent —
+          // synthesizes a principal + opens a workspace tx so those tools
+          // run (a role-scoped caller is authenticated by its verified
+          // signed URL). workspaceId='*' (no workspace chosen) still fails
           // those tools — caller must pass ?workspace=X.
           const needsTx =
-            spawnRes.ctx.isSuperuser &&
-            spawnRes.ctx.workspaceId &&
+            Boolean(spawnRes.ctx.workspaceId) &&
             spawnRes.ctx.workspaceId !== '*';
           // Generic projected-dispatch → MCP-result mapping (P-031,
           // @papercusp/tooldef-mcp). Same shape/behavior as before: success →
@@ -732,15 +733,25 @@ const handler = createMcpHandler(
           // the CALLER's workspace, not the process-global `reg.current`. '*'
           // (superuser with no chosen workspace) stays unpinned.
           if (needsTx) {
-            return await runWithWorkspaceIfConcrete(spawnRes.ctx.workspaceId, () =>
-              withWorkspace(spawnRes.ctx.workspaceId, async (tx) => {
+            const ctxWs = spawnRes.ctx.workspaceId;
+            const ctxRole = spawnRes.ctx.role;
+            return await runWithWorkspaceIfConcrete(ctxWs, () =>
+              withWorkspace(ctxWs, async (tx) => {
+                // Superuser already carries gateBypass.capability (set in
+                // buildMcpToolContext), so its empty cap-set is fine. A signed
+                // role-scoped caller is NOT bypassed — grant it exactly the
+                // capabilities its provisioned system principal holds
+                // (least-privilege); the capability gate then enforces normally.
+                const capabilities = spawnRes.ctx.isSuperuser
+                  ? new Set<string>()
+                  : await loadRoleCapabilities(tx, ctxWs, ctxRole);
                 const ctx: UnifiedToolContext = {
                   ...baseCtx,
                   tx,
                   principal: {
-                    slug: 'system:operator',
-                    workspaceId: spawnRes.ctx.workspaceId,
-                    capabilities: new Set<string>(),
+                    slug: spawnRes.ctx.isSuperuser ? 'system:operator' : `system:${ctxRole}`,
+                    workspaceId: ctxWs,
+                    capabilities,
                   },
                 };
                 return await runDispatch(ctx);
