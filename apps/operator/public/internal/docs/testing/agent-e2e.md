@@ -61,12 +61,15 @@ Other tools and when:
   `/docs` MDX renderer hitting an external URL). Do **not** drive the
   operator with verdict; the operator only renders correctly inside
   Tauri.
-* **Xvfb + `xdotool` + `import` + `tesseract`** — fallback for
+* **Xvfb + VirtualGL + `xdotool` + `import` + `tesseract`** — fallback for
   scenarios where the bridge can't help: macOS dev builds without
-  the bridge compiled in, production AppImages (the bridge is
-  `#[cfg(debug_assertions)]` only), forensics on a crashed app, or
-  visual checks (animation timing, font rendering) that the DOM
-  can't express. See §15.4 for the cookbook.
+  the bridge compiled in, **release/production builds** (the bridge is
+  `#[cfg(debug_assertions)]` only, so screenshots are your only signal),
+  forensics on a crashed app, or visual checks (animation timing, font
+  rendering) that the DOM can't express. **⚠ Use VirtualGL (`vglrun -d egl0`),
+  NOT bare `Xvfb` — a plain Xvfb has no GL so WebKitGTK never paints and every
+  screenshot is blank-white regardless of the DOM.** See §15.4 for the cookbook
+  (incl. the GL trap + the `vglrun` recipe).
 
 Forbidden:
 
@@ -1275,29 +1278,62 @@ The bridge covers 99% of cases. Reach for this stack only when:
   window (use `tauri-agent-tools diagnose` first; this is a deeper
   fallback).
 
-Recipe — isolated second instance under Xvfb (no focus-steal):
+:::danger\[Bare `Xvfb` has no GPU/GL — WebKitGTK won't paint → every screenshot is blank]
+A plain `Xvfb` is a **software framebuffer with no DRI3/GL** (you'll see
+`libEGL warning: DRI3 error: Could not get DRI3 device` in the app log).
+WebKitGTK's accelerated compositor then **never paints the webview to that
+framebuffer, so every screenshot comes back uniformly blank white regardless
+of what the DOM actually contains** — a render-environment artifact that looks
+exactly like a broken/blank app. The DOM is fine; the pixels just never render.
+(This burned \~hours in the desktop-ipc Phase-4 smoke before it was spotted: the
+"blank window" was the GL-less Xvfb, not the app.)
+
+**Get real GPU GL one of two ways:**
+
+1. **Run on `:0`** (the real GPU X server): `DISPLAY=:0 …`. Simplest, but puts a
+   window on the operator's actual screen (focus-steal — see §0).
+2. **VirtualGL on an isolated Xvfb** (no focus-steal, real GPU) — *recommended.*
+   `vglrun` routes GL to the GPU's EGL render node while the app displays to the
+   isolated Xvfb. **Always confirm real GL first** — it must report the GPU, not
+   `llvmpipe`/`swrast`:
+   ```sh
+   DISPLAY=:90 vglrun -d egl0 glxinfo | grep -i "OpenGL renderer"
+   # → OpenGL renderer string: NVIDIA GeForce RTX 3090/...   (good)
+   # → ...llvmpipe / swrast                                  (still software — wrong)
+   ```
+   VirtualGL isn't in Ubuntu apt; install the GitHub release once:
+   ```sh
+   curl -sSL -o /tmp/vgl.deb \
+     https://github.com/VirtualGL/virtualgl/releases/download/3.1.4/virtualgl_3.1.4_amd64.deb
+   sudo dpkg -i /tmp/vgl.deb
+   ```
+   Use `-d egl0` — the EGL **device index**. Do NOT pass the
+   `/dev/dri/renderD128` path; VGL rejects it ("Invalid EGL device").
+   :::
+
+Recipe — isolated **GPU-accelerated** instance via VirtualGL (no focus-steal):
 
 ```sh
-Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &  echo $! > /tmp/xvfb99.pid
-DISPLAY=:99 openbox &                            echo $! > /tmp/openbox99.pid
-DISPLAY=:99 \
-  PAPERCUSP_BRIDGE_PORT=9230 \
-  cd papercusp-desktop && DISPLAY=:99 npm run dev > /tmp/tauri-xvfb.log 2>&1 &
+Xvfb :90 -screen 0 1920x1080x24 -nolisten tcp &  echo $! > /tmp/xvfb90.pid
+DISPLAY=:90 openbox &                            echo $! > /tmp/openbox90.pid
+# Sanity — must be the real GPU, not llvmpipe:
+DISPLAY=:90 vglrun -d egl0 glxinfo | grep -i "OpenGL renderer"
+# Launch the app UNDER vglrun so WebKitGTK composites on the GPU:
+( cd papercusp-desktop && DISPLAY=:90 PAPERCUSP_BRIDGE_PORT=9230 \
+    vglrun -d egl0 npm run dev ) > /tmp/tauri-xvfb.log 2>&1 &
 # wait for window
-until DISPLAY=:99 xdotool search --name Papercusp > /dev/null 2>&1; do sleep 1; done
-WID=$(DISPLAY=:99 xdotool search --name Papercusp | head -1)
-# input + screenshot
-DISPLAY=:99 xdotool type --window $WID "hello"
-DISPLAY=:99 xdotool key --window $WID Return
-DISPLAY=:99 import -window $WID /tmp/shot.png
-# OCR a horizontal band
-convert /tmp/shot.png -crop 1280x80+0+460 /tmp/band.png
-tesseract /tmp/band.png - 2>/dev/null
+until DISPLAY=:90 xdotool search --name Papercusp > /dev/null 2>&1; do sleep 1; done
+WID=$(DISPLAY=:90 xdotool search --name Papercusp | head -1)
+DISPLAY=:90 xdotool type --window $WID "hello"; DISPLAY=:90 xdotool key --window $WID Return
+DISPLAY=:90 import -window $WID /tmp/shot.png    # ← now shows REAL content, not blank
+convert /tmp/shot.png -crop 1280x80+0+460 /tmp/band.png; tesseract /tmp/band.png - 2>/dev/null
 ```
 
-Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox99.pid /tmp/xvfb99.pid) 2>/dev/null`.
+Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/dev/null`.
 
-Even on the second Xvfb instance the bridge is still up — `probe`
-will find it on the configured `PAPERCUSP_BRIDGE_PORT`. So in
-practice this fallback is for the rare case where the bridge itself
-is what you're trying to bypass (release build, crash forensics).
+For a **release build** (no dev bridge) screenshots are your *only* window
+introspection — so GPU GL via VirtualGL is **mandatory** there, or the
+screenshot tells you nothing. On a **debug** build the bridge is still up on the
+isolated instance (`probe` finds it on `PAPERCUSP_BRIDGE_PORT`) — prefer the
+bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and
+use this VirtualGL stack only for the pixels.
