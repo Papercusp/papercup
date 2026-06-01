@@ -55,20 +55,42 @@ async function ensureTable(): Promise<void> {
       last_status TEXT,
       consecutive_errors INT NOT NULL DEFAULT 0,
       workspace_id TEXT NOT NULL DEFAULT '',
-      PRIMARY KEY (harness_slug, role)
+      PRIMARY KEY (workspace_id, harness_slug, role)
     )
   `;
   // Backwards-compat: add `role` and `workspace_id` columns if upgrading.
   await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'director'`);
   await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`);
+  // Phase E (P-020): widen an existing (harness_slug, role) PK to include
+  // workspace_id so the autoloop keeps per-workspace fire-state (mirror of
+  // migration 093 for the native dev box, where migrations are applied by hand).
+  await sql.unsafe(`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'harness_shared.autoloop_state'::regclass
+          AND contype = 'p' AND array_length(conkey, 1) = 2
+      ) THEN
+        ALTER TABLE harness_shared.autoloop_state DROP CONSTRAINT autoloop_state_pkey;
+        ALTER TABLE harness_shared.autoloop_state
+          ADD CONSTRAINT autoloop_state_pkey PRIMARY KEY (workspace_id, harness_slug, role);
+      END IF;
+    END $$;
+  `);
 }
 
-export async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
+export async function listHarnesses(operatorBase: string, workspaceId?: string): Promise<HarnessRow[]> {
   try {
     // /projects/lite returns slug+path+harnessDir without the per-project
     // PG hits we don't need here (autoloop only checks director-config.json
     // on disk). Cuts the hot-path autoloop tick from ~5s to <50ms.
-    const r = await loopbackFetch(`${operatorBase}/api/harness/projects/lite`, { signal: AbortSignal.timeout(5000) });
+    // Phase E (P-020): scope to a workspace via `?ws=` (the workspace middleware
+    // reads the query param — loopbackFetch can't set the header). Omitted → the
+    // operator resolves its global active workspace (today's behavior).
+    const url = workspaceId
+      ? `${operatorBase}/api/harness/projects/lite?ws=${encodeURIComponent(workspaceId)}`
+      : `${operatorBase}/api/harness/projects/lite`;
+    const r = await loopbackFetch(url, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return [];
     const d: any = await r.json();
     return Array.isArray(d?.projects) ? d.projects : [];
@@ -89,11 +111,15 @@ export async function readDirectorConfig(harnessPath: string): Promise<DirectorC
 
 export async function shouldFire(slug: string, role: string, intervalSeconds: number): Promise<boolean> {
   const { db } = getOrgPg();
+  // Phase E (P-020): fire-state is per-(workspace, slug, role). Scope by the
+  // current workspace (set by the tick's runWithWorkspace, else the global) so
+  // the same slug in two workspaces fires independently.
+  const ws = activeWorkspaceId();
   const rows = await db
     .select({ last_fired_at: at.lastFiredAt })
     .from(at)
-    .where(and(eq(at.harnessSlug, slug), eq(at.role, role)));
-  if (rows.length === 0) return true; // never fired for this role
+    .where(and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role)));
+  if (rows.length === 0) return true; // never fired for this (workspace, role)
   const elapsed = (Date.now() - new Date(rows[0].last_fired_at).getTime()) / 1000;
   return elapsed >= intervalSeconds;
 }
@@ -113,7 +139,7 @@ export async function recordFire(slug: string, role: string, status: string, err
         workspaceId: ws,
       })
       .onConflictDoUpdate({
-        target: [at.harnessSlug, at.role],
+        target: [at.workspaceId, at.harnessSlug, at.role],
         set: {
           lastFiredAt: dsql`now()`,
           lastStatus: dsql`EXCLUDED.last_status`,
@@ -133,7 +159,7 @@ export async function recordFire(slug: string, role: string, status: string, err
         workspaceId: ws,
       })
       .onConflictDoUpdate({
-        target: [at.harnessSlug, at.role],
+        target: [at.workspaceId, at.harnessSlug, at.role],
         set: {
           lastFiredAt: dsql`now()`,
           lastStatus: dsql`EXCLUDED.last_status`,
@@ -164,7 +190,12 @@ export async function readHarnessConfig(harnessPath: string): Promise<HarnessCon
 
 export async function fireDirector(operatorBase: string, slug: string, role: string): Promise<{ ok: boolean; detail?: string }> {
   try {
-    const r = await loopbackFetch(`${operatorBase}/api/harness/${encodeURIComponent(slug)}/invoke?role=${encodeURIComponent(role)}`, {
+    // Phase E (P-020): resolve the harness in the CURRENT workspace (set by the
+    // tick's runWithWorkspace, else the global) via `?ws=` — loopbackFetch can't
+    // set the header, and without it the invoke would resolve the slug in the
+    // operator's global workspace (wrong one under the shared operator).
+    const ws = encodeURIComponent(activeWorkspaceId());
+    const r = await loopbackFetch(`${operatorBase}/api/harness/${encodeURIComponent(slug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ timeoutMs: FIRE_TIMEOUT_MS }),
