@@ -315,6 +315,24 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   a focused fix (mock getOrgPg centrally for unit tests, or fix the schema-spread
   null under vitest module resolution) could clear several at once.
 
+  **CONFIRMED (round 4):** `getOrgPg()` throws `Cannot read properties of null
+  (reading 'constructor')` **consistently in vitest** (probe: import getOrgPg →
+  call it → throws; production/tsx is fine, operator runs). The crash is in
+  Drizzle's `extractTablesRelationalConfig` during the `.db` handle construct.
+  Ruled OUT: a static null in the merged schema (probed all 165 keys of
+  `{...sharedSchema, ...generatedSchema, ...generatedRelations}` — none null/undef)
+  AND vitest `server.deps.inline:[/drizzle-orm/]` (tried — did NOT fix it, so it's
+  not a plain drizzle-orm dual-instance dedup issue). So a quick central fix is
+  NOT available; it needs deeper Drizzle-relations debugging (likely the
+  `generatedRelations` graph referencing a name that resolves to null only under
+  vitest's module loader). **Reliable per-test fix meanwhile:** mock
+  `@papercusp/db-org` with `getOrgPg: () => ({ sql: <stub>, db: <chainable fake> })`
+  — note `db` must be a CHAINABLE fake (`db.select().from()...`), not `{}` (a bare
+  `{}` re-500s because resolvers call `db.select`). This unblocks
+  device-auth/catchall/experts/oauth-residual/subscriptions. A central
+  `getOrgPg`-mock test setup (opt-out for `.integration.test.ts`) would be the
+  DRY version once the chainable-fake shape is settled.
+
 **Test-rework (test-only, but involved):**
 - **subscriptions** — coord watches are PG-backed (`getOrgPg().sql`); mock it with
   an in-memory watch store (the raw-SQL queries make this fiddly) OR convert to
