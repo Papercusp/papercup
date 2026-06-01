@@ -377,6 +377,19 @@ Mapped every background reader (no request scope) for the shared-operator model.
 **Recommendation:** Option B (status quo) is the safe default — P-020 needs NO code under it. Only do Option A if you want all-workspaces background progress, and then it must ship WITH per-workspace cost caps. I will NOT implement Option A unilaterally (it multiplies LLM spend). Helper for either: `runWithWorkspace(id, fn)` (workspace-als.ts) + `readRegistry().workspaces`.
 Related: P-020
 
+
+### D-016 — D-016 — P-020 IMPLEMENTED (Option A): shared orchestrator + autoloop sweep all workspaces, gated, migration-backed
+Date: 2026-06-01
+avi chose Option A ("go with P-020") + confirmed the architecture (one shared orchestrator, NOT per-window — windows are webviews; D-008). Implemented + committed:
+
+- **orchestrator dispatcher** (`b8defb8f6`): `orchestratorWorkspaceIds()` (pin → that one; `PAPERCUSP_SHARED_OPERATOR=1` → every registered workspace; else → global active = today's behavior). `runOrchestratorTick` loops them, each in `runWithWorkspace`. +3 tests (27/27).
+- **autoloop** (`64cfff4cf` + submodule `2fff034`): `autoLoopTickImpl` iterates the same set, workspace-keyed dedup (`autoloop:<ws>:<slug>:<role>`); `fireRoleImpl` takes an explicit `workspaceId` (dequeued OUTSIDE the tick ALS) + re-establishes the scope; `shouldFire`/`recordFire` scope fire-state by workspace; `fireDirector` appends `&ws=`. Migration **093** widens `autoloop_state` PK → `(workspace_id, harness_slug, role)`. +2 fireDirector tests.
+
+**Cost is bounded** (the concern behind avi's question): each harness only dispatches if opted-in + is gated by its own concurrency + `maxCostUsd` caps, so cost scales with opted-in harnesses, not window count.
+
+**Gating (fleet-safe, D-009):** the all-workspaces sweep activates ONLY under `PAPERCUSP_SHARED_OPERATOR=1` (set only by the new packaged shell). Dev/legacy stay single-workspace — no behavior change. Dev box: 093 applied by hand; autoloop currently dormant (no `autoLoop:true` harness, newest fire-state row May 1), so no cutover hazard. Goes live on the next `:3070` restart (gated → no dev behavior change). Full multi-workspace autoloop/dispatch is packaged-runtime-verified.
+Related: P-020
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)
