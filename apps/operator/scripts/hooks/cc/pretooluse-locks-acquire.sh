@@ -367,9 +367,16 @@ if inner.get('reason'):
 else:
     lines.append('locks: file(s) held by another agent:')
 for b in busy[:5]:
+    label = b.get('owner_label') or b.get('owner')
+    # Prefer the holder's DECLARED coord intent (what they're actually
+    # changing) over the lock's own `intent`, which is a generic
+    # 'PreToolUse:Edit' for hook-acquired edit locks. The server fills
+    # holder_intent from coord:presence (declare-intent) when set.
+    intent = b.get('holder_intent') or b.get('intent')
+    focus = ' [focused on this file]' if b.get('holder_focused') else ''
     lines.append(
-        f"  - {b.get('path')}: {b.get('owner_label')} — "
-        f"{b.get('intent')!r} (until {b.get('expires_ts')})"
+        f"  - {b.get('path')}: {label} — {intent!r}{focus} "
+        f"(until {b.get('expires_ts')})"
     )
 if len(busy) > 5:
     lines.append(f"  …and {len(busy) - 5} more")

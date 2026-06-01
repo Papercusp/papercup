@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
+import { getPresence } from '../coordination/presence';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import {
   expireWaiter,
@@ -79,6 +80,15 @@ interface BusyJson {
   owner_label: string | null;
   intent: string;
   expires_ts: string;
+  /** Holder's DECLARED coord intent (coord:declare-intent → presence),
+   *  when meaningful. The lock's own `intent` is uninformative for the
+   *  common hook-acquired edit lock ('PreToolUse:Edit'); this answers
+   *  "what are they changing?" for a blocked peer. Absent when the holder
+   *  declared nothing (or only the heartbeat placeholder). */
+  holder_intent?: string;
+  /** True when the holder declared THIS path among their current_files —
+   *  i.e. they're knowingly focused on the file you're blocked on. */
+  holder_focused?: boolean;
 }
 
 function busyToJson(b: AcquireBusy): BusyJson {
@@ -89,6 +99,36 @@ function busyToJson(b: AcquireBusy): BusyJson {
     intent: b.intent,
     expires_ts: b.expires_ts.toISOString(),
   };
+}
+
+/** The OMP turn-start hook heartbeats this exact intent every turn, so
+ *  treat it as "nothing meaningful declared" rather than surfacing it. */
+const PLACEHOLDER_INTENT = '(active — see coord:presence for current work)';
+
+/**
+ * Enrich busy rows with the holder's declared coord intent (presence).
+ * Best-effort: a presence miss (no declaration, lookup error) just leaves
+ * the row unenriched — the caller still gets owner_label + expires_ts. One
+ * getPresence per DISTINCT holder, and only on contention, so the cost is
+ * paid rarely. See the SU playbook's note nudging agents to declare a real
+ * intent so these blocks are useful.
+ */
+async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
+  const owners = [...new Set(rows.map((r) => r.owner))];
+  const byOwner = new Map<string, Awaited<ReturnType<typeof getPresence>>>();
+  await Promise.all(
+    owners.map(async (o) => {
+      byOwner.set(o, await getPresence(o).catch(() => null));
+    }),
+  );
+  return rows.map((b) => {
+    const json = busyToJson(b);
+    const p = byOwner.get(b.owner) ?? null;
+    const intent = p?.intent?.trim();
+    if (intent && intent !== PLACEHOLDER_INTENT) json.holder_intent = intent;
+    if (p?.currentFiles?.includes(b.path)) json.holder_focused = true;
+    return json;
+  });
 }
 
 export default defineTool({
@@ -158,7 +198,7 @@ export default defineTool({
     }
 
     if (maxWaitSec === 0) {
-      return busy(first.busy);
+      return await busy(first.busy);
     }
 
     // ── Wait path ────────────────────────────────────────────────────
@@ -196,7 +236,7 @@ export default defineTool({
         });
       } catch (err: unknown) {
         if (err instanceof TooManyActiveWorkspacesError) {
-          return tooManyWorkspaces(first.busy);
+          return await tooManyWorkspaces(first.busy);
         }
         throw err;
       }
@@ -222,7 +262,7 @@ export default defineTool({
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: first.busy.map(busyToJson) }),
+              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy) }),
             },
           ],
         };
@@ -399,7 +439,7 @@ export default defineTool({
             type: 'text' as const,
             text: JSON.stringify({
               ok: false,
-              busy: finalBusy.busy.map(busyToJson),
+              busy: await enrichBusy(finalBusy.busy),
               ticket_id: ticketId,
             }),
           },
@@ -445,15 +485,15 @@ function ok(
   };
 }
 
-function busy(busyRows: AcquireBusy[]) {
+async function busy(busyRows: AcquireBusy[]) {
   return {
     content: [
-      { type: 'text' as const, text: JSON.stringify({ ok: false, busy: busyRows.map(busyToJson) }) },
+      { type: 'text' as const, text: JSON.stringify({ ok: false, busy: await enrichBusy(busyRows) }) },
     ],
   };
 }
 
-function tooManyWorkspaces(busyRows: AcquireBusy[]) {
+async function tooManyWorkspaces(busyRows: AcquireBusy[]) {
   return {
     content: [
       {
@@ -461,7 +501,7 @@ function tooManyWorkspaces(busyRows: AcquireBusy[]) {
         text: JSON.stringify({
           ok: false,
           reason: 'too_many_active_workspaces',
-          busy: busyRows.map(busyToJson),
+          busy: await enrichBusy(busyRows),
         }),
       },
     ],

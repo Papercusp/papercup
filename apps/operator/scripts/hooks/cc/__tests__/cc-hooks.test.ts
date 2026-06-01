@@ -109,3 +109,63 @@ describe('cc PreToolUse hook — operator-independent paths', () => {
     expect((r.stdout ?? '').trim()).toBe('');
   });
 });
+
+// ── PostToolUse coord-inbox hook ───────────────────────────────────────
+// Operator-independent paths only: the psu-session + install gates, the
+// first-run cursor seed, and the fail-open contract (a coord blip must
+// NEVER block a turn / emit a deny). The live inbox→inject path needs a
+// running operator and is exercised by the live functional smoke.
+const COORD_HOOK = join(__dirname, '..', 'posttooluse-coord-inbox.sh');
+const postPayload = { tool_name: 'Read', tool_input: { file_path: '/x' }, tool_use_id: 't', session_id: 's', cwd: '/tmp' };
+
+function runCoord(extraEnv: Record<string, string> = {}, homeDir = home) {
+  const r = spawnSync('bash', [COORD_HOOK], {
+    input: payload(postPayload),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PAPERCUSP_LOCKS_CACHE_DIR: cache,
+      PAPERCUSP_SID: '', // cleared unless a test opts in (parent psu session sets it)
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // never reach a real operator
+      ...extraEnv,
+    },
+  });
+  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+}
+
+describe('cc PostToolUse coord-inbox hook — operator-independent paths', () => {
+  it('no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)', () => {
+    const r = runCoord();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('psu session but not installed (no token) → no-op', () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'coordhook-bare-'));
+    const r = runCoord({ PAPERCUSP_SID: 'sid-notok' }, bareHome);
+    fs.rmSync(bareHome, { recursive: true, force: true });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('first run seeds the cursor (no fetch, no inject) — even with operator unreachable', () => {
+    const sid = 'sid-first';
+    const cur = join(cache, `coord-cursor-${sid}.json`);
+    if (fs.existsSync(cur)) fs.rmSync(cur);
+    const r = runCoord({ PAPERCUSP_SID: sid });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(''); // seeds only; never injects on first run
+    expect(fs.existsSync(cur)).toBe(true);
+    expect(typeof JSON.parse(fs.readFileSync(cur, 'utf8')).since_ts).toBe('string');
+  });
+
+  it('subsequent run + operator unreachable → FAIL-OPEN (exit 0, no stdout)', () => {
+    const sid = 'sid-second';
+    const cur = join(cache, `coord-cursor-${sid}.json`);
+    fs.writeFileSync(cur, JSON.stringify({ since_ts: '2020-01-01T00:00:00Z' }));
+    const r = runCoord({ PAPERCUSP_SID: sid });
+    expect(r.status).toBe(0); // a coord/operator blip never blocks the turn
+    expect(r.stdout).toBe(''); // and never injects junk
+  });
+});

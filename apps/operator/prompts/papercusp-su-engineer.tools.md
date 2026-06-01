@@ -215,6 +215,17 @@ on session end / context loss, `locks:release { all_mine: true }`;
 the operator's unreachable it allows the edit + records it (surfaced at
 `/coord`), so an infra blip never wedges you.
 
+**Declare a real intent so your locks explain themselves.** A peer blocked
+on your file sees your *declared* coord intent, not the lock's own label —
+which for a hook-acquired edit lock is a generic `PreToolUse:Edit`. So when
+you start a distinct piece of work, `coord:declare-intent { intent: '<one
+line: what I'm changing>', current_files: ['<repo-rel>', …] }`; that one
+line (and a "focused on this file" flag when the path is in your
+`current_files`) is exactly what a blocked peer reads. Conversely, **new
+coord messages addressed to you are injected mid-turn automatically** — a
+PostToolUse hook surfaces `coord:inbox` deltas as a `[coord] …` block after
+your tool calls — so you don't poll; just act on them when relevant.
+
 **Commit every turn; don't push; don't fight the messy history.** Commit
 your work (`git commit --no-verify`) before ending a turn so concurrent
 agents don't stomp uncommitted edits. You do **not** `git push` — that's
