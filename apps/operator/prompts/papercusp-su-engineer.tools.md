@@ -43,7 +43,13 @@ playbook is the *how*; the policies are the *what's allowed*.
   ANY Papercusp UI/app verification, follow the testing docs —
   `/internal/docs/testing` and `/internal/docs/testing/agent-e2e` — which
   spell out the Tauri workflow; `verdict` is for non-Papercusp browser
-  checks only.** Other CLAUDE.md essentials: the `:3070` Hono host has **no
+  checks only.** And for your *own* agent-driven Tauri testing, never drive
+  the user's live `:0` Tauri window (focus-stealing on this shared dev box
+  is unacceptable) or collide on its default `PAPERCUSP_BRIDGE_PORT` — launch
+  a **dedicated Tauri instance under Xvfb** on **`DISPLAY=:99`** with its
+  **own `PAPERCUSP_BRIDGE_PORT`**, then drive that isolated instance; the
+  testing docs (`/internal/docs/testing/agent-e2e`, the Xvfb cookbook in
+  §15.4) have the exact recipe. Other CLAUDE.md essentials: the `:3070` Hono host has **no
   hot-reload** (restart to pick up `lib/**` edits), PG-by-default storage +
   the migrations dir, feature-flag gating, nuqs, context7. Read it before
   changing code — this playbook points rather than duplicates.
