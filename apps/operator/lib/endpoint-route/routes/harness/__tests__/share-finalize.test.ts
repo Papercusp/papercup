@@ -9,6 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { finalizeShare, FinalizeShareError, type FinalizeShareDeps } from '../share-finalize';
 import { isHarnessSharedConfig } from '@/lib/harness/harness-shared-config-types';
+import type { EnsureBindingResult } from '@/lib/harness/ensure-binding-published';
 
 const TOPIC = 'a'.repeat(64);
 
@@ -192,5 +193,108 @@ describe('finalizeShare', () => {
     const { d } = deps();
     const r = await finalizeShare(INPUT, d);
     expect(r.binding).toBeUndefined();
+  });
+
+  // ── ensureBinding (D-003 mutual binding) ─────────────────────────────────
+
+  it('calls ensureBinding after shared.json is written with resolved repoOwner+repoName', async () => {
+    const ensureBinding = vi.fn(async (_args: {
+      repoOwner: string;
+      repoName: string;
+      defaultBranch: string;
+      github_remote: string;
+    }): Promise<EnsureBindingResult> => ({ devicePubkeyBase64: 'abc123' }));
+    const { d, writeFileUtf8 } = deps({ ensureBinding });
+    const r = await finalizeShare(INPUT, d);
+    // shared.json was written before ensureBinding was called
+    expect(writeFileUtf8).toHaveBeenCalledTimes(1);
+    expect(ensureBinding).toHaveBeenCalledTimes(1);
+    const callArg = ensureBinding.mock.calls[0]![0];
+    expect(callArg.repoOwner).toBe('Papercusp');
+    expect(callArg.repoName).toBe('papercup');
+    expect(typeof callArg.defaultBranch).toBe('string');
+    expect(callArg.defaultBranch.length).toBeGreaterThan(0);
+    expect(r.bindingPublished).toBe(true);
+    expect(r.bindingWarning).toBeUndefined();
+  });
+
+  it('ensureBinding called with non-empty attestationGistId-bearing args (HTTPS remote)', async () => {
+    const ensureBinding = vi.fn(async (_args: unknown): Promise<EnsureBindingResult> => ({
+      devicePubkeyBase64: 'pubkey64',
+    }));
+    const { d } = deps({ ensureBinding });
+    const httpsInput = {
+      ...INPUT,
+      github_remote: 'https://github.com/myorg/myrepo.git',
+    };
+    const r = await finalizeShare(httpsInput, d);
+    expect(ensureBinding).toHaveBeenCalledTimes(1);
+    const arg = ensureBinding.mock.calls[0]![0] as { repoOwner: string; repoName: string };
+    expect(arg.repoOwner).toBe('myorg');
+    expect(arg.repoName).toBe('myrepo');
+    expect(r.bindingPublished).toBe(true);
+  });
+
+  it('ensureBinding failure → finalize still succeeds with bindingWarning set; reboot still happens', async () => {
+    const ensureBinding = vi.fn(async () => {
+      throw new Error('github timeout');
+    });
+    const reboot = vi.fn(async (_slug: string) => ({
+      rebooted: true as const,
+      state: 'booted' as const,
+    }));
+    const { d } = deps({ ensureBinding, reboot });
+    const r = await finalizeShare(INPUT, d);
+    expect(r.ok).toBe(true);
+    expect(r.bindingPublished).toBeUndefined();
+    expect(r.bindingWarning).toContain('github timeout');
+    // reboot must still happen despite ensureBinding failure
+    expect(reboot).toHaveBeenCalledWith('papercup');
+    expect(r.swarm).toMatchObject({ rebooted: true, state: 'booted' });
+  });
+
+  it('gh_auth_required during binding → non-fatal warning, share succeeds', async () => {
+    // Simulate what happens when the real ensureBinding throws due to missing gh auth
+    const ensureBinding = vi.fn(async () => {
+      throw new Error('gh auth required — publisher binding skipped; re-share after `gh auth login`');
+    });
+    const { d } = deps({ ensureBinding });
+    const r = await finalizeShare(INPUT, d);
+    expect(r.ok).toBe(true);
+    expect(r.bindingWarning).toMatch(/gh auth required/);
+    expect(r.bindingPublished).toBeUndefined();
+  });
+
+  it('ensureBinding called AFTER shared.json write (ordering)', async () => {
+    const callOrder: string[] = [];
+    const writeFileUtf8 = vi.fn(async () => { callOrder.push('write'); });
+    const ensureBinding = vi.fn(async (): Promise<EnsureBindingResult> => {
+      callOrder.push('ensureBinding');
+      return { devicePubkeyBase64: 'pub' };
+    });
+    const reboot = vi.fn(async (_slug: string) => {
+      callOrder.push('reboot');
+      return { rebooted: true as const, state: 'booted' as const };
+    });
+    const { d: baseDeps } = deps({ ensureBinding, reboot });
+    const d: FinalizeShareDeps = { ...baseDeps, writeFileUtf8 };
+    await finalizeShare(INPUT, d);
+    // shared.json write must precede ensureBinding, which must precede reboot
+    expect(callOrder.indexOf('write')).toBeLessThan(callOrder.indexOf('ensureBinding'));
+    expect(callOrder.indexOf('ensureBinding')).toBeLessThan(callOrder.indexOf('reboot'));
+  });
+
+  it('omits bindingPublished and bindingWarning when ensureBinding dep is not provided', async () => {
+    const { d } = deps();
+    const r = await finalizeShare(INPUT, d);
+    expect(r.bindingPublished).toBeUndefined();
+    expect(r.bindingWarning).toBeUndefined();
+  });
+
+  it('ensureBinding NOT called when the write is rejected (bad input)', async () => {
+    const ensureBinding = vi.fn(async (): Promise<EnsureBindingResult> => ({ devicePubkeyBase64: 'pub' }));
+    const { d } = deps({ ensureBinding });
+    await expect(finalizeShare({ ...INPUT, topic: 'not-hex' }, d)).rejects.toMatchObject({ status: 400 });
+    expect(ensureBinding).not.toHaveBeenCalled();
   });
 });

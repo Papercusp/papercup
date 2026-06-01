@@ -46,6 +46,7 @@ import {
   type HarnessSharedPrivacy,
 } from '@/lib/harness/harness-shared-config-types';
 import type { BindingClaimStatus } from '@/lib/harness/binding-types';
+import type { EnsureBindingResult } from '@/lib/harness/ensure-binding-published';
 
 export interface FinalizeShareInput {
   slug: string;
@@ -96,6 +97,18 @@ export interface FinalizeShareResult {
    * existed (someone shared this repo first), or creation failed.
    */
   binding?: FinalizeShareBinding;
+  /**
+   * True when the publisher's device-signed contributor file was successfully
+   * published to the shared GitHub repo (mutual binding, D-003). Absent when
+   * the `ensureBinding` dep was not provided.
+   */
+  bindingPublished?: boolean;
+  /**
+   * Set when the publisher binding publish was attempted but failed (including
+   * when gh auth is unavailable). The share itself still succeeds — this is a
+   * non-fatal warning. Absent when the publish succeeded or was not attempted.
+   */
+  bindingWarning?: string;
 }
 
 export interface FinalizeShareDeps {
@@ -126,6 +139,24 @@ export interface FinalizeShareDeps {
     harness_topic: string;
     privacy: HarnessSharedPrivacy;
   }) => Promise<FinalizeShareBinding>;
+  /**
+   * Optional: publish the publisher's own device-signed contributor file to
+   * the shared GitHub repo (mutual binding, D-003). Best-effort — a throw is
+   * caught and recorded as `bindingWarning`; the share itself + reboot still
+   * succeed. Omit to skip (no `bindingPublished` / `bindingWarning` in result).
+   *
+   * Called AFTER shared.json is written and the repo owner/name are known,
+   * BEFORE the reboot (so the publisher binding is on GitHub before joiners
+   * arrive after the substrate announces).
+   *
+   * Returns `{ devicePubkeyBase64, commitSha? }` on success.
+   */
+  ensureBinding?: (args: {
+    repoOwner: string;
+    repoName: string;
+    defaultBranch: string;
+    github_remote: string;
+  }) => Promise<EnsureBindingResult>;
 }
 
 /** Raised on bad input / unknown harness; the handler maps it to a 4xx. */
@@ -187,6 +218,32 @@ export async function finalizeShare(
   const absPath = join(projectDir, HARNESS_SHARED_CONFIG_REL_PATH);
   await deps.writeFileUtf8(absPath, JSON.stringify(config, null, 2));
 
+  // Publisher binding side effect (best-effort, D-003): publish the publisher's
+  // own device-signed contributor file to the shared GitHub repo. This makes
+  // verification symmetric — joiners can now read the publisher's contributor
+  // file from the `user/<id>` branch and complete channel-2 verification.
+  // Non-fatal: a missing gh token or GitHub outage must not block the share.
+  let bindingPublished: boolean | undefined;
+  let bindingWarning: string | undefined;
+  if (deps.ensureBinding) {
+    const parsed = parseGithubRemoteForBinding(input.github_remote);
+    if (parsed) {
+      try {
+        await deps.ensureBinding({
+          repoOwner: parsed.owner,
+          repoName: parsed.repo,
+          defaultBranch: parsed.defaultBranch,
+          github_remote: input.github_remote,
+        });
+        bindingPublished = true;
+      } catch (e) {
+        bindingWarning = e instanceof Error ? e.message : String(e);
+      }
+    } else {
+      bindingWarning = `could not parse github_remote for binding: ${input.github_remote}`;
+    }
+  }
+
   // Claim-system side effect (best-effort): create the unclaimed binding row so
   // dedup + provisional ownership work. Never fails the finalize — the file is
   // the swarm-critical artifact; the binding row is the claim layer on top.
@@ -222,7 +279,34 @@ export async function finalizeShare(
     path: absPath,
     ...(swarm ? { swarm } : {}),
     ...(binding ? { binding } : {}),
+    ...(bindingPublished !== undefined ? { bindingPublished } : {}),
+    ...(bindingWarning !== undefined ? { bindingWarning } : {}),
   };
+}
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Parse a GitHub remote URL into { owner, repo, defaultBranch } for the
+ * publisher binding publish. Uses `parseGithubUrl` (the same parser used by
+ * clone-github). `defaultBranch` is always 'main' for the publisher path —
+ * the repo was just shared and is under the publisher's control; the shared.json
+ * already confirms it exists. A Octokit `repos.get` round-trip is not worth the
+ * extra latency here; 'main' is the universal default for Papercusp-shared repos.
+ */
+function parseGithubRemoteForBinding(
+  github_remote: string,
+): { owner: string; repo: string; defaultBranch: string } | null {
+  const HTTPS_RE =
+    /^https:\/\/github\.com\/([A-Za-z0-9][A-Za-z0-9_.-]{0,38})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99}?)(?:\.git)?\/?$/;
+  const SSH_RE =
+    /^git@github\.com:([A-Za-z0-9][A-Za-z0-9_.-]{0,38})\/([A-Za-z0-9][A-Za-z0-9_.-]{0,99}?)(?:\.git)?$/;
+  const trimmed = github_remote.trim();
+  let m = HTTPS_RE.exec(trimmed) ?? SSH_RE.exec(trimmed);
+  if (!m) return null;
+  const [, owner, repo] = m;
+  if (!owner || !repo) return null;
+  return { owner, repo, defaultBranch: 'main' };
 }
 
 const realDeps: FinalizeShareDeps = {
@@ -269,6 +353,52 @@ const realDeps: FinalizeShareDeps = {
       }
       return { created: false, error: e instanceof Error ? e.message : String(e) };
     }
+  },
+  // Publish the publisher's own device-signed contributor file (D-003, mutual
+  // binding). Mirrors the join path (join-shared-harness.ts stepPublishBinding
+  // + step1_oauthAttest). Uses the same signWithDeviceKey signer as the join
+  // path and announce path (local-announce-identity.ts). Non-fatal — callers
+  // catch errors and surface them as bindingWarning.
+  ensureBinding: async ({ repoOwner, repoName, defaultBranch }) => {
+    const { resolveLocalGithubIdentity } = await import('@/lib/identity/resolve-local-github-identity');
+    const identity = await resolveLocalGithubIdentity();
+    if (identity.kind === 'gh_auth_required') {
+      throw new Error('gh auth required — publisher binding skipped; re-share after `gh auth login`');
+    }
+
+    const { resolveDeviceKeychainId } = await import('@/lib/identity/device-keychain-id');
+    const { loadOrGenerateDeviceKeypair, createAttestationGist } = await import('@/lib/identity/attest');
+    const { signWithDeviceKey } = await import('@/lib/identity/sign-with-device-key');
+    const { ensureMyBindingPublished } = await import('@/lib/harness/ensure-binding-published');
+
+    const keychainId = resolveDeviceKeychainId(identity.githubUserId);
+    const keypair = await loadOrGenerateDeviceKeypair(keychainId);
+
+    // Ensure a non-empty attestation gist id (required by isContributorFileBody).
+    // Reuse the same create-or-reuse approach as step1_oauthAttest in join-shared-harness.ts.
+    const gistResult = await createAttestationGist({
+      keychainId,
+      pubkeyBase64: keypair.pubkeyBase64,
+      deviceLabel: 'unnamed-device',
+      githubUserId: identity.githubUserId,
+      githubLogin: identity.githubLogin,
+      token: identity.token,
+    });
+
+    return ensureMyBindingPublished({
+      repoOwner,
+      repoName,
+      identity: {
+        token: identity.token,
+        githubUserId: identity.githubUserId,
+        githubLogin: identity.githubLogin,
+      },
+      keychainId,
+      devicePubkeyBase64: keypair.pubkeyBase64,
+      sign: signWithDeviceKey,
+      defaultBranch,
+      attestationGistId: gistResult.gistId,
+    });
   },
 };
 
