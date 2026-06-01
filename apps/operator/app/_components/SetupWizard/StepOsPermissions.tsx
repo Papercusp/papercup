@@ -387,9 +387,19 @@ export function StepOsPermissions() {
       buffer.getChannelData(0).set(rec.samples);
       const src = ctx.createBufferSource();
       src.buffer = buffer;
+      // Normalize playback to a consistent, audible level. Captured mic levels
+      // are typically low (peak ~0.1 here), which plays barely-audible at unity
+      // gain. Boost so the loudest sample hits ~0.9, capped so a near-silent
+      // take doesn't blast pure noise.
+      let peak = 0;
+      for (let i = 0; i < rec.samples.length; i++) { const a = Math.abs(rec.samples[i]); if (a > peak) peak = a; }
+      const gainVal = peak > 0.0005 ? Math.min(20, 0.9 / peak) : 1;
+      const gain = ctx.createGain();
+      gain.gain.value = gainVal;
       // Straight to ctx.destination — the only path that produces sound on the
       // WebKitGTK desktop webview (an <audio> element / setSinkId is silent).
-      src.connect(ctx.destination);
+      src.connect(gain);
+      gain.connect(ctx.destination);
       src.onended = () => {
         if (playbackRef.current?.src === src) {
           playbackRef.current = null;
