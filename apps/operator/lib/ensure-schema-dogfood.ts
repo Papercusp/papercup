@@ -540,6 +540,30 @@ export async function ensureSubstrateOutboxTable(): Promise<void> {
     END;
     $body$ LANGUAGE plpgsql;
   `);
+  // fill_workspace_id_from_projects: a BEFORE INSERT trigger fn (wired in
+  // wireDogfoodTriggers onto BOTH consolidated tables) that resolves
+  // workspace_id from harness_shared.projects by slug, falling back to
+  // 'default'. Mirrors migration 103. WITHOUT this, issue rows land
+  // workspace_id='' → their substrate_outbox rows get '' → the Stage-3 drain
+  // (keyed on the booted harness's real workspaceId) never matches them and
+  // issues silently never federate. (Features already had an ad-hoc
+  // fill_ws_features_trg on the dev box; 103 + this captured it into source for
+  // fresh embedded-pg boots and extended it to issues — the G1 parity lesson.)
+  await sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.fill_workspace_id_from_projects()
+    RETURNS TRIGGER AS $body$
+    BEGIN
+      IF NEW.workspace_id IS NULL OR NEW.workspace_id = '' THEN
+        SELECT workspace_id INTO NEW.workspace_id
+          FROM harness_shared.projects WHERE slug = NEW.harness_slug LIMIT 1;
+        IF NEW.workspace_id IS NULL OR NEW.workspace_id = '' THEN
+          NEW.workspace_id := 'default';
+        END IF;
+      END IF;
+      RETURN NEW;
+    END;
+    $body$ LANGUAGE plpgsql;
+  `);
   flags.substrateOutbox = true;
 }
 
@@ -744,6 +768,34 @@ export async function wireDogfoodTriggers(): Promise<void> {
           'AFTER INSERT OR UPDATE OR DELETE ' +
           'ON harness_shared.' + tableName + ' ' +
           "FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_substrate_outbox('" + keyCol + "')",
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/does not exist|relation .* does not exist/i.test(msg)) {
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  // Migration 103: BEFORE INSERT fill of workspace_id from projects on BOTH
+  // consolidated tables. Must be attached so a fresh embedded-pg boot resolves
+  // workspace_id for local feature/issue writes — otherwise the AFTER-INSERT
+  // capture trigger above enqueues an outbox row with workspace_id='' and the
+  // Stage-3 drain never matches it. BEFORE fires before the row is stored, so
+  // the AFTER capture trigger sees the filled value. CREATE OR REPLACE TRIGGER
+  // (PG 14+) is idempotent. Same missing-table tolerance.
+  const WS_FILL_TARGETS: ReadonlyArray<readonly [string, string]> = [
+    ['harness_features_consolidated', 'fill_ws_features_trg'],
+    ['harness_issues_consolidated', 'fill_ws_issues_trg'],
+  ];
+  for (const [tableName, trgName] of WS_FILL_TARGETS) {
+    try {
+      await sql.unsafe(
+        'CREATE OR REPLACE TRIGGER ' + trgName + ' ' +
+          'BEFORE INSERT ' +
+          'ON harness_shared.' + tableName + ' ' +
+          'FOR EACH ROW EXECUTE FUNCTION harness_shared.fill_workspace_id_from_projects()',
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

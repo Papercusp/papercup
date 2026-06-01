@@ -33,9 +33,20 @@ const MIGRATION_PATH = resolve(
   HERE,
   '../../../../../../libs/papercusp/libs/db/sql/102-substrate-outbox.sql',
 );
+// Migration 103: BEFORE INSERT fill of workspace_id from projects on both
+// consolidated tables (the Stage-1 fix — issues had no workspace_id source, so
+// their outbox rows landed workspace_id='' and the Stage-3 drain never matched).
+const FILL_MIGRATION_PATH = resolve(
+  HERE,
+  '../../../../../../libs/papercusp/libs/db/sql/103-issues-workspace-id-fill-trigger.sql',
+);
 
 const WS = 'ws_fed';
 const SLUG = 'fed';
+// A second harness whose workspace_id is resolved purely by the 103 fill trigger
+// (via the projects lookup) rather than supplied by the INSERT.
+const SLUG_FILL = 'fed_fill';
+const WS_FILL = 'ws_fed_resolved';
 
 interface OutboxRow {
   id: string | number;
@@ -127,11 +138,29 @@ describe('substrate-outbox capture triggers (Stage 1, real PG)', () => {
       );
     `);
 
+    // projects: the slug→workspace_id map the 103 fill trigger resolves against.
+    // Map SLUG_FILL → WS_FILL; leave SLUG out so the SLUG-based tests keep
+    // supplying workspace_id explicitly (the trigger's fast path).
+    await db.sql.unsafe(`
+      CREATE TABLE harness_shared.projects (
+        slug         TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL
+      );
+    `);
+    await db.sql`INSERT INTO harness_shared.projects (slug, workspace_id)
+      VALUES (${SLUG_FILL}, ${WS_FILL})`;
+
     // Apply the Stage-1 migration verbatim. The migration ALTERs
     // harness_issues_consolidated to add workspace_id (idempotent), creates the
     // substrate_outbox table, the capture function, and both triggers.
     const migration = readFileSync(MIGRATION_PATH, 'utf8');
     await db.sql.unsafe(migration);
+
+    // Apply the Stage-1 fix migration (103): defines
+    // fill_workspace_id_from_projects() + attaches the BEFORE INSERT fill
+    // triggers on both consolidated tables, and backfills empty workspace_id.
+    const fillMigration = readFileSync(FILL_MIGRATION_PATH, 'utf8');
+    await db.sql.unsafe(fillMigration);
   }, 60_000);
 
   afterAll(async () => {
@@ -255,6 +284,54 @@ describe('substrate-outbox capture triggers (Stage 1, real PG)', () => {
     expect(del!.key).toBe('I-LOCAL');
     expect(del!.workspace_id).toBe(WS);
     expect(del!.harness_slug).toBe(SLUG);
+  });
+
+  // ── workspace_id fill (migration 103 — the Stage-1 bug fix) ────────────────
+  // The bug: issues_consolidated had no workspace_id source, so a local issue
+  // write landed workspace_id='' → its outbox row got '' → the Stage-3 drain
+  // (keyed on the booted harness's REAL workspaceId) never matched it. The 103
+  // fill trigger resolves workspace_id from projects on BEFORE INSERT, so the
+  // AFTER capture trigger enqueues the real value.
+  it('a local issue inserted WITHOUT workspace_id gets the real ws on its outbox row (not "")', async () => {
+    // Note: no workspace_id column in this INSERT — the 103 fill trigger must
+    // resolve it from projects (SLUG_FILL → WS_FILL).
+    await db.sql`INSERT INTO harness_shared.harness_issues_consolidated
+      (harness_slug, issue_id, title, severity, source, status, found_at, attempts, created_ts, updated_ts, origin)
+      VALUES (${SLUG_FILL}, 'I-FILL', 'I I-FILL', 'high', 'manual', 'open', now(), 0, 1, 1, 'local')`;
+
+    // The consolidated row itself carries the resolved workspace_id.
+    const [issueRow] = await db.sql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.harness_issues_consolidated
+       WHERE harness_slug = ${SLUG_FILL} AND issue_id = 'I-FILL'`;
+    expect(issueRow.workspace_id).toBe(WS_FILL);
+
+    // And — the point of the fix — the outbox row carries the SAME real
+    // workspace_id, not '' (which the Stage-3 drain would never match).
+    const rows = await outboxFor('harness_issues_consolidated', 'I-FILL');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspace_id).toBe(WS_FILL);
+    expect(rows[0].workspace_id).not.toBe('');
+  });
+
+  it('a local feature inserted WITHOUT workspace_id also gets the real ws on its outbox row', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, title, summary, status, origin)
+      VALUES (${SLUG_FILL}, 'F-FILL', 'T F-FILL', 'summary', 'todo', 'local')`;
+    const rows = await outboxFor('harness_features_consolidated', 'F-FILL');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspace_id).toBe(WS_FILL);
+  });
+
+  it('an issue whose harness is not in projects falls back to "default" (never "")', async () => {
+    // SLUG_NOPROJ has no projects row → the fill trigger uses its 'default'
+    // fallback so the drain still has a non-empty key to match on.
+    await db.sql`INSERT INTO harness_shared.harness_issues_consolidated
+      (harness_slug, issue_id, title, severity, source, status, found_at, attempts, created_ts, updated_ts, origin)
+      VALUES ('fed_noproj', 'I-NOPROJ', 'I I-NOPROJ', 'high', 'manual', 'open', now(), 0, 1, 1, 'local')`;
+    const rows = await outboxFor('harness_issues_consolidated', 'I-NOPROJ');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspace_id).toBe('default');
+    expect(rows[0].workspace_id).not.toBe('');
   });
 
   // ── NOTIFY (source-level assertion; delivery is Stage 3's drain test) ──────
