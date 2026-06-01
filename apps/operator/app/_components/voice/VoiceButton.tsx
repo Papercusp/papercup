@@ -373,6 +373,15 @@ export function VoiceButton(): ReactElement {
           href="/settings/voice"
           className="pc-voice-settings-link"
           aria-label="Microphone settings"
+          onClick={(e) => {
+            // Plain left-click → soft client navigation. Without this the
+            // bare <a> does a full document load, which on the desktop
+            // re-bootstraps the whole SPA (several-second "reload"). Keep the
+            // href so middle-click / modified-click / right-click still work.
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            e.preventDefault();
+            navigateClient('/settings/voice');
+          }}
         >
           <Settings2 size={14} aria-hidden="true" />
           <span className="pc-voice-settings-text">Voice</span>
