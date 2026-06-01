@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Button } from '../../../harness/Button';
+import RouteLink from '@/app/_components/RouteLink';
 import {
   type AdminTestCheckResult,
   type AdminTestRunSnapshot,
@@ -169,7 +170,7 @@ export default function MemoryTab() {
         <div className="pc-warn" role="alert" style={{ margin: '12px 0' }}>
           <strong>Suite blocked.</strong>
           <span>{preflight.reason ?? 'Embedder unavailable.'}</span>
-          <a href="/settings/api-keys" style={{ marginLeft: 12 }}>Open API keys settings</a>
+          <RouteLink href="/settings/api-keys" style={{ marginLeft: 12 }}>Open API keys settings</RouteLink>
         </div>
       ) : null}
 

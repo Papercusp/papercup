@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import RouteLink from '@/app/_components/RouteLink';
 import { Button } from '../../../harness/Button';
 import { Select } from '../../../harness/Select';
 import { Checkbox } from '../../../harness/Checkbox';
@@ -174,7 +175,7 @@ export default function AIExploreTab() {
             <span className="pc-test-badge is-good">configured</span>
             <code style={{ fontSize: 12, color: 'var(--fg-mute)' }}>{creds!.anthropic_api_key}</code>
             <Button variant="ghost" onClick={() => setShowInput(true)}>Replace</Button>
-            <a href="/settings/api-keys" style={{ fontSize: 12, color: 'var(--accent)' }}>Manage in Settings →</a>
+            <RouteLink href="/settings/api-keys" style={{ fontSize: 12, color: 'var(--accent)' }}>Manage in Settings →</RouteLink>
           </div>
         ) : (
           <>

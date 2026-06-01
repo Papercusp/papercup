@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
+import RouteLink from '@/app/_components/RouteLink';
 import { makeAjvResolver } from '@/lib/forms';
 import { ProvisionPanel } from './ProvisionPanel';
 import { Select } from '../../harness/Select';
@@ -191,7 +192,7 @@ export default function PluginSettingsPage() {
       <p className="pc-settings-intro">
         Per-harness configuration for installed plugins. Reads/writes{' '}
         <code>~/.papercusp/harnesses/&lt;slug&gt;/plugin-configs/</code>.
-        See <a href="/settings/plugins/tools" style={{ color: 'var(--fg)' }}>tools contributed by plugins →</a>
+        See <RouteLink href="/settings/plugins/tools" style={{ color: 'var(--fg)' }}>tools contributed by plugins →</RouteLink>
       </p>
 
       {harnesses.length === 0 ? (

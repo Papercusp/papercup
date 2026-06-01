@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
+import RouteLink from '@/app/_components/RouteLink';
 
 interface User {
   id: string;
@@ -322,8 +323,8 @@ export default function UserSettingsPage() {
         <h2>Memory</h2>
         <p style={{ color: 'var(--fg-mute)', fontSize: 13 }}>
           The operator stores things it learns about you (preferences, corrections, etc).
-          Inspect and delete per entry at <a href="/settings/user/memory" style={{ color: 'var(--accent)' }}>/settings/user/memory</a>.
-          Search across memories + workspace prose at <a href="/settings/user/search" style={{ color: 'var(--accent)' }}>/settings/user/search</a>.
+          Inspect and delete per entry at <RouteLink href="/settings/user/memory" style={{ color: 'var(--accent)' }}>/settings/user/memory</RouteLink>.
+          Search across memories + workspace prose at <RouteLink href="/settings/user/search" style={{ color: 'var(--accent)' }}>/settings/user/search</RouteLink>.
         </p>
       </section>
     </div>

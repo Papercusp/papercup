@@ -7,6 +7,7 @@ import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { AuthSignInCards } from '@/app/_components/AuthSignInCards';
+import RouteLink from '@/app/_components/RouteLink';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
@@ -461,7 +462,7 @@ function SearchProvidersSection() {
         API keys for OMP&rsquo;s 14 web-search providers. Set the ones you actually use; the
         orchestrator injects them into OMP&rsquo;s spawn env. OMP&rsquo;s search chain
         falls through to whichever provider is configured.
-        See <a href="/settings/omp" style={{ color: 'var(--fg)' }}>OMP settings → providers.webSearch</a>{' '}
+        See <RouteLink href="/settings/omp" style={{ color: 'var(--fg)' }}>OMP settings → providers.webSearch</RouteLink>{' '}
         to set the preferred provider.
       </p>
       {error && (
