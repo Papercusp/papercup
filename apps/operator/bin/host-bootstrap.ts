@@ -34,6 +34,54 @@ export function runBootstrap(): void {
   if (g[GUARD_KEY]) return;
   g[GUARD_KEY] = true;
 
+  // Endpoint-IPC server — the webview→Tauri→Node fast path. The packaged
+  // desktop spawns this sidecar with PAPERCUSP_IPC_ENABLE=1 and watches stdout
+  // for the `PAPERCUSP_IPC_READY socket=<path>` handshake line within a 30s
+  // window; the Rust client then connects and the operator SPA's /api fetch +
+  // EventSource ride IPC. Under the papercusp:// origin (Phase 4, default-on)
+  // this is load-bearing for STREAMING: if IPC never comes up, /api falls back
+  // to the buffering custom_protocol handler and SSE stops streaming.
+  //
+  // This start used to live ONLY in the now-retired instrumentation-node.ts
+  // (a Next hook the Hono host never runs), so packaged builds printed no
+  // ready line → 30s timeout → IPC disabled → SSE buffered. Ported here, the
+  // live boot path (mirrors the DBOS block below). Started first + fire-and-
+  // forget so the handshake never waits on PG/migrations. Idempotent via the
+  // runBootstrap guard above. In dev / webapp the env is unset → no-op.
+  if (process.env.PAPERCUSP_IPC_ENABLE === '1') {
+    void (async () => {
+      try {
+        const [{ startEndpointIpcServer }, { PROJECTED_DEPS }, { listAllProjectedTools }] =
+          await Promise.all([
+            import('../lib/endpoint-ipc/server'),
+            import('../lib/projected-tool-deps'),
+            import('@papercusp/tooldef'),
+          ]);
+        // Populate the projection registry (defineTool side-effects) before
+        // reading expose.ipc off it.
+        await import('../lib/agent-tools');
+        // Registry-driven IPC allowlist: a tool is IPC-eligible iff it declares
+        // `expose: { ipc: true }` (must be self-contained — every safety check
+        // + persistence side-effect in the tool, not the route). `sys:http` —
+        // the privileged HTTP-over-IPC bridge, not a defineTool projection — is
+        // added explicitly. (oracle:chat + agent_chats:chat are intentionally
+        // NOT eligible — route-dependent; see their tool files.)
+        const ipcEligible = listAllProjectedTools()
+          .filter((t) => t.expose?.ipc === true)
+          .map((t) => t.expose.mcp?.name)
+          .filter((n): n is string => typeof n === 'string');
+        const allowedTools = [...new Set([...ipcEligible, 'sys:http'])];
+        await startEndpointIpcServer({
+          socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
+          deps: PROJECTED_DEPS,
+          allowedTools,
+        });
+      } catch (err) {
+        console.error('[endpoint-ipc] failed to start:', err);
+      }
+    })();
+  }
+
   // Prewarm the OMP-SU bootstrap (file copies + `omp config set` shell-
   // outs). Runs once per process, fire-and-forget. Without this the
   // first /adv launch pays 5+ seconds of bootstrap synchronously on
