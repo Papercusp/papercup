@@ -612,7 +612,10 @@ export function setVoiceMode(mode: VoiceMode): void {
     // (which only makes sense for the full-agent EL/Realtime engines and
     // otherwise sticks as a permanent "Connecting…"). Go straight to 'idle'
     // (ready); capture happens on hold via startPushToTalk.
+    // Tear down any always-on continuous capture (e.g. energy-VAD) so it
+    // doesn't keep the mic open and block per-hold PTT capture.
     clearConnectingWatchdog();
+    stopWhisperCaptureIfRunning();
     setState({ mode, status: 'idle', micOwnedByFullAgent: false });
   } else {
     // always-on: claim mic ownership SYNCHRONOUSLY in the same setState that
@@ -1502,6 +1505,10 @@ let porcupineHandle: { stop(): Promise<void> } | null = null;
 // `whisperCapture` above (Silero VAD, which can't load on WebKitGTK), this
 // records the whole hold and transcribes on release — see ./ptt-capture.
 let pttRawCapture: PttRawCapture | null = null;
+// True between startPushToTalk and stopPushToTalk. Lets the async capture
+// startup tear itself down if the user already released (prevents an orphaned
+// mic stream when the hold ends before getUserMedia resolves).
+let pttActive = false;
 
 const VOICEMODE_WHISPER_URL = 'http://localhost:2022';
 
@@ -1832,6 +1839,7 @@ function activateListening(seedTranscript: string): void {
  */
 export function startPushToTalk(): void {
   if (!state.supported) return;
+  pttActive = true;
   setState({ status: 'listening' });
   // Use the same capture path as always-on. setVoiceMode-style sync
   // handles which engine to spin up based on prefs.sttEngine.
@@ -1877,6 +1885,7 @@ function dispatchNoTranscriptToast(): void {
 
 /** Stop push-to-talk: tear down whichever capture is running. */
 export function stopPushToTalk(): void {
+  pttActive = false;
   // Read before the reset below: for streaming engines this is the "did we
   // capture audio?" signal.
   const heardAudio = state.audioReceiving || !!state.lastTranscript;
@@ -1946,51 +1955,53 @@ async function finalizePttRawCapture(result: PttRawCaptureResult | null): Promis
 }
 
 async function maybeStartCaptureForPtt(): Promise<void> {
-  if (whisperCapture || pttRawCapture) return; // already running
-  // Reuse the same engine-selection logic as always-on.
+  if (pttRawCapture) return; // already capturing
+  // Release any lingering always-on capture (e.g. energy-VAD) so PTT owns the
+  // mic — otherwise its open stream blocks this and PTT silently no-ops.
+  stopWhisperCaptureIfRunning();
+
+  // Open the mic and start buffering IMMEDIATELY — before resolving prefs,
+  // probing whisper, or importing engines. That async startup used to run
+  // first and swallow the opening ~0.5–1s of speech on a quick hold, surfacing
+  // as "No audio detected". Voicemode whisper (raw capture → transcribe on
+  // release) is the default and the only engine that works on the WebKitGTK
+  // desktop; deepgram/web-speech are swapped in below when configured.
+  try {
+    const { startPttRawCapture } = await import('./ptt-capture');
+    if (!whisperCapture) {
+      const cap = await startPttRawCapture();
+      if (!pttActive) { try { cap.stop(); } catch { /* ignore */ } return; } // released mid-startup
+      pttRawCapture = cap;
+      setMicCaptureError(null);
+    }
+  } catch (err) {
+    // getUserMedia/permission/device failure — record it so the no-audio toast
+    // on release names the real cause. pttRawCapture stays null, so
+    // stopPushToTalk falls through to the no-audio branch.
+    setMicCaptureError(err);
+  }
+
+  // Resolve the configured engine; swap to a cloud streaming engine if set.
   const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs').catch(() => null);
   const prefs = prefsR?.ok ? await prefsR.json() : null;
-  if (!prefs) {
-    if (state.hasWebSpeechSTT) activateListening('');
-    return;
-  }
-  // Voicemode whisper if reachable. PTT records the whole hold as raw audio
-  // and transcribes it on release — no Silero VAD, because the button marks
-  // the utterance boundaries and MicVAD (onnxruntime-web → SharedArrayBuffer)
-  // can't load on the WebKitGTK desktop webview. See ./ptt-capture.
-  if (prefs.sttEngine === 'voicemode') {
-    const probe = await fetch(`${VOICEMODE_WHISPER_URL}/health`, { signal: AbortSignal.timeout(2000) }).catch(() => null);
-    if (probe?.ok) {
-      try {
-        const { startPttRawCapture } = await import('./ptt-capture');
-        pttRawCapture = await startPttRawCapture();
-        setMicCaptureError(null);
-      } catch (err) {
-        // getUserMedia/permission/device failure — record it so the no-audio
-        // toast on release names the real cause. pttRawCapture stays null, so
-        // stopPushToTalk falls through to the no-audio branch below.
-        setMicCaptureError(err);
-      }
+  if (prefs?.sttEngine === 'deepgram' && prefs.webSpeechLeakAcked) {
+    const bootR = await fetch('/api/agent-mcp/operator-stt-bootstrap?engine=deepgram').catch(() => null);
+    const apiKey: string | null = bootR?.ok ? ((await bootR.json())?.apiKey ?? null) : null;
+    if (apiKey) {
+      // Hand the mic from the raw capture over to Deepgram's own stream.
+      if (pttRawCapture) { try { pttRawCapture.stop(); } catch { /* ignore */ } pttRawCapture = null; }
+      const { startDeepgramStream } = await import('../../../lib/voice-engines/deepgram');
+      whisperCapture = await startDeepgramStream({
+        apiKey,
+        onFinal: (text) => { setState({ lastTranscript: text }); onUtteranceFinal(text); },
+      });
       return;
     }
   }
-  // Deepgram if configured + leak-acked
-  if (prefs.sttEngine === 'deepgram' && prefs.webSpeechLeakAcked) {
-    const bootR = await fetch('/api/agent-mcp/operator-stt-bootstrap?engine=deepgram').catch(() => null);
-    if (bootR?.ok) {
-      const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
-      if (apiKey) {
-        const { startDeepgramStream } = await import('../../../lib/voice-engines/deepgram');
-        whisperCapture = await startDeepgramStream({
-          apiKey,
-          onFinal: (text) => { setState({ lastTranscript: text }); onUtteranceFinal(text); },
-        });
-        return;
-      }
-    }
-  }
-  // Web Speech fallback (always works in Chromium when not denied)
-  if (state.hasWebSpeechSTT) activateListening('');
+
+  // Voicemode default keeps the raw capture already running. If neither the raw
+  // capture nor a streaming engine came up, last-ditch Web Speech.
+  if (!pttRawCapture && !whisperCapture && state.hasWebSpeechSTT) activateListening('');
 }
 
 const utteranceListeners = new Set<(text: string) => void>();

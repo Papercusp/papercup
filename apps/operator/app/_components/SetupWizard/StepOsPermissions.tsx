@@ -121,8 +121,14 @@ export function StepOsPermissions() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
+  // Raw-capture refs for the test recording. MediaRecorder supports no audio
+  // mime type on the WebKitGTK desktop webview, so we capture PCM via Web
+  // Audio (reusing the live monitor stream) and WAV-encode it instead.
+  const recNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const recSrcRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const recMuteRef = useRef<GainNode | null>(null);
+  const recChunksRef = useRef<Float32Array[]>([]);
+  const recTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toneCtxRef = useRef<AudioContext | null>(null);
   const audioElsRef = useRef<HTMLAudioElement[]>([]);
 
@@ -273,27 +279,57 @@ export function StepOsPermissions() {
   }, [selectedOutput, sinkIdSupported, recordings]);
 
   const startRecording = () => {
-    if (!streamRef.current) return;
-    chunksRef.current = [];
-    const recorder = new MediaRecorder(streamRef.current);
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
+    const stream = streamRef.current;
+    const ctx = audioCtxRef.current;
+    if (!stream || !ctx) return;
+    recChunksRef.current = [];
+    if (ctx.state === 'suspended') { void ctx.resume().catch(() => {}); }
+    const src = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (e) => {
+      const d = e.inputBuffer.getChannelData(0);
+      const c = new Float32Array(d.length);
+      c.set(d);
+      recChunksRef.current.push(c);
     };
-    recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
-      const url = URL.createObjectURL(blob);
-      setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
-    };
-    recorderRef.current = recorder;
-    recorder.start();
+    // Route through a muted gain into the destination so the node keeps
+    // firing without echoing the mic back to the speakers.
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    src.connect(node);
+    node.connect(mute);
+    mute.connect(ctx.destination);
+    recSrcRef.current = src;
+    recNodeRef.current = node;
+    recMuteRef.current = mute;
     setRecording(true);
-    setTimeout(() => stopRecording(), 5000);
+    recTimerRef.current = setTimeout(() => { void stopRecording(); }, 5000);
   };
 
-  const stopRecording = () => {
-    recorderRef.current?.stop();
-    recorderRef.current = null;
+  const stopRecording = async () => {
+    if (recTimerRef.current) { clearTimeout(recTimerRef.current); recTimerRef.current = null; }
+    const node = recNodeRef.current;
+    const ctx = audioCtxRef.current;
+    try { if (node) node.onaudioprocess = null; } catch { /* ignore */ }
+    try { recSrcRef.current?.disconnect(); } catch { /* ignore */ }
+    try { node?.disconnect(); } catch { /* ignore */ }
+    try { recMuteRef.current?.disconnect(); } catch { /* ignore */ }
+    recNodeRef.current = null;
+    recSrcRef.current = null;
+    recMuteRef.current = null;
     setRecording(false);
+
+    const chunks = recChunksRef.current;
+    recChunksRef.current = [];
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    if (total === 0) return;
+    const samples = new Float32Array(total);
+    let off = 0;
+    for (const c of chunks) { samples.set(c, off); off += c.length; }
+    const { f32ToWav } = await import('../voice/f32-to-wav');
+    const url = URL.createObjectURL(f32ToWav(samples, ctx?.sampleRate ?? 44100));
+    setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
   };
 
   // 1-second 440Hz tone via Web Audio, routed through an AudioElement
@@ -501,7 +537,7 @@ export function StepOsPermissions() {
                 Record 5-second test
               </button>
             ) : (
-              <button type="button" className="pc-btn" onClick={stopRecording}>
+              <button type="button" className="pc-btn" onClick={() => void stopRecording()}>
                 Stop
               </button>
             )}
