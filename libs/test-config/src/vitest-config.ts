@@ -43,7 +43,16 @@ export function defineVitestConfig(opts: DefineVitestConfigOptions): UserConfig 
           ? ['**/*.integration.test.*', '**/*.browser.test.*']
           : []),
       ],
-      pool: layer === 'integration' ? 'forks' : 'threads',
+      // Use process-forked workers (vitest's own default), NOT worker_threads,
+      // for the unit + integration layers. The `threads` pool core-dumps
+      // (SIGABRT / "Aborted (core dumped)", exit 134) non-deterministically
+      // under Node ≥25 on this libuv/io_uring kernel — worker_threads share a
+      // libuv loop that aborts mid-run. `forks` runs each file in its own child
+      // process and is stable across Node versions, so the suite no longer
+      // depends on which Node the runner's PATH happens to resolve. Browser
+      // mode keeps its own pool semantics. See
+      // docs/plans/test-affected-coredump-investigation-2026-06-01.md.
+      pool: layer === 'browser' ? 'threads' : 'forks',
       // Integration tests share real PG schemas (e.g. harness_shared) — running
       // files in parallel races their `DROP SCHEMA CASCADE` teardown. Serialise.
       fileParallelism: layer === 'integration' ? false : undefined,
