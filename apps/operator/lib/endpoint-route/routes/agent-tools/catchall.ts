@@ -64,6 +64,18 @@ const HOST_EXTRAS: HttpToolHostExtras = {
       tx: sql,
     };
   },
+  runScoped: (_scope, run) => {
+    // P-062 Phase 3 — the scoping seam, landed behavior-neutral: every tool
+    // still runs on the admin (rolbypassrls) handle, exactly as the static
+    // resolvePrincipalAndTx tx did, so this is a no-op behavior change that
+    // simply routes all dispatch through the seam. Phase 4 (P-004) flips this
+    // to run inside withWorkspace(scope.workspaceId) for normal calls (so the
+    // dormant harness_app role + RLS isolate the tool to its workspace), while
+    // keeping this admin handle for superuser calls (scope.isSuperuser) and
+    // tools that declare themselves crossWorkspace.
+    const { sql } = getOrgPg();
+    return run(sql);
+  },
   deps: PROJECTED_DEPS,
   log: (line, ctx: UnifiedToolContext) => {
     // eslint-disable-next-line no-console

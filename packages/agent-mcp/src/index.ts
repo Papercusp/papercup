@@ -161,6 +161,7 @@ export {
   type HttpToolResponse,
   type HttpToolResult,
   type HttpToolHostExtras,
+  type ToolScope,
   type HttpRequestContextInput,
 } from '@papercusp/tooldef-http';
 export type {
