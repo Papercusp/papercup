@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isTauri, wslStatus, type WslStatus } from '@/lib/wsl-tauri';
 import { Select } from '@/app/harness/Select';
+import { f32ToWav } from '../voice/f32-to-wav';
 
 type PermState = 'unknown' | 'granted' | 'denied' | 'prompt' | 'unsupported';
 
@@ -356,7 +357,6 @@ export function StepOsPermissions() {
       setRecInfo(`No audio captured — frames=${frames}, samples=${samples.length}, peak=${peak.toFixed(4)}, ctx=${ctxState}, rate=${rate}. (Check the mic isn't muted / right device selected.)`);
       return;
     }
-    const { f32ToWav } = await import('../voice/f32-to-wav');
     const url = URL.createObjectURL(f32ToWav(samples, rate));
     setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
     setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved.`);
