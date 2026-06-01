@@ -186,6 +186,13 @@ describe('register (OMP adapter)', () => {
     const prevCoordDir = process.env.PAPERCUSP_COORD_DIR;
     const tmpCoordDir = await fs.mkdtemp(join(tmpdir(), 'coord-hook-empty-'));
     process.env.PAPERCUSP_COORD_DIR = tmpCoordDir;
+    // The hook reaches the operator via these env vars (callMcpTool). On a dev
+    // box one is set + a real operator is up, so the probe would succeed and
+    // read live coord data — defeating the "no operator → detached" premise.
+    // Clear them so the turn deterministically resolves to DETACHED.
+    const opEnvKeys = ['PAPERCUSP_BUNDLE_URL', 'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_API_BASE'] as const;
+    const prevOpEnv = Object.fromEntries(opEnvKeys.map((k) => [k, process.env[k]]));
+    for (const k of opEnvKeys) delete process.env[k];
     try {
       const { default: register } = await import('../coord-hook');
       register(pi as never);
@@ -204,6 +211,10 @@ describe('register (OMP adapter)', () => {
     } finally {
       if (prevCoordDir === undefined) delete process.env.PAPERCUSP_COORD_DIR;
       else process.env.PAPERCUSP_COORD_DIR = prevCoordDir;
+      for (const k of opEnvKeys) {
+        if (prevOpEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = prevOpEnv[k];
+      }
       await fs.rm(tmpCoordDir, { recursive: true, force: true });
     }
   });
