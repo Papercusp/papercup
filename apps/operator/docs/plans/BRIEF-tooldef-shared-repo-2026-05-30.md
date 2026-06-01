@@ -1,10 +1,11 @@
 ---
 title: Brief — @papercusp/tooldef is now a shared repo (Papercusp/tooldef)
 slug: BRIEF-tooldef-shared-repo-2026-05-30
-status: active
+status: superseded
 created: 2026-05-30
 owner: avi@storewolf.com
 related: [papercusp-tooldef-extraction-2026-05-29]
+updated: 2026-06-01
 ---
 
 # Brief — `@papercusp/tooldef` is now a shared repo

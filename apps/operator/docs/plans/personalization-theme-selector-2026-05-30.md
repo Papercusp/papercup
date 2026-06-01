@@ -1,9 +1,9 @@
 ---
 title: Personalization — Theme selector, black theme & custom themes
 slug: personalization-theme-selector-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 

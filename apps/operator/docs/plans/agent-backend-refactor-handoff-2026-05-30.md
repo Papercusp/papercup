@@ -1,9 +1,9 @@
 ---
 title: Agent-backend refactor (omp / claude / codex) — handoff
 slug: agent-backend-refactor-handoff-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-06-01
 owner: aviynw3@gmail.com
 ---
 

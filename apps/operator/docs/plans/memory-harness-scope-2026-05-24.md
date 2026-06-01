@@ -2,8 +2,8 @@
 title: Memory scope — user + harness model
 slug: memory-harness-scope-2026-05-24
 created: 2026-05-24
-updated: 2026-05-25
-status: active
+updated: 2026-06-01
+status: shipped
 owner: aviynw3@gmail.com
 ---
 

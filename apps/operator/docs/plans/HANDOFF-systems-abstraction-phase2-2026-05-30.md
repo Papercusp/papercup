@@ -1,10 +1,11 @@
 ---
 title: Handoff — systems-abstraction Phase 2 (pick up here)
 slug: HANDOFF-systems-abstraction-phase2-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
 owner: avi@storewolf.com
 companion-to: [papercusp-systems-abstraction-2026-05-29]
+updated: 2026-06-01
 ---
 
 # Handoff: papercusp-systems-abstraction Phase 2

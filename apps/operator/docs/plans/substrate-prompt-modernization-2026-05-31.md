@@ -1,7 +1,7 @@
 ---
 title: Modernize the stale harness substrate role prompts
 slug: substrate-prompt-modernization-2026-05-31
-status: active
+status: shipped
 created: 2026-05-31
 updated: 2026-06-01
 owner: avi@storewolf.com

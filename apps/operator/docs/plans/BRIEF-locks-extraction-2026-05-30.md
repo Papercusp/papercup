@@ -1,10 +1,11 @@
 ---
 title: Brief — @papercusp/locks (P-010)
 slug: BRIEF-locks-extraction-2026-05-30
-status: active
+status: shipped
 created: 2026-05-30
 owner: avi@storewolf.com
 companion-to: [papercusp-systems-abstraction-2026-05-29, BRIEF-RECIPE-shared-2026-05-30]
+updated: 2026-06-01
 ---
 
 # Brief: `@papercusp/locks` (P-010)

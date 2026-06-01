@@ -1,9 +1,9 @@
 ---
 title: Papercusp dogfood — Phase 0 spike (Holepunch primitive gate)
 slug: papercusp-dogfood-phase0-spike-2026-05-24
-status: active
+status: superseded
 created: 2026-05-24
-updated: 2026-05-30
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 

@@ -1,10 +1,11 @@
 ---
 title: Handoff brief — P-054 (mirror tooldef to a libs/generic submodule) — DECIDED, attempted, reverted; here's how to finish it
 slug: BRIEF-tooldef-P054-handoff-2026-05-31
-status: active
+status: shipped
 created: 2026-05-31
 owner: avi@storewolf.com
 related: [papercusp-tooldef-extraction-2026-05-29, BRIEF-tooldef-shared-repo-2026-05-30]
+updated: 2026-06-01
 ---
 
 # Handoff — finishing P-054 (tooldef → `libs/generic` submodule)

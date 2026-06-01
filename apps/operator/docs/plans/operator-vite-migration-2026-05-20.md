@@ -1,9 +1,9 @@
 ---
 title: Operator Vite migration — frontend/host scope
 slug: operator-vite-migration-2026-05-20
-status: active
+status: shipped
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 companion: host-architecture-2026-05-20-v2.md
 supersedes_for_my_scope: [next-removal-2026-05-20]

@@ -1,9 +1,9 @@
 ---
 title: psu-only launch unification — retire the *-su wrappers, one launch spec for su + roles
 slug: psu-only-launch-unification-2026-05-31
-status: active
+status: shipped
 created: 2026-05-31
-updated: 2026-05-31
+updated: 2026-06-01
 ---
 
 # psu-only launch unification — retire the *-su wrappers, one launch spec for su + roles

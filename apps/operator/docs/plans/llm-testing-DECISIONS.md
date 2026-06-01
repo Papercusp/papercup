@@ -1,9 +1,9 @@
 ---
 title: LLM testing framework — decisions log
 slug: llm-testing-DECISIONS
-status: active
+status: shipped
 created: 2026-05-14
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 ---
 

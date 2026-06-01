@@ -1,9 +1,9 @@
 ---
 title: Harness Tests tab + tester role promotion + admin/testing shell extraction
 slug: harness-tests-tab-and-tester-promotion-2026-05-26
-status: active
+status: shipped
 created: 2026-05-26
-updated: 2026-05-31
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 

@@ -3,27 +3,16 @@ title: Host architecture — implementation plan v2
 slug: host-architecture-2026-05-20-v2
 status: active
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 supersedes: [host-architecture-2026-05-20]
 ---
 
 ## Now
 
-**State:** **Date:** 2026-05-20 **Status:** Ready to implement. **Supersedes:** `host-architecture-2026-05-20.md` (v1). **Read with:** `host-architecture-blocker-report-2026-05-20.md` (codebase audit; informs the changes below). **Detailed sub-plan referenced:** `desktop-ipc-transport-completion-2026-05-20.md` (Phase 1 details).
+**State:** The host-agnostic-core infrastructure is the live, valuable scope: Phase 1 (IPC `sys:http` bridge — SHIPPED, see `libs/generic/ipc-endpoint-server/src/sys-http.ts`), Phase 2 (platform-adapter interface), Phase 3a (composable middleware), Phase 3b (principal RFC — internal auth only), Phase 4 (route-migration audit), Phase 6a/6b (layering), Phase 7 (OpenAPI surface). ⛔ RETIRED 2026-06-01 (user): **Phase 8 (webapp host)**, **Track A (auth & multi-tenancy)**, and this plan's top-of-body **"Decision reversal banner"** are DEAD — the standalone webapp is retired (CLAUDE.md canon) and is not coming back. Do NOT build them. Confirmed no code depends on them (the only reference is a doc comment in `apps/operator/lib/auth/principal/from-loopback.ts`). See the retirement decision below.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
-
-
-# Host architecture — implementation plan (v2)
-
-**Date:** 2026-05-20
-**Status:** Ready to implement.
-**Supersedes:** `host-architecture-2026-05-20.md` (v1).
-**Read with:** `host-architecture-blocker-report-2026-05-20.md` (codebase audit; informs the changes below).
-**Detailed sub-plan referenced:** `desktop-ipc-transport-completion-2026-05-20.md` (Phase 1 details).
-
----
+**Next:** Owner — live remaining infra is Phase 2 (platform-adapter interface), Phase 3a (composable middleware), Phase 6a (layering scaffold), and the Phase 4 route-migration audit. Ignore Phase 8 / Track A / the reversal banner (retired); the body banner is stale.
 
 ## Recommended first move
 
@@ -42,16 +31,20 @@ supersedes: [host-architecture-2026-05-20]
 
 ---
 
-## Decision reversal banner
+## ⛔ Decision reversal banner — RETRACTED 2026-06-01
 
-Future sessions: this plan **reverses** prior memorialized decisions. Read here before acting on stale memory.
+> **This banner is DEAD. Do not act on it.** It tried to re-introduce a webapp host
+> target; that was retracted by the user on 2026-06-01: **the standalone webapp is
+> retired (CLAUDE.md canon) and is not coming back.** The prior decisions it claimed
+> to "reverse" are STILL IN FORCE. See `## Now` + decision **D-001**. Phase 8 (webapp
+> host) and Track A (auth & multi-tenancy) are retired — do not build them.
 
-| Prior decision | Source | Status under this plan |
+| Prior decision | Source | Status (RE-AFFIRMED 2026-06-01) |
 |---|---|---|
-| "Webapp retired; Tauri dev is the only test path." | `feedback_webapp_retired_use_tauri_dev.md` (2026-05-14) | **Reversed.** Self-hosted/webapp is a target host again. |
-| "Webapp is test-only." | `project_papercup_deployment_model.md` | **Reversed.** Same as above. |
-| "Operator auth is loopback-only." | `project_operator_auth_loopback.md` | **Reversed in principle; design TBD.** Real auth is required before Phase 8 ships. Tracked as Track A. |
-| "Desktop releases are local; no GitHub Actions." | `reference_desktop_releases_local.md` | **Not yet decided.** A self-hosted webapp deployment may or may not change this; flag, don't decide here. |
+| "Webapp retired; Tauri dev is the only test path." | `feedback_webapp_retired_use_tauri_dev.md` (2026-05-14) | **In force.** The standalone webapp is retired; do not build a webapp host. |
+| "Webapp is test-only." | `project_papercup_deployment_model.md` | **In force.** |
+| "Operator auth is loopback-only." | `project_operator_auth_loopback.md` | **In force.** (Internal principal work = Phase 3b; genuine user-protection = `papercusp-user-protection-gate-2026-05-31`.) |
+| "Desktop releases are local; no GitHub Actions." | `reference_desktop_releases_local.md` | **In force.** |
 
 ---
 
@@ -220,7 +213,9 @@ Critical path is **Track A and Phase 4**. Everything else parallelizes against t
 - **NOT shipping:** typed-client codegen for consumers (separate decision); regenerating runtime from OpenAPI.
 - **Rollback:** remove the build step; endpoint definitions unchanged.
 
-### Phase 8 — Webapp host
+### Phase 8 — Webapp host  ⛔ RETIRED 2026-06-01
+
+> **RETIRED — do not build.** The standalone webapp is retired (CLAUDE.md canon). See `## Now` + D-001. Nothing below is active.
 
 - **Hard prerequisite:** **Track A** complete or substantially complete.
 - **Scope:** operator as a network-reachable HTTP server. `PAPERCUSP_BIND_HOST` env already supports this — *transport-level* webapp deployment is trivial. The same client (React + `useSyncQuery` + `dispatchEndpointStream`) connects over HTTP. A **local-first replica is added behind `useSyncQuery`** (the Linear/Obsidian impl) when the webapp ships.
@@ -232,7 +227,9 @@ Critical path is **Track A and Phase 4**. Everything else parallelizes against t
 
 ## Parallel tracks
 
-### Track A — Auth & multi-tenancy
+### Track A — Auth & multi-tenancy  ⛔ RETIRED 2026-06-01
+
+> **RETIRED — do not build.** This track existed only as the webapp-host prerequisite; the webapp is retired. Genuine user-protection work is governed by `papercusp-user-protection-gate-2026-05-31` / `papercusp-trust-model-2026-05-31`, not here. See `## Now` + D-001.
 
 - **Scope:** real session auth (OAuth / passkeys / TBD); multi-tenant data isolation; row-level security policy; **consolidation of the 8+ scattered loopback-only auth checks** identified in the blocker report.
 - **Why parallel:** independent of any transport phase; can start immediately; gates Phase 8.
@@ -258,3 +255,17 @@ Critical path is **Track A and Phase 4**. Everything else parallelizes against t
 When this lands: the desktop is the core hosted locally, reached over IPC + (still-existing) loopback HTTP; the webapp is the same core on a server, reached over HTTP, with a local-first replica behind `useSyncQuery`. The client is identical — it only ever calls `useSyncQuery` and `dispatchEndpointStream`. `define_tool` stays the single definition surface throughout, gaining capability (resumability gap-closure, composable middleware, OpenAPI emission), never coupled to a transport.
 
 **Start with Phase 1.** It's small, contained, has all its infrastructure already shipped, needs zero Rust changes, and is the cleanest first proof that the substrate works.
+
+## Decisions
+
+### D-001 — RETIRED: Phase 8 (webapp host) + Track A — the standalone webapp is retired, do not build
+Date: 2026-06-01
+User direction 2026-06-01: "THE WEBSITE IS RETIRED — I don't want anyone using them." This plan's top-of-body **"Decision reversal banner"** (which claimed to reverse the webapp-retired / loopback-only-auth decisions and re-introduce a webapp host target) is itself REVERSED and dead.
+
+- **Phase 8 (webapp host)** — RETIRED. The standalone webapp is retired per CLAUDE.md; the operator runs only as the desktop content source. Do not build a network-reachable webapp host.
+- **Track A (auth & multi-tenancy)** — RETIRED *as a webapp prerequisite*. (Any genuine security/user-protection work is governed by `papercusp-trust-model-2026-05-31` / `papercusp-user-protection-gate-2026-05-31`, NOT by Track A's "real session auth for a public webapp" framing.)
+- The body's **"Decision reversal banner"** table is stale: treat "Webapp retired" and "operator auth is loopback-only" as STILL IN FORCE.
+
+Dependency check (grep, 2026-06-01): nothing depends on these surfaces — the only reference is a doc comment in `apps/operator/lib/auth/principal/from-loopback.ts:10`. No build target, no route, no other plan blocks on them. Safe to retire.
+
+STILL LIVE in this plan (host-agnostic-core, webapp-independent): Phase 1 (shipped), Phase 2 (platform adapter), Phase 3a (composable middleware), Phase 3b (principal RFC — internal auth only), Phase 4 (route-migration audit), Phase 6a/6b (layering), Phase 7 (OpenAPI).

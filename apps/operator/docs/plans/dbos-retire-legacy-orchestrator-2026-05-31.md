@@ -1,7 +1,7 @@
 ---
 title: Retire the legacy orchestrator — DBOS becomes the complete, sole, default-on pipeline for all harnesses
 slug: dbos-retire-legacy-orchestrator-2026-05-31
-status: active
+status: shipped
 created: 2026-05-31
 updated: 2026-06-01
 owner: avi@storewolf.com
@@ -198,4 +198,48 @@ User decision (supersedes the D-010 removal): instead of removing the deprecated
 Commit 00accc288: restored HarnessSettingsPanel.tsx from 29671aa08~1 (all controls + state/load/save/helpers back), then gated the deprecated controls behind `useFlag(FLAGS.TESTING)` (papercusp-testing, default false; pattern copied from ChromeShell.tsx:99). Gated regions: the workers/feature MODE dropdown, N-per-feature (workersPerFeature), features-cap (maxFeaturesInFlight), the SYNTHESIZER toggle (synthesizeSingle), the Worker-count-TIERS section + rubric, the adaptive "recent worker decisions" telemetry grid, and the branchIso/mode-aware summary line (falls back to a simple summary when the flag is off). Kept ALWAYS-visible (live under chunk-loop): max workers, the chunk-loop subsection (useChunkLoop/workingStateCheck/replanStrikes/escalateToRole), debugger threshold, AI backend. The config state/save are fully preserved, so a harness with these set keeps working; the form just hides the controls unless the testing flag is on. tsc-clean for the file.
 
 Reminder of the verified merit context (D-009/D-010): these features are the superseded worktree-competition model (gated behind useChunkLoop:false; the DBOS pipeline uses chunk-loop). Flag-gating keeps them reachable for testing without surfacing them in the default ship state. The dead-Next lanes-viz/competition-counters were not touched.
+Related: P-009
+
+### D-012 — D-012 — re-audit: chunk-loop DID deliberately supersede competition/adaptive/synth (2026-05-08); the real regression is chunk-loop absent from DBOS
+Date: 2026-06-01
+Skeptical re-audit (user challenged the "chunk-loop disables competition/synth" claim). Verdict: the claim holds, with hard evidence — but reconciled with the user's memory.
+
+- chunk-loop wired into NEXT_WORKER dispatch 2026-05-08 (commit 1d944de05 "skips legacy adaptive/competition/lane paths"); bypasses branch-iso (35b63f795); useChunkLoop default-flipped to true + branch-iso toggle removed (99f082ade). handleNextWorker (main-loop.ts:1015) `if (useChunkLoop) return handleChunkLoopWorker(...)` is a TRUE early-return short-circuit — competition/adaptive/lane logic (1019-1163) is unreachable under chunk-loop. chunk-loop + competition are mutually-exclusive SIBLINGS (chunk-loop does NOT run inside a competition lane). Synthesizer skip under chunk-loop is CODIFIED in a test (handle-next-validator.dispatcher.test.ts:288). Documented: packages/harness/README.md:134, config.json.template:76, PARITY.md.
+- RECONCILIATION: competition/adaptive/synth WERE the active model BEFORE ~2026-05-08; the chunk-loop default-flip deliberately superseded them. All 384 harness configs on disk run useChunkLoop:true → competition/synth dormant since. User's memory (active) is right for the pre-5/8 era; the supersession was deliberate.
+- THE REAL REGRESSION (undecided, my earlier error in D-010): the DBOS pipeline does NOT use the chunk-loop — the worker step is a bare invoke(worker), not driveChunkLoop. So the canonical worker model (chunk-loop: up-front planning, per-chunk file locks, L1 typecheck gate, replan-strikes, escalate-to-debugger) is absent under DBOS despite every harness running useChunkLoop:true.
+
+DECISION → Phase H: (1) concurrency-aware continuous DBOS dispatch (honor per-harness parallelWorkers.max/maxFeaturesInFlight; refill a freed slot immediately on pipeline completion instead of the 30s crontab poll); (2) bring the chunk-loop into the DBOS worker step (driveChunkLoop, not bare invoke). Competition/adaptive/synth stay the flag-gated predecessor (D-011) — not ported (chunk-loop is their successor) unless the user overrules the 5/8 supersession.
+Related: P-009
+
+### D-013 — D-013 — Phase H done: #1 concurrency-aware continuous dispatch + #2 chunk loop in the DBOS worker (TDD'd, tested, plumbing-verified)
+Date: 2026-06-01
+Both Phase-H fixes from D-012 implemented, committed, and verified.
+
+#1 — concurrency-aware continuous dispatch (parent 8e1d0c461, submodule 4b917d8):
+- resolvePerHarnessCap (apps/operator/lib/dbos/orchestrator-dispatcher.ts) + 7 TDD unit tests: per-harness pipeline cap from the harness's own parallelWorkers.max / maxFeaturesInFlight (env PAPERCUSP_DBOS_MAX_PIPELINES is now an OPTIONAL global ceiling, default SAFETY_CEILING=16), replacing the flat global cap of 4. Default harness → 1 feature at a time; a harness set to N → N concurrent (matches legacy lane-pool).
+- Continuous refill: featurePipelineImpl fires setPipelineSettledHook on a `done` terminal → refillHarnessOnSettle → setImmediate re-dispatch of just that harness (fresh slot filled immediately, not ≤30s). done-only avoids re-picking an escalated/idle feature; the 30s crontab stays as the backstop for newly-filed work. dispatchOneHarness extracted; reads config once for both cap + cost-cap.
+- exported maxFeaturesInFlight from @papercusp/orchestrator.
+
+#2 — chunk loop is the shared canonical worker model (parent f8781dc8b, submodule b44e682):
+- Extracted handleChunkLoopWorker out of the retired main-loop.ts into a new shared module src/run-worker-chunk-loop.ts (runWorkerChunkLoop + shouldUseWorkerChunkLoop predicate, 3 TDD tests). main-loop.ts now delegates to it (retired + live path share one impl); dropped the now-dead chunkImplementInlinePrompt/listChangedFiles.
+- bin/invoke-once.ts: when role=worker + useChunkLoop (the default on every harness), drives the chunk loop (up-front planning, per-chunk file locks, L1 typecheck gate, replan-strikes, escalate-to-debugger) instead of a bare invoke('worker'). Crash-safe: the loop persists its plan to PG, so a retried DBOS worker step resumes mid-feature. FileLockQueue is in-process → per-subprocess queue serializes the feature's own chunks; cross-feature safety is the operator's PG-backed lock layer.
+
+Verification: 80+ orchestrator unit tests green (incl. 10 new TDD tests); operator dbos suite 85 green; type-clean (run-worker-chunk-loop + invoke-once + the dbos files); the 3 transient orch-package failures proven pre-existing/environmental (pre-loop needs an agent backend; harnessSlug was my shell's PAPERCUSP_HARNESS_SLUG pin). Dev API restarts clean (health 200) — no circular-import from the new runner→dispatcher edge. End-to-end plumbing verified by code: buildInvokeOnce sets ROLE+EXTRAS_JSON; NEXT_WORKER dispatch carries FEATURE_ID; so the DBOS worker step routes through runWorkerChunkLoop.
+
+NOT yet done: a live real-harness end-to-end run of the chunk loop under DBOS (spawns real agents) — offered to the user as the next step. Relates to D-012, P-009.
+Related: P-009
+
+### D-014 — D-014 — live sheets validation: #2 proven end-to-end; surfaced + fixed two pre-existing DBOS-path bugs
+Date: 2026-06-01
+Triggered a real DBOS pipeline (pipeline:sheets:F-FIX-024:e0) on the sheets harness. DBOS steps: decide-0 (director → NEXT_WORKER) → invoke-worker-0 → decide-1. Run log proved #2's routing: "invoke-once: role=worker + useChunkLoop → driving chunk loop for F-FIX-024" → "CHUNK_LOOP starting" → "resuming … from PG". Before #2 the worker step was a bare invoke('worker'); now it drives the chunk loop. #1's per-harness cap resolved correctly (min(max:2, maxFeaturesInFlight:2)=2).
+
+The chunk loop is the FIRST code to exercise readFeaturesPg + readPlan under DBOS, which surfaced two PRE-EXISTING bugs (not in the #1/#2 code) that blocked the whole DBOS path. Both found via stderr (spawnInvokeOnce drops child stderr — a separate observability gap), fixed TDD, committed (submodule fa9fe63, parent e3e688df1):
+
+1. readFeaturesPg (state-pg.ts, from commit 25308f6) queried harness_features.source_plan_slug — a column that exists ONLY on harness_shared.harness_features_consolidated (migration 084); per-schema harness_features store the slug in metadata->>'source_plan'. Threw "column source_plan_slug does not exist" on EVERY harness → broke the DBOS dispatcher (dispatchOneHarness) AND the chunk-loop worker. Fixed to read metadata->>'source_plan' + query-shape test (the mock-pg test never validated columns).
+
+2. readPlan (chunk-plan-pg.ts) crashed resuming legacy chunk_plans rows: pre-pgJson-fix writes double-encoded `files` (a JSON string in the jsonb column, not an array) → resume threw "paths.map is not a function". Verified current writes store a proper jsonb array (jsonb_typeof=array), so legacy-data-only; added normalizeStoredFiles to parse the legacy string form + unit test.
+
+Re-ran the worker invoke with both fixes: clean (no errors), resumed the real plan, and ran into the chunk implement (file-lock acquire → worker claude call → typecheck) until the 130s bound. The DBOS worker step now executes the canonical chunk loop end-to-end on a real harness.
+
+Follow-up worth noting: spawnInvokeOnce (orchestrator-runner.ts) captures only stdout, not child stderr — a thrown worker-step error surfaces as exitCode=1 + empty output with the message lost. Consider capturing stderr for observability. Still deferred: the PAPERCUSP_WORKSPACE_ID=default pin in apps/operator/.env.local (re-added to fix workspace resolution; reverting it likely re-breaks F-001 — needs the user's call, not a blind revert).
 Related: P-009

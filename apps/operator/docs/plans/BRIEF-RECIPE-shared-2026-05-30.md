@@ -1,10 +1,11 @@
 ---
 title: Shared recipe — Population-B shared-lib extractions
 slug: BRIEF-RECIPE-shared-2026-05-30
-status: active
+status: superseded
 created: 2026-05-30
 owner: avi@storewolf.com
 companion-to: [papercusp-systems-abstraction-2026-05-29]
+updated: 2026-06-01
 ---
 
 # Shared recipe — extracting a `@papercusp/*` shared lib

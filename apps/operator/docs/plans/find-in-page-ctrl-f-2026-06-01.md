@@ -1,7 +1,7 @@
 ---
 title: Ctrl+F find-in-page for the desktop (operator Vite SPA)
 slug: find-in-page-ctrl-f-2026-06-01
-status: active
+status: shipped
 created: 2026-06-01
 updated: 2026-06-01
 owner: aviynw3@gmail.com

@@ -1,9 +1,9 @@
 ---
 title: Endpoint unification — collapse defineRoute into defineTool, add expose.mobile
 slug: endpoint-unification-2026-05-21
-status: active
+status: superseded
 created: 2026-05-21
-updated: 2026-05-21
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 companion-to: [endpoint-route-migration-2026-05-20, phase-4-endpoint-system-2026-05-12, principal-rfc-2026-05-20, host-architecture-2026-05-20-v2]
 ---

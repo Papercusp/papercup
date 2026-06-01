@@ -5,47 +5,14 @@ date: 2026-05-23
 status: active
 owners: [aviynw3]
 supersedes: papercusp-dogfood-v4-2026-05-23
+updated: 2026-06-01
 ---
 
 ## Now
 
-**State (2026-05-25):** Umbrella plan. Per-phase execution plans
-own their own `## Now` / items / decisions; this block is a
-**phase-status rollup only**, updated when any phase transitions
-status. Convention spec: `/internal/docs/spec/plan-format`
-(§Umbrella plans and per-phase split-outs).
+**State:** The umbrella vision for collaborative-at-the-core dogfood. Most of the cross-cutting design remains the operative reference and is being built via the per-phase plans + `HANDOFF-dogfood-substrate-2026-05-30`: identity, trust tiers (§17), Cupboard (§10), user profile (§18), Insights (§9.0), two-channel binding (§0.2.7), canonical-repo claim (§5.1). ⚠️ SUPERSEDED 2026-06-01: the Autobase/multi-writer DATA-LAYER design is replaced by the "Model B" rewrite (`papercusp-substrate-model-b-rewrite-2026-05-31` + -impl). Do NOT implement §6 (Hybrid sync), §0.6 (Autobase claim arbitration), §7.1 (Hyperbee-bucket routing-through-Autobase), or §12 (P2P transport / Autobase bootstrap key-exchange) as written — see the supersession decision below.
 
-### Phase status (read from each per-phase plan's frontmatter)
-
-| Phase | Plan slug | Status |
-|-------|-----------|--------|
-| 0 — Holepunch primitives spike | `papercusp-dogfood-phase0-spike-2026-05-24` | draft (macOS gate skipped per 2026-05-25 user direction) |
-| 1a — Workspace + classifier + UI shell | `papercusp-dogfood-phase1a-workspace-ui-shell-2026-05-24` | shipped |
-| 1b — OAuth + clone + attestation + binding + verifier | `papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24` | shipped |
-| 2 — completion_ref verifier | `papercusp-dogfood-phase2-completion-ref-2026-05-24` | shipped |
-| 3 — Reactivity | (in-tree work; no separate plan — covered by Phase 2 + Phase 4 prereqs) | shipped |
-| 4 — Single-engineer dogfood | `papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24` | draft (P-026 awaits user behavioral run) |
-| 5a — Hyperbee plumbing | `papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24` | shipped (substrate + 8 projections + flag-gated boot wiring + full diagnostic stack across 7 access paths) |
-| 5b — Hyperbee UI integration | `papercusp-dogfood-phase5b-hyperbee-ui-integration-2026-05-24` | in-progress (P-066 bootstrap-progress vertical slice shipped; P-032/033/034/035 gated on flag flip) |
-| 6 — Orchestrator claim | `papercusp-dogfood-phase6-orchestrator-claim-2026-05-24` | in-progress (every substrate-facing piece shipped — primitive + adapter + lookup + entry-point + strategy + audit + endpoint + pills; P-037 production wiring is the only user-driven step) |
-| 7 — PR lifecycle | `papercusp-dogfood-phase7-pr-lifecycle-2026-05-24` | shipped (P-041 auto-rebase deferred → blocked on Phase 5a) |
-| 8 — Sidebar Insights + Profile | `papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24` | in-progress (badges + P-072 user profile shell shipped 2026-05-25; P-048/P-073 assembly next) |
-| 9 — Cupboard + Discord | `papercusp-dogfood-phase9-cupboard-discord-sync-2026-05-24` | code-complete (P-051a + P-053 + P-076 shipped 2026-05-25; P-051b deploy = user step per README) |
-| 10 — Hyperdrive peer mirror | `papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24` | draft (Phase 12+ candidate) |
-| 11 — Multi-engineer dogfood | `papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-24` | draft (blocked on multi-engineer setup) |
-
-### What this plan is for now
-
-This umbrella holds the design (10 audit changes, 8 resolved Q's,
-3 addenda) and the cross-phase decisions. **Routine progress
-inside any phase does not touch this file.** A `plans:set-now`
-here is justified only when a per-phase plan's frontmatter
-`status:` flips — at which point this rollup table updates and
-the line gets a one-sentence "what shipped" note if material.
-
-Carve-outs (separate plan docs, status: draft):
-- `proxy-witness-pattern-2026-05-24` (addendum 2)
-- `plans-harness-scoped-2026-05-24` (addendum 2)
+**Next:** Owner — treat identity/trust/Cupboard/profile/binding sections as live reference; for anything touching the cross-peer data layer follow Model B + the federation/revocation plans (papercusp-substrate-model-b-*, papercusp-phase1b-bidirectional-federation, papercusp-substrate-revocation-v1/v2), NOT v5 §6/§0.6/§7.1/§12.
 
 ## What changed from v4
 
@@ -1543,6 +1510,23 @@ Other git operations (peer-mirror push, sync-with-main rebase) continue using sh
 **Why**: pubkey-signed Hyperbee rows alone prove "the device that signed this row owns the pubkey," not "the device's claimed `github_user_id` is real". Channel 1 proves live OAuth session; channel 2 proves write-access + GitHub-attributed commit author. Together they make Sybil bindings cost a real verified GitHub account per Sybil — the friction is what we want.
 
 **Alternatives rejected**: single-channel (gist-only) verification (one attacker-controlled HTTP fetch; gives the asymmetric trust window we're trying to close); admin-approves-each-contributor (high friction for the team-collab use case); trust-on-first-use (defeats the purpose).
+
+
+### D-032 — Autobase data-layer sections superseded by Model B
+Date: 2026-06-01
+User direction 2026-06-01: deprecate the v5 substrate sections overtaken by the "Model B" rewrite. The original v5 substrate was multi-writer Autobase + deterministic `apply()` over Hyperbee/Hyperswarm. Model B replaces the DATA LAYER with per-peer signed logs + local read-merge (LWW), keeping the Hyperswarm transport + projection→PG layers.
+
+SUPERSEDED — do NOT implement as written in v5:
+- **§6 Hybrid sync model** — Autobase multi-writer data layer → Model B per-peer logs + LWW read-merge.
+- **§0.6 Orchestrator distributed claim** — Autobase merge-order arbitration → Model B LWW advisory claim + clobber-toast (Model-B D-002).
+- **§7.1 Hyperbee bucket** — table-routing-through-Autobase semantics → per-peer log ops. (Transport + table classification stay valid; the propagation mechanism does not.)
+- **§12 P2P transport / Autobase bootstrap key-exchange** → Model B signed announcement-on-connect.
+- The `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` flag + the Phase-0 Autobase cross-platform gate are gone (Model-B D-005); `papercusp-dogfood-phase0-spike` is superseded.
+- §0.2 step 5 ("device emits a Hyperbee binding row") → Phase-1b contributor file via the GitHub Contents API.
+
+STILL LIVE reference: §0.2.7 two-channel binding, §5.1 canonical-repo binding/claim, §17 trust tiers (A/B/C/D), §9.0 Insights, §10 Cupboard (minus the Model-B per-author ingest cap), §18 user profile.
+
+Canonical replacements: `papercusp-substrate-model-b-rewrite-2026-05-31` (+ -impl), `papercusp-phase1b-bidirectional-federation-2026-06-01`, `papercusp-substrate-revocation-v1/v2-2026-06-01`.
 
 ## Open questions
 
