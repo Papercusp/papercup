@@ -301,10 +301,19 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   layout no longer matches `experts-data.ts`'s read paths. Align the fixtures to
   the current read paths (test) or fix the route's listing (product) — confirm
   which by reading `experts-data.ts:listExperts`.
-- **agent-tools-device-auth + agent-tools-catchall** — routes 500; trace the
-  thrown error (likely the same db-org/ensure-schema/workspace-registry mock-gap
-  pattern already fixed elsewhere → test fix). catchall also asserts SSE
-  `event: delta` ordering — verify the stream contract.
+- **agent-tools-device-auth + agent-tools-catchall** — routes 500. Investigated:
+  the handler is `catchall.find(d=>d.method==='POST').handler` →
+  `handleHttpToolRequest` (the tooldef dispatcher). Mocking the route's
+  `buildContext` getOrgPg did NOT fix it, so the 500 is **dispatcher-level** —
+  likely telemetry `recordInvocation` or the principal-store hitting PG and
+  crashing under vitest's Drizzle construct (`null constructor`, same family as
+  oauth). Next step: capture the 500 body via `def.handler(req, CTX)` (NOT the
+  default export) + mock the dispatcher's PG touch (telemetry/`unscopedDb`).
+  catchall also asserts SSE `event: delta` ordering — verify the stream contract.
+  NB: the recurring vitest-only `getOrgPg`→Drizzle `null constructor` crash
+  (oauth, these 500s, maybe experts/subscriptions) is plausibly ONE root cause —
+  a focused fix (mock getOrgPg centrally for unit tests, or fix the schema-spread
+  null under vitest module resolution) could clear several at once.
 
 **Test-rework (test-only, but involved):**
 - **subscriptions** — coord watches are PG-backed (`getOrgPg().sql`); mock it with
