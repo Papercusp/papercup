@@ -33,6 +33,8 @@ import type { ReactNode } from 'react';
  * `vitest` / `playwright` / `cargo` are auto-discovered via globs.
  * `node` / `shell` are explicit ad-hoc runners — these will shrink to zero
  * after Phase 5 framework standardization (D-006).
+ * `k6` is a load-test script (porting Restart's /load-tests; the run route
+ * spawns `k6 run <script>` with the given VUs/duration).
  * `admin-suite` defers to the existing admin-test-suites orchestrator.
  */
 export type TestRunner =
@@ -41,6 +43,7 @@ export type TestRunner =
   | { kind: 'cargo'; crate: string; test?: string }
   | { kind: 'node'; cmd: string; args?: string[]; label?: string }
   | { kind: 'shell'; cmd: string; args?: string[]; label?: string }
+  | { kind: 'k6'; script: string; vus?: number; duration?: string }
   | { kind: 'admin-suite'; suiteId: string };
 
 /**

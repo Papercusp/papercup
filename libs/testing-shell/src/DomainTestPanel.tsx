@@ -60,6 +60,10 @@ function runnerLabel(r: TestRunnerWire): string {
   if (r.kind === 'cargo') {
     return r.test ? `cargo ${r.crate}::${r.test}` : `cargo ${r.crate}`;
   }
+  if (r.kind === 'k6') {
+    const opts = [r.vus ? `${r.vus} VUs` : null, r.duration].filter(Boolean).join(', ');
+    return opts ? `k6 ${r.script} (${opts})` : `k6 ${r.script}`;
+  }
   return `suite ${r.suiteId}`;
 }
 

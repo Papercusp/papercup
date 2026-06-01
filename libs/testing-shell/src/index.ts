@@ -7,9 +7,12 @@
  *   default adminTestingDataSource (P-002)
  * - TestingShell: the left-rail + panel host, parameterized by tabs /
  *   tierLabels / dataSource / customTabs (P-003)
+ * - run-status: parseRunnerStatus — the per-runner result→ChipStatus
+ *   contract a backend calls after running a test (P-013)
  */
 export * from './registry';
 export * from './data-source';
+export * from './run-status';
 export { default as DomainTestPanel } from './DomainTestPanel';
 export { default as TestingShell, tabsFromRegistry } from './TestingShell';
 export type { TestingShellTab, TestingShellProps } from './TestingShell';

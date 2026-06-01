@@ -28,6 +28,7 @@ export type TestRunnerWire =
   | { kind: 'cargo'; crate: string; test?: string }
   | { kind: 'node'; cmd: string; args?: string[]; label?: string }
   | { kind: 'shell'; cmd: string; args?: string[]; label?: string }
+  | { kind: 'k6'; script: string; vus?: number; duration?: string }
   | { kind: 'admin-suite'; suiteId: string };
 
 export interface ResolvedSection {
