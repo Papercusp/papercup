@@ -343,6 +343,36 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
+### ROUND 5 (vitest unblocked) — more fixes + a SECURITY finding
+
+**FIXED + committed (→ 29 of 38 fully green + oauth 5/6):**
+- device-auth, catchall — the dispatcher now **default-denies** ungated tools;
+  marked the deliberately-ungated fixture tools `public: true` (NOT a getOrgPg
+  issue — proved via a probe). Pattern for any ungated test fixture.
+- misc — `snapshots:*` is flag-gated (cut-V1, default-off); enable the
+  `papercusp-snapshots` flag in the test (mock `getFlag→true`).
+- require-principal — mock `device-store.isRevoked→false` so the synthetic device
+  principal resolves (else it reads as revoked → "no principal").
+
+**⚠️ SECURITY (auth-posture) — REAL, needs avi's per-route decision (NOT a test
+patch):** the D3 auth-posture guard finds **8 routes under `/admin/` are `public`**
+that it expects to require `{trust:['verified','trusted']}`:
+`POST /admin/plans/:verb`, `POST /admin/coord/:verb` (mutating + public — almost
+certainly wrong), `GET /admin/locks/queue`, `GET /admin/dogfood-substrate-status`
+`/…-health` `/…-boot-history`, `GET /admin/plans/git/:op`, and
+`POST /admin/dbos/pipeline/start` (gated `trusted` but missing `verified`). Either
+these admin routes are **under-gated (fix the route `auth:` declarations)** or a
+few are intentionally public (then update the test allowlist). Did NOT change auth
+blindly — needs a deliberate security call per route.
+
+**experts — diagnosed (involved rewrite):** `GET /experts` 500s because
+`lookupProjectDir`→`loadHarnessRegistry` is **PG-backed** (`getOrgPg().sql`) and
+`getOrgPg` crashes in vitest; the experts data layer also reads PG
+(`listExpertIdsInPg`). The test's **file-based fixtures** (`.harness/experts/*`,
+`registry.json`) are obsolete vs the PG-backed SUT. Needs a rewrite: mock the PG
+reads (chainable `getOrgPg` returning the registry + expert rows) or convert to
+`.integration.test.ts`.
+
 **Test-rework (test-only, but involved):**
 - **subscriptions** — coord watches are PG-backed (`getOrgPg().sql`); mock it with
   an in-memory watch store (the raw-SQL queries make this fiddly) OR convert to
