@@ -46,11 +46,40 @@ both pools; `subscriptions.test.ts` → 7 under both).
    serialized** (`--no-file-parallelism`). Worst-case-only CPU contention when
    running all 661 files at once; normal `test:affected` subsets don't hit it.
 
-### Open decision (deferred pending avi)
+### Pre-existing-failures triage (investigated 2026-06-01, avi said "fix now")
 
-Whether to (a) fix the ~60–110 pre-existing unit-test failures now, (b) file a
-separate plan/issue for them, or (c) leave for later. They are a distinct
-problem from this core-dump and were not in this plan's scope.
+Isolation-tested the failing files one-by-one (each run alone). Findings:
+
+- **`app/**` UI/component tests → mostly CONTAMINATION.** They pass alone and
+  fail only in the full suite (shared external-state bleed across files —
+  filesystem/CWD/`.harness` paths, the real PG, ENOENT on moved routes, a
+  "FileHandle closed during GC" fd leak). Sweep sample: 65/68 passed alone.
+- **`lib/**` tests → substantial GENUINE failures** (fail in isolation, proven
+  not pool-related — identical under `threads`). The dominant cluster is
+  **test-debt from a repo-wide raw-`sql` → Drizzle `getOrgPg().db`
+  query-builder migration**: the SUTs (voice-lease, device-pair-store,
+  device-harnesses, operator-notes, omp-sessions, execute-action,
+  harness-plan-reviews, cooldown-marks, harness-fs-watcher, harness-status-sweep,
+  spawn-signing, admin-tables, provision/*, completion-ref-verifier, … ~16+
+  files importing `generated`) now query via `db.select().from(generated.X)`,
+  but their `vi.mock('@papercusp/db-org')` factories still only provide `sql`
+  (and omit `generated`, so they crash at import with vitest's strict
+  named-export check). Plus distinct one-offs: `distributed-claim` (7),
+  `subscriptions` (7), `experts`, snapshots/`bumpPatch`, css-tokens, etc.
+
+Fixing the genuine cluster is **not mechanical** — each test needs its `db`
+query-builder mock rewritten (or conversion to a real-PG integration test per
+the testing-spec). That's a strategy call + a multi-session effort. The
+contamination is a separate root-cause investigation (find the file(s) that
+pollute shared external state). **Both are out of THIS plan's scope (the
+core-dump); tracked here for the follow-up.** Status of the follow-up is the
+open decision below.
+
+### Open decision (with avi)
+
+Genuine `lib/**` test-debt: rewrite the `db` mocks per-file, OR convert the
+Drizzle-querying units to real-PG integration tests, OR push one through fully
+as the reference pattern then fan out. Contamination: separate root-cause pass.
 ---
 
 ## Objective
