@@ -48,7 +48,14 @@ export function chooseScopedHandle(
   return { kind: 'workspace', workspaceId: ws };
 }
 
-/** Env flag gating the Phase-4 rollout. Default OFF until the 27-tool isolation pass is green. */
+/**
+ * Workspace isolation is ON by default (P-062 Phase 4 flipped default-on after
+ * the end-to-end pass: routing 9/9, RLS substrate isolation, full
+ * handleHttpToolRequest smoke own=257/foreign=0, every ctx.tx tool a read on a
+ * harness_app-grantable table, zero write-via-ctx.tx). `PAPERCUSP_AGENT_TOOLS_WS_ISOLATION='0'`
+ * is an operational kill-switch to fall back to the admin handle for every tool
+ * if a regression surfaces — set it and restart the host, no code change needed.
+ */
 export function isWorkspaceIsolationEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.PAPERCUSP_AGENT_TOOLS_WS_ISOLATION === '1';
+  return env.PAPERCUSP_AGENT_TOOLS_WS_ISOLATION !== '0';
 }

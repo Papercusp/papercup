@@ -66,12 +66,13 @@ const HOST_EXTRAS: HttpToolHostExtras = {
     };
   },
   runScoped: (scope, run) => {
-    // P-062 Phase 4 — workspace isolation, rolled out behind a flag (default
-    // OFF; see isWorkspaceIsolationEnabled). The dispatch stack's own
-    // bookkeeping (tool_invocations + quota) runs on the admin handle inside
-    // PROJECTED_DEPS, NOT on ctx.tx, so this seam only changes the handle the
-    // tool HANDLER reads. The admin-vs-workspace decision matrix is the pure,
-    // unit-tested `chooseScopedHandle`; here we only wire it to the real PG.
+    // P-062 Phase 4 — workspace isolation is ON by default (kill-switch
+    // PAPERCUSP_AGENT_TOOLS_WS_ISOLATION='0'; see isWorkspaceIsolationEnabled).
+    // The dispatch stack's own bookkeeping (tool_invocations + quota) runs on
+    // the admin handle inside PROJECTED_DEPS, NOT on ctx.tx, so this seam only
+    // changes the handle the tool HANDLER reads. The admin-vs-workspace decision
+    // matrix is the pure, unit-tested `chooseScopedHandle`; here we only wire it
+    // to the real PG.
     //   admin     → getOrgPg() (rolbypassrls) — flag-off / superuser /
     //               crossWorkspace tools / no concrete workspace.
     //   workspace → withWorkspace(ws) (harness_app role + GUC) so RLS isolates

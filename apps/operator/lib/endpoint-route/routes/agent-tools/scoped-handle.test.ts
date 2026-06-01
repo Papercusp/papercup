@@ -62,12 +62,14 @@ describe('chooseScopedHandle', () => {
 });
 
 describe('isWorkspaceIsolationEnabled', () => {
-  it("returns true only when the env flag is exactly '1'", () => {
-    expect(isWorkspaceIsolationEnabled({ PAPERCUSP_AGENT_TOOLS_WS_ISOLATION: '1' })).toBe(true);
+  it('defaults ON (Phase 4 flipped default-on) when the flag is absent', () => {
+    expect(isWorkspaceIsolationEnabled({})).toBe(true);
   });
-  it('defaults OFF when the flag is absent or any other value', () => {
-    expect(isWorkspaceIsolationEnabled({})).toBe(false);
+  it("the only way to disable is the explicit '0' kill-switch", () => {
     expect(isWorkspaceIsolationEnabled({ PAPERCUSP_AGENT_TOOLS_WS_ISOLATION: '0' })).toBe(false);
-    expect(isWorkspaceIsolationEnabled({ PAPERCUSP_AGENT_TOOLS_WS_ISOLATION: 'true' })).toBe(false);
+  });
+  it('any non-\'0\' value keeps isolation ON', () => {
+    expect(isWorkspaceIsolationEnabled({ PAPERCUSP_AGENT_TOOLS_WS_ISOLATION: '1' })).toBe(true);
+    expect(isWorkspaceIsolationEnabled({ PAPERCUSP_AGENT_TOOLS_WS_ISOLATION: 'true' })).toBe(true);
   });
 });
