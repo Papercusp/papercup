@@ -7,7 +7,7 @@ interface AuditRow {
   action: string;
   subject: string;
   details: unknown;
-  workspace_id: string;
+  workspaceId: string;
 }
 const rows: AuditRow[] = [];
 
@@ -82,7 +82,9 @@ describe('writeOperatorAudit', () => {
 
   it('stamps each row with workspace_id', async () => {
     await writeOperatorAudit({ cardId: 'c5', kind: 'accepted' });
-    expect(rows[0].workspace_id).toBe('test-ws');
+    // SUT writes the drizzle camelCase column key `workspaceId` (maps to the
+    // snake_case DB column) after the raw-sql→Drizzle migration.
+    expect(rows[0].workspaceId).toBe('test-ws');
   });
 
   it('respects an explicit `at` timestamp in details (not the row ts)', async () => {

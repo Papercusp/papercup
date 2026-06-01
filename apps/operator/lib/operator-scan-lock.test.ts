@@ -9,8 +9,10 @@ vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 // Drizzle stub: model the scan-lock table with a single in-memory row.
 // drizzle-orm's fluent builder is mocked enough to satisfy the call sites
 // in operator-scan-lock.ts (select.from.where.limit, insert.values.onConflictDoUpdate, delete.where).
-vi.mock('drizzle-orm/postgres-js', () => ({
-  drizzle: () => ({
+// The SUT now receives `tx` from withWorkspace (it migrated off raw sql), so
+// the fake is shared: withWorkspace passes THIS object as the tx (the bare `{}`
+// it used to pass had no .select/.insert/.delete → acquire always failed).
+const fakeTx = {
     select: () => ({
       from: () => ({
         where: () => ({
@@ -24,14 +26,16 @@ vi.mock('drizzle-orm/postgres-js', () => ({
       }),
     }),
     insert: () => ({
-      values: (row: { holder_id: string; expires_at: unknown }) => ({
+      // SUT passes drizzle camelCase column keys (holderId/expiresAt), not the
+      // snake_case DB names — read those.
+      values: (row: { holderId: string; expiresAt: unknown }) => ({
         onConflictDoUpdate: async () => {
-          // operator-scan-lock binds expires_at as `dsql\`${iso}::timestamptz\``
+          // operator-scan-lock binds expiresAt as `dsql\`${iso}::timestamptz\``
           // — a drizzle SQL fragment whose `.queryChunks` array holds the
           // raw ISO string. Extract it; fall back to "now + TTL" if the
           // fragment shape changes upstream.
           let expIso = '';
-          const ev = row.expires_at as { queryChunks?: unknown[] } | string | Date;
+          const ev = row.expiresAt as { queryChunks?: unknown[] } | string | Date;
           if (typeof ev === 'string') expIso = ev;
           else if (ev instanceof Date) expIso = ev.toISOString();
           else if (ev && typeof ev === 'object' && Array.isArray(ev.queryChunks)) {
@@ -44,7 +48,7 @@ vi.mock('drizzle-orm/postgres-js', () => ({
             }
           }
           if (!expIso) expIso = new Date(Date.now() + 60_000).toISOString();
-          lockRow = { holder_id: row.holder_id, expires_at: expIso };
+          lockRow = { holder_id: row.holderId, expires_at: expIso };
         },
       }),
     }),
@@ -63,12 +67,12 @@ vi.mock('drizzle-orm/postgres-js', () => ({
         deleteHolderId = null;
       },
     }),
-  }),
-}));
+};
+vi.mock('drizzle-orm/postgres-js', () => ({ drizzle: () => fakeTx }));
 
-vi.mock('@papercusp/db-org', () => ({
-  withWorkspace: async (_ws: string, cb: (tx: unknown) => Promise<unknown>) => cb({}),
-  generated: { operatorScanLocksInHarnessShared: { workspace_id: {}, holder_id: {}, expires_at: {} } },
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...((await orig()) as object), // real `generated` so eq()/gt() resolve real columns
+  withWorkspace: async (_ws: string, cb: (tx: unknown) => Promise<unknown>) => cb(fakeTx),
 }));
 
 import { acquireScanLock, releaseScanLock } from './operator-scan-lock';
