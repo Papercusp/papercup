@@ -8,7 +8,11 @@ import { Hono } from 'hono';
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 vi.mock('@/lib/require-flag', () => ({ gateApiRoute: vi.fn(async () => null) }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { DESIGN: 'design' } }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  // Keep real `generated`/`schemaOf`/`withWorkspace` (side-effect-free schema
+  // defs) so route modules that read `generated.<table>` at import don't crash
+  // vitest's strict named-export check; only the connection is stubbed.
+  ...((await orig()) as object),
   getOrgPg: vi.fn(() => ({
     sql: Object.assign(
       (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),

@@ -19,7 +19,11 @@ vi.mock('@/lib/auth/require-principal', () => ({
 }));
 vi.mock('@/lib/process-kill', () => ({ killProcess: vi.fn(async () => ({ ok: true, pid: 1 })) }));
 vi.mock('@/lib/workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  // Keep real `generated`/`schemaOf` (side-effect-free schema defs) so route
+  // modules importing them don't trip vitest's strict named-export check; the
+  // overrides below stub the connection/workspace seams.
+  ...((await orig()) as object),
   getOrgPg: vi.fn(() => ({
     sql: Object.assign(
       (_s: TemplateStringsArray) => Promise.resolve([]),
@@ -31,7 +35,6 @@ vi.mock('@papercusp/db-org', () => ({
   })),
   withWorkspace: vi.fn(async (_ws: string, _cb: unknown) => {}),
   withWorkspaceQuery: vi.fn(async () => ({ rows: [], n: 0 })),
-  generated: {},
 }));
 
 import { registerRoute } from '../define-route';
@@ -63,7 +66,16 @@ describe('dev family ports', () => {
   it('GET /dev/tables returns the table list', async () => {
     const res = await appWith(devTables as AnyRoute).request('/dev/tables');
     expect(res.status).toBe(200);
-    expect((await res.json()).tables).toEqual([]);
+    // The route enumerates the real `generated` schema (now in scope via the
+    // db-org mock spread), so the list is non-empty + shaped {name, exportName,
+    // columnCount}. The old `[]` expectation was an artifact of an empty mock.
+    const tables = (await res.json()).tables as Array<{ name: string; exportName: string; columnCount: number }>;
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables[0]).toMatchObject({
+      name: expect.any(String),
+      exportName: expect.any(String),
+      columnCount: expect.any(Number),
+    });
   });
 
   it('GET /dev/tables/:exportName returns 404 for unknown table', async () => {
