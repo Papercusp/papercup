@@ -164,6 +164,34 @@ it still needs the Tauri desktop + two actual peers (see `/internal/docs/testing
 this single-box test proves the module composition + replication + gate logic, not
 the cross-machine Hyperswarm transport.
 
+## Session 5 (2026-06-01) — live Tauri-shell verification + idle-state false-'booting' fix
+
+Drove the running Tauri desktop (via the `tauri-agent-tools` bridge — no
+focus-steal) to verify the Model B host. **Result: the operator boots cleanly on
+Model B** (host restarted onto the new code, `enabled:true`, no crash) and the
+Substrate admin page renders with the Stage-4 flag-copy fixes live
+(`staleFlagCopy:false`, `fixedEmptyCopy:true` — "No shared harnesses booted yet").
+
+The verification surfaced one real defect — the phantom health-endpoint entry the
+Session-4 handoff couldn't yet explain — and it is now **root-caused + fixed**
+(commit `b5c2df3a0`). Root cause: Stage 4d's flag removal left three
+flag-conditional branches built on the old singleton-flag assumption ("flag on ⇒ a
+substrate should be booted"), which is false under per-harness Model B:
+- `dogfood-substrate-health` synthesised a phantom `{workspaceId:'',harnessSlug:'',
+  verdict:'booting'}` row when nothing was booted (while the summary filtered it out
+  → inconsistent payload, stuck orange "Booting" pill).
+- `summariseWorkspaceSubstrate` mapped enabled+empty → `worstVerdict:'booting'`.
+- `format-cli` mapped enabled+0-booted → exit 1 (a permanent false alarm for every
+  env with no shared harness: fresh installs, this dev box, CI).
+
+Fix: **zero booted harnesses is the idle ground state, not an alarm.** Endpoint →
+`harnesses:[]` (UI empty state); summary → `worstVerdict:'healthy'`; CLI → exit 0 +
+idle hint. A real boot failure still surfaces as a per-harness
+`unhealthy`/`booting` row or a boot-history `boot_fail` event. Verified live
+post-restart: `GET /api/admin/dogfood-substrate-health` → `{harnesses:[],
+summary.worstVerdict:'healthy', totalHarnesses:0}`. 411 hyperbee+insights unit
+tests green.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
