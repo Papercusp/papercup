@@ -217,6 +217,50 @@ true cross-MACHINE P-080 soak) remain the user's acceptance steps. The gate LOGI
 itself is already unit-covered (`read-admission` tests + `two-peer.test.ts`
 Cases 2-3: forged binding / tampered announce / revoke).
 
+## Session 6 (2026-06-01) — Phase-1b bidirectional federation SHIPPED
+
+Brainstormed → specced → planned → built (subagent-driven, 11 tasks, two-stage
+review each + a final holistic review = **SHIP**). Spec
+`papercusp-phase1b-bidirectional-federation-2026-06-01`; plan
+`papercusp-phase1b-bidirectional-federation-impl-2026-06-01`. This wires the live
+join/share identity pipeline onto Model B so two **different** GitHub engineers can
+federate **bidirectionally** through the desktop UI.
+
+The audit found three real defects (all fixed): (1) the join UI couldn't
+authenticate (sent empty creds → 400) → **server-side gh-identity resolution**
+(`resolveLocalGithubIdentity`); (2) **the keystone latent bug** — admission ran
+channel-1 OAuth (`GET /user` with the LOCAL token vs the REMOTE id), which ALWAYS
+failed for a *different* user → two different GitHub users could never admit each
+other. Fixed by **admission = channel-2 ONLY** (the remote-verifiable, GitHub-
+published, device-signed contributor file; channel-1 is a self-attestation a remote
+peer can't run — it stays on the publish/self path). Validated against
+Keybase/Sigstore/Radicle (the OLD code was the outlier). (3) only the joiner
+published a binding → **symmetric `ensureMyBindingPublished`** now called by BOTH
+join and share so each side is channel-2-verifiable by the other.
+
+Also: join orchestrator collapsed 10 Autobase-era steps → **6 Model-B steps +
+auto-boot**; a **pending-retry** self-heals the GitHub-propagation window
+(channel-2 404 → retry within a 30-min grace, freshness anchored to arrival);
+**announce freshness** (`ts`+window) replay hardening (D-007). Contributor files
+are published via the **GitHub Contents API** so the commit is `verified` (R-1) —
+NEVER local git push.
+
+**Proof:** `two-peer-swarm-bidi.test.ts` — two distinct identities admit each
+other over the real testnet-DHT swarm and each peer's PG converges with the
+OTHER's op (deterministic, ~0.5s, no flake). Full suite 1896 tests green.
+
+**STILL the user's acceptance step — R-1 LIVE confirmation:** the
+`commit.verification.verified === true` guarantee from the Contents API is
+by-design and CANNOT be asserted offline. The manual two-machine P-079 (now
+genuinely runnable — two real GitHub accounts) must confirm Contents-API commits
+are actually `verified` in the real gh-token context. **If they are NOT, channel-2
+step (c) fails for everyone and escalation is needed** (register the device key as
+an account SSH/GPG signing key, or a GitHub App with commit signing). Other
+recorded-not-built limitations: one verifiable device per GitHub login
+(multi-device collision, D-008); login-rename fragility; gist-proliferation minor
+(share creates a fresh attestation gist each finalize). See
+`agent-insights/phase1b-federation-limitations.mdx`.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
