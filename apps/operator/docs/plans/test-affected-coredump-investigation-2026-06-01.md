@@ -333,6 +333,16 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   `getOrgPg`-mock test setup (opt-out for `.integration.test.ts`) would be the
   DRY version once the chainable-fake shape is settled.
 
+  **⚠ ENV BLOCKER (round 4):** vitest currently **won't start at all** —
+  `@papercusp/locks` is duplicated across `packages/locks` AND the `libs/papercusp`
+  submodule (`libs/papercusp/packages/locks`), so npm refuses ("must not have
+  multiple workspaces with the same name"). That's a concurrent agent's in-flight
+  locks relocation (commits f7c83bb72 / 2a5790a85 / a034f00fd), NOT this work —
+  left untouched. The device-auth chainable-`db` mock above is written + correct
+  in shape but UNVERIFIED (reverted from the tree) because no test can run until
+  the locks dup is resolved. Once it is: re-apply that mock to
+  device-auth/catchall/experts and verify.
+
 **Test-rework (test-only, but involved):**
 - **subscriptions** — coord watches are PG-backed (`getOrgPg().sql`); mock it with
   an in-memory watch store (the raw-SQL queries make this fiddly) OR convert to
