@@ -186,3 +186,19 @@ D-002 (libs/papercup-shared/*View.tsx): turns out NOT a simple delete. index.ts 
 P-012 (operator-docs MDX) deferred: needs a full Astro rebuild of the public/internal/docs mirror (churny); pages already carry a correct caution banner.
 
 NET: the operator's LIVE/SHIPPING code (app/lib/bin + operator-vite/src + marketplace-public-ui) is fully Next-free + verified. All remaining items are non-shipping (dep declarations, submodule dead code, doc prose) and each needs a dedicated pass for the reasons above.
+
+### D-008 — Session 2 close: D-002 papercup-shared DONE; P-012 core DONE; apps/web + P-009 blocked on env state
+Date: 2026-06-01
+Pushed all remaining items this session. Outcomes:
+
+DONE:
+- D-002 (papercup-shared): deleted the entire dead presentational view-tree (17 files: all *View.tsx + PapercupTabs + useAgentRoles + DocumentationFrame + _discarded) + slimmed index.ts to openFeatureChat. Verified all dead (only consumers were _retired/papercup + the dead apps/web; operator uses only openFeatureChat + ./agent). Removed the last next/* imports from that lib. Submodule commit 4515ca5; superproject pointer bump 89f4b3ff9; operator-vite vite build clean.
+- P-012 (core): fixed the two most-concretely-wrong operator-describing docs — build-system/index.mdx (:3070 "Next.js standalone"→Hono host; :3055 "Next.js dev server"→Vite) + data-sync/pitfalls.mdx (false "operator uses next dev"→Vite). Rebuilt + committed the 4 served twins (5982a1340); reverted the llms/pagefind/other-agent rebuild churn to avoid sweeping un-mirrored work.
+- agent-mcp workspace:* → * (694f82e71) — removed the invalid-npm-protocol landmine.
+
+STILL BLOCKED/REMAINING (hard env reasons, not avoidance):
+- P-009 (drop next/next-themes/@bprogress/next/@nx/next deps): confirmed blocked. npm --package-lock-only is a no-op even after the workspace:* fix; the only reconcile is a full `npm install --legacy-peer-deps` = 874-package churn that mutates the shared in-use node_modules — unsafe on the live box. Deps remain unused dead weight. UNBLOCK = coordinated env reconcile / fix npm-install drift.
+- D-002 (libs/papercusp/apps/web, 100-file dead Next app): deferred — libs/papercusp is a HOT submodule with another agent's 17-file orchestrator WIP in flight; dropping a 100-file deletion there now would entangle/disrupt their work. It's dead (not in workspaces, smoketest-only ref). Do when that submodule is quiet.
+- P-012 (remainder): architecture.mdx + admin-commands.mdx have banner-mitigated stale prose (e.g. "operator = Next.js apps"); lower value, each needs another full docs-mirror rebuild. Leave for a focused docs pass.
+
+NET unchanged: the operator's LIVE/SHIPPING code is fully Next-free + verified. All remaining items are non-shipping and each has a concrete reason to be a separate pass.
