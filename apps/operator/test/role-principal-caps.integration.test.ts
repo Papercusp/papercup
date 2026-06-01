@@ -15,7 +15,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
-import { loadRoleCapabilities } from '../lib/endpoint-route/routes/transport/role-principal-caps';
+import {
+  loadRoleCapabilities,
+  dispatchNeedsTx,
+  synthesizeDispatchPrincipal,
+} from '../lib/endpoint-route/routes/transport/role-principal-caps';
 
 let sql: postgres.Sql;
 let dbName: string;
@@ -75,5 +79,41 @@ describe('loadRoleCapabilities (least-privilege)', () => {
     expect(caps.size).toBe(3);
     const otherCaps = await loadRoleCapabilities(sql, 'other', 'operator');
     expect([...otherCaps]).toEqual(['harness:read']);
+  });
+});
+
+// The #1 handler-path decision+synthesis (the wiring in _mcp-handler.ts that
+// the cap-loader alone didn't cover). These are the exact functions the tools/
+// call handler now calls.
+describe('dispatchNeedsTx', () => {
+  it('a concrete workspace needs a principal + tx', () => {
+    expect(dispatchNeedsTx({ workspaceId: 'default' })).toBe(true);
+  });
+  it("'*' (superuser, no workspace chosen) does NOT — caller must pass ?workspace", () => {
+    expect(dispatchNeedsTx({ workspaceId: '*' })).toBe(false);
+  });
+  it('an empty workspace does NOT', () => {
+    expect(dispatchNeedsTx({ workspaceId: '' })).toBe(false);
+  });
+});
+
+describe('synthesizeDispatchPrincipal', () => {
+  it('role-scoped (non-superuser) gets its provisioned caps + system:<role> slug', async () => {
+    const p = await synthesizeDispatchPrincipal(sql, { workspaceId: 'default', role: 'operator', isSuperuser: false });
+    expect(p.slug).toBe('system:operator');
+    expect(p.workspaceId).toBe('default');
+    expect([...p.capabilities].sort()).toEqual(['audit:read', 'chat:write', 'harness:read']);
+  });
+
+  it('a pipeline role (no system principal) gets an EMPTY cap-set — capability-gated built-ins stay denied', async () => {
+    const p = await synthesizeDispatchPrincipal(sql, { workspaceId: 'default', role: 'worker', isSuperuser: false });
+    expect(p.slug).toBe('system:worker');
+    expect(p.capabilities.size).toBe(0);
+  });
+
+  it('superuser keeps an empty cap-set (it relies on gateBypass.capability, not loaded caps)', async () => {
+    const p = await synthesizeDispatchPrincipal(sql, { workspaceId: 'default', role: 'operator', isSuperuser: true });
+    expect(p.slug).toBe('system:operator');
+    expect(p.capabilities.size).toBe(0); // not 3 — superuser does NOT load role caps
   });
 });

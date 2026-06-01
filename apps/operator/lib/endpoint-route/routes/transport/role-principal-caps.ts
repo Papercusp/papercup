@@ -35,3 +35,34 @@ export async function loadRoleCapabilities(
   const raw = rows[0]?.capabilities;
   return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []);
 }
+
+/**
+ * Whether a tool call needs a synthesized principal + workspace tx. Any
+ * concrete workspace does; `'*'` (superuser with no chosen workspace) and an
+ * empty workspace do NOT — principal-gated built-ins then fail and the caller
+ * must pass `?workspace=X`.
+ */
+export function dispatchNeedsTx(spawnCtx: { workspaceId: string }): boolean {
+  return Boolean(spawnCtx.workspaceId) && spawnCtx.workspaceId !== '*';
+}
+
+/**
+ * The principal to dispatch a concrete-workspace call under. Superuser keeps the
+ * `gateBypass.capability` it already carries (its empty cap-set is fine); a
+ * signed role-scoped caller is NOT bypassed, so it gets exactly its provisioned
+ * capabilities (least-privilege) and the capability gate enforces normally.
+ * `tx` must already be workspace-scoped.
+ */
+export async function synthesizeDispatchPrincipal(
+  tx: Sql,
+  spawnCtx: { workspaceId: string; role: string; isSuperuser?: boolean },
+): Promise<{ slug: string; workspaceId: string; capabilities: Set<string> }> {
+  const capabilities = spawnCtx.isSuperuser
+    ? new Set<string>()
+    : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role);
+  return {
+    slug: spawnCtx.isSuperuser ? 'system:operator' : `system:${spawnCtx.role}`,
+    workspaceId: spawnCtx.workspaceId,
+    capabilities,
+  };
+}

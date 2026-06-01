@@ -50,7 +50,7 @@ import {
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
 import { withWorkspace } from '@papercusp/db-org';
-import { loadRoleCapabilities } from './role-principal-caps';
+import { dispatchNeedsTx, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '@/lib/workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
@@ -713,9 +713,7 @@ const handler = createMcpHandler(
           // run (a role-scoped caller is authenticated by its verified
           // signed URL). workspaceId='*' (no workspace chosen) still fails
           // those tools — caller must pass ?workspace=X.
-          const needsTx =
-            Boolean(spawnRes.ctx.workspaceId) &&
-            spawnRes.ctx.workspaceId !== '*';
+          const needsTx = dispatchNeedsTx(spawnRes.ctx);
           // Generic projected-dispatch → MCP-result mapping (P-031,
           // @papercusp/tooldef-mcp). Same shape/behavior as before: success →
           // { content }, failure → { isError, content:["<code>: <message>"] }.
@@ -734,25 +732,12 @@ const handler = createMcpHandler(
           // (superuser with no chosen workspace) stays unpinned.
           if (needsTx) {
             const ctxWs = spawnRes.ctx.workspaceId;
-            const ctxRole = spawnRes.ctx.role;
             return await runWithWorkspaceIfConcrete(ctxWs, () =>
               withWorkspace(ctxWs, async (tx) => {
-                // Superuser already carries gateBypass.capability (set in
-                // buildMcpToolContext), so its empty cap-set is fine. A signed
-                // role-scoped caller is NOT bypassed — grant it exactly the
-                // capabilities its provisioned system principal holds
-                // (least-privilege); the capability gate then enforces normally.
-                const capabilities = spawnRes.ctx.isSuperuser
-                  ? new Set<string>()
-                  : await loadRoleCapabilities(tx, ctxWs, ctxRole);
                 const ctx: UnifiedToolContext = {
                   ...baseCtx,
                   tx,
-                  principal: {
-                    slug: spawnRes.ctx.isSuperuser ? 'system:operator' : `system:${ctxRole}`,
-                    workspaceId: ctxWs,
-                    capabilities,
-                  },
+                  principal: await synthesizeDispatchPrincipal(tx, spawnRes.ctx),
                 };
                 return await runDispatch(ctx);
               }),
