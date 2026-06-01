@@ -27,6 +27,6 @@
     "zod-to-json-schema": "*"
   },
   "peerDependencies": {
-    "@papercusp/db-org": "workspace:*"
+    "@papercusp/db-org": "*"
   }
 }
