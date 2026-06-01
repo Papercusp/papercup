@@ -234,3 +234,6 @@ import './architect/plan-block-handler';
 
 // substrate-revocation-v1 Task 3 — self-revocation of own device keys.
 import './substrate/revoke-self-device';
+
+// substrate-revocation-v2 Component B — owner-revocation of another contributor.
+import './substrate/revoke-contributor';
