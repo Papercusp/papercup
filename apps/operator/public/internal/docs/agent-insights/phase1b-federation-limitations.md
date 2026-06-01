@@ -1,0 +1,165 @@
+# Phase-1b federation — known limitations and the verified-commit requirement
+URL: /internal/docs/agent-insights/phase1b-federation-limitations
+
+Three Phase-1b federation gaps (D-008): multi-device collision, login-rename fragility, and why the contributor file MUST be published via the GitHub Contents API (R-1). Symptoms, root causes, fix shapes.
+
+import { Aside } from '@astrojs/starlight/components';
+
+Phase-1b ships bidirectional federation (decision `papercusp-phase1b-bidirectional-federation-2026-06-01`).
+Three gaps were identified, recorded as **D-008**, and intentionally left out of scope.
+This page captures each one — symptom, root cause, and fix shape — so future implementors
+have context and so nobody "simplifies" the verified-commit path and silently breaks everything.
+
+***
+
+## 1. One verifiable device per GitHub login (multi-device collision)
+
+### Symptom
+
+A user runs Papercusp on two machines — say a laptop and a desktop, each with its own
+device keypair. The second device publishes its contributor file. Because contributor
+files are keyed by `github_login`:
+
+```
+.harness/contributors/<login>.json
+```
+
+…the second device's publish **overwrites** the first device's file on the
+`user/<id>` branch. When the first device later tries to announce (channel-2 step d),
+the verifier reads the contributor file and finds the *second* device's pubkey — not
+the first's — so verification fails. Federation silently breaks on the first device.
+
+### Root cause
+
+The contributor-file path uses `github_login` as the sole key. One file per login
+means one device per login. There is no structural slot for a second device.
+
+### Fix shape
+
+One of:
+
+* **Array of pubkeys in one file.** The contributor file body gains a
+  `device_pubkeys: string[]` field (replacing the single `device_pubkey`).
+  The verifier accepts a signature from any listed key.
+* **Per-device paths.**
+  `.harness/contributors/<login>/<device-fingerprint>.json`
+  Each device has its own file; the verifier walks the directory.
+
+Either approach requires a schema migration for existing contributor files and
+a corresponding verifier update. **Not built in Phase-1b (D-008).**
+
+***
+
+## 2. Login-rename fragility
+
+### Symptom
+
+A contributor renames their GitHub username. The `user/<id>` branch (keyed by the
+stable numeric `github_user_id`) survives intact. But the contributor file lives at:
+
+```
+.harness/contributors/<old-login>.json
+```
+
+The verifier looks up `.harness/contributors/<new-login>.json` and finds nothing —
+federation breaks for that contributor on all harnesses they've joined.
+
+### Root cause
+
+The contributor-file **path** is keyed by `github_login`, which is mutable. The
+branch name is keyed by the stable numeric id, so it survives renames, but the
+file inside the branch does not.
+
+The `ContributorFileBody` itself contains both `github_login` and `github_user_id`,
+so the data is correct once found — the problem is purely path resolution.
+
+### Fix shape
+
+Key the file path by the numeric id instead of the login:
+
+```
+.harness/contributors/<github_user_id>.json
+```
+
+Or: keep the login path but add a re-publish trigger when the GitHub API returns a
+new login for a known `github_user_id` (e.g. on token refresh or profile fetch).
+The second option is more conservative but requires a background re-publish flow.
+
+Either requires a migration for existing contributor files. **Not built in Phase-1b (D-008).**
+
+Renames are rare in practice (GitHub discourages them and forwards the old login for
+90 days), but the gap is correctness-level: after the forwarding period expires,
+the old path becomes stale with no warning.
+
+***
+
+## 3. Verified-commit requirement (R-1) — NEVER publish via local git
+
+### Why this matters
+
+Channel-2 step (c) requires:
+
+```
+commit.verification.verified === true
+AND
+commit.author.login === github_login
+```
+
+A plain `git commit` + `git push` is **not** GitHub-verified unless the committing
+key is registered on the account. Even if the push succeeds, `commit.verification.verified`
+is `false` on unregistered keys — and the verifier rejects it.
+
+### The fix — use the GitHub Contents API
+
+The only reliable way to produce a verified commit without requiring every user to
+register a GPG/SSH key is to publish the contributor file via the
+**GitHub Contents API**:
+
+```
+PUT /repos/{owner}/{repo}/contents/{path}
+```
+
+(`repos.createOrUpdateFileContents` in Octokit.)
+
+Commits created through this API are **web-flow-signed** (GitHub signs them with its
+own key) and come back with `verification.verified === true` and
+`verification.reason === "web_flow"`. This is how `ensureMyBindingPublished` works —
+it calls `createOrUpdateFileContents`, not `git push`.
+
+### The trap to avoid
+
+If someone "optimises" `ensureMyBindingPublished` to avoid an API round-trip and
+switches to a local git commit + push, the result is:
+
+1. The contributor file lands on the branch (the push succeeds).
+2. `commit.verification.verified` is `false` (no registered signing key).
+3. The two-channel verifier's step (c) rejects it.
+4. **All admission for that device silently fails** — the contributor is
+   blocked from joining any harness and gets no clear error.
+
+This is the exact failure mode R-1 was written to prevent. The API call is not
+optional boilerplate; it is the mechanism that makes channel-2 work.
+
+### Key source paths
+
+| File                                                        | Role                                                                                                                       |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `apps/operator/lib/identity/ensure-my-binding-published.ts` | Calls `createOrUpdateFileContents`; idempotent on no-op (same pubkey already present).                                     |
+| `apps/operator/lib/identity/contributor-file-types.ts`      | `buildSignedContributorFile` — builds + signs the body; called by `ensureMyBindingPublished`.                              |
+| `apps/operator/lib/identity/two-channel-verifier.ts`        | `verifyContributorFileSignature` — verifies the device signature on the body; separate from the commit-verification check. |
+
+`buildSignedContributorFile` produces the *signed body bytes* — it does not push
+anything. The API call that makes the commit GitHub-verified is in
+`ensureMyBindingPublished`. Do not pull the push logic out of that function.
+
+***
+
+## Decision record
+
+* **D-008** — Multi-device-per-login and login-rename fragility are recorded known
+  limitations, not built in Phase-1b. Source:
+  `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`
+  §"Known limitations".
+* **R-1** — Verified-commit requirement. Source: same doc §"Open risks". Resolved
+  by the Contents API approach in `ensureMyBindingPublished` (Task 2 of the impl
+  plan).

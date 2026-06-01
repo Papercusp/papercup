@@ -926,7 +926,7 @@ That purity is also why the durable pipeline is **sequential-only**. The moment 
 
 # Desktop IPC transport map — what rides IPC, what's dormant, how to turn it on
 
-> The desktop routes webview /api traffic over Tauri IPC to dodge WebKitGTK's ~6-conn libsoup cap. Three mechanisms, all gated behind PAPERCUSP_DESKTOP_IPC + a release-only sidecar spawn. Here's the whole map + the turn-on recipe + the gotchas.
+> The desktop routes webview /api traffic over Tauri IPC to dodge WebKitGTK's ~6-conn libsoup cap. Three mechanisms, all gated behind PAPERCUSP_DESKTOP_IPC + a release-only sidecar spawn. Here's the whole map + the turn-on recipe + the SSE-over-IPC reconnect/churn contract (D-006) + how to verify with window.__ipcInspector + the gotchas.
 
 ## Why IPC exists here
 
@@ -967,6 +967,35 @@ PAPERCUSP_DESKTOP_IPC=1 ./target/release/papercusp-desktop   # redundant now it 
 ```
 
 Release/bundled mode spawns its own sidecar on a **free port** (no `:3070`/systemd conflict — `find_free_port`), and points the webview at `window.__papercuspBase`. Verify on the new window via the dev bridge (`tauri-agent-tools eval --port <p> --token <t>`): `endpoint_invoke('dev:ipc_echo')` returns a result (not “state not managed”); `window.EventSource`/`window.fetch` are the patched polyfills; `~/.papercusp/sockets/<pid>.sock` exists.
+
+**But connectivity is NOT the real check** — see the churn contract below. A `dev:ipc_echo` that returns a result proves the wire works; it does **not** prove the long-lived SSE streams are stable, which is what actually broke (flashing).
+
+## SSE-over-IPC reconnect — the churn contract (D-006, 2026-06-01)
+
+[Section titled “SSE-over-IPC reconnect — the churn contract (D-006, 2026-06-01)”](#sse-over-ipc-reconnect--the-churn-contract-d-006-2026-06-01)
+
+Turning IPC on once surfaced a sharp regression: **the desktop flashed — constant full reloads.** Root cause was a reconnect-ownership conflict between the transport and its consumer, now fixed across three layers. The invariant to preserve when touching any of them:
+
+> **The transport auto-reconnects on a transient drop (readyState CONNECTING); a consumer recreates the EventSource only when it is genuinely dead (readyState CLOSED).** Recreating on a CONNECTING drop discards a stream that was about to resume — and over IPC that means a brand-new channel + a sync-layer re-subscribe + a re-render on *every* blip. That is the flashing.
+
+What went wrong + the fix (`@papercusp/desktop-ipc` + `@papercusp/sse`):
+
+1. **`IpcEventSource` was one-shot** — a dropped stream (`done` / transient error) called `close()` (terminal). Native `EventSource` instead auto-reconnects (CONNECTING, resumes with `Last-Event-ID`). Fixed: it now reconnects internally, terminal only on `close()` or a fatal head. (`8f2da9a`)
+2. **A fatal error fired BEFORE `close()`** — so readyState still read CONNECTING when a consumer’s error handler ran, hiding the death. Fixed: a `terminate()` helper sets readyState CLOSED *then* dispatches `error` (faithful to native), so a recreate-on-CLOSED consumer rebuilds — and on the IPC-unavailable latch, the rebuild yields a native EventSource fallback. (`5da236d`)
+3. **`createResilientEventSource` force-recreated on EVERY error** — it closed the underlying ES and span up a fresh one on every blip. Fixed: it recreates only on readyState CLOSED, leaving CONNECTING drops to the underlying ES; the zombie watchdog stays the safety net and escalation still counts every error. (`c6927b3`)
+
+`DesktopAttentionNotifier` got the same recreate-on-CLOSED alignment (`7b827b2c1`). All four changes are unit-proven (66 tests) but **not yet live-verified** — the verification below is the open step.
+
+**Verify it (the real check):** open **/dev → IPC tab → churn**, or in the desktop devtools console:
+
+```js
+window.__ipcInspector.churn()
+// PASS → [{ path:'/api/zero-harness/sse', constructions:1, drops:>0,
+//           verdict:'OK — one persistent channel (N internal reconnects)' }]
+// FAIL → constructions climbing for one URL = a consumer is still recreating it.
+```
+
+The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is dev-only and unset in production. IPC traffic is invisible to the devtools Network panel (it rides the unix socket, not HTTP), so the inspector is the *only* way to see the reconnect cadence — `constructions` (new channels) vs `connects`/`drops` (internal reconnects) is exactly the churn signal. Plan: `calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
 
 ## The audit conclusion (2026-05-31)
 
@@ -3475,6 +3504,161 @@ The bug also caught us a fourth time on a later migration that used `$$ ... $$` 
 
 The migration apply script lives in `libs/papercusp/libs/db/scripts/` — check there before adding a new heredoc-based applier.
 
+# Phase-1b federation — known limitations and the verified-commit requirement
+
+> Three Phase-1b federation gaps (D-008): multi-device collision, login-rename fragility, and why the contributor file MUST be published via the GitHub Contents API (R-1). Symptoms, root causes, fix shapes.
+
+Phase-1b ships bidirectional federation (decision `papercusp-phase1b-bidirectional-federation-2026-06-01`). Three gaps were identified, recorded as **D-008**, and intentionally left out of scope. This page captures each one — symptom, root cause, and fix shape — so future implementors have context and so nobody “simplifies” the verified-commit path and silently breaks everything.
+
+***
+
+## 1. One verifiable device per GitHub login (multi-device collision)
+
+[Section titled “1. One verifiable device per GitHub login (multi-device collision)”](#1-one-verifiable-device-per-github-login-multi-device-collision)
+
+### Symptom
+
+[Section titled “Symptom”](#symptom)
+
+A user runs Papercusp on two machines — say a laptop and a desktop, each with its own device keypair. The second device publishes its contributor file. Because contributor files are keyed by `github_login`:
+
+```plaintext
+.harness/contributors/<login>.json
+```
+
+…the second device’s publish **overwrites** the first device’s file on the `user/<id>` branch. When the first device later tries to announce (channel-2 step d), the verifier reads the contributor file and finds the *second* device’s pubkey — not the first’s — so verification fails. Federation silently breaks on the first device.
+
+### Root cause
+
+[Section titled “Root cause”](#root-cause)
+
+The contributor-file path uses `github_login` as the sole key. One file per login means one device per login. There is no structural slot for a second device.
+
+### Fix shape
+
+[Section titled “Fix shape”](#fix-shape)
+
+One of:
+
+* **Array of pubkeys in one file.** The contributor file body gains a `device_pubkeys: string[]` field (replacing the single `device_pubkey`). The verifier accepts a signature from any listed key.
+* **Per-device paths.** `.harness/contributors/<login>/<device-fingerprint>.json` Each device has its own file; the verifier walks the directory.
+
+Either approach requires a schema migration for existing contributor files and a corresponding verifier update. **Not built in Phase-1b (D-008).**
+
+***
+
+## 2. Login-rename fragility
+
+[Section titled “2. Login-rename fragility”](#2-login-rename-fragility)
+
+### Symptom
+
+[Section titled “Symptom”](#symptom-1)
+
+A contributor renames their GitHub username. The `user/<id>` branch (keyed by the stable numeric `github_user_id`) survives intact. But the contributor file lives at:
+
+```plaintext
+.harness/contributors/<old-login>.json
+```
+
+The verifier looks up `.harness/contributors/<new-login>.json` and finds nothing — federation breaks for that contributor on all harnesses they’ve joined.
+
+### Root cause
+
+[Section titled “Root cause”](#root-cause-1)
+
+The contributor-file **path** is keyed by `github_login`, which is mutable. The branch name is keyed by the stable numeric id, so it survives renames, but the file inside the branch does not.
+
+The `ContributorFileBody` itself contains both `github_login` and `github_user_id`, so the data is correct once found — the problem is purely path resolution.
+
+### Fix shape
+
+[Section titled “Fix shape”](#fix-shape-1)
+
+Key the file path by the numeric id instead of the login:
+
+```plaintext
+.harness/contributors/<github_user_id>.json
+```
+
+Or: keep the login path but add a re-publish trigger when the GitHub API returns a new login for a known `github_user_id` (e.g. on token refresh or profile fetch). The second option is more conservative but requires a background re-publish flow.
+
+Either requires a migration for existing contributor files. **Not built in Phase-1b (D-008).**
+
+Note
+
+Renames are rare in practice (GitHub discourages them and forwards the old login for 90 days), but the gap is correctness-level: after the forwarding period expires, the old path becomes stale with no warning.
+
+***
+
+## 3. Verified-commit requirement (R-1) — NEVER publish via local git
+
+[Section titled “3. Verified-commit requirement (R-1) — NEVER publish via local git”](#3-verified-commit-requirement-r-1--never-publish-via-local-git)
+
+### Why this matters
+
+[Section titled “Why this matters”](#why-this-matters)
+
+Channel-2 step (c) requires:
+
+```plaintext
+commit.verification.verified === true
+AND
+commit.author.login === github_login
+```
+
+A plain `git commit` + `git push` is **not** GitHub-verified unless the committing key is registered on the account. Even if the push succeeds, `commit.verification.verified` is `false` on unregistered keys — and the verifier rejects it.
+
+### The fix — use the GitHub Contents API
+
+[Section titled “The fix — use the GitHub Contents API”](#the-fix--use-the-github-contents-api)
+
+The only reliable way to produce a verified commit without requiring every user to register a GPG/SSH key is to publish the contributor file via the **GitHub Contents API**:
+
+```plaintext
+PUT /repos/{owner}/{repo}/contents/{path}
+```
+
+(`repos.createOrUpdateFileContents` in Octokit.)
+
+Commits created through this API are **web-flow-signed** (GitHub signs them with its own key) and come back with `verification.verified === true` and `verification.reason === "web_flow"`. This is how `ensureMyBindingPublished` works — it calls `createOrUpdateFileContents`, not `git push`.
+
+### The trap to avoid
+
+[Section titled “The trap to avoid”](#the-trap-to-avoid)
+
+If someone “optimises” `ensureMyBindingPublished` to avoid an API round-trip and switches to a local git commit + push, the result is:
+
+1. The contributor file lands on the branch (the push succeeds).
+2. `commit.verification.verified` is `false` (no registered signing key).
+3. The two-channel verifier’s step (c) rejects it.
+4. **All admission for that device silently fails** — the contributor is blocked from joining any harness and gets no clear error.
+
+This is the exact failure mode R-1 was written to prevent. The API call is not optional boilerplate; it is the mechanism that makes channel-2 work.
+
+### Key source paths
+
+[Section titled “Key source paths”](#key-source-paths)
+
+| File                                                        | Role                                                                                                                       |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `apps/operator/lib/identity/ensure-my-binding-published.ts` | Calls `createOrUpdateFileContents`; idempotent on no-op (same pubkey already present).                                     |
+| `apps/operator/lib/identity/contributor-file-types.ts`      | `buildSignedContributorFile` — builds + signs the body; called by `ensureMyBindingPublished`.                              |
+| `apps/operator/lib/identity/two-channel-verifier.ts`        | `verifyContributorFileSignature` — verifies the device signature on the body; separate from the commit-verification check. |
+
+Caution
+
+`buildSignedContributorFile` produces the *signed body bytes* — it does not push anything. The API call that makes the commit GitHub-verified is in `ensureMyBindingPublished`. Do not pull the push logic out of that function.
+
+***
+
+## Decision record
+
+[Section titled “Decision record”](#decision-record)
+
+* **D-008** — Multi-device-per-login and login-rename fragility are recorded known limitations, not built in Phase-1b. Source: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md` §“Known limitations”.
+* **R-1** — Verified-commit requirement. Source: same doc §“Open risks”. Resolved by the Contents API approach in `ensureMyBindingPublished` (Task 2 of the impl plan).
+
 # Pull daemon decision logic into pure functions, leave glue in the runtime
 
 > A poll daemon's "what should I do next?" logic is testable in isolation only when it's pure. The runtime becomes a thin shim around `decideX()` calls; every interesting branch lives in a unit-tested types module.
@@ -4463,6 +4647,46 @@ If any of these stay degraded for hours, file an issue with the boot- history en
 
 * [Substrate diagnostic stack](/internal/docs/agent-insights/substrate-diagnostic-stack)
 * [Dogfood v5 readiness map](/internal/docs/agent-insights/dogfood-v5-readiness-map)
+
+# Substrate revocation — the trust model (read before touching admission)
+
+> How peer revocation works in the Model B substrate — self vs owner, the GitHub-anchored authority, the re-verify enforcement, and why it's fail-open.
+
+If you’re about to change substrate admission/revocation, or a security review flags something here as a “gap,” read this first — several of these are **intentional** trust-model decisions, not bugs.
+
+## Two flavors of revocation (both enforced)
+
+[Section titled “Two flavors of revocation (both enforced)”](#two-flavors-of-revocation-both-enforced)
+
+1. **Self-revocation** (`papercusp-substrate-revocation-v1-2026-06-01`). A contributor revokes their OWN device key (lost/rotated device). Mechanism: the device pubkey is added to that contributor’s own `revoked_pubkeys` (a `TEXT[]` on `harness_shared.contributors`, replicated via the substrate). Trigger: `revokeSelfDevice` / `POST /api/admin/substrate/revoke-self-device` / the `substrate:revoke_self_device` MCP tool — guarded by `not_your_key` (you can only revoke keys in your OWN `device_attestations`). Enforcement: `boot.ts` seeds the admission `revoked` Set from `loadRevokedPubkeys` at startup (unconditional, fail-open) AND refreshes it inside every `mergeNow`.
+
+2. **Owner-revocation** (`papercusp-substrate-revocation-v2-owner-2026-06-01`, Component A). Kicking out a different contributor (a bad actor). Authority is **GitHub**, not a papercusp-native owner: a repo admin **deletes the contributor’s `user/<id>` branch** (the channel-2 artifact). Enforcement: `boot.ts` periodically **re-verifies admitted peers’ channel-2** (throttled inside `mergeNow`, default \~15 min) and drops any whose binding conclusively `fail`s.
+
+The gap that motivated rev-v2
+
+Model B verified a peer’s channel-2 binding ONCE at admission and re-checked only PENDING peers. An already-**admitted** peer was NEVER re-verified — so a deleted GitHub binding was not noticed. If you see admission logic that only checks at admit-time, that gap is back.
+
+## Why GitHub-anchored authority (not a papercusp owner gate)
+
+[Section titled “Why GitHub-anchored authority (not a papercusp owner gate)”](#why-github-anchored-authority-not-a-papercusp-owner-gate)
+
+Deliberate, consistent with `papercusp-trust-model-2026-05-31` + the **no-collaborator-gate** decision + Phase-1b §8 / D-009: **GitHub is the real authority** for the thing that matters (merging code); peer-synced state is **advisory**. An owner-signed revocation list was considered and rejected — it reintroduces exactly the papercusp-side authority gate that decision avoided, and the P-068 “owner” is only *provisional*/contestable. Re-verifying channel-2 is **not** a collaborator gate; it re-applies the *same* check admission already requires, just periodically.
+
+## Intentional decisions a reviewer will want to “fix” (don’t, without re-deciding the posture)
+
+[Section titled “Intentional decisions a reviewer will want to “fix” (don’t, without re-deciding the posture)”](#intentional-decisions-a-reviewer-will-want-to-fix-dont-without-re-deciding-the-posture)
+
+* **Fail-OPEN on a revocation/re-verify LOAD failure** (rev-v1 D-006, rev-v2 D-004). If the PG read or the GitHub API fails, admission continues WITHOUT the (new) revocation rather than evicting peers. Rationale: advisory substrate + GitHub-is-authority → a transient blip must not self-inflict a federation outage. It’s **visible** (`merge_error`/`announce_error` events) and **self-healing** (re-checked next cycle). A channel-2-`fail` (conclusive) DOES drop; only transient (`pending`/api-down) keeps. Fail-secure (evict-on-failure) is the wrong trade here.
+* **A channel-2-fail drop does NOT blocklist the pubkey.** A re-published binding is re-admitted by normal admission; a still-deleted binding is rejected (`binding_invalid`) — no flap. (Self-revocation DOES persist via `revoked_pubkeys` — that’s the difference.)
+* **Revocation is non-retroactive.** Ops a peer already merged remain (advisory; GitHub is authority). True cryptographic removal isn’t a goal.
+
+## Not built (intentional)
+
+[Section titled “Not built (intentional)”](#not-built-intentional)
+
+* **Rev-v2 Component B** — an in-app “delete a contributor’s `user/<id>` branch via the GitHub API” trigger. It’s a destructive outward-facing action + optional (a repo admin deletes the branch on GitHub directly; Component A enforces it). Held pending an explicit decision.
+* **Un-revoke / re-instate** — YAGNI; revocation is append-only.
+* **Multi-device per login** — see `phase1b-federation-limitations`.
 
 # Substrate write-side stack — one shape per Hyperbee table
 
@@ -9137,13 +9361,13 @@ The operator frontend migrated **Next.js → Vite** (`@papercusp/operator-vite`,
 
 Three different things are bundled by three different commands:
 
-| Artifact                         | What it is                                                                                       | Built by                                                               | Path                                                                                                                      |
-| -------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| **Linux `.deb` / `.rpm`**        | Tauri desktop installer for Linux                                                                | `npm run build` in `papercusp-desktop/` (runs locally on the dev host) | `papercusp-desktop/src-tauri/target/release/bundle/{deb,rpm}/`                                                            |
-| **macOS `.dmg`**                 | Tauri desktop installer for macOS x86\_64                                                        | Same `npm run build`, but executed **inside the macOS VM** over SSH    | `~/papercupai/papercusp-desktop/src-tauri/target/release/bundle/dmg/` on the Mac VM, then `scp`’d back                    |
-| **Windows `.msi` + NSIS `.exe`** | Tauri desktop installer for Windows                                                              | Same, executed **inside the Windows VM**                               | `C:\Users\User\papercupai\papercusp-desktop\src-tauri\target\release\bundle\{msi,nsis}\` on the Win VM, then `scp`’d back |
-| **`:3070` standalone webapp**    | Production Next.js standalone of `apps/operator` (the testing surface)                           | `bin/prod` in the `papercup/` repo                                     | `apps/operator/.next-prod/standalone/`                                                                                    |
-| **`:3055` dev server**           | The Next.js dev server used by `tauri dev` AND served directly in the browser for fast iteration | `bin/dev` in the `papercup/` repo (papercup-dev systemd user unit)     | live, no artifact                                                                                                         |
+| Artifact                         | What it is                                                                                                                                      | Built by                                                               | Path                                                                                                                      |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Linux `.deb` / `.rpm`**        | Tauri desktop installer for Linux                                                                                                               | `npm run build` in `papercusp-desktop/` (runs locally on the dev host) | `papercusp-desktop/src-tauri/target/release/bundle/{deb,rpm}/`                                                            |
+| **macOS `.dmg`**                 | Tauri desktop installer for macOS x86\_64                                                                                                       | Same `npm run build`, but executed **inside the macOS VM** over SSH    | `~/papercupai/papercusp-desktop/src-tauri/target/release/bundle/dmg/` on the Mac VM, then `scp`’d back                    |
+| **Windows `.msi` + NSIS `.exe`** | Tauri desktop installer for Windows                                                                                                             | Same, executed **inside the Windows VM**                               | `C:\Users\User\papercupai\papercusp-desktop\src-tauri\target\release\bundle\{msi,nsis}\` on the Win VM, then `scp`’d back |
+| **`:3070` Hono host**            | Production Hono host (`bin/hono-host.ts`) serving the built Vite SPA + the `/api` surface + `/internal/docs` (the testing surface)              | `bin/prod` in the `papercup/` repo                                     | built `apps/operator-vite/dist/` (served by the Hono host)                                                                |
+| **`:3055` Vite dev server**      | The Vite dev server (`@papercusp/operator-vite`, TanStack-Router SPA) used by `tauri dev` AND served directly in the browser for fast iteration | `bin/dev` in the `papercup/` repo (papercup-dev systemd user unit)     | live, no artifact                                                                                                         |
 
 Production Tauri builds are real binaries (\~700MB Linux, \~440MB Mac, \~375MB Windows). They contain a bundled Node.js runtime + 5 spawned sidecars (operator-server, embedded-postgres, code-server, zero-cache, mcp-bridge). They do **not** depend on `:3055` at runtime.
 
@@ -11037,7 +11261,7 @@ If you need a query outside the harness layout’s tree, mount a separate provid
 
 **Why**: `dev:web` serves `apps/web/.next/standalone/server.js`, **not** a dev server. To see source changes you need `npm run build` (full rebuild — never `npx next build`, which skips the static-asset copy).
 
-**Fix**: rebuild apps/web. The operator (`:3055`) and papercup-app (`:3061`) DO use `next dev` and pick up source changes via HMR — only `apps/web` is the static-build outlier.
+**Fix**: rebuild apps/web. The operator (`:3055`) uses the **Vite** dev server (`@papercusp/operator-vite`) and picks up source changes via HMR; only the legacy `apps/web` Next standalone is the static-build outlier.
 
 ## 11. Replication slot stuck after DB rename
 
@@ -37959,6 +38183,130 @@ convert /tmp/shot.png -crop 1280x80+0+460 /tmp/band.png; tesseract /tmp/band.png
 Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox90.pid /tmp/xvfb90.pid) 2>/dev/null`.
 
 For a **release build** (no dev bridge) screenshots are your *only* window introspection — so GPU GL via VirtualGL is **mandatory** there, or the screenshot tells you nothing. On a **debug** build the bridge is still up on the isolated instance (`probe` finds it on `PAPERCUSP_BRIDGE_PORT`) — prefer the bridge for DOM/JS (it reads the DOM, not pixels, so it works even GL-less) and use this VirtualGL stack only for the pixels.
+
+# P-079 runbook — live bidirectional federation acceptance
+
+> **Webapp retired.** Every `localhost:3055`/`localhost:3070` URL here is only reachable while the **Tauri dev shell** is running (`cd papercusp-desktop && npm run dev`). Drive the operator through the Tauri shell, not a browser (see [Agent E2E playbook](/internal/docs/testing/agent-e2e)).
+
+This is the **manual acceptance test** for Phase-1b bidirectional federation: two **different** GitHub engineers join/share a harness and sync state **both ways** over the Model B Hyperswarm substrate. It is the gate that closes implementation **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
+
+Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`. The deterministic offline proof (module + transport, gate stubbed) already exists at `apps/operator/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`; this runbook covers what that test *can’t*: the real GitHub publish→verify loop with two real identities.
+
+Verified live 2026-06-01 (gist-level)
+
+The **channel-2 publish→verify loop** — the offline-impossible crux — was run live with two genuinely distinct GitHub accounts (`papercupai` + `aviynw`): each created a real attestation **gist** under its own account, and the **real** `verifyAttestation` / `verifyChannel2` accepted each peer for the correct identity **bidirectionally**, while a *forged* identity claim (one account’s gist claimed as the other’s id) was rejected with `github_user_id_mismatch` (D-006 holds live). That run also surfaced + fixed a real bug: the attestation **gist filename** used a raw base64 pubkey prefix, but a gist filename can’t contain `/` (\~11% of device keys) — fixed in `attestationGistFilename` (commit `ae5e25be3`). What remains for a *full* Mode-A pass is the two-Tauri-instance swarm/transport half (steps 4–7), which the offline `two-peer-swarm-bidi` test already proves at the module level.
+
+R-1 — RESOLVED: channel-2(c) anchors on gist ownership, not a verified commit
+
+**Historical:** the original design required the contributor-file *commit* to be GitHub-**verified** (`commit.verification.verified === true`). A live probe found Contents-API commits come back **unverified** (`reason: unsigned`) in the real gh-token context, so that check was unsatisfiable and would have blocked **all** admission. **R-1 is resolved** by re-anchoring channel-2 step (c) on **gist ownership**: the contributor file embeds a `device_attestation_gist_id`, and `verifyAttestation` checks that gist is **owned by the claimed `github_user_id`** (GitHub reports `gist.owner.id`), attests the announced `device_pubkey`, and carries a valid device Ed25519 signature. No commit-verification is required anywhere. The 2026-06-01 live run above confirms the gist-ownership anchor works with two real identities.
+
+## Two modes
+
+[Section titled “Two modes”](#two-modes)
+
+* **Mode A — same laptop, two instances (Q-2 surrogate, do this FIRST).** Catches *code* bugs. Two operator instances with fully isolated state + two distinct GitHub accounts. Cheap, fast, repeatable.
+* **Mode B — two real machines.** Catches *network* bugs (NAT, firewall, DHT reachability). Run only after Mode A passes.
+
+The **decision rule** (from `papercusp-dogfood-phase11-multi-engineer-dogfood-2026-05-26`): **P-079 PASSES when ≥5 of the 7 walkthrough steps land within 30 s of the user action** — AND the two hard gates hold: (i) both peers’ attestation **gists** are owned by their claimed GitHub id (channel-2(c) holds), (ii) data flows **both** directions.
+
+## Prerequisites (both modes)
+
+[Section titled “Prerequisites (both modes)”](#prerequisites-both-modes)
+
+* Two **distinct** GitHub accounts (call them **Alice** and **Bob**), each with access to a shared test repo (use a throwaway repo, not a production one). Any real GitHub identity is admissible — there is **no** repo-collaborator gate at the substrate; GitHub’s own write/branch-protection rules gate the actual PR merge. So Alice and Bob each just need to be real, `gh`-authenticated GitHub users who can push a `user/<id>` branch to the repo.
+* Each side authenticated: `gh auth status` shows the intended account (Alice on her instance, Bob on his). The join/share flow resolves identity **server-side** from this — you do **not** type credentials into the UI.
+
+Why two distinct accounts (not one)
+
+A peer’s device key lives in the OS keychain under `<github_user_id>:<machine-fingerprint>`. Two *different* GitHub accounts get distinct keychain ids → distinct device keys → two genuinely distinct peers, even on one machine. The same account on two machines would currently collide on the login-keyed contributor file (see the [multi-device limitation](/internal/docs/agent-insights/phase1b-federation-limitations)).
+
+### Mode A — isolating two instances on one laptop
+
+[Section titled “Mode A — isolating two instances on one laptop”](#mode-a--isolating-two-instances-on-one-laptop)
+
+Each instance needs its **own**: workspace root (→ its own per-harness corestore), Postgres database, `gh` identity, and Tauri bridge port. Run the second instance under its own Xvfb display so it never steals your focus (see [Agent E2E §15.4](/internal/docs/testing/agent-e2e)):
+
+```sh
+# Instance B (Bob) — isolated display, bridge port, and gh config
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+DISPLAY=:99 openbox &
+DISPLAY=:99 \
+  PAPERCUSP_BRIDGE_PORT=9230 \
+  GH_CONFIG_DIR=/tmp/gh-bob \
+  PAPERCUSP_HOME=/tmp/papercusp-bob \
+  bash -lc 'cd papercusp-desktop && npm run dev'
+# (gh auth login --hostname github.com  with GH_CONFIG_DIR=/tmp/gh-bob, as Bob, beforehand)
+```
+
+Instance A (Alice) is your normal `papercusp-desktop && npm run dev` on `:0`. Point each instance’s operator at a **separate** PG database (distinct `DATABASE_URL` / embedded-pg dir) so “Alice’s PG” and “Bob’s PG” are observably different — that is what makes “data crossed the wire” verifiable.
+
+## The 7-step walkthrough
+
+[Section titled “The 7-step walkthrough”](#the-7-step-walkthrough)
+
+1. **Alice shares the harness.** In Alice’s Tauri shell, open the harness’s **Share** wizard (ShareWizard) and finalize. This writes `.harness/shared.json`, **publishes Alice’s attestation gist + contributor file** (the file via the Contents API, embedding the gist id), boots Alice’s substrate (joins the swarm topic derived from the repo id) and announces. Note the **join link** the wizard shows (“Send this link to contributors…”).
+
+2. **Confirm Alice’s binding: contributor file + an owned attestation gist (channel-2 gate).** On the shared repo, the `user/<alice_id>` branch should now have `.harness/contributors/<alice_login>.json`. That file embeds a `device_attestation_gist_id`; confirm the gist exists and is **owned by Alice’s account** (the channel-2(c) anchor — no commit-verification is involved):
+
+   ```sh
+   # gist id from the contributor file
+   gh api repos/<owner>/<repo>/contents/.harness/contributors/<alice_login>.json?ref=user/<alice_id> \
+     --jq '.content' | base64 -d | jq -r '.device_attestation_gist_id'
+   # confirm that gist's owner id === Alice's github user id
+   gh api gists/<gist_id> --jq '.owner.id, .owner.login'
+   # expect:  <alice_id>   <alice_login>
+   ```
+
+   **If the gist is missing or owned by a different id, channel-2 won’t admit** — see *Troubleshooting*.
+
+3. **Bob joins via the link.** In Bob’s shell, open the create-harness picker → **Entry 4 (harness link)**, paste Alice’s link, and join. Bob’s identity is resolved server-side from his `gh` auth (no creds typed). Watch the join progress through the 6 steps: `oauth_attest → clone_repo → publish_binding → boot_federate → await_admission_merge → route_insights`. After `publish_binding`, repeat the Step-2 gist-ownership check for **Bob’s** file on `user/<bob_id>`.
+
+   * If join returns **“GitHub authentication required”**, Bob’s `gh` isn’t authenticated in that instance’s `GH_CONFIG_DIR` — fix and retry.
+
+4. **Bob admits Alice (publisher→joiner).** On Bob’s `/admin/dogfood-substrate` (or the boot-history), expect an `announce_admitted` for Alice’s device pubkey within \~30 s. `announce_pending` is fine transiently (GitHub propagation) — it self-heals via the retry; `announce_rejected` is a failure (inspect the reason).
+
+5. **Alice admits Bob (joiner→publisher).** Symmetric: Alice’s boot-history shows `announce_admitted` for Bob within \~30 s.
+
+6. **Alice → Bob data flow.** Alice creates/edits a feature in the shared harness. It appears in **Bob’s** queue (Bob’s PG / Bob’s harness UI) within \~30 s.
+
+7. **Bob → Alice data flow.** Bob creates/edits a feature. It appears in **Alice’s** queue within \~30 s. (Bonus: have both claim the same feature to exercise the LWW advisory claim + clobber-toast.)
+
+## Pass criteria
+
+[Section titled “Pass criteria”](#pass-criteria)
+
+* **Hard gate 1 — channel-2 anchor:** both contributors’ attestation **gists** (Steps 2 + 3) exist and are **owned by the claimed `github_user_id`** (so `verifyAttestation` returns valid). *Non-negotiable.* (This replaces the obsolete “verified commit” gate — see the R-1 Aside; no commit-verification is required.)
+* **Hard gate 2 — bidirectional:** Steps 6 **and** 7 both succeed (data crosses in *both* directions, into *separate* PGs).
+* **Soft gate:** ≥5 of the 7 steps land within 30 s of the triggering action.
+
+Record each failing step as a P-027-style observation on `F-DOGFOOD-001` (per the Phase-11 plan).
+
+## Inspecting state
+
+[Section titled “Inspecting state”](#inspecting-state)
+
+* **Boot/admission events:** `/admin/dogfood-substrate` (substrate diagnostic), or `GET /api/admin/dogfood-substrate-boot-history`. Kinds: `peer_connected`, `announce_admitted`, `announce_pending`, `announce_rejected`, `announce_error`, `peer_revoked`, `merge_error`.
+* **Health:** `GET /api/admin/dogfood-substrate-health` (idle = `harnesses:[]`, `worstVerdict:'healthy'`).
+* **Replicated rows:** query each instance’s Postgres for the harness’s feature queue / contributor tables (the read-merge projects admitted peers’ ops there).
+
+## Troubleshooting
+
+[Section titled “Troubleshooting”](#troubleshooting)
+
+* **`announce_rejected` with `binding_invalid`** → channel-2 couldn’t verify the peer’s binding. Most likely the peer’s **attestation gist is missing or owned by a different GitHub id** (channel-2(c)), the contributor file is missing on the `user/<id>` branch (a+b), or the `device_pubkey` in the file/gist doesn’t match the announced key (e.g. a multi-device collision — same login on two machines). Note: a deleted gist is *also the revocation signal* (`channel2_attestation_missing`).
+* **Stuck `announce_pending`** → GitHub hasn’t propagated the just-pushed file yet; it self-heals within the 30-min grace. If it never clears, the file/branch is missing or the API read is failing.
+* **No `peer_connected` at all** → swarm/DHT reachability (Mode B: NAT/firewall on the DHT port). Confirm both booted with a non-null `swarm` and the **same** `topicHex`.
+* **Federation only one way** → the silent side’s binding isn’t verifiable by the other (re-check that side’s Step-2 gist-ownership + that its contributor file exists, AND that the *reading* peer can actually read the shared repo — a private repo the other peer can’t access reads as 404 → stuck `pending`).
+
+## Escalation — channel-2 gist anchor (R-1 history)
+
+[Section titled “Escalation — channel-2 gist anchor (R-1 history)”](#escalation--channel-2-gist-anchor-r-1-history)
+
+R-1 was the worry that channel-2(c) required a GitHub-**verified commit**, which a live probe showed is unsatisfiable (Contents-API commits return `verified:false / reason:unsigned`). **That risk is closed:** channel-2(c) now anchors on **gist ownership** (`verifyAttestation`: `gist.owner.id === claimed github_user_id` + device-pubkey match + Ed25519 sig), which needs no commit verification and is confirmed live (2026-06-01, two real identities). If a future change reintroduced a commit-verification dependency, the same escalation ladder would apply (GitHub App commit signing → registered GPG/SSH key → documented relaxation) — but it does not apply today.
+
+A reliability gotcha the live run found: the attestation **gist filename** must use the URL/filename-safe base64 alphabet — a raw base64 pubkey prefix contains `/` (\~11% of keys), which GitHub rejects as a gist filename. Fixed in `attestationGistFilename` (`ae5e25be3`); the regression test pins it.
+
+After this passes, the longer **P-080 soak** (Alice + Bob each use Papercusp for ≥5 consecutive working days on the harness) is the next acceptance milestone.
 
 # Visual regression — Storybook + Lost Pixel
 

@@ -1,8 +1,8 @@
 ---
 title: Desktop IPC transport map — what rides IPC, what's dormant, how to turn it on
-description: The desktop routes webview /api traffic over Tauri IPC to dodge WebKitGTK's ~6-conn libsoup cap. Three mechanisms, all gated behind PAPERCUSP_DESKTOP_IPC + a release-only sidecar spawn. Here's the whole map + the turn-on recipe + the gotchas.
+description: The desktop routes webview /api traffic over Tauri IPC to dodge WebKitGTK's ~6-conn libsoup cap. Three mechanisms, all gated behind PAPERCUSP_DESKTOP_IPC + a release-only sidecar spawn. Here's the whole map + the turn-on recipe + the SSE-over-IPC reconnect/churn contract (D-006) + how to verify with window.__ipcInspector + the gotchas.
 discovered: 2026-05-31
-tags: [desktop, ipc, transport, sse, webkitgtk, tauri]
+tags: [desktop, ipc, transport, sse, webkitgtk, tauri, reconnect]
 status: active
 sidebar:
   order: 30
@@ -68,6 +68,62 @@ on the new window via the dev bridge (`tauri-agent-tools eval --port <p> --token
 `endpoint_invoke('dev:ipc_echo')` returns a result (not "state not managed");
 `window.EventSource`/`window.fetch` are the patched polyfills; `~/.papercusp/sockets/<pid>.sock`
 exists.
+
+**But connectivity is NOT the real check** — see the churn contract below. A
+`dev:ipc_echo` that returns a result proves the wire works; it does **not** prove
+the long-lived SSE streams are stable, which is what actually broke (flashing).
+
+## SSE-over-IPC reconnect — the churn contract (D-006, 2026-06-01)
+
+Turning IPC on once surfaced a sharp regression: **the desktop flashed —
+constant full reloads.** Root cause was a reconnect-ownership conflict between
+the transport and its consumer, now fixed across three layers. The invariant to
+preserve when touching any of them:
+
+> **The transport auto-reconnects on a transient drop (readyState CONNECTING);
+> a consumer recreates the EventSource only when it is genuinely dead (readyState
+> CLOSED).** Recreating on a CONNECTING drop discards a stream that was about to
+> resume — and over IPC that means a brand-new channel + a sync-layer
+> re-subscribe + a re-render on *every* blip. That is the flashing.
+
+What went wrong + the fix (`@papercusp/desktop-ipc` + `@papercusp/sse`):
+
+1. **`IpcEventSource` was one-shot** — a dropped stream (`done` / transient
+   error) called `close()` (terminal). Native `EventSource` instead
+   auto-reconnects (CONNECTING, resumes with `Last-Event-ID`). Fixed: it now
+   reconnects internally, terminal only on `close()` or a fatal head. (`8f2da9a`)
+2. **A fatal error fired BEFORE `close()`** — so readyState still read CONNECTING
+   when a consumer's error handler ran, hiding the death. Fixed: a `terminate()`
+   helper sets readyState CLOSED *then* dispatches `error` (faithful to native),
+   so a recreate-on-CLOSED consumer rebuilds — and on the IPC-unavailable latch,
+   the rebuild yields a native EventSource fallback. (`5da236d`)
+3. **`createResilientEventSource` force-recreated on EVERY error** — it closed
+   the underlying ES and span up a fresh one on every blip. Fixed: it recreates
+   only on readyState CLOSED, leaving CONNECTING drops to the underlying ES; the
+   zombie watchdog stays the safety net and escalation still counts every error.
+   (`c6927b3`)
+
+`DesktopAttentionNotifier` got the same recreate-on-CLOSED alignment (`7b827b2c1`).
+All four changes are unit-proven (66 tests) but **not yet live-verified** — the
+verification below is the open step.
+
+**Verify it (the real check):** open **/dev → IPC tab → churn**, or in the
+desktop devtools console:
+
+```js
+window.__ipcInspector.churn()
+// PASS → [{ path:'/api/zero-harness/sse', constructions:1, drops:>0,
+//           verdict:'OK — one persistent channel (N internal reconnects)' }]
+// FAIL → constructions climbing for one URL = a consumer is still recreating it.
+```
+
+The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost
+seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is dev-only and unset in
+production. IPC traffic is invisible to the devtools Network panel (it rides the
+unix socket, not HTTP), so the inspector is the *only* way to see the reconnect
+cadence — `constructions` (new channels) vs `connects`/`drops` (internal
+reconnects) is exactly the churn signal. Plan:
+`calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
 
 ## The audit conclusion (2026-05-31)
 
