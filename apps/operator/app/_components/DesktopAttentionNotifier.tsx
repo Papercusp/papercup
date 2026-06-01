@@ -113,9 +113,14 @@ export default function DesktopAttentionNotifier() {
         if (retry) { clearTimeout(retry); retry = null; }
       };
       es.onerror = () => {
-        // Only intervene if it never opened; a transient drop on an OPEN
-        // stream is the browser's job to retry.
-        if (es && es.readyState !== EventSource.OPEN) recreate();
+        // Recreate ONLY when the stream is genuinely dead (CLOSED). A drop on a
+        // live stream goes CONNECTING and the transport reconnects itself —
+        // native EventSource and (on desktop) IpcEventSource both auto-reconnect.
+        // The old `!== OPEN` check recreated during that reconnect too, which
+        // over IPC churns a fresh channel + re-subscribes the sync layer every
+        // drop (the dev-IPC flashing). The never-opened-yet case is the
+        // watchdog's job below. Plan: calltool-endpoint-seam-2026-06-01 (P-007).
+        if (es && es.readyState === EventSource.CLOSED) recreate();
       };
       // Watchdog for the silent-stuck case (no error, no open).
       watchdog = setTimeout(() => {
