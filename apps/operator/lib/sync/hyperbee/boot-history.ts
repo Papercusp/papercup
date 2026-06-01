@@ -24,6 +24,10 @@
  *                           and never recorded here — this is in-flight/IP-ban).
  *   - 'peer_rate_limited' — a peer tripped the per-peer connection-rate limit and
  *                           was banned + dropped (DoS guard).
+ *   - 'peer_capped'       — an admitted peer's log exceeded the per-author op
+ *                           cap; the merge ingested only the first N ops this
+ *                           pass (DoS Phase-4 reshape — a noisy peer bloats only
+ *                           its own tail, not the whole merge).
  *   - 'announce_admitted' — an inbound signed announce passed read-admission and
  *                           its per-peer log was added to the admitted set (Model B).
  *   - 'announce_rejected' — an inbound announce failed the read-admission decision
@@ -46,6 +50,7 @@ export type BootHistoryKind =
   | 'swarm_join_failed'
   | 'peer_rejected'
   | 'peer_rate_limited'
+  | 'peer_capped'
   | 'announce_admitted'
   | 'announce_rejected'
   | 'announce_error'

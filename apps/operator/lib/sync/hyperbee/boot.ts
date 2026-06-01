@@ -81,6 +81,10 @@ function peerLabel(keyHex?: string, ip?: string): string {
 /** Polled-merge fallback interval (ms). The own log + admitted remotes are
  *  re-merged on this cadence in addition to the on-admit + initial passes. */
 const MERGE_POLL_MS = 1000;
+// Stage 6 (DoS Phase-4 reshape): cap how many ops the merge ingests from any
+// single author per pass. A noisy/Sybil peer bloats only its OWN log, so this
+// bounds per-pass ingest rather than mitigating a shared-structure flood.
+const MAX_OPS_PER_AUTHOR = 50_000;
 
 /**
  * A local write the per-table helpers append to the own log. Mirrors the
@@ -285,7 +289,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
         logs.push(versionGatedLog(slug, log));
       }
-      return await mergeAdmittedLogs(logs, {});
+      return await mergeAdmittedLogs(logs, {
+        maxOpsPerAuthor: MAX_OPS_PER_AUTHOR,
+        // Surface a capped author in boot-history (best-effort observability).
+        onCapped: (keyHex, total, cap) => {
+          try {
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'peer_capped',
+              `${keyHex.slice(0, 8)} capped ${cap}/${total}`,
+            );
+          } catch {
+            // observability must never abort the merge pass
+          }
+        },
+      });
     } catch (e) {
       recordBootEvent(
         opts.workspaceId,

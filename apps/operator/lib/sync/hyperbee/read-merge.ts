@@ -16,8 +16,11 @@
  *
  * Single responsibility: read → map → LWW-fold → apply → count. It does NOT
  * refresh remote logs — the caller (Stage 4's boot driver) calls `update()`
- * before passing logs in; we read `[0, length)` as presented. No per-author op
- * cap here either — that is Stage 6.
+ * before passing logs in; we read `[0, min(length, cap))` as presented.
+ *
+ * Stage 6 adds a per-LOG op-count cap (`maxOpsPerAuthor`) so one noisy author
+ * can't make a merge pass ingest unbounded ops (the DoS Phase-4 reshape: a
+ * peer that bloats its own log only delays its own tail, not the whole merge).
  */
 
 import type { OpEnvelope } from './op-envelope-types';
@@ -40,6 +43,13 @@ export interface AdmittedLog {
  *  from being held hostage (the op is skipped + retried on the next pass). */
 export const DEFAULT_GET_TIMEOUT_MS = 5000;
 
+/** Default per-LOG op-count cap. A single admitted log contributes at most this
+ *  many ops to a merge pass; the rest are skipped this pass (and `onCapped`
+ *  fires). Bounds the DoS where a noisy peer bloats its own log to force the
+ *  merge to ingest unbounded ops. Override (or disable with `<= 0`) via
+ *  `MergeOpts.maxOpsPerAuthor`. */
+export const DEFAULT_MAX_OPS_PER_AUTHOR = 50_000;
+
 export interface MergeOpts {
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). For tests. */
   applyImpl?: (op: OpEnvelope) => Promise<boolean>;
@@ -51,6 +61,22 @@ export interface MergeOpts {
    * disable the timeout (e.g. tests over instant fakes).
    */
   getTimeoutMs?: number;
+  /**
+   * Per-LOG op-count cap (Stage 6). Each admitted log contributes at most this
+   * many ops to a single merge pass; if `log.length` exceeds the cap, only the
+   * first `cap` ops are read/applied this pass and `onCapped` fires ONCE for
+   * that log. Bounds the DoS where one noisy author bloats its own log to make
+   * the merge ingest unbounded ops. Defaults to `DEFAULT_MAX_OPS_PER_AUTHOR`.
+   * Pass `0` / a non-positive value to disable the cap (read all ops).
+   */
+  maxOpsPerAuthor?: number;
+  /**
+   * Called once per log whose `length` exceeded `maxOpsPerAuthor` (so the merge
+   * read only the first `cap` of `totalLength` ops). Best-effort observability
+   * hook (e.g. record a `peer_capped` boot-history event); must not throw —
+   * a failing callback is swallowed so it can't abort the merge pass.
+   */
+  onCapped?: (keyHex: string, totalLength: number, cap: number) => void;
 }
 
 /**
@@ -113,8 +139,10 @@ function toEnvelope(op: PeerLogOp): OpEnvelope {
 export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): Promise<number> {
   const apply = opts?.applyImpl ?? applyHyperbeeOpToPg;
   const getTimeoutMs = opts?.getTimeoutMs ?? DEFAULT_GET_TIMEOUT_MS;
+  const maxOpsPerAuthor = opts?.maxOpsPerAuthor ?? DEFAULT_MAX_OPS_PER_AUTHOR;
+  const onCapped = opts?.onCapped;
 
-  // 1+2. Read every op of every log (skip nulls) and map to OpEnvelope.
+  // 1+2. Read each log's ops (skip nulls) and map to OpEnvelope.
   // 3. Fold into per-(table, hbKey) LWW winners as we go.
   //
   // Each `get(i)` is BOUNDED + per-op isolated (readOpBounded): a read that
@@ -123,9 +151,27 @@ export async function mergeAdmittedLogs(logs: AdmittedLog[], opts?: MergeOpts): 
   // pass. This keeps one connected-but-withholding peer from starving the own
   // log + other peers while the caller holds the merge lock — the skipped op
   // is retried on the next pass once the block downloads.
+  //
+  // Per-LOG cap (Stage 6): a log contributes at most `maxOpsPerAuthor` ops to
+  // this pass — we iterate `i` over `[0, min(length, cap))`. If `length`
+  // exceeds the cap, `onCapped` fires once for that log. Reading the FIRST
+  // `cap` ops is the simple, deterministic policy: a more sophisticated policy
+  // could prefer recent ops (read the tail), but first-N suffices for the
+  // cap's purpose — bounding per-pass ingest from any single author so a noisy
+  // peer can't make the merge unbounded. A `<= 0` cap disables the bound.
   const winners = new Map<string, OpEnvelope>();
   for (const log of logs) {
-    for (let i = 0; i < log.length; i++) {
+    const cap = maxOpsPerAuthor;
+    const capped = cap > 0 && log.length > cap;
+    if (capped) {
+      try {
+        onCapped?.(log.keyHex, log.length, cap);
+      } catch {
+        // Observability hook must never abort the merge pass.
+      }
+    }
+    const upper = capped ? cap : log.length;
+    for (let i = 0; i < upper; i++) {
       const op = await readOpBounded(log, i, getTimeoutMs);
       if (!op) continue;
       const env = toEnvelope(op);

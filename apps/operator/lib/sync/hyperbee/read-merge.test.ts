@@ -151,4 +151,76 @@ describe('mergeAdmittedLogs', () => {
     expect(applied).toBe(1);
     expect(apply.mock.calls[0][0]).toMatchObject({ hbKey: 'C-1' });
   });
+
+  // ── Stage 6: per-author ingest cap (DoS Phase-4 reshape) ──
+
+  // A log whose declared length exceeds the cap: only the first `cap` ops are
+  // read (we count get() calls), so a noisy author can't make the merge ingest
+  // unbounded ops; `onCapped` fires once with (keyHex, length, cap).
+  it('caps a too-long log to maxOpsPerAuthor ops and fires onCapped once', async () => {
+    const apply = applyMock();
+    const cap = 3;
+    const keyHex = 'a'.repeat(64);
+    let gets = 0;
+    // 10 ops on distinct keys; reading all would apply 10. With cap=3 only the
+    // first 3 keys are read/applied.
+    const overLog: AdmittedLog = {
+      keyHex,
+      length: 10,
+      get: async (i: number) => {
+        gets++;
+        return {
+          type: 'put', table: 'features_consolidated', hbKey: `F-${i}`,
+          value: {}, ts: 1, schema_version: 1, author_pubkey: 'A',
+        } as never;
+      },
+    };
+    const onCapped = vi.fn<(keyHex: string, totalLength: number, cap: number) => void>();
+    const applied = await mergeAdmittedLogs([overLog], {
+      applyImpl: apply,
+      maxOpsPerAuthor: cap,
+      onCapped,
+    });
+    // Only the first `cap` ops were read + applied.
+    expect(gets).toBe(cap);
+    expect(applied).toBe(cap);
+    // onCapped fired exactly once with (keyHex, totalLength, cap).
+    expect(onCapped).toHaveBeenCalledTimes(1);
+    expect(onCapped).toHaveBeenCalledWith(keyHex, 10, cap);
+  });
+
+  it('does NOT fire onCapped for a log at/under the cap (reads all ops)', async () => {
+    const apply = applyMock();
+    const onCapped = vi.fn<(keyHex: string, totalLength: number, cap: number) => void>();
+    // length 3 == cap → not over → no cap, all 3 read.
+    const logs = [ fakeLog('b'.repeat(64), [
+      { type:'put', table:'features_consolidated', hbKey:'F-1', value:{}, ts:1, schema_version:1, author_pubkey:'B' },
+      { type:'put', table:'features_consolidated', hbKey:'F-2', value:{}, ts:1, schema_version:1, author_pubkey:'B' },
+      { type:'put', table:'features_consolidated', hbKey:'F-3', value:{}, ts:1, schema_version:1, author_pubkey:'B' },
+    ])];
+    const applied = await mergeAdmittedLogs(logs, {
+      applyImpl: apply,
+      maxOpsPerAuthor: 3,
+      onCapped,
+    });
+    expect(applied).toBe(3);
+    expect(onCapped).not.toHaveBeenCalled();
+  });
+
+  it('maxOpsPerAuthor: 0 disables the cap (all ops read, onCapped never fires)', async () => {
+    const apply = applyMock();
+    const onCapped = vi.fn<(keyHex: string, totalLength: number, cap: number) => void>();
+    const ops = Array.from({ length: 8 }, (_, i) => ({
+      type: 'put', table: 'features_consolidated', hbKey: `F-${i}`,
+      value: {}, ts: 1, schema_version: 1, author_pubkey: 'A',
+    }));
+    const applied = await mergeAdmittedLogs([fakeLog('c'.repeat(64), ops)], {
+      applyImpl: apply,
+      maxOpsPerAuthor: 0,
+      onCapped,
+    });
+    // Cap disabled → all 8 distinct keys applied.
+    expect(applied).toBe(8);
+    expect(onCapped).not.toHaveBeenCalled();
+  });
 });

@@ -27,6 +27,7 @@ export type BootHistoryKind =
   | 'swarm_join_failed'
   | 'peer_rejected'
   | 'peer_rate_limited'
+  | 'peer_capped'
   | 'announce_admitted'
   | 'announce_rejected'
   | 'announce_error'
@@ -55,6 +56,7 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   swarm_join_failed: 'var(--fg-warning, #ff9800)',
   peer_rejected: 'var(--fg-warning, #ff9800)',
   peer_rate_limited: 'var(--fg-danger, #f44336)',
+  peer_capped: 'var(--fg-warning, #ff9800)',
   announce_admitted: 'var(--accent, #4CAF50)',
   announce_rejected: 'var(--fg-warning, #ff9800)',
   announce_error: 'var(--fg-danger, #f44336)',
@@ -70,6 +72,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   swarm_join_failed: '⚠',
   peer_rejected: '⛔',
   peer_rate_limited: '🛑',
+  peer_capped: '✂',
   announce_admitted: '➕',
   announce_rejected: '⛔',
   announce_error: '✗',
