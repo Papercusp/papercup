@@ -47,6 +47,17 @@ function fmtTime(ms: number | null): string {
   }
 }
 
+/** Only render http(s) URLs as links — blocks `javascript:`/`data:` href XSS from registry data. */
+function safeHttpUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 const STATUS_LABEL: Record<ReportRow['status'], string> = {
   pending: 'Pending',
   resolved_unlist: 'Unlisted',
@@ -156,13 +167,15 @@ export default function CupboardModerationClient() {
             {filter === 'pending' ? 'No pending reports — nothing to moderate.' : 'No reports match this filter.'}
           </div>
         ) : (
-          reports.map((r) => (
+          reports.map((r) => {
+            const repoUrl = safeHttpUrl(r.harness_github_url);
+            return (
             <div key={r.id} className="pc-cbmod__card">
               <div className="pc-cbmod__cardhead">
                 <Flag size={13} aria-hidden className="pc-cbmod__flag" />
                 <span className="pc-cbmod__harness">{r.harness_title ?? r.harness_id}</span>
-                {r.harness_github_url && (
-                  <a className="pc-cbmod__gh" href={r.harness_github_url} target="_blank" rel="noreferrer">
+                {repoUrl && (
+                  <a className="pc-cbmod__gh" href={repoUrl} target="_blank" rel="noreferrer">
                     <ExternalLink size={12} aria-hidden /> repo
                   </a>
                 )}
@@ -197,7 +210,8 @@ export default function CupboardModerationClient() {
                 </div>
               )}
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
