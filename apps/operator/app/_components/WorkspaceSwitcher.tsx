@@ -23,6 +23,7 @@ import {
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';
 import { Tooltip } from '../harness/Tooltip';
+import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '../../lib/browser-workspace';
 
 export default function WorkspaceSwitcher() {
   const [reg, setReg] = useState<WorkspaceRegistry | null>(null);
@@ -43,9 +44,15 @@ export default function WorkspaceSwitcher() {
     listWorkspaces()
       .then((r) => {
         setReg(r);
-        // Mirror the active workspace into the URL so refreshes/share-links
-        // surface which workspace this view belongs to.
-        if (r?.current) void setWsParam(r.current);
+        // Mirror THIS WINDOW's active workspace into the URL so refreshes /
+        // share-links surface which workspace this view belongs to. Resolved
+        // from getBrowserWorkspaceId() (__PAPERCUSP_WS__ / ?ws=), NEVER the
+        // process-global reg.current — on a shared dev sidecar that one value
+        // drives every window, and writing it here flipped a window that
+        // opened a different workspace to whatever the global pointed at (the
+        // P-030 reload-flip). reg.current is only the new-window default (D-005).
+        const active = resolveActiveWorkspaceId(r, getBrowserWorkspaceId());
+        if (active && active !== 'default') void setWsParam(active);
       })
       .catch((e) => toast.error(`workspaces: ${e?.message ?? e}`));
   }, [setWsParam]);
@@ -83,7 +90,14 @@ export default function WorkspaceSwitcher() {
 
   if (!reg || reg.workspaces.length === 0) return null;
 
-  const current = reg.workspaces.find((w) => w.id === reg.current) ?? reg.workspaces[0];
+  // The workspace THIS WINDOW is active in (P-030 / D-005) — resolved from the
+  // window's own id, not the process-global reg.current. Drives the trigger
+  // label, the "active" highlight, and the switch/delete guards. A row is
+  // undeletable if the window is operating in it (activeId) or it's the
+  // new-window default (reg.current) — removing either pulls a rug out.
+  const activeId = resolveActiveWorkspaceId(reg, getBrowserWorkspaceId());
+  const current = reg.workspaces.find((w) => w.id === activeId) ?? reg.workspaces[0];
+  const undeletable = (id: string) => id === activeId || id === reg.current;
 
   const refresh = () => listWorkspaces().then(setReg).catch(() => {});
 
@@ -106,7 +120,7 @@ export default function WorkspaceSwitcher() {
   };
 
   const onSwitch = async (id: string) => {
-    if (id === reg.current) return setOpen(false);
+    if (id === activeId) return setOpen(false);
     const target = reg.workspaces.find((w) => w.id === id)?.name ?? id;
     if (!await askConfirm({
       title: `Switch to "${target}"?`,
@@ -148,8 +162,12 @@ export default function WorkspaceSwitcher() {
   };
 
   const onDelete = async (ws: Workspace) => {
-    if (ws.id === reg.current) {
+    if (ws.id === activeId) {
       toast.error('switch to another workspace before deleting this one');
+      return;
+    }
+    if (ws.id === reg.current) {
+      toast.error('this is the default workspace new windows open into — set another default first');
       return;
     }
     if (!await askConfirm({
@@ -222,7 +240,7 @@ export default function WorkspaceSwitcher() {
             Workspaces
           </div>
           {reg.workspaces.map((ws) => {
-            const isCurrent = ws.id === reg.current;
+            const isCurrent = ws.id === activeId;
             const isRenaming = ws.id === renamingId;
             return (
               <div
@@ -290,9 +308,9 @@ export default function WorkspaceSwitcher() {
                       type="button"
                       onClick={() => onDelete(ws)}
                       title="Delete"
-                      disabled={isCurrent || reg.workspaces.length <= 1}
+                      disabled={undeletable(ws.id) || reg.workspaces.length <= 1}
                       className="pc-workspace-menu-action"
-                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: isCurrent || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: isCurrent || reg.workspaces.length <= 1 ? 0.3 : 1 }}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: undeletable(ws.id) || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: undeletable(ws.id) || reg.workspaces.length <= 1 ? 0.3 : 1 }}
                     >
                       ✕
                     </button>

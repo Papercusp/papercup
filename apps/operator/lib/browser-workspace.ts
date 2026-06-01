@@ -47,3 +47,25 @@ export function getBrowserWorkspaceId(): string {
 export function wsLocalKey(key: string): string {
   return `pc:ws:${getBrowserWorkspaceId()}:${key}`;
 }
+
+/**
+ * The workspace a view is *active* in (per-window-workspace-context-2026-05-31,
+ * P-030 / D-005). It is the workspace THIS WINDOW opened — `windowWsId` (from
+ * `getBrowserWorkspaceId()`) — never the process-global `reg.current`, which is
+ * only the default a *new* window opens into. On a shared dev sidecar a single
+ * `reg.current` drives every window, so resolving a window's view against it is
+ * the "reload-flip to another workspace" bug this kills.
+ *
+ * Precedence: the window's workspace if it's a known workspace → else
+ * `reg.current` if known → else the first workspace → else the window id
+ * unchanged (degenerate empty registry).
+ */
+export function resolveActiveWorkspaceId(
+  reg: { current: string; workspaces: { id: string }[] },
+  windowWsId: string,
+): string {
+  const known = (id: string) => reg.workspaces.some((w) => w.id === id);
+  if (windowWsId && known(windowWsId)) return windowWsId;
+  if (reg.current && known(reg.current)) return reg.current;
+  return reg.workspaces[0]?.id ?? windowWsId;
+}

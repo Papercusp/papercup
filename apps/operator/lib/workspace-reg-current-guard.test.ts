@@ -23,6 +23,11 @@ const ALLOW = new Set([
   'endpoint-route/routes/workspaces/switch.ts', // the switch handler SETS it
   'endpoint-route/routes/workspaces/index.ts', // bootstrap default on create
   'endpoint-route/routes/workspaces/by-id.ts', // workspace management
+  // resolveActiveWorkspaceId() — the BROWSER-side active-workspace resolver
+  // (P-030), the client analogue of activeWorkspaceId(). It reads reg.current
+  // only as the new-window-default fallback on a *fetched* registry object
+  // (a param), never the server process-global readRegistry().
+  'browser-workspace.ts',
 ]);
 
 // Match the conventional ways code reads the active workspace off the registry.
