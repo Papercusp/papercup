@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { lazyWithRetry as lazy } from '../../lib/lazy-with-retry';
-import { usePathname } from 'next/navigation';
+import { usePathname } from '@/lib/router-compat/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';

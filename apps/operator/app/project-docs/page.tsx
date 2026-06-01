@@ -16,7 +16,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join, normalize, relative, resolve as resolvePath, sep } from 'node:path';
 import { Suspense } from 'react';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
-import Link from 'next/link';
+import Link from '@/lib/router-compat/link';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export const dynamic = 'force-dynamic';

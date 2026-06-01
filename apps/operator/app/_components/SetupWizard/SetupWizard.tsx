@@ -1,7 +1,7 @@
 'use client';
 
 import { useQueryState } from 'nuqs';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/lib/router-compat/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { SETUP_STEPS, findStep } from './steps';
 import type { StepStatus } from './types';

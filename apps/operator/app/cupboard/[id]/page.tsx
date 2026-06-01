@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter } from '@/lib/router-compat/navigation';
 import {
   Shield, ExternalLink, Users, Clock, GitBranch,
   ArrowLeft, Loader2, AlertTriangle,

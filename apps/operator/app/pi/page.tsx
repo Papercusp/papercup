@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 
 /**
  * dockview-react v5 + Next 16 Turbopack hydration: when the dock

@@ -9,7 +9,7 @@
  * will land alongside the data fetch in /users/github/[id]/page.tsx.
  */
 
-import { redirect, notFound } from 'next/navigation';
+import { redirect, notFound } from '@/lib/router-compat/navigation';
 import { getOrgPg } from '@papercusp/db-org';
 
 export const dynamic = 'force-dynamic';

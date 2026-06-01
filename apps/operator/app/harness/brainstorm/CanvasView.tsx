@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import { toast } from 'sonner';
 import '@excalidraw/excalidraw/index.css';
 import { useSyncQuery } from '@papercusp/sync';

@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import Link from '@/lib/router-compat/link';
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { requireFlag } from '@/lib/require-flag';

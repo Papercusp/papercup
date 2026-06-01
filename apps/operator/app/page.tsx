@@ -1,4 +1,4 @@
-import { redirect } from 'next/navigation';
+import { redirect } from '@/lib/router-compat/navigation';
 import { readOperatorState } from '@/lib/operator-state-pg';
 
 /**

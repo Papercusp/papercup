@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter } from '@/lib/router-compat/navigation';
 import RouteLink from '../_components/RouteLink';
 import { Select } from '../harness/Select';
 import { FLAGS, type FlagKey } from '@papercusp/flags';

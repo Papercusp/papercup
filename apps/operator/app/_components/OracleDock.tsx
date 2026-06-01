@@ -57,7 +57,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from '@/lib/router-compat/navigation';
 import { getOrCreateClientId } from '@/lib/ui/client-id';
 
 gsap.registerPlugin(useGSAP);

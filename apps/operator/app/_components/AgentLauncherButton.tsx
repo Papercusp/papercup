@@ -21,7 +21,7 @@
  */
 
 import { useState } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 
 import { launchAgent } from '@/lib/launch-agent';

@@ -1,9 +1,9 @@
 'use client';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 
-import { ProgressProvider } from '@bprogress/next/app';
-import { usePathname } from 'next/navigation';
-import { useProgress } from '@bprogress/next';
+import { ProgressProvider } from '@bprogress/react';
+import { usePathname } from '@/lib/router-compat/navigation';
+import { useProgress } from '@bprogress/react';
 
 import ControlPlaneLoading from './ControlPlaneLoading';
 import {

@@ -8,7 +8,7 @@
 
 'use client';
 
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import type { PanelComponentProps } from './panel-registry';
 import { crossOriginUrl } from '@/lib/cross-origin-url';
 

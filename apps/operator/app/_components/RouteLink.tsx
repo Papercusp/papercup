@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useSyncExternalStore, type MouseEvent } from 'react';
-import { usePathname } from 'next/navigation';
-import NextLink from 'next/link';
-import { useProgress } from '@bprogress/next';
+import { usePathname } from '@/lib/router-compat/navigation';
+import NextLink from '@/lib/router-compat/link';
+import { useProgress } from '@bprogress/react';
 
 import {
   ROUTE_PROGRESS_FALLBACK_MS,

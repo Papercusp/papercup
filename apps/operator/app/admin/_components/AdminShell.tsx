@@ -1,7 +1,7 @@
 'use client';
 
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import Link from '@/lib/router-compat/link';
+import { usePathname } from '@/lib/router-compat/navigation';
 import * as Tabs from '@radix-ui/react-tabs';
 
 /**

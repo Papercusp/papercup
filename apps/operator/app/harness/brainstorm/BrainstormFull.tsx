@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import { Pencil, Network, PencilRuler } from 'lucide-react';
 /* Three independent brainstorm surfaces, each with its own storage:
  *   - WriteView   → /api/harness/<slug>/brainstorm        (markdown)

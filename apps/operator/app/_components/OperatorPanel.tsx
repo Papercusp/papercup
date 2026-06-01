@@ -17,7 +17,7 @@
  */
 
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { createResilientEventSource } from '@papercusp/sse';

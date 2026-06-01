@@ -22,7 +22,7 @@
  */
 import { Component, Suspense, useMemo, type ReactNode } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 import { lazyWithRetry } from '../../lib/lazy-with-retry';
 import { useShortcutAction } from '../../lib/hotkeys';

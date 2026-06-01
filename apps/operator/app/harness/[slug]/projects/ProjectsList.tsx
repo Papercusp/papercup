@@ -8,7 +8,7 @@
  * present in <slug>.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/lib/router-compat/navigation';
 import { Loader2, FolderKanban } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../theme';

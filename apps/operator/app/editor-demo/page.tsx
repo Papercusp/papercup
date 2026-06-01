@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import { SPEC_CONTENT } from './spec-content';
 import { Checkbox } from '../harness/Checkbox';
 

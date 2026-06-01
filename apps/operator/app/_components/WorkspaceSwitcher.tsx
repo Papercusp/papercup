@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
-import { useProgress } from '@bprogress/next';
+import { useProgress } from '@bprogress/react';
 import {
   Workspace,
   WorkspaceRegistry,

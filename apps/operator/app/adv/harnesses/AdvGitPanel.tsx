@@ -1,6 +1,6 @@
 'use client';
 
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import { parseAsString, useQueryState } from 'nuqs';
 import { CommitDetail } from '@papercusp/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';

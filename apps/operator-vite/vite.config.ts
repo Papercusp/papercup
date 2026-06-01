@@ -66,45 +66,15 @@ export default defineConfig({
   // the SPA-fallback index.html and render as broken images.
   publicDir: resolve(operatorRoot, 'public'),
 
-  // During the migration the Vite app imports operator components
-  // in place (Phase H physically relocates them). The operator's
-  // `@/*` tsconfig path maps to `apps/operator/*`; mirror it here.
-  //
-  // `next/{navigation,link,dynamic}` shims (see `shims/`): shared
-  // components under `apps/operator/app/` still `import { useRouter }
-  // from 'next/navigation'`, but in the Vite bundle those resolve to
-  // small TSR-backed wrappers. The live Next operator (still on
-  // `next dev` during the migration window) resolves the same imports
-  // via `node_modules/next/` and is unaffected. Decommission this
-  // alias block + delete `shims/` when `apps/operator/app/` is removed
-  // in Phase H. Exact-match (RegExp) so deep imports like
-  // `next/navigation/types` aren't rewritten.
+  // The Vite app imports operator components from `apps/operator/app/**`
+  // in place. The operator's `@/*` tsconfig path maps to `apps/operator/*`;
+  // mirror it here. (The former `next/{navigation,link,dynamic}` +
+  // `@bprogress/next` aliases are gone — those imports were rewritten to
+  // `@/lib/router-compat/*` and `@bprogress/react`; see plan
+  // `finish-next-removal-2026-06-01`.)
   resolve: {
     alias: [
       { find: '@', replacement: operatorRoot },
-      {
-        find: /^next\/navigation$/,
-        replacement: resolve(import.meta.dirname, 'shims/next-navigation.tsx'),
-      },
-      {
-        find: /^next\/link$/,
-        replacement: resolve(import.meta.dirname, 'shims/next-link.tsx'),
-      },
-      {
-        find: /^next\/dynamic$/,
-        replacement: resolve(import.meta.dirname, 'shims/next-dynamic.tsx'),
-      },
-      // `@bprogress/next` (+ its `/app` subpath) — the top-of-page
-      // progress bar. No-op shim until plan B6 ships the TSR-native
-      // adapter; see `shims/bprogress.tsx`.
-      {
-        find: /^@bprogress\/next$/,
-        replacement: resolve(import.meta.dirname, 'shims/bprogress.tsx'),
-      },
-      {
-        find: /^@bprogress\/next\/app$/,
-        replacement: resolve(import.meta.dirname, 'shims/bprogress.tsx'),
-      },
     ],
     // Operator components and the Vite shell must share ONE React
     // instance — two copies would break hooks ("invalid hook call").

@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { toast } from 'sonner';
 import { Select } from '../harness/Select';

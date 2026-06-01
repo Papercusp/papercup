@@ -1,6 +1,6 @@
 'use client';
 
-import { useProgress } from '@bprogress/next';
+import { useProgress } from '@bprogress/react';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';

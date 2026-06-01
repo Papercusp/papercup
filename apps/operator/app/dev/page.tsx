@@ -10,7 +10,7 @@
 
 import { Suspense, useCallback, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import WorkspacePicker from './_components/WorkspacePicker';
 import RightRail from './_components/RightRail';
 

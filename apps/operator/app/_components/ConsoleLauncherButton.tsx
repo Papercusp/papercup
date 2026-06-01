@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 
 import { launchNativeConsole, isConsoleLauncherSupported } from '@/lib/native-console';

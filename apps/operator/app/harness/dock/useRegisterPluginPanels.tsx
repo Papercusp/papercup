@@ -19,7 +19,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import { panelRegistry, type PanelComponentProps } from './panel-registry';
 import { IframePanel } from './IframePanel';
 import { MissingPanel } from './MissingPanel';

@@ -15,7 +15,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Search, Globe, Shield, RefreshCw, ExternalLink, GitBranch, Users, Clock } from 'lucide-react';
 import type { HarnessListing } from '@/lib/cupboard/types';

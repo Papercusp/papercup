@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import dynamic from 'next/dynamic';
+import dynamic from '@/lib/router-compat/dynamic';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';

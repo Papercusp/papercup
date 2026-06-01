@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter } from '@/lib/router-compat/navigation';
 import { gsap } from 'gsap';
 import { useEffectiveVisualEffects } from '@/lib/visual-effects';
 
