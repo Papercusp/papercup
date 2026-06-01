@@ -54,8 +54,14 @@ export type TestRunner =
  *  - `runners`: explicit non-vitest runners (`.mjs`/`.sh`/cargo) rendered
  *    as named buttons. Used while ad-hoc scripts await migration to
  *    Vitest in Phase 5; the descriptor disappears with the script.
+ *  - `role`: a logical glob slot, left unresolved by the lib. A
+ *    *universal* domain (one shared across projects) names a `role`
+ *    instead of a hardcoded glob; each project supplies the concrete
+ *    globs via a role→globs map applied with {@link applyRoleGlobs}. This
+ *    is what lets the same domain resolve against any repo, instead of
+ *    baking in `apps/operator/**` (which only ever matched the operator).
  *
- * At least one of `globs` or `runners` must be present.
+ * At least one of `globs`, `runners`, or `role` must be present.
  */
 export interface TestSection {
   id: string;
@@ -63,6 +69,7 @@ export interface TestSection {
   description?: string;
   globs?: string[];
   runners?: TestRunner[];
+  role?: string;
 }
 
 /**
@@ -139,10 +146,11 @@ export function defineTestDomain(domain: TestDomain): TestDomain {
     sectionIds.add(section.id);
     const hasGlobs = (section.globs?.length ?? 0) > 0;
     const hasRunners = (section.runners?.length ?? 0) > 0;
-    if (!hasGlobs && !hasRunners) {
+    const hasRole = !!section.role;
+    if (!hasGlobs && !hasRunners && !hasRole) {
       throw new Error(
         `defineTestDomain: domain "${domain.id}" section "${section.id}" ` +
-          `must declare globs or runners (or both).`,
+          `must declare globs, runners, or a role.`,
       );
     }
   }
@@ -169,6 +177,31 @@ export function listTestDomains(): TestDomain[] {
     if (t !== 0) return t;
     return 0;
   });
+}
+
+/**
+ * Resolve a universal domain set against one project's `role → globs` map.
+ *
+ * Each section that names a `role` gets its `globs` filled from the map
+ * (an unmapped role → `[]`, which renders as an empty section rather than
+ * silently matching the wrong repo's paths). Sections without a `role`
+ * pass through untouched. Pure — never mutates the input.
+ *
+ * This is the seam that makes the universal tier project-agnostic: the lib
+ * ships the domain *definitions* (id/label/role), and each consumer (the
+ * operator generating its harness contract, Restart's data source, …)
+ * supplies the globs for its own repo.
+ */
+export function applyRoleGlobs(
+  domains: TestDomain[],
+  roleGlobs: Record<string, string[]>,
+): TestDomain[] {
+  return domains.map((d) => ({
+    ...d,
+    sections: d.sections.map((s) =>
+      s.role ? { ...s, globs: roleGlobs[s.role] ?? [] } : s,
+    ),
+  }));
 }
 
 /**

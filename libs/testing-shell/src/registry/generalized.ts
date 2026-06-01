@@ -78,6 +78,12 @@ export const generalizedRegistry: TestDomain[] = [
       {
         id: 'endpoint-tests',
         label: 'Endpoint tests',
+        // `role: 'endpoints'` is the project-resolvable handle (P-007): a
+        // cross-project consumer overrides these globs via applyRoleGlobs
+        // with its own endpoint-test paths. The operator keeps using the
+        // baked glob (it consumes this registry directly, without applying
+        // a role map), so its /admin/testing behavior is unchanged.
+        role: 'endpoints',
         globs: ['apps/operator/lib/endpoint-route/__tests__/**/*.test.ts'],
       },
     ],
