@@ -1,6 +1,12 @@
 ---
 title: Vitest `threads` pool core-dumps under Node ≥25 (use `forks`)
-description: The shared vitest config ran unit tests under the worker_threads pool, which SIGABRTs ("Aborted (core dumped)", exit 134) non-deterministically under Node 25 on this libuv/io_uring kernel — taking down `npm run test:affected` mid-run. Fix is `pool: 'forks'`. Also: the perpetual crash had been masking a large body of pre-existing unit-test failures, and full-parallel forks adds spurious 5s-timeout failures purely from CPU contention.
+description: >-
+  The shared vitest config ran unit tests under the worker_threads pool, which
+  SIGABRTs (Aborted / core dumped, exit 134) non-deterministically under Node 25
+  on this libuv/io_uring kernel, taking down npm run test:affected mid-run. Fix
+  is the forks pool. The perpetual crash had also been masking a large body of
+  pre-existing unit-test failures, and full-parallel forks adds spurious 5s
+  timeout failures purely from CPU contention.
 discovered: 2026-06-01
 tags: [vitest, test-infra, node-version, worker_threads, forks, io_uring, test-affected]
 status: active
