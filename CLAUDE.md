@@ -22,8 +22,10 @@ Then drive the **Tauri window** it opens (for agent-driven UI checks see
   and points you back here.
 - **Never start `apps/operator` as a standalone server** (`next dev` / `next start`
   / `bin/dev` / `bin/prod`). That standalone webapp is **retired** — `bin/dev` and
-  `bin/prod` are gone, and native PG was renamed `papercusp_legacy` so it fails
-  loud.
+  `bin/prod` are gone, and a `PreToolUse` hook blocks browser nav to its ports.
+  (Older docs say it "fails loud because native PG was renamed `papercusp_legacy`";
+  that mechanism is stale — see the Database-topology section: native `papercusp`
+  is alive on `:5432` and is what the dev box uses.)
 - A `curl http://127.0.0.1:3070/...` for a quick **API** check (not a UI check) is
   fine **while the desktop is running**.
 
@@ -66,7 +68,7 @@ See `apps/operator/docs/nuqs-audit-2026-05-11.md` for the rationale + the 46+ pa
 
 **Source of truth: `apps/operator/providers/HarnessZeroProvider.tsx` lines 6–19** (the "Transport selection by deployment context" doc-comment).
 
-The shipping target is the **Tauri desktop app**, and it is also the only supported test surface. The old `next dev` / `bin/prod` standalone webapp path (running `apps/operator` directly and opening `localhost:3055` in a browser) is **retired as of 2026-05-14** — native Postgres has been renamed to `papercusp_legacy` specifically to make accidental webapp boots fail loudly.
+The shipping target is the **Tauri desktop app**, and it is also the only supported test surface. The old `next dev` / `bin/prod` standalone webapp path (running `apps/operator` directly and opening `localhost:3055` in a browser) is **retired as of 2026-05-14** — `bin/dev`/`bin/prod` are gone and a `PreToolUse` hook blocks browser nav to its ports. (Older text says native PG was renamed `papercusp_legacy` to make boots fail loudly; that mechanism is **stale** — native `papercusp` on `:5432` is alive and is this dev box's substrate. See the Database-topology section.)
 
 **To run / test the app, launch the Tauri dev shell:**
 
@@ -109,7 +111,7 @@ write tests for it, wire new code to it, or "revive" it without an explicit ask.
 | Surface | Location | Status | Restore |
 |---|---|---|---|
 | `@papercup/web` — papercupai.com public site | `_retired/papercup/` | Retired 2026-05-30. Dropped from the workspace glob + root scripts; `docker-compose.papercup.prod.yml` + `Dockerfile.papercup` bannered (preserved, not deployed). | `_retired/papercup/RESTORE.md` + git tag `papercup-web-retired-2026-05-30` |
-| Standalone operator webapp (`apps/operator` opened on `:3055` in a browser) | `apps/operator` — run **only** via the Tauri shell | Retired 2026-05-14; native PG renamed `papercusp_legacy` to fail loud. | n/a — the operator still ships, just not as a standalone webapp |
+| Standalone operator webapp (`apps/operator` opened on `:3055` in a browser) | `apps/operator` — run **only** via the Tauri shell | Retired 2026-05-14; a `PreToolUse` hook blocks browsing its ports. (Old "native PG renamed `papercusp_legacy` to fail loud" rationale is stale — native `papercusp` on `:5432` is the live dev substrate; see Database-topology.) | n/a — the operator still ships, just not as a standalone webapp |
 | `libs/zero-harness` — Zero ZQL schema/queries | `libs/zero-harness` | On the Zero-retirement path; the ZQL package now has **0 live importers** (only dead surfaces reference it: `libs/papercup-shared/**/*View.tsx` + the retired `@papercusp/web`). **Migrate off, don't add tests.** | n/a |
 | `libs/papercup-db` — fictional-org demo schema | `libs/papercup-db` | Demo data; only consumed by `_retired/papercup` + a vendored submodule. Deletion candidate. | n/a |
 | `libs/holepunch-spike` — P2P spike | `libs/holepunch-spike` | Phase-0 spike. **NOT zero-importers** — its `holepunch.d.ts` shim surface is implemented by `apps/operator/lib/sync/hyperbee/swarm.ts` and wired into ~10 orchestrator files (feature-claim, distributed-claim, instrumentation-node, …), so it is not a safe delete as-is. | n/a |
@@ -239,7 +241,7 @@ cd /home/marsh-office/papercupai-workspace/papercusp-desktop
 npm run dev
 ```
 
-If you need to iterate on a server-side handler or API route and you don't want to wait for the Tauri webview to repaint, you can still reload the desktop window (Ctrl+R in the Tauri shell) or hit endpoints directly at `127.0.0.1:3055` and `127.0.0.1:3070` *while the desktop is running*. Do not try to start `apps/operator` on its own — it will fail at the first PG query because native PG was renamed to `papercusp_legacy`.
+If you need to iterate on a server-side handler or API route and you don't want to wait for the Tauri webview to repaint, you can still reload the desktop window (Ctrl+R in the Tauri shell) or hit endpoints directly at `127.0.0.1:3055` and `127.0.0.1:3070` *while the desktop is running*. Do not try to start `apps/operator` on its own — it isn't a separable webapp (and a `PreToolUse` hook blocks browsing its ports). Note: the old "first PG query fails because native PG was renamed `papercusp_legacy`" rationale is stale — native `papercusp` on `:5432` is live and is this dev box's substrate (see Database-topology).
 
 **Server-side code has no hot-reload — restart to pick it up.** The `:3070` **Hono host** (`bin/hono-host.ts` — the MCP tools, the `lib/endpoint-route` handlers, and everything in `apps/operator/lib/**` they import) runs under `tsx` with no file-watch, so edits there do **not** go live until the host process is restarted: reload the Tauri shell, or — on the standing systemd dev box — `systemctl --user restart papercup-dev-api.service`. (The `:3055` **Vite** dev server *does* hot-reload its own routes/components.) The tell that you're testing stale server code: a probe lands in the *old* place — e.g. during the coord FS→PG cutover a `coord:send` kept writing `coord/*.jsonl` instead of Postgres because the host hadn't reloaded. Probe where the write actually lands; if it's stale, restart and re-probe before trusting any result.
 
@@ -277,20 +279,31 @@ under load. Skip the cycle.
 for compound-key tables. Add a column to an existing table or write a
 migration in `libs/papercusp/libs/db/sql/<NNN>-...sql`.
 
-### Database topology — embedded-pg only. Native PG is retired.
+### Database topology — embedded-pg is the ship target; this dev box runs native PG
 
-The shipped product is a **desktop app backed by embedded Postgres**
-(`embedded-postgres-server`, per-harness instance). As of 2026-05-14
-the native-PG `papercusp` database has been **renamed to `papercusp_legacy`**
-to enforce the embedded-only path — any code that connects to
-`postgres://...@localhost:5432/papercusp` now fails immediately with
-`database "papercusp" does not exist`. That failure is the loud signal
-you forgot to launch the Tauri dev shell.
+The **shipping** product is a desktop app backed by **embedded Postgres**
+(`embedded-postgres-server`, per-harness instance), discovered through
+`~/.papercusp/embedded-pg.json`. That remains the product direction, and code
+must keep working under it (see the implications below).
 
-Practical rule: **never hardcode `localhost:5432`**. Resolve the admin
-DSN through `getHarnessAdminUrl()` (which reads the embedded-pg discovery
-file) so every code path automatically uses whichever embedded-pg the
-desktop spun up.
+**Reality on the standing dev box (verified 2026-06-01): the operator runs
+against NATIVE Postgres `papercusp` on `localhost:5432`, not embedded-pg.**
+`apps/operator/.env.local` pins
+`DATABASE_URL=postgresql://harness_admin:…@localhost:5432/papercusp`, the `:5432`
+cluster holds the live databases `papercusp` (operator), `papercusp_su`, and
+`papercusp_test`, and **no embedded-pg is running** here. So the earlier claim
+that "native `papercusp` was renamed to `papercusp_legacy` and connecting to
+`localhost:5432/papercusp` fails immediately with `database "papercusp" does not
+exist`" is **stale/false** — there is no `papercusp_legacy`, that connection
+works, and it is what the dev box uses. A few one-liners elsewhere in this file
+still repeat the old "renamed to legacy / fails loud" line (the standalone-webapp
+retirement is still real; only that *mechanism* is wrong) — **this section
+supersedes them.**
+
+Practical rule: **never hardcode `localhost:5432`** regardless. Resolve the admin
+DSN through `getHarnessAdminUrl()` so a code path works whether the box is on
+embedded-pg (discovery file) or the native-PG `DATABASE_URL` override — hardcoding
+ties you to one box's topology.
 
 Practical implications when writing code today:
 
@@ -309,10 +322,13 @@ Practical implications when writing code today:
 - **Connection-string assumptions:** prefer the workspace-resolved PG
   connection that the embedded-pg path returns; don't hard-code
   `localhost:5432`.
-- **No system-PG-only migration runner** is planned, because the
-  system PG is going away. The brief's "system PG :5432 has no runner
-  → run psql -f" warning is correct *for dev today* but is not
-  describing a long-term architectural gap.
+- **Migration runner:** embedded-pg applies `sql/<NNN>-*.sql` automatically
+  on boot; native `:5432` has **no** auto-runner, so on this dev box you apply
+  pending migrations manually (`psql "$DATABASE_URL" -f <file>`). Embedded-pg is
+  still the ship target, so the schema must work there too — but "system PG is
+  going away" is **not** true today: the dev box runs on native `:5432` (see the
+  topology note above), so don't write code that assumes embedded-pg is the only
+  reachable substrate.
 
 **Acceptable file uses (the short list):**
 - Bootstrap state that must be readable before a PG connection exists
