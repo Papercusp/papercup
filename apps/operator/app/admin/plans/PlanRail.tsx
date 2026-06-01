@@ -188,39 +188,11 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     [sorted, selectedKey, onSelect], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  if (loading) {
-    return <p className="pc-plans__placeholder">Loading plans…</p>;
-  }
-  if (error) {
-    return (
-      <div className="pc-plans__placeholder pc-plans__placeholder--error">
-        <p>Failed to load plans:</p>
-        <code>{error}</code>
-        <button type="button" className="pc-plans__retry" onClick={refresh}>
-          Retry
-        </button>
-      </div>
-    );
-  }
-  if (!plans.length) {
-    return <p className="pc-plans__placeholder">No plans found.</p>;
-  }
-
-  if (!sorted.length) {
-    // Distinguish a search miss from a filter miss — `query` is the
-    // search box, the rest are the PlanFilters keys.
-    const q = query.trim();
-    const filtersActive =
-      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
-    const msg = q
-      ? `No plans match “${q}”.`
-      : filtersActive
-        ? 'No plans match the active filters.'
-        : 'No plans to show.';
-    return <p className="pc-plans__placeholder">{msg}</p>;
-  }
-
-  // Drag-to-reorder handlers for started plans (P-045).
+  // Drag-to-reorder handlers for started plans (P-045). These hooks MUST be
+  // declared BEFORE the early-return guards below: an early return that skips
+  // a useCallback changes the hook count between renders (React #310) — the
+  // loading→loaded transition tripped exactly that and crashed the whole
+  // /admin/plans page to the error boundary.
   const runningPlans = sorted.filter((p) => bucketOf(p) === 'running');
   const hasRunning = runningPlans.length > 1; // single-plan: no reorder needed
 
@@ -262,6 +234,38 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     setDragSlug(null);
     setDragOverSlug(null);
   }, []);
+
+  if (loading) {
+    return <p className="pc-plans__placeholder">Loading plans…</p>;
+  }
+  if (error) {
+    return (
+      <div className="pc-plans__placeholder pc-plans__placeholder--error">
+        <p>Failed to load plans:</p>
+        <code>{error}</code>
+        <button type="button" className="pc-plans__retry" onClick={refresh}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (!plans.length) {
+    return <p className="pc-plans__placeholder">No plans found.</p>;
+  }
+
+  if (!sorted.length) {
+    // Distinguish a search miss from a filter miss — `query` is the
+    // search box, the rest are the PlanFilters keys.
+    const q = query.trim();
+    const filtersActive =
+      fBuckets.length > 0 || !!fOwner || !!fDate || fArchived || fLegacy || fInbox || fActionable;
+    const msg = q
+      ? `No plans match “${q}”.`
+      : filtersActive
+        ? 'No plans match the active filters.'
+        : 'No plans to show.';
+    return <p className="pc-plans__placeholder">{msg}</p>;
+  }
 
   return (
     <>
