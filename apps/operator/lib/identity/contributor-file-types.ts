@@ -286,3 +286,80 @@ export function stripSignatureForSigning(
  * `binding-verifier-types.ts` — both surfaces use the same window.
  */
 export const CHANNEL2_PROPAGATION_GRACE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+
+// ─── buildSignedContributorFile ───────────────────────────────────────────────
+
+/**
+ * Options for `buildSignedContributorFile`. The `sign` callback is
+ * injectable so the caller can pass a keychain signer in production or
+ * a generated-key signer in tests — no OS keychain dependency here.
+ */
+export interface BuildSignedContributorFileOpts {
+  githubUserId: number;
+  githubLogin: string;
+  /** Raw 32-byte Ed25519 public key, base64-encoded. */
+  devicePubkeyBase64: string;
+  attestationGistId: string;
+  /** Optional override for the `joined_at` timestamp (ISO-8601). Defaults
+   * to `new Date().toISOString()`. Injectable for deterministic tests. */
+  joinedAt?: string;
+  /**
+   * Signing callback. Receives the JCS-canonical payload bytes (UTF-8),
+   * returns the raw signature bytes. The caller wraps the signer
+   * (keychain, in-test keypair, etc.). Return value is base64-encoded
+   * into `signature_by_device`.
+   */
+  sign: (keychainId: string, payload: Buffer) => Promise<Buffer>;
+  /** Keychain id forwarded verbatim to `sign`. */
+  keychainId: string;
+}
+
+/**
+ * Build a fully-signed `ContributorFileBody`.
+ *
+ * Extraction point: this was inlined in `join-shared-harness.ts`
+ * `step7_pushContributorFile`. Extracting it here makes it reusable by
+ * `ensureMyBindingPublished` (Task 2) and by Task 6 when step7 is
+ * deleted.
+ *
+ * Signing payload: JCS-canonical JSON of all fields EXCEPT
+ * `signature_by_device`, ordered per `CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER`.
+ * This exactly matches what `two-channel-verifier.ts`
+ * `verifyContributorFileSignature` verifies (via `jcsSerialize`).
+ */
+export async function buildSignedContributorFile(
+  opts: BuildSignedContributorFileOpts,
+): Promise<ContributorFileBody> {
+  const joinedAt = opts.joinedAt ?? new Date().toISOString();
+
+  // Build the unsigned body (all fields except signature_by_device).
+  const unsignedBody: ContributorFileSigningBody = {
+    version: CONTRIBUTOR_FILE_VERSION,
+    github_user_id: opts.githubUserId,
+    github_login: opts.githubLogin,
+    device_pubkey: `ed25519:${opts.devicePubkeyBase64}`,
+    device_attestation_gist_id: opts.attestationGistId,
+    joined_at: joinedAt,
+  };
+
+  // Build the signing-ordered object: fields per
+  // CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER minus signature_by_device.
+  const signingFields = (CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER as readonly string[]).filter(
+    (f) => f !== 'signature_by_device',
+  );
+  const ordered: Record<string, unknown> = {};
+  for (const f of signingFields) {
+    ordered[f] = (unsignedBody as Record<string, unknown>)[f];
+  }
+
+  // JCS-canonical payload: JSON.stringify with the pre-ordered object.
+  // (All values are primitives — no nested objects — so pre-ordering
+  // is equivalent to full RFC 8785 JCS for this schema.)
+  const payloadBytes = Buffer.from(JSON.stringify(ordered), 'utf8');
+  const sigBytes = await opts.sign(opts.keychainId, payloadBytes);
+
+  return {
+    ...unsignedBody,
+    signature_by_device: sigBytes.toString('base64'),
+  };
+}
