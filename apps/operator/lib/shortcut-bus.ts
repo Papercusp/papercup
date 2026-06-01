@@ -153,7 +153,7 @@ export function dispatchKeydown(e: KeyboardEvent): string | null {
     // for known browser-shortcut categories so we don't trigger the print
     // dialog while a modal-open guard skipped us.
     const def = getShortcutDef(entry.id);
-    if (def?.category === 'palette' || def?.category === 'editor' || entry.id === 'feature.search-global') {
+    if (def?.category === 'palette' || def?.category === 'editor' || entry.id === 'find.open') {
       e.preventDefault();
     }
     return entry.id;
