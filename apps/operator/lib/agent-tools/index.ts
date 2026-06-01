@@ -228,6 +228,7 @@ import './plans/run-transcript';
 // plan-agent-launch — launch / resume an autonomous agent on a plan.
 import './plans/start';
 import './plans/pause';
+import './plans/set-priority';
 import './plans/launch';
 import './plans/resume';
 import './plans/runs-list';

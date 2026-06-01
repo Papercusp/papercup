@@ -1,0 +1,68 @@
+/**
+ * plans:set-priority — set the cross-plan dispatch priority for a
+ * started plan (dbos-system-completion-2026-06-01 P-045/D-013).
+ *
+ * Writes `harness_shared.harness_plan_status.priority` (INTEGER, NULLable;
+ * lower = dispatched first). The frontier groups the ready feature set by
+ * plan and orders the groups by this column, so operators drag-to-reorder
+ * started plans to control which plan's features the pipeline tackles next.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { withWorkspace } from '@papercusp/db-org';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+
+const SU_ROLES = [
+  'scoper', 'architect', 'worker', 'validator', 'reviewer',
+  'debugger', 'operator', 'documenter', 'curator',
+] as const;
+
+const argsSchema = z.object({
+  slug: z.string().min(1).describe('Plan slug to prioritize.'),
+  priority: z.number().int().nullable().describe(
+    'Dispatch rank — lower = dispatched first. Pass null to clear (no explicit priority; uses started_at order).',
+  ),
+  harness: harnessArg,
+});
+
+export default defineTool({
+  name: 'plans:set-priority',
+  description:
+    'Set the cross-plan dispatch priority for a started plan. Lower = dispatched first. The drag-to-reorder UI calls this automatically; agents can also call it when explicit ordering matters.',
+  guidance: {
+    when: 'User drags a started plan to a new position in the Plans rail, or explicitly asks "do plan A before plan B".',
+    notWhen: 'For pausing a plan, use plans:pause. For the run lifecycle, use plans:set-run-status.',
+    chaining: 'plans:list to see started plans and their current priorities.',
+  },
+  capability: 'plans:write',
+  requirePrincipal: false,
+  agentRoles: [...SU_ROLES],
+  modality: ['text'],
+  args: argsSchema,
+  async handler(args, ctx) {
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
+    const now = new Date().toISOString();
+
+    await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+      return tx`
+        UPDATE harness_shared.harness_plan_status
+           SET priority   = ${args.priority},
+               updated_at = ${now}
+         WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+           AND harness_slug = ${harnessSlug}
+           AND plan_slug    = ${args.slug}
+      `;
+    });
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ ok: true, slug: args.slug, harnessSlug, priority: args.priority }),
+      }],
+    };
+  },
+});

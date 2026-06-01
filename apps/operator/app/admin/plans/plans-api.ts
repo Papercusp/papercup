@@ -84,6 +84,8 @@ export interface PlanListRow {
   harness: string;
   /** Operational start state — null means never started. */
   startStatus: PlanStartStatus;
+  /** Cross-plan dispatch rank — lower = dispatched first. Null = no explicit priority (uses started_at order). */
+  priority: number | null;
 }
 
 export interface PlanItem {
@@ -808,6 +810,14 @@ export function pausePlan(slug: string) {
   return postJson<{ slug: string; harnessSlug: string; status?: string; notStarted?: boolean }>(
     'pause',
     { slug },
+  );
+}
+
+/** Set cross-plan dispatch priority for a started plan (P-045/D-013). */
+export function setPlanPriority(slug: string, priority: number | null) {
+  return postJson<{ ok: boolean; slug: string; priority: number | null }>(
+    'set-priority',
+    { slug, priority },
   );
 }
 

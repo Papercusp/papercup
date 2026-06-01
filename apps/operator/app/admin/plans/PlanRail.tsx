@@ -19,6 +19,7 @@ import {
   bucketOf,
   startPlan,
   pausePlan,
+  setPlanPriority,
   type AsyncResult,
   type PlanListRow,
   type ItemStatus,
@@ -93,6 +94,12 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const selectedKey = selectedSlugs.join('|');
   const { data, loading, error, refresh } = list;
 
+  // Drag-to-reorder state for started plans (P-045).
+  const [dragSlug, setDragSlug] = useState<string | null>(null);
+  const [dragOverSlug, setDragOverSlug] = useState<string | null>(null);
+  // Optimistic running-plans order — null means "use server order".
+  const [runningOrder, setRunningOrder] = useState<string[] | null>(null);
+
   // Filter reads — PlanFilters / PlanBucketTabs own the writes; same keys.
   // Plan-status is now multi-select (`?pBuckets=`); empty = all buckets.
   const [fBuckets] = useQueryState(
@@ -125,7 +132,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       ? filtered.filter((p) => fBuckets.includes(bucketOf(p)))
       : filtered;
     const sel = new Set(selectedSlugs);
-    return [...bucketed].sort((a, b) => {
+    const raw = [...bucketed].sort((a, b) => {
       // Plans toggled into the filter float to the very top.
       const selA = sel.has(a.slug) ? 0 : 1;
       const selB = sel.has(b.slug) ? 0 : 1;
@@ -133,10 +140,28 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       const sa = BUCKET_ORDER[bucketOf(a)] ?? 99;
       const sb = BUCKET_ORDER[bucketOf(b)] ?? 99;
       if (sa !== sb) return sa - sb;
+      // Within the running bucket: sort by explicit priority (lower first),
+      // then by started_at (approximated by priority=null → last).
+      if (sa === BUCKET_ORDER.running) {
+        const pa = a.priority ?? Number.MAX_SAFE_INTEGER;
+        const pb = b.priority ?? Number.MAX_SAFE_INTEGER;
+        if (pa !== pb) return pa - pb;
+      }
       return (b.updated ?? '').localeCompare(a.updated ?? '');
     });
+    // Apply local drag-reorder override for running plans (P-045).
+    if (!runningOrder) return raw;
+    const orderMap = new Map(runningOrder.map((s, i) => [s, i]));
+    return [...raw].sort((a, b) => {
+      const oa = orderMap.get(a.slug);
+      const ob = orderMap.get(b.slug);
+      if (oa !== undefined && ob !== undefined) return oa - ob;
+      if (oa !== undefined) return -1;
+      if (ob !== undefined) return 1;
+      return 0;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs, selectedKey]);
+  }, [plans, fBucketsKey, fOwner, fDate, fArchived, fLegacy, fInbox, fActionable, query, searchHitSlugs, selectedKey, runningOrder]);
 
   useImperativeHandle(
     ref,
@@ -195,19 +220,83 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     return <p className="pc-plans__placeholder">{msg}</p>;
   }
 
+  // Drag-to-reorder handlers for started plans (P-045).
+  const runningPlans = sorted.filter((p) => bucketOf(p) === 'running');
+  const hasRunning = runningPlans.length > 1; // single-plan: no reorder needed
+
+  const handleDragStart = useCallback((slug: string) => {
+    setDragSlug(slug);
+    setRunningOrder(runningPlans.map((p) => p.slug));
+  }, [runningPlans]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleDragOver = useCallback((e: React.DragEvent, slug: string) => {
+    e.preventDefault();
+    if (!dragSlug || dragSlug === slug) return;
+    setDragOverSlug(slug);
+    setRunningOrder((prev) => {
+      const cur = prev ?? runningPlans.map((p) => p.slug);
+      const from = cur.indexOf(dragSlug);
+      const to = cur.indexOf(slug);
+      if (from < 0 || to < 0 || from === to) return cur;
+      const next = [...cur];
+      next.splice(from, 1);
+      next.splice(to, 0, dragSlug);
+      return next;
+    });
+  }, [dragSlug, runningPlans]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragSlug(null);
+    setDragOverSlug(null);
+    if (!runningOrder) return;
+    // Persist the new order as integer priorities (1-based, lower = first).
+    await Promise.all(
+      runningOrder.map((slug, i) => setPlanPriority(slug, i + 1).catch(() => {})),
+    );
+    onStartToggle?.(); // re-fetch so the server order reflects the new priorities
+    setRunningOrder(null);
+  }, [runningOrder, onStartToggle]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleDragEnd = useCallback(() => {
+    setDragSlug(null);
+    setDragOverSlug(null);
+  }, []);
+
   return (
-    <ul className="pc-plan-rail__rows" role="list">
-      {sorted.map((p) => (
-        <PlanRow
-          key={p.slug}
-          plan={p}
-          active={selectedSlugs.includes(p.slug)}
-          onSelect={() => onSelect(p.slug)}
-          onStartToggle={onStartToggle}
-          harnessSlug={harnessSlug}
-        />
-      ))}
-    </ul>
+    <>
+      {hasRunning && (
+        <p className="pc-plan-rail__drag-hint" aria-live="polite">
+          Drag started plans to set their priority
+        </p>
+      )}
+      <ul
+        className="pc-plan-rail__rows"
+        role="list"
+        onDrop={hasRunning ? handleDrop : undefined}
+        onDragOver={hasRunning ? (e) => e.preventDefault() : undefined}
+      >
+        {sorted.map((p) => {
+          const isRunning = bucketOf(p) === 'running';
+          return (
+            <PlanRow
+              key={p.slug}
+              plan={p}
+              active={selectedSlugs.includes(p.slug)}
+              onSelect={() => onSelect(p.slug)}
+              onStartToggle={onStartToggle}
+              harnessSlug={harnessSlug}
+              draggable={hasRunning && isRunning}
+              isDragging={dragSlug === p.slug}
+              isDragOver={dragOverSlug === p.slug}
+              onDragStart={hasRunning && isRunning ? () => handleDragStart(p.slug) : undefined}
+              onDragOver={hasRunning && isRunning ? (e) => handleDragOver(e, p.slug) : undefined}
+              onDragEnd={hasRunning && isRunning ? handleDragEnd : undefined}
+            />
+          );
+        })}
+      </ul>
+    </>
   );
 });
 
@@ -219,12 +308,24 @@ function PlanRow({
   onSelect,
   onStartToggle,
   harnessSlug,
+  draggable = false,
+  isDragging = false,
+  isDragOver = false,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
 }: {
   plan: PlanListRow;
   active: boolean;
   onSelect: () => void;
   onStartToggle?: () => void;
   harnessSlug?: string | null;
+  draggable?: boolean;
+  isDragging?: boolean;
+  isDragOver?: boolean;
+  onDragStart?: () => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragEnd?: () => void;
 }) {
   const title = plan.title ?? plan.slug;
   const source = sourceOfDraftPlan(plan);
@@ -268,7 +369,13 @@ function PlanRow({
   const showStartToggle = bucket === 'ready' || bucket === 'running';
 
   return (
-    <li className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}`}>
+    <li
+      className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}${isDragging ? ' is-dragging' : ''}${isDragOver ? ' is-drag-over' : ''}`}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDragEnd={onDragEnd}
+    >
       <button
         type="button"
         className={`pc-plan-row ${active ? 'is-active' : ''}`}
@@ -277,6 +384,11 @@ function PlanRow({
         aria-current={active ? 'page' : undefined}
       >
         <div className="pc-plan-row__head">
+          {draggable && (
+            <span className="pc-plan-row__drag-handle" aria-hidden="true" title="Drag to reorder">
+              ⠿
+            </span>
+          )}
           <span className="pc-plan-row__title">{title}</span>
           {showStartToggle ? (
             <button

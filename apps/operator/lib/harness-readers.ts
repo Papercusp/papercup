@@ -272,3 +272,85 @@ export async function getHealth(
     },
   };
 }
+
+// ── wave progress (promote-policy-and-waves P-011) ──────────────────
+
+export interface WaveCounts {
+  total: number;
+  passed: number;
+  failing: number;
+  inProgress: number;
+  blocked: number;
+}
+
+export interface WaveProgressData {
+  /** Plan slug this wave data belongs to. */
+  planSlug: string;
+  /** Ordered waves (wave ids in the order features were promoted). */
+  waves: string[];
+  /** Per-wave counts keyed by wave id. */
+  byWave: Record<string, WaveCounts>;
+  /** Overall totals across all waves from this plan. */
+  totals: WaveCounts;
+}
+
+/**
+ * Compute per-wave feature counts for a given plan in a harness.
+ *
+ * Reads `harness_features_consolidated` WHERE `source_plan_slug = planSlug`
+ * and groups the results by `wave`. Wave order is by first seen (the order
+ * features were promoted, approximated by created_ts).
+ */
+export async function getWaveProgress(
+  harnessSlug: string,
+  planSlug: string,
+): Promise<HarnessReadResult<WaveProgressData>> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      wave: string | null;
+      status: string;
+      created_ts: number | bigint | null;
+    }[]>`
+      SELECT wave, status, created_ts
+        FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug     = ${harnessSlug}
+         AND source_plan_slug = ${planSlug}
+       ORDER BY created_ts ASC NULLS LAST
+    `;
+
+    const byWave: Record<string, WaveCounts> = {};
+    const waveOrder: string[] = [];
+
+    for (const r of rows) {
+      const wave = r.wave ?? '(no wave)';
+      if (!byWave[wave]) {
+        byWave[wave] = { total: 0, passed: 0, failing: 0, inProgress: 0, blocked: 0 };
+        waveOrder.push(wave);
+      }
+      const c = byWave[wave]!;
+      c.total += 1;
+      const s = r.status;
+      if (s === 'passed') c.passed += 1;
+      else if (s === 'failing') c.failing += 1;
+      else if (s === 'in_progress' || s === 'validating') c.inProgress += 1;
+      else if (s === 'blocked') c.blocked += 1;
+    }
+
+    const totals: WaveCounts = { total: 0, passed: 0, failing: 0, inProgress: 0, blocked: 0 };
+    for (const c of Object.values(byWave)) {
+      totals.total += c.total;
+      totals.passed += c.passed;
+      totals.failing += c.failing;
+      totals.inProgress += c.inProgress;
+      totals.blocked += c.blocked;
+    }
+
+    return {
+      ok: true,
+      data: { planSlug, waves: waveOrder, byWave, totals },
+    };
+  } catch (e) {
+    return { ok: false, status: 404, error: String(e) };
+  }
+}

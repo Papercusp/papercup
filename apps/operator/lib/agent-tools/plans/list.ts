@@ -209,13 +209,14 @@ export default defineTool({
     // Batch-load harness_plan_status for all slugs so Start/Pause UI
     // can derive button state without a separate fetch per plan.
     let startStatusMap: Map<string, string> = new Map();
+    let priorityMap: Map<string, number | null> = new Map();
     try {
       const slugSet = rows.map((r) => r.slug);
       if (slugSet.length > 0) {
         const harnessSlug = perHarnessOpts[0]?.harnessSlug ?? 'papercup';
         const statusRows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-          return tx<{ plan_slug: string; status: string }[]>`
-            SELECT plan_slug, status
+          return tx<{ plan_slug: string; status: string; priority: number | null }[]>`
+            SELECT plan_slug, status, priority
               FROM harness_shared.harness_plan_status
              WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
                AND harness_slug  = ${harnessSlug}
@@ -224,6 +225,7 @@ export default defineTool({
         });
         for (const sr of statusRows) {
           startStatusMap.set(sr.plan_slug, sr.status);
+          priorityMap.set(sr.plan_slug, sr.priority ?? null);
         }
       }
     } catch {
@@ -233,6 +235,7 @@ export default defineTool({
     const augmentedRows = rows.map((r) => ({
       ...r,
       startStatus: (startStatusMap.get(r.slug) ?? null) as 'started' | 'paused' | 'done' | null,
+      priority: priorityMap.get(r.slug) ?? null,
     }));
 
     return {

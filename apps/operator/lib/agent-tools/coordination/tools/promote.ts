@@ -74,15 +74,41 @@ const PROMOTE_STATUS_MARKER = '<!-- plan-pipeline-status -->';
  * If the plan has no `## Now` block, returns the body unchanged
  * (promote write-back has no preferred state/next to author).
  */
+export interface WaveSummary {
+  wave: string;
+  total: number;
+  passed: number;
+  inflight: number;
+  blocked: number;
+  failing: number;
+}
+
 export function upsertPromoteStatusLine(
   body: string,
   harnessSlug: string,
   counts: { total: number; inflight: number; passed: number },
+  waveSummaries?: WaveSummary[],
 ): string {
-  const block =
-    `${PROMOTE_STATUS_MARKER}\n` +
+  const totalsLine =
     `**Promote-status:** ${counts.total} feature(s) in \`${harnessSlug}\`: ` +
     `${counts.inflight} in-flight · ${counts.passed} passed`;
+
+  // Per-wave breakdown (P-013) — rendered as a compact table when waves exist.
+  const waveLines: string[] = [];
+  if (waveSummaries && waveSummaries.length > 1) {
+    for (const w of waveSummaries) {
+      const stuck = w.failing > 0 ? ` ⚠ ${w.failing} failing` : '';
+      const blk = w.blocked > 0 ? ` · ${w.blocked} blocked` : '';
+      waveLines.push(
+        `  Wave **${w.wave}**: ${w.total} total · ${w.passed} passed · ${w.inflight} in-flight${blk}${stuck}`,
+      );
+    }
+  }
+
+  const block =
+    `${PROMOTE_STATUS_MARKER}\n` +
+    totalsLine +
+    (waveLines.length ? '\n' + waveLines.join('\n') : '');
 
   // Strip any prior marker line + its content (idempotent re-promote).
   const stripRe = new RegExp(
@@ -719,14 +745,16 @@ export default defineTool({
     // Best-effort: failure here is non-fatal — the ## Promoted block
     // write proceeds regardless.
     let statusCounts: { total: number; inflight: number; passed: number } | null = null;
+    let waveSummaries: WaveSummary[] | undefined;
     try {
       const { sql } = getOrgPg();
       // P-041: scope to the caller's workspace (already used for the assertion
       // write above). The admin handle bypasses RLS, and post-091 neither
       // source_plan_slug nor harness_slug is globally unique, so without this
       // the status counts fold in a colliding workspace's features.
-      const rows = await sql<{ status: string }[]>`
-        SELECT status FROM harness_shared.harness_features_consolidated
+      // P-013: also read `wave` so we can emit per-wave progress lines.
+      const rows = await sql<{ status: string; wave: string | null }[]>`
+        SELECT status, wave FROM harness_shared.harness_features_consolidated
          WHERE workspace_id     = ${ctx.workspaceId ?? ''}
            AND source_plan_slug = ${args.slug}
            AND harness_slug     = ${harnessSlug}
@@ -738,6 +766,23 @@ export default defineTool({
         else inflight++;
       }
       statusCounts = { total: rows.length, inflight, passed };
+
+      // P-013: group by wave for the per-wave breakdown.
+      const waveMap = new Map<string, WaveSummary>();
+      for (const r of rows) {
+        const w = r.wave ?? '(no wave)';
+        if (!waveMap.has(w)) {
+          waveMap.set(w, { wave: w, total: 0, passed: 0, inflight: 0, blocked: 0, failing: 0 });
+        }
+        const ws = waveMap.get(w)!;
+        ws.total += 1;
+        const s = r.status;
+        if (s === 'passed') ws.passed += 1;
+        else if (s === 'failing') { ws.failing += 1; ws.inflight += 1; }
+        else if (s === 'blocked') { ws.blocked += 1; }
+        else ws.inflight += 1;
+      }
+      if (waveMap.size > 0) waveSummaries = Array.from(waveMap.values());
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       ctx.log?.(`[plans:promote] status-count query failed (status line skipped): ${msg}`);
@@ -762,7 +807,7 @@ export default defineTool({
         const featureRows = buildPromotedRows(promoteFeatures, importRes.ids, waveId);
         let newBody = upsertPromotedBlock(current, featureRows);
         if (statusCounts) {
-          newBody = upsertPromoteStatusLine(newBody, harnessSlug, statusCounts);
+          newBody = upsertPromoteStatusLine(newBody, harnessSlug, statusCounts, waveSummaries);
         }
         // Promote-on-draft: flip status to active. Only the literal
         // `status: draft` line in frontmatter is rewritten — does not

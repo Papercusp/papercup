@@ -90,6 +90,8 @@ const WRITE_VERBS = new Set([
   'resume',
   // plans-central-harness-ux P-003: operational start/pause in harness_plan_status.
   'start', 'pause',
+  // dbos-system-completion P-045: drag-to-reorder priority for the frontier dispatcher.
+  'set-priority',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/
