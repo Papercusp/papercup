@@ -218,15 +218,19 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     options: { preventDefault: true },
   },
   {
-    id: 'feature.search-global',
-    description: 'Find a feature (global, overrides browser Find)',
-    // Mod+F overrides the browser's in-page find dialog. The global
-    // dispatcher (`GlobalShortcutDispatcher`) preventDefaults whenever
-    // a registered action runs, so the browser's find bar is skipped.
-    // `enableOnFormTags` is required so the binding wins inside vditor /
-    // search inputs / etc.
+    id: 'find.open',
+    description: 'Find in page (highlight + scroll matches)',
+    // Mod+F opens the in-app find bar (GlobalFindInPage) and claims the
+    // combo from the webview's own find: native find-in-page is
+    // inconsistent across Tauri webviews (WebView2 yes, WKWebView /
+    // WebKitGTK no), so we own it. The global dispatcher
+    // (`GlobalShortcutDispatcher`) preventDefaults whenever a registered
+    // action runs; shortcut-bus also id-claims `find.open` so the native
+    // find never shows even before the handler mounts. `enableOnFormTags`
+    // is required so Ctrl+F works while focus is in the chat composer /
+    // vditor / any input.
     defaultCombo: 'mod+f',
-    category: 'feature-list',
+    category: 'navigation',
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   },
   {

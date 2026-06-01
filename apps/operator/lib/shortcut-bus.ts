@@ -134,7 +134,7 @@ export function dispatchKeydown(e: KeyboardEvent): string | null {
       // browser print dialog is suppressed even on routes that don't
       // bind the action (e.g. `/settings` for Cmd+P).
       const def = getShortcutDef(entry.id);
-      if (def?.category === 'palette' || def?.category === 'editor' || entry.id === 'feature.search-global') {
+      if (def?.category === 'palette' || def?.category === 'editor' || entry.id === 'find.open') {
         e.preventDefault();
       }
       return entry.id;

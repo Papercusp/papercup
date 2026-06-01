@@ -10,6 +10,7 @@ import WslOnboardingGate from '@/app/_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from '@/app/_components/GlobalShortcutDispatcher';
 import GlobalNavShortcuts from '@/app/_components/GlobalNavShortcuts';
 import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
+import GlobalFindInPage from '@/app/_components/GlobalFindInPage';
 import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from '@/app/_components/ToastHistoryRecorder';
@@ -26,6 +27,9 @@ import '@/app/globals.css';
 // App-wide command-palette chrome (⌘K / Ctrl+P). The palette markup uses
 // `.h-cmd*` classes that used to live in harness.css; they now live here.
 import '@/app/command-palette.css';
+// App-wide find-in-page (Ctrl/⌘+F): the ::highlight() rules for the CSS
+// Custom Highlight API + the `.pc-find*` find-bar chrome.
+import '@/app/find-in-page.css';
 // Harness panel styles (the `h-*` classes). The legacy /harness page loaded
 // these via HarnessDashboard; now that /adv tabs render harness panel
 // components directly (brainstorm/prs/settings/insights — see
@@ -100,6 +104,7 @@ function RootComponent() {
                   the chromeless iframe targets ChromeShell itself skips. */}
               <GlobalNavShortcuts />
               <GlobalCommandPalette />
+              <GlobalFindInPage />
               <RouteTransitionProvider>
                 <WslOnboardingGate>
                   <OperatorConversationProvider>

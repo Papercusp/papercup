@@ -10,13 +10,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./shortcut-registry', () => {
   const base: Record<string, string> = {
-    'feature.search-global': 'mod+k',
+    'find.open': 'mod+f',
     'cmd.palette': 'mod+p',
     'editor.save': 'mod+s',
     'nav.next': 'j',
   };
   const cat: Record<string, string> = {
-    'feature.search-global': 'feature',
+    'find.open': 'navigation',
     'cmd.palette': 'palette',
     'editor.save': 'editor',
     'nav.next': 'nav',
@@ -52,7 +52,7 @@ describe('refreshKeymap / getResolvedKeymap', () => {
     expect(getResolvedKeymap().map((e) => e.id).sort()).toEqual([
       'cmd.palette',
       'editor.save',
-      'feature.search-global',
+      'find.open',
       'nav.next',
     ]);
   });
@@ -131,6 +131,15 @@ describe('dispatchKeydown — browser-default claim', () => {
     const e = ev('j'); // nav.next, category nav (not claimed)
     expect(dispatchKeydown(e)).toBe('nav.next');
     expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('claims find.open (Ctrl+F) even with no handler, so the native browser find never shows', () => {
+    // find.open is category 'navigation' (which is NOT a claimed category) —
+    // it is claimed by id, the safety net that suppresses the webview's native
+    // find bar on routes where GlobalFindInPage has not bound the action.
+    const e = ev('f', { ctrlKey: true });
+    expect(dispatchKeydown(e)).toBe('find.open');
+    expect(e.preventDefault).toHaveBeenCalled();
   });
 
   it('still claims an editor combo when the handler returned false (fall-through)', () => {
