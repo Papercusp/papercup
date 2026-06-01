@@ -57,7 +57,7 @@ describe('brainstorm:chat — registry invariants', () => {
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
     await import('@/lib/agent-tools/architect/chat'); // side-effect: registers both architect + brainstorm
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('brainstorm:chat');
     expect(tool, 'brainstorm:chat is registered').toBeTruthy();
@@ -72,7 +72,7 @@ describe('oracle:chat — registry invariants', () => {
   it('registers with replayBufferSize > 0', async () => {
     mockAgentChat();
     await import('@/lib/agent-tools/oracle/chat'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('oracle:chat');
     expect(tool).toBeTruthy();
@@ -85,7 +85,7 @@ describe('operator:converse — registry invariants', () => {
   it('registers with replayBufferSize > 0', async () => {
     mockAgentChat();
     await import('@/lib/agent-tools/operator/converse'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('operator:converse');
     expect(tool).toBeTruthy();
@@ -98,7 +98,7 @@ describe('operator:delegate — registry invariants', () => {
   it('registers with replayBufferSize > 0', async () => {
     mockAgentChat();
     await import('@/lib/agent-tools/operator/delegate'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('operator:delegate');
     expect(tool).toBeTruthy();
@@ -120,7 +120,7 @@ describe('all 5 streaming surfaces declare consistent replay-buffer + modality',
     await import('@/lib/agent-tools/oracle/chat');
     await import('@/lib/agent-tools/operator/converse');
     await import('@/lib/agent-tools/operator/delegate');
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const surfaces = [
       'architect:chat',

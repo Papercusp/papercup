@@ -93,7 +93,7 @@ describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
     await import('@/lib/agent-tools/architect/chat'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('architect:chat');
     expect(tool).toBeTruthy();
@@ -113,7 +113,7 @@ describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
     await import('@/lib/agent-tools/architect/chat'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('architect:chat');
     expect(tool).toBeTruthy();

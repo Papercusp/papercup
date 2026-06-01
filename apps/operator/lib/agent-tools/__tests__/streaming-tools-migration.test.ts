@@ -58,7 +58,7 @@ describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
       runAgentChat: () => mockAgentChat([]),
     }));
     await import('@/lib/agent-tools/architect/chat'); // register
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     for (const name of ['architect:chat', 'brainstorm:chat']) {
       const tool = lookupByMcpName(name);
@@ -142,7 +142,7 @@ describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
     await import('@/lib/agent-tools/operator/scan');
     await import('@/lib/agent-tools/operator/converse');
     await import('@/lib/agent-tools/operator/delegate');
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     for (const name of ['operator:scan', 'operator:converse', 'operator:delegate']) {
       const tool = lookupByMcpName(name);
@@ -282,7 +282,7 @@ describe('oracle:chat (JSON-shape delta wire)', () => {
       ORACLE_ALLOWED_TOOLS: [],
     }));
     await import('@/lib/agent-tools/oracle/chat');
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('oracle:chat');
     expect(tool, 'oracle:chat registered').toBeTruthy();
@@ -357,7 +357,7 @@ describe('agent_chats:chat (thin-slice JSON-shape delta wire)', () => {
       runAgentChat: () => mockAgentChat([]),
     }));
     await import('@/lib/agent-tools/agent_chats/chat');
-    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('agent_chats:chat');
     expect(tool, 'agent_chats:chat registered').toBeTruthy();

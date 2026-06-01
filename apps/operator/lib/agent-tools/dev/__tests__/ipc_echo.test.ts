@@ -69,9 +69,7 @@ describe('dev:ipc_echo', () => {
 
   it('schema-inferred wire — binary event is classified as binary', async () => {
     await import('@/lib/agent-tools/dev/ipc_echo');
-    const { lookupByMcpName } = await import(
-      '@papercusp/agent-mcp/tool-projection'
-    );
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp');
     const t = lookupByMcpName('dev:ipc_echo')!;
     expect(t.eventWireKinds?.delta).toBe('json');
     expect(t.eventWireKinds?.binary).toBe('binary');
