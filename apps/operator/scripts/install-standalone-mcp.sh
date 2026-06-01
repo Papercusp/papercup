@@ -571,10 +571,13 @@ Done.  Profile: ${PROFILE}
     - Claude → Pre/PostToolUse hooks in ~/.claude/settings.json (user-level,
       automatic — BLOCKS the edit with the holder's intent + expiry).
     - OMP    → coord-hook.ts loaded via \`-e\` by psu's omp launch (automatic).
-    - Codex  → NO automatic hook (codex doesn't fire PreToolUse on edits —
-      upstream openai/codex #20204). Codex coordinates by calling \`locks:*\`
-      itself, as its playbook instructs. The per-session CODEX_HOME ships a
-      hooks.json that activates automatically once codex fixes hook emission.
+    - Codex  → lock PreToolUse is INERT (codex doesn't fire it on edits —
+      upstream openai/codex #20204), so codex coordinates LOCKS by calling
+      \`locks:*\` itself, per its playbook; the lock hooks.json is ready and
+      activates once codex fixes PreToolUse emission. BUT codex's PostToolUse
+      DOES fire (Bash / apply_patch / MCP), so the per-session SU CODEX_HOME
+      now also ships a coord-inbox PostToolUse hook — new coord:inbox messages
+      are injected mid-turn, same as Claude.
   Enforcement scopes to the papercup workspace + fails open when the
   operator is down. /coord surfaces "enforcement offline".
 

@@ -48,6 +48,7 @@ async function installFakeHooks() {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'pretooluse-locks-acquire.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'posttooluse-coord-inbox.sh'), '#!/bin/sh\n');
   return dir;
 }
 
@@ -115,6 +116,10 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('pretooluse-locks-acquire.sh');
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
+    // Role sessions get NO coord push hook — they coordinate via
+    // messages:feature_*, not the SU coord bus.
+    expect(hooks.hooks.PostToolUse).toHaveLength(1);
+    expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
   });
 
   it('writeCodexLockHooks no-ops (no hooks.json) when the hook scripts are absent', async () => {
@@ -177,5 +182,35 @@ describe('writeSuCodexHome', () => {
     const out = writeSuCodexHome({ sessionKey: 6, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
     expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(true);
     expect(existsSync(join(out.codexHome, 'settings.json'))).toBe(false);
+  });
+
+  it('adds the coord-inbox PUSH hook (PostToolUse, matcher .*, baked PAPERCUSP_SID = the session id)', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 12, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-abc-123' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    // Two PostToolUse entries: lock-release + coord push.
+    expect(hooks.hooks.PostToolUse).toHaveLength(2);
+    const coord = hooks.hooks.PostToolUse.find(
+      (e: { hooks: { command: string }[] }) => e.hooks[0].command.includes('posttooluse-coord-inbox.sh'),
+    );
+    expect(coord).toBeTruthy();
+    expect(coord.matcher).toBe('.*');
+    // SID baked (codex doesn't env-expand) so the hook's coord identity == &client=.
+    expect(coord.hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+    expect(coord.hooks[0].command).toContain('PAPERCUSP_WORKSPACE_ROOT=');
+  });
+
+  it('no coord hook when the coord script is absent (only lock hooks installed)', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const dir = join(fakeHome, '.papercusp', 'hooks', 'cc');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'pretooluse-locks-acquire.sh'), '#!/bin/sh\n');
+    writeFileSync(join(dir, 'posttooluse-locks-release.sh'), '#!/bin/sh\n');
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 13, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.PostToolUse).toHaveLength(1); // lock-release only
+    expect(JSON.stringify(hooks)).not.toContain('posttooluse-coord-inbox.sh');
   });
 });

@@ -99,27 +99,55 @@ function freshCodexHome(codexHome: string): string {
  * the installer §4f + an earlier version of this wrote, which codex silently
  * ignored). We write `hooks.json`.
  *
- * CURRENTLY INERT (D-011): codex 0.135/0.136-alpha do NOT actually fire
- * PreToolUse for `apply_patch` OR `Bash` in practice (upstream openai/codex
- * #20204 / #16732 — open). So this config is *correct + ready* but enforces
- * nothing until codex's hook emission is fixed upstream. codex coordination is
- * SOFT meanwhile (the playbook instructs voluntary `locks:*` calls). claude's
- * user-level hooks DO fire — only codex is affected.
+ * LOCK HOOKS CURRENTLY INERT (D-011): codex 0.135/0.136-alpha do NOT actually
+ * fire PreToolUse for `apply_patch` OR `Bash` in practice (upstream openai/codex
+ * #20204 / #16732 — open). So the *lock* config is *correct + ready* but
+ * enforces nothing until codex's hook emission is fixed upstream. codex lock
+ * coordination is SOFT meanwhile (the playbook instructs voluntary `locks:*`
+ * calls). claude's user-level lock hooks DO fire — only codex is affected.
+ *
+ * COORD PUSH HOOK (SU only) — NOT inert. When `coordSid` is given (SU sessions
+ * pass their session id), we ALSO add a PostToolUse coord-inbox hook. Unlike
+ * PreToolUse, codex's PostToolUse DOES fire for Bash / `apply_patch` / MCP
+ * calls (developers.openai.com/codex/hooks), so the SU agent gets new
+ * coord:inbox messages injected mid-turn — the codex counterpart of the
+ * Claude global-settings coord entry. We BAKE PAPERCUSP_SID=<coordSid>: codex
+ * doesn't env-expand config, and the hook both gates on and addresses its
+ * inbox by PAPERCUSP_SID, which must equal the `&client=<sid>` baked into the
+ * SU MCP url. Role sessions get no coord hook (they coordinate via
+ * messages:feature_*, not the SU coord bus).
  */
-export function writeCodexLockHooks(codexHome: string): boolean {
+export function writeCodexLockHooks(codexHome: string, coordSid?: string): boolean {
   const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
   const root = shellSingleQuote(resolveWorkspaceRoot());
+
+  type CodexHook = { matcher: string; hooks: { type: 'command'; command: string }[] };
+  const postToolUse: CodexHook[] = [
+    { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${post}` }] },
+  ];
+
+  // SU coord push hook (matcher `.*` — every PostToolUse-eligible tool, for
+  // max cadence). Baked PAPERCUSP_SID = the session's coord identity.
+  const coord = join(dir, 'posttooluse-coord-inbox.sh');
+  if (coordSid && existsSync(coord)) {
+    postToolUse.push({
+      matcher: '.*',
+      hooks: [{
+        type: 'command',
+        command: `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_SID=${shellSingleQuote(coordSid)} ${coord}`,
+      }],
+    });
+  }
+
   const hooks = {
     hooks: {
       PreToolUse: [
         { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${pre}` }] },
       ],
-      PostToolUse: [
-        { matcher: CODEX_LOCK_MATCHER, hooks: [{ type: 'command', command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${post}` }] },
-      ],
+      PostToolUse: postToolUse,
     },
   };
   writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify(hooks, null, 2), { mode: 0o600 });
@@ -238,7 +266,10 @@ export function writeSuCodexHome(opts: {
   ].join('\n');
   writeFileSync(configPath, toml, { mode: 0o600 });
 
-  writeCodexLockHooks(codexHome);
+  // SU sessions also get the coord-inbox PUSH hook (passing the session id as
+  // coordSid) — new coord:inbox messages injected mid-turn, parity with the
+  // Claude global-settings coord entry.
+  writeCodexLockHooks(codexHome, opts.sid);
 
   return { codexHome, agentsPath, configPath };
 }
