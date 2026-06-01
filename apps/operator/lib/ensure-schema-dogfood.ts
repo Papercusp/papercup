@@ -38,6 +38,7 @@ type DogfoodFlags = {
   insightsFirstVisit: boolean;
   sharedRepoBindingCache: boolean;
   sharedPresence: boolean;
+  substrateOutbox: boolean;
 };
 
 type _G = { __dogfoodEnsureFlags?: DogfoodFlags };
@@ -60,6 +61,7 @@ const flags: DogfoodFlags =
     insightsFirstVisit: false,
     sharedRepoBindingCache: false,
     sharedPresence: false,
+    substrateOutbox: false,
   });
 
 /* ─── HYPERBEE-bucket (v5 §7.1) ───────────────────────────────────── */
@@ -452,6 +454,95 @@ export async function ensureWebhookAuditTable(): Promise<void> {
   flags.webhookAudit = true;
 }
 
+/* ─── FEDERATION-bucket (feature-content-federation Stage 1) ──────── */
+
+/** harness_shared.substrate_outbox — the transactional-outbox CDC seam for
+ *  feature/issue federation (plan
+ *  papercusp-feature-content-federation-2026-06-01, migration 102). The capture
+ *  trigger (wired in wireDogfoodTriggers) enqueues every LOCAL-origin write to
+ *  the consolidated tables here; the Stage-3 drain appends them to this device's
+ *  own log.
+ *
+ *  Fresh-boot parity (the G1 lesson): migration 102 may 42P01-skip on a fresh
+ *  embedded-pg boot if it runs before the consolidated tables exist, so we
+ *  re-ensure the table + the capture FUNCTION here at boot. The triggers
+ *  themselves are attached in wireDogfoodTriggers (alongside the change-notify
+ *  triggers on the same consolidated tables). Mirrors migration 102 exactly. */
+export async function ensureSubstrateOutboxTable(): Promise<void> {
+  if (flags.substrateOutbox) return;
+  const { sql } = getOrgPg();
+  // workspace_id parity on issues_consolidated (features_consolidated already
+  // has it via migration 009; issues_consolidated, created later in 030, did
+  // not). The per-(workspace, harness) drain needs it for issues too.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.harness_issues_consolidated
+      ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT '';
+    CREATE INDEX IF NOT EXISTS hic_workspace_idx
+      ON harness_shared.harness_issues_consolidated (workspace_id);
+
+    CREATE TABLE IF NOT EXISTS harness_shared.substrate_outbox (
+      id           BIGSERIAL PRIMARY KEY,
+      workspace_id TEXT   NOT NULL,
+      harness_slug TEXT   NOT NULL,
+      table_name   TEXT   NOT NULL,
+      op           TEXT   NOT NULL CHECK (op IN ('put', 'del')),
+      key          TEXT   NOT NULL,
+      row          JSONB,
+      ts           BIGINT NOT NULL,
+      drained_at   BIGINT
+    );
+    CREATE INDEX IF NOT EXISTS substrate_outbox_drain_idx
+      ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);
+  `);
+  // The capture function. Named dollar-quote ($body$) per repo convention.
+  await sql.unsafe(`
+    CREATE OR REPLACE FUNCTION harness_shared.capture_substrate_outbox()
+    RETURNS TRIGGER AS $body$
+    DECLARE
+      v_op      TEXT;
+      v_rec     RECORD;
+      v_origin  TEXT;
+      v_key     TEXT;
+      v_row     JSONB;
+      v_ws      TEXT;
+      v_slug    TEXT;
+      v_keycol  TEXT := TG_ARGV[0];
+    BEGIN
+      IF (TG_OP = 'DELETE') THEN
+        v_op := 'del';
+        v_rec := OLD;
+      ELSE
+        v_op := 'put';
+        v_rec := NEW;
+      END IF;
+
+      v_row := to_jsonb(v_rec);
+      v_origin := v_row ->> 'origin';
+
+      -- Echo-loop guard: skip remote-origin writes (the projection's own writes).
+      IF COALESCE(v_origin, 'local') <> 'local' THEN
+        RETURN v_rec;
+      END IF;
+
+      v_key  := v_row ->> v_keycol;
+      v_ws   := COALESCE(v_row ->> 'workspace_id', '');
+      v_slug := v_row ->> 'harness_slug';
+
+      INSERT INTO harness_shared.substrate_outbox
+        (workspace_id, harness_slug, table_name, op, key, row, ts)
+      VALUES
+        (v_ws, v_slug, TG_TABLE_NAME, v_op, v_key, v_row,
+         (extract(epoch from now()) * 1000)::bigint);
+
+      PERFORM pg_notify('substrate_outbox', v_ws || '::' || v_slug);
+
+      RETURN v_rec;
+    END;
+    $body$ LANGUAGE plpgsql;
+  `);
+  flags.substrateOutbox = true;
+}
+
 /* ─── batch helper ───────────────────────────────────────────────── */
 
 /** Run all dogfood ensures in parallel. Cheap if flags are already set
@@ -505,6 +596,7 @@ export async function ensureAllDogfoodTables(): Promise<void> {
     ensureInsightsFirstVisitTable(),
     ensureSharedRepoBindingCacheTable(),
     ensureSharedPresenceTable(),
+    ensureSubstrateOutboxTable(),
   ]);
 }
 
@@ -628,6 +720,34 @@ export async function wireDogfoodTriggers(): Promise<void> {
         // Table not yet provisioned in this workspace — fine, will retry
         // on next boot. Don't log noisily; this is the expected pre-
         // scaffold state.
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  // Feature-content-federation Stage 1 (migration 102): the capture trigger on
+  // each consolidated table that enqueues LOCAL-origin writes into
+  // substrate_outbox. ensureSubstrateOutboxTable (called via ensureAllDogfoodTables
+  // above) has already created the table + the capture function; here we attach
+  // the per-table trigger, passing the key column name as TG_ARGV[0]. Same
+  // missing-table tolerance as the change-notify wiring. CREATE OR REPLACE TRIGGER
+  // (PG 14+) makes this idempotent across boots.
+  const OUTBOX_CAPTURE_TARGETS: ReadonlyArray<readonly [string, string]> = [
+    ['harness_features_consolidated', 'feature_id'],
+    ['harness_issues_consolidated', 'issue_id'],
+  ];
+  for (const [tableName, keyCol] of OUTBOX_CAPTURE_TARGETS) {
+    try {
+      await sql.unsafe(
+        'CREATE OR REPLACE TRIGGER capture_substrate_outbox_trg ' +
+          'AFTER INSERT OR UPDATE OR DELETE ' +
+          'ON harness_shared.' + tableName + ' ' +
+          "FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_substrate_outbox('" + keyCol + "')",
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/does not exist|relation .* does not exist/i.test(msg)) {
         continue;
       }
       throw e;
