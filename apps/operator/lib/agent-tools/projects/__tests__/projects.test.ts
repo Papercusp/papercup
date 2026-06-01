@@ -44,7 +44,7 @@ describe('projects:list', () => {
     expect(payload).toEqual({ harnessSlug: 'sheets', projects });
   });
 
-  it('throws when no slug available', async () => {
+  it('returns an isError envelope when no slug available', async () => {
     vi.doMock('@/lib/projects-data', () => ({
       listProjectsForHarness: vi.fn(),
       getProjectDetail: vi.fn(),
@@ -52,9 +52,11 @@ describe('projects:list', () => {
       getProjectSpecRevision: vi.fn(),
     }));
     const { default: tool } = await import('@/lib/agent-tools/projects/list');
-    await expect(tool.handler({}, MAKE_CTX({ harnessSlug: undefined }))).rejects.toThrow(
-      /slug required/i,
-    );
+    // The tool now returns the canonical MCP {isError:true} envelope instead of
+    // throwing, so the dispatcher surfaces the guidance text to the caller.
+    const res = await tool.handler({}, MAKE_CTX({ harnessSlug: undefined }));
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/slug_required|needs a specific harness/i);
   });
 });
 

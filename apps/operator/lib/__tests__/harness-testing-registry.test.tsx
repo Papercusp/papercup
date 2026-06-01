@@ -37,13 +37,13 @@ describe('harnessTestingRegistry', () => {
     expect(generalizedRegistry.every((d) => d.tier === 'generalized')).toBe(true);
   });
 
-  it('maps the two tiers to Built-in / Project labels', () => {
-    expect(HARNESS_TESTING_TIER_LABELS).toEqual({ generalized: 'Built-in', project: 'Project' });
+  it('maps the two tiers to Universal / This Harness labels', () => {
+    expect(HARNESS_TESTING_TIER_LABELS).toEqual({ generalized: 'Universal', project: 'This Harness' });
   });
 });
 
 describe('<HarnessTestsView>', () => {
-  it('renders TestingShell with Built-in + Project tiers for a harness slug', async () => {
+  it('renders TestingShell with Universal + This Harness tiers for a harness slug', async () => {
     // Minimal stub so DomainTestPanel's detail fetch resolves; the nav
     // (tier headings + tabs) comes from the registry and renders regardless.
     vi.stubGlobal(
@@ -63,8 +63,8 @@ describe('<HarnessTestsView>', () => {
     });
 
     // Both tiers render in the rail…
-    await waitFor(() => screen.getByText('Built-in'));
-    screen.getByText('Project');
+    await waitFor(() => screen.getByText('Universal'));
+    screen.getByText('This Harness');
     // …and the Acceptance tab is present.
     screen.getByText('Acceptance');
   });
