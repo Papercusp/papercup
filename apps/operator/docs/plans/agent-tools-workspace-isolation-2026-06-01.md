@@ -27,7 +27,7 @@ single id, status token, free text, optional blocked-by.)
 
 ## Phase 1 — Grants
 
-- **P-001** `todo` Grant-expansion migration: GRANT SELECT/INSERT/UPDATE/DELETE (+ sequence USAGE) to harness_app on harness_shared OPERATIONAL tables, EXCLUDING the sensitive set (operator_credentials/secrets/*_credentials, operator_marketplace_token, oauth_nonces, system_principals, token_index, mobile_pair/push_tokens, auth_audit_log, auth_rate_limit, trusted_authors) + any borderline (be conservative; a tool needing those uses the explicit admin opt-out). + ALTER DEFAULT PRIVILEGES for future tables. Additive/behavior-neutral (app unused for HTTP tools until Phase 4). Migration + verify admin path unaffected.
+- **P-001** `done` Grant-expansion migration: GRANT SELECT/INSERT/UPDATE/DELETE (+ sequence USAGE) to harness_app on harness_shared OPERATIONAL tables, EXCLUDING the sensitive set (operator_credentials/secrets/*_credentials, operator_marketplace_token, oauth_nonces, system_principals, token_index, mobile_pair/push_tokens, auth_audit_log, auth_rate_limit, trusted_authors) + any borderline (be conservative; a tool needing those uses the explicit admin opt-out). + ALTER DEFAULT PRIVILEGES for future tables. Additive/behavior-neutral (app unused for HTTP tools until Phase 4). Migration + verify admin path unaffected. (migration 095 submodule ba5add3 applied to dev; 132 operational tables granted, sensitive excluded)
 
 
 ## Phase 2 — RLS rollout (the crux)
@@ -44,6 +44,11 @@ single id, status token, free text, optional blocked-by.)
 
 - **P-004** `todo` Flip catchall.ts HOST_EXTRAS to run tools as harness_app inside withWorkspace(principal.workspaceId) (GUC set) by default; add an explicit opt-out for cross-workspace tools (call getOrgPg() / a `crossWorkspace: true` flag). Gate on Phases 1-2 complete (else false isolation). Test across all 27+ HTTP tools: each still works for its own workspace AND an A≠B isolation check (a tool can't read/write another workspace's rows). Only after green: consider default-on. importance: high
 
+
+## Phase 1b — Revoke app's sensitive grants (security lockdown)
+
+- **P-005** `todo` REVOKE harness_app SELECT/INSERT/UPDATE/DELETE on the sensitive set it ALREADY has (D-002): token_index, operator_credentials, operator_publish_credentials, operator_marketplace_token, operator_voice_credentials, operator_search_provider_credentials, oauth_nonces, system_principals, auth_audit_log, auth_rate_limit, mobile_pair_tokens, mobile_push_tokens. Verify each isn't read via getOrgPgApp first (auth.ts resolveBearer uses ADMIN context for token_index — safe; check provisioning.ts token_index writes + others). Migration + per-table verification. Must precede the Phase-4 host flip. importance: high
+
 ## Decisions
 
 (Use plans:add-decision to append. Each decision is a third-level
@@ -57,3 +62,13 @@ From the gating audit (per-window-workspace-context D-017). The naive framing ("
 - harness_shared holds sensitive per-workspace tables (creds/secrets/tokens) that must be excluded from the app grant.
 
 So the order MATTERS and the phases are coupled: **Phase 1 (grants) + Phase 2 (RLS) must both complete before Phase 4 (host flip)** — flipping early gives unscoped app access on the 111 un-RLS'd tables (worse than today's honest admin-bypass, because it LOOKS isolated). Phase 2 is the bulk + the danger: ~111 live tables, each needing the right policy; a wrong/missing policy silently returns 0 rows or denies — operator-wide for that table. Execute Phase 2 incrementally (table-group at a time), audit existing getOrgPgApp read sites first (RLS on a GUC-less app read → 0 rows), and verify admin-still-works + app-scoped per group. Recommendation: this is a deliberate security project, not a single PR; do not one-shot. Decide ENABLE vs FORCE RLS (admin owner bypasses ENABLE — fine for the current admin path; FORCE would also bind the owner).
+
+### D-002 — D-002 — Phase 1 grants SHIPPED (095); + a pre-existing security finding: harness_app is already over-granted to sensitive tables
+Date: 2026-06-01
+**Phase 1 (P-001) DONE:** migration 095 (submodule ba5add3) grants harness_app DML on the 132 workspace-scoped operational harness_shared tables (excluding sensitive), + sequence usage. Applied to native dev PG; verified additive (admin/rolbypassrls unaffected; no RLS enabled → no read can break). Closes the ~40-table operational grant gap from D-017.
+
+**Pre-existing finding (reshapes the plan — not caused by 095):** harness_app ALREADY has SELECT+INSERT on nearly ALL the sensitive tables — `token_index` (bearer tokens), `operator_credentials`, `operator_publish_credentials`, `operator_marketplace_token`, `operator_voice_credentials`, `operator_search_provider_credentials`, `oauth_nonces`, `system_principals`, `auth_audit_log`, `auth_rate_limit`, `mobile_pair_tokens`, `mobile_push_tokens`. Only `operator_secrets` + `trusted_authors` are denied to app. So the "least-privilege" app role is NOT least-privilege — and switching tools to harness_app would give them creds/token access. This is a current-state security gap independent of P-062.
+
+**NEW Phase 1b (revoke):** REVOKE harness_app's grants on the sensitive set so deny-by-default actually protects them. De-risked: `auth.ts` resolveBearer reads `token_index` in ADMIN context ("needs to read across workspaces"), NOT via app — so revoking app's token_index access does NOT break bearer auth. Still verify each sensitive table isn't read via getOrgPgApp before revoking (provisioning.ts writes token_index — check its handle). Do Phase 1b before the Phase-4 host flip.
+
+Net: Phase 1 (grant operational) done; Phase 1b (revoke sensitive) is the security lockdown; Phase 2 (RLS rollout, the crux) + Phase 3/4 follow.
