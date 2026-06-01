@@ -58,18 +58,45 @@ export function extractAgentOutput(stdout: string): string {
     .trim();
 }
 
+/** Max chars of child stderr to surface on a failed invoke (P-005). */
+const STDERR_SURFACE_LIMIT = 4000;
+
+/**
+ * Build the stderr-surfacing log line for a non-zero `invoke-once` exit (P-005).
+ * Returns `null` on a clean exit (code 0) or when the child wrote nothing to
+ * stderr. Exported for unit testing.
+ *
+ * Why this exists: a subprocess that THROWS during boot (e.g. the
+ * `source_plan_slug` column / `paths.map` runtime bugs the retire plan's D-014
+ * fixed) writes its message to the child's stderr and exits non-zero BEFORE it
+ * ever records a `harness_run_output` row — so the parent saw only an empty
+ * stdout + exit 1 and the real cause was invisible. Capturing + logging the
+ * child's stderr here makes those throw-before-run failures debuggable, which the
+ * debugger-before-worker (P-012) and CONVERT_ISSUES (P-011) fills depend on.
+ */
+export function formatInvokeStderr(role: string, exitCode: number, stderr: string): string | null {
+  const trimmed = stderr.trim();
+  if (exitCode === 0 || !trimmed) return null;
+  const body =
+    trimmed.length > STDERR_SURFACE_LIMIT
+      ? `${trimmed.slice(0, STDERR_SURFACE_LIMIT)}\n... [stderr truncated: ${trimmed.length} chars]`
+      : trimmed;
+  return `[dbos-invoke] role=${role} exited ${exitCode} — stderr:\n${body}`;
+}
+
 /**
  * Spawn one headless `invoke-once` run for `role` with the given `extras`
  * (complete KEY=value list) inside `projectDir`. Shared by the role runner and
- * the finalizer (curator/documenter). Resolves to the agent's output + exit code;
- * never rejects.
+ * the finalizer (curator/documenter). Resolves to the agent's output + exit code
+ * + captured stderr; never rejects. On a non-zero exit the child's stderr is
+ * surfaced to the operator run log (P-005) so a throw-before-run isn't silent.
  */
 async function spawnInvokeOnce(
   projectDir: string,
   role: string,
   extras: string[],
   extraEnv: Record<string, string>,
-): Promise<{ output: string; exitCode: number }> {
+): Promise<{ output: string; exitCode: number; stderr: string }> {
   const { command, args, env } = buildInvokeOnce({
     projectDir,
     stateDir: join(projectDir, '.harness'),
@@ -81,17 +108,24 @@ async function spawnInvokeOnce(
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: projectDir, env });
     let stdout = '';
+    let stderr = '';
     const timer = setTimeout(() => {
       try { child.kill('SIGTERM'); } catch { /* ignore */ }
     }, INVOKE_TIMEOUT_MS);
     child.stdout?.on('data', (d) => { stdout += String(d); });
+    child.stderr?.on('data', (d) => { stderr += String(d); });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ output: extractAgentOutput(stdout), exitCode: code ?? 1 });
+      const exitCode = code ?? 1;
+      const failLog = formatInvokeStderr(role, exitCode, stderr);
+      if (failLog) console.error(failLog);
+      resolve({ output: extractAgentOutput(stdout), exitCode, stderr });
     });
-    child.on('error', () => {
+    child.on('error', (err) => {
       clearTimeout(timer);
-      resolve({ output: '', exitCode: 1 });
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[dbos-invoke] role=${role} spawn error: ${msg}`);
+      resolve({ output: '', exitCode: 1, stderr: msg });
     });
   });
 }

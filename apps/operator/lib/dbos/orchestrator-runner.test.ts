@@ -1,0 +1,56 @@
+import { describe, test, expect } from 'vitest';
+import { extractAgentOutput, formatInvokeStderr } from './orchestrator-runner';
+
+describe('extractAgentOutput — strip orchestrator timestamp log lines', () => {
+  test('drops [2026-…] timestamp lines, keeps the agent body', () => {
+    const stdout = [
+      '[2026-06-01T04:00:00.000Z] booting invoke-once',
+      'NEXT_WORKER',
+      'some body text',
+      '[2026-06-01T04:00:01.000Z] done',
+    ].join('\n');
+    expect(extractAgentOutput(stdout)).toBe('NEXT_WORKER\nsome body text');
+  });
+
+  test('trims leading/trailing whitespace', () => {
+    expect(extractAgentOutput('\n\n  PASS  \n\n')).toBe('PASS');
+  });
+
+  test('empty stdout → empty string', () => {
+    expect(extractAgentOutput('')).toBe('');
+  });
+});
+
+describe('formatInvokeStderr — surface child stderr on a failed invoke (P-005)', () => {
+  test('null on a clean (exit 0) run even with stderr present', () => {
+    expect(formatInvokeStderr('worker', 0, 'some noise on stderr')).toBeNull();
+  });
+
+  test('null when exit is non-zero but stderr is empty/whitespace', () => {
+    expect(formatInvokeStderr('worker', 1, '')).toBeNull();
+    expect(formatInvokeStderr('worker', 1, '   \n  ')).toBeNull();
+  });
+
+  test('surfaces the role, exit code, and stderr body on a non-zero exit', () => {
+    const out = formatInvokeStderr('director', 1, 'TypeError: paths.map is not a function');
+    expect(out).toContain('role=director');
+    expect(out).toContain('exited 1');
+    expect(out).toContain('TypeError: paths.map is not a function');
+  });
+
+  test('this is exactly the throw-before-run case that was previously invisible', () => {
+    // The two D-014 runtime bugs threw during subprocess boot → non-zero exit with
+    // the message ONLY on stderr (stdout empty). Before P-005 the parent dropped it.
+    const colErr = 'error: column "source_plan_slug" does not exist';
+    const out = formatInvokeStderr('worker', 1, colErr);
+    expect(out).not.toBeNull();
+    expect(out).toContain(colErr);
+  });
+
+  test('truncates a pathologically long stderr with a marker', () => {
+    const huge = 'x'.repeat(10_000);
+    const out = formatInvokeStderr('worker', 1, huge)!;
+    expect(out.length).toBeLessThan(huge.length);
+    expect(out).toContain('[stderr truncated: 10000 chars]');
+  });
+});
