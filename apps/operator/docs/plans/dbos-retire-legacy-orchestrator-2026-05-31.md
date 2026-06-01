@@ -174,3 +174,19 @@ COMPETITION / ADAPTIVE / SYNTHESIZER — recommend DON'T PORT, on merit:
 
 The genuinely-good kernel (scale scrutiny to difficulty) is already migrated — it's the director's NEXT_ARCHITECT + retry-with-notes. If best-of-N competition is later proven worth it, the DBOS-native build is parallel child-workflows + per-attempt worktrees (L-XL effort) — kept as an offer, not a default.
 Related: P-009
+
+### D-010 — D-010 — claims verified (2 audits, all TRUE); removed the deprecated parallelism controls from the live settings UI
+Date: 2026-06-01
+User: verify the superseded-model claims, and if true remove the deliberately-degraded features from the UI. Two read-only audits ran:
+
+VERIFICATION (all 5 claims TRUE, code-evidenced):
+1. useChunkLoop defaults TRUE + is the canonical worker model (lanes.ts:243-251).
+2. competition/synthesizer/worktrees are gated behind useChunkLoop:false — branchIsoEnabled returns false under chunk-loop (branch-iso.ts:39); they're dead under the default.
+3. the DBOS pipeline's worker USES the chunk-loop (main-loop.ts:1015 handleChunkLoopWorker → driveChunkLoop).
+4. the difficulty-aware-scrutiny kernel is already in the DBOS pipeline (director NEXT_ARCHITECT for large/ambiguous + retry-with-notes via priorValidatorLog — chunk-plan.ts:76-101).
+5. the deprecation was DELIBERATE (lanes.ts comment "no longer surfaced in the harness settings UI"; branch-iso.test.ts "useChunkLoop now defaults to true").
+
+UI CLEANUP (commit 29671aa08): the deprecated controls were live (HarnessSettingsPanel.tsx is rendered by the Vite adv "Settings" tab via @/app/ import — the audit's first pass wrongly called it dead; I caught it by grepping operator-vite). Removed from HarnessSettingsPanel: the workers/feature MODE dropdown (one/fixed-N/orchestrator-picks), N-per-feature (workersPerFeature), the Worker-count-TIERS section (adaptive + rubric), the SYNTHESIZER toggle (synthesizeSingle), the branchIsolation notation, maxFeaturesInFlight (dead lane cap), and the adaptive "recent worker decisions" telemetry grid — plus all their state/load/save/helpers. KEPT (live): max workers, the chunk-loop subsection (useChunkLoop/workingStateCheck/replanStrikes/escalateToRole), debugger threshold, AI backend. tsc-clean for the file + its importer; 78 dbos tests green.
+
+NOT TOUCHED (genuinely dead, not imported by the Vite app): the lanes-viz stat card (HarnessTopBar.tsx) + "active competitions" counters (AdvOverviewPanel/RealHarnessOverviewPanel) — they live in the retired Next app (apps/operator/app/**, not served) and will go with its wholesale removal. The legacy backend code (lanes.ts/synthesizer.ts/branch-iso.ts/competition) is kept (instant-revert per useChunkLoop:false + parent D-006).
+Related: P-009
