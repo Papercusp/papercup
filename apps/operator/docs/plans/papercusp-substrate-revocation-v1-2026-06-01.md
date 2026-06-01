@@ -66,6 +66,18 @@ device keys (the Keybase/Sigstore model). Two halves:
   page can grow a button in a follow-up).
 - **D-005 — Append-only / idempotent.** Revoking an already-revoked pubkey is a
   no-op (it's already in the row + the Set). No un-revoke.
+- **D-006 — Revocation-load failure is FAIL-OPEN (intentional), not fail-secure.**
+  If the PG load of `revoked_pubkeys` fails (startup OR refresh), boot/admission
+  continues WITHOUT the (new) revocations rather than evicting peers. Rationale: the
+  substrate is **advisory** — GitHub PR-merge is the real authority for merging code
+  (trust model + D-009), so a revoked peer admitted during a PG outage can only write
+  advisory rows (bounded by the per-author ingest cap), never merge code. Fail-secure
+  (evict-all-when-unconfirmable) would turn a transient PG blip into a self-inflicted
+  federation outage on a no-authority layer — a worse trade. The failure is **visible**
+  (a `merge_error` boot event, not silent) and **self-healing**: the refresh re-loads
+  inside every `mergeNow` (~1s cadence), so the unenforced window is bounded by the
+  next successful refresh after PG recovers, not session-long. (Flagged by automated
+  security review 2026-06-01 as a fail-open gate; accepted with this reasoning.)
 
 ## Design
 
