@@ -343,6 +343,14 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
+### TALLY (end of round 5): **31 of 38 genuine tests now green** (+ core dump). 7 remain:
+oauth/state (FIXED 6/6 via in-memory nonce mock), pty-ws (was flake, passes).
+Remaining: **subscriptions** (coord-store stateful mock — many query shapes, involved),
+**experts** (PG+FS fixture rewrite), **chat-surface-tools** (audit-path repoint+revalidate),
+**css-tokens** (design-token migration — REAL), **perf-anti-patterns** (baseline/code — REAL),
+**auth-posture** (SECURITY decision — 8 admin routes public), **branch-actions** (1 stderr
+spawn-completion hang — product).
+
 ### ROUND 5 (vitest unblocked) — more fixes + a SECURITY finding
 
 **FIXED + committed (→ 29 of 38 fully green + oauth 5/6):**
