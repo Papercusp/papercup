@@ -20,7 +20,7 @@ import { describe, it, expect } from 'vitest';
 import { SCENARIOS, getScenario } from '../scenarios';
 
 describe('scenario registry', () => {
-  it('exposes the full operator suite (S01–S12 + M1–M12), oracle (O1–O3), and architect (A1–A2)', () => {
+  it('exposes the full operator suite (S01–S12 + M1–M12), oracle (O1–O6), and architect (A1–A6)', () => {
     const ids = SCENARIOS.map((s) => s.id).sort();
     expect(ids).toEqual([
       // operator legacy (S-prefixed; framework build-out)
@@ -54,9 +54,16 @@ describe('scenario registry', () => {
       'oracle-O1-docs-question',
       'oracle-O2-refuse-speculation',
       'oracle-O3-harness-question',
+      'oracle-O4-no-tool-use-for-simple-fact',
+      'oracle-O5-harness-scoped-answer',
+      'oracle-O6-graceful-not-found',
       // architect
       'architect-A1-clarifying-questions',
       'architect-A2-scope-pushback',
+      'architect-A3-reject-then-refine',
+      'architect-A4-no-hallucinated-plan-items',
+      'architect-A5-tradeoff-explanation',
+      'architect-A6-no-spec-without-reading',
     ].sort());
   });
 
