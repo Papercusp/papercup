@@ -31,7 +31,8 @@ interface HarnessHealthRow {
 const get = defineTool({
   method: 'GET',
   path: '/admin/dogfood-substrate-health',
-  auth: 'public',
+  // Admin-only substrate health (verified admin insights UI); gated per D3 (was 'public').
+  auth: { trust: ['verified', 'trusted'] },
   async handler() {
     // Stage 4d: the substrate always boots (the opt-in gate was removed).
     const flagEnabled = true;

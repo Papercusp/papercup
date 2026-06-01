@@ -24,7 +24,9 @@ import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
 const get = defineTool({
   method: 'GET',
   path: '/admin/dogfood-substrate-status',
-  auth: 'public',
+  // Admin-only substrate status (consumed by the verified admin insights UI);
+  // gated per D3 auth posture (was 'public').
+  auth: { trust: ['verified', 'trusted'] },
   async handler() {
     const booted = listBootedHandles();
     return Response.json({

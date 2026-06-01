@@ -98,7 +98,9 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
 const writeRoute = defineTool({
   method: 'POST',
   path: '/admin/coord/:verb',
-  auth: 'public',
+  // Mutating coord ops — gate to the admin tier (the admin coord UI runs as a
+  // verified session). Was 'public', which the D3 auth-posture guard flags.
+  auth: { trust: ['verified', 'trusted'] },
   handler: dispatchWrite,
 });
 

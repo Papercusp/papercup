@@ -283,14 +283,16 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
 const readRoute = defineTool({
   method: 'GET',
   path: '/admin/plans/:verb',
-  auth: 'public',
+  // Admin plans surface (verified admin/plans UI); gated per D3 (was 'public').
+  auth: { trust: ['verified', 'trusted'] },
   handler: dispatchRead,
 });
 
 const writeRoute = defineTool({
   method: 'POST',
   path: '/admin/plans/:verb',
-  auth: 'public',
+  // Mutating admin plans ops (verified admin/plans UI); gated per D3 (was 'public').
+  auth: { trust: ['verified', 'trusted'] },
   handler: dispatchWrite,
 });
 

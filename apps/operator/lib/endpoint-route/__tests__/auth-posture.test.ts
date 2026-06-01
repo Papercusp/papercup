@@ -53,11 +53,11 @@ const RULES: ReadonlyArray<{
       { method: 'POST', path: '/admin/embed-backfill', auth: T_ONLY },
       { method: 'GET',  path: '/admin/spawn-signing/failures', auth: T_ONLY },
       { method: 'POST', path: '/admin/spawn-signing/rotate', auth: T_ONLY },
-      // Deferred: admin/plans.ts is another agent's uncommitted file (added
-      // to ALL_ROUTES via index.ts but not yet tracked). Tightening it now
-      // would mean committing their work-in-progress. Re-tighten in a
-      // follow-up once the file lands in HEAD.
-      { method: 'GET',  path: '/admin/plans/:verb', auth: 'public' },
+      // dbos/pipeline/start intentionally requires the stricter `trusted` tier
+      // (not verified) — a deliberate stricter gate, like spawn-signing.
+      { method: 'POST', path: '/admin/dbos/pipeline/start', auth: T_ONLY },
+      // (admin/plans.ts is now committed + gated to VT, so its prior deferred
+      // 'public' exception was removed.)
     ],
   },
 ];

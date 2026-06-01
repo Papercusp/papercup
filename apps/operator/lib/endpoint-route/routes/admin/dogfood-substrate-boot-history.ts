@@ -33,7 +33,8 @@ const VALID_KINDS: ReadonlyArray<BootHistoryKind> = [
 const get = defineTool({
   method: 'GET',
   path: '/admin/dogfood-substrate-boot-history',
-  auth: 'public',
+  // Admin-only substrate boot history (verified admin insights UI); gated per D3 (was 'public').
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req) {
     const url = new URL(req.url);
     const workspaceId = url.searchParams.get('workspace_id') ?? undefined;

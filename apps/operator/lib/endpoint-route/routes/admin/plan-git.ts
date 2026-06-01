@@ -60,6 +60,7 @@ async function handler(req: Request, ctx: RouteContext): Promise<Response> {
 export default defineTool({
   method: 'GET',
   path: '/admin/plans/git/:op',
-  auth: 'public',
+  // Admin plans git ops (verified admin/plans UI); gated per D3 (was 'public').
+  auth: { trust: ['verified', 'trusted'] },
   handler,
 });

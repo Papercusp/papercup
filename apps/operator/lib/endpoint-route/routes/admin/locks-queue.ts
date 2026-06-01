@@ -78,6 +78,9 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
 export default defineTool({
   method: 'GET',
   path: '/admin/locks/queue',
-  auth: 'public',
+  // Admin lock-queue view (verified admin/plans UI); gated per D3 (was 'public').
+  // The public lock-visibility surface for agents is the MCP `locks:queue` tool,
+  // not this HTTP admin route.
+  auth: { trust: ['verified', 'trusted'] },
   handler,
 });
