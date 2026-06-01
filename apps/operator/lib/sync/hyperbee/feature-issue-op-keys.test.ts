@@ -1,0 +1,280 @@
+/**
+ * feature-issue-op-keys.test.ts — Stage 2 of the feature-content federation plan
+ * (papercusp-feature-content-federation-2026-06-01).
+ *
+ * Pure unit tests for the row→op mappers that turn a `substrate_outbox` row
+ * (captured by the Stage-1 trigger as `to_jsonb` of the full consolidated row)
+ * into a `LocalWriteOp` the existing `harness-features` / `issues` read-side
+ * projections consume verbatim.
+ *
+ * The two load-bearing correctness facts these tests pin:
+ *
+ *  (1) `LocalWriteOp.table` must equal the projection's REGISTERED tableTag —
+ *      `'features-by-id'` for features, `'issues'` for issues (see
+ *      `projections/harness-features.ts` + `issues.ts`). NOT the raw
+ *      `harness_*_consolidated` table_name. If this drifts, `applyOpVia`'s
+ *      `lookup(op.table)` returns null and the op is silently dropped on peers.
+ *
+ *  (2) `to_jsonb` of a row renders TIMESTAMPTZ columns as ISO strings, but the
+ *      projection's row validators (`isHarnessFeatureRow` / `isHarnessIssueRow`)
+ *      require those fields to be epoch-ms NUMBERS (`taken_at`/`expires_at` on
+ *      features, `found_at` on issues). The mapper MUST convert them, else the
+ *      projection's `decodeValue` rejects the op and federation silently breaks.
+ *
+ * These tests assert the produced `value` field-for-field AND prove it passes
+ * the real projection validators, so a future projection-shape change that the
+ * mapper doesn't track fails here.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  composeFeatureKey,
+  composeIssueKey,
+  outboxRowToLocalWriteOp,
+  type OutboxRow,
+} from './feature-issue-op-keys';
+import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import { isHarnessFeatureRow, type HarnessFeatureRow } from './projections/harness-features';
+import { isHarnessIssueRow, type HarnessIssueRow } from './projections/issues';
+
+describe('composeFeatureKey / composeIssueKey', () => {
+  it('composeFeatureKey is the feature_id itself (matches projection composeKey)', () => {
+    expect(composeFeatureKey('F-001')).toBe('F-001');
+    expect(composeFeatureKey('F-FIX-42')).toBe('F-FIX-42');
+  });
+
+  it('composeIssueKey is the issue_id itself (matches projection composeKey)', () => {
+    expect(composeIssueKey('I-001')).toBe('I-001');
+    expect(composeIssueKey('I-007')).toBe('I-007');
+  });
+
+  it('is deterministic — same id → same key', () => {
+    expect(composeFeatureKey('F-001')).toBe(composeFeatureKey('F-001'));
+    expect(composeIssueKey('I-001')).toBe(composeIssueKey('I-001'));
+  });
+});
+
+describe('outboxRowToLocalWriteOp — features', () => {
+  // A `to_jsonb` rendering of a features_consolidated row. Note:
+  //  - BIGINT columns (ts/created_ts/updated_ts/attempts/expected_cost_cents)
+  //    arrive as numbers (the prod-faithful client parses BIGINT→number).
+  //  - TIMESTAMPTZ columns (taken_at/expires_at) arrive as ISO strings.
+  const featureOutboxRow: OutboxRow = {
+    table_name: 'harness_features_consolidated',
+    op: 'put',
+    key: 'F-001',
+    ts: 1717000000000,
+    row: {
+      workspace_id: 'ws_demo',
+      harness_slug: 'demo',
+      feature_id: 'F-001',
+      title: 'Build the thing',
+      summary: 'a summary',
+      status: 'in_progress',
+      attempts: 2,
+      claims: null,
+      notes: 'some notes',
+      metadata: { foo: 'bar' },
+      kind: 'task',
+      project_id: 'P-9',
+      expected_cost_cents: 1500,
+      tags: ['a', 'b'],
+      needs_human_review: false,
+      ts: 1717000000000,
+      created_ts: 1716000000000,
+      updated_ts: 1717000000000,
+      parent_id: null,
+      goal_id: 'G-1',
+      taken_by: 'alice',
+      taken_at: '2024-05-29T12:00:00.000Z',
+      expires_at: '2024-05-29T13:00:00.000Z',
+      author_pubkey: 'deadbeef',
+      origin: 'local',
+    },
+  };
+
+  it('maps a put to LocalWriteOp with table="features-by-id", hbKey=feature_id', () => {
+    const op = outboxRowToLocalWriteOp(featureOutboxRow);
+    expect(op).not.toBeNull();
+    expect(op!.type).toBe('put');
+    expect(op!.table).toBe('features-by-id');
+    expect(op!.hbKey).toBe('F-001');
+    expect(op!.ts).toBe(1717000000000);
+    expect(op!.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it('produces a value that is field-for-field a valid HarnessFeatureRow', () => {
+    const op = outboxRowToLocalWriteOp(featureOutboxRow)!;
+    const value = op.value as HarnessFeatureRow;
+    // The projection's own validator must accept it — the real gate on peers.
+    expect(isHarnessFeatureRow(value)).toBe(true);
+    expect(value).toEqual({
+      harness_slug: 'demo',
+      feature_id: 'F-001',
+      title: 'Build the thing',
+      summary: 'a summary',
+      status: 'in_progress',
+      attempts: 2,
+      claims: null,
+      notes: 'some notes',
+      metadata: { foo: 'bar' },
+      kind: 'task',
+      project_id: 'P-9',
+      expected_cost_cents: 1500,
+      tags: ['a', 'b'],
+      needs_human_review: false,
+      ts: 1717000000000,
+      created_ts: 1716000000000,
+      updated_ts: 1717000000000,
+      parent_id: null,
+      goal_id: 'G-1',
+      taken_by: 'alice',
+      // TIMESTAMPTZ ISO strings converted back to epoch ms.
+      taken_at: Date.parse('2024-05-29T12:00:00.000Z'),
+      expires_at: Date.parse('2024-05-29T13:00:00.000Z'),
+    });
+  });
+
+  it('converts null TIMESTAMPTZ fields to null (not NaN)', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...featureOutboxRow,
+      row: { ...featureOutboxRow.row, taken_at: null, expires_at: null },
+    })!;
+    const value = op.value as HarnessFeatureRow;
+    expect(value.taken_at).toBeNull();
+    expect(value.expires_at).toBeNull();
+    expect(isHarnessFeatureRow(value)).toBe(true);
+  });
+
+  it('maps a del to a LocalWriteOp with no value (just the key)', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...featureOutboxRow,
+      op: 'del',
+      row: null,
+    })!;
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('features-by-id');
+    expect(op.hbKey).toBe('F-001');
+    expect(op.value).toBeUndefined();
+    expect(op.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+  });
+});
+
+describe('outboxRowToLocalWriteOp — issues', () => {
+  const issueOutboxRow: OutboxRow = {
+    table_name: 'harness_issues_consolidated',
+    op: 'put',
+    key: 'I-001',
+    ts: 1717000000000,
+    row: {
+      workspace_id: 'ws_demo',
+      harness_slug: 'demo',
+      issue_id: 'I-001',
+      title: 'Crash on save',
+      severity: 'high',
+      source: 'manual',
+      status: 'open',
+      found_at: '2024-05-29T12:00:00.000Z',
+      found_during: 'F-001',
+      repro: 'click save',
+      evidence: 'stacktrace',
+      suggested_fix: null,
+      code_pointer: 'foo.ts:10',
+      linked_feature_id: 'F-FIX-1',
+      attempts: 0,
+      notes: [{ ts: 1, text: 'hi' }],
+      created_ts: 1716000000000,
+      updated_ts: 1717000000000,
+      author_pubkey: 'deadbeef',
+      origin: 'local',
+    },
+  };
+
+  it('maps a put to LocalWriteOp with table="issues", hbKey=issue_id', () => {
+    const op = outboxRowToLocalWriteOp(issueOutboxRow)!;
+    expect(op.type).toBe('put');
+    expect(op.table).toBe('issues');
+    expect(op.hbKey).toBe('I-001');
+    expect(op.ts).toBe(1717000000000);
+    expect(op.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it('produces a value that is field-for-field a valid HarnessIssueRow', () => {
+    const op = outboxRowToLocalWriteOp(issueOutboxRow)!;
+    const value = op.value as HarnessIssueRow;
+    expect(isHarnessIssueRow(value)).toBe(true);
+    expect(value).toEqual({
+      harness_slug: 'demo',
+      issue_id: 'I-001',
+      title: 'Crash on save',
+      severity: 'high',
+      source: 'manual',
+      status: 'open',
+      // TIMESTAMPTZ ISO string converted to epoch ms.
+      found_at: Date.parse('2024-05-29T12:00:00.000Z'),
+      found_during: 'F-001',
+      repro: 'click save',
+      evidence: 'stacktrace',
+      suggested_fix: null,
+      code_pointer: 'foo.ts:10',
+      linked_feature_id: 'F-FIX-1',
+      attempts: 0,
+      notes: [{ ts: 1, text: 'hi' }],
+      created_ts: 1716000000000,
+      updated_ts: 1717000000000,
+    });
+  });
+
+  it('maps a del to a LocalWriteOp with no value (just the key)', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...issueOutboxRow,
+      op: 'del',
+      row: null,
+    })!;
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('issues');
+    expect(op.hbKey).toBe('I-001');
+    expect(op.value).toBeUndefined();
+  });
+});
+
+describe('outboxRowToLocalWriteOp — error handling', () => {
+  it('throws on an unknown table_name', () => {
+    expect(() =>
+      outboxRowToLocalWriteOp({
+        table_name: 'harness_unknown_consolidated',
+        op: 'put',
+        key: 'X-1',
+        ts: 1,
+        row: { harness_slug: 'demo', feature_id: 'X-1' },
+      }),
+    ).toThrow(/unknown.*table/i);
+  });
+
+  it('a put accepts found_at/taken_at already given as epoch-ms numbers (idempotent)', () => {
+    // Defensive: if a future client parses TIMESTAMPTZ → epoch ms directly, the
+    // mapper must not double-convert. A number passes through unchanged.
+    const op = outboxRowToLocalWriteOp({
+      table_name: 'harness_issues_consolidated',
+      op: 'put',
+      key: 'I-NUM',
+      ts: 5,
+      row: {
+        harness_slug: 'demo',
+        issue_id: 'I-NUM',
+        title: 'x',
+        severity: 'low',
+        source: 'manual',
+        status: 'open',
+        found_at: 1717000000000,
+        attempts: 0,
+        notes: [],
+        created_ts: 1,
+        updated_ts: 1,
+        origin: 'local',
+      },
+    })!;
+    const value = op.value as HarnessIssueRow;
+    expect(value.found_at).toBe(1717000000000);
+    expect(isHarnessIssueRow(value)).toBe(true);
+  });
+});
