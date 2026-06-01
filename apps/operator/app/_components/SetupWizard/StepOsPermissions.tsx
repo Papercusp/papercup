@@ -114,7 +114,9 @@ export function StepOsPermissions() {
   const [level, setLevel] = useState(0);
   const [recordings, setRecordings] = useState<{ url: string; createdAt: number }[]>([]);
   const [recording, setRecording] = useState(false);
-  const [recStatus, setRecStatus] = useState<'idle' | 'no-audio' | 'error'>('idle');
+  // Diagnostic readout for the test recording (shown on-page) so capture
+  // failures on WebKitGTK are observable end-to-end.
+  const [recInfo, setRecInfo] = useState<string>('');
   const [tonePlaying, setTonePlaying] = useState(false);
   const [sinkIdSupported, setSinkIdSupported] = useState(true);
 
@@ -289,27 +291,28 @@ export function StepOsPermissions() {
   }, [selectedOutput, sinkIdSupported, recordings]);
 
   const startRecording = async () => {
-    setRecStatus('idle');
-    // Record on a fresh getUserMedia stream (its own source → real audio; the
-    // monitor stream stays up so the device isn't released/reacquired). Inline
-    // so the outcome is observable.
+    setRecInfo('opening mic…');
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
-    } catch {
-      setRecStatus('error');
+    } catch (e) {
+      const name = (e as { name?: string })?.name ?? String(e);
+      setRecInfo(`Couldn't open the microphone (${name}) — it may be in use by another app.`);
       return;
     }
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new Ctx();
     if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
     const rate = ctx.sampleRate;
+    const track = stream.getAudioTracks()[0];
     const src = ctx.createMediaStreamSource(stream);
     const node = ctx.createScriptProcessor(4096, 1, 1);
     const chunks: Float32Array[] = [];
+    let frames = 0;
     node.onaudioprocess = (e) => {
+      frames++;
       const d = e.inputBuffer.getChannelData(0);
       const c = new Float32Array(d.length);
       c.set(d);
@@ -320,19 +323,21 @@ export function StepOsPermissions() {
     src.connect(node);
     node.connect(mute);
     mute.connect(ctx.destination);
+    setRecInfo(`recording… (ctx ${ctx.state}, track ${track?.readyState}${track?.muted ? ', MUTED' : ''})`);
     recStopRef.current = () => {
       try { node.onaudioprocess = null; } catch { /* ignore */ }
       try { src.disconnect(); } catch { /* ignore */ }
       try { node.disconnect(); } catch { /* ignore */ }
       try { mute.disconnect(); } catch { /* ignore */ }
       try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
+      const ctxState = ctx.state;
       try { void ctx.close(); } catch { /* ignore */ }
       let total = 0;
       for (const c of chunks) total += c.length;
       const samples = new Float32Array(total);
       let off = 0;
       for (const c of chunks) { samples.set(c, off); off += c.length; }
-      return { samples, rate };
+      return { samples, rate, frames, ctxState };
     };
     setRecording(true);
     recTimerRef.current = setTimeout(() => { void stopRecording(); }, 5000);
@@ -343,19 +348,18 @@ export function StepOsPermissions() {
     const teardown = recStopRef.current;
     recStopRef.current = null;
     setRecording(false);
-    if (!teardown) return;
-    const { samples, rate } = teardown();
+    if (!teardown) { setRecInfo('recording never started (no teardown)'); return; }
+    const { samples, rate, frames, ctxState } = teardown();
     let peak = 0;
     for (let i = 0; i < samples.length; i++) { const a = Math.abs(samples[i]); if (a > peak) peak = a; }
     if (samples.length === 0 || peak < 0.002) {
-      // Mic opened but delivered (near-)silence — surface it instead of doing
-      // nothing, so the failure is actionable.
-      setRecStatus('no-audio');
+      setRecInfo(`No audio captured — frames=${frames}, samples=${samples.length}, peak=${peak.toFixed(4)}, ctx=${ctxState}, rate=${rate}. (Check the mic isn't muted / right device selected.)`);
       return;
     }
     const { f32ToWav } = await import('../voice/f32-to-wav');
     const url = URL.createObjectURL(f32ToWav(samples, rate));
     setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
+    setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved.`);
   };
 
   // 1-second 440Hz tone via Web Audio, routed through an AudioElement
@@ -569,16 +573,9 @@ export function StepOsPermissions() {
             )}
           </div>
 
-          {recStatus === 'no-audio' && (
-            <p className="pc-field__hint" role="status">
-              No audio was captured. Make sure the mic isn&apos;t muted and that the right input
-              device is selected above, then try again.
-            </p>
-          )}
-          {recStatus === 'error' && (
-            <p className="pc-field__hint" role="status">
-              Couldn&apos;t open the microphone for recording — it may be in use by another app or
-              window. Close other apps using the mic and try again.
+          {recInfo && (
+            <p className="pc-field__hint" role="status" style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11 }}>
+              {recInfo}
             </p>
           )}
 
