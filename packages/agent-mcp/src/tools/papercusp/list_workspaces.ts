@@ -30,17 +30,28 @@ export default defineTool({
         error: { code: 'no_tx', message: 'list_workspaces requires a workspace tx (read-only via harness_app role)' },
       };
     }
-    interface Row { workspace_id: string; harness_slug: string; last_active_ts: number | null }
+    // int8/BIGINT comes back from postgres-js as a string, so last_active_ts is widened.
+    interface Row { workspace_id: string; harness_slug: string | null; last_active_ts: string | number | null }
+    // harness_registry is ONE JSONB-blob row per workspace
+    // (workspace_id PK, payload JSONB, updated_at BIGINT — see migration 025);
+    // the harnesses live in payload.projects[].slug. There is no harness_slug
+    // column here (that's on harness_feature_notes), and updated_at is already
+    // epoch-ms, not a timestamp. LEFT JOIN LATERAL so a workspace with zero
+    // registered harnesses still shows up.
     const rows = await sql<Row[]>`
-      SELECT workspace_id, harness_slug, EXTRACT(EPOCH FROM updated_at)::bigint * 1000 AS last_active_ts
-      FROM harness_shared.harness_registry
-      ORDER BY workspace_id, harness_slug
+      SELECT r.workspace_id,
+             p->>'slug'   AS harness_slug,
+             r.updated_at AS last_active_ts
+      FROM harness_shared.harness_registry r
+      LEFT JOIN LATERAL jsonb_array_elements(COALESCE(r.payload->'projects', '[]'::jsonb)) AS p ON true
+      ORDER BY r.workspace_id, harness_slug
     `;
     const buckets = new Map<string, { harnesses: string[]; lastActiveTs: number }>();
     for (const r of rows) {
       const b = buckets.get(r.workspace_id) ?? { harnesses: [], lastActiveTs: 0 };
-      b.harnesses.push(r.harness_slug);
-      if ((r.last_active_ts ?? 0) > b.lastActiveTs) b.lastActiveTs = r.last_active_ts ?? 0;
+      if (r.harness_slug) b.harnesses.push(r.harness_slug);
+      const ts = Number(r.last_active_ts ?? 0); // int8 arrives as a string from postgres-js
+      if (ts > b.lastActiveTs) b.lastActiveTs = ts;
       buckets.set(r.workspace_id, b);
     }
     const workspaces = Array.from(buckets.entries())

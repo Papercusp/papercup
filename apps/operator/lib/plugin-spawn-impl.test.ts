@@ -7,6 +7,8 @@
  * error→reject path, and secret resolution from env.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { delimiter, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 
 let lastChild: FakeChild;
 let lastCtl: ChildCtl;
@@ -57,7 +59,7 @@ const spawnMock = vi.fn(() => {
 });
 vi.mock('node:child_process', () => ({ spawn: (...a: unknown[]) => spawnMock(...(a as [])) }));
 
-import { pluginSpawnImpl, secretImpl } from './plugin-spawn-impl';
+import { pluginSpawnImpl, secretImpl, augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 
 beforeEach(() => {
   spawnMock.mockClear();
@@ -139,6 +141,38 @@ describe('pluginSpawnImpl — limits + failure', () => {
     const p = pluginSpawnImpl('missing-bin', [], {});
     lastCtl.emitError(new Error('ENOENT'));
     await expect(p).rejects.toThrow('ENOENT');
+  });
+});
+
+describe('pluginSpawnImpl — PATH augmentation (the `spawn npx ENOENT` fix)', () => {
+  it('augmentedSpawnPath includes the running node bin dir (where npx lives)', () => {
+    const dirs = augmentedSpawnPath().split(delimiter);
+    expect(dirs).toContain(dirname(process.execPath));
+  });
+
+  it('resolveBin absolutizes a real binary found on PATH', () => {
+    // `node` is reachable via the augmented path (its own dir is appended, and
+    // it's typically already on PATH via a symlink dir). resolveBin returns an
+    // absolute, existing path ending in /node — which exact dir wins depends on
+    // PATH ordering, so assert the contract, not a specific dir.
+    const resolved = resolveBin('node', augmentedSpawnPath());
+    expect(resolved.startsWith('/')).toBe(true);
+    expect(resolved.endsWith(`${delimiter === ';' ? '\\' : '/'}node`)).toBe(true);
+    expect(existsSync(resolved)).toBe(true);
+  });
+
+  it('resolveBin falls through to the bare basename when not found (libuv ENOENTs clearly)', () => {
+    const name = 'definitely-not-a-real-bin-xyz';
+    expect(resolveBin(name, augmentedSpawnPath())).toBe(name);
+  });
+
+  it('passes the augmented PATH (incl. node bin dir) to the spawned child env', async () => {
+    const p = pluginSpawnImpl('repomix', [], {});
+    const [, , opts] = spawnMock.mock.calls[0] as unknown as [string, string[], Record<string, unknown>];
+    const childPath = (opts.env as Record<string, string>).PATH;
+    expect(childPath.split(delimiter)).toContain(dirname(process.execPath));
+    lastCtl.emitClose(0);
+    await p;
   });
 });
 

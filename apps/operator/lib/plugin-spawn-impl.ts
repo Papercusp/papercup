@@ -9,7 +9,43 @@
  * over HTTP.
  */
 import { spawn as childSpawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, join, delimiter } from 'node:path';
 import type { PluginSpawn } from '@papercusp/plugin-sdk';
+
+/**
+ * The operator sidecar is launched by the Tauri shell / a systemd dev unit
+ * with a minimal PATH that frequently omits the directory where `node`/`npx`
+ * actually live (Homebrew, nvm). Plugin tools shell out by basename (e.g.
+ * repomix → `npx`), so a bare spawn fails with `spawn npx ENOENT`. Augment
+ * PATH with the running node's own bin dir + well-known locations, and
+ * absolutize the basename so resolution never depends on the supervisor's
+ * PATH. (Same absolute-path discipline as setup-pty-commands.ts.)
+ */
+export function augmentedSpawnPath(): string {
+  const extra = [
+    dirname(process.execPath), // the running node → its sibling npx/npm
+    '/home/linuxbrew/.linuxbrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    process.env.HOME ? join(process.env.HOME, '.local/bin') : '',
+  ];
+  const seen = new Set<string>();
+  return [...(process.env.PATH ?? '').split(delimiter), ...extra]
+    .filter((d) => d && !seen.has(d) && (seen.add(d), true))
+    .join(delimiter);
+}
+
+/** Resolve a basename to an absolute path against `path`; returns the bare
+ * name if not found so libuv still surfaces a clear ENOENT. */
+export function resolveBin(bin: string, path: string): string {
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    const cand = join(dir, bin);
+    if (existsSync(cand)) return cand;
+  }
+  return bin;
+}
 
 export const pluginSpawnImpl: PluginSpawn = (bin, args, opts) =>
   new Promise((resolve, reject) => {
@@ -17,9 +53,10 @@ export const pluginSpawnImpl: PluginSpawn = (bin, args, opts) =>
       reject(new Error(`spawn rejected absolute/relative path "${bin}"; use binary basename`));
       return;
     }
-    const child = childSpawn(bin, [...args], {
+    const spawnPath = augmentedSpawnPath();
+    const child = childSpawn(resolveBin(bin, spawnPath), [...args], {
       cwd: opts?.cwd,
-      env: { ...process.env, ...(opts?.env ?? {}) },
+      env: { ...process.env, ...(opts?.env ?? {}), PATH: spawnPath },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
