@@ -94,6 +94,24 @@ declare module 'hyperswarm' {
   }
 }
 
+declare module 'hyperdht/testnet.js' {
+  import type Hyperswarm from 'hyperswarm';
+  // Minimal surface — `createTestnet(size)` spins up a LOCAL DHT (loopback,
+  // offline) and returns `{ bootstrap, destroy() }`. `bootstrap` is fed to a
+  // `new Hyperswarm({ bootstrap })` so two same-box peers discover each other
+  // without touching the public DHT. Used by `two-peer-swarm.test.ts`.
+  export interface Testnet {
+    bootstrap: Array<{ host: string; port: number }>;
+    nodes: unknown[];
+    createNode(opts?: Record<string, unknown>): unknown;
+    destroy(): Promise<void>;
+  }
+  export default function createTestnet(
+    size?: number,
+    opts?: Record<string, unknown>,
+  ): Promise<Testnet>;
+}
+
 declare module 'hyperbee' {
   export default class Hyperbee {
     constructor(feed: unknown, opts?: Record<string, unknown>);

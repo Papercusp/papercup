@@ -70,7 +70,10 @@ import {
   type AdmissionInput,
   type AdmissionResult,
 } from './read-admission';
-import { resolveLocalAnnounceIdentity } from './local-announce-identity';
+import {
+  resolveLocalAnnounceIdentity,
+  type ResolveLocalAnnounceIdentityOpts,
+} from './local-announce-identity';
 import { buildVerifyBindingAdapter } from './verify-binding-adapter';
 import { signWithDeviceKey } from '@/lib/identity/sign-with-device-key';
 
@@ -180,6 +183,46 @@ export interface BootHarnessOpts {
    * projections or the (collision-prone) global registry.
    */
   applyOverride?: (op: OpEnvelope) => Promise<boolean>;
+  /**
+   * Test seam — override how THIS peer's signed announce identity is resolved
+   * and signed. Production leaves this undefined: the announce identity is
+   * resolved via the real `resolveLocalAnnounceIdentity` (gh-token `GET /user`
+   * + OS keychain device keypair) and signed via `signWithDeviceKey`
+   * (keychain-held Ed25519 private key).
+   *
+   * BOTH sub-seams are needed for an offline transport test (e.g.
+   * `two-peer-swarm.test.ts`) because:
+   *   - `resolveOpts` lets the test inject a fake `resolveGithubUser` (distinct
+   *     per peer) and a self-generated Ed25519 keypair (via `loadKeypair` +
+   *     `keychainId`), so the resolver never calls the real `gh` token / OS
+   *     keychain (which throw / pollute the user's identity in a test runner).
+   *   - `sign` REPLACES `signWithDeviceKey`. Even with an injected keypair, the
+   *     default signer reads the private key from the OS keychain by
+   *     `keychainId` — which the test's generated key isn't stored under. The
+   *     signer override lets the test sign the announce with the matching
+   *     in-test private key, so `verifyAnnounce` (which checks the sig against
+   *     the announced `device_pubkey`) passes over the real wire.
+   *
+   * No-op for production callers: when undefined, `resolveOpts` defaults to
+   * `{}` (merged into the real resolver with only `logCoreKeyHex` set, i.e.
+   * current behavior) and `sign` defaults to `signWithDeviceKey(keychainId, …)`.
+   */
+  announceIdentityOverride?: {
+    /**
+     * Partial `ResolveLocalAnnounceIdentityOpts` merged into the
+     * `resolveLocalAnnounceIdentity({ logCoreKeyHex, ...resolveOpts })` call.
+     * `logCoreKeyHex` is always supplied by boot from the own log; any
+     * `logCoreKeyHex` here is ignored (overwritten by boot's value).
+     */
+    resolveOpts?: Partial<ResolveLocalAnnounceIdentityOpts>;
+    /**
+     * Replacement announce signer. Receives the resolved `keychainId` and the
+     * canonical bytes to sign; returns the raw 64-byte Ed25519 signature
+     * (`buildAnnounce` base64-encodes it). Defaults to
+     * `signWithDeviceKey(keychainId, bytes)`.
+     */
+    sign?: (keychainId: string, bytes: Buffer) => Promise<Buffer>;
+  };
 }
 
 export interface BootedHarnessHandle {
@@ -554,8 +597,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // (→ caught below) when gh-auth / keychain can't resolve, keeping the
       // harness local-only rather than joining without an announce.
       const identity = await resolveLocalAnnounceIdentity({
+        // Spread the test override FIRST so boot's own `logCoreKeyHex` always
+        // wins (the announce must bind THIS peer's actual log core).
+        ...(opts.announceIdentityOverride?.resolveOpts ?? {}),
         logCoreKeyHex: ownLog.keyHex,
       });
+      // The signer defaults to the keychain-backed `signWithDeviceKey`; tests
+      // inject a signer over a self-generated keypair so no OS keychain is
+      // touched (see `announceIdentityOverride`).
+      const signAnnounce =
+        opts.announceIdentityOverride?.sign ?? signWithDeviceKey;
       const ourAnnounce = await buildAnnounce(
         {
           device_pubkey: identity.devicePubkeyBase64,
@@ -563,7 +614,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           github_login: identity.githubLogin,
           log_core_key: ownLog.keyHex,
         },
-        (bytes) => signWithDeviceKey(identity.keychainId, bytes),
+        (bytes) => signAnnounce(identity.keychainId, bytes),
       );
       swarmHandle = await joinHarnessSwarm({
         store,
