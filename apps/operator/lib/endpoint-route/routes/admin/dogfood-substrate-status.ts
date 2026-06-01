@@ -4,13 +4,12 @@
  * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24.
  *
  * Reports which harnesses have a live Hyperbee substrate handle in
- * the current process. Useful for verifying PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE
- * took effect and the boot orchestrator successfully attached to each
- * harness in the active workspace.
+ * the current process — verifying the boot orchestrator successfully
+ * attached to each harness in the active workspace.
  *
  * Response:
  *   {
- *     enabled: boolean,        // PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1'
+ *     enabled: boolean,        // always true — the substrate always boots (Stage 4d)
  *     booted: Array<{ workspaceId, harnessSlug }>,
  *     bootedCount: number,
  *   }
@@ -29,7 +28,8 @@ const get = defineTool({
   async handler() {
     const booted = listBootedHandles();
     return Response.json({
-      enabled: process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1',
+      // Stage 4d: the substrate always boots (the opt-in gate was removed).
+      enabled: true,
       booted,
       bootedCount: booted.length,
     });

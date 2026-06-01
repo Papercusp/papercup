@@ -12,9 +12,8 @@
  *
  * Composes boot-all's getBootedHarness() with claim-handle-adapter's
  * buildClaimAutobaseHandle(). Returns null if the substrate hasn't
- * booted yet (substrate boot is gated behind the
- * PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 flag — without it, the
- * orchestrator should fall back to legacy single-writer claim).
+ * booted yet for this harness — the orchestrator then falls back to the
+ * legacy single-writer claim.
  *
  * Pure logic — no PG, no FS. Tests inject fake substrate handles via
  * the boot-all test hooks.

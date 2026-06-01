@@ -106,33 +106,13 @@ describe('getInProcessSubstrateStatus', () => {
     expect(r.harnesses[0]?.verdict).toBe('healthy');
   });
 
-  it('envFlag override beats process.env', () => {
-    const original = process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE;
-    try {
-      process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE = '1';
-      const r = getInProcessSubstrateStatus({ envFlag: false });
-      expect(r.flagEnabled).toBe(false);
-    } finally {
-      if (original === undefined) {
-        delete process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE;
-      } else {
-        process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE = original;
-      }
-    }
+  it('envFlag:false override forces the disabled rendering (test seam)', () => {
+    const r = getInProcessSubstrateStatus({ envFlag: false });
+    expect(r.flagEnabled).toBe(false);
   });
 
-  it('reads from process.env when envFlag undefined', () => {
-    const original = process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE;
-    try {
-      process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE = '1';
-      const r = getInProcessSubstrateStatus();
-      expect(r.flagEnabled).toBe(true);
-    } finally {
-      if (original === undefined) {
-        delete process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE;
-      } else {
-        process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE = original;
-      }
-    }
+  it('defaults to enabled when envFlag undefined (substrate always boots, Stage 4d)', () => {
+    const r = getInProcessSubstrateStatus();
+    expect(r.flagEnabled).toBe(true);
   });
 });

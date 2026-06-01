@@ -22,16 +22,14 @@
  * Going online without a host restart: an already-booted harness caches its
  * handle (`bootSingleHarness` returns `already-booted` and never re-resolves
  * the swarm binding), so just writing the file wouldn't make a running harness
- * join the swarm. When the substrate is enabled
- * (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1) this route therefore reboots the
- * harness after the write (`rebootHarness` = closeBootedHarness +
- * bootSingleHarness) so the next boot re-resolves the now-present config and
- * joins the derived topic. This is safe in-process: the finalize route and the
- * booted-handle map both live in the hono-host (`bin/host-bootstrap.ts` boots
- * the substrate there; the Next process carries no flag). The reboot is
+ * join the swarm. This route therefore reboots the harness after the write
+ * (`rebootHarness` = closeBootedHarness + bootSingleHarness) so the next boot
+ * re-resolves the now-present config and joins the derived topic. (The Model B
+ * substrate always boots — Stage 4d removed the opt-in gate.) This is safe
+ * in-process: the finalize route and the booted-handle map both live in the
+ * hono-host (`bin/host-bootstrap.ts` boots the substrate there). The reboot is
  * best-effort — a failure never fails the write; the file is the source of
- * truth and a host restart would still bring it online. When the flag is off,
- * the write happens and the harness goes online on the next enabled boot.
+ * truth and a host restart would still bring it online.
  */
 
 import { writeFile, mkdir } from 'node:fs/promises';
@@ -231,13 +229,11 @@ const realDeps: FinalizeShareDeps = {
   },
   writeFileUtf8: (absPath, contents) => writeFile(absPath, contents, 'utf8'),
   now: () => Date.now(),
-  // Reboot the harness in-process so it joins the swarm immediately. Reads the
-  // flag at call time (the host sets it at startup); a no-op when disabled so a
-  // flag-off host never boots a substrate it deliberately left down.
+  // Reboot the harness in-process so it joins the swarm immediately. The Model
+  // B substrate always boots (the PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE gate was
+  // removed in Stage 4d), so the reboot always runs — picking up the freshly
+  // written shared.json so the harness derives its swarm topic + announces.
   reboot: async (slug) => {
-    if (process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE !== '1') {
-      return { rebooted: false };
-    }
     const { rebootHarness } = await import('@/lib/sync/hyperbee/boot-all');
     const r = await rebootHarness(activeWorkspaceId(), slug);
     return {

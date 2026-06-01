@@ -516,9 +516,8 @@ export async function step7_pushContributorFile(opts: {
 // reader (Insights People card, Contributors tab, claim-CTA gate) sees
 // the new contributor without a round-trip.
 //
-// When the substrate isn't booted (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=0)
-// or the per-harness handle isn't ready, this step marks itself
-// phase_0_pending and the flow continues — the bare-PG path still
+// When the per-harness substrate handle isn't ready yet, this step marks
+// itself phase_0_pending and the flow continues — the bare-PG path still
 // works, just without the substrate-fan-out signal. Mirrors the
 // pre-substrate behavior.
 

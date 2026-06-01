@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import type { OpEnvelope } from './autobase-setup';
+import type { OpEnvelope } from './op-envelope-types';
 import { mergeAdmittedLogs, type AdmittedLog } from './read-merge';
 
 // Typed apply sink so `mock.calls[0][0]` resolves to the OpEnvelope argument

@@ -20,7 +20,7 @@
  * cap here either — that is Stage 6.
  */
 
-import type { OpEnvelope } from './autobase-setup';
+import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 import { applyHyperbeeOpToPg, lwwPick } from './projection';
 

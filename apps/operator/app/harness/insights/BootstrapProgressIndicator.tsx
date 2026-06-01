@@ -10,8 +10,8 @@
  * when M=N (caught up).
  *
  * Pure UI; consumer passes the current numbers + a manual dismiss
- * callback. Wiring to live Autobase merge events ships once the
- * substrate boot is gated on (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1).
+ * callback. The numbers are fed by the substrate's bootstrap-progress
+ * poller (own-log length), which always runs now (Stage 4d).
  *
  * Three render states:
  *   - syncing (M > N): pill with spinner + "Syncing N/M ops"

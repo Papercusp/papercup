@@ -86,17 +86,17 @@ export function formatSubstrateStatus(
     input.bootedCount === 1 ? '' : 'es'
   }`;
   lines.push(
-    `Substrate flag: ${input.enabled ? '✓ ON' : '· off'}   booted: ${hcount}`,
+    `Substrate: ${input.enabled ? '✓ ON' : '· off'}   booted: ${hcount}`,
   );
 
   if (!input.enabled) {
-    lines.push(
-      '  → set PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 and restart to engage.',
-    );
+    // The substrate always boots (Stage 4d removed the opt-in gate); this
+    // branch only renders when a caller explicitly forces the disabled view.
+    lines.push('  → substrate reported disabled.');
     return { lines, exitCode: 0 };
   }
   if (input.bootedCount === 0) {
-    lines.push('  → flag is on but no handles in boot map yet.');
+    lines.push('  → substrate on but no handles in the boot map yet.');
     return { lines, exitCode: 1 };
   }
 

@@ -25,9 +25,8 @@
  *   - Boot retry / backoff. A failure logs + moves on; the next
  *     bootAllHarnessesForActiveWorkspace() call retries.
  *
- * Gated by PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 in the
- * instrumentation-node.ts call site so the default dev loop is
- * unchanged until you opt in.
+ * Always runs at host boot (bin/host-bootstrap.ts) — the opt-in gate was
+ * removed in Stage 4d; the Model B substrate is the default.
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
@@ -297,9 +296,8 @@ export interface RebootHarnessResult {
  * against the now-present config and joins the derived Hyperswarm topic.
  *
  * Idempotent + safe when not booted: `closeBootedHarness` no-ops (returns
- * false) and `bootSingleHarness` boots fresh. Callers should only invoke
- * this when the substrate is enabled (PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1)
- * — otherwise it would boot a substrate the host deliberately left down.
+ * false) and `bootSingleHarness` boots fresh. The substrate always boots
+ * (Stage 4d), so this can be called whenever a harness's shared.json changes.
  */
 export async function rebootHarness(
   workspaceId: string,

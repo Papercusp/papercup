@@ -8,11 +8,12 @@
  * Compact pill showing the local process's substrate state for one
  * harness (or for the workspace as a whole). Three modes:
  *
- *   disabled  — PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE not set; flag off.
+ *   disabled  — substrate reported off (a forced/diagnostic state only;
+ *               the substrate always boots as of Stage 4d).
  *               Greyed pill: "Substrate off".
- *   booting   — flag on, but this harness not yet in handle map.
+ *   booting   — substrate on, but this harness not yet in handle map.
  *               Yellow pill: "Booting…".
- *   booted    — flag on, harness handle present.
+ *   booted    — substrate on, harness handle present.
  *               Green pill: "Substrate live".
  *
  * Pure UI; consumer fetches state via /api/admin/dogfood-substrate-status

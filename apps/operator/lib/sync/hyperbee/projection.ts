@@ -16,7 +16,7 @@
  * timestamp). LWW helper here is pure + testable.
  */
 
-import type { OpEnvelope } from './autobase-setup';
+import type { OpEnvelope } from './op-envelope-types';
 import { observeMergedOp } from './clobber-events';
 
 export interface TableProjection<Row> {

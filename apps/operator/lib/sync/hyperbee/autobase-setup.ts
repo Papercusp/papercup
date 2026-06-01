@@ -22,24 +22,16 @@
 import Autobase from 'autobase';
 import type Corestore from 'corestore';
 
-export interface OpEnvelope {
-  type: 'put' | 'del' | 'addWriter';
-  // For addWriter:
-  key?: string;
-  // For put/del:
-  table?: string;
-  hbKey?: string;
-  value?: unknown;
-  schema_version?: number;
-  ts?: number;
-  /**
-   * Hex-encoded writer pubkey. Optional on local writes (callers may
-   * not have it threaded yet); when present, projections fire the
-   * clobber-events `observeMergedOp` on apply so a stale remote
-   * override of a recent local write surfaces as a toast. v5 D-012.
-   */
-  writerPubkey?: string;
-}
+// STAGE-5 RETIREMENT: Stage 4 replaced the multi-writer Autobase data layer
+// with per-peer logs + a read-merge (see boot.ts). The boot path no longer
+// uses `createAutobaseHarness`/`AutobaseHarnessHandle`; the only surviving
+// importer is the orchestrator claim adapter (claim-handle-adapter.ts /
+// distributed-claim.ts), which Stage 5 rewrites onto the own log. Once that
+// lands, this whole module + its test can be deleted. `OpEnvelope` moved to
+// `op-envelope-types.ts` (the projection contract outlives the Autobase) and is
+// re-exported here so existing `from './autobase-setup'` imports keep working.
+import type { OpEnvelope } from './op-envelope-types';
+export type { OpEnvelope } from './op-envelope-types';
 
 export interface AutobaseHarnessHandle {
   base: Autobase;

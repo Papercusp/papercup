@@ -33,8 +33,8 @@ const get = defineTool({
   path: '/admin/dogfood-substrate-health',
   auth: 'public',
   async handler() {
-    const flagEnabled =
-      process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1';
+    // Stage 4d: the substrate always boots (the opt-in gate was removed).
+    const flagEnabled = true;
     const booted = listBootedHandles();
     const progress = listBootstrapProgress();
     const progressByKey = new Map<

@@ -31,9 +31,10 @@
  */
 
 import type Corestore from 'corestore';
-// Imported for reference only — `PeerLogOp` is defined explicitly below so this
-// module does not depend on autobase-setup being kept (it is on the way out).
-import type { OpEnvelope } from './autobase-setup';
+// Imported for the compile-time field-compat guard below. `PeerLogOp` is
+// defined explicitly so this module doesn't depend on the (retiring) Autobase;
+// `OpEnvelope` now lives in its own types module (Stage 4d).
+import type { OpEnvelope } from './op-envelope-types';
 
 /**
  * A single-writer op envelope. This is the `OpEnvelope` shape MINUS the
@@ -60,8 +61,8 @@ export interface PeerLogOp {
 // here is dropped from OpEnvelope, the `Pick` stops compiling. It does NOT
 // catch a type change on those fields — they're all optional on OpEnvelope, so
 // a `PeerLogOp` (with its required versions) still satisfies the `Pick`. Purely
-// structural; no runtime cost. (autobase-setup is being retired; this guard
-// goes with it.)
+// structural; no runtime cost. Keeps the per-peer-log op aligned with the
+// projection-layer `OpEnvelope` (op-envelope-types.ts).
 type _PeerLogOpSharesEnvelope = Pick<OpEnvelope, 'table' | 'hbKey' | 'value' | 'ts' | 'schema_version'>;
 const _opEnvelopeCompat: (op: PeerLogOp) => _PeerLogOpSharesEnvelope = (op) => op;
 void _opEnvelopeCompat;

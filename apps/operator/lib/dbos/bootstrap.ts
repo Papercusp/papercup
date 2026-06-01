@@ -4,8 +4,7 @@
  * Boots DBOS durable execution against the operator's embedded Postgres.
  * The call site (instrumentation-node.ts) gates this behind
  * `PAPERCUSP_DBOS_ENABLE=1` (default OFF) — same shape as the other
- * opt-in boot workers (`PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE`,
- * `PAPERCUSP_IPC_ENABLE`). The PostHog `flags:*` A/B gate (plan D-011)
+ * opt-in boot worker (`PAPERCUSP_IPC_ENABLE`). The PostHog `flags:*` A/B gate (plan D-011)
  * comes in Phase 1 with the AutoLoop runtime migration; the boot launch
  * itself stays env-gated so we never block startup on an async flag read.
  *

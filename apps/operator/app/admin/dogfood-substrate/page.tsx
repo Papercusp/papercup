@@ -6,7 +6,7 @@
  * Composes the substrate-status JSON endpoint with the per-harness
  * claim-attempts stats. Useful for verifying:
  *
- *   1. PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE took effect (top badge).
+ *   1. The substrate is up (top badge — it always boots as of Stage 4d).
  *   2. Each expected harness successfully booted (rows below).
  *   3. The claim-audit table has rows for each harness (won/lost/error).
  *
@@ -77,7 +77,8 @@ const EMPTY = {
 };
 
 export default async function DogfoodSubstratePage() {
-  const enabled = process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1';
+  // Stage 4d: the substrate always boots (the opt-in gate was removed).
+  const enabled = true;
   const booted = listBootedHandles();
   const { sql } = getOrgPg();
   const runQuery = async <T,>(
@@ -154,16 +155,15 @@ export default async function DogfoodSubstratePage() {
           marginBottom: 16,
         }}
       >
-        Hyperbee substrate boot state for the local process. Gated by{' '}
-        <code>PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1</code>; with the flag off
-        the operator runs in PG-only mode.
+        Model B sync substrate boot state for the local process. The substrate
+        always boots; PG remains the canonical store and each harness federates
+        over its own per-peer log when shared.
       </p>
 
       {booted.length === 0 ? (
         <div style={EMPTY}>
-          {enabled
-            ? 'Flag enabled but no harnesses have booted yet. Watch this page; the orchestrator boots each harness on its own.'
-            : 'Flag disabled — no substrate handles in this process. Set PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 and restart.'}
+          No harnesses have booted yet. Watch this page; the orchestrator boots
+          each harness on its own.
         </div>
       ) : (
         <table style={TABLE} data-testid="dogfood-substrate-table">

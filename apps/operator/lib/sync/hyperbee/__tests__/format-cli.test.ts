@@ -23,20 +23,18 @@ function summary(
 }
 
 describe('formatSubstrateStatus', () => {
-  it('flag off → exit 0 + flag-off hint', () => {
+  it('disabled view → exit 0 + disabled hint', () => {
     const r = formatSubstrateStatus({ enabled: false, bootedCount: 0 });
     expect(r.exitCode).toBe(0);
     expect(r.lines[0]).toContain('· off');
-    expect(r.lines.join('\n')).toContain(
-      'PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE',
-    );
+    expect(r.lines.join('\n')).toContain('substrate reported disabled');
   });
 
-  it('flag on + no boot map → exit 1 + flag-on-no-handles hint', () => {
+  it('on + no boot map → exit 1 + no-handles hint', () => {
     const r = formatSubstrateStatus({ enabled: true, bootedCount: 0 });
     expect(r.exitCode).toBe(1);
     expect(r.lines[0]).toContain('✓ ON');
-    expect(r.lines.join('\n')).toContain('no handles in boot map yet');
+    expect(r.lines.join('\n')).toContain('no handles in the boot map yet');
   });
 
   it('singular "harness" for booted=1', () => {

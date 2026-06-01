@@ -24,7 +24,7 @@ export default defineTool({
     'Hyperbee substrate diagnostic: flag state, booted harnesses, per-row health verdict, workspace summary. Mirrors /api/admin/dogfood-substrate-health.',
   capability: 'intel:read',
   guidance: {
-    when: `Investigating substrate boot state, claim error rates, or workspace-level dogfood health. Run after PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1 has been set + the operator restarted.`,
+    when: `Investigating substrate boot state, claim error rates, or workspace-level dogfood health. The substrate always boots, so run this any time after the operator has started.`,
     notWhen: `For per-harness Insights or feature-level data, use the harness:* tools. This is the dogfood substrate layer specifically.`,
     chaining: `Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy.`,
   },

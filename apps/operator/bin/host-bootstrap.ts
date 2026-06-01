@@ -163,58 +163,57 @@ export function runBootstrap(): void {
       });
   }
 
-  // dogfood-v5 Phase 5a — Hyperbee substrate boot. Gated by
-  // PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1; default OFF so the dev loop is
-  // unchanged until explicit opt-in. Same wiring as the (retired)
-  // instrumentation-node.ts: await boot-gate, then boot every harness
-  // in the active workspace. Failures roll up but don't block the host.
-  if (process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1') {
-    void (async () => {
-      try {
-        // Ensure the dogfood PG schema + reactivity triggers BEFORE the gate
-        // opens. The projection writers do NOT self-ensure (verified: a missing
-        // harness_shared.* table 500s the first reader — e.g. the
-        // shared_repo_binding_cache hit by /api/harness/binding/resolve), so the
-        // prior "writers ensure on first write" assumption was false and the
-        // dogfood schema was never created at host boot. wireDogfoodTriggers()
-        // is idempotent (guarded) and ensures every dogfood table first (it
-        // calls ensureAllDogfoodTables) then attaches the change-notify
-        // triggers. A failure here keeps the gate closed (the catch logs
-        // non-fatally and the substrate simply retries next boot) rather than
-        // opening it over a missing schema.
-        const { wireDogfoodTriggers } = await import('../lib/ensure-schema-dogfood');
-        await wireDogfoodTriggers();
-        const { markSqlMigrationsComplete, markRuntimeEnsureComplete } =
-          await import('../lib/sync/hyperbee/boot-gate');
-        markSqlMigrationsComplete();
-        markRuntimeEnsureComplete();
-        const { bootAllHarnessesForActiveWorkspace } = await import(
-          '../lib/sync/hyperbee/boot-all'
-        );
-        const t0 = Date.now();
-        const result = await bootAllHarnessesForActiveWorkspace({
-          perHarnessTimeoutMs: 30_000,
-        });
-        console.log(
-          `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed}`,
-        );
-        if (result.failed > 0) {
-          for (const r of result.results) {
-            if (r.state === 'failed') {
-              console.warn(
-                `[hyperbee-substrate] (${r.workspaceId}::${r.harnessSlug}) failed: ${r.error}`,
-              );
-            }
+  // Model B sync substrate boot. Always runs (the
+  // PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE opt-in gate was removed in Stage 4d —
+  // the per-peer-log substrate is now the default). Awaits the dogfood schema
+  // + boot-gate, then boots every harness in the active workspace. Failures
+  // roll up but don't block the host (each harness boot is independently
+  // defensive — a swarm/identity failure leaves it local-only).
+  void (async () => {
+    try {
+      // Ensure the dogfood PG schema + reactivity triggers BEFORE the gate
+      // opens. The projection writers do NOT self-ensure (verified: a missing
+      // harness_shared.* table 500s the first reader — e.g. the
+      // shared_repo_binding_cache hit by /api/harness/binding/resolve), so the
+      // prior "writers ensure on first write" assumption was false and the
+      // dogfood schema was never created at host boot. wireDogfoodTriggers()
+      // is idempotent (guarded) and ensures every dogfood table first (it
+      // calls ensureAllDogfoodTables) then attaches the change-notify
+      // triggers. A failure here keeps the gate closed (the catch logs
+      // non-fatally and the substrate simply retries next boot) rather than
+      // opening it over a missing schema.
+      const { wireDogfoodTriggers } = await import('../lib/ensure-schema-dogfood');
+      await wireDogfoodTriggers();
+      const { markSqlMigrationsComplete, markRuntimeEnsureComplete } =
+        await import('../lib/sync/hyperbee/boot-gate');
+      markSqlMigrationsComplete();
+      markRuntimeEnsureComplete();
+      const { bootAllHarnessesForActiveWorkspace } = await import(
+        '../lib/sync/hyperbee/boot-all'
+      );
+      const t0 = Date.now();
+      const result = await bootAllHarnessesForActiveWorkspace({
+        perHarnessTimeoutMs: 30_000,
+      });
+      console.log(
+        `[hyperbee-substrate] boot complete in ${Date.now() - t0}ms — attempted=${result.attempted} booted=${result.booted} alreadyBooted=${result.alreadyBooted} failed=${result.failed}`,
+      );
+      if (result.failed > 0) {
+        for (const r of result.results) {
+          if (r.state === 'failed') {
+            console.warn(
+              `[hyperbee-substrate] (${r.workspaceId}::${r.harnessSlug}) failed: ${r.error}`,
+            );
           }
         }
-      } catch (err) {
-        console.warn(
-          '[hyperbee-substrate] boot failed (non-fatal):',
-          err instanceof Error ? err.message : err,
-        );
       }
-    })();
-  }
+    } catch (err) {
+      console.warn(
+        '[hyperbee-substrate] boot failed (non-fatal):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
 
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
   // Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF. Dynamic import so the host

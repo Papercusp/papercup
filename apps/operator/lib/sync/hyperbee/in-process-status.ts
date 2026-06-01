@@ -46,7 +46,11 @@ export interface InProcessSubstrateStatus {
 }
 
 export interface GetInProcessStatusOpts {
-  /** Override for tests. Defaults to process.env. */
+  /**
+   * Override for tests. Defaults to `true` — the Model B substrate always
+   * boots now (the PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE opt-in gate was removed
+   * in Stage 4d). Tests still pass `false` to exercise the disabled rendering.
+   */
   envFlag?: boolean;
   /**
    * Per-harness claim stats fetcher — defaulted to a zero-stats
@@ -65,10 +69,9 @@ const ZERO_STATS = { total: 0, won: 0, lost: 0, error: 0 } as const;
 export function getInProcessSubstrateStatus(
   opts: GetInProcessStatusOpts = {},
 ): InProcessSubstrateStatus {
-  const flagEnabled =
-    opts.envFlag !== undefined
-      ? opts.envFlag
-      : process.env.PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE === '1';
+  // Stage 4d: the substrate always boots; `flagEnabled` is now constant true
+  // (the `envFlag` override is retained as a test seam for disabled-rendering).
+  const flagEnabled = opts.envFlag !== undefined ? opts.envFlag : true;
   const booted = listBootedHandles();
   const progress = listBootstrapProgress();
   const progressByKey = new Map<
