@@ -35,6 +35,23 @@ describe('attestationGistFilename', () => {
   it('handles empty pubkey defensively', () => {
     expect(attestationGistFilename('')).toBe('papercusp-device-binding-.json');
   });
+  it("maps base64 '/' and '+' in the prefix to the filename-safe alphabet (gist 422 bug)", () => {
+    // A gist filename cannot contain '/'; raw base64 prefixes do ~11% of the time.
+    expect(attestationGistFilename('ab/d+2zz9999')).toBe('papercusp-device-binding-ab_d-2zz.json');
+    expect(attestationGistFilename('////++++rest')).toBe('papercusp-device-binding-____----.json');
+  });
+  it('NEVER produces a gist-invalid filename for a real Ed25519 pubkey (regression)', () => {
+    const { generateKeyPairSync } = require('node:crypto') as typeof import('node:crypto');
+    for (let i = 0; i < 500; i++) {
+      const { publicKey } = generateKeyPairSync('ed25519');
+      const der = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+      const pubkeyBase64 = der.subarray(-32).toString('base64');
+      const fn = attestationGistFilename(pubkeyBase64);
+      // '/' is the hard 422 trigger; assert neither it nor raw '+' survive.
+      expect(fn.includes('/'), `prefix of ${pubkeyBase64} produced '/' in ${fn}`).toBe(false);
+      expect(fn.slice('papercusp-device-binding-'.length).includes('+')).toBe(false);
+    }
+  });
 });
 
 describe('hasAllAttestationScopes', () => {

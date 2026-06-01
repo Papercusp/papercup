@@ -123,10 +123,19 @@ export const ATTESTATION_VERIFY_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
  * Gist filename convention. Exported so the publish + verify paths
  * use one source of truth.
  *
- * Example: pubkeyBase64="abcd1234..." → "papercusp-device-binding-abcd1234.json"
+ * The prefix is mapped to the URL/filename-safe base64 alphabet
+ * (`+`→`-`, `/`→`_`): a GitHub gist filename CANNOT contain `/`, and a raw
+ * base64 pubkey prefix contains `/` ~11% of the time (and `+` ~12%), so
+ * without this `createAttestationGist` 422s ("Validation Failed: files
+ * invalid") for ~1-in-9 devices and they can never publish their binding.
+ * (Surfaced by the live two-identity P-079 acceptance run, 2026-06-01.)
+ * Both publish + verify call this, so the mapping stays consistent; the
+ * substitution is a bijection on those positions (no collisions).
+ *
+ * Example: pubkeyBase64="ab/d+234..." → "papercusp-device-binding-ab_d-234.json"
  */
 export function attestationGistFilename(pubkeyBase64: string): string {
-  const prefix = pubkeyBase64.slice(0, 8);
+  const prefix = pubkeyBase64.slice(0, 8).replace(/\+/g, '-').replace(/\//g, '_');
   return 'papercusp-device-binding-' + prefix + '.json';
 }
 
