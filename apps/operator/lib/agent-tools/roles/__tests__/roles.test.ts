@@ -46,8 +46,8 @@ describe('roles:list', () => {
     expect(listRoles).toHaveBeenCalledWith('foo');
     const payload = parseTextPayload(result as never);
     expect(payload.harnessSlug).toBe('foo');
-    expect(Array.isArray(payload.agentRoles)).toBe(true);
-    expect((payload.agentRoles as Array<{ id: string }>)[0].id).toBe('architect');
+    expect(Array.isArray(payload.roles)).toBe(true);
+    expect((payload.roles as Array<{ id: string }>)[0].id).toBe('architect');
   });
 
   it('falls back to ctx.harnessSlug when arg is omitted', async () => {
@@ -111,7 +111,7 @@ describe('roles:firing_on', () => {
     expect(rolesFiringOn).toHaveBeenCalledWith('feature_completed', 'sheets');
     const payload = parseTextPayload(result as never);
     expect(payload.event).toBe('feature_completed');
-    expect((payload.agentRoles as Array<{ id: string }>)[0].id).toBe('match-feature_completed');
+    expect((payload.roles as Array<{ id: string }>)[0].id).toBe('match-feature_completed');
   });
 });
 
@@ -123,7 +123,7 @@ describe('roles:known', () => {
     const { default: tool } = await import('@/lib/agent-tools/roles/known');
     const result = await tool.handler({}, MAKE_CTX());
     const payload = parseTextPayload(result as never);
-    expect(payload.agentRoles).toEqual(['architect', 'worker', 'validator']);
+    expect(payload.roles).toEqual(['architect', 'worker', 'validator']);
   });
 });
 

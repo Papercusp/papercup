@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { bumpPatch } from './page';
+// bumpPatch moved from page.tsx to the client component during the snapshots refactor.
+import { bumpPatch } from './InstalledSnapshotsClient';
 
 describe('bumpPatch', () => {
   it('bumps a plain semver patch', () => {
