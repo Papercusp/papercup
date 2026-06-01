@@ -505,6 +505,13 @@ async function readFrontierFeatures(
               AND status = 'started'
          )
        )
+       -- Auditor gate (G2 / P-008): a remote-authored feature is NOT pickable
+       -- until the auditor admits it. This MUST be enforced here on the live
+       -- DBOS frontier read (not only in the legacy readFeaturesPg) so the
+       -- pick path independently quarantines un-admitted remote features even
+       -- if the auditor dispatch lane is unwired/errors/lags — fail-safe.
+       -- (origin NULL = local, for pre-G1 back-compat; mirrors isAutoPickable.)
+       AND (origin = 'local' OR origin IS NULL OR audit_verdict = 'admit')
   `;
   return rows.map((r) => ({
     id: r.feature_id,
