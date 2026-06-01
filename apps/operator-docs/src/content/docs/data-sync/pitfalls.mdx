@@ -167,9 +167,9 @@ with in-memory cache + bulk upsert).
 a dev server. To see source changes you need `npm run build` (full
 rebuild — never `npx next build`, which skips the static-asset copy).
 
-**Fix**: rebuild apps/web. The operator (`:3055`) and papercup-app
-(`:3061`) DO use `next dev` and pick up source changes via HMR — only
-`apps/web` is the static-build outlier.
+**Fix**: rebuild apps/web. The operator (`:3055`) uses the **Vite** dev
+server (`@papercusp/operator-vite`) and picks up source changes via HMR;
+only the legacy `apps/web` Next standalone is the static-build outlier.
 
 ## 11. Replication slot stuck after DB rename
 

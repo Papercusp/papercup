@@ -183,9 +183,9 @@ with in-memory cache + bulk upsert).</p>
 <p><strong>Why</strong>: <code dir="auto">dev:web</code> serves <code dir="auto">apps/web/.next/standalone/server.js</code>, <strong>not</strong>
 a dev server. To see source changes you need <code dir="auto">npm run build</code> (full
 rebuild — never <code dir="auto">npx next build</code>, which skips the static-asset copy).</p>
-<p><strong>Fix</strong>: rebuild apps/web. The operator (<code dir="auto">:3055</code>) and papercup-app
-(<code dir="auto">:3061</code>) DO use <code dir="auto">next dev</code> and pick up source changes via HMR — only
-<code dir="auto">apps/web</code> is the static-build outlier.</p>
+<p><strong>Fix</strong>: rebuild apps/web. The operator (<code dir="auto">:3055</code>) uses the <strong>Vite</strong> dev
+server (<code dir="auto">@papercusp/operator-vite</code>) and picks up source changes via HMR;
+only the legacy <code dir="auto">apps/web</code> Next standalone is the static-build outlier.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="11-replication-slot-stuck-after-db-rename">11. Replication slot stuck after DB rename</h2><a class="sl-anchor-link" href="#11-replication-slot-stuck-after-db-rename"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “11. Replication slot stuck after DB rename”</span></a></div>
 <p><strong>Symptom</strong>: <code dir="auto">zero-cache-harness</code> won’t start; logs show “replication
 slot in use.”</p>
