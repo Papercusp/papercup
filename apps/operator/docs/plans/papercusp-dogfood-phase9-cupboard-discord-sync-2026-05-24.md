@@ -168,7 +168,11 @@ Date: 2026-05-31
 
 **Note field shipped (commit `a2f0ef142`):** pending reports now carry an optional operator note, sent as `note` on resolve (the worker records it in `resolved_by_operator_note` + the audit row). Draft is useState (mid-edit, per the state rule); cleared on success.
 
-**Remaining — visual/interaction pass in the Tauri shell, blocked on a host restart (user's call):** the UI is compile-verified (operator tsc + operator-vite build green, route registered) but not yet clicked through a running desktop. The catch: the server-side `/api/cupboard/admin/*` proxy is in `cupboard.ts`, and the `:3070` hono-host has **no hot-reload** — the currently-running host (PID-checked, started ~3h before the proxy commit) does NOT have the proxy, so a probe 404s as a false negative. Loading it needs a host restart, but ~10+ active `psu-launcher` agent sessions depend on `:3070`, so restarting autonomously would disrupt them. After the next host restart, verify: Admin → Cupboard renders, and `GET /api/cupboard/admin/reports` round-trips (operator → worker → papercupai allowlist → `{reports:[]}`).
+**Host restarted (user-authorized) + server path verified live 2026-05-31:** bounced `papercup-dev-api.service` and confirmed against the running host on current code:
+- `GET /api/cupboard/admin/reports` → 200 `{reports:[]}` — the **operator proxy round-trips end-to-end** (adds gh-token → worker → papercupai allowlist → empty list).
+- `GET /api/cupboard/listings` → 200 `{listings:[]}` — browse works after a SECOND fix (commit `d13a1c777`): the browse route read `process.env.PAPERCUSP_CUPBOARD_URL` directly, but the systemd unit sources `.env.local` not `~/.papercusp/env`, so the URL was `''` and it returned `cupboard_url_missing`. Unified onto `resolveCupboardBaseUrl()` (canonical default), like publish + admin.
+
+**Only residual: the literal React render of `/admin/cupboard-moderation`.** Not verified by driving the desktop — a Tauri desktop is running but the standing rule is not to drive the user's live `:0` window (focus-steal / intrusion). The component is compile-verified (operator tsc + operator-vite build) and follows the exact DbosClient/InsightsTab pattern known to render in this shell, and its entire data path is now proven live. A pixel check is a quick human glance at Admin → Cupboard, or an isolated-Xvfb instance pass if certainty is wanted.
 
 ## Named fallback rollout
 
