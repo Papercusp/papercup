@@ -1,5 +1,5 @@
 ---
-title: Reconcile substrate role prompts to the live DBOS director pipeline
+title: Reconcile substrate role prompts to DBOS — preserve legacy capabilities except the intentional cuts
 slug: dbos-pipeline-prompt-reconciliation-2026-06-01
 status: draft
 created: 2026-06-01
@@ -7,54 +7,74 @@ updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 
-# Reconcile substrate role prompts to the live DBOS director pipeline
+# Reconcile substrate role prompts to DBOS — preserve legacy capabilities except the intentional cuts
 
 ## Now
 
-**State:** Draft for review before any code. The `substrate-prompt-modernization` plan fixed what the prompts SAY about deprecated *files and ports* (SPEC.md→plan, contract→VAL-*, :3055→:3070). This plan fixes what they say about the **engine** — and that's a deeper, behavior-changing problem. Code review (2026-06-01, all verified against source) found the role prompts still describe the **RETIRED main-loop architecture**, so live agents are being told how a pipeline that no longer runs works. The personas themselves are mostly sound; the *control-flow narrative* is wrong.
+**State:** Draft for review before any code. **Governing directive (avi, 2026-06-01):** use the DBOS engine, but do **NOT** deprecate any capability the old roles had — *except* the ones the DBOS-retirement plan (`dbos-retire-legacy-orchestrator-2026-05-31`) explicitly records as your intentional cuts. So this is **not** a "document current reality + delete what DBOS doesn't do" pass (that was this plan's original, wrong framing). It's a **parity** pass: where a legacy capability is missing from DBOS and is NOT on the cut list, the gap gets **FILLED** (engine work), not reframed away in the prompt.
 
-**Next:** human decision on D-001 (retire-vs-merge `orchestrator.md`) and D-002 (is the pre-loop scoper/plan-gate flow actually dead under DBOS, or just unmodeled?) — both need a code/intent call before editing. Then P-001…P-007.
+This is the controlling distinction for every item below:
+- **Intentionally cut → remove from prompts** (only these): `NEXT_HARNESS`, `NEXT_WORKER_CEO_MODE`, parallel `NEXT_WORKER N=k` (D-001 of the retire plan); competition / adaptive-tiers / synthesizer (D-009/D-012; **flag-gated, not deleted** per D-011).
+- **Preserved-by-DBOS → make the prompt accurate** (already works, prompt just describes it via the retired engine): all lifecycle + quality/expert verbs, DONE/ESCALATE finalization, cost-cap, chunk-loop, concurrency.
+- **Legacy-only, NOT on the cut list → FILL the gap** (the part my earlier draft got wrong): the **pre-loop** (scoper `MODE=initial` auto-populate; reviewer `MODE=plan` plan-gate) and **`CONVERT_ISSUES`** global issue→feature promotion. Per the directive these are *accidental* losses to be ported, not deprecated.
 
-## Background — the gap, grounded in source (verified 2026-06-01)
+**Next:** human confirms D-001 (orchestrator.md fate) and D-002 (pre-loop = gap to FILL — my recommendation now flipped). Then the work splits into a prompt-accuracy track (P-003…P-006, no behavior change) and an engine-parity track (P-011/P-012, fills the gaps) before the prompts can truthfully describe those capabilities.
 
-**The live engine** (`apps/operator/lib/dbos/orchestrator-workflow.ts`, default-on since P-009 `dbos-retire-legacy-orchestrator-2026-05-31`):
-- A **DBOS durable per-feature pipeline**. The 30s dispatcher (`orchestrator-dispatcher.ts`) reads `harness_features`, runs up to `PAPERCUSP_DBOS_MAX_PIPELINES` (default 4) pipelines concurrently.
-- Each pipeline turn runs the **`director`** role (`orchestrator-workflow.ts:106`, `orchestratorRole ?? 'director'`) — `director.md` is 47 lines, "You are the **director** for a SINGLE feature inside a durable pipeline."
-- `classifyDecision()` (`orchestrator-decide.ts`) maps the director's verb to a role dispatch. It explicitly classifies `NEXT_HARNESS`, `NEXT_WORKER_CEO_MODE`, and `NEXT_WORKER N=k` (parallel lanes) as **`unsupported`** — the pipeline stops rather than running them.
-- There is **no pre-loop** in the DBOS path (`grep runPreLoop apps/operator/lib/dbos/` → 0 hits). The scoper-`MODE=initial` gate and reviewer-`MODE=plan` gate that `pre-loop.ts` runs are **legacy-only**.
+## Background — what DBOS already preserves vs. what you cut (from the retire plan's own decisions)
 
-**The retired engine** (`libs/papercusp/packages/orchestrator/src/main-loop.ts`, banner line 1: "⚠️ RETIRED … Do not extend"):
-- `orchestrator.md` (259 lines, "You are the **ORCHESTRATOR** in a 3-agent autonomous coding harness") is its persona. It is **6× the size of `director.md`** and still presents itself as the live decision driver.
-- The legacy loop is reachable only via `PAPERCUSP_DBOS_ORCHESTRATOR=0` + `bin/run.ts` (a revert path the operator never invokes).
+Verified against `dbos-retire-legacy-orchestrator-2026-05-31` (D-001…D-014) + `orchestrator-decide.ts` + `decision-parse.ts`, 2026-06-01.
 
-**The concrete inaccuracies in the live-loaded prompts:**
-1. `orchestrator.md` describes itself as the live driver — but `director.md` is. Two prompts, overlapping job, one retired.
-2. `orchestrator.md` (and `README.md`) teach verbs the DBOS path rejects as `unsupported` (`NEXT_HARNESS`, `CEO_MODE`, `N=` lanes). An agent emitting them gets a silent pipeline stop.
-3. `scoper.md` / `reviewer.md` / `plan-gate.md` present `MODE=initial` / `MODE=plan` as the operating flow — but the pre-loop that triggers those isn't in the DBOS path. (Scoper IS still reachable via `NEXT_SCOPER` + the `/replan`,`/product-review` endpoints, so it's not dead — but its *self-description* as a pre-loop gate is.)
-4. The "scoper→architect→worker→validator→reviewer→documenter→curator" fixed sequence several prompts imply is not how `director` decides — the director picks per-turn; curator/documenter are terminal-only; reviewer-`MODE=plan` is pre-loop (legacy).
+**DBOS already PRESERVES (Phase F of the retire plan closed these gaps deliberately):**
+- Lifecycle verbs `NEXT_WORKER` / `NEXT_VALIDATOR` / `NEXT_ARCHITECT` / `NEXT_SCOPER` → all `dispatch` in `orchestrator-decide.ts`.
+- Quality/expert verbs `NEXT_TESTER` / `NEXT_SECURITY` / `GENERATE_TESTS` / `NEXT_MONITOR` / `NEXT_EXPERT` / `NEXT_FEEDBACK` → all `dispatch` (retire-plan P-003). `director.md` is kept minimal (retire D-003) so it doesn't *force* a role a harness lacks — but the capability is wired.
+- DONE finalization (curator → documenter → archive → afterDone hook) + ESCALATE finalization (on-escalate hook → curator) → retire P-001/P-002, D-004.
+- Cost-cap (dispatcher gate, retire D-002), chunk-loop worker (retire D-013/D-014), per-harness concurrency + continuous refill (retire D-013), autoloop + periodic timers (retire D-009).
 
-**Why this matters (answers the review's Q2 — "do the prompts make sense for what Papercusp is trying to achieve"):** a worker/validator reading an accurate persona is cheap; one reading a retired-engine persona wastes turns on dead verbs and mis-models who decides what. This is the highest-value correctness work left on the prompt surface — bigger than the string scrub, because it's about *behavior*, not *vocabulary*.
+**You INTENTIONALLY CUT (the only allowed deprecations):**
+- `NEXT_HARNESS`, `NEXT_WORKER_CEO_MODE`, parallel `NEXT_WORKER N=k` — global-orchestrator-only, cut from the per-feature model (retire D-001).
+- competition (best-of-N) / adaptive worker-count tiers / synthesizer — the pre-chunk-loop worktree-race model, superseded 2026-05-08 (retire D-009/D-012). **Flag-gated behind FLAGS.TESTING, NOT deleted** (retire D-011) — reachable for testers, hidden in V1.
 
-## Phase 1 — Decide the engine-prompt topology (needs-human gates)
+**Legacy-only, NOT on the cut list → these are GAPS TO FILL, not deprecations:**
+- **Pre-loop** (`pre-loop.ts`): scoper `MODE=initial` (auto-populate an empty harness's queue) + reviewer `MODE=plan` (gate the initial plan before any worker runs). The DBOS dispatcher has no `runPreLoop` (`grep runPreLoop apps/operator/lib/dbos/` → 0). Nothing in the retire plan lists the pre-loop as an intentional cut → by the directive it must be ported, not reframed away.
+- **`CONVERT_ISSUES`** (orchestrator.md decision D): global open-issue → feature promotion. Per-feature `director` doesn't do it. Need to confirm whether the DBOS **autoloop's** global director (retire D-009 migrated an autoloop) covers it; if not, it's a gap to fill, not a capability to drop.
 
-- **P-001** `needs-human` Decide `orchestrator.md`'s fate: (a) **retire** it (move to `_archived/`, since the legacy loop that loads it is retired) and make `director.md` the sole decision persona; (b) **merge** the still-relevant guidance from orchestrator.md into director.md, then retire; (c) keep both, clearly labelled legacy-vs-live. Recommendation: (b) — salvage the genuinely-useful decision heuristics into director.md, then archive orchestrator.md. See D-001.
-- **P-002** `needs-human` Decide the scoper/pre-loop framing: is the pre-loop (scoper-`MODE=initial`, reviewer-`MODE=plan`) intended to return under DBOS, or is it gone for good? This determines whether `scoper.md`/`reviewer.md`/`plan-gate.md` get *reframed* (scoper = on-demand re-scope via `NEXT_SCOPER`/`/replan`; no auto-gate) or *rewritten around a planned DBOS pre-loop*. Recommendation: reframe to the current reality (no auto pre-loop; scoper is on-demand) — don't document an aspiration. See D-002.
+**Engine reality (so the prompts can describe it accurately):**
+- Live driver is the **DBOS per-feature pipeline**; the per-turn decision agent is **`director.md`** (47 lines, accurate today — emits only `NEXT_WORKER`/`NEXT_ARCHITECT`/`NEXT_VALIDATOR`/`DONE`/`ESCALATE`, explicitly disclaims `N=k`).
+- `orchestrator.md` (259 lines, "You are the ORCHESTRATOR in a 3-agent harness") is the **RETIRED** main-loop persona, still present in `prompts/` and still posing as the live driver — the clearest single inaccuracy.
+- The legacy loop is reachable only via `PAPERCUSP_DBOS_ORCHESTRATOR=0` (the documented instant-revert) → orchestrator.md must be **archived (preserved), not deleted**, so the revert path keeps its persona.
 
-## Phase 2 — Director-engine accuracy (the core rewrite)
+## Phase 1 — Decisions (needs-human gates)
 
-- **P-003** `todo` Audit `director.md` (47 lines) against `orchestrator-decide.ts`: confirm every verb it can emit is one the DBOS classifier actually `dispatch`es, and that it does NOT advertise `NEXT_HARNESS`/`CEO_MODE`/`N=` lanes (which classify as `unsupported`). Add the verbs the classifier supports but director may under-use (`NEXT_TESTER`, `NEXT_SECURITY`, `GENERATE_TESTS`, `NEXT_MONITOR`, `NEXT_EXPERT`, `NEXT_FEEDBACK`). Tighten it to the per-feature durable-pipeline reality. blocked-by: P-001
-- **P-004** `todo` Retire/merge `orchestrator.md` per the P-001 decision. If merged: lift the still-true decision heuristics (when to architect vs worker, escalation criteria, issue-conversion) into director.md; drop everything about the multi-iteration global loop, `IDLE`/`READY_FOR_PROD`/`FEATURE_FREEZE`/`RUN_TESTS` verbs, and the 3-agent framing. Then `git mv` orchestrator.md to `prompts/_archived/`. blocked-by: P-001
-- **P-005** `todo` Reframe `scoper.md` / `reviewer.md` / `plan-gate.md` per the P-002 decision: drop the pre-loop self-description; state scoper is invoked on-demand (`NEXT_SCOPER`, `/replan`, `/product-review`) and that plan→promote is the primary ingestion path (not scoper-`MODE=initial`). Resolve the reviewer-vs-plan-gate overlap (which one is live? both load — confirm from `role-registry.ts` + decide if one should be archived). blocked-by: P-002
-- **P-006** `todo` Sweep the remaining prompts + `README.md` for the retired-sequence narrative and the unsupported verbs: any "scoper→…→curator" fixed-pipeline language, any `NEXT_HARNESS`/`CEO_MODE` mention, reframed to "the director decides each turn." Grep target: `NEXT_HARNESS|CEO_MODE|NEXT_WORKER N=` → 0 in live prompts (README may keep them with a clear "legacy" label).
+- **P-001** `needs-human` `orchestrator.md`'s fate. It's the retired-loop persona but the loop is the sanctioned revert path (`PAPERCUSP_DBOS_ORCHESTRATOR=0`). Recommendation: **(b) merge-then-archive** — lift its still-true *global-scope* heuristics (issue-conversion, escalation criteria, cross-feature judgment) somewhere appropriate, then `git mv` it to `prompts/_archived/` (preserved for the revert, out of the live load path). NOT hard-delete (would strip the revert path's persona). See D-001.
+- **P-002** `needs-human` Pre-loop disposition — **the crux of the directive.** The scoper-`MODE=initial` + reviewer-`MODE=plan` pre-loop is legacy-only and NOT on your cut list. Per "don't deprecate non-acknowledged capabilities," recommendation is now **(b) FILL the gap**: add a DBOS pre-loop equivalent (scoper auto-populates an empty harness; optional plan-gate), then the prompts describe a real capability. (My earlier draft recommended reframing the prompts to "on-demand only" — that would have *deprecated* the auto-populate behavior, contradicting the directive. Corrected.) See D-002.
+- **P-002b** `needs-human` `CONVERT_ISSUES` disposition: confirm from code whether the DBOS autoloop's global director performs issue→feature conversion. If yes → prompt-accuracy only. If no → it's a gap to FILL (port `CONVERT_ISSUES` into the dispatcher/autoloop), since it's not an acknowledged cut. See D-003.
 
-## Phase 3 — Verify behavior, not just text
+## Phase 2 — Engine-parity track (FILL the non-cut gaps) — gated on P-002 / P-002b
 
-- **P-007** `todo` The verification the string-plan deferred: spot-run a harness pipeline turn (per the testing docs — `/internal/docs/testing` + agent-e2e) on a scratch harness and confirm the director's emitted verbs are all `dispatch`-classified (no `unsupported` stops), and that worker/validator behave against the reframed personas. This is the real "do the prompts make sense" check. blocked-by: P-003, P-004, P-005
+- **P-011** `todo` If D-002 = fill: implement a DBOS pre-loop — on a harness with eligible features but an un-scoped/empty queue, run scoper `MODE=initial` (and optional reviewer `MODE=plan` gate) before the per-feature pipeline dispatches workers. Port from `pre-loop.ts` into the dispatcher path; idempotent + checkpointed like the rest of the DBOS work. Unit-tested. blocked-by: P-002
+- **P-012** `todo` If D-003 = fill: ensure global issue→feature conversion (`CONVERT_ISSUES`) runs under DBOS (dispatcher or autoloop), matching the legacy orchestrator's decision D. Unit-tested. blocked-by: P-002b
+
+## Phase 3 — Prompt-accuracy track (no behavior change; describe what's actually true)
+
+- **P-003** `todo` `director.md`: confirm against `orchestrator-decide.ts` that every verb it emits is `dispatch`-classified and it never advertises a cut verb (`NEXT_HARNESS`/`CEO_MODE`/`N=`). Optionally surface the preserved quality verbs (`NEXT_TESTER`/`NEXT_SECURITY`/…) at the right point — but heed retire-D-003 (don't make it spawn a role a harness lacks); gate any such addition per-harness. blocked-by: P-001
+- **P-004** `todo` Merge-then-archive `orchestrator.md` per P-001: salvage the still-true global heuristics, drop the multi-iteration-loop framing + the cut verbs (`NEXT_HARNESS`/`CEO_MODE`/`N=`) + the `IDLE`/`READY_FOR_PROD`/`FEATURE_FREEZE`/`RUN_TESTS` global-loop verbs, then `git mv` to `prompts/_archived/`. blocked-by: P-001
+- **P-005** `todo` `scoper.md` / `reviewer.md` / `plan-gate.md`: rewrite to describe the **actual** DBOS flow once P-011 lands — i.e. the pre-loop as it really runs under DBOS (NOT "deprecated; on-demand only"). Drop the dead `run.sh`/legacy-loop framing; keep the capability. Resolve the reviewer-vs-plan-gate overlap (confirm from `role-registry.ts` which is live; archive the redundant one rather than leaving two). blocked-by: P-011
+- **P-006** `todo` Sweep all prompts + `README.md` for the cut verbs and the retired fixed-sequence narrative: remove `NEXT_HARNESS`/`CEO_MODE`/`N=` from live prompts (README may keep them under a clear "legacy / revert-only" label); reframe any rigid "scoper→…→curator" pipeline language to "the director decides each turn; finalization runs curator+documenter on DONE." Do NOT remove competition/adaptive/synthesizer *mentions* if they're flag-gated-live (per the retire plan's flag-gating decision) — label them testing-only instead.
+
+## Phase 4 — Verify behavior, not just text
+
+- **P-007** `todo` Spot-run a harness pipeline turn (testing docs: `/internal/docs/testing` + agent-e2e) on a scratch harness: confirm the director's emitted verbs are all `dispatch`-classified (no `unsupported` stops), the pre-loop fires on an empty queue (if P-011 landed), DONE runs curator+documenter, and worker/validator behave against the rewritten personas. The real "do the prompts make sense" check. blocked-by: P-003, P-004, P-005, P-011
 
 ## Decisions
 
-### D-001 — orchestrator.md: retire vs merge into director.md (OPEN — needs avi)
-Date: 2026-06-01. `orchestrator.md` (259 lines) is the persona of the RETIRED main loop; `director.md` (47 lines) drives the live DBOS pipeline. Keeping both risks an agent loading the wrong mental model. Options: (a) hard-retire orchestrator.md to `_archived/`; (b) merge its still-true heuristics into director.md then retire; (c) keep both labelled. Recommendation: (b). Note the legacy loop can still be re-enabled via `PAPERCUSP_DBOS_ORCHESTRATOR=0` — if that revert path must keep working, orchestrator.md should be archived (preserved) not deleted, so a revert still has its persona.
+### D-001 — orchestrator.md: merge-then-archive, do not delete (OPEN — needs avi)
+Date: 2026-06-01. `orchestrator.md` (259 lines) is the RETIRED main-loop persona; `director.md` (47 lines) drives the live DBOS pipeline. But the legacy loop is the sanctioned instant-revert (`PAPERCUSP_DBOS_ORCHESTRATOR=0`, retire D-007), so its persona must survive the revert. Recommendation: salvage its still-true global heuristics, then `git mv` to `prompts/_archived/` (preserved, out of the live load path) — never hard-delete. Keeps both the revert path AND a single live decision persona.
 
-### D-002 — Is the pre-loop (scoper-initial / reviewer-plan gate) dead under DBOS? (OPEN — needs avi)
-Date: 2026-06-01. The DBOS path has no `runPreLoop`, so the scoper-`MODE=initial` ingestion gate and reviewer-`MODE=plan` plan-review gate do not auto-run. But the scoper is still reachable on-demand (`NEXT_SCOPER`, `/replan`, `/product-review`) and plans:promote is now the primary ingestion path. Decision: do we (a) reframe the prompts to "no auto pre-loop; scoper is on-demand; plans:promote ingests" (matches current code), or (b) treat the missing pre-loop as a DBOS gap to be filled and keep the prompts describing the intended gate? Recommendation: (a) — document reality, not aspiration; if a DBOS pre-loop is later wanted, that's its own feature + plan. This decision gates P-005.
+### D-002 — Pre-loop is a gap to FILL, not a deprecation (OPEN — needs avi) — flips this plan's earlier rec
+Date: 2026-06-01. The scoper-`MODE=initial` auto-populate + reviewer-`MODE=plan` gate run only in the legacy `pre-loop.ts`; DBOS has no `runPreLoop`. The retire plan does NOT list the pre-loop as an intentional cut. Per the governing directive (preserve all non-acknowledged capabilities), this is an **accidental loss to port**, not a behavior to document-away. Recommendation: **(b) implement a DBOS pre-loop** (P-005a), THEN make the scoper/reviewer/plan-gate prompts describe it accurately (P-005). This explicitly supersedes the earlier draft's "(a) reframe to on-demand only," which would have deprecated a capability you didn't sign off on cutting. (If on reflection you DO consider the pre-loop intentionally superseded by plans:promote-as-primary-ingestion, say so and it joins the cut list — but that's your call to make explicit, not mine to assume.)
+
+### D-003 — CONVERT_ISSUES: confirm DBOS coverage, fill if missing (OPEN — needs avi)
+Date: 2026-06-01. Legacy orchestrator decision D promotes open critical/major issues → F-FIX features globally. The per-feature director doesn't; the retire D-009 autoloop migration may or may not cover it. Not on the cut list. Recommendation: confirm from code (autoloop global director scope); if uncovered, port it (P-005b) rather than silently lose global issue-conversion.
+
+### D-004 — The cut list is authoritative; everything else is preserve-or-fill
+Date: 2026-06-01. Per avi's directive, the ONLY capabilities allowed to disappear are those the retire plan explicitly records as intentional: `NEXT_HARNESS` / `NEXT_WORKER_CEO_MODE` / parallel `N=k` lanes (retire D-001), and competition / adaptive-tiers / synthesizer (retire D-009/D-012, flag-gated not deleted per D-011). Any other legacy/DBOS delta found during this work is treated as a gap to FILL or a prompt to make accurate — never a new deprecation — unless avi explicitly adds it to the cut list. This decision is the lens for triaging anything new this work surfaces.
