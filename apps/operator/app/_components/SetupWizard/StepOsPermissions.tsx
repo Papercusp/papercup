@@ -126,9 +126,9 @@ export function StepOsPermissions() {
   const rafRef = useRef<number | null>(null);
   // The test recording captures PCM via Web Audio (MediaRecorder supports no
   // audio mime on the WebKitGTK webview), inline + self-contained so its
-  // outcome is observable (recStatus). recStopRef holds a teardown that
-  // returns the captured samples.
-  const recStopRef = useRef<null | (() => { samples: Float32Array; rate: number })>(null);
+  // outcome is observable (recInfo). recStopRef holds a teardown that returns
+  // the captured samples + diagnostics.
+  const recStopRef = useRef<null | (() => { samples: Float32Array; rate: number; frames: number; ctxState: string })>(null);
   const recTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toneCtxRef = useRef<AudioContext | null>(null);
   const audioElsRef = useRef<HTMLAudioElement[]>([]);
