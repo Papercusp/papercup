@@ -6,7 +6,42 @@
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The coord stores are PG-backed (getOrgPg().sql), and getOrgPg() crashes under
+// vitest. Replace them with coordinated in-memory stores: PgSubscriptionStore
+// holds watches; coordLog writes notify envelopes that readInbox reads.
+const __subs: any[] = [];
+const __inbox: any[] = [];
+vi.mock('@papercusp/coordination/subscription-store', () => ({
+  PgSubscriptionStore: class {
+    constructor(_opts: unknown) {}
+    async add(rec: any) { __subs.push({ ...rec, cancelled: false }); }
+    async cancel(ownerId: string, msgId: string) {
+      const r = __subs.find((s) => s.owner_id === ownerId && s.msg_id === msgId);
+      if (r) r.cancelled = true;
+    }
+    async listActive({ owner }: { owner?: string } = {}) {
+      const now = Date.now();
+      return __subs
+        .filter((s) => !s.cancelled)
+        .filter((s) => s.expires_ts == null || new Date(s.expires_ts).getTime() > now)
+        .filter((s) => (owner ? s.owner_id === owner : true))
+        .sort((a, b) =>
+          a.created_ts < b.created_ts ? -1 : a.created_ts > b.created_ts ? 1 : a.msg_id < b.msg_id ? -1 : 1,
+        );
+    }
+  },
+}));
+vi.mock('../log', () => ({
+  coordLog: { appendLine: async (_surface: string, _writerKey: string, env: any) => { __inbox.push(env); } },
+}));
+vi.mock('../messages', () => ({
+  readInbox: async (owner: string, opts: { kinds?: string[] } = {}) =>
+    __inbox
+      .filter((e) => Array.isArray(e.to) && e.to.includes(owner))
+      .filter((e) => (opts.kinds ? opts.kinds.includes(e.kind) : true)),
+}));
 
 import {
   addWatch,
@@ -33,6 +68,8 @@ function id(ownerId: string): AgentIdentity {
 let tmp = '';
 let prev: string | undefined;
 beforeEach(async () => {
+  __subs.length = 0;
+  __inbox.length = 0;
   tmp = await fs.mkdtemp(join(tmpdir(), 'coord-d-'));
   prev = process.env.PAPERCUSP_COORD_DIR;
   process.env.PAPERCUSP_COORD_DIR = tmp;
