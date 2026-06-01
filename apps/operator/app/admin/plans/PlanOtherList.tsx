@@ -19,8 +19,10 @@
  * View-log / Open point at the source harness view.
  */
 
-import { useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { useEffect, useRef, useState } from 'react';
+import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import PlanChat from './PlanChat';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
@@ -76,11 +78,38 @@ function otherOnly(
 
 export default function PlanOtherList({ groups, loading, error, refresh, kinds, planFilters }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
+  // Collapsible plan groups — same `?expand=` model as the Plans tab's
+  // PlanItemsList, so a plan's expand state stays consistent across both views.
+  const [expandedGroups, setExpandedGroups] = useQueryState(
+    'expand',
+    parseAsArrayOf(parseAsString).withDefault([]),
+  );
 
   const planList = planFilters ?? [];
   const otherGroups = otherOnly(groups, kinds ?? [], planList);
   const allItems = otherGroups.flatMap((g) => g.items);
   const selItem = allItems.find((i) => i.id === selected) ?? null;
+
+  // Auto-expand the selected item's group (mirrors the Plans tab). The ref
+  // token stops us reopening a group the user just collapsed while the
+  // selection stays put.
+  const selectedGroupKey = selected
+    ? otherGroups.find((g) => g.items.some((i) => i.id === selected))?.key ?? null
+    : null;
+  const autoExpandRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedGroupKey) {
+      autoExpandRef.current = null;
+      return;
+    }
+    if (expandedGroups.includes(selectedGroupKey)) {
+      autoExpandRef.current = selectedGroupKey;
+      return;
+    }
+    if (autoExpandRef.current === selectedGroupKey) return;
+    autoExpandRef.current = selectedGroupKey;
+    void setExpandedGroups([...expandedGroups, selectedGroupKey]);
+  }, [selectedGroupKey, expandedGroups, setExpandedGroups]);
 
   if (loading) {
     return (
@@ -119,47 +148,66 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
       <div className="pc-items__layout">
         <div className="pc-items__listpane">
           <ul className="pc-items__groups" role="list">
-            {otherGroups.map((g) => (
-              <li key={g.key} className="pc-items__group">
-                <div className="pc-items__plan-head pc-items__plan-head--static">
-                  <span className="pc-items__plan-copy">
-                    <span className="pc-items__plan-name">{g.title}</span>
-                    {g.harnessSlug ? (
-                      <span className="pc-items__plan-meta">
-                        <span className="pc-pill pc-pill--harness">{g.harnessSlug}</span>
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="pc-items__plan-count">{g.items.length}</span>
-                </div>
-                <ul className="pc-items__rows" role="list">
-                  {g.items.map((it) => {
-                    const isSel = selected === it.id;
-                    return (
-                      <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
-                        <button
-                          type="button"
-                          className="pc-items__row"
-                          aria-current={isSel ? 'true' : undefined}
-                          title={it.title}
-                          onClick={() => void setSelected(it.id)}
-                        >
-                          {/* Free-form text first (leftmost); kind + importance
-                              pills follow on the right. */}
-                          <span className="pc-items__text">{it.title}</span>
-                          <span className="pc-items__rowmeta">
-                            <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
-                            {it.importance !== 'normal' ? (
-                              <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
-                            ) : null}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </li>
-            ))}
+            {otherGroups.map((g) => {
+              const isExpanded = expandedGroups.includes(g.key);
+              return (
+                <li key={g.key} className="pc-items__group">
+                  <Collapsible.Root
+                    open={isExpanded}
+                    onOpenChange={(open) =>
+                      void setExpandedGroups(
+                        open
+                          ? Array.from(new Set([...expandedGroups, g.key]))
+                          : expandedGroups.filter((k) => k !== g.key),
+                      )
+                    }
+                  >
+                    <Collapsible.Trigger asChild>
+                      <button type="button" className="pc-items__plan-head" title={g.title}>
+                        <ChevronRight className="pc-items__group-chevron" size={13} aria-hidden />
+                        <span className="pc-items__plan-copy">
+                          <span className="pc-items__plan-name">{g.title}</span>
+                          {g.harnessSlug ? (
+                            <span className="pc-items__plan-meta">
+                              <span className="pc-pill pc-pill--harness">{g.harnessSlug}</span>
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="pc-items__plan-count">{g.items.length}</span>
+                      </button>
+                    </Collapsible.Trigger>
+                    <Collapsible.Content className="pc-items__group-content">
+                      <ul className="pc-items__rows" role="list">
+                        {g.items.map((it) => {
+                          const isSel = selected === it.id;
+                          return (
+                            <li key={it.id} className={`pc-items__row-wrap${isSel ? ' is-selected' : ''}`}>
+                              <button
+                                type="button"
+                                className="pc-items__row"
+                                aria-current={isSel ? 'true' : undefined}
+                                title={it.title}
+                                onClick={() => void setSelected(it.id)}
+                              >
+                                {/* Free-form text first (leftmost); kind + importance
+                                    pills follow on the right. */}
+                                <span className="pc-items__text">{it.title}</span>
+                                <span className="pc-items__rowmeta">
+                                  <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
+                                  {it.importance !== 'normal' ? (
+                                    <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
+                                  ) : null}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </Collapsible.Content>
+                  </Collapsible.Root>
+                </li>
+              );
+            })}
           </ul>
         </div>
 
