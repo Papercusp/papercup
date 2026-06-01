@@ -159,7 +159,7 @@ export async function verifyAttestation(
   claimedGithubUserId: number,
   opts?: { skipCache?: boolean },
 ): Promise<AttestationVerificationResult> {
-  const cacheKey = gistId + ':' + claimedPubkeyBase64;
+  const cacheKey = gistId + ':' + claimedPubkeyBase64 + ':' + claimedGithubUserId;
   if (!opts?.skipCache) {
     const cached = getCache().get(cacheKey);
     if (cached && Date.now() - cached.cachedAt < ATTESTATION_VERIFY_CACHE_TTL_MS) {
@@ -178,9 +178,22 @@ export async function verifyAttestation(
   return result;
 }
 
-/** Evict a specific entry from the verification cache. */
+/**
+ * Evict all cache entries for a given gist + pubkey pair (across all
+ * claimedGithubUserId values). The cache key now includes the claimed id
+ * (fix for cross-identity impersonation), so eviction must scan by prefix
+ * `gistId + ':' + pubkeyBase64 + ':'` rather than an exact match.
+ * Callers do not need to supply a user id — this evicts every identity that
+ * was cached under this gist/pubkey combination.
+ */
 export function evictAttestationCache(gistId: string, pubkeyBase64: string): void {
-  getCache().delete(gistId + ':' + pubkeyBase64);
+  const prefix = gistId + ':' + pubkeyBase64 + ':';
+  const cache = getCache();
+  for (const key of cache.keys()) {
+    if (key.startsWith(prefix)) {
+      cache.delete(key);
+    }
+  }
 }
 
 /** Clear the entire verification cache. Test helper. */

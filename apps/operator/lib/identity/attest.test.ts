@@ -402,4 +402,80 @@ describe('verifyAttestation', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
+
+  // ─── regression: cross-identity impersonation via cache key (R-1 fix) ─────────
+  //
+  // Before the fix the cache key was `gistId + ':' + pubkeyBase64`, omitting
+  // the claimedGithubUserId.  This allowed an attacker to:
+  //   1. Self-verify as idX  → `G:P` cached valid:true
+  //   2. Re-call with VICTIM_id → cache hit returned valid:true → id check bypassed
+  //
+  // After the fix the key is `gistId + ':' + pubkeyBase64 + ':' + userId`, so
+  // step 2 is a cache miss and must go to runVerification, which correctly checks
+  // the gist owner against the new claimedGithubUserId and returns
+  // `github_user_id_mismatch`.
+
+  it('cache hit for idX must NOT be returned for a different idY (cross-identity isolation)', async () => {
+    const { verifyAttestation, clearAttestationCache } = await import('./attest');
+    clearAttestationCache();
+
+    // Build a gist owned by ID_X (12345).  makeFakeGistResponse already
+    // creates a gist with github_user_id: 12345 and ownerId: 12345.
+    const { pubkeyBase64, gistResponse } = makeFakeGistResponse();
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => gistResponse,
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    // First call: verify legitimately as ID_X (12345) → cache populated, valid:true
+    const first = await verifyAttestation('test-gist-id', pubkeyBase64, 12345);
+    expect(first.valid).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Second call: same gistId + pubkey but different claimedGithubUserId (the victim)
+    // Must NOT return the cached result — must re-verify against the network,
+    // and since the gist is owned by 12345, it must fail with github_user_id_mismatch.
+    const second = await verifyAttestation('test-gist-id', pubkeyBase64, 99999);
+    expect(mockFetch).toHaveBeenCalledTimes(2); // cache miss → second fetch
+    expect(second.valid).toBe(false);
+    expect(second.reason).toBe('github_user_id_mismatch');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('evictAttestationCache removes all user-id variants for a gist+pubkey pair', async () => {
+    const { verifyAttestation, clearAttestationCache, evictAttestationCache } = await import('./attest');
+    clearAttestationCache();
+
+    // Two separate users each verify the same gist (different gists in practice,
+    // but the eviction contract is about clearing all ids for a given pair).
+    // We use two gists owned by different users so each verify call succeeds.
+    const { pubkeyBase64, gistResponse } = makeFakeGistResponse();
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => gistResponse,
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    // Prime the cache with the real id
+    await verifyAttestation('evict-gist', pubkeyBase64, 12345);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Same id again → cache hit, no extra fetch
+    await verifyAttestation('evict-gist', pubkeyBase64, 12345);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Evict — prefix scan should remove the 12345 entry
+    evictAttestationCache('evict-gist', pubkeyBase64);
+
+    // Now the same call is a cache miss → fetch again
+    await verifyAttestation('evict-gist', pubkeyBase64, 12345);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    vi.unstubAllGlobals();
+  });
 });

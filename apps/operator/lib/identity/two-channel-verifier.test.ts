@@ -283,6 +283,53 @@ describe('verifyChannel2', () => {
     expect(result).toEqual({ kind: 'fail', reason: 'channel2_signature_invalid' });
     expect(mockAttest).not.toHaveBeenCalled();
   });
+
+  // ─── regression: defense-in-depth resolvedGithubUserId assertion (R-1 fix) ───
+  //
+  // Even if verifyAttestation returns valid:true (e.g. a stale cache hit or a
+  // misconfigured mock), channel2 must still reject when resolvedGithubUserId
+  // does not match the githubUserId that was presented for admission.
+
+  it('fails with channel2_attestation_invalid when resolvedGithubUserId differs from claimed id (defense-in-depth)', async () => {
+    const VICTIM_ID = 77777;
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+
+    // Attestation impl returns valid:true but resolvedGithubUserId is USER_ID
+    // (the real owner of pubkey P), while the request claims VICTIM_ID.
+    const spoofAttest = vi.fn(async () => ({
+      valid: true as const,
+      resolvedGithubUserId: USER_ID, // ← real owner, not VICTIM_ID
+      verifiedAt: Date.now(),
+    }));
+
+    const result = await verifyChannel2({
+      ...commonOpts,
+      githubUserId: VICTIM_ID, // claiming to be VICTIM_ID
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: spoofAttest,
+    });
+
+    // Defense-in-depth: resolved id USER_ID ≠ claimed VICTIM_ID → reject
+    expect(result).toEqual({ kind: 'fail', reason: 'channel2_attestation_invalid' });
+  });
+
+  it('passes when resolvedGithubUserId matches claimed id', async () => {
+    const fileBody = makeSignedContributorFile({ githubUserId: USER_ID, githubLogin: LOGIN, devicePubkeyBase64, privateKey, gistId: GIST_ID });
+
+    // resolvedGithubUserId explicitly matches githubUserId → should still pass
+    const matchingAttest = vi.fn(async () => ({
+      valid: true as const,
+      resolvedGithubUserId: USER_ID,
+      verifiedAt: Date.now(),
+    }));
+
+    const result = await verifyChannel2({
+      ...commonOpts,
+      fetchFn: makeFetch([makeContentsBody(fileBody)]),
+      verifyAttestationImpl: matchingAttest,
+    });
+    expect(result).toEqual({ kind: 'ok' });
+  });
 });
 
 // ─── verifyBoth ───────────────────────────────────────────────────────────────

@@ -104,12 +104,16 @@ export interface VerifyChannel2Options {
    * Injectable verifyAttestation implementation for tests.
    * Defaults to the real `verifyAttestation` from `./attest`.
    * Mirrors the `fetchFn` seam style.
+   *
+   * The return type mirrors `AttestationVerificationResult`: callers may
+   * also return `resolvedGithubUserId` for the defense-in-depth id check
+   * (see step (c) in `verifyChannel2`).
    */
   verifyAttestationImpl?: (
     gistId: string,
     claimedPubkeyBase64: string,
     claimedGithubUserId: number,
-  ) => Promise<{ valid: boolean; reason?: string }>;
+  ) => Promise<{ valid: boolean; reason?: string; resolvedGithubUserId?: number }>;
 }
 
 /**
@@ -210,6 +214,17 @@ export async function verifyChannel2(
       return { kind: 'fail', reason: 'github_api_down' };
     }
     // owner/pubkey/sig/body mismatch → attestation invalid (forgery indicator)
+    return { kind: 'fail', reason: 'channel2_attestation_invalid' };
+  }
+
+  // Defense-in-depth: even when valid=true, assert that the resolved
+  // github_user_id matches what was claimed. This catches any scenario
+  // where a cached or mocked attestation returns valid for the wrong
+  // identity (e.g. the cache-key impersonation gap fixed in attest.ts).
+  if (
+    att.resolvedGithubUserId !== undefined &&
+    att.resolvedGithubUserId !== githubUserId
+  ) {
     return { kind: 'fail', reason: 'channel2_attestation_invalid' };
   }
 
