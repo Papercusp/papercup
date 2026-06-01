@@ -84,6 +84,32 @@ to join swarm. **ShareWizard needs NO frontend change** — it already POSTs bot
    (plans, locks, dogfood-substrate-*) as `auth:'public'` vs expected verified/trusted
    (confirmed 'public' on HEAD). Worth a separate auth pass.
 
+## Session 3 (2026-05-31) — `sheets` is live-shared single-machine (substrate ON)
+
+Per the user's call: dogfood the SHARED path on disposable `sheets`, NOT papercup
+(papercup is actively-developed + papercusp-inside-papercusp self-reference = footgun).
+
+Done + verified live this session:
+- **Substrate enabled** on the `:3070` systemd host: added `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1`
+  to `apps/operator/.env.local` (the unit's WorkingDirectory is `apps/operator`; it sources
+  `./.env.local`), restarted `papercup-dev-api.service`. `dogfood-substrate-status` → `enabled:true`.
+- **Sheets shared**: `POST /api/harness/sheets/share/finalize` with a SYNTHETIC repo id (999000001;
+  no real GitHub repo needed to test substrate mechanics — the swarm topic is just
+  `sha256("…:gh:<id>")`). Wrote `/home/marsh-office/sheets-clone/.harness/shared.json`,
+  response `swarm:{rebooted:true,state:"booted"}`. `binding:{created:false,error:"GITHUB_API_DOWN"}`
+  is EXPECTED (synthetic repo doesn't exist; the claim layer is best-effort + not needed for replication).
+- **Verified online**: `dogfood-substrate-status` → `booted:[{default,sheets}]`; boot-history
+  `boot_start→boot_ok`; `dogfood-substrate-health` → `worstVerdict:"healthy"` ("no issues detected").
+
+Single-machine validates "goes online + healthy." It does NOT prove replication: on one peer the
+read-loop only replays the local writer's own ops (idempotent backfill), and the diagnostics don't
+expose Autobase op-log length. **The real test is two-peer (Stage 4 / P-079)** — peer A mutates a
+sheets feature → peer B's PG reflects it. Needs either a 2nd machine OR a 2nd local instance on this
+box (own data-dir/corestore/port, same topic via repo id 999000001). NOT yet done.
+
+Revert when done testing: remove `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` from `.env.local` +
+`rm /home/marsh-office/sheets-clone/.harness/shared.json` + restart.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
