@@ -52,7 +52,7 @@ sidebar:
 
 If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one.
 
-Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `packages/tooldef/src/types.ts`.
+Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `libs/generic/tooldef/src/types.ts`.
 
 ## Error codes
 
@@ -107,7 +107,7 @@ The framework doesn't care if you invent a new role — `tool.roles[]` is a stri
 
 `window_key` (and the quota ceiling) in `tool_invocations` is computed by the
 host-injected `DispatchProjectedDeps.computeQuotaWindow(ctx, roleQuota)` (plan P-011).
-The engine default (`defaultComputeQuotaWindow` in `packages/tooldef/src/dispatch-types.ts`)
+The engine default (`defaultComputeQuotaWindow` in `libs/generic/tooldef/src/dispatch-types.ts`)
 is run-scoped / `perRun`; Papercusp's policy (`papercuspComputeQuotaWindow` in
 `packages/agent-mcp/src/quota-policy.ts`, wired via `PROJECTED_DEPS`) is:
 
@@ -129,16 +129,16 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 | Concern | Module |
 |---|---|
-| Projection registry (3 Maps) | `packages/tooldef/src/tool-projection.ts` |
-| Built-in `defineTool` + auto-projection | `packages/tooldef/src/define-tool.ts` |
+| Projection registry (3 Maps) | `libs/generic/tooldef/src/tool-projection.ts` |
+| Built-in `defineTool` + auto-projection | `libs/generic/tooldef/src/define-tool.ts` |
 | Plugin loader + `registerPluginTools` | `packages/plugin-loader/src/index.ts` |
 | Plugin host + lifecycle | `apps/operator/lib/plugin-host-runtime.ts` |
 | HTTP catch-all (plugins) | `apps/operator/app/api/plugins/[...path]/route.ts` |
 | HTTP catch-all (built-ins) | `apps/operator/app/api/agent-tools/[...path]/route.ts` |
 | MCP transport (both pipelines) | `apps/operator/lib/endpoint-route/routes/transport/_mcp-handler.ts` |
-| Dispatcher (gates + record) | `packages/tooldef/src/dispatch-projected.ts` (+ `dispatch-stack.ts`) |
-| HTTP request → context builder | `packages/tooldef-http/src/http-projection.ts` |
-| Replay buffer (Last-Event-ID resume) | `packages/tooldef/src/replay-buffer.ts` |
+| Dispatcher (gates + record) | `libs/generic/tooldef/src/dispatch-projected.ts` (+ `dispatch-stack.ts`) |
+| HTTP request → context builder | `libs/generic/tooldef-http/src/http-projection.ts` |
+| Replay buffer (Last-Event-ID resume) | `libs/generic/tooldef/src/replay-buffer.ts` |
 | Spawn-mcp `.mcp.json` writer | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` |
 | Per-spawn URL → ctx parser | `packages/agent-mcp/src/spawn-context.ts` |
 | Host deps (PG quota/telemetry, policies) | `apps/operator/lib/projected-tool-deps.ts` + `packages/agent-mcp/src/{quota-policy,capability-tiers-papercusp,gate-bypass,role-config}.ts` |
@@ -150,10 +150,10 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 | Concern | Module |
 |---|---|
-| State channel (per-run snapshot map + subscribers) | `packages/tooldef/src/state-channel.ts` |
-| Card correlator (PENDING map + deferred lifecycle) | `packages/tooldef/src/card-correlator.ts` |
-| `ctx.askUser` install + abort race | `packages/tooldef/src/ask-user.ts` (+ install site in `dispatch-projected.ts`) |
-| Workspace-switch lifecycle hook | `packages/tooldef/src/workspace-lifecycle.ts` |
+| State channel (per-run snapshot map + subscribers) | `libs/generic/tooldef/src/state-channel.ts` |
+| Card correlator (PENDING map + deferred lifecycle) | `libs/generic/tooldef/src/card-correlator.ts` |
+| `ctx.askUser` install + abort race | `libs/generic/tooldef/src/ask-user.ts` (+ install site in `dispatch-projected.ts`) |
+| Workspace-switch lifecycle hook | `libs/generic/tooldef/src/workspace-lifecycle.ts` |
 | State-snapshot SSE route | `apps/operator/app/api/operator/state-snapshot/route.ts` |
 | Card-response endpoint | `apps/operator/app/api/operator/conversations/[id]/card-response/route.ts` |
 | Run-cancel endpoint | `apps/operator/app/api/operator/conversations/[id]/run-cancel/route.ts` |
