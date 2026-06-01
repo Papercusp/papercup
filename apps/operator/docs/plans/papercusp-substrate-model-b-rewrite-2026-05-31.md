@@ -44,8 +44,12 @@ A claim ("I'm working on F-042") is an ephemeral per-peer hint, not durable trut
 ### D-003 — Read-merge = LWW-register per key, relational projection
 Per-peer logs carry LWW-register ops `{table, key, field?, value, ts, author_pubkey}`. Read-merge resolves each `(table, key[, field])` by highest `(ts, author-tiebreak)` and materializes via the **existing** `projections/* writeToPg` row-writers. NOT a document-CRDT (Automerge/Yjs) — our data is relational + author-partitioned, so a CRDT is an impedance mismatch + a heavy dep we'd fight; LWW-register reuses the projection layer and keeps one uniform conflict rule across the whole substrate. Granularity: **per-field** LWW where rows have independent editors, per-row elsewhere.
 
-### D-004 — Read-admission = signed announcement-on-connect, verified against the two-channel binding
-On a swarm connection, peers exchange a signed announcement `{ device_pubkey, github_user_id, github_login, log_core_key, sig }`. A peer aggregates a log **iff** (1) `sig` verifies against `device_pubkey`, (2) `device_pubkey` ↔ `github_login` is a valid **two-channel binding** (Phase 1b, already built), and (3) that `github_login` is a **collaborator on this repo** (binding service / gh API). Otherwise the log is ignored (no data enters PG). **Revocation = drop the pubkey from the admitted set** (the `revoked_pubkeys` drop-list, now trivially effective). This realizes C.4(d) ("the firewall hook becomes B's read-admission seam"). Chosen over a per-harness "membership log" for simplicity — no extra log to maintain.
+### D-004 — Read-admission = signed announcement-on-connect, attributable to ANY real GitHub identity (NO collaborator gate)
+On a swarm connection, peers exchange a signed announcement `{ device_pubkey, github_user_id, github_login, log_core_key, sig }`. A peer aggregates a log **iff** (1) `sig` verifies against `device_pubkey` (authorship integrity), **and** (2) `device_pubkey` ↔ `github_login` is a valid **two-channel binding** (Phase 1b, already built) — i.e. the log is attributable to a *specific, real* GitHub identity and cannot impersonate someone else's.
+
+**There is deliberately NO repo-collaborator gate** (owner decision 2026-06-01). From Papercusp's perspective *anyone* may participate in the **advisory** layer; the hard authorization for the only thing that matters — changing the code — is **GitHub's own PR-merge gate** (a non-collaborator's PR simply won't merge). Gating swarm participation on collaborator-status would be redundant with GitHub and against the advisory-state thesis (Addendum C.2). So read-admission needs **no gh repo-collaborators call** — the binding check alone suffices (resolves OQ-1).
+
+**Revocation = drop the pubkey from the admitted set** (the `revoked_pubkeys` drop-list) — an anti-abuse tool, not the primary gate. Anti-flood is the connection-layer DoS hardening + the per-author ingest cap (D-006), not an admission whitelist. The binding also feeds **trust-tiering** downstream (a verified identity → higher-tier stats per the §17 trust tiers). Realizes C.4(d) with the gate set to "real-identity-attributable," not "collaborator." Chosen over a per-harness membership log for simplicity.
 
 ### D-005 — Migration = replace-in-place, substrate always-on (no flag)
 Keep the transport + projection layers; replace only the data layer. The `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` flag is **removed** (alpha — nothing to protect; per repo CLAUDE.md "no deprecation aliases, break things freely"). The substrate boots unconditionally for **shared** harnesses (those with `.harness/shared.json`); unshared harnesses are untouched as before. No A-and-B-side-by-side, no model-select flag.
@@ -69,7 +73,7 @@ Read-admission (D-004) answers "whose logs do I trust as *authorship*." The user
 Each device appends only to **its own** Hypercore (single-writer, natively signed by the device key from the OS keychain — Phase 1b). Op = an LWW-register cell (D-003). A peer's own log is its complete contribution; there is no shared structure.
 
 ### Discovery + read-admission (new — `read-admission.ts`)
-Announcement-on-connect (D-004). Maintains the per-harness **admitted set** {pubkey → log_core_key} of verified collaborators, plus the `revoked_pubkeys` drop-list. Replication of a peer's log is started only on admission; dropped on revocation.
+Announcement-on-connect (D-004). Maintains the per-harness **admitted set** {pubkey → log_core_key} of **binding-verified peers (any real GitHub identity — no collaborator gate)**, plus the `revoked_pubkeys` drop-list. Replication of a peer's log starts only on a valid signed binding; dropped on revocation.
 
 ### Read-merge (new — `read-merge.ts`, replaces the Autobase path in `read-loop.ts`)
 Replicate all admitted logs; for each `(table, key[, field])` apply highest `(ts, author-tiebreak)`; materialize via existing `projections/* writeToPg`. Driven by per-log `'append'`/`'truncate'` events + a polled fallback (mirrors today's read-loop). Idempotent.
@@ -90,7 +94,7 @@ Read-admission emits the verified-authorship boundary; the auditor consumes aggr
 
 Two corestores/instances on this machine, each with its own data-dir + device key + log, joining the same topic (repo id `999000001`):
 1. **Replication:** peer A writes a `sheets` feature → it **lands in peer B's Postgres** via the read-merge (the round-trip that's been impossible until B).
-2. **Read-admission:** a peer whose `github_login` is **not** a repo collaborator is **refused** — its log never enters PG.
+2. **Read-admission:** a peer presenting an **invalid/forged binding** (bad `sig`, or `device_pubkey`↔`github_login` mismatch) is **refused** — its log never enters PG. (A *valid*-binding peer is admitted regardless of repo-collaborator status — anyone may participate.)
 3. **Revocation:** dropping a pubkey from the admitted set stops further ingest from it.
 4. **LWW claim:** both peers claim F-042 → converges to one holder, the other gets the clobber-toast.
 
@@ -101,11 +105,15 @@ Two corestores/instances on this machine, each with its own data-dir + device ke
 - **Out:** the user-protection auditor gate (own plan, D-007); op-level encryption-at-rest; >2-peer beyond "it generalizes" (verify with 2); any UI changes (Phase-8 surfaces read the same projected PG).
 - **In:** the data-layer rewrite, read-admission/discovery, LWW claims, the DoS per-author ingest cap, removing the flag, and the two-peer verification.
 
+## Resolved (were open; settled in review 2026-06-01)
+
+- **OQ-1 — collaborator verification:** **RESOLVED — no collaborator gate** (D-004). Read-admission requires only a valid signed two-channel binding (any real GitHub identity); no gh repo-collaborators call. GitHub's PR-merge gate is the real authorization for code changes; the advisory layer is open.
+- **OQ-2 — announcement transport:** **RESOLVED** — a well-known-named, device-signed `announce` record each peer publishes and others read on connect.
+- **OQ-3 — backfill:** **RESOLVED** — **no migration of A's Autobase view**; start clean per-peer logs. PG already holds the local rows; peers re-announce + re-replicate. Advisory + re-derivable, so nothing is lost.
+
 ## Open questions
 
-- **OQ-1 — collaborator-verification source for D-004(3):** binding service vs. a live `gh` repo-collaborators call vs. the Cupboard binding. Lean: the binding service (Phase-1b P-068), cached, with a gh fallback. Resolve in the plan.
-- **OQ-2 — announcement transport:** a dedicated tiny "hello" core per peer that others read first, vs. an out-of-band handshake message on the swarm connection. Lean: a well-known-named `announce` record the peer signs + others read on connect. Resolve in the plan.
-- **OQ-3 — backfill:** existing `sheets` (and any A-shared harness) has Autobase state; B starts fresh per-peer logs. Since data is advisory + re-derivable, lean: **no migration of A's view** — start clean (PG already has the local rows; peers re-announce + re-replicate). Confirm.
+(None remaining — all resolved above. New questions surfaced during implementation go in the implementation plan.)
 
 ## Cross-references
 
