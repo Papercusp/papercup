@@ -105,7 +105,7 @@ export async function resolveHarnessPlansDir(
     // workspaces by slug when not pinned — so cross_harness:plans_* can reach a
     // harness in any workspace instead of hard-failing on whichever happens to
     // be active. A pinned workspace (opts.workspaceId) stays in it.
-    project = await resolveProject(resolved, opts.workspaceId);
+    project = (await resolveProject(resolved, opts.workspaceId)) ?? undefined;
     if (!project) {
       // 'papercusp' (the product/umbrella name) is the classic typo for the
       // 'papercup' harness — a recurring agent error in the failed-tool-call
