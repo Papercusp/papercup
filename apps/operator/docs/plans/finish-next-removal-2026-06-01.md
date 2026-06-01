@@ -174,3 +174,15 @@ REMAINING:
 - P-009 (drop next/next-themes/@bprogress/next/@nx/next deps): BLOCKED — npm lockfile reconcile is a no-op here (workspace:* protocol); removing without reconcile breaks `npm ci`. Deps are now dead weight. Unblock = fix repo-wide npm install.
 - P-012 (operator-docs MDX: build-system/{index,architecture,admin-commands}, data-sync/pitfalls describe the operator build as Next): DEFERRED — pages already carry a correct "this is Vite now" caution banner; the proper fix regenerates the full public/internal/docs HTML mirror (churny, risky on the shared tree). Do as a focused pass. (CLAUDE.md + engineer playbook prose already fixed.)
 - D-002 (libs/papercusp/apps/web dead Next app + libs/papercup-shared/*View.tsx): DEFERRED — cross-repo SUBMODULE deletions; both submodules already modified; needs an isolated submodule-commit pass to avoid entangling others' work.
+
+### D-007 — P-009 dep-removal confirmed blocked; agent-mcp workspace:* fixed; D-002 is a tangled view-tree (needs its own pass)
+Date: 2026-06-01
+Pushed P-009/D-002 hard this session; outcomes:
+
+P-009 (drop next/next-themes/@bprogress/next/@nx/next): CONFIRMED BLOCKED. Found + fixed the documented landmine — packages/agent-mcp peerDependency `@papercusp/db-org: "workspace:*"` → `*` (invalid npm protocol; committed 694f82e71, lockfile unchanged). But that wasn't the reconcile blocker: even after the fix, `npm install --package-lock-only --legacy-peer-deps` is still a NO-OP (won't prune; lockfile keeps next at apps/operator). Bare `npm install` separately fails on a pre-existing @blocknote/mantine@0.49.0 ↔ @mantine/core@9.1.1 ERESOLVE (why --legacy-peer-deps is mandatory). The ONLY reconcile path is a full `npm install --legacy-peer-deps` = 874-package churn that mutates the shared, in-use node_modules — unsafe to run/commit on the live box. Reverted the package.json edits (kept in sync). Deps remain unused dead weight. UNBLOCK = a coordinated full reconcile / fix the env drift.
+
+D-002 (libs/papercup-shared/*View.tsx): turns out NOT a simple delete. index.ts exports ~15 Views with internal chains (HarnessDetailView→HarnessConsoleView) and the file is a shared view-tree consumed by apps/web (dead) AND apps/public-site (liveness unverified). Only 6 Views import next/*. Deleting them needs consumer-liveness analysis + index.ts surgery without breaking retained Views or a live consumer — a careful pass, in a submodule with other-agent WIP. IMPORTANT: the operator's live bundle already tree-shakes these Views out (their next imports never reach the shipping app — vite build clean), so they are NOT a live Next remnant. Same for libs/papercusp/apps/web (whole dead Next app, submodule). Both deferred to a focused submodule pass.
+
+P-012 (operator-docs MDX) deferred: needs a full Astro rebuild of the public/internal/docs mirror (churny); pages already carry a correct caution banner.
+
+NET: the operator's LIVE/SHIPPING code (app/lib/bin + operator-vite/src + marketplace-public-ui) is fully Next-free + verified. All remaining items are non-shipping (dep declarations, submodule dead code, doc prose) and each needs a dedicated pass for the reasons above.
