@@ -37,8 +37,10 @@ vi.mock('@/lib/desktop-install/papercusp-files', () => ({
 vi.mock('@/lib/superuser-token', () => ({
   readSuperuserToken: vi.fn(() => 'TESTTOKEN'),
 }));
+// Workspace-scoped root resolver: echo the workspace id so the test asserts
+// cwd is derived from the SELECTED workspace, not a global value.
 vi.mock('@/lib/papercusp-root', () => ({
-  papercuspPath: vi.fn(() => '/ws-root'),
+  papercuspPathForWorkspace: vi.fn((ws: string) => `/ws-root/${ws}`),
 }));
 
 import { buildRoleLaunchSpec, buildLaunchSpec } from '@/lib/role-launch-spec';
@@ -158,8 +160,9 @@ describe('buildLaunchSpec — kind dispatch', () => {
     expect(spec.role).toBe('su');
     expect(spec.featureId).toBeNull();
     expect(spec.harnessSlug).toBeNull();
-    // workspace-level → papercuspPath() (mocked), no resolveProjectDir.
-    expect(spec.cwd).toBe('/ws-root');
+    // workspace-level → papercuspPathForWorkspace(workspaceId) (mocked),
+    // scoped to the SELECTED workspace, no resolveProjectDir.
+    expect(spec.cwd).toBe('/ws-root/default');
     expect(resolveProjectDir).not.toHaveBeenCalled();
     // playbook rendered for the right client; no launch-context (no harness/plan).
     expect(renderSuPlaybookMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'claude' }));

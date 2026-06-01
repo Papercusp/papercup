@@ -37,6 +37,12 @@ function fakeView() {
   };
 }
 
+// STAGE-5: distributed-claim still reads the retired Autobase `base`
+// (`base.base.view` + `base.base.local.key`). resolveMyPubkey prefers the
+// Model B own-log key when present; these fixtures intentionally OMIT `ownLog`
+// so the legacy `base.local.key` fallback is exercised. Cast through `unknown`
+// because `base` is no longer a declared `BootedHarnessHandle` property — the
+// Stage-5 claim rewrite retires these fixtures.
 function fakeHandle(
   workspaceId: string,
   harnessSlug: string,
@@ -61,7 +67,7 @@ function fakeHandle(
     store: {} as never,
     base,
     close: vi.fn(async () => {}),
-  };
+  } as unknown as BootedHarnessHandle;
 }
 
 // Mock audit so tests don't try to write PG.
@@ -138,7 +144,7 @@ describe('attemptDistributedClaim', () => {
       ts: 1_000,
       schema_version: 1,
     };
-    const view = (h.base.base as unknown as { view: { log: OpEnvelope[] } }).view;
+    const view = ((h as unknown as { base: { base: unknown } }).base.base as unknown as { view: { log: OpEnvelope[] } }).view;
     view.log.push({
       type: 'put',
       table: 'claims',

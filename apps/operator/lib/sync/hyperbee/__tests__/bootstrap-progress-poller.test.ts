@@ -2,36 +2,25 @@
  * bootstrap-progress-poller tests.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { startBootstrapProgressPoller } from '../bootstrap-progress-poller';
 import {
   _resetTrackerForTests,
   _setNowForTests,
   getBootstrapProgress,
 } from '../bootstrap-progress';
-import type { AutobaseHarnessHandle } from '../autobase-setup';
 
 afterEach(() => {
   _resetTrackerForTests();
 });
 
-function fakeBase(initialLength = 0): {
-  base: AutobaseHarnessHandle;
+function fakeLength(initialLength = 0): {
+  readLength: () => number;
   setLength: (n: number) => void;
 } {
   let length = initialLength;
-  const view = {
-    get length() {
-      return length;
-    },
-  };
-  const handle: AutobaseHarnessHandle = {
-    base: { view } as unknown as AutobaseHarnessHandle['base'],
-    append: vi.fn(),
-    close: vi.fn(),
-  };
   return {
-    base: handle,
+    readLength: () => length,
     setLength: (n: number) => {
       length = n;
     },
@@ -39,13 +28,13 @@ function fakeBase(initialLength = 0): {
 }
 
 describe('startBootstrapProgressPoller', () => {
-  it('records the initial view length on creation', () => {
+  it('records the initial own-log length on creation', () => {
     _setNowForTests(() => 1_000);
-    const { base } = fakeBase(7);
+    const { readLength } = fakeLength(7);
     const poller = startBootstrapProgressPoller({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      base,
+      readLength,
       setIntervalImpl: ((() => 0) as unknown as typeof setInterval),
       clearIntervalImpl: (() => {}) as unknown as typeof clearInterval,
     });
@@ -53,13 +42,13 @@ describe('startBootstrapProgressPoller', () => {
     poller.stop();
   });
 
-  it('pollOnce updates when view length grows', () => {
+  it('pollOnce updates when the length grows', () => {
     _setNowForTests(() => 1_000);
-    const { base, setLength } = fakeBase(3);
+    const { readLength, setLength } = fakeLength(3);
     const poller = startBootstrapProgressPoller({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      base,
+      readLength,
       setIntervalImpl: ((() => 0) as unknown as typeof setInterval),
       clearIntervalImpl: (() => {}) as unknown as typeof clearInterval,
     });
@@ -81,11 +70,11 @@ describe('startBootstrapProgressPoller', () => {
     const clearI = ((id: number) => {
       cleared.push(id);
     }) as unknown as typeof clearInterval;
-    const { base } = fakeBase(0);
+    const { readLength } = fakeLength(0);
     const poller = startBootstrapProgressPoller({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      base,
+      readLength,
       setIntervalImpl: setI,
       clearIntervalImpl: clearI,
     });
@@ -94,17 +83,14 @@ describe('startBootstrapProgressPoller', () => {
     expect(cleared).toHaveLength(1);
   });
 
-  it('readViewLength handles missing view shape', () => {
+  it('readLength throwing is handled defensively (no record)', () => {
     _setNowForTests(() => 1_000);
-    const handle: AutobaseHarnessHandle = {
-      base: {} as unknown as AutobaseHarnessHandle['base'],
-      append: vi.fn(),
-      close: vi.fn(),
-    };
     const poller = startBootstrapProgressPoller({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      base: handle,
+      readLength: () => {
+        throw new Error('store closed');
+      },
       setIntervalImpl: ((() => 0) as unknown as typeof setInterval),
       clearIntervalImpl: (() => {}) as unknown as typeof clearInterval,
     });
@@ -113,17 +99,12 @@ describe('startBootstrapProgressPoller', () => {
     poller.stop();
   });
 
-  it('handles a non-number view.length defensively', () => {
+  it('handles a non-number length defensively', () => {
     _setNowForTests(() => 1_000);
-    const handle: AutobaseHarnessHandle = {
-      base: { view: { length: 'oops' } } as unknown as AutobaseHarnessHandle['base'],
-      append: vi.fn(),
-      close: vi.fn(),
-    };
     const poller = startBootstrapProgressPoller({
       workspaceId: 'ws-1',
       harnessSlug: 'papercup',
-      base: handle,
+      readLength: () => 'oops' as unknown as number,
       setIntervalImpl: ((() => 0) as unknown as typeof setInterval),
       clearIntervalImpl: (() => {}) as unknown as typeof clearInterval,
     });

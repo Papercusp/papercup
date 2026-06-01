@@ -13,6 +13,7 @@ import type {
   OpEnvelope,
 } from '../../sync/hyperbee/autobase-setup';
 import type { BootedHarnessHandle } from '../../sync/hyperbee/boot';
+import { makeFakeBootedHandle } from '../../sync/hyperbee/__tests__/fake-booted-handle';
 
 function fakeView(): { length: number; get(seq: number): Promise<OpEnvelope | null> } {
   const log: OpEnvelope[] = [];
@@ -26,6 +27,9 @@ function fakeView(): { length: number; get(seq: number): Promise<OpEnvelope | nu
   };
 }
 
+// STAGE-5: the claim adapter still reads `handle.base` (a retired Autobase
+// view). These fixtures attach a legacy base via the helper's `legacyBase`
+// seam; Stage 5 rewrites the claim path onto the own log + retires this.
 function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
   const view = fakeView();
   const base: AutobaseHarnessHandle = {
@@ -33,13 +37,7 @@ function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHand
     append: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
-  return {
-    workspaceId,
-    harnessSlug,
-    store: {} as never,
-    base,
-    close: vi.fn(async () => {}),
-  };
+  return makeFakeBootedHandle({ workspaceId, harnessSlug, legacyBase: base }).handle;
 }
 
 afterEach(() => {
@@ -72,17 +70,15 @@ describe('get-claim-handle — P-037 lookup', () => {
   it('returns null when adapter construction throws', () => {
     // Build a fakeHandle whose base.view is missing a get() method —
     // buildClaimAutobaseHandle throws, lookup catches and returns null.
-    const broken: BootedHarnessHandle = {
+    const broken = makeFakeBootedHandle({
       workspaceId: 'ws-1',
       harnessSlug: 'broken',
-      store: {} as never,
-      base: {
+      legacyBase: {
         base: { view: { length: 0 } } as unknown as AutobaseHarnessHandle['base'],
         append: vi.fn(),
         close: vi.fn(),
       },
-      close: vi.fn(),
-    };
+    }).handle;
     _setHandleForTests('ws-1', 'broken', broken);
     expect(
       getClaimHandleForHarness({

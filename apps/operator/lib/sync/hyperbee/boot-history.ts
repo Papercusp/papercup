@@ -24,6 +24,12 @@
  *                           and never recorded here — this is in-flight/IP-ban).
  *   - 'peer_rate_limited' — a peer tripped the per-peer connection-rate limit and
  *                           was banned + dropped (DoS guard).
+ *   - 'announce_admitted' — an inbound signed announce passed read-admission and
+ *                           its per-peer log was added to the admitted set (Model B).
+ *   - 'announce_rejected' — an inbound announce failed the read-admission decision
+ *                           (bad_sig / binding_invalid / revoked).
+ *   - 'announce_error'    — an exception while handling an announce (defensive).
+ *   - 'merge_error'       — the read-merge driver threw on a pass (defensive).
  *
  * Keep this union in sync with the second declaration in
  * `app/harness/insights/BootHistoryTable.tsx` (+ its KIND_COLOR / KIND_MARK
@@ -39,7 +45,11 @@ export type BootHistoryKind =
   | 'peer_connected'
   | 'swarm_join_failed'
   | 'peer_rejected'
-  | 'peer_rate_limited';
+  | 'peer_rate_limited'
+  | 'announce_admitted'
+  | 'announce_rejected'
+  | 'announce_error'
+  | 'merge_error';
 
 export interface BootHistoryEntry {
   ts: number;

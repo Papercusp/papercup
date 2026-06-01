@@ -21,16 +21,10 @@ import {
 } from '../boot-all';
 import type { BootedHarnessHandle } from '../boot';
 import type { SwarmBinding } from '../derive-swarm-topic';
+import { makeFakeBootedHandle } from './fake-booted-handle';
 
 function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHandle {
-  return {
-    workspaceId,
-    harnessSlug,
-    store: {} as never,
-    base: {} as never,
-    swarm: null,
-    close: vi.fn(async () => {}),
-  };
+  return makeFakeBootedHandle({ workspaceId, harnessSlug }).handle;
 }
 
 afterEach(async () => {

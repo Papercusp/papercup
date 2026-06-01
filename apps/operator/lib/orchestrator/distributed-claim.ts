@@ -67,21 +67,26 @@ export type AttemptDistributedClaimResult =
 
 /**
  * Best-effort pubkey extraction from the booted substrate handle.
- * The substrate's Autobase exposes `local.key` as a Buffer of the
- * local writer's hypercore key. We hex-encode for the wire claim
- * record. Defensive: returns null if the field shape changes.
+ *
+ * Model B (Stage 4a): the local writer's hypercore key is the own log's
+ * `keyHex` (64-hex). This is the same per-peer-log core key the wire claim
+ * record keys on. Falls back to the retired Autobase `base.local.key` shape
+ * for any not-yet-migrated handle. Defensive: returns null if neither resolves.
  */
 export function resolveMyPubkey(
   booted: BootedHarnessHandle,
 ): string | null {
   try {
-    const base = (booted.base as unknown as {
-      base?: { local?: { key?: Buffer | Uint8Array } };
+    // Model B: own-log key hex.
+    const ownKey = (booted as unknown as { ownLog?: { keyHex?: string } }).ownLog?.keyHex;
+    if (typeof ownKey === 'string' && ownKey.length > 0) return ownKey;
+    // Legacy Autobase handle (pre-Stage-4) — retained for safety.
+    const base = (booted as unknown as {
+      base?: { base?: { local?: { key?: Buffer | Uint8Array } } };
     }).base;
-    const k = base?.local?.key;
+    const k = base?.base?.local?.key;
     if (!k) return null;
     if (typeof (k as Buffer).toString === 'function') {
-      // node Buffer or Uint8Array with the same API
       const hex = Buffer.from(k as Uint8Array).toString('hex');
       if (hex.length > 0) return hex;
     }
@@ -114,10 +119,24 @@ export async function attemptDistributedClaim(
       feature_id: opts.feature_id,
     };
   }
+  // STAGE-5 TODO (papercusp-substrate-model-b-rewrite-2026-05-31): the claim
+  // adapter still expects an Autobase view. Model B handles no longer expose
+  // `base`; until Stage 5 rewrites the claim path onto the own log, fall back
+  // to substrate-not-booted (legacy single-writer claim) when `base` is absent.
+  const legacyBase = (booted as unknown as { base?: Parameters<typeof buildClaimAutobaseHandle>[0]['base'] }).base;
+  if (!legacyBase) {
+    return {
+      reason: 'substrate-not-booted',
+      won: false,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      feature_id: opts.feature_id,
+    };
+  }
   let claimHandle;
   try {
     claimHandle = buildClaimAutobaseHandle({
-      base: booted.base,
+      base: legacyBase,
       myPubkey,
       table: opts.claimTable,
     });

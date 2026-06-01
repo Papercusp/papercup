@@ -55,7 +55,7 @@ export async function setActiveFeature(opts: WorkingSetWriteOpts): Promise<void>
   if (opts.writerPubkey) {
     recordLocalWrite({ table: 'working-set', hbKey, ts, pubkey: opts.writerPubkey });
   }
-  await opts.handle.base.append({
+  await opts.handle.append({
     type: 'put',
     table: 'working-set',
     hbKey,
@@ -82,7 +82,7 @@ export async function clearActiveFeature(opts: WorkingSetWriteOpts): Promise<voi
   if (opts.writerPubkey) {
     recordLocalWrite({ table: 'working-set', hbKey, ts, pubkey: opts.writerPubkey });
   }
-  await opts.handle.base.append({
+  await opts.handle.append({
     type: 'put',
     table: 'working-set',
     hbKey,

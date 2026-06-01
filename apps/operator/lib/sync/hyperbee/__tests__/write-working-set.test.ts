@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { setActiveFeature, clearActiveFeature } from '../write-working-set';
-import type { BootedHarnessHandle } from '../boot';
-import type { OpEnvelope } from '../autobase-setup';
+import type { BootedHarnessHandle, LocalWriteOp } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import {
   clobberEvents,
@@ -10,28 +9,15 @@ import {
   _setNowForTests,
   type ClobberEvent,
 } from '../clobber-events';
+import { makeFakeBootedHandle } from './fake-booted-handle';
 
 afterEach(() => _resetForTests());
 
 function fakeHandle(slug = 'papercup'): {
   handle: BootedHarnessHandle;
-  appended: OpEnvelope[];
+  appended: LocalWriteOp[];
 } {
-  const appended: OpEnvelope[] = [];
-  const handle: BootedHarnessHandle = {
-    workspaceId: 'ws-1',
-    harnessSlug: slug,
-    store: {} as never,
-    base: {
-      base: {} as never,
-      async append(op: OpEnvelope) {
-        appended.push(op);
-      },
-      async close() {},
-    },
-    async close() {},
-  };
-  return { handle, appended };
+  return makeFakeBootedHandle({ harnessSlug: slug });
 }
 
 describe('setActiveFeature', () => {

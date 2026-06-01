@@ -1,25 +1,40 @@
 /**
- * bootHarnessSubstrate — composer tests.
+ * bootHarnessSubstrate — composer tests (Model B, Stage 4a).
  *
- * Heavy integration (Autobase + Corestore + swarm) is intentionally
- * not exercised here — the holepunch-spike smokes cover that
- * primitive end-to-end. These tests focus on:
- *
+ * Covers:
  *   - Argument validation (workspaceRoot / workspaceId / harnessSlug).
  *   - Schema-version alert event subscription / unsubscription.
- *   - The intent that the boot helper composes the documented pieces.
+ *   - The Model B handle shape: `ownLog.keyHex` + `mergeNow` + `admitted`
+ *     (NOT the retired Autobase `base`).
+ *   - The single-peer path: own writes → mergeNow → PG projection.
  *
- * The full integration boot path lands when instrumentation-node.ts
- * wiring lands; that's a follow-up coupled with the harness-registry
- * iteration loop.
+ * The single-peer test uses a real Corestore over a tmp dir (mirrors
+ * peer-log.test.ts) + a capturing projection sink (no real PG), with the
+ * merge poll-timer disabled so the test drives `mergeNow()` by hand.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { bootHarnessSubstrate, onSchemaVersionAlert } from '../boot';
-import { schemaVersionEvents, type SchemaVersionAlert } from '../schema-version';
+import { schemaVersionEvents, type SchemaVersionAlert, CURRENT_SCHEMA_VERSION } from '../schema-version';
+import { _resetCacheForTests } from '../corestore';
+import {
+  registerProjection,
+  _clearRegistryForTests,
+  type TableProjection,
+} from '../projection';
 
-afterEach(() => {
+const cleanups: Array<() => void | Promise<void>> = [];
+
+afterEach(async () => {
   schemaVersionEvents.removeAllListeners();
+  _clearRegistryForTests();
+  while (cleanups.length) {
+    try { await cleanups.pop()!(); } catch {}
+  }
+  _resetCacheForTests();
 });
 
 describe('bootHarnessSubstrate — validation', () => {
@@ -39,6 +54,66 @@ describe('bootHarnessSubstrate — validation', () => {
     await expect(
       bootHarnessSubstrate({ workspaceRoot: '/tmp', workspaceId: 'w', harnessSlug: '' }),
     ).rejects.toThrow(/harnessSlug/);
+  });
+});
+
+describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', () => {
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  it('exposes ownLog.keyHex + mergeNow + admitted, NOT base', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 's1',
+      mergePollMs: 0, // disable the poll timer; drive mergeNow by hand
+    });
+    cleanups.push(() => handle.close());
+
+    expect(handle.ownLog.keyHex).toMatch(/^[0-9a-f]{64}$/);
+    expect(typeof handle.mergeNow).toBe('function');
+    expect(handle.admitted.get(handle.ownLog.keyHex)).toBe(handle.ownLog);
+    // The retired Autobase `base` is gone.
+    expect((handle as unknown as { base?: unknown }).base).toBeUndefined();
+    expect(handle.swarm).toBeNull();
+  });
+
+  it('single-peer: own writes flow through mergeNow into the projection sink', async () => {
+    // Register a capturing projection for a test table.
+    const writes: unknown[] = [];
+    const proj: TableProjection<{ id: string }> = {
+      tableTag: 'mb_test_table',
+      composeKey: (row) => row.id,
+      decodeValue: (raw) => (raw && typeof raw === 'object' ? (raw as { id: string }) : null),
+      writeToPg: async (row) => { writes.push(row); },
+      deleteFromPg: async () => {},
+    };
+    registerProjection(proj);
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-1',
+      harnessSlug: 's2',
+      mergePollMs: 0,
+    });
+    cleanups.push(() => handle.close());
+
+    await handle.append({
+      type: 'put',
+      table: 'mb_test_table',
+      hbKey: 'F-1',
+      value: { id: 'F-1' },
+      ts: 1000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+    });
+    expect(handle.ownLog.length).toBe(1);
+
+    const applied = await handle.mergeNow();
+    expect(applied).toBe(1);
+    expect(writes).toEqual([{ id: 'F-1' }]);
   });
 });
 

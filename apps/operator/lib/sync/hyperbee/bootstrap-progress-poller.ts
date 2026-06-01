@@ -3,10 +3,11 @@
  *
  * Plan: papercusp-dogfood-v5-2026-05-23 (Q-6 resolution).
  *
- * The substrate's Autobase view doesn't currently emit a typed
- * merge-complete event we can subscribe to. As a pragmatic bridge,
- * this helper polls `base.base.view.length` on a setInterval and
- * records the count via `recordMergedOps`. Once the substrate grows
+ * The Model B substrate doesn't emit a typed merge-complete event we
+ * can subscribe to. As a pragmatic bridge, this helper polls a length
+ * getter on a setInterval and records the count via `recordMergedOps`.
+ * Stage 4 repointed it from the (retired) Autobase `base.base.view.length`
+ * to the per-peer own-log length (`readLength`). Once the substrate grows
  * a typed event source we can swap this for an event listener with
  * the same external behavior.
  *
@@ -15,13 +16,16 @@
  */
 
 import { recordMergedOps } from './bootstrap-progress';
-import type { AutobaseHarnessHandle } from './autobase-setup';
 
 export interface PollerOpts {
   workspaceId: string;
   harnessSlug: string;
-  /** The substrate handle whose view length to read. */
-  base: AutobaseHarnessHandle;
+  /**
+   * Length getter for the substrate's local op count (Model B own-log
+   * length). Called every tick; throwing or returning a non-finite value
+   * skips the tick. Stage 4: `() => ownLog.length`.
+   */
+  readLength: () => number;
   /** Poll interval in ms. Default 1000. Test seam. */
   intervalMs?: number;
   /** Setter for tests; defaults to setInterval. */
@@ -37,11 +41,9 @@ export interface PollerHandle {
   pollOnce(): void;
 }
 
-function readViewLength(base: AutobaseHarnessHandle): number | null {
+function readLengthSafely(readLength: () => number): number | null {
   try {
-    const v = (base as unknown as {
-      base?: { view?: { length?: number } };
-    }).base?.view?.length;
+    const v = readLength();
     if (typeof v === 'number' && Number.isFinite(v)) return v;
     return null;
   } catch {
@@ -57,7 +59,7 @@ export function startBootstrapProgressPoller(
   const clearI = opts.clearIntervalImpl ?? clearInterval;
 
   function tick(): void {
-    const len = readViewLength(opts.base);
+    const len = readLengthSafely(opts.readLength);
     if (len !== null) {
       recordMergedOps(opts.workspaceId, opts.harnessSlug, len);
     }

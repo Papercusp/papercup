@@ -9,7 +9,7 @@
  * routes rely on.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   _resetHandleMapForTests,
   _setHandleForTests,
@@ -25,10 +25,7 @@ import {
 import { getInProcessSubstrateStatus } from '../in-process-status';
 import { formatSubstrateStatus } from '../format-cli';
 import type { BootedHarnessHandle } from '../boot';
-import type {
-  AutobaseHarnessHandle,
-  OpEnvelope,
-} from '../autobase-setup';
+import { makeFakeBootedHandle } from './fake-booted-handle';
 
 afterEach(() => {
   _resetHandleMapForTests();
@@ -40,27 +37,7 @@ function fakeHandle(
   workspaceId: string,
   harnessSlug: string,
 ): BootedHarnessHandle {
-  const log: OpEnvelope[] = [];
-  const view = {
-    get length() {
-      return log.length;
-    },
-    async get(seq: number) {
-      return log[seq] ?? null;
-    },
-  };
-  const base: AutobaseHarnessHandle = {
-    base: { view, local: { key: Buffer.from('aa', 'hex') } } as unknown as AutobaseHarnessHandle['base'],
-    append: vi.fn(async () => {}),
-    close: vi.fn(async () => {}),
-  };
-  return {
-    workspaceId,
-    harnessSlug,
-    store: {} as never,
-    base,
-    close: vi.fn(async () => {}),
-  };
+  return makeFakeBootedHandle({ workspaceId, harnessSlug }).handle;
 }
 
 describe('substrate integration smoke', () => {

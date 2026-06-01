@@ -53,7 +53,7 @@ export async function publishContributorRow(
   if (opts.writerPubkey) {
     recordLocalWrite({ table: 'contributors', hbKey, ts, pubkey: opts.writerPubkey });
   }
-  await opts.handle.base.append({
+  await opts.handle.append({
     type: 'put',
     table: 'contributors',
     hbKey,

@@ -29,13 +29,16 @@ function fakeHandle(workspaceId: string, harnessSlug: string): BootedHarnessHand
     append: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
+  // STAGE-5: legacy Autobase `base` fixture (no longer a declared
+  // BootedHarnessHandle property); cast through `unknown`. getClaimStrategy
+  // only checks handle presence, so the shape is incidental.
   return {
     workspaceId,
     harnessSlug,
     store: {} as never,
     base,
     close: vi.fn(async () => {}),
-  };
+  } as unknown as BootedHarnessHandle;
 }
 
 afterEach(() => {

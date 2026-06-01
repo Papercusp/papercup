@@ -66,7 +66,7 @@ export async function enqueueFeature(opts: QueueWriteOpts): Promise<void> {
   if (opts.writerPubkey) {
     recordLocalWrite({ table: 'queue', hbKey, ts, pubkey: opts.writerPubkey });
   }
-  await opts.handle.base.append({
+  await opts.handle.append({
     type: 'put',
     table: 'queue',
     hbKey,
@@ -98,7 +98,7 @@ export async function dequeueFeature(opts: QueueWriteOpts): Promise<void> {
   if (opts.writerPubkey) {
     recordLocalWrite({ table: 'queue', hbKey, ts, pubkey: opts.writerPubkey });
   }
-  await opts.handle.base.append({
+  await opts.handle.append({
     type: 'put',
     table: 'queue',
     hbKey,

@@ -1,10 +1,20 @@
 /**
- * Single-function composer: bring a harness's Hyperbee sync substrate
+ * Single-function composer: bring a harness's Model B sync substrate
  * fully online.
  *
- * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24.
+ * Plan: papercusp-substrate-model-b-rewrite-2026-05-31 (Stage 4).
  *
- * Production call site (when instrumentation-node.ts boot wiring lands):
+ * Model B replaces the multi-writer Autobase with ONE signed,
+ * append-only log PER PEER (`openOwnLog`) plus a read-merge over the
+ * admitted set of logs (`mergeAdmittedLogs`). This composer:
+ *
+ *   1. Opens / creates the per-harness corestore.
+ *   2. Opens the peer's OWN writable log (`openOwnLog`).
+ *   3. Registers all per-table PG projection writers.
+ *   4. Drives a read-merge over the admitted set (own log + any remote
+ *      logs admitted at runtime via the swarm announce channel) into PG.
+ *
+ * Production call site (instrumentation-node.ts / host-bootstrap.ts):
  *
  *   await awaitEnsurePaths();              // P-031a — both ensure paths complete
  *   const harnesses = await loadHarnessRegistry(workspaceId);
@@ -16,28 +26,23 @@
  *     }));
  *   }
  *
- * Each handle returned is the entry point for that harness's Autobase
- * (the orchestrator's `claimFeature` takes one), and `close()` is the
- * cleanup hook for harness-remove.
- *
  * What this function does NOT do:
- *   - Hyperswarm replication setup. The `corestore.replicate()` call
- *     against a swarm topic is intentionally separated — testable in
- *     isolation, swappable for an offline mode, and not all harnesses
- *     swarm-join at boot (private harnesses skip it entirely).
- *   - PG → Hyperbee write hooks. Those land per-table as call sites
- *     opt into "fan out my PG write to Hyperbee too." Until then the
- *     substrate only consumes remote ops; local writes still flow
+ *   - PG → substrate write hooks. Those land per-table as call sites
+ *     opt into "fan out my PG write to my own log too." Until then the
+ *     substrate only consumes admitted ops; local writes still flow
  *     through PG-direct.
  */
 
 import { getHarnessStore, type HarnessStoreOpts } from './corestore';
-import { createAutobaseHarness, type AutobaseHarnessHandle } from './autobase-setup';
+import { openOwnLog, openRemoteLog, type PeerLogOp } from './peer-log';
+import {
+  mergeAdmittedLogs,
+  type AdmittedLog,
+} from './read-merge';
 import { acceptOpVersion, type SchemaVersionAlert } from './schema-version';
 import { schemaVersionEvents } from './schema-version';
 import { registerAllHarnessProjections } from './projections/register-all';
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
-import { startHyperbeeReadLoop, type ReadLoopHandle } from './read-loop';
 import { recordBootEvent } from './boot-history';
 import type Corestore from 'corestore';
 import {
@@ -50,6 +55,15 @@ import {
   type HyperswarmLike,
   type SwarmHandle,
 } from './swarm';
+import {
+  verifyAnnounce,
+  type SignedAnnounce,
+} from './announce';
+import {
+  makeAdmissionDecider,
+  type AdmissionInput,
+  type AdmissionResult,
+} from './read-admission';
 
 /** Short human label for a dropped peer, for the boot-history message field.
  *  Truncates the (long) Noise key to its first 8 hex chars. */
@@ -60,21 +74,36 @@ function peerLabel(keyHex?: string, ip?: string): string {
   return parts.join(' ') || 'unknown peer';
 }
 
+/** Polled-merge fallback interval (ms). The own log + admitted remotes are
+ *  re-merged on this cadence in addition to the on-admit + initial passes. */
+const MERGE_POLL_MS = 1000;
+
+/**
+ * A local write the per-table helpers append to the own log. Mirrors the
+ * fields the old Autobase `OpEnvelope` carried for put/del ops; `writerPubkey`
+ * is mapped onto the single-writer log's `author_pubkey`.
+ */
+export interface LocalWriteOp {
+  type: 'put' | 'del';
+  table: string;
+  hbKey: string;
+  value?: unknown;
+  ts: number;
+  schema_version: number;
+  /** Local-writer pubkey (hex), threaded to clobber-event attribution. */
+  writerPubkey?: string;
+}
+
 export interface BootHarnessOpts {
   workspaceRoot: string;
   workspaceId: string;
   harnessSlug: string;
   /**
-   * For non-bootstrap writers (joining a shared harness), the bootstrap
-   * peer's Autobase key (hex). Omit when this peer creates the harness
-   * (i.e. share-wizard P-029 flow → `bootstrap: null`).
-   */
-  bootstrap?: string | null;
-  /**
    * Optional swarm binding. When present, the harness joins a
-   * Hyperswarm topic + plugs corestore.replicate into every peer
-   * stream so writes federate cross-machine. Omit (or pass null) for
-   * `state: private` harnesses that stay single-engineer.
+   * Hyperswarm topic + exchanges signed announces with peers, admitting
+   * remote per-peer logs that pass the D-004 read-admission decision.
+   * Omit (or pass null) for `state: private` harnesses that stay
+   * single-engineer.
    *
    * v5 §0.2.7 + addendum 1 — pass `{ kind: 'gh', github_repository_id }`
    * for the canonical post-binding topic. Pre-binding dev mode can
@@ -87,6 +116,11 @@ export interface BootHarnessOpts {
    * getSharedSwarm() (one Hyperswarm per process).
    */
   swarmOverride?: HyperswarmLike;
+  /**
+   * Merge-poll interval override (ms). Tests set this to 0 to disable the
+   * timer and drive `mergeNow()` by hand. Default 1000.
+   */
+  mergePollMs?: number;
 }
 
 export interface BootedHarnessHandle {
@@ -94,28 +128,44 @@ export interface BootedHarnessHandle {
   harnessSlug: string;
   /** The Corestore — for swarm replication wiring + introspection. */
   store: Corestore;
-  /** Autobase handle. Pass to claimFeature / appendOp callers. */
-  base: AutobaseHarnessHandle;
+  /** The peer's OWN writable single-writer log. Local appends go here;
+   *  Stage 5 rewrites the orchestrator claim wiring onto this. */
+  ownLog: AdmittedLog;
+  /**
+   * Append a local put/del op to the peer's OWN log. Convenience over
+   * `ownLog.append` for the per-table write helpers (write-contributor-row /
+   * write-feature-queue / write-working-set) that previously appended to the
+   * Autobase. Maps the op's `writerPubkey` onto the single-writer log's
+   * required `author_pubkey`.
+   *
+   * STAGE-5 TODO: the orchestrator claim path (feature-claim.ts) and a real
+   * device `author_pubkey` thread through here when the claim/write rewrite
+   * lands; today `author_pubkey` falls back to `writerPubkey ?? ''`.
+   */
+  append(op: LocalWriteOp): Promise<void>;
+  /**
+   * The admitted-set: keyHex → log. Seeded with the own log; the swarm
+   * announce channel adds remote logs that pass read-admission (4b).
+   */
+  admitted: Map<string, AdmittedLog>;
+  /** Run a single read-merge pass over the admitted set into PG. Resolves
+   *  with the number of ops applied. Idempotent + safe to call concurrently
+   *  (it serializes internally). */
+  mergeNow(): Promise<number>;
+  /**
+   * Handle an inbound signed announce from a peer (called by the swarm
+   * connection handler in 4b). Verifies the sig, runs the admission
+   * decision, and on admit opens + admits the peer's remote log and
+   * triggers a merge.
+   */
+  onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult>;
   /** Swarm handle. Null when this boot didn't join a swarm
    *  (private harness OR swarmBinding omitted). */
   swarm: SwarmHandle | null;
-  /** Cleanup. Idempotent. Tears down swarm + Autobase + Corestore. */
+  /** Cleanup. Idempotent. Tears down swarm + merge poller + Corestore. */
   close(): Promise<void>;
 }
 
-/**
- * Compose the full substrate for one harness. Order matters:
- *
- *   1. Open / create the per-harness corestore.
- *   2. Build the Autobase view over it, gated by the per-harness
- *      schema-version filter.
- *   3. Register all 8 per-table PG projection writers.
- *
- * Returns a handle whose `close()` tears down the Autobase + Corestore
- * cleanly. Projection registrations are global and currently leak across
- * harness re-boots; that's safe because registerProjection overwrites
- * by tableTag and the closure binds the new workspace/slug.
- */
 export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
   if (!opts.workspaceRoot) throw new Error('bootHarnessSubstrate: workspaceRoot required');
   if (!opts.workspaceId) throw new Error('bootHarnessSubstrate: workspaceId required');
@@ -135,6 +185,31 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
   }
 }
 
+/**
+ * Wrap an admitted log so the merge driver drops unknown-newer ops (the
+ * D-024 schema-version gate that used to live in the Autobase apply). The
+ * gate runs in the merge driver, NOT inside `mergeAdmittedLogs`, so the
+ * merge stays a pure read→LWW→apply. `acceptOpVersion` emits the
+ * "newer Papercusp available" alert once per (slug, version).
+ */
+function versionGatedLog(slug: string, log: AdmittedLog): AdmittedLog {
+  return {
+    get keyHex() {
+      return log.keyHex;
+    },
+    get length() {
+      return log.length;
+    },
+    async get(i: number): Promise<PeerLogOp | null> {
+      const op = await log.get(i);
+      if (!op) return null;
+      // Drop unknown-newer ops (D-024). acceptOpVersion alerts once.
+      if (!acceptOpVersion(slug, op.schema_version)) return null;
+      return op;
+    },
+  };
+}
+
 async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedHarnessHandle> {
   const storeOpts: HarnessStoreOpts = {
     workspaceRoot: opts.workspaceRoot,
@@ -143,15 +218,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const store = await getHarnessStore(storeOpts);
 
   const slug = opts.harnessSlug;
-  const base = await createAutobaseHarness({
-    store,
-    bootstrap: opts.bootstrap ?? null,
-    // Schema-version filter: every op carries schema_version per D-024.
-    // The substrate drops unknown-newer ops + emits a single alert per
-    // (slug, version) pair so the UI can surface "newer Papercusp
-    // available."
-    acceptOp: (op) => acceptOpVersion(slug, op.schema_version),
-  });
+
+  // ── Model B: the peer's OWN writable single-writer log. ──
+  // Replaces createAutobaseHarness. Local writes append here; the merge
+  // driver reads it (+ admitted remote logs) into PG.
+  const ownLog = await openOwnLog(store);
 
   // Wire the 8 per-table PG projection writers. Idempotent (re-running
   // overwrites by tableTag).
@@ -160,34 +231,151 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     harnessSlug: opts.harnessSlug,
   });
 
-  // P-066 bootstrap-progress tracker. Polls base.view.length each
-  // second; feeds the BootstrapProgressIndicator via /api/harness/
-  // :slug/bootstrap-progress. Cheap (one async getter call per
-  // second per harness); idempotent across reboots since the tracker
-  // map keys by (workspaceId, slug).
+  // ── Admitted-set ── keyHex → log. Seeded with the own log (which is
+  // structurally an AdmittedLog). Remote logs are added on admit (4b).
+  const admitted = new Map<string, AdmittedLog>();
+  admitted.set(ownLog.keyHex, ownLog);
+
+  // ── Read-merge driver ── replaces the old Autobase read-loop. A pass:
+  //   1. update() every REMOTE log first (the spike found remote `length`
+  //      is stale until update() — own log is always current so skip it).
+  //   2. version-gate each log (drop unknown-newer ops, D-024).
+  //   3. mergeAdmittedLogs → LWW → existing projection writers → PG.
+  // Serialized via `merging` so the poll + on-admit + initial passes don't
+  // race a half-applied merge.
+  let merging = false;
+  let stopped = false;
+  async function mergeNow(): Promise<number> {
+    if (merging || stopped) return 0;
+    merging = true;
+    try {
+      const logs: AdmittedLog[] = [];
+      for (const log of admitted.values()) {
+        // Refresh remote logs so `length` reflects the writer's appends.
+        // The own log is the local source of truth; calling update() on it
+        // is unnecessary (and it has no `update`), so only remotes refresh.
+        if (log.keyHex !== ownLog.keyHex) {
+          const maybeRemote = log as Partial<{ update(): Promise<void> }>;
+          if (typeof maybeRemote.update === 'function') {
+            try {
+              await maybeRemote.update();
+            } catch {
+              // A remote that can't refresh (peer offline / stream closed)
+              // is merged at its last-known length; the next pass retries.
+            }
+          }
+        }
+        logs.push(versionGatedLog(slug, log));
+      }
+      return await mergeAdmittedLogs(logs, {});
+    } catch (e) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'merge_error',
+        e instanceof Error ? e.message : String(e),
+      );
+      return 0;
+    } finally {
+      merging = false;
+    }
+  }
+
+  // P-066 bootstrap-progress tracker. Polls ownLog.length each second;
+  // feeds the BootstrapProgressIndicator via /api/harness/:slug/
+  // bootstrap-progress. Cheap; idempotent across reboots (keys by
+  // (workspaceId, slug)).
   const progressPoller = startBootstrapProgressPoller({
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
-    base,
+    readLength: () => ownLog.length,
   });
 
-  // P-031 read side: replay the merged Autobase view back into PG so remote
-  // (and local) substrate ops actually land in PG / the UI — without this the
-  // substrate is write-only (applyHyperbeeOpToPg had no runtime caller). Runs
-  // for private AND swarmed harnesses; idempotent op-replay over the view log.
-  const readLoop: ReadLoopHandle = startHyperbeeReadLoop({
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-    base,
+  // Initial backfill merge + a polled fallback. On-remote-append merges
+  // are driven by `onAnnounce` (4b) calling mergeNow after each admit.
+  void mergeNow();
+  const mergePollMs = Number.isFinite(opts.mergePollMs as number)
+    ? (opts.mergePollMs as number)
+    : MERGE_POLL_MS;
+  const mergeTimer =
+    mergePollMs > 0 ? setInterval(() => void mergeNow(), mergePollMs) : null;
+  if (mergeTimer && typeof (mergeTimer as { unref?: () => void }).unref === 'function') {
+    (mergeTimer as { unref: () => void }).unref();
+  }
+
+  // ── Read-admission decider ── the D-004 sig+binding decision applied to
+  // an inbound announce. The real verifyBoth-over-harness-context adapter
+  // lands in 4c; until then verifyBinding is fail-closed (admits nothing on
+  // a binding check), so only the own log is ever merged. The swarm announce
+  // EXCHANGE that drives onAnnounce lands in 4b.
+  // TODO(stage-4c): inject buildVerifyBindingAdapter({harness context}).
+  const admit = makeAdmissionDecider({
+    verifyBinding: async () => false,
   });
 
-  // ── Hyperswarm replication (final substrate piece) ──
-  // Joins the swarm topic + plugs corestore.replicate into every
-  // peer stream. Only fires for harnesses that pass swarmBinding;
-  // `state: private` harnesses (no binding) stay local-only.
-  // Defensive: swarm join failures don't fail the boot — harness
-  // still works as a local-only substrate; UI can show "offline"
-  // status if needed.
+  /**
+   * Admit (or reject) an inbound signed announce. Verifies the sig, runs the
+   * D-004 decision, and on admit opens + admits the peer's remote log and
+   * merges. Defensive: never throws into the swarm handler.
+   */
+  async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
+    let decision: AdmissionResult;
+    try {
+      const sigValid = verifyAnnounce(frame);
+      const input: AdmissionInput = {
+        device_pubkey: frame.device_pubkey,
+        github_login: frame.github_login,
+        sigValid,
+      };
+      decision = await admit(input);
+    } catch (e) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_error',
+        e instanceof Error ? e.message : String(e),
+      );
+      return { admit: false, reason: 'binding_invalid' };
+    }
+    if (!decision.admit) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_rejected',
+        `${decision.reason} ${peerLabel(frame.log_core_key)}`,
+      );
+      return decision;
+    }
+    // Admitted: open the remote log + add to the admitted-set + merge.
+    try {
+      if (!admitted.has(frame.log_core_key)) {
+        const remote = await openRemoteLog(store, frame.log_core_key);
+        admitted.set(frame.log_core_key, remote);
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_admitted',
+          peerLabel(frame.log_core_key),
+        );
+      }
+      await mergeNow();
+    } catch (e) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'announce_error',
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+    return decision;
+  }
+
+  // ── Hyperswarm replication (4a: replication only) ──
+  // Joins the swarm topic + plugs corestore.replicate into every peer
+  // stream. The signed-announce channel + remote-log admission that drive
+  // `onAnnounce` land in 4b (swarm.ts). Only fires for harnesses that pass
+  // swarmBinding; `state: private` harnesses (no binding) stay local-only.
+  // Defensive: swarm join failures don't fail the boot.
   let swarmHandle: SwarmHandle | null = null;
   if (opts.swarmBinding) {
     try {
@@ -235,25 +423,43 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     workspaceId: opts.workspaceId,
     harnessSlug: opts.harnessSlug,
     store,
-    base,
+    ownLog,
+    async append(op: LocalWriteOp): Promise<void> {
+      await ownLog.append({
+        type: op.type,
+        table: op.table,
+        hbKey: op.hbKey,
+        value: op.value,
+        ts: op.ts,
+        schema_version: op.schema_version,
+        // STAGE-5: thread the real device pubkey. Until then attribute to
+        // the write's clobber pubkey (or empty), which the merge tolerates.
+        author_pubkey: op.writerPubkey ?? '',
+      });
+    },
+    admitted,
+    mergeNow,
+    onAnnounce,
     swarm: swarmHandle,
     async close() {
-      // Stop the progress poller first so it doesn't race the
-      // autobase teardown trying to read .view.length on a closed
-      // store.
+      stopped = true;
+      // Stop the progress poller first so it doesn't read ownLog.length on
+      // an about-to-close store.
       progressPoller.stop();
-      // Same for the read-loop — stop before the view closes (a get() against
-      // a closing store throws; the loop bails defensively, but stop cleanly).
-      readLoop.stop();
-      // Leave the swarm before tearing down autobase/store so we
-      // stop receiving peer replication onto an about-to-close
-      // corestore.
+      // Stop the merge poller before the store closes (a get() against a
+      // closing store throws; mergeNow bails on `stopped`, but clear cleanly).
+      if (mergeTimer) {
+        try {
+          clearInterval(mergeTimer);
+        } catch {
+          // no-op
+        }
+      }
+      // Leave the swarm before tearing down the store so we stop receiving
+      // peer replication onto an about-to-close corestore.
       if (swarmHandle) {
         try { await swarmHandle.close(); } catch {}
       }
-      // Autobase first, then corestore — autobase holds open writers
-      // into the store.
-      try { await base.close(); } catch {}
       try { await store.close(); } catch {}
       recordBootEvent(opts.workspaceId, opts.harnessSlug, 'close');
     },

@@ -39,7 +39,7 @@ import { getPromptOverride } from '@/lib/harness-prompt-overrides';
 import { renderSuPlaybook } from '@/lib/desktop-install/papercusp-files';
 import { composeLaunchContext } from '@/lib/su-launch-context';
 import { readSuperuserToken } from '@/lib/superuser-token';
-import { papercuspPath } from '@/lib/papercusp-root';
+import { papercuspPathForWorkspace } from '@/lib/papercusp-root';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -256,7 +256,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     }
     cwd = projectDir;
   } else {
-    cwd = papercuspPath();
+    // Workspace-only launch: the SELECTED workspace's root, not the global
+    // active one (same fix as console-launcher — input.workspaceId may differ
+    // from activeWorkspaceId()).
+    cwd = papercuspPathForWorkspace(input.workspaceId);
   }
 
   // 2. Prompt — the engineer/power playbook (base + per-agent tooling

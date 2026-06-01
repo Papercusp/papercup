@@ -2,7 +2,7 @@
  * getInProcessSubstrateStatus tests.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { getInProcessSubstrateStatus } from '../in-process-status';
 import {
   _resetHandleMapForTests,
@@ -13,10 +13,7 @@ import {
   recordMergedOps,
 } from '../bootstrap-progress';
 import type { BootedHarnessHandle } from '../boot';
-import type {
-  AutobaseHarnessHandle,
-  OpEnvelope,
-} from '../autobase-setup';
+import { makeFakeBootedHandle } from './fake-booted-handle';
 
 afterEach(() => {
   _resetHandleMapForTests();
@@ -27,27 +24,7 @@ function fakeHandle(
   workspaceId: string,
   harnessSlug: string,
 ): BootedHarnessHandle {
-  const log: OpEnvelope[] = [];
-  const view = {
-    get length() {
-      return log.length;
-    },
-    async get(seq: number) {
-      return log[seq] ?? null;
-    },
-  };
-  const base: AutobaseHarnessHandle = {
-    base: { view } as unknown as AutobaseHarnessHandle['base'],
-    append: vi.fn(async () => {}),
-    close: vi.fn(async () => {}),
-  };
-  return {
-    workspaceId,
-    harnessSlug,
-    store: {} as never,
-    base,
-    close: vi.fn(async () => {}),
-  };
+  return makeFakeBootedHandle({ workspaceId, harnessSlug }).handle;
 }
 
 describe('getInProcessSubstrateStatus', () => {
