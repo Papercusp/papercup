@@ -24,7 +24,21 @@ import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-cli
 // cycle. (Were CJS require()s, which are undefined in the Vite browser bundle.)
 import { loadVoicePrefsClient } from './voice-prefs-client';
 import { requestVoiceLead, getVoiceLeaderState } from './voice-leader';
-import type { PttRawCapture, PttRawCaptureResult } from './ptt-capture';
+// Static-imported (not dynamic): these are small, dependency-light modules,
+// and dynamic import() of them was intermittently HANGING in the operator-vite
+// build — which left PTT capture never starting → "No audio detected". The
+// heavy/optional engines (stt-voicemode's MicVAD, deepgram) stay dynamic below.
+import {
+  startPttRawCapture,
+  classifyPttResult,
+  resampleLinearTo16k,
+  isBlankTranscript,
+  type PttRawCapture,
+  type PttRawCaptureResult,
+} from './ptt-capture';
+import { f32ToWav } from './f32-to-wav';
+import { transcribeChunk } from '../../../lib/voice-engines/whisper';
+import { startEnergyVadCapture } from './energy-vad-capture';
 
 /**
  * Emit the voice-engagement signal the OperatorConversationProvider
@@ -1687,13 +1701,6 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
  * tears it down on mode change.
  */
 async function startEnergyVadAlwaysOn(): Promise<void> {
-  const [{ startEnergyVadCapture }, { f32ToWav }, { transcribeChunk }, { isBlankTranscript }] =
-    await Promise.all([
-      import('./energy-vad-capture'),
-      import('./f32-to-wav'),
-      import('../../../lib/voice-engines/whisper'),
-      import('./ptt-capture'),
-    ]);
   whisperCapture = await startEnergyVadCapture({
     onSpeechStart: () => setAudioReceiving(true),
     onSpeechEnd: () => setAudioReceiving(false),
@@ -1925,7 +1932,6 @@ export function stopPushToTalk(): void {
  * resample → WAV-encode → POST to whisper and dispatch the transcript.
  */
 async function finalizePttRawCapture(result: PttRawCaptureResult | null): Promise<void> {
-  const { classifyPttResult, resampleLinearTo16k, isBlankTranscript } = await import('./ptt-capture');
   if (classifyPttResult(result) === 'no-audio') {
     dispatchNoAudioToast();
     return;
@@ -1934,10 +1940,6 @@ async function finalizePttRawCapture(result: PttRawCaptureResult | null): Promis
   const captured = result as PttRawCaptureResult;
   beginProcessingTranscript();
   try {
-    const [{ f32ToWav }, { transcribeChunk }] = await Promise.all([
-      import('./f32-to-wav'),
-      import('../../../lib/voice-engines/whisper'),
-    ]);
     const pcm16k = resampleLinearTo16k(captured.samples, captured.sampleRate);
     const blob = f32ToWav(pcm16k, 16000);
     const text = (await transcribeChunk(VOICEMODE_WHISPER_URL, blob)).trim();
@@ -1967,7 +1969,6 @@ async function maybeStartCaptureForPtt(): Promise<void> {
   // release) is the default and the only engine that works on the WebKitGTK
   // desktop; deepgram/web-speech are swapped in below when configured.
   try {
-    const { startPttRawCapture } = await import('./ptt-capture');
     if (!whisperCapture) {
       const cap = await startPttRawCapture();
       if (!pttActive) { try { cap.stop(); } catch { /* ignore */ } return; } // released mid-startup
