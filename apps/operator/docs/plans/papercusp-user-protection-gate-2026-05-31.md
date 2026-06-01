@@ -36,9 +36,24 @@ human. The current user's own features bypass it entirely; no middle tier.
   now closed). All reviewed (incl. opus on the security crux). Behavioral end-to-end
   (P-013, real-fleet) is the remaining acceptance.
 
-**Next:** **Phase 3 (G3 — untrusted-data framing)** + **Phase 4 (G4 — spawn
-least-privilege)**. Original Phase-1 next-step (now done):
-greenlight Phase 1 (G1 provenance) — thread `op.writerPubkey` through projection.
+**State update (2026-06-01): Phase 4 (G4 spawn least-privilege) SHIPPED.**
+- **G4 (Phase 4, P-011 + P-012) — DONE** (submodule `85a6ae7`; superproject =
+  this doc's commit, which bumps the `libs/papercusp` pointer): P-011 scopes the
+  downstream **agent-CLI** child `spawnEnv`
+  (`invoke.ts` — `scopeSpawnEnvForRole`): every spawned agent loses the admin PG
+  DSNs + the `operator_secrets` decryption key (it reaches privileged surfaces via
+  the signed MCP endpoint, not direct PG), and the read-only **auditor** role
+  additionally loses every decrypted search-provider key. Unit-tested in
+  `invoke.test.ts`. P-012 records the chosen sandbox posture (already enforced,
+  default-on; per-role egress deferred) + the residual risk — see the Phase-4
+  subsection below. NOTE the seam in the original P-011 text was wrong:
+  `harness-launch.ts`/`harness-invoke-once.ts` build the *trusted orchestrator's*
+  env (which legitimately needs `DATABASE_URL`) — G4 scopes only the child
+  `spawnEnv`, not those.
+
+**Next:** **Phase 5 (P-013 adversarial end-to-end + P-014 unit-tests).** Original
+Phase-1 next-step (now done): greenlight Phase 1 (G1 provenance) — thread
+`op.writerPubkey` through projection.
 
 ## Background
 
@@ -152,18 +167,101 @@ independent. G4 composes with the B rewrite.
 
 ## Phase 4 — G4 Spawn least-privilege (backstop)
 
-- **P-011** `todo` Scope the spawned child env per role
-  (`harness-launch.ts:45-76` + `harness-invoke-once.ts:48-69`): stop handing every
-  child the full `...process.env` + the admin `DATABASE_URL` + all decrypted
-  search-provider keys. Pass only what the role needs (the signed MCP URL already
-  carries the role-scoped tool catalog). The auditor role specifically gets a
-  read-only, secret-free env (P-006). Acceptance: a worker/auditor spawn env
-  contains no secret it doesn't use; document the diff.
-- **P-012** `todo` Design item: evaluate a sandbox / permission posture for the
-  execution-capable agents (the agent CLI's own permission mode + optional
-  OS-level sandbox) so a feature the auditor wrongly admitted still can't run
-  arbitrary destructive shell unprompted. Document the chosen posture + residual
-  risk. May spin out as its own effort.
+- **P-011** `done` Scope the spawned child env per role. **Correction to the seam:**
+  `harness-launch.ts` / `harness-invoke-once.ts` build the **orchestrator's**
+  (`invoke-once`'s) env — that trusted process legitimately needs `DATABASE_URL`
+  (it opens the admin PG pool the agent reads through the MCP endpoint), so we do
+  NOT strip there. G4 scopes only the downstream **agent-CLI** child `spawnEnv` at
+  `invoke.ts` (the merge at ~`1837`). New pure helper
+  `scopeSpawnEnvForRole(env, role)` (`invoke.ts:808`) returns a COPY with secrets
+  removed: ALL roles lose `DATABASE_URL` / `PAPERCUSP_PG_DSN` /
+  `PAPERCUSP_DB_ENCRYPTION_KEY` (`SPAWN_ENV_ALL_ROLES_STRIP`, `:742`) — the agent
+  reaches every privileged surface via the signed MCP HTTP endpoint, never direct
+  PG; the **auditor** role additionally loses every decrypted search-provider key
+  (`SEARCH_PROVIDER_ENV_KEYS`, `:767`, mirroring `search-provider-credentials.ts`)
+  — it's a read-only judge with no `web_search`. Backend auth is session/OAuth-
+  FILE based (claude → `~/.claude` via `resolveSpawnHome`; codex →
+  `~/.codex/auth.json` symlinked into the per-spawn `CODEX_HOME`; omp → Meridian
+  bridge), so **no API-key env is load-bearing** — stripping the API-key-named
+  search keys for the auditor is safe and it still emits a verdict. Applied to the
+  merged env BEFORE the post-merge HOME / git-no-push / MCP-config / sandbox-cache
+  additions, which survive. Acceptance MET: unit tests in `invoke.test.ts`
+  (worker keeps search keys + drops PG/DB; auditor drops both; input not mutated;
+  validator/scoper behave like worker; name-list mirror pinned). Done: submodule
+  `85a6ae7`; superproject = this doc's commit (the `libs/papercusp` pointer bump).
+- **P-012** `done` Design item — sandbox / permission posture for execution-capable
+  agents. See **"P-012 — sandbox posture (chosen)"** below. Outcome: the posture is
+  **already enforced** (default-on, P-013/D-015) — claude self-sandbox via
+  `--settings`, codex/omp via the external `srt` wrap, with a credential-hide
+  (`denyRead` + Read/Edit deny rules + `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`),
+  write-confinement to cwd+cache, a registry egress allowlist, and no-push; G4's
+  P-011 env-scoping composes on top. Per-role egress (the reserved
+  `fleetSandboxSettingsForRole` `role` param) is **deferred** (uniform floor today
+  — needs a real-spawn verification pass). Residual risk documented below.
+
+### P-012 — sandbox posture (chosen)
+
+Grounded in the sandbox machinery in `packages/orchestrator/src/invoke.ts`.
+
+**(a) What exists TODAY, per backend.** The fleet OS sandbox is **default-ON**
+(`fleetSandboxEnabled()` `:664` — opt out with `PAPERCUSP_FLEET_SANDBOX=0`), and the
+mechanism differs by backend because each backend's self-sandbox composes
+differently with MCP:
+- **claude-code** — its OWN built-in sandbox, injected via `--settings <inline
+  JSON>` (`claudeSandboxArgs` `:824` → `fleetSandboxSettingsForRole` `:691`):
+  Linux bubblewrap + socat proxy, `failIfUnavailable:true`,
+  `allowUnsandboxedCommands:false`. Confines writes to cwd + the cache root,
+  hides creds (`denyRead` `:522`), and allows egress only to the registry
+  allowlist.
+- **codex / omp** — NOT self-sandboxable for the fleet: codex's native sandbox
+  CANCELS MCP tool calls (D-009/D-016) and omp has no usable native sandbox, so
+  both run wrapped in the external `srt` runtime (`backendUsesSrt` `:1003` →
+  `wrapSpawnWithSrt` `:1017` / `buildFleetSrtSettings` `:953`), which confines
+  shell writes (cwd + cache + the backend's own agent/auth dirs), filters egress
+  to the same allowlist, and hides creds — while allow-listing the backend's
+  model + the loopback MCP endpoint through srt's proxy. codex itself still runs
+  with its native sandbox bypassed (`codexSandboxArgs` `:874`) under that wrap.
+- **none** — if `PAPERCUSP_FLEET_SANDBOX=0`, or claude's sandbox deps are missing
+  (it then fails loud, by design — never degrades silently to unsandboxed), or a
+  backend the wrap doesn't cover, the spawn is unsandboxed. P-011 env-scoping
+  still applies (it is independent of the sandbox).
+
+**(b) Chosen posture for execution-capable agents.** Already enforced and kept:
+egress allowlist (`resolveFleetAllowedDomains()` `:589` — registries + toolchain
+CDNs, two deployment env knobs, `…DENY_ALL_EGRESS=1` lockdown floor),
+write-confinement to cwd + the package-cache root, credential-hiding (`denyRead`
+`:522` + Read/Edit deny rules `:643`, plus `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+`:1978` scrubbing provider/cloud creds from the sandboxed Bash subprocess),
+no-`git push` (per-spawn `GIT_CONFIG` pre-push hook + the `Bash(git push:*)`
+deny backstop), and now P-011's env-scoping (PG/DB secrets off every child; the
+auditor's search keys off too). **Per-role egress tightening is DEFERRED, not
+done now:** `fleetSandboxSettingsForRole` reserves the `role` seat (`:691-693`,
+`void role`) but the floor is uniform across roles today. The right cut
+(read-only roles need NO egress; `expert`/`feedback` need a research allowlist)
+is the achievable per-role axis (per-role WRITE tightening is NOT achievable —
+claude's sandbox cwd is always writable, P-004), but it wants a real fleet-spawn
+verification pass before narrowing — narrowing blind risks breaking a role's
+legitimate fetch with an opaque egress block. Deferring matches the existing
+code's own stated plan (the `fleetSandboxSettingsForRole` docstring).
+
+**(c) Residual risk after G1–G4.** The auditor (G2) is itself a prompt-injection
+target and can false-negative — wrongly `admit` a malicious remote feature
+(D-007). When that happens the execution-capable worker that runs it is bounded
+by **[sandbox + P-011-scoped env]**: it cannot read admin PG creds or the
+decryption key from its env, cannot reach the network outside the registry
+allowlist, cannot write outside cwd+cache, cannot read the hidden cred dirs, and
+cannot `git push`. **What remains uncovered:** (1) the sandbox is default-on but
+**opt-out-able** (`PAPERCUSP_FLEET_SANDBOX=0`) and **claude-only for the
+self-sandbox path** — codex/omp depend on `srt` being installed (the spawn throws
+if it's set but `srt` is absent, so this fails loud rather than silently
+unsandboxed); a deployment that disables the sandbox keeps only the P-011
+env-scoping + tool/permission layer. (2) The egress allowlist reaches its hosts
+with **TLS uninspected** (D-005), so a registry host is a potential exfil channel
+for a determined admitted-malicious feature; the `…DENY_ALL_EGRESS=1` floor exists
+for hardened deployments. (3) The cwd is always writable, so write-discipline per
+role stays at the allowed-tools layer (`FLEET_NO_WRITE_ROLES`), not the sandbox; a
+`Bash`-granted role can still write within cwd via a shell redirect (documented
+limit). (4) A *compromised local machine* is explicitly out of scope (D-007).
 
 ## Phase 5 — Verification
 
