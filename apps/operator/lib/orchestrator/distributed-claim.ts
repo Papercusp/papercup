@@ -15,11 +15,14 @@
  *     // r.claimed === true — schedule the worker (advisory; may be clobbered)
  *   }
  *
- * D-002: the claim is an LWW ADVISORY hint appended to the peer's OWN log
+ * D-002: the claim is an ADVISORY hint appended to the peer's OWN log
  * (`boot.ts` `ownLog`), not a race. There is no won/lost arbitration —
- * `claimFeature` appends + returns `{ claimed: true }`. Concurrent claims
- * resolve LWW in the read-merge; contention surfaces via the clobber toast
- * and the orchestrator backs off (P-037d).
+ * `claimFeature` appends + returns `{ claimed: true }`. It records one row
+ * in the APPEND-ONLY `feature_claims` audit history (keyed
+ * `<feature_id>/<seq>`); claims do not cross-author-collide, so there is no
+ * LWW-clobber and no clobber-toast on the claim path. Who currently holds a
+ * feature is a separate derived read (latest `claimed_at`); the GitHub PR
+ * merge is the real authority.
  *
  * Composes:
  *   - getBootedHarness() to find the substrate handle

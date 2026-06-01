@@ -17,12 +17,15 @@
  * in-process substrate handles directly. It calls this endpoint
  * before dispatching a worker on a feature.
  *
- * D-002: the claim is an LWW ADVISORY hint, not a race — appending it always
- * succeeds (`claimed: true`). The orchestrator dispatches on `claimed`;
- * contention (another peer's later claim clobbering this one) surfaces via
- * the clobber toast + the orchestrator's backoff (P-037d), NOT a `won:false`
- * here. The only `claimed:false` is `manually-active` (a human flipped the
- * feature to working) — that still blocks pickup.
+ * D-002: the claim is an ADVISORY hint, not a race — appending it always
+ * succeeds (`claimed: true`). It records one row in the APPEND-ONLY
+ * `feature_claims` audit history (keyed `<feature_id>/<seq>`); claims do not
+ * cross-author-collide, so there is no LWW-clobber and no clobber-toast on
+ * this path (and no `won:false`). The orchestrator dispatches on `claimed`;
+ * who currently holds a feature is derived separately (latest `claimed_at`)
+ * and the GitHub PR merge is the real authority. The only `claimed:false`
+ * is `manually-active` (a human flipped the feature to working) — that
+ * still blocks pickup.
  *
  * Public (auth=public) — same tier as the rest of the harness API
  * during pre-alpha.
@@ -126,8 +129,9 @@ const post = defineTool({
         reason: r.reason,
       });
     }
-    // reason === 'attempted' — the advisory claim was appended. claimed is
-    // always true; contention is resolved LWW downstream (clobber + backoff).
+    // reason === 'attempted' — the advisory claim was appended as one row in
+    // the append-only feature_claims audit history. claimed is always true;
+    // claims don't cross-author-collide, so there's no downstream clobber.
     return Response.json({
       strategy: 'distributed',
       reason: r.reason,

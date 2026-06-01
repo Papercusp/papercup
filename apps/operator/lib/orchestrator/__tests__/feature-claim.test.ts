@@ -9,10 +9,12 @@
  *   - The appended op's value is a `FeatureClaimRow` that the EXISTING
  *     feature-claims projection's `decodeValue` accepts, and its `hbKey` is
  *     the projection's `composeKey` of that row — so it round-trips PG.
- *   - Two claims on the same feature with different ts: the later one is the
- *     LWW winner a subsequent read-merge keeps (asserted at the op level via
- *     mergeAdmittedLogs over an applyImpl sink) and the clobber path is
- *     reachable (cross-author op carries writerPubkey).
+ *   - `feature_claims` is APPEND-ONLY: two claims on the same feature get
+ *     DISTINCT `hbKey`s because `seq = ownLog.length` advances, so both
+ *     round-trip the read-merge as separate audit rows — there is NO
+ *     cross-author key collision and NO clobber on the claim path. (Who
+ *     currently holds a feature is a separate latest-`claimed_at` read, not
+ *     an LWW winner on this path.)
  *   - Validation (harness_slug + feature_id + claimer_github_user_id).
  */
 
@@ -118,52 +120,61 @@ describe('claimFeature — Model B advisory claim', () => {
     expect(r.claimed).toBe(true);
   });
 
-  it('two same-feature claims with different ts: the later ts is the LWW winner', async () => {
-    // Peer A claims F-1 at ts=1; peer B claims the SAME feature at ts=2.
-    // Both share table+hbKey (feature_id/seq), so the read-merge resolves
-    // them LWW — the later ts wins. We assert at the op level via an
-    // applyImpl sink that captures whatever the merge decided to apply.
-    const peerA = new FakeOwnLog('a0'.repeat(32));
-    const peerB = new FakeOwnLog('b0'.repeat(32));
+  it('two claims on the same feature get DISTINCT hbKeys (append-only audit) — both round-trip, no collision', async () => {
+    // `feature_claims` is an APPEND-ONLY per-attempt audit history. Each
+    // claim a peer makes lands at `seq = ownLog.length`, which advances per
+    // append — so two claims on the SAME feature occupy DIFFERENT keys
+    // (`F-1/0` then `F-1/1`) and survive the read-merge as TWO separate audit
+    // rows. There is no cross-author key collision and no clobber on the
+    // claim path: "who currently holds F-1" is derived separately by the
+    // latest `claimed_at` read, NOT by an LWW winner on this key.
+    const peer = new FakeOwnLog('a0'.repeat(32));
 
-    await claimFeature(peerA, {
+    await claimFeature(peer, {
       harness_slug: 'sheets',
       feature_id: 'F-1',
       claimer_github_user_id: 1,
       now_ms: 1,
     });
-    await claimFeature(peerB, {
+    await claimFeature(peer, {
       harness_slug: 'sheets',
       feature_id: 'F-1',
       claimer_github_user_id: 2,
       now_ms: 2,
     });
 
-    // Both peers' single op land at seq 0 → identical hbKey 'F-1/0' →
-    // they collide in the same LWW group, so LWW by ts decides the winner.
-    expect(peerA.ops[0].hbKey).toBe('F-1/0');
-    expect(peerB.ops[0].hbKey).toBe('F-1/0');
+    // seq advances 0 → 1, so the two claims on the same feature key DISTINCTLY.
+    expect(peer.ops[0].hbKey).toBe('F-1/0');
+    expect(peer.ops[1].hbKey).toBe('F-1/1');
 
     const applied: OpEnvelope[] = [];
-    await mergeAdmittedLogs(
-      [logFrom(peerA.keyHex, peerA.ops), logFrom(peerB.keyHex, peerB.ops)],
-      {
-        getTimeoutMs: 0,
-        applyImpl: async (op) => {
-          applied.push(op);
-          return true;
-        },
+    await mergeAdmittedLogs([logFrom(peer.keyHex, peer.ops)], {
+      getTimeoutMs: 0,
+      applyImpl: async (op) => {
+        applied.push(op);
+        return true;
       },
-    );
+    });
 
-    // Exactly one winner applied for the colliding key; it is peer B's
-    // (ts=2 > ts=1), and it carries the cross-author writerPubkey so the
-    // clobber-event path is reachable.
-    expect(applied).toHaveLength(1);
-    expect(applied[0].ts).toBe(2);
-    expect(applied[0].writerPubkey).toBe(peerB.keyHex);
-    const winnerRow = projection.decodeValue(applied[0].value);
-    expect(winnerRow?.claimer_github_user_id).toBe(2);
+    // Both claims apply — distinct keys → distinct LWW groups → no clobber.
+    // Both audit rows persist; neither overwrites the other.
+    expect(applied).toHaveLength(2);
+    const byKey = new Map(applied.map((op) => [op.hbKey, op]));
+    expect(byKey.get('F-1/0')).toBeDefined();
+    expect(byKey.get('F-1/1')).toBeDefined();
+    expect(projection.decodeValue(byKey.get('F-1/0')!.value)?.claimer_github_user_id).toBe(1);
+    expect(projection.decodeValue(byKey.get('F-1/1')!.value)?.claimer_github_user_id).toBe(2);
+  });
+
+  it('lwwPick (in isolation, NOT claim contention): later ts wins for a single key', async () => {
+    // This exercises the generic read-merge primitive `lwwPick` directly, on
+    // a SINGLE shared key — it does NOT model claim contention, which can't
+    // produce a cross-author key collision (see the append-only test above).
+    const { lwwPick } = await import('../../sync/hyperbee/projection');
+    const a: OpEnvelope = { type: 'put', table: 'claims', hbKey: 'F-1/0', value: {}, ts: 1 };
+    const b: OpEnvelope = { type: 'put', table: 'claims', hbKey: 'F-1/0', value: {}, ts: 2 };
+    expect(lwwPick(a, b)).toBe(b);
+    expect(lwwPick(b, a)).toBe(b);
   });
 
   it('rejects empty harness_slug', async () => {

@@ -5,14 +5,17 @@
  *
  * Pairs the two things the orchestrator always does together:
  *
- *   1. claimFeature(ownLog, opts) — append an LWW advisory claim to the
+ *   1. claimFeature(ownLog, opts) — append one advisory claim to the
  *      peer's OWN log (Model B; D-002). Returns `{ claimed: true }`.
  *   2. recordClaimAttempt({...}) — LOCAL PG audit row per attempt.
  *
  * The Autobase merge-order arbiter is gone: there is no won/lost race, so
- * the audit outcome is always `'won'` (this peer asserted the claim).
- * Concurrent claims resolve LWW in the read-merge; contention surfaces via
- * the clobber toast and the orchestrator backs off (P-037d).
+ * the audit outcome is always `'won'` (this peer asserted the claim). The
+ * claim appends to the APPEND-ONLY `feature_claims` audit history keyed
+ * `<feature_id>/<seq>`; it does not cross-author-collide, so there is no
+ * LWW-clobber and no clobber-toast on this path. Who currently holds a
+ * feature is derived separately (latest `claimed_at`); the real authority
+ * is the GitHub PR merge.
  *
  * If the audit write fails (PG unreachable, schema not present), the claim
  * still succeeds — auditing is best-effort. The orchestrator's decision

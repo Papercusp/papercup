@@ -4,9 +4,9 @@
  * Plan: papercusp-substrate-model-b-rewrite-2026-05-31 (Stage 5).
  * Supersedes the Phase-6 P-036 Autobase merge-order arbiter.
  *
- * D-002 (settled): a claim ("I'm working on F-042") is an LWW ADVISORY
- * hint, NOT a merge-order arbitration. There is no global ordering, no
- * "did I win the race" wait. `claimFeature`:
+ * D-002 (settled): a claim ("I'm working on F-042") is an ADVISORY hint,
+ * NOT a merge-order arbitration. There is no global ordering, no "did I
+ * win the race" wait. `claimFeature`:
  *
  *   1. Appends ONE claim op to the peer's OWN single-writer log
  *      (`ownLog.append`). The op value is a `FeatureClaimRow` so the
@@ -14,13 +14,20 @@
  *      to `harness_shared.feature_claims` verbatim on the next read-merge.
  *   2. Returns immediately `{ claimed: true }` — no awaiting convergence.
  *
- * Concurrent claims on the same feature resolve last-writer-wins in the
- * read-merge (`read-merge.ts` → `lwwPick`). Contention surfaces via the
- * already-built clobber-toast: `observeMergedOp` fires inside
- * `applyHyperbeeOpToPg` when a cross-author op overrides a recent local
- * write. If a claim is later clobbered, the orchestrator's existing
- * backoff (P-037d) handles it. The own log is the claim handle now — there
- * is no Autobase `base`, no `addWriter`, no seq-tiebreak.
+ * `feature_claims` is an APPEND-ONLY per-attempt audit history. Each claim
+ * op is keyed `<feature_id>/<seq>` where `seq = ownLog.length` — so each
+ * claim a peer makes occupies a DISTINCT key (its own log's seq advances)
+ * and every claim row persists as its own audit row. There is no
+ * cross-author key collision on this path: two peers claiming the same
+ * feature get different seqs → different keys → both rows survive the
+ * read-merge, nothing is clobbered. "Who currently holds feature F" is a
+ * SEPARATE derived read (the latest `claimed_at` row for F), not an
+ * LWW winner-takes-the-key. Claims are advisory — the real authority is
+ * the GitHub PR merge — so there is no LWW-clobber and no clobber-toast on
+ * the claim path. (The clobber-toast is for row-OVERWRITE tables only —
+ * feature-queue / contributor / working-set, which call `recordLocalWrite`;
+ * `claimFeature` deliberately does not.) The own log is the claim handle
+ * now — there is no Autobase `base`, no `addWriter`, no seq-tiebreak.
  *
  * Per D-024: every op carries `schema_version` (currently `1`).
  */
@@ -49,9 +56,11 @@ export interface ClaimOwnLog {
 }
 
 export interface ClaimResult {
-  /** Always true — the claim op was appended to the own log. Advisory: a
-   *  later cross-author claim can clobber it (surfaced via the clobber
-   *  toast; the orchestrator backs off per P-037d). */
+  /** Always true — the claim op was appended to the own log. Advisory: it
+   *  records ONE attempt in the append-only `feature_claims` audit history;
+   *  it does not arbitrate who holds the feature (that's a separate
+   *  latest-`claimed_at` read), and the real authority is the GitHub PR
+   *  merge. No cross-author collision, so no clobber on this path. */
   claimed: true;
 }
 
@@ -73,13 +82,16 @@ export class ClaimValidationError extends Error {
 }
 
 /**
- * Append an LWW advisory claim to the peer's own log + return immediately.
+ * Append one advisory claim to the peer's own log + return immediately.
  *
  * The appended op's value is a `FeatureClaimRow` and its `hbKey` is the
- * feature-claims projection's `composeKey(row)` (`<feature_id>/<seq>`), so
- * the existing projection materializes it to PG on the next read-merge with
- * no new projection logic. `claimer_pubkey` is the own log's `keyHex`;
- * `author_pubkey` matches so the clobber-event hook attributes correctly.
+ * feature-claims projection's `composeKey(row)` (`<feature_id>/<seq>`, with
+ * `seq = ownLog.length`), so the existing projection materializes it to PG
+ * on the next read-merge with no new projection logic. Because `seq`
+ * advances per append, every claim is a DISTINCT append-only audit row;
+ * claims do not collide cross-author, so this never clobbers another peer's
+ * row. `claimer_pubkey` / `author_pubkey` are the own log's `keyHex` (author
+ * attribution only — there is no clobber-event on the claim path).
  */
 export async function claimFeature(
   ownLog: ClaimOwnLog,
