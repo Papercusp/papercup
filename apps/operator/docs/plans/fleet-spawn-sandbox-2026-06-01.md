@@ -221,3 +221,20 @@ SCOPE/CAVEATS (unchanged, restated): default-on contains ONLY claude-code Bash s
 
 Plan COMPLETE: the sandbox is shipped, default-on, verified end-to-end against a real toolchain, with a recoverable + loud failure mode and deployment-extensible/lockdownable egress.
 Related: P-013
+
+### D-016 — codex containment RE-VERIFIED on codex 0.135 — still cancels MCP under sandbox (network_access ruled out); omp unchanged. Both stay uncontained by design
+Date: 2026-06-01
+Date: 2026-06-01 (resume session). Re-ran the D-009 codex investigation against the CURRENT codex (codex-cli **0.135.0**, up from the earlier test) with a faithful CODEX_HOME (superuser HTTP MCP + baked bearer + `~/.codex/auth.json` symlink, mirroring writeSignedSpawnCodexHome). Three `codex exec` variants, one MCP call each (`harness:list`):
+
+- **V1 `-s workspace-write`** → `mcp: papercusp-su/harness:list started → (failed) → "user cancelled MCP tool call"` (CLIENT-side cancel, never reaches the server). Same as D-009.
+- **V2 `-s workspace-write -c sandbox_workspace_write.network_access=true`** → IDENTICAL ("user cancelled MCP tool call"). So the cancellation is NOT a network-egress block — it is a codex POLICY that gates MCP under any non-full sandbox, independent of egress. The `network_access` hypothesis is ruled out.
+- **V3 `-s danger-full-access --dangerously-bypass-approvals-and-sandbox`** (positive control) → the call REACHED THE SERVER (server-side response: `unauthorized: harness:list requires bearer + workspace tx` — a capability error, i.e. connectivity proven). Matches D-009's positive case.
+
+Config scan: codex 0.135 exposes NO auto-approve / MCP-trust knob — only `--dangerously-bypass-approvals-and-sandbox` (which bundles approval-skip WITH sandbox-off) and the `untrusted` policy (a trusted-shell-command set, irrelevant to MCP). There is no way to keep the sandbox AND let MCP through: codex couples approval-bypass to sandbox-bypass.
+
+VERDICT: codex remains NOT containable for the MCP-dependent fleet on the current version — genuinely upstream-blocked (needs codex to decouple approval-bypass from sandbox-bypass, i.e. MCP-under-sandbox support). The orchestrator's behavior is therefore CORRECT and unchanged: `codexSandboxArgs` always returns `-s danger-full-access --dangerously-bypass-approvals-and-sandbox` regardless of PAPERCUSP_FLEET_SANDBOX. No code change. Revisit when codex ships MCP-under-sandbox.
+
+omp: UNCHANGED from D-010 — still not containable here. (1) omp is mis-configured on this box (points at a local ollama that 400s), so a real omp-under-srt verification can't be run; (2) srt wraps omp's WHOLE process incl. its own model+MCP connections, so it needs a per-omp egress ALLOWLIST (omp's model endpoint + the operator), not the deny-all that Phase 3 used. Reintroducing the srt helpers without a working omp to verify would ship unverified security code — declined. Stays deferred with that precise blocker.
+
+NET: default-on contains the default claude-code path; codex/omp stay uncontained, now re-confirmed against current versions. This is the correct end state until the respective upstreams change.
+Related: P-005, P-006
