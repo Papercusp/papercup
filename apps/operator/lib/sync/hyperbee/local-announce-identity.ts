@@ -30,7 +30,7 @@
  */
 
 import { loadOrGenerateDeviceKeypair } from '@/lib/identity/attest';
-import { getOctokit } from '@/lib/identity/octokit-client';
+import { getAuthenticatedGithubUser } from '@/lib/identity/resolve-local-github-identity';
 import { resolveDeviceKeychainId } from '@/lib/identity/device-keychain-id';
 
 export interface LocalAnnounceIdentity {
@@ -65,15 +65,11 @@ export interface ResolveLocalAnnounceIdentityOpts {
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {
-  const oc = await getOctokit();
-  if (!oc) {
+  const user = await getAuthenticatedGithubUser();
+  if (!user) {
     throw new Error('local-announce-identity: gh not authenticated (run `gh auth login`)');
   }
-  const { data } = await oc.users.getAuthenticated();
-  if (typeof data.id !== 'number' || typeof data.login !== 'string' || data.login.length === 0) {
-    throw new Error('local-announce-identity: GET /user returned an unexpected shape');
-  }
-  return { id: data.id, login: data.login };
+  return user;
 }
 
 /**
