@@ -104,30 +104,35 @@ are dropped as part of fixing each file.)
 4. *Empty-mock artifact assertions* (e.g. `expect(tables).toEqual([])` because
    `generated` was `{}`) → assert the real shape instead.
 
-**FIXED + committed so far (8 files, all green in isolation):**
+**FIXED + committed so far (13 of 38, all green in isolation):**
 - tool-projection import (4): `ipc_echo`, `streaming-tools-migration`,
   `chat-architect.e2e`, `chat-surfaces.e2e`.
-- db-org Drizzle: `voice-lease` (reference), `design`, `dev`.
+- db-org Drizzle / mock-gap: `voice-lease` (reference), `design`, `dev`,
+  `operator-scan-lock`, `operator-audit`, `device-pair-store`,
+  `device-harnesses`, `power-user-routes`, `operator-state-snapshot`.
 
-**REMAINING genuine (~30) — by cluster, with the pattern to apply:**
-- *Drizzle `db`/`tx` rewrite (pattern 2+3):* `device-pair-store`,
-  `device-harnesses` (uses `withWorkspace` tx), `operator-audit` (tx),
-  `operator-scan-lock` (still raw `sql` — likely just needs pattern 2 + a tx
-  fake), endpoint-route 500s likely db-org-rooted: `experts`,
-  `agent-tools-device-auth`, `operator-state-snapshot`, `agent-tools-catchall`.
-- *workspace-registry mock gap:* `power-user-routes` (`No "workspacesRoot"
-  export` — add to the `@/lib/workspace-registry` mock, like
-  agent-mcp-operator-converse already does).
-- *Relocated path:* `chat-surface-tools` (reads the retired
-  `app/api/agent-mcp/operator-converse/route.ts` — repoint to the relocated
-  endpoint-route module or drop the file-read).
+**Extra pattern learned:** workspace-registry mocks need `workspacesRoot`
+(backup seam reads it at import); ensure-schema is a flat module of `ensure*Table`
+DDL helpers — spread the real module + harden the getOrgPg `sql` stub with
+`unsafe`/`begin` so they no-op (a Proxy mock breaks vitest's interop).
+
+**REMAINING genuine (25) — by cluster, with the pattern to apply:**
+- *endpoint-route 500s (route throws at runtime — TRACE the thrown error, not
+  just a mock-gap; capture the 500 response body / route try-catch):* `experts`,
+  `agent-tools-device-auth`, `agent-tools-catchall` (also an SSE
+  `event: delta` ordering assertion).
+- *Relocated/retired path:* `chat-surface-tools` — a source-auditing test with a
+  hardcoded list of `app/api/agent-mcp/**/route.ts` paths (the RETIRED Next.js
+  routes). Repoint each `file:` to the relocated `lib/endpoint-route/routes/**`
+  module, or rework the audit; the *intent* (chat surfaces wire tools
+  consistently) is still relevant.
 - *Assertion/expectation drift (verify NOT a real regression first):*
   `subscriptions`, `projects`, `roles`, `agent-tools/misc`, `require-principal`,
   `oauth/state`, `runner-aggregate`, `sync-resolver/table-to-query-names`,
   `harness-testing-registry`, `steps`, `OperatorChatSidebar`, `AddPanelCatalog`
   (UI text), `coord-hook`, `auth-posture`.
-- *Env-specific assumption:* `desktop` (`/home/…/claude` vs `claude`),
-  (similar `gh` path) — assert resolved-path behavior, not bare name.
+- *Env-specific assumption:* `desktop` (`/home/…/claude` vs `claude`; similar
+  `gh` path) — assert resolved-path behavior, not the bare name.
 - *Possibly REAL code issues (don't just patch the test):* `css-tokens` (43
   undefined CSS tokens), `perf-anti-patterns`, `un-hardcode-contract`
   (console.warn), `branch-actions` (5s timeout + FileHandle-GC fd leak under
