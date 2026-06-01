@@ -17,6 +17,7 @@ import {
   createWorkspace,
   deleteWorkspace,
   listWorkspaces,
+  openWorkspaceWindow,
   renameWorkspace,
   switchWorkspace,
 } from '../../lib/workspaces-tauri';
@@ -124,18 +125,29 @@ export default function WorkspaceSwitcher() {
     const target = reg.workspaces.find((w) => w.id === id)?.name ?? id;
     if (!await askConfirm({
       title: `Switch to "${target}"?`,
-      body: 'The app will reload into the selected workspace.',
+      body: 'This window will reload into the selected workspace.',
       confirmLabel: 'Switch',
     })) return;
     progress.start(0.08, 0, true);
     try {
+      // Phase E (P-050): no longer a restart. switchWorkspace persists the
+      // registry default then navigates THIS window to ?ws=<id> (other windows
+      // are untouched, P-031); the navigation reloads the view under us.
       await switchWorkspace(id, { resetTo: `/harness?ws=${encodeURIComponent(id)}` });
-      // The promise above never actually resolves — the Tauri shell calls
-      // app.restart() before responding. If we get here, the call returned
-      // before the restart took effect; do nothing (the reload is coming).
     } catch (e: any) {
       toast.error(`switch failed: ${e?.message ?? e}`);
       progress.stop(120);
+    }
+  };
+
+  // Phase E (P-053): open the workspace in a SEPARATE window against the one
+  // shared sidecar (desktop) / a new tab (webapp). Leaves this window as-is.
+  const onOpenWindow = async (id: string) => {
+    setOpen(false);
+    try {
+      await openWorkspaceWindow(id);
+    } catch (e: any) {
+      toast.error(`open window failed: ${e?.message ?? e}`);
     }
   };
 
@@ -295,6 +307,16 @@ export default function WorkspaceSwitcher() {
                 )}
                 {!isRenaming && (
                   <>
+                    <button
+                      type="button"
+                      onClick={() => onOpenWindow(ws.id)}
+                      title={`Open "${ws.name}" in a new window`}
+                      aria-label={`Open ${ws.name} in a new window`}
+                      className="pc-workspace-menu-action"
+                      style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
+                    >
+                      ⧉
+                    </button>
                     <button
                       type="button"
                       onClick={() => startRename(ws)}
