@@ -50,7 +50,7 @@ describe('AddPanelCatalog', () => {
     render(<AddPanelCatalog />);
     fireEvent.click(screen.getByLabelText('Add panel'));
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByText('Open new panel')).toBeTruthy();
+    expect(screen.getByText('Open panel')).toBeTruthy();
   });
 
   it('lists registered panel types in the popover', () => {
