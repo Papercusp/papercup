@@ -6,8 +6,9 @@ description: >-
   writes to the cwd + an allow-listed cache dir, hides credential dirs, and
   allowlists egress. claude's MCP/model connections are OUTSIDE its sandbox.
   codex is contained too — via an external srt-wrap (its native sandbox cancels
-  MCP); omp is not. How to opt out, extend the egress allowlist, the npm-install
-  cache gotcha, and the bwrap fail-loud mode.
+  MCP); omp gets the same srt-wrap. So all three backends are contained. How to
+  opt out, extend the egress allowlist, the npm-install cache gotcha, the bwrap
+  fail-loud mode, and omp's writable agent-dirs.
 discovered: 2026-06-01
 tags: [claude-code, sandbox, fleet, orchestrator, security, egress, bubblewrap, npm]
 status: active
@@ -65,11 +66,21 @@ the isolated netns (unreachable) — the wrap clears `no_proxy` inside the srt
 shell so it goes through the proxy. So under `PAPERCUSP_FLEET_SANDBOX`, **both
 claude-code and codex are contained.**
 
-**omp** is still NOT wrapped: its model-endpoint host is provider-dependent
-(unknown, vs codex's stable OpenAI hosts) and omp can't be run on the dev box to
-verify, so wrapping it could sever omp's own model reach. The srt architecture is
-proven (via codex); reintroduce omp once its model host is known + verifiable.
-Switching `AGENT_BACKEND` to **omp** therefore still loses containment.
+**omp** (no native sandbox) gets the **same srt-wrap** as codex (D-018/D-019).
+Its model + MCP are loopback on this box (ollama / the meridian bridge), the same
+loopback-through-srt's-proxy transport codex uses, so its egress allowlist is
+operator + localhost + registries; a cloud-model omp adds its host via
+`PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS` (omp's provider is deployment-set, so
+there's no single host to hardcode like codex's OpenAI). Its writable agent dirs
+(`~/.omp` + `PI_CODING_AGENT_DIR` = `<project>/.harness/pi-sessions`, which holds
+omp's agent/auth/models SQLite DBs) are added to `allowWrite` — miss that and omp
+dies at startup with `SQLiteError: attempt to write a readonly database`. Verified
+under srt: omp **starts cleanly + reaches its model**. (Caveat unrelated to
+containment: omp can't *complete* a tool-using task against **ollama** due to an
+omp↔ollama tool-schema bug — `cannot unmarshal bool into ToolFunctionParameters.properties`
+— present with or without srt, on every ollama model; needs a tool-capable local
+server or a working cloud/meridian provider.) So under `PAPERCUSP_FLEET_SANDBOX`
+**all three backends are contained.**
 
 ## Knobs (env, read per-spawn from the trusted orchestrator env)
 

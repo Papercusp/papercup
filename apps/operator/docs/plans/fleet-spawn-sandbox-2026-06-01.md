@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** COMPLETE + default-on (live). The fleet OS sandbox is shipped, default-on, and now covers TWO backends: claude-code (native --settings sandbox) and codex (P-015/D-017 — the "way around" D-009: codex's native sandbox bypassed so MCP works, whole process wrapped in srt with an egress allowlist [operator+model+registries] + no_proxy cleared so MCP/model route through srt's proxy; writes→cwd+cache+CODEX_HOME, creds hidden via denyRead+allowRead). Both verified end-to-end on the real code path. npm-install EROFS fixed (P-014). Egress deployment-extensible + lockdownable (D-012). Only omp remains uncontained — its model-endpoint host is provider-dependent and omp is unrunnable on this box, so wrapping it is unverifiable (would risk severing omp's own model reach); the architecture (same srt-wrap) is proven, just not omp-verifiable here.
+**State:** COMPLETE + default-on (live). The fleet OS sandbox now covers ALL THREE backends under PAPERCUSP_FLEET_SANDBOX: claude-code (native --settings sandbox), codex (external srt-wrap — native sandbox bypassed for MCP + srt confines; fully verified end-to-end, D-017), and omp (external srt-wrap; D-018/D-019 — startup + model-reach through srt verified). npm-install EROFS fixed (P-014); egress deployment-extensible + lockdownable (D-012). The codex/omp wraps allowlist operator+model+registries, confine writes to cwd+cache+agent-dirs, hide creds, and clear no_proxy so loopback model/MCP route through srt's proxy. Residual: omp can't COMPLETE a tool task LOCALLY due to an omp↔ollama tool-schema bug (omp's own, present with/without srt; needs a tool-capable local server or a working cloud/meridian provider) — not a containment gap.
 
-**Next:** Done — no open build work. Default-on is live (:3070 restarted). Remaining optional: omp srt-wrap once its model host is known + a working omp exists to verify; P-011 enableWeakerNestedSandbox for a containerized operator; per-role egress narrowing.
+**Next:** Done — no open build work. Default-on is live (:3070 restarted earlier in the session; the codex/omp srt-wraps take effect on the next spawn). Optional: a tool-capable local server (or fixed meridian :3456) so omp can be task-verified locally; P-011 enableWeakerNestedSandbox for a containerized operator; per-role egress narrowing.
 
 ## Background
 
@@ -276,3 +276,20 @@ CONTAINMENT verdict: the MECHANISM is proven for omp's class — srt-wrap + allo
 
 DECISION: omp stays NOT wrapped. I can't end-to-end verify omp FUNCTIONS under srt (omp can't run a task here at all), and couldn't map omp's required writable data-dirs under srt — so a shipped omp srt-wrap under default-on would likely break omp's startup (readonly-DB) where omp actually runs. Shipping unverifiable security code that could silently break omp is worse than leaving it uncontained (the D-010 principle). Recipe is ready (extend wrapSpawnWithSrt to 'omp' + map omp's writable dirs [~/.omp + auth-store path + PI_CODING_AGENT_DIR] + allowlist its model host); reintroduce when omp is task-runnable locally (a tool-capable local server, or a fixed meridian bridge) so it can be verified.
 Related: P-008
+
+### D-019 — omp containment IMPLEMENTED + verified (D-018 recipe): srt-wrap extended to omp; all 3 backends now handled (claude native / codex+omp via srt)
+Date: 2026-06-01
+Date: 2026-06-01 (resume session). Per "implement the ready recipe," extended the codex srt-wrap to omp (submodule 2dfa9fb). What unblocked it: I traced (strace) omp's startup-write failure under srt to its agent/auth/models SQLite DBs at `<PI_CODING_AGENT_DIR>/.harness/pi-sessions/{agent,models}.db` (NOT under the dirs I'd guessed) — once that dir is in srt's allowWrite, omp starts cleanly.
+
+IMPLEMENTATION:
+- `backendUsesSrt(backend)` → codex + omp (claude uses its own --settings sandbox).
+- `buildFleetSrtSettings` now takes `agentHomes: string[]` (was single agentHome): codex → [CODEX_HOME]; omp → [~/.omp, PI_CODING_AGENT_DIR]. allowWrite = cwd + cache + agentHomes; allowRead re-permits any agentHome under a denyRead dir (codex's CODEX_HOME under ~/.papercusp).
+- `fleetSrtModelDomains('omp')` = [] — omp's model is loopback here (ollama :11434 / meridian :3456), covered by the localhost/127.0.0.1 entries; a cloud-model omp adds its host via PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS (provider is deployment-set, no stable host to hardcode unlike codex's OpenAI).
+- `wrapSpawnWithSrt` wraps codex+omp (clears no_proxy inside the srt shell; omp's prompt rides its `@promptfile` arg through the exec). Spawn site maps the backend's agentHomes + fail-loud if srt absent.
+
+VERIFIED end-to-end on the REAL emitted wrap (codex 0.135-style + omp): omp starts cleanly under srt (agent DBs writable) + REACHES its model through srt's proxy (the 400 = ollama responded). codex was already fully verified (D-017). +6 tests, 91/91 invoke.test.ts; full suite only the 3 pre-existing failures.
+
+RESIDUAL (not a containment gap): omp can't COMPLETE a tool-using task locally because of an omp↔ollama tool-schema 400 (`cannot unmarshal bool into ToolFunctionParameters.properties`) — present WITH OR WITHOUT srt, on every ollama model; it's an omp/ollama incompat, fixed by a tool-capable local server or a working cloud/meridian provider, NOT by the sandbox. Containment (startup + model-reach + shell-confine + MCP-via-codex-parity) is verified.
+
+NET: all 3 fleet backends are now handled under default-on — claude-code (native sandbox), codex (srt-wrap, fully verified), omp (srt-wrap, startup+model-reach verified). codex/omp egress = operator + model + registries; cloud-model omp extends via the env var.
+Related: P-008, P-015
