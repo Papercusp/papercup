@@ -23,9 +23,22 @@ role: a read-only agent that screens every feature **not written by the current
 user's own device key** and admits or rejects it — rejects auto-escalate to a
 human. The current user's own features bypass it entirely; no middle tier.
 
-**Next:** greenlight **Phase 1 (G1 provenance)** — thread the already-available
-`op.writerPubkey` through projection and stamp `author_pubkey` + `origin` — the
-prerequisite that gives the auditor an *unforgeable* "is this mine?" signal.
+**State update (2026-06-01): Phases 1 + 2 SHIPPED.**
+- **G1 provenance (Phase 1, P-001..P-004) — DONE** (`dbca05e58` + submodule `ef0919c`,
+  fresh-boot fix `755112af1`): every projected row carries `origin`
+  (`local`/`remote`, derived from the *log source* — unforgeable) + `author_pubkey`.
+- **G2 auditor-admission (Phase 2, P-005..P-008) — DONE** (submodule `f702a86`/`83eed3f`/
+  `350fb28`; operator `bbfb20948`/`b8efd4e56`/`59f683a0e`; live-path gate fix `dce922ccc`):
+  admission columns + the read-only `auditor` role (empty tool catalog) + the dispatch
+  lane (admit→pickable; reject→quarantine + needs-human escalation; null/error verdict→
+  fail-safe reject) + the pick-gate on BOTH `readFeaturesPg` (legacy) AND the live DBOS
+  `readFrontierFeatures` (a review caught the latter was ungated — fail-open — and it's
+  now closed). All reviewed (incl. opus on the security crux). Behavioral end-to-end
+  (P-013, real-fleet) is the remaining acceptance.
+
+**Next:** **Phase 3 (G3 — untrusted-data framing)** + **Phase 4 (G4 — spawn
+least-privilege)**. Original Phase-1 next-step (now done):
+greenlight Phase 1 (G1 provenance) — thread `op.writerPubkey` through projection.
 
 ## Background
 
