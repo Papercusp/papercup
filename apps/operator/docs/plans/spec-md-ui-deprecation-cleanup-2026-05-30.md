@@ -3,7 +3,7 @@ title: Finish SPEC.md UI + health-subsystem deprecation cleanup
 slug: spec-md-ui-deprecation-cleanup-2026-05-30
 status: ready
 created: 2026-05-30
-updated: 2026-05-30
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 
@@ -29,8 +29,8 @@ All line numbers are against `apps/operator/app/harness/HarnessDashboard.tsx` (5
 
 ## Phase 2 — Onboarding empty-state (needs a UX call)
 
-- **P-004** `needs-human` Decide the post-SPEC.md empty-state onboarding flow. The current bootstrap (lines 2744, 2772) tells a new user to "open Config → Harness → SPEC.md to describe what this project should accomplish" — that surface no longer exists. What should the empty state prompt instead? See D-002.
-- **P-005** `todo` Implement the chosen empty-state in HarnessDashboard — replace the empty-SPEC bootstrap toast/CTA at lines 2744/2772 with the D-002 direction. blocked-by: P-004
+- **P-004** `done` Decide the post-SPEC.md empty-state onboarding flow. The current bootstrap (lines 2744, 2772) tells a new user to "open Config → Harness → SPEC.md to describe what this project should accomplish" — that surface no longer exists. What should the empty state prompt instead? See D-002. (Copy decided by avi see new decision: "Welcome to your harness. Come up with ideas in the brainstorm tab, plan them in the plan tab. Start them, and then watch agents work on them in the harness tab.")
+- **P-005** `todo` Implement the chosen empty-state in HarnessDashboard — replace the empty-SPEC bootstrap toast/CTA at lines 2744/2772 with the D-002 direction. blocked-by: P-004 (Unblocked P-004 done. NB: a REBUILD not a string-swap — HarnessDashboard.tsx the referenced 2744/2772 surface was deleted ad5897d58. Build the welcome empty-state on the live harness home HarnessDockShell / InsightsFirstVisitGate; confirm target surface with avi; verify in the Tauri shell.)
 
 ## Phase 3 — File-presence health subsystem
 
@@ -59,3 +59,12 @@ The SPEC.md→plans migration touches three rings: (a) backend/prompts — done 
 ### D-002 — Post-SPEC.md onboarding empty-state direction (OPEN — needs avi)
 Date: 2026-05-30
 When a harness has no work yet, the old empty-state told the user to write SPEC.md (HarnessDashboard 2744/2772). With SPEC.md retired the prompt must change, but the right replacement is a product call, not an agent call. Candidates on the table: (a) "Create your first plan" CTA that opens the Plans surface / `plans:new`; (b) route to Brainstorm to explore before committing; (c) a minimal "no work yet — open the Plans tab" pointer. Recommendation pending avi's input on P-004; P-005 implements whatever is chosen.
+
+### D-003 — Onboarding empty-state copy DECIDED (resolves D-002/P-004); the old surface was deleted so P-005 rebuilds it
+Date: 2026-06-01
+Date: 2026-06-01. avi gave the empty-state copy verbatim: "Welcome to your harness. Come up with ideas in the brainstorm tab, plan them in the plan tab. Start them, and then watch agents work on them in the harness tab." This resolves the open D-002 onboarding question (P-004). It correctly maps to the real flow (brainstorm → plan → promote/start → harness watches the DBOS pipeline) and contains no SPEC.md reference.
+
+IMPORTANT finding while placing it: the surface P-004/P-005 referenced — the SPEC.md bootstrap toast/CTA at `HarnessDashboard.tsx:2744/2772` — no longer exists. `HarnessDashboard.tsx` was DELETED (commit `ad5897d58`, "the legacy monolith, now unused"). The live `/adv` harness home is `HarnessDockShell` + `InsightsFirstVisitGate`; its only empty-states today are generic ("Loading insights…", "Select a harness"). So there is currently NO "your harness is empty, here's how to start" welcome state to edit — P-005 is a small build, not a string swap.
+
+P-005 (rebuild): render this welcome copy as the harness no-work empty-state (shown when a harness has no started plans / no eligible features). Target surface to confirm with avi before building — recommended home is the harness-tab empty-state; alternative is a first-visit card via the existing InsightsFirstVisitGate. Must be verified through the Tauri shell (desktop app), not a browser, per the testing docs.
+Related: P-004, P-005
