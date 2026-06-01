@@ -23,7 +23,6 @@ import './tools/goals/get';
 import './tools/issues/list';
 import './tools/messages/inbox';
 import './tools/messages/outbox';
-import './tools/messages/feature_inbox';
 import './tools/audit/list';
 import './tools/intel/spawn_tree';
 import './tools/intel/artifacts';
@@ -38,9 +37,9 @@ import './tools/artifacts/save';
 import './tools/artifacts/append';
 import './tools/artifacts/delete';
 
-// Write tools formerly here (tasks:create, messages:send, messages:feature_send,
-// messages:feature_dismiss) moved to apps/operator/lib/agent-tools/{tasks,messages}/
-// after the function-as-truth audit: they call executeAction() in-process now
+// Write tools formerly here (tasks:create, messages:send, messages:dismiss)
+// moved to apps/operator/lib/agent-tools/{tasks,messages}/ after the
+// function-as-truth audit: they call executeAction() in-process now
 // instead of HTTP-roundtripping /api/admin/execute-action, which required an
 // operator-side import the package can't make. tasks:update + tasks:close were
 // removed — they referenced a non-existent 'update_feature' op and never worked.

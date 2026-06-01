@@ -1,12 +1,14 @@
 /**
- * messages-tools.test.ts — handler-level unit tests for messages:send and
- * messages:feature_send (Plan 1 P-015).
+ * messages-tools.test.ts — handler-level unit tests for the merged
+ * messages surface: `messages:send` (harness-level + optional feature
+ * scope) and `messages:dismiss`.
  *
- * Both tools delegate to executeAction; the tests confirm:
+ * Both delegate to executeAction; the tests confirm:
  *   - correct op/field mapping into executeAction
- *   - success path returns the expected data shape
- *   - executeAction failure is surfaced as degraded (not thrown)
- *   - feature_send slug/featureId validation guards
+ *   - the conditional kind default (Directive vs feature-note)
+ *   - feature scoping (to_feature_id / from_feature_id) mapping
+ *   - slug validation guard on recipients
+ *   - executeAction failure surfaces as degraded (not thrown)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,12 +35,7 @@ afterEach(() => {
   vi.doUnmock('@/lib/execute-action');
 });
 
-function payload(result: { content?: Array<{ text: string }> }): unknown {
-  if (result.content) return JSON.parse(result.content[0].text);
-  return result;
-}
-
-// ─── messages:send ────────────────────────────────────────────────────────────
+// ─── messages:send (harness-level) ──────────────────────────────────────
 
 describe('messages:send', () => {
   it('calls executeAction with send_message op and correct fields', async () => {
@@ -58,11 +55,24 @@ describe('messages:send', () => {
     );
 
     expect(executeAction).toHaveBeenCalledTimes(1);
-    const [, callArgs] = executeAction.mock.calls[0];
+    const [, callArgs] = (executeAction.mock.calls[0] ?? []) as any[];
     expect(callArgs.action.op).toBe('send_message');
     expect(callArgs.action.to).toEqual(['sheets', 'org']);
     expect(callArgs.action.kind).toBe('Directive');
     expect(callArgs.action.subject).toBe('Retry F-001');
+  });
+
+  it('defaults kind to Directive for a harness-level send (no feature)', async () => {
+    const executeAction = vi.fn(async () => ({ ok: true }));
+    vi.doMock('@/lib/execute-action', () => ({ executeAction }));
+    const { default: tool } = await import('@/lib/agent-tools/messages/send');
+    await tool.handler(
+      { to: ['org'], subject: 'S', body: 'B', reason: 'Default-kind test for harness send.' },
+      MAKE_CTX(),
+    );
+    const [, call] = (executeAction.mock.calls[0] ?? []) as any[];
+    expect(call.action.kind).toBe('Directive');
+    expect(call.action.toFeatureId).toBeUndefined();
   });
 
   it('returns recipients + kind on success', async () => {
@@ -76,6 +86,17 @@ describe('messages:send', () => {
     )) as any;
     expect(result.data.recipients).toEqual(['org']);
     expect(result.data.kind).toBe('Note');
+  });
+
+  it('rejects an invalid recipient slug with degraded', async () => {
+    vi.doMock('@/lib/execute-action', () => ({ executeAction: vi.fn() }));
+    const { default: tool } = await import('@/lib/agent-tools/messages/send');
+    const result = (await tool.handler(
+      { to: ['bad slug!'], subject: 'S', body: 'B', reason: 'Testing slug validation guard.' },
+      MAKE_CTX(),
+    )) as any;
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReasons[0]).toMatch(/invalid slug/);
   });
 
   it('surfaces executeAction failure as degraded, not thrown', async () => {
@@ -92,7 +113,7 @@ describe('messages:send', () => {
     expect(result.degradedReasons[0]).toMatch(/db_down/);
   });
 
-  it('passes parentMessageId through when provided', async () => {
+  it('passes parent_message_id through when provided', async () => {
     const executeAction = vi.fn(async () => ({ ok: true }));
     vi.doMock('@/lib/execute-action', () => ({ executeAction }));
     const { default: tool } = await import('@/lib/agent-tools/messages/send');
@@ -102,26 +123,26 @@ describe('messages:send', () => {
         kind: 'Reply',
         subject: 'Re: thing',
         body: 'Got it.',
-        parentMessageId: 'msg_123',
-        reason: 'Testing parentMessageId propagation now.',
+        parent_message_id: 'msg_123',
+        reason: 'Testing parent_message_id propagation now.',
       },
       MAKE_CTX(),
     );
-    const [, call] = executeAction.mock.calls[0];
+    const [, call] = (executeAction.mock.calls[0] ?? []) as any[];
     expect(call.action.parentMessageId).toBe('msg_123');
   });
 });
 
-// ─── messages:feature_send ────────────────────────────────────────────────────
+// ─── messages:send (feature-scoped — subsumes old feature_send) ──────────
 
-describe('messages:feature_send', () => {
-  it('calls executeAction with toFeatureId + fromFeatureId fields', async () => {
+describe('messages:send (feature-scoped)', () => {
+  it('maps to_feature_id + from_feature_id and defaults kind to feature-note', async () => {
     const executeAction = vi.fn(async () => ({ ok: true }));
     vi.doMock('@/lib/execute-action', () => ({ executeAction }));
-    const { default: tool } = await import('@/lib/agent-tools/messages/feature_send');
+    const { default: tool } = await import('@/lib/agent-tools/messages/send');
     await tool.handler(
       {
-        to_slug: 'sheets',
+        to: ['sheets'],
         to_feature_id: 'F-001',
         from_feature_id: 'F-002',
         subject: 'Status update',
@@ -130,38 +151,21 @@ describe('messages:feature_send', () => {
       },
       MAKE_CTX(),
     );
-    const [, call] = executeAction.mock.calls[0];
+    const [, call] = (executeAction.mock.calls[0] ?? []) as any[];
     expect(call.action.toFeatureId).toBe('F-001');
     expect(call.action.fromFeatureId).toBe('F-002');
     expect(call.action.to).toEqual(['sheets']);
-  });
-
-  it('rejects an invalid slug with degraded', async () => {
-    vi.doMock('@/lib/execute-action', () => ({ executeAction: vi.fn() }));
-    const { default: tool } = await import('@/lib/agent-tools/messages/feature_send');
-    const result = (await tool.handler(
-      {
-        to_slug: 'bad slug!',
-        to_feature_id: 'F-001',
-        from_feature_id: 'F-002',
-        subject: 'S',
-        body: 'B',
-        reason: 'Testing slug validation guard.',
-      },
-      MAKE_CTX(),
-    )) as any;
-    expect(result.degraded).toBe(true);
-    expect(result.degradedReasons[0]).toMatch(/invalid slug/);
+    expect(call.action.kind).toBe('feature-note'); // conditional default
   });
 
   it('surfaces executeAction failure as degraded', async () => {
     vi.doMock('@/lib/execute-action', () => ({
       executeAction: vi.fn(async () => ({ ok: false, error: 'timeout' })),
     }));
-    const { default: tool } = await import('@/lib/agent-tools/messages/feature_send');
+    const { default: tool } = await import('@/lib/agent-tools/messages/send');
     const result = (await tool.handler(
       {
-        to_slug: 'sheets',
+        to: ['sheets'],
         to_feature_id: 'F-001',
         from_feature_id: 'F-002',
         subject: 'S',
@@ -172,5 +176,36 @@ describe('messages:feature_send', () => {
     )) as any;
     expect(result.degraded).toBe(true);
     expect(result.degradedReasons[0]).toMatch(/timeout/);
+  });
+});
+
+// ─── messages:dismiss (subsumes old feature_dismiss) ────────────────────
+
+describe('messages:dismiss', () => {
+  it('marks a message archived via mark_message_status', async () => {
+    const executeAction = vi.fn(async () => ({ ok: true }));
+    vi.doMock('@/lib/execute-action', () => ({ executeAction }));
+    const { default: tool } = await import('@/lib/agent-tools/messages/dismiss');
+    await tool.handler(
+      { message_id: 'm-1', reason: 'Handled this note already, dismissing.' },
+      MAKE_CTX(),
+    );
+    const [, call] = (executeAction.mock.calls[0] ?? []) as any[];
+    expect(call.action.op).toBe('mark_message_status');
+    expect(call.action.messageId).toBe('m-1');
+    expect(call.action.status).toBe('archived');
+  });
+
+  it('surfaces executeAction failure as degraded', async () => {
+    vi.doMock('@/lib/execute-action', () => ({
+      executeAction: vi.fn(async () => ({ ok: false, error: 'not_found' })),
+    }));
+    const { default: tool } = await import('@/lib/agent-tools/messages/dismiss');
+    const result = (await tool.handler(
+      { message_id: 'nope', reason: 'Testing dismiss failure path.' },
+      MAKE_CTX(),
+    )) as any;
+    expect(result.degraded).toBe(true);
+    expect(result.degradedReasons[0]).toMatch(/not_found/);
   });
 });

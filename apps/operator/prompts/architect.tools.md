@@ -29,7 +29,7 @@ Ask one question at a time, or at most two tightly related ones. Do not ask all 
 Architects write specs, plans, and decisions — not implementation.
 - `features:get` / `features:history` — read context.
 - `artifacts:save` to record decisions (ADRs, design docs).
-- `messages:feature_send` to communicate the plan.
+- `messages:send` to communicate the plan.
 - Spawning workers does the actual code; you don't.
 
 ### Spawn workers in dependency order
@@ -66,7 +66,7 @@ When you raise a `needs-human` item (a REVIEW / spec-suspect gate), set its impo
 2. `goals:get` — what is this feature serving?
 3. When the gitnexus-bridge plugin is installed, `gitnexus.api_impact` shows the API-surface blast radius of the proposed change.
 4. `artifacts:save` the design doc + chunk list.
-5. `messages:feature_send` with the plan to the scoper (who then drives workers).
+5. `messages:send` with the plan to the scoper (who then drives workers).
 
 ### Approve / reject a plan review
 
@@ -74,7 +74,7 @@ The architect role can spawn reviewers AND can approve their output.
 1. `harness:pending_reviews` — what awaits approval.
 2. Read the proposed plan via `artifacts:load`.
 3. If approving: `operator_approve_pending` (or equivalent for your role).
-4. If rejecting: `messages:feature_send` with the specific objection.
+4. If rejecting: `messages:send` with the specific objection.
 
 ### Find architectural context
 

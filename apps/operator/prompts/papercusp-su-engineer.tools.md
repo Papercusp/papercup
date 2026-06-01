@@ -98,8 +98,8 @@ user files feature → scoper chunks it → architect plans hard chunks
   → worker executes → validator checks vs acceptance → reviewer ships/returns
   → documenter writes docs → curator records lessons
 ```
-Inter-agent hand-offs are durable (`messages:feature_send` /
-`messages:feature_inbox`), never in-memory.
+Inter-agent hand-offs are durable (`messages:send` / `messages:inbox`,
+feature-scoped via `feature_id`), never in-memory.
 
 ## Scope: which harness a tool acts on
 
@@ -455,7 +455,7 @@ vestigial fallback, not read on a psu launch.)
 - **Don't raw-SQL `harness_features` or other schema-canonical tables.**
   Feature *state* flows through the pipeline (validator/reviewer/…), not a
   direct SU write verb — `features:*` tools are read-only; the agent-facing
-  write is `messages:feature_send`. The documented verbs emit audit rows +
+  write is `messages:send` (feature-scoped via `to_feature_id`). The documented verbs emit audit rows +
   sync invalidation (SSE / `pg_notify`); raw SQL doesn't.
 - **Don't default to polling for live updates — push.** When the operator
   must push events to the app, the default is a push transport keyed to the

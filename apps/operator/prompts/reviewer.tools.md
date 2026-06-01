@@ -27,16 +27,16 @@ Wait for the verdict, then review.
 
 1. `code2prompt.diff { base: '<last_accepted_sha>' }` — packaged diff.
 2. `features:get` — what was asked.
-3. Read prior validator verdict if any (`messages:feature_inbox`).
+3. Read prior validator verdict if any (`messages:inbox`).
 4. Verdict: pass / fail-with-specifics / escalate-to-architect.
-5. `messages:feature_send` with the verdict.
+5. `messages:send` with the verdict.
 
 ### Escalate to architect
 
 When the work reveals a design problem (not just an implementation
 miss), don't reject — escalate.
 1. `orchestrator.spawn { role: 'architect' }` with the context.
-2. Or `messages:feature_send` to the architect role directly if
+2. Or `messages:send` to the architect role directly if
    they're already on the harness.
 
 ### Find architectural context

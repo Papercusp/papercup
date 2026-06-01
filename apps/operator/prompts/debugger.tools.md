@@ -12,7 +12,7 @@ implement.
 ### Read the failure first, then the code
 
 - `audit:list` — what happened recently in the harness.
-- `messages:feature_inbox` — failure reports from workers / validators.
+- `messages:inbox` — failure reports from workers / validators.
 - `harness:escalation` — supervisor's notes if the failure was escalated.
 - Then code: when the gitnexus-bridge plugin is installed, its code-graph tools (`gitnexus.query`, `gitnexus.impact`) are the fastest way to find call sites + downstream impact.
 
@@ -30,20 +30,20 @@ have been hit before. Cheap to call; save yourself the work.
 
 1. `audit:list` to find the failing event.
 2. `harness:escalation` if it was escalated.
-3. `messages:feature_inbox` for the failure report.
+3. `messages:inbox` for the failure report.
 4. Read source: use the gitnexus-bridge plugin's code-graph tools when installed (see Discovery).
 5. Spawn a validator if you need to verify your hypothesis:
    `orchestrator.spawn { role: 'validator' }`.
-6. `messages:feature_send` with diagnosis + recommended fix. Send to
+6. `messages:send` with diagnosis + recommended fix. Send to
    the worker role for implementation.
 
 ### Investigate a validator rejection
 
 The validator already explained what failed. Your job is WHY.
-1. `messages:feature_inbox` — read the validator's verdict.
+1. `messages:inbox` — read the validator's verdict.
 2. `artifacts:load` the work + the plan that produced it.
 3. Diagnose the gap (intent miss vs implementation bug vs spec ambiguity).
-4. `messages:feature_send` with the analysis. If the spec is wrong,
+4. `messages:send` with the analysis. If the spec is wrong,
    escalate to architect; if the implementation is wrong, send to worker.
 
 ### Find architectural context

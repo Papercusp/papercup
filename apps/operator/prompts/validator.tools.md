@@ -11,7 +11,7 @@ don't produce.
 
 ### Always read BOTH sides before validating
 
-- The work (what was produced): `artifacts:load`, `messages:feature_inbox`, source files.
+- The work (what was produced): `artifacts:load`, `messages:inbox`, source files.
 - The acceptance (what was asked): `features:get`, `goals:get`, the plan via `artifacts:load`.
 - Validation = comparison. Reading only one side guarantees a wrong verdict.
 
@@ -24,10 +24,10 @@ reviewer, operator) act on it. Be specific about what fails and why.
 
 ### Validate a worker's output
 
-1. `messages:feature_inbox` — pick the latest worker handoff.
+1. `messages:inbox` — pick the latest worker handoff.
 2. `features:get` + `artifacts:load` on the plan — what was asked.
 3. Compare. Read source files if needed (use phase_path).
-4. `messages:feature_send` with verdict + specific reasoning.
+4. `messages:send` with verdict + specific reasoning.
 5. If failing: cite the exact acceptance criterion that's missed.
 
 ### Validate a plan (pre-execution)
@@ -35,7 +35,7 @@ reviewer, operator) act on it. Be specific about what fails and why.
 Architects ask validators to sanity-check plans before workers run.
 1. `artifacts:load` the plan.
 2. `features:get` + `goals:get` for context.
-3. Verdict via `messages:feature_send`.
+3. Verdict via `messages:send`.
 
 ### Find architectural context
 

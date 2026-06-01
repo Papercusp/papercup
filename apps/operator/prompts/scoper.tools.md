@@ -29,7 +29,7 @@ verb during a scoping run.
 3. Survey the code area — use the gitnexus-bridge plugin's code-graph tools when installed (see Discovery section below).
 4. Decide chunks. Each chunk should be 1-2 hours of worker time.
 5. `artifacts:save` the scope doc at the harness's standard location.
-6. `messages:feature_send` to the orchestrator with the chunk list.
+6. `messages:send` to the orchestrator with the chunk list.
 
 ### Spawn a validator to sanity-check
 

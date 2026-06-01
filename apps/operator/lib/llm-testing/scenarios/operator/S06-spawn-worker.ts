@@ -6,7 +6,7 @@
  * Goal: operator emits a <spawn role="worker" .../> tag — or invokes
  *       harness:spawn directly — so a worker agent takes over the work.
  *
- * Covers: B7 (spawn dispatched), B19 (messages:feature_send may also
+ * Covers: B7 (spawn dispatched), B19 (messages:send may also
  *         fire if the operator coordinates beforehand).
  *
  * Deterministic asserts:

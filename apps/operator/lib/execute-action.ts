@@ -115,6 +115,8 @@ export interface MarkMessageStatusAction {
   op: 'mark_message_status';
   messageId: string;
   status: 'acknowledged' | 'archived';
+  /** Audited via saveAction's generic `action.reason` read (messages:dismiss). */
+  reason?: string;
 }
 
 export interface SpinupProjectAction {

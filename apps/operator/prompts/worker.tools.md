@@ -32,12 +32,12 @@ payload into your artifacts.
 2. `harness:phase_path` for the on-disk workspace if you need to read source.
 3. Do the work — write files, edit code.
 4. `artifacts:save` for any auxiliary docs your work produced (decision notes, output summaries).
-5. `messages:feature_send` to report what changed, addressed to the orchestrator + reviewer.
+5. `messages:send` to report what changed, addressed to the orchestrator + reviewer.
 
 ### Hit a blocker
 
 1. Don't escalate via chat — workers can't chat directly. Use the messaging surface.
-2. `messages:feature_send` with kind="Blocker" and the specific question.
+2. `messages:send` with kind="Blocker" and the specific question.
 3. The orchestrator routes to the right next role (debugger, architect, etc.).
 
 ### Where new tests go

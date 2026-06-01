@@ -89,7 +89,7 @@ see who's working where), `coord:*` (presence, messaging, handoffs),
 **Utilities** — `artifacts:*` (text artifacts), `tasks:*` / `goals:*` (work
 items + objectives), `search:fulltext` / `search:semantic` (keyword +
 meaning-based recall across workspace prose), `messages:*` (durable
-feature-scoped messages, e.g. `messages:feature_send`).
+feature-scoped messages, e.g. `messages:send`).
 
 **High-value systems worth knowing:**
 - **`design-phase:*`** — the UI design loop: validate/lint a design spec,
@@ -289,7 +289,7 @@ BM25) → `search:semantic` if paraphrased → read code at the cited paths
 - **Don't raw-SQL `harness_features` or other schema-canonical tables.**
   Feature *state* flows through the pipeline (validator/reviewer/…), not a
   direct write — `features:*` tools are read-only; the agent-facing write is
-  `messages:feature_send`. The documented verbs emit audit rows + sync
+  `messages:send`. The documented verbs emit audit rows + sync
   invalidation; raw SQL doesn't.
 - **Don't default to polling for live updates — push.** When the app must
   push events, default to a push transport keyed to the deployment: **IPC
