@@ -12,7 +12,9 @@ import {
 
 describe('OperatorChatSidebar layout helpers', () => {
   it('computes a viewport-based ceiling with a minimum floor', () => {
-    expect(operatorChatWidthCeiling(300)).toBe(360);
+    // MIN_WIDTH was lowered to the collapsed width (56) so the resize handle can
+    // drag to the rail, so 75% of 300 (=225) now wins over the floor.
+    expect(operatorChatWidthCeiling(300)).toBe(225);
     expect(operatorChatWidthCeiling(1200)).toBe(900);
   });
 
@@ -21,8 +23,8 @@ describe('OperatorChatSidebar layout helpers', () => {
   });
 
   it('clamps stored or dragged widths into the allowed range', () => {
-    expect(clampOperatorChatWidth(NaN, 1200)).toBe(360);
-    expect(clampOperatorChatWidth(200, 1200)).toBe(360);
+    expect(clampOperatorChatWidth(NaN, 1200)).toBe(360); // non-finite → DEFAULT_WIDTH
+    expect(clampOperatorChatWidth(200, 1200)).toBe(200);  // ≥ MIN_WIDTH (56) now, so kept
     expect(clampOperatorChatWidth(500, 1200)).toBe(500);
     expect(clampOperatorChatWidth(2000, 1200)).toBe(900);
   });
