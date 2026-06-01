@@ -11,21 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Implemented P-000..P-008 in commit `df8c54801` (9 files, +586). A
-browser-style find bar on the **CSS Custom Highlight API** using
-**`react-css-highlight`** as the engine + an in-house bar/navigation wrapper.
-Vitest green (engine 11 + bus claim 13 + registry 9); `vite build` green
-(resolution + named imports bundle). **Two things are NOT yet done and are
-owed:** (1) **P-009 manual Tauri-shell verification** — could not run the
-desktop GUI headlessly; this is the real "does it actually work" check.
-(2) **The Playwright e2e is written but not executed** (needs the running dev
-stack). Plus a follow-up: **root `package-lock.json` was not updated** for the
-new dep (P-010 / D-006), and **two runtime assumptions** need eyeballing in the
-manual pass (D-007).
+**State:** Built + **verified working end-to-end in the running Tauri shell** (P-009, commits df8c54801 + 1c82283ea). Manual verification via tauri-agent-tools caught a real bug the headless checks missed — react-css-highlight's `targetRef` is non-reactive, so the feature was initially dead (D-008); fixed by holding `<main>` in state. Confirmed live: Ctrl+F opens (`?find=1`), typing registers `CSS.highlights['papercup-find']` (8 matches) + `['papercup-find-active']` (1), count `1/8`, Enter/Shift+Enter navigate, Esc clears all highlights + `?find`. D-007's two assumptions both confirmed (exact highlight name; `onPaint` timing). Vitest green; `vite build` green; the `::highlight()` CSS rules survive lightningcss minify into the live sheets.
 
-**Next:** Run the Tauri shell (`cd papercusp-desktop && npm run dev`), press
-Ctrl+F, confirm D-007's highlight-name + paint-timing assumptions, then run the
-e2e against the live server (P-008/P-009). Resolve the lockfile follow-up (P-010).
+**Next:** Two follow-ups remain: run the committed Playwright spec under a real dev server (P-008), and update root package-lock.json once `npm install` is unbroken (P-010 / D-006).
 
 ## Background
 
@@ -160,7 +148,7 @@ within `<main>` → `onPaint` → engine `collectOrderedRanges` → `activeIndex
   derives a guaranteed-present term from `<main>`, asserts the count, the
   `papercup-find` / `papercup-find-active` highlight sizes, Enter nav, and Esc
   teardown. Needs the running dev stack; not run headlessly this session. OWED: run it.
-- **P-009** `todo` **Manual verify in the Tauri shell** (`cd papercusp-desktop &&
+- **P-009** `done` **Manual verify in the Tauri shell** (`cd papercusp-desktop && (verified in the Tauri shell via tauri-agent-tools commit 1c82283ea: Ctrl+F→8 highlights, 1/8 count, Enter/Shift+Enter nav, Esc clears all + ?find. Found+fixed a real bug D-008.)
   npm run dev`) on docs viewer + chat transcript + a long list — NOT a browser at
   :3055. Confirm D-007's two assumptions. OWED.
 - **P-010** `todo` Install/lockfile follow-up (D-006): once `npm install` works again,
@@ -259,3 +247,9 @@ matches won't render → adjust the CSS name / read-back. (2) **Paint timing** �
 read ranges in `onPaint`, assuming the registry is written by then (the lib defers
 painting via `requestIdleCallback`); if navigation lags a keystroke, switch to
 `onHighlightChange` or re-read on a microtask.
+
+### D-008 — Manual Tauri verification found a real bug — react-css-highlight's targetRef is non-reactive
+Date: 2026-06-01
+Date: 2026-06-01
+P-009 (driving the running Tauri shell via tauri-agent-tools) caught a bug that all the headless checks — Vitest, vite build, the source-inspection spike — missed: the feature was completely dead (no highlight ever registered). Root cause: `react-css-highlight`'s create-effect reads `targetRef.current` only when its deps `[targetRef, isSupported]` change — i.e. ONCE at mount — then `createHighlight(targetRef.current, …)` or, if null, hits an early-return guard. Refs aren't reactive, so a `targetRef` whose `.current` is populated AFTER mount (our case: `<main>` resolved via querySelector in an effect) is captured as null and never re-read. No dev warning fired because the desktop serves a production build (the lib's `console.warn` is `NODE_ENV==='development'`-gated). Fix (commit 1c82283ea): hold `<main>` in `useState` and pass the lib a fresh ref object per element (`useMemo(() => ({current: mainEl}), [mainEl])`), so the create-effect's `[targetRef]` dep identity changes when `<main>` resolves and the effect re-runs with a non-null target. This also resolves D-007: verified live that the lib registers under exactly `papercup-find` (CSS + read-back names match) and that reading ranges in `onPaint` is correctly timed. Lesson: when a hook takes a `RefObject` target, assume it reads `.current` at its own effect time — give it a target that exists by then (attach the ref to rendered JSX, or key a fresh ref object off state), don't populate the ref asynchronously.
+Related: P-009
