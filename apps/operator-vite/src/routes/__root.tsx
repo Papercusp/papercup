@@ -23,6 +23,7 @@ import ChromeShell from '@/app/_components/ChromeShell';
 import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
+import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
 import '@/app/globals.css';
 // App-wide command-palette chrome (⌘K / Ctrl+P). The palette markup uses
 // `.h-cmd*` classes that used to live in harness.css; they now live here.
@@ -140,6 +141,7 @@ function RootComponent() {
               <PerfObserverProvider />
               <RecorderHost />
               <DevReloadGate />
+              <ChunkReloadPrompt />
             </NuqsAdapter>
           </Suspense>
         </ProgressProvider>
