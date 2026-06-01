@@ -32,6 +32,7 @@ import {
   resolveAgentIdentity,
   type ResolveIdentityCtx,
 } from '../coordination/identity';
+import { lockCoordinationDomain } from './coordination-domain';
 
 /**
  * Loose ctx type — read-only access to the fields we need. Wraps the
@@ -40,36 +41,35 @@ import {
  */
 export type IdentityCtx = ResolveIdentityCtx;
 
-/**
- * Default workspace id for callers whose ctx carries no workspace.
- * Matches the convention used by other operator surfaces
- * (`apps/operator/lib/dock-layouts.ts:getUserIdForLayouts`) and the
- * `coordination_domain NOT NULL` constraint on the locks schema.
- */
-const DEFAULT_WORKSPACE = 'default';
-
 export interface SuAgentIdentity {
   /** Stable durable identity — used as the `owner` column. */
   ownerId: string;
   /** Human-readable label — used as the `owner_label` column. */
   ownerLabel: string;
-  /** Workspace scope from the bearer principal / power-user clamp. */
+  /**
+   * File-lock coordination domain — the canonical repo root (NOT the workspace).
+   * File locking is a physical-file concern, so it must be workspace-INDEPENDENT
+   * (D-015): two workspaces importing the same harness, or an SU agent and a
+   * worker, editing the same file must serialize on the same key. See
+   * `lockCoordinationDomain()`.
+   */
   coordinationDomain: string;
 }
 
 /**
  * Read identity from the agent's tool context. Adapter around
  * `resolveAgentIdentity` — see the file header.
+ *
+ * `coordinationDomain` is deliberately the repo root, NOT `workspaceId`: keying
+ * file locks by workspace silently split the same physical file across namespaces
+ * for the (in-spec) multi-workspace-same-harness case → no serialization → clobber
+ * (D-015). The owner identity still flows from the coordination layer.
  */
 export function readIdentity(ctx: IdentityCtx): SuAgentIdentity {
   const id = resolveAgentIdentity(ctx);
   return {
     ownerId: id.ownerId,
     ownerLabel: id.ownerLabel,
-    // AgentIdentity carries `workspaceId` (the Papercusp workspace
-    // context, when present); the SU-locks substrate maps it onto the
-    // coordination domain (file-locking #12). Keeping the boundary
-    // translation explicit so the two concepts can't drift again.
-    coordinationDomain: id.workspaceId ?? DEFAULT_WORKSPACE,
+    coordinationDomain: lockCoordinationDomain(),
   };
 }

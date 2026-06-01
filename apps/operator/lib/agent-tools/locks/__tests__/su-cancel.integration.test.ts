@@ -35,7 +35,7 @@ describe('su-cancel', async () => {
     const ws = 'cancel-test-ws-' + Date.now();
     const owner = 'cancel-agent';
     const inserted = await sql<Array<{ ticket_id: string }>>`
-      INSERT INTO agent_lock_waiters (workspace_id, owner, owner_label, paths, intent, ttl_sec, wait_until)
+      INSERT INTO agent_lock_waiters (coordination_domain, owner, owner_label, paths, intent, ttl_sec, wait_until)
       VALUES (${ws}, ${owner}, ${'cancel-label'}, ${['libs/foo.ts']}, ${'test'}, ${600}, ${new Date(Date.now() + 60000)})
       RETURNING ticket_id
     `;
