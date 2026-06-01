@@ -1,15 +1,22 @@
 /**
- * Phase 3 AUTO-dispatcher (dbos-durable-jobs-2026-05-31). When durable
- * orchestration is enabled, this periodically scans the opted-in harnesses for
- * features that need work and starts a durable pipeline per feature (up to a
- * concurrency cap) — the production counterpart to the manual
+ * The DBOS **orchestrator** — the global, deterministic cross-feature selector
+ * (formerly "the dispatcher"; renamed per dbos-system-completion-2026-06-01 D-007
+ * so there is exactly ONE "orchestrator" = this code component that selects work
+ * globally, while the per-feature LLM decision-maker keeps its distinct name
+ * `director`). Naming convention: the component is the **orchestrator**; "dispatch"
+ * survives only as a *verb* — it dispatches a durable pipeline per feature.
+ *
+ * When durable orchestration is enabled, this periodically scans the opted-in
+ * harnesses for features that need work and starts a durable pipeline per feature
+ * (up to a concurrency cap) — the production counterpart to the manual
  * `POST /admin/dbos/pipeline/start` trigger.
  *
  * Double-gated for safety:
  *   - `PAPERCUSP_DBOS_ORCHESTRATOR=1` — registers the workflow (via bootstrap).
- *   - `PAPERCUSP_DBOS_DISPATCH_HARNESSES=slug,slug` — which harnesses opt in
+ *   - `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=slug,slug` — which harnesses opt in
  *     (empty → the tick is a no-op, so enabling the orchestrator flag alone
- *     never auto-starts agent work).
+ *     never auto-starts agent work). The legacy `PAPERCUSP_DBOS_DISPATCH_HARNESSES`
+ *     is still accepted as a back-compat alias (D-007).
  *   - `PAPERCUSP_DBOS_MAX_PIPELINES` — OPTIONAL global concurrency ceiling that
  *     clamps every harness (e.g. the shared dev box); unset → each harness uses
  *     its own `parallelWorkers` cap up to a hard `SAFETY_CEILING` (#1).
@@ -111,7 +118,19 @@ export function selectFeaturesToDispatch(
 const DISPATCH_OFF = new Set(['none', 'off']);
 
 /**
- * Resolve which harnesses the dispatcher serves from the env value + the full
+ * Which harnesses the orchestrator serves, from the environment. Primary env is
+ * `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES`; the legacy `PAPERCUSP_DBOS_DISPATCH_HARNESSES`
+ * is still honored as a back-compat alias (D-007 rename). Same grammar either way.
+ */
+function orchestratorHarnessesEnv(): string | undefined {
+  return (
+    process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES ??
+    process.env.PAPERCUSP_DBOS_DISPATCH_HARNESSES
+  );
+}
+
+/**
+ * Resolve which harnesses the orchestrator serves from the env value + the full
  * workspace harness list (P-006/P-009). Pure (testable). Since P-009, DBOS is the
  * DEFAULT orchestrator for every harness:
  *   - empty / unset / `'*'` → ALL harnesses in the workspace (the default);
@@ -119,7 +138,7 @@ const DISPATCH_OFF = new Set(['none', 'off']);
  *     so this just means "don't auto-dispatch here", e.g. a contended shared box);
  *   - an explicit comma list → that allowlist (scoped override).
  */
-export function resolveDispatchHarnesses(
+export function resolveOrchestratorHarnesses(
   envRaw: string | undefined,
   allSlugs: string[],
 ): string[] {
@@ -133,7 +152,7 @@ export function resolveDispatchHarnesses(
 }
 
 /** Whether to arm the 30s scheduled tick: anything but an explicit opt-out (P-009). */
-export function shouldScheduleDispatch(envRaw: string | undefined): boolean {
+export function shouldScheduleOrchestrator(envRaw: string | undefined): boolean {
   const v = (envRaw ?? '').trim();
   return !DISPATCH_OFF.has(v.toLowerCase());
 }
@@ -143,9 +162,9 @@ export function shouldScheduleDispatch(envRaw: string | undefined): boolean {
  * every harness in the active workspace; otherwise use the explicit allowlist.
  */
 async function resolveTickHarnesses(workspaceId: string): Promise<string[]> {
-  const envRaw = process.env.PAPERCUSP_DBOS_DISPATCH_HARNESSES;
+  const envRaw = orchestratorHarnessesEnv();
   if ((envRaw ?? '').trim() !== '*') {
-    return resolveDispatchHarnesses(envRaw, []);
+    return resolveOrchestratorHarnesses(envRaw, []);
   }
   try {
     const { harnesses } = await listAllHarnesses([workspaceId]);
@@ -208,7 +227,7 @@ async function liveCountFor(harnessSlug: string): Promise<number> {
   return live.length;
 }
 
-export interface DispatchTickResult {
+export interface OrchestratorTickResult {
   harness: string;
   started: string[];
 }
@@ -223,7 +242,7 @@ export async function dispatchOneHarness(
   slug: string,
   workspaceId: string,
   adminUrl: string = getHarnessAdminUrl(),
-): Promise<DispatchTickResult> {
+): Promise<OrchestratorTickResult> {
   const pg = postgres(adminUrl, {
     max: 1,
     connect_timeout: 5,
@@ -239,7 +258,7 @@ export async function dispatchOneHarness(
       cap,
       overCostCap,
     );
-    if (overCostCap) console.log(`[dbos-dispatch] ${slug} over maxCostUsd — skipping new pipelines`);
+    if (overCostCap) console.log(`[dbos-orchestrator] ${slug} over maxCostUsd — skipping new pipelines`);
     const started: string[] = [];
     for (const fid of toStart) {
       const r = await ensureFeaturePipeline(slug, fid);
@@ -259,12 +278,12 @@ export async function dispatchOneHarness(
  * harness fills its own slots via `dispatchOneHarness`. Returns what was newly
  * started (for logging / tests).
  */
-export async function runDispatchTick(): Promise<DispatchTickResult[]> {
+export async function runOrchestratorTick(): Promise<OrchestratorTickResult[]> {
   const workspaceId = activeWorkspaceId();
   const slugs = await resolveTickHarnesses(workspaceId);
   if (slugs.length === 0) return [];
   const adminUrl = getHarnessAdminUrl();
-  const out: DispatchTickResult[] = [];
+  const out: OrchestratorTickResult[] = [];
   for (const slug of slugs) {
     out.push(await dispatchOneHarness(slug, workspaceId, adminUrl));
   }
@@ -290,16 +309,16 @@ export function refillHarnessOnSettle(slug: string, workspaceId: string): void {
 // Registered only when bootstrap imports this module (PAPERCUSP_DBOS_ORCHESTRATOR=1).
 // Called directly (no steps): a crashed tick should re-scan fresh on recovery,
 // and ensureFeaturePipeline's dedup makes the wholesale re-run safe.
-async function dispatchTickWorkflow(): Promise<void> {
-  const results = await runDispatchTick();
+async function orchestratorTickImpl(): Promise<void> {
+  const results = await runOrchestratorTick();
   const started = results.flatMap((r) => r.started.map((f) => `${r.harness}:${f}`));
   if (started.length > 0) {
-    console.log(`[dbos-dispatch] started ${started.length} pipeline(s): ${started.join(', ')}`);
+    console.log(`[dbos-orchestrator] started ${started.length} pipeline(s): ${started.join(', ')}`);
   }
 }
 
-export const orchestratorDispatchWorkflow = DBOS.registerWorkflow(dispatchTickWorkflow, {
-  name: 'orchestratorDispatch',
+export const orchestratorTickWorkflow = DBOS.registerWorkflow(orchestratorTickImpl, {
+  name: 'orchestratorTick',
   maxRecoveryAttempts: 2,
 });
 
@@ -311,9 +330,9 @@ export const orchestratorDispatchWorkflow = DBOS.registerWorkflow(dispatchTickWo
 // cluttering the DBOS system DB / `/admin/dbos`. With the orchestrator flag on but
 // no harnesses opted in, the workflow stays registered (so the manual trigger +
 // recovery work) but nothing fires on a timer.
-if (shouldScheduleDispatch(process.env.PAPERCUSP_DBOS_DISPATCH_HARNESSES)) {
-  DBOS.registerScheduled(orchestratorDispatchWorkflow, {
-    name: 'orchestratorDispatch',
+if (shouldScheduleOrchestrator(orchestratorHarnessesEnv())) {
+  DBOS.registerScheduled(orchestratorTickWorkflow, {
+    name: 'orchestratorTick',
     crontab: '*/30 * * * * *',
   });
 }

@@ -1,59 +1,59 @@
 import { describe, test, expect } from 'vitest';
 import {
   selectFeaturesToDispatch,
-  resolveDispatchHarnesses,
-  shouldScheduleDispatch,
+  resolveOrchestratorHarnesses,
+  shouldScheduleOrchestrator,
   resolvePerHarnessCap,
-} from './orchestrator-dispatcher';
+} from './orchestrator-loop';
 
 const f = (id: string, status: string) => ({ id, status });
 
-describe('resolveDispatchHarnesses — all-harnesses default + allowlist override (P-006)', () => {
+describe('resolveOrchestratorHarnesses — all-harnesses default + allowlist override (P-006)', () => {
   const all = ['papercup', 'sheets', 'restart'];
 
   test('"*" → every harness in the workspace (the default-on-for-all rollout)', () => {
-    expect(resolveDispatchHarnesses('*', all)).toEqual(all);
+    expect(resolveOrchestratorHarnesses('*', all)).toEqual(all);
   });
 
   test('whitespace around "*" still means all', () => {
-    expect(resolveDispatchHarnesses('  *  ', all)).toEqual(all);
+    expect(resolveOrchestratorHarnesses('  *  ', all)).toEqual(all);
   });
 
   test('empty / unset → ALL (P-009 flip: DBOS is the default orchestrator for every harness)', () => {
-    expect(resolveDispatchHarnesses('', all)).toEqual(all);
-    expect(resolveDispatchHarnesses(undefined, all)).toEqual(all);
+    expect(resolveOrchestratorHarnesses('', all)).toEqual(all);
+    expect(resolveOrchestratorHarnesses(undefined, all)).toEqual(all);
   });
 
   test('explicit comma list is an override (scoped testing) — not all', () => {
-    expect(resolveDispatchHarnesses('sheets', all)).toEqual(['sheets']);
-    expect(resolveDispatchHarnesses('sheets, restart', all)).toEqual(['sheets', 'restart']);
+    expect(resolveOrchestratorHarnesses('sheets', all)).toEqual(['sheets']);
+    expect(resolveOrchestratorHarnesses('sheets, restart', all)).toEqual(['sheets', 'restart']);
   });
 
   test('"none" / "off" → disabled (explicit opt-out, e.g. the shared dev box)', () => {
-    expect(resolveDispatchHarnesses('none', all)).toEqual([]);
-    expect(resolveDispatchHarnesses('off', all)).toEqual([]);
-    expect(resolveDispatchHarnesses('  none  ', all)).toEqual([]);
+    expect(resolveOrchestratorHarnesses('none', all)).toEqual([]);
+    expect(resolveOrchestratorHarnesses('off', all)).toEqual([]);
+    expect(resolveOrchestratorHarnesses('  none  ', all)).toEqual([]);
   });
 
   test('trims + drops blanks in an explicit list', () => {
-    expect(resolveDispatchHarnesses(' sheets , , restart ,', all)).toEqual(['sheets', 'restart']);
+    expect(resolveOrchestratorHarnesses(' sheets , , restart ,', all)).toEqual(['sheets', 'restart']);
   });
 });
 
-describe('shouldScheduleDispatch — when to arm the 30s tick (P-009: schedule by default)', () => {
+describe('shouldScheduleOrchestrator — when to arm the 30s tick (P-009: schedule by default)', () => {
   test('"*" → schedule (all-harnesses mode)', () => {
-    expect(shouldScheduleDispatch('*')).toBe(true);
+    expect(shouldScheduleOrchestrator('*')).toBe(true);
   });
   test('explicit allowlist → schedule', () => {
-    expect(shouldScheduleDispatch('sheets,restart')).toBe(true);
+    expect(shouldScheduleOrchestrator('sheets,restart')).toBe(true);
   });
   test('empty / unset → schedule (default-all)', () => {
-    expect(shouldScheduleDispatch('')).toBe(true);
-    expect(shouldScheduleDispatch(undefined)).toBe(true);
+    expect(shouldScheduleOrchestrator('')).toBe(true);
+    expect(shouldScheduleOrchestrator(undefined)).toBe(true);
   });
   test('"none" / "off" → do NOT schedule (explicit opt-out)', () => {
-    expect(shouldScheduleDispatch('none')).toBe(false);
-    expect(shouldScheduleDispatch('off')).toBe(false);
+    expect(shouldScheduleOrchestrator('none')).toBe(false);
+    expect(shouldScheduleOrchestrator('off')).toBe(false);
   });
 });
 

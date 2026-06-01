@@ -94,9 +94,9 @@ export async function startDbos(): Promise<void> {
     await import('./orchestrator-workflow');
     const { wireOrchestratorInvokeRunner } = await import('./orchestrator-runner');
     wireOrchestratorInvokeRunner();
-    // The auto-dispatcher (scheduled): scans PAPERCUSP_DBOS_DISPATCH_HARNESSES for
+    // The orchestrator (scheduled): scans PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES for
     // features needing work and starts pipelines (no-op until harnesses opt in).
-    await import('./orchestrator-dispatcher');
+    await import('./orchestrator-loop');
   }
 
   await DBOS.launch();

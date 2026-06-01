@@ -41,7 +41,7 @@ import {
 } from './orchestrator-workflow';
 import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
-import { refillHarnessOnSettle } from './orchestrator-dispatcher';
+import { refillHarnessOnSettle } from './orchestrator-loop';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 

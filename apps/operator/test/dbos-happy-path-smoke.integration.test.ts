@@ -35,7 +35,7 @@ import { readFeaturesPg, parseDecision, type PgStateContext } from '@papercusp/o
 // eslint-disable-next-line import/no-relative-packages -- exercise the real durable modules
 import { readPlan, type ChunkPlanPgCtx } from '../../../libs/papercusp/packages/orchestrator/src/chunk-plan-pg';
 import { classifyDecision } from '../lib/dbos/orchestrator-decide';
-import { selectFeaturesToDispatch } from '../lib/dbos/orchestrator-dispatcher';
+import { selectFeaturesToDispatch } from '../lib/dbos/orchestrator-loop';
 import { planFinalization } from '../lib/dbos/orchestrator-finalize';
 
 const WS = 'ws_smoke';
@@ -103,7 +103,7 @@ describe('DBOS happy-path smoke — real-PG reads do not throw (D-008/D-014 regr
     const ins = (
       fid: string,
       status: string,
-      meta: Record<string, unknown> | null,
+      meta: Record<string, string> | null,
     ) =>
       db.sql`INSERT INTO public.harness_features
         (harness_slug, workspace_id, feature_id, title, status, metadata, created_ts, updated_ts)
