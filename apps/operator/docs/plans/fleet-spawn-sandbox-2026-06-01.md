@@ -11,26 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design ready, not yet built. Follow-up from
-`claude-code-backend-restore-2026-05-30` (D-003-B). The fleet's permission
-posture — per-role `--allowed-tools` whitelist + `--disallowed-tools` deny +
-spawn-scoped pre-push hook — is shipped, but it leaves two honest gaps it
-*cannot* close: (1) **credential reads** — the allow-listed `Read` tool (and
-`cat` under the granted `Bash`) reach any path incl. `~/.ssh`, `~/.aws`,
-`~/.papercusp` secrets; (2) **network egress** — the allow-listed `WebFetch`
-(and `curl`) can exfiltrate anything the agent holds. Closing those needs an
-OS-level filesystem+network sandbox, not an allow/deny-list.
+**State:** Phases 1–3 BUILT + unit-tested + committed, all behind `PAPERCUSP_FLEET_SANDBOX` (off by default; no behavior change until opt-in). claude-code → built-in sandbox via `--settings` (per-role resolver `fleetSandboxSettingsForRole`, cred denyRead + Read/Edit deny rules + deny-all egress + env-scrub); codex → `-s workspace-write` (flag-off keeps the prior `danger-full-access`); omp → wrapped in `srt`. 76 orchestrator unit tests green; submodule `papercusp@ac955f6`. Each backend's sandbox mechanism verified in isolation on this box (cred-read blocked, cwd-write ok, egress blocked). Host deps installed: `srt` + `ripgrep` (bwrap/socat already present). Known per-backend limits recorded: codex reads broadly (no denyRead — D-007); claude sandbox covers Bash only so cred-reads via the Read tool need the paired deny rules (D-004); cwd is always writable so per-role write tightening isn't a sandbox lever (D-006); containment is defense-in-depth, TLS not inspected (D-005).
 
-Research (2026-06-01, web + local binary inspection) found we should **not
-roll our own** sandbox: each backend ships (or can borrow) a native one, all
-built on the **same OS primitives** (bubblewrap+seccomp on Linux, Seatbelt on
-macOS, + a localhost proxy for domain egress). See D-001.
-
-**Next:** human go-ahead to build Phase 1 (claude-code). All phases ship the
-sandbox **off-by-default behind a flag** (`PAPERCUSP_FLEET_SANDBOX`); flipping
-default-on is gated on a real fleet-spawn per-role verification pass (the `#1`
-gold-standard gate), because every one of these sandboxes breaks *some* tools
-(jest+watchman, Go CLIs' TLS under Seatbelt, docker, nested-container /proc).
+**Next:** Run P-012 — the real per-role fleet-spawn verification pass on a running desktop (does each role actually FUNCTION under its sandbox; settle the two gated unknowns: codex MCP under workspace-write, and omp's Python/Bun/loopback under srt) — then P-013 flips default-on.
 
 ## Background
 
@@ -69,26 +52,26 @@ AppArmor profile) covers every backend.
 
 ## Phase 1 — claude-code native sandbox
 
-- **P-001** `todo` Inject a `sandbox` block into the per-spawn claude settings (or `--settings`): `enabled:true`, `failIfUnavailable:true`, `allowUnsandboxedCommands:false` (strict), `filesystem.allowWrite:["."]`, `filesystem.denyRead:[creds]`, `network.allowedDomains:["api.anthropic.com"]` + `allowManagedDomainsOnly:true`. Gated behind `PAPERCUSP_FLEET_SANDBOX`.
-- **P-002** `todo` Pair the sandbox with `Read`/`Edit` deny rules for the credential paths — the sandbox only covers Bash + children, NOT the Read/Edit/Write tools (Anthropic docs: default read policy "still allows reading credential files such as ~/.aws/credentials and ~/.ssh/"). Without this, cred-reads via the `Read` tool stay open. blocked-by: P-001
-- **P-003** `todo` Set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on the spawn env to strip Anthropic/cloud creds from sandboxed subprocesses.
-- **P-004** `todo` Isolation verification: a `claude -p` spawn under the sandbox can write its cwd, cannot read a sentinel `~/.ssh` secret (via Bash AND via Read), and cannot reach a non-allowlisted domain; a representative role task still completes. blocked-by: P-001, P-002
+- **P-001** `done` Inject a `sandbox` block into the per-spawn claude settings (or `--settings`): `enabled:true`, `failIfUnavailable:true`, `allowUnsandboxedCommands:false` (strict), `filesystem.allowWrite:["."]`, `filesystem.denyRead:[creds]`, `network.allowedDomains:["api.anthropic.com"]` + `allowManagedDomainsOnly:true`. Gated behind `PAPERCUSP_FLEET_SANDBOX`.
+- **P-002** `done` Pair the sandbox with `Read`/`Edit` deny rules for the credential paths — the sandbox only covers Bash + children, NOT the Read/Edit/Write tools (Anthropic docs: default read policy "still allows reading credential files such as ~/.aws/credentials and ~/.ssh/"). Without this, cred-reads via the `Read` tool stay open. blocked-by: P-001
+- **P-003** `done` Set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on the spawn env to strip Anthropic/cloud creds from sandboxed subprocesses.
+- **P-004** `done` Isolation verification: a `claude -p` spawn under the sandbox can write its cwd, cannot read a sentinel `~/.ssh` secret (via Bash AND via Read), and cannot reach a non-allowlisted domain; a representative role task still completes. blocked-by: P-001, P-002
 
 ## Phase 2 — codex native sandbox
 
-- **P-005** `todo` Orchestrator codex spawn uses `--sandbox workspace-write --ask-for-approval never` (config.toml `sandbox_mode`/`approval_policy`), with `sandbox_workspace_write.writable_roots` = the cwd. workspace-write already blocks command network by default (stricter than claude). Gated behind the same flag.
-- **P-006** `todo` Decide codex command-network policy: workspace-write denies it by default; if a role needs the operator API from a command, widen writable_roots/network — but note the macOS `network_access` Seatbelt bug (codex#10390), so don't rely on codex command-network on Mac. blocked-by: P-005
-- **P-007** `todo` Isolation verification mirroring P-004 for codex (cwd write ok; cred read denied; egress denied; role task completes). blocked-by: P-005
+- **P-005** `done` Orchestrator codex spawn uses `--sandbox workspace-write --ask-for-approval never` (config.toml `sandbox_mode`/`approval_policy`), with `sandbox_workspace_write.writable_roots` = the cwd. workspace-write already blocks command network by default (stricter than claude). Gated behind the same flag.
+- **P-006** `done` Decide codex command-network policy: workspace-write denies it by default; if a role needs the operator API from a command, widen writable_roots/network — but note the macOS `network_access` Seatbelt bug (codex#10390), so don't rely on codex command-network on Mac. blocked-by: P-005
+- **P-007** `done` Isolation verification mirroring P-004 for codex (cwd write ok; cred read denied; egress denied; role task completes). blocked-by: P-005 (standalone-verified; codex MCP under workspace-write gated to P-012)
 
 ## Phase 3 — omp via srt wrapper
 
-- **P-008** `todo` Add `@anthropic-ai/sandbox-runtime` (`srt`) as the omp containment wrapper: prefix the omp spawn with `srt` carrying an `~/.srt-settings.json` of the common policy (`filesystem.denyRead`/`allowWrite`, `network.allowedDomains`). srt wraps an arbitrary process, cross-platform (same bwrap/Seatbelt+proxy). Gated behind the flag; no-op + warn if `srt`/bwrap absent.
-- **P-009** `todo` Isolation verification for the omp+srt path (cwd write ok; cred read denied; egress denied; omp role task completes). blocked-by: P-008
+- **P-008** `done` Add `@anthropic-ai/sandbox-runtime` (`srt`) as the omp containment wrapper: prefix the omp spawn with `srt` carrying an `~/.srt-settings.json` of the common policy (`filesystem.denyRead`/`allowWrite`, `network.allowedDomains`). srt wraps an arbitrary process, cross-platform (same bwrap/Seatbelt+proxy). Gated behind the flag; no-op + warn if `srt`/bwrap absent.
+- **P-009** `done` Isolation verification for the omp+srt path (cwd write ok; cred read denied; egress denied; omp role task completes). blocked-by: P-008 (wrapper-verified; omp-under-srt functioning gated to P-012)
 
 ## Phase 4 — host setup, flag, and default-on gate
 
-- **P-010** `todo` Shared policy module: one source of truth for the credential-deny list + egress allowlist, mapped onto each backend's config shape (claude settings / codex toml / srt json). Avoids drift across the three.
-- **P-011** `todo` Host dependency check + docs: `bubblewrap` + `socat` + seccomp helper present; Ubuntu 24.04+ `bwrap` AppArmor profile; `enableWeakerNestedSandbox` when the spawn runs inside a container; fallback-safe + Linux/macOS only (no native Windows).
+- **P-010** `done` Shared policy module: one source of truth for the credential-deny list + egress allowlist, mapped onto each backend's config shape (claude settings / codex toml / srt json). Avoids drift across the three. (FLEET_SANDBOX_DENY_READ/ALLOWED_DOMAINS are the shared source mapped onto claude settings + srt schema)
+- **P-011** `wip` Host dependency check + docs: `bubblewrap` + `socat` + seccomp helper present; Ubuntu 24.04+ `bwrap` AppArmor profile; `enableWeakerNestedSandbox` when the spawn runs inside a container; fallback-safe + Linux/macOS only (no native Windows). (deps installed on this box srt+ripgrep; bwrap/socat present + documented in D-008; formal dep-check/docs page TODO)
 - **P-012** `todo` Per-role real-spawn verification pass (the `#1` gold-standard gate): run each pipeline role under the sandbox against a real harness; catalogue tool breakage (watchman, Go-CLI TLS, docker, etc.) and add per-tool `excludedCommands`/`allowWrite` exceptions. Only after this passes do we flip default-on. blocked-by: P-004, P-007, P-009
 - **P-013** `todo` Flip `PAPERCUSP_FLEET_SANDBOX` default-on once P-012 is green; keep `failIfUnavailable` opt-in for managed/CI deployments. blocked-by: P-012
 
@@ -118,3 +101,41 @@ Related: P-002, P-003
 Date: 2026-06-01
 Even with the sandbox, the egress proxy filters by client-supplied hostname WITHOUT terminating TLS, so a broad allowlist enables domain-fronting exfil (Anthropic + OpenAI both warn). Keep the allowlist minimal (model API + operator only). True TLS-aware egress needs a custom MITM proxy + CA inside the sandbox — out of scope here, noted as further hardening if the threat model demands it. Worktree isolation also remains conditional (invoke.ts falls back to the shared projectDir), so the sandbox is the primary containment, not the worktree.
 Related: P-001, P-008
+
+### D-006 — Sandbox can't tighten cwd writes per-role; write-discipline stays at the allowed-tools layer
+Date: 2026-06-01
+P-004 verification (vs claude 2.1.159) — both a confirmation and a correction:
+
+POSITIVE: the worker policy the orchestrator emits works end-to-end — cwd write allowed, egress to a non-allowlisted host blocked (exit 56), `~/.ssh` hidden from Bash (`ls` empty), and the **Read TOOL on `~/.ssh/config` denied** by the `permissions.deny` rule ("denied by your permission settings"). So cred-read closure (Bash via denyRead + the Read/Edit tools via permission deny) and egress closure both hold.
+
+CORRECTION: per-role WRITE tightening is NOT achievable via claude's sandbox. The cwd is **always writable** — `allowWrite` only ADDS paths beyond cwd (an empty array is a no-op, not "no writes"), and `denyWrite` of the cwd did not reliably block either (bwrap then wrote the file). So the original idea of `allowWrite:[]` for the API-only roles was ineffective and has been removed.
+
+Resolution: `fleetSandboxSettingsForRole(role)` keeps `role` as the per-role decision SEAT but the policy is **uniform** today — cred `denyRead` + Read/Edit deny rules + deny-all egress. Write-discipline per role stays at the allowed-tools layer (FLEET_NO_WRITE_ROLES already lose the Edit/Write tools); the residual Bash-escape (`echo > file`) is a documented, accepted limit. The achievable per-role axis is **egress** (`allowedDomains` — e.g. `expert`/`feedback` do web research and would need an allowlist while a worker needs none); the exact per-role domains are deferred to the real-spawn pass (P-012), where `role` will branch.
+Related: P-004
+
+### D-007 — Codex: workspace-write confines writes+egress but NOT reads; MCP interaction is the gating unknown
+Date: 2026-06-01
+Phase 2 shipped: codexSandboxArgs flag-gates `-s workspace-write` (contained) vs the prior `-s danger-full-access --dangerously-bypass-approvals-and-sandbox` (kept as the flag-OFF default, so behavior is unchanged until opt-in). Moved the sandbox flags out of streamFormatFlags into codexSandboxArgs, appended to extraFlags BEFORE the `-` stdin positional (codex wants options before the prompt). Defers to a user-set `-s`/`--sandbox`/bypass in AGENT_CMD. 72 unit tests.
+
+Verified on this box (codex exec -s workspace-write, headless):
+- cwd write OK; write to `$HOME` BLOCKED ("Read-only file system") — out-of-workspace writes confined (`/tmp` is a default writable_root, so it's allowed — tighten via writable_roots if needed);
+- command network egress BLOCKED (curl → exit 6 / HTTP000);
+- runs non-interactively, no hang.
+
+GAP vs claude (P-006): codex `workspace-write` reads BROADLY — `ls ~/.ssh` listed the keys. codex has no `denyRead` equivalent, so credential-READ closure is NOT provided by the codex sandbox; it relies on the egress block (can't exfil) + the subprocess env-scrub. Documented per-backend difference, not a regression.
+
+OPEN RISK → P-007/P-012: whether codex MCP tool calls work under `workspace-write`. The handoff note records `-s read-only` CANCELS codex MCP; `workspace-write` is less restrictive but unverified against the live operator MCP (the test needs a CODEX_HOME + signed-URL MCP server). If workspace-write also cancels MCP, codex can't be both sandboxed AND tool-enabled → it stays off and we keep danger-full-access. This is THE gating question for codex sandbox viability and must be settled on a real spawn before default-on.
+Related: P-005, P-006, P-007
+
+### D-008 — omp wrapped in srt; host deps (srt + ripgrep) installed; fail-loud when srt absent (deviates from no-op+warn)
+Date: 2026-06-01
+Phase 3 shipped: omp (no native sandbox) is wrapped in `srt` (@anthropic-ai/sandbox-runtime). New pure helpers in invoke.ts: buildOmpSrtSettings(cwd) (the common policy in srt's schema — note srt REQUIRES every key incl. deniedDomains/denyWrite and needs absolute literal paths on Linux, so `~/.ssh` is homedir-expanded), srtBinOnPath(), writeOmpSrtSettings(cwd) (per-spawn 0600 file), wrapOmpWithSrt() (command→`srt -s <file> <cmd> …`). Wired at the spawn() chokepoint, flag-gated. 76 unit tests.
+
+Verified on this box: the code's actual buildOmpSrtSettings output is a valid srt config that engages — cred-dir read blocked ("No such file or directory"), cwd write allowed, egress blocked (HTTP000). srt uses the SAME bwrap+socat+proxy mechanism as claude/codex.
+
+DEVIATION from P-008's "no-op + warn if srt absent": chose **fail-loud** instead — if the flag is set for an omp spawn but `srt` isn't on PATH, invoke() throws rather than silently running omp unsandboxed. Rationale: the operator opted in; silently bypassing a requested security control is worse than failing. This mirrors claude's failIfUnavailable:true. (It only affects opt-in users, who will install srt.)
+
+HOST DEPS (P-011) installed on this dev box: `@anthropic-ai/sandbox-runtime` (srt) globally + `ripgrep` (srt requires rg). bwrap + socat were already present. These are documented deps for the sandbox on Linux.
+
+OPEN (→ P-012, like codex MCP): whether omp itself FUNCTIONS under srt — omp runs a persistent Python + Bun worker over a loopback bridge, which may need paths/sockets the sandbox restricts. The wrapper is verified (srt sandboxes a command correctly); omp-under-srt working is the real-spawn gate.
+Related: P-008, P-009, P-011
