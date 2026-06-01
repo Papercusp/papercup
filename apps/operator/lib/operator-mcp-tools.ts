@@ -42,7 +42,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__messages:send',
   'mcp__agentmcp__audit:list',
   'mcp__agentmcp__pending_events:list',
-  'mcp__agentmcp__hindsight:recall',
+  // hindsight:recall removed 2026-05-31 — the tool was DEPRECATED 2026-05-09 and
+  // is unwired (no importer registers it), so advertising it here just produced
+  // "tool not found". Memory recall is features:get / features:history / features:search.
   'mcp__agentmcp__search:query',
   'mcp__agentmcp__search:fulltext',
   'mcp__agentmcp__search:semantic',
