@@ -101,11 +101,31 @@ Done + verified live this session:
 - **Verified online**: `dogfood-substrate-status` → `booted:[{default,sheets}]`; boot-history
   `boot_start→boot_ok`; `dogfood-substrate-health` → `worstVerdict:"healthy"` ("no issues detected").
 
-Single-machine validates "goes online + healthy." It does NOT prove replication: on one peer the
-read-loop only replays the local writer's own ops (idempotent backfill), and the diagnostics don't
-expose Autobase op-log length. **The real test is two-peer (Stage 4 / P-079)** — peer A mutates a
-sheets feature → peer B's PG reflects it. Needs either a 2nd machine OR a 2nd local instance on this
-box (own data-dir/corestore/port, same topic via repo id 999000001). NOT yet done.
+Single-machine validates "goes online + healthy." It does NOT prove replication.
+
+### ⚠️ Code-verified finding (2026-05-31): TWO-PEER MERGE IS UNBUILT, not just untested
+
+Before standing up a 2nd peer I traced the merge path. Multi-peer replication CANNOT work with
+the current code — it's missing the writer-admission step:
+- **`boot.ts:148` boots every peer `bootstrap: opts.bootstrap ?? null`**, and the flag-on boot path
+  (`bootAllHarnessesForActiveWorkspace`) supplies no bootstrap → each peer is its OWN independent
+  Autobase root.
+- **The autobase root key is never surfaced** anywhere (no `base.key` export), and the join link
+  (`papercusp://harness?topic=…&github=…&repo_id=…`, parsed in `url-scheme.ts` / `join-link.ts`)
+  carries only topic + repo_id — **no autobase key**. So a joining peer can't bootstrap the sharer's base.
+- **`addWriter` is HANDLED in `autobase-setup.ts`'s apply fn but NEVER EMITTED** — no code in the
+  boot/swarm/join path produces an addWriter op or exchanges keys.
+
+Net: two peers on the same topic connect over Hyperswarm + replicate raw cores, but each
+materializes ONLY its own view. **Peer A's writes never reach peer B's projected PG.** This is the
+designed-but-unbuilt writer-admission / bootstrap-key-exchange (the Model-B substrate rewrite / the
+deferred gate arc, per `papercusp-trust-model-2026-05-31` + `papercusp-user-protection-gate-2026-05-31`).
+
+**Consequence for "get sheets sharing working":** it needs BUILDING, not just testing. Minimal
+read-replication slice = surface peer A's autobase key → carry it in the join link / shared.json →
+pass it as `bootstrap` to the joining peer's boot (peer B then materializes peer A's view).
+Bidirectional writes + auth (addWriter admission, op signing) is the larger gate-arc work. A
+2nd-peer stand-up today would only DEMONSTRATE the gap (connect-but-no-merge), not close it.
 
 Revert when done testing: remove `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE=1` from `.env.local` +
 `rm /home/marsh-office/sheets-clone/.harness/shared.json` + restart.
