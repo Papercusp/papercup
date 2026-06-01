@@ -110,13 +110,27 @@ describe('VoiceButton — keyboard PTT (Backquote)', () => {
     expect(h.stopPushToTalk).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores the shortcut while typing in an editable field', () => {
+  it('reserves the backtick for PTT even inside a normal text input (swallows the char)', () => {
     renderButton();
     const input = document.createElement('input');
     document.body.appendChild(input);
-    fireEvent.keyDown(input, { code: 'Backquote' });
-    expect(h.startPushToTalk).not.toHaveBeenCalled();
+    const notPrevented = fireEvent.keyDown(input, { code: 'Backquote' });
+    expect(h.startPushToTalk).toHaveBeenCalledTimes(1);
+    expect(notPrevented).toBe(false); // preventDefault ran → no literal backtick typed
     input.remove();
+  });
+
+  it('does NOT hijack the backtick inside a code editor / terminal (literal needed)', () => {
+    renderButton();
+    const editor = document.createElement('div');
+    editor.className = 'cm-editor';
+    const inner = document.createElement('span');
+    editor.appendChild(inner);
+    document.body.appendChild(editor);
+    const notPrevented = fireEvent.keyDown(inner, { code: 'Backquote' });
+    expect(h.startPushToTalk).not.toHaveBeenCalled();
+    expect(notPrevented).toBe(true); // not prevented → backtick types normally
+    editor.remove();
   });
 
   it('ignores the shortcut when a modifier is held', () => {
@@ -159,6 +173,20 @@ describe('VoiceButton — compact status display', () => {
     renderButton();
     expect(screen.getByRole('status', { name: 'Hearing you' })).toBeTruthy();
     expect(screen.queryByText(/listening|hearing/i)).toBeNull();
+  });
+
+  it('shows a speaker glyph (no word) while the agent is speaking', () => {
+    h.state.status = 'speaking';
+    renderButton();
+    expect(screen.getByRole('status', { name: 'Speaking' })).toBeTruthy();
+    expect(screen.queryByText(/speaking/i)).toBeNull();
+  });
+
+  it('shows a thinking glyph (no word) while awaiting the response', () => {
+    h.state.status = 'idle'; h.state.awaitingResponse = true;
+    renderButton();
+    expect(screen.getByRole('status', { name: 'Thinking' })).toBeTruthy();
+    expect(screen.queryByText(/thinking/i)).toBeNull();
   });
 });
 

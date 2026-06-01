@@ -59,13 +59,12 @@ const MODE_TITLE: Record<VoiceMode, string> = {
 
 const WAKE_HINT_SEEN_KEY = 'pc-voice-wake-hint-seen-v1';
 const PTT_HINT_SEEN_KEY = 'pc-voice-ptt-hint-seen-v1';
-// Push-to-talk key. Backtick (`) is the right default for a coding-harness
-// app: rarely typed in normal English/code outside template literals,
-// easy to find by touch (top-left, below Escape), and doesn't conflict
-// with editor shortcuts. V was a poor choice — it fires in any text
-// input that isn't caught by `isEditableTarget`, and the global keydown
-// listener only ran in push-to-talk *mode*, so users in always-on mode
-// got a silent no-op instead of a temporary force-mic.
+// Push-to-talk key. Backtick (`) is reserved exclusively for PTT: it never
+// types a literal backtick anywhere in the app except code editors / the
+// terminal (see isCodeEntryTarget), so the key is always available to talk
+// without colliding with text input. Easy to find by touch (top-left, below
+// Escape). The listener is mounted whenever voice is supported (not just in
+// push-to-talk mode) so holding it in always-on/off acts as a force-listen.
 //
 // `event.code === 'Backquote'` matches the physical key regardless of
 // keyboard layout (US/UK/etc), which is more reliable than e.key.
@@ -78,13 +77,15 @@ const PTT_SHORTCUT_LABEL = '`';
 // the "no audio detected" toast points here instead.
 const MIC_PERMISSIONS_HREF = '/settings/setup-wizard?step=os-permissions';
 
-function isEditableTarget(target: EventTarget | null): boolean {
+// The backtick is reserved EXCLUSIVELY for push-to-talk — it never types a
+// literal `` ` `` anywhere in the app, EXCEPT the surfaces below where a
+// backtick is genuinely needed for input: code editors (CodeMirror / Monaco)
+// and the terminal (xterm). In those, the key falls through to normal typing
+// and PTT does not fire. Everywhere else (normal inputs, textareas,
+// contenteditable, buttons, the page) the keystroke is swallowed and drives PTT.
+function isCodeEntryTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
-  // contenteditable elements: any "true"/"" value, plus inherited via [contenteditable=inherit]
-  if (target instanceof HTMLElement && target.isContentEditable) return true;
-  return !!target.closest(
-    'input, textarea, select, [contenteditable="true"], [contenteditable=""], .cm-editor, .monaco-editor, .xterm, .xterm-screen',
-  );
+  return !!target.closest('.cm-editor, .monaco-editor, .xterm, .xterm-screen');
 }
 
 /** Tiny CSS ring spinner — shown in place of a "Connecting…" word. */
@@ -104,6 +105,20 @@ function VoiceListening({ hearing }: { hearing: boolean }): ReactElement {
       role="status"
       aria-label={hearing ? 'Hearing you' : 'Listening'}
     >
+      <i /><i /><i />
+    </span>
+  );
+}
+
+/** Pulsing speaker glyph — shown while the agent is talking (TTS playing). */
+function VoiceSpeaking(): ReactElement {
+  return <span className="pc-voice-speaking" role="status" aria-label="Speaking" />;
+}
+
+/** Three bouncing dots — the "agent is thinking" glyph (awaiting response). */
+function VoiceThinking(): ReactElement {
+  return (
+    <span className="pc-voice-thinking" role="status" aria-label="Thinking">
       <i /><i /><i />
     </span>
   );
@@ -238,10 +253,15 @@ export function VoiceButton(): ReactElement {
   useEffect(() => {
     if (!vs.supported) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       if (e.code !== PTT_SHORTCUT_CODE) return;
-      if (isEditableTarget(e.target)) return;
+      // Let modifier combos through — Ctrl+` / Cmd+` are real shortcuts.
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      // Code editors / terminal need a literal backtick — don't hijack it.
+      if (isCodeEntryTarget(e.target)) return;
+      // Reserve the backtick for PTT: swallow the character everywhere else,
+      // including OS key-repeat while the key is held down.
       e.preventDefault();
+      if (e.repeat) return;
       markPttHintSeen();
       if (pttHeld) return;
       setPttHeld(true);
@@ -300,9 +320,9 @@ export function VoiceButton(): ReactElement {
   if (!vs.supported) {
     content = <span className="pc-voice-btn-label">No mic</span>;
   } else if (vs.status === 'speaking') {
-    content = <span className="pc-voice-btn-label">Speaking</span>;
+    content = <VoiceSpeaking />;
   } else if (vs.awaitingResponse) {
-    content = <span className="pc-voice-btn-label">Thinking…</span>;
+    content = <VoiceThinking />;
   } else if (vs.processingTranscript) {
     content = <VoiceSpinner label="Processing" />;
   } else if (pttHeld || vs.audioReceiving) {
