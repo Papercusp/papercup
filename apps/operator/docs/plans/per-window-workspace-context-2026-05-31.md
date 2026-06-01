@@ -3,7 +3,7 @@ title: Per-window workspace context — resolve workspace per request, not per p
 slug: per-window-workspace-context-2026-05-31
 status: active
 created: 2026-05-31
-updated: 2026-05-31
+updated: 2026-06-01
 owner: aviynw3@gmail.com
 ---
 
@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** **Every dev-model phase shipped + tested; the one non-gated Phase E fix landed; the rest precisely gated (2026-05-31, autonomous A→F pass).** Per-window resolution is complete and verified: fetch (header) + streams (`?ws=`), `activeWorkspaceId()` request-scoped, MCP tool calls scoped (P-022), dev guardrail (P-021), and **papercuspRoot() (P-052, 62 consumers) now resolves the request workspace** not the global. Verification: P-016 (resolution correct-by-design), P-060 (50 concurrent windows, no cross-talk), P-061 (reg.current guard, broadened to catch `parsed.current`). **68/68** tests green across the workspace surface; middleware + MCP scoping live on `:3070` (D-007 fires). Commits d5604fb98 / 6bdca2265 / a7bae5e2d / 7e07a60b6 / ab661d910 / 925c70aeb / 5f57c973f / f937b80d7. **What remains needs a packaged build (D-009): P-050 (shared embedded-PG + drop switch=restart, Rust), P-051 (per-spawn HOME at the enumerated spawn sites), P-053 (multi-window). P-020 runtime threading folds in.** The remaining raw `homedir()` reads were audited and are correct as-is (deliberate shared/bootstrap roots).
+**State:** Phase A/B/F + the P-052 fix shipped earlier. This pass (2026-05-31, continuation) closed the two non-gated remaining items: **P-030** — WorkspaceSwitcher now resolves the active workspace from the *window* (`resolveActiveWorkspaceId`, __PAPERCUSP_WS__/?ws=) instead of the server-global `reg.current`, killing the reload-flip; it also delivers P-031's "a switch doesn't yank other windows" for the dev-browser case (commit ee599d266, +4 TDD tests). **P-041** — audited ~98 request-path `getOrgPg()` sites (admin role BYPASSES RLS) and fixed **11 real cross-workspace leaks** with explicit `workspace_id` predicates: harness insights/activity loaders, harness/features detail-read + provenance-write, design/features (dead set_config removed), plans/lint + coordination/promote counts, and the pending_events queue (insert now stamps workspace_id — also repairing a latent NOT-NULL bug — + scoped list/consume; spawn.ts & plugin-host.ts pass activeWorkspaceId). Ground-truth-validated (tool_invocations had 22 workspaces co-mingled) + live-smoked in a rolled-back tx. Commits 14d95cea7 + db-org a3682c5 + pointer f84a39c26. Decision D-010 records the full audit. **68 loader tests + the new guard tests green; tsc clean for all touched files.**
 
-**Next:** A future session WITH a packaged Tauri build executes Phase E per D-009 — P-050 → P-051 (touchpoints listed: invoke.ts:1284, plugin-spawn-impl, harness-launch, pty) → P-053; verify in the desktop shell. No further dev-model code is needed — Phases A/B/F + the P-052 fix are complete.
+**Next:** Owner decisions on the 3 P-041 NEEDS-JUDGMENT items (D-010): (1) intel-spawn-tree/intel-artifacts tool_invocations VIEWs need `security_invoker=on` (a SQL migration) — confirm before I add it; (2) plugins/tools.ts global tool-health aggregate — keep global or scope?; (3) agent-tools/catchall.ts hands raw admin sql to every tool. Separately: a pre-existing (non-P-041) bug — the spend queries reference columns that don't exist on tool_invocations (cost_microcents/ts/user_id_text → spend silently returns 0). Everything else remaining (P-014 live-SSE, P-020, P-031 no-restart-switch, P-050/P-051/P-053) stays gated on a packaged Tauri build per D-009.
 
 ## Background
 
@@ -248,6 +248,28 @@ Verified 2026-05-31 (autonomous Phase A→F pass). Phase E (D-008 per-spawn HOME
 **Verification reality:** all of Phase E needs a packaged build to verify (per CLAUDE.md, the app runs only via the Tauri shell; these are Rust + lifecycle + spawn-env changes). Implementing it without that build would be unverifiable + dev-breaking — explicitly out of scope for the inline dev session that shipped Phases A/B + the F tests.
 Related: P-020, P-050, P-051, P-052, P-053
 
+
+### D-010 — P-041 audit complete + 11 request-path getOrgPg leaks fixed; 4 needs-judgment + a pre-existing spend-column bug flagged
+Date: 2026-06-01
+Audited all ~98 request-path getOrgPg() call sites (endpoint-route + agent-tools + agent-mcp) against the 21 RLS-scoped harness_shared tables. Model confirmed: getOrgPg()=harness_admin role BYPASSES RLS (ENABLE-not-FORCE, admin owns tables) → a request-path read/write of a workspace-scoped table spans EVERY workspace. Ground truth: tool_invocations = 41,203 rows across 22 distinct workspaces; harness_features_consolidated workspace_id 0-empty → leaks are real.
+
+FIXED (11 sites, explicit `workspace_id = activeWorkspaceId()/ctx.workspaceId` predicate — the codebase's established pattern; commits 14d95cea7 operator + db-org a3682c5 + pointer f84a39c26):
+- harness-insights/load-spend.ts, load-your-place.ts (hfc×2 + tool_invocations), harness-activity/load.ts (hfc), load-all.ts threads workspace_id.
+- routes/harness/features.ts feature-detail READ + provenance UPDATE (write-leak).
+- routes/design/features.ts: removed dead set_config(app.workspace_id) (no-op on admin handle) → real predicate.
+- agent-tools/plans/lint.ts + coordination/tools/promote.ts: features-from-plan counts.
+- pending_events queue (db-org): insertPendingEvent now sets workspace_id (also repairs a latent NOT-NULL-no-default insert bug; table was dormant/empty), RoutineRow carries workspaceId, list/consume gain optional workspaceId; spawn.ts (the severe consume-leak) + plugin-host.ts pass activeWorkspaceId(). Live-smoke validated (insert+scoped-read in a rolled-back tx).
+
+NEEDS-JUDGMENT (NOT changed — your call):
+1. intel-spawn-tree.ts + intel-artifacts.ts read tool_invocations via VIEWs that are NOT security_invoker → RLS evaluates as the view owner (admin) so the in-tx GUC is a no-op; needs `security_invoker=on` on the views (a SQL migration) OR an explicit workspace_id predicate.
+2. plugins/tools.ts:66 aggregates tool_invocations health across ALL workspaces for a global catalog — intent unclear (global stat vs should-be-scoped).
+3. agent-tools/catchall.ts:55 hands the raw admin sql to every tool on /api/agent-tools/* → no RLS inside that path; systemic, each tool must scope manually.
+
+DISCOVERED (pre-existing, out of P-041 scope, surfaced for honesty): the spend queries in load-spend.ts/load-your-place.ts reference columns that DON'T exist on tool_invocations — `cost_microcents`, `ts`, `user_id_text` (real timestamp col is `invoked_at`; there is NO cost column at all). These queries always throw → caught → spend silently returns 0. My workspace_id predicate is correct and will apply once the columns are fixed, but the spend feature is non-functional independent of P-041.
+
+INTENTIONAL-GLOBAL (correct as-is): all token_index bearer lookups + rotate-token, user-profile aggregation, dev sql/table playgrounds, all-kpis, search.ts (uses routeWithWorkspace), test-snapshot + promote:468 (manually scoped).
+Related: P-041, P-030
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)
@@ -327,7 +349,7 @@ Related: P-020, P-050, P-051, P-052, P-053
 
 ## Phase C — `/adv` view drives off the window's workspace
 
-- **P-030** `todo` `/adv` active workspace + harness come from the window
+- **P-030** `done` `/adv` active workspace + harness come from the window (WorkspaceSwitcher resolves active workspace from the window resolveActiveWorkspaceId, not server-global reg.current; removed the setWsParamreg.current flip. Commit ee599d266. Also delivers P-031's "don't yank other windows" for the dev-browser case the no-restart-switch + true multi-window remainder is Phase-E-coupled, P-050/P-053.)
   `?ws=`/`__PAPERCUSP_WS__`, not a re-resolve against `reg.current` on load — fixes
   the reload-flip to another workspace's harness.
 - **P-031** `todo` A switch in one window doesn't yank others; it updates this
@@ -340,7 +362,7 @@ Related: P-020, P-050, P-051, P-052, P-053
 - **P-040** `done` Confirm `routeWithWorkspace` (now per-request) sets (Confirmed by construction + P-060: routeWithWorkspace = withWorkspaceactiveWorkspaceId route-workspace.ts:41 → per-tx SET LOCAL app.workspace_id; PG guarantees RLS isolation of two concurrent SET-LOCAL txns. P-060 proves the resolution feeding it is per-request with no cross-talk.)
   `app.workspace_id` to the request workspace and RLS isolates two concurrent
   requests on different workspaces (true by construction — `SET LOCAL` per-tx).
-- **P-041** `todo` Audit direct `getOrgPg().sql` reads of workspace-scoped tables
+- **P-041** `done` Audit direct `getOrgPg().sql` reads of workspace-scoped tables (Audited ~98 request-path getOrgPg sites; fixed 11 real cross-workspace leaks D-010. 4 needs-judgment flagged intel views security_invoker, plugins/tools aggregate, catchall plumbing. Commits 14d95cea7 + db-org a3682c5 + f84a39c26.)
   that bypass `withWorkspace` for missing scoping now the workspace varies
   per-request.
 
