@@ -88,3 +88,18 @@ Consequences for P-062:
 3. So P-062's deny-by-default needs an **ownership normalization** first — decide + execute (as postgres_app/superuser) whether harness_shared should be uniformly owned by harness_admin (transfer the 55 postgres_app-owned tables), THEN do grants + RLS + the lockdown. That's a superuser-level DB-architecture change, not a harness_admin migration.
 
 **Net scope (confirmed across the session's layered audit):** P-062 = (a) ownership normalization [superuser] → (b) grant model [done for admin-owned operational tables: 095] + sensitive-table lockdown [needs superuser, blocked today] → (c) ~111-table RLS rollout → (d) tooldef-http seam → (e) host flip + 27-tool test. A deliberate DB-security project requiring postgres_app/superuser access for the ownership+lockdown parts; cannot be completed via harness_admin migrations alone. Phase 1 (095, operational grants) is the only safely-shippable piece without superuser + the ownership decision.
+
+### D-004 — D-004 — HARD blocker: no superuser access at the agent's level; P-062 beyond Phase 1 needs postgres_app/superuser + the ownership decision
+Date: 2026-06-01
+Confirmed the access reality (2026-06-01). The dev box exposes only `DATABASE_URL=harness_admin` (no `MIGRATION_DATABASE_URL`/postgres_app/superuser DSN in apps/operator/.env.local; connecting as postgres_app needs a password the agent doesn't have). harness_admin is NOT a superuser and does NOT own the postgres_app tables.
+
+Owner breakdown of the ~111 un-RLS'd workspace-scoped tables: **85 harness_admin-owned, 48 postgres_app-owned**. The 55 postgres_app-owned harness_shared tables are a coherent historical set (operator_*, org_*, user_*, auth_*, token_index, projects, routines, plugin_*, pending_events, *_consolidated) from a postgres_app-connected creation path.
+
+Therefore, as harness_admin the agent CANNOT:
+- transfer ownership (ownership normalization) — needs superuser;
+- revoke harness_app's pre-existing grants on the postgres_app-owned sensitive tables (Phase 1b) — needs the owner/superuser (verified: the 096 REVOKE was a silent no-op);
+- enable RLS / add policies on the 48 postgres_app-owned workspace-scoped tables (part of Phase 2) — needs the owner.
+
+What IS doable as harness_admin (but deferred deliberately): RLS rollout on the 85 harness_admin-owned workspace-scoped tables. NOT done because (1) it's a large risky change on live tables for no realized isolation benefit until the Phase-4 host flip, and (2) the host flip is gated on ALL scoped tables (incl. the 48 postgres_app ones) being RLS'd — which needs superuser. So a partial 85-table rollout delivers nothing alone + leaves a half-state.
+
+**Conclusion:** P-062 beyond Phase 1 (095) is HARD-BLOCKED on (a) superuser/postgres_app DB access + (b) the owner's ownership-normalization decision. Not completable by the agent at its current access level. To proceed: provide a superuser DSN + decide ownership normalization; then grants/lockdown/RLS/framework/flip can be executed.
