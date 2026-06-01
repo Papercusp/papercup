@@ -91,9 +91,13 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
     status: 'open',
     importance: severityToImportance(e.severity),
     needsHuman: true,
-    // Resolve goes through coord:resolve (with the escalation's named
-    // options); Chat opens an agent chat scoped to the escalation.
-    actions: [{ id: 'resolve', label: 'Resolve', primary: true }, CHAT],
+    // Resolve always (coord:resolve, with the escalation's named options).
+    // Chat opens a per-harness agent chat, so only offer it when the escalation
+    // carries a harness — workspace-level escalations have none and Chat would
+    // dead-end on "not attached to a harness".
+    actions: e.harnessSlug
+      ? [{ id: 'resolve', label: 'Resolve', primary: true }, CHAT]
+      : [{ id: 'resolve', label: 'Resolve', primary: true }],
     ref: { kind: 'coord-escalation', msgId: e.msgId, options },
   };
 }
@@ -124,7 +128,11 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
     status: 'message',
     importance: 'normal',
     needsHuman: true,
-    actions: [{ id: 'ack', label: 'Acknowledge', primary: true }, CHAT],
+    // Ack always; Chat only when the message carries a harness (workspace-level
+    // broadcasts have none, so a per-harness chat can't open).
+    actions: m.harnessSlug
+      ? [{ id: 'ack', label: 'Acknowledge', primary: true }, CHAT]
+      : [{ id: 'ack', label: 'Acknowledge', primary: true }],
     ref: { kind: 'coord-message', msgId: m.msgId },
   };
 }

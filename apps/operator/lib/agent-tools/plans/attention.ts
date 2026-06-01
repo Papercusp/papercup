@@ -130,10 +130,15 @@ export default defineTool({
     }
 
     // 3. Coord messages addressed to the human (most recent, capped).
+    //    Acknowledged messages are dropped so the inbox "Acknowledge" dismisses.
     try {
-      const { readInbox } = await import('../coordination/messages');
-      const msgs = await readInbox('human', { kinds: ['message'] });
+      const { readInbox, readAckedMsgIds } = await import('../coordination/messages');
+      const [msgs, acked] = await Promise.all([
+        readInbox('human', { kinds: ['message'] }),
+        readAckedMsgIds(),
+      ]);
       for (const m of msgs.slice(-50)) {
+        if (acked.has(m.msg_id)) continue;
         items.push(
           coordMessageToAttention({
             msgId: m.msg_id,

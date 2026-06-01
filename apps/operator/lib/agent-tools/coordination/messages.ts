@@ -92,6 +92,21 @@ export async function readInbox(
 }
 
 /**
+ * Msg-ids that have been acknowledged — every `ack` envelope's `related_msg_id`.
+ * Acks were always written (appendAck) but never folded out of any view, so a
+ * coord-message inbox "Acknowledge" had no visible effect. The Planning inbox
+ * uses this to dismiss acked messages so the button actually clears them.
+ */
+export async function readAckedMsgIds(): Promise<Set<string>> {
+  const lines = await coordLog.readLines('messages');
+  const acked = new Set<string>();
+  for (const l of lines) {
+    if (l.kind === 'ack' && typeof l.related_msg_id === 'string') acked.add(l.related_msg_id);
+  }
+  return acked;
+}
+
+/**
  * Reconstruct a thread rooted at `rootMsgId` by walking the
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */
