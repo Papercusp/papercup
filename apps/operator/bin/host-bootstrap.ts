@@ -19,7 +19,8 @@ import { mountPluginApiRoutes } from '../lib/plugin-api-mount';
 import { startAutoLoopOnce } from '../lib/autoloop';
 import { ensureHarnessFsWatcher } from '../lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '../lib/harness-status-sweep';
-import { ensureWaveAdvanceSweep } from '../lib/harness/wave-advance-sweep-live';
+// ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
+// started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '../lib/expirable-registrations';
 import { startMobileVoiceWs } from '../lib/device-voice-ws';
 import { startPushCredentialRefresher } from '../lib/device-push-credentials';
@@ -153,14 +154,16 @@ export function runBootstrap(): void {
     console.warn('[api] harness-status-sweep failed to start:', (e as Error)?.message ?? e);
   }
 
-  // Wave-advance sweep (promote-policy-and-waves P-009): per started plan with a
-  // `## Promote` policy, auto-promote the next wave when the current one drains.
-  // No-op for plans without a policy. Idempotent.
-  try {
-    ensureWaveAdvanceSweep();
-  } catch (e) {
-    console.warn('[api] wave-advance-sweep failed to start:', (e as Error)?.message ?? e);
-  }
+  // Wave-advance sweep — RETIRED (dbos-system-completion P-044 / Path A). Under
+  // all-waves-up-front promotion (`plans:promote { all_waves: true }`), every
+  // wave is promoted at once with cross-wave ordering written as feature
+  // `blocked_by` edges, so the P-042 dispatch frontier sequences the waves and
+  // the next-wave-on-drain promotion this 30s poll did is redundant. The
+  // newly-filed-work backstop is the orchestrator tick (`runOrchestratorTick`),
+  // and the stuck-wave signal is now raised by the frontier (computeFrontier's
+  // `stuck` → an I-STUCK issue in dispatchOneHarness). The sweep module is kept
+  // (not deleted) for the revert; it is simply no longer started.
+  //   try { ensureWaveAdvanceSweep(); } catch { … }   // ← retired
 
   // TTL-based row expiry. Replaces ad-hoc lazy-deletes scattered across
   // operator-scan-lock, operator-claims, harness_status stalled-detection,

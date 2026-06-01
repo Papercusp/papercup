@@ -52,6 +52,8 @@ import { runWithWorkspace } from '@/lib/workspace-als';
 import { listAllHarnesses } from '@/lib/dev-data';
 import { resolveProject } from '@/lib/harness-core';
 import { convertOpenIssuesToFeatures } from '@/lib/promote-issue';
+import { loadIssuesOrSeed, saveIssues } from '@/lib/harness-issues';
+import type { Issue } from '@/app/harness/issues/types';
 import { ensureFeaturePipeline } from './orchestrator-start';
 
 /**
@@ -319,6 +321,53 @@ async function convertIssuesForHarness(slug: string, workspaceId: string): Promi
   }
 }
 
+/** The persistent stuck-frontier issue id (one per harness; idempotent). */
+const STUCK_ISSUE_ID = 'I-STUCK';
+const OPEN_STATUSES = new Set(['open', 'acknowledged', 'fixing']);
+
+/**
+ * P-044: surface the frontier `stuck` state as a persistent harness issue — the
+ * observability the retired wave-advance sweep's `onBlocked` (I-WAVE-*) provided.
+ * Idempotent: raises one open `I-STUCK` while stuck (no re-save if already open),
+ * and auto-closes it when work becomes ready again. Best-effort.
+ */
+async function raiseOrClearStuckSignal(slug: string, workspaceId: string, stuck: boolean): Promise<void> {
+  const project = await resolveProject(slug, workspaceId);
+  if (!project) return;
+  const file = loadIssuesOrSeed(project);
+  const existing = file.issues.find((i) => i.id === STUCK_ISSUE_ID);
+  const isOpen = !!existing && OPEN_STATUSES.has(existing.status);
+  const now = new Date().toISOString();
+  if (stuck) {
+    if (isOpen) return; // already raised — idempotent, no write
+    if (existing) {
+      existing.status = 'open';
+      existing.notes.push({ ts: now, by: 'orchestrator', text: 'Frontier stuck again — work remains but nothing is ready.' });
+    } else {
+      file.issues.unshift({
+        id: STUCK_ISSUE_ID,
+        title: 'Dispatch frontier stuck — work remains but nothing is ready',
+        severity: 'major',
+        source: 'system',
+        foundAt: now,
+        status: 'open',
+        evidence:
+          `Harness "${slug}" has features needing work, but every remaining one is blocked ` +
+          `(its blocked_by isn't satisfied) or failing, so the dependency frontier can't advance. ` +
+          `Resolve a failing/blocking feature (or deprecate it), or fix a dependency cycle.`,
+        attempts: 0,
+        notes: [],
+      } as Issue);
+    }
+    await saveIssues(project, file);
+  } else {
+    if (!isOpen) return; // nothing to clear
+    existing!.status = 'closed';
+    existing!.notes.push({ ts: now, by: 'orchestrator', text: 'Frontier no longer stuck — work became ready.' });
+    await saveIssues(project, file);
+  }
+}
+
 /**
  * Dispatch for ONE harness: read eligible (non-owned) features, fill the free
  * slots up to the harness's own concurrency `cap`, and `ensureFeaturePipeline`
@@ -361,6 +410,11 @@ export async function dispatchOneHarness(
           `(all remaining features are blocked or failing)`,
       );
     }
+    // P-044: the retired wave-advance sweep used to raise an I-WAVE-* issue when a
+    // wave couldn't drain. Preserve that observability in the frontier model — a
+    // persistent (idempotent) I-STUCK issue while stuck, auto-cleared when work
+    // becomes ready again. Best-effort; never sinks dispatch.
+    if (!overCostCap) await raiseOrClearStuckSignal(slug, workspaceId, stuck).catch(() => {});
     const started: string[] = [];
     for (const fid of toStart) {
       const r = await ensureFeaturePipeline(slug, fid);
