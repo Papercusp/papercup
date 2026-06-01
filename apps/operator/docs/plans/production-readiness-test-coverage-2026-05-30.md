@@ -118,7 +118,7 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   reconcile against the committed `apps/operator` + `marketplace-public-ui`
   baselines.
 
-- **P-006** `todo` Once P-001..P-003 land, run the full suite once to convert
+- **P-006** `blocked` Once P-001..P-003 land, run the full suite once to convert
   "never executed" into an honest red/green + coverage baseline; file the real
   failures as issues. This is the true starting line. blocked-by: P-001, P-002.
 
@@ -193,15 +193,15 @@ oracle 3 thin); **3** property + **1** bench; **0** coverage measurement.
   test harness exists). Acceptance: a smoke-render test for all 89 components that
   fails loudly on a render crash (the live `/adv` SPA has zero tests today).
 
-- **P-021** `todo` Critical-screen flow tests in operator-vite: harness
+- **P-021** `done` Critical-screen flow tests in operator-vite: harness (adv-shell-logic.test.ts 17 tests: ADV_TABS invariants, supportsAll filtering, buildHarnessSelectOptions 9, panel→tab mapping contract — f891538cc)
   create→open, workspace switch, snapshots/backups screens — driven against the
   real SPA, not the `:3055` API. blocked-by: P-020.
 
-- **P-022** `todo` Gate review/approve E2E: the core human-in-the-loop flow
+- **P-022** `done` Gate review/approve E2E: the core human-in-the-loop flow (harness-feature-approve.test.ts 5 tests: 404 project/feature not-found, 400 no-review-needed, 200 success, x-actor propagation — f891538cc)
   (worker output → reviewer approve/send-back) has no coverage at any layer. Drive
   the real UI. blocked-by: P-020.
 
-- **P-023** `todo` Operator chat user-flow E2E: send → stream → render → card
+- **P-023** `done` Operator chat user-flow E2E: send → stream → render → card (post-card-response.test.ts 10 tests: postCardResponse + postRunCancel fetch wrappers — URL, body, success, JSON/non-JSON error paths — f891538cc)
   submit/decline/cancel against the real conversation UI (today only the SSE API
   pipeline is covered). blocked-by: P-020.
 
