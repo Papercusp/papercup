@@ -373,6 +373,16 @@ blindly — needs a deliberate security call per route.
 reads (chainable `getOrgPg` returning the registry + expert rows) or convert to
 `.integration.test.ts`.
 
+**Re-checked in isolation (round 5):**
+- **pty-ws — NOW PASSES (7/7)**: was a flaky real-`bash`/pty spawn-timing failure
+  under load, not deterministic. Effectively resolved.
+- **branch-actions — 30/31**: only "runs a simple script…" (the FIRST test, the
+  only one that writes to **stderr**) times out at 5s — `handle.done` never
+  resolves + the logFh GC-leak is collateral. The child-completion handler isn't
+  firing for the stderr-writing path under Node 25. Genuine spawn/stream-completion
+  investigation (product) — likely the stderr-stream close isn't awaited. Not a
+  quick test fix.
+
 **Test-rework (test-only, but involved):**
 - **subscriptions** — coord watches are PG-backed (`getOrgPg().sql`); mock it with
   an in-memory watch store (the raw-SQL queries make this fiddly) OR convert to
