@@ -28,7 +28,7 @@ socket to the Node sidecar) instead of real HTTP sockets, dodging the cap entire
    (`maybeStartEndpointIpcServer`). Returns the same `EndpointStreamEvent` union on both
    transports, so a consumer migrated to it keeps a working HTTP fallback in the browser.
 3. **`expose.ipc: true`** — declarative per-tool flag in `ToolExposure`
-   (`packages/tooldef` `tool-projection.ts`). The intended successor to the hardcoded
+   (`libs/generic/tooldef` `tool-projection.ts`). The intended successor to the hardcoded
    allowlist; `defineTool`'s auto-projection must thread `input.expose?.ipc` for it to reach
    the registry.
 
@@ -77,7 +77,7 @@ channels can't map onto it as-is.
 
 ## Resumability
 
-`packages/tooldef/src/replay-buffer.ts` (Phase-4 T2.2) already buffers per
+`libs/generic/tooldef/src/replay-buffer.ts` (Phase-4 T2.2) already buffers per
 `(workspaceId, toolName, runId)` and the HTTP SSE routes already honor
 `Last-Event-ID + X-Papercusp-Run-Id` (`parseLastEventId`; `agent-tools/catchall.ts` sets the
 run id). The remaining work for the typed dispatch path is wiring that cursor through

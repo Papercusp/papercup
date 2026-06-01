@@ -3,7 +3,7 @@ URL: /internal/docs/agent-insights/tooldef-authorization-model
 
 The non-obvious parts of the RFC tooldef-auth layer — the narrow dispatch principal, the audited break-glass, why default-deny is safe to flip for built-ins, and the two distinct "roles" axes.
 
-The full gate stack and error codes live in [Gating](/internal/docs/endpoint-system/gating). This page is just the parts that bit during implementation — read it before touching `packages/tooldef/src/{dispatch-stack,authz,types,tool-projection}.ts`.
+The full gate stack and error codes live in [Gating](/internal/docs/endpoint-system/gating). This page is just the parts that bit during implementation — read it before touching `libs/generic/tooldef/src/{dispatch-stack,authz,types,tool-projection}.ts`.
 
 ## The dispatch-layer principal is NARROW — not the route `Principal`
 
@@ -29,6 +29,6 @@ An `authorize` hook and the audit event run at **dispatch**, so they only get th
 
 They live on different objects (`tool` vs `principal`) and answer different questions. The RFC deliberately did **not** rename `tool.roles`→`tool.agentRoles` (a 189-callsite churn) because the new `requireRoles` field doesn't collide — but the conceptual overload is real, so name your variables carefully.
 
-## packages/tooldef is in-tree here; the shared mirror is peer-owned
+## tooldef + tooldef-http are libs/generic submodules (shared with Restart)
 
-In papercup, `packages/tooldef` is an **in-tree** workspace (not a submodule). There is a separate shared repo `Papercusp/tooldef` (consumed by Restart as a submodule). The two have an open in-tree-vs-mirror fork (extraction-plan **P-054**, needs-human). Do **not** push in-tree tooldef changes to the shared mirror yourself — that sync is the tooldef owner's, and racing it is the exact failure the fork tracking exists to prevent. Commit in-tree, keep the diff clean, and flag the peer.
+In papercup, `libs/generic/tooldef` and `libs/generic/tooldef-http` are **git submodules** of `Papercusp/tooldef` and `Papercusp/tooldef-http` — the same shared repos Restart consumes. They are no longer in-tree (the in-tree-vs-mirror fork is resolved as of the P-054 conversion, 2026-05-31): edit tooldef in the submodule and push to the shared repo as usual; there is no separate in-tree copy to keep in sync.

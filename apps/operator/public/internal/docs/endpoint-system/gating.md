@@ -5,7 +5,7 @@ The ordered gates every tool call runs through — signature, default-deny, role
 
 ## The gates, in order
 
-Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code. The dispatch-stack gates are defined once in `DEFAULT_DISPATCH_STACK` (`packages/tooldef/src/dispatch-stack.ts`); signature verification runs earlier, in `tryBuildSpawnContext`.
+Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code. The dispatch-stack gates are defined once in `DEFAULT_DISPATCH_STACK` (`libs/generic/tooldef/src/dispatch-stack.ts`); signature verification runs earlier, in `tryBuildSpawnContext`.
 
 ```
 ┌────────────────────────────────────────────────┐
@@ -232,4 +232,4 @@ Same call a third time: gates 1–5 pass/skip as before, then the quota check re
 
 ## Where the dispatcher lives
 
-`packages/tooldef/src/dispatch-stack.ts` defines `DEFAULT_DISPATCH_STACK` — the one ordered list these checks run in; `dispatch-projected.ts` drives it. If you find yourself wanting to add a custom gate inside a tool function, you're probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.
+`libs/generic/tooldef/src/dispatch-stack.ts` defines `DEFAULT_DISPATCH_STACK` — the one ordered list these checks run in; `dispatch-projected.ts` drives it. If you find yourself wanting to add a custom gate inside a tool function, you're probably making a mistake. The dispatcher is the canonical place for cross-cutting concerns.

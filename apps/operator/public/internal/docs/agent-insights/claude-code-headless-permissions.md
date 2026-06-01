@@ -47,7 +47,7 @@ this first.
 
 5. **The per-role MCP boundary is already server-side**, belt-and-suspenders:
    `tools/list` is surface-filtered by `listMcpProjections(role)`
-   (`packages/tooldef/src/tool-projection.ts`) AND call-time-denied by the
+   (`libs/generic/tooldef/src/tool-projection.ts`) AND call-time-denied by the
    dispatch stack's `role-allowlist` step (`dispatch-stack.ts`, skipped only for
    `gateBypass.role` = superuser). So a fleet worker only ever sees/calls its
    role's MCP tools — `--allowed-tools "mcp__papercusp"` (server wildcard) grants

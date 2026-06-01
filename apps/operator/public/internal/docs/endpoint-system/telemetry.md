@@ -149,7 +149,7 @@ The `app.workspace_id` GUC is set before every insert via `SELECT set_config('ap
 * Quota read + insert: `apps/operator/app/api/plugins/[...path]/route.ts:HOST_EXTRAS.deps`
 * Same for built-in catch-all: `apps/operator/app/api/agent-tools/[...path]/route.ts:HOST_EXTRAS.deps`
 * Same for MCP transport: `apps/operator/app/api/[transport]/route.ts:PLUGIN_DEPS`
-* Window-key + ceiling computation: host-injected `computeQuotaWindow` (engine default `packages/tooldef/src/dispatch-types.ts:defaultComputeQuotaWindow`; Papercusp policy `packages/agent-mcp/src/quota-policy.ts:papercuspComputeQuotaWindow`)
+* Window-key + ceiling computation: host-injected `computeQuotaWindow` (engine default `libs/generic/tooldef/src/dispatch-types.ts:defaultComputeQuotaWindow`; Papercusp policy `packages/agent-mcp/src/quota-policy.ts:papercuspComputeQuotaWindow`)
 
 ## Future Intel-tab queries
 

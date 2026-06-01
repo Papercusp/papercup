@@ -123,7 +123,7 @@ Everything Papercusp-specific is a **host-injected seam** with a generic engine 
 | Quota / telemetry I/O            | `DispatchProjectedDeps.readQuotaState` / `recordInvocation`                       | no-ops                        |
 | Transaction handle               | `ToolContext<Tx = any>`                                                           | `any`                         |
 
-The engine is provably standalone — see `packages/tooldef/examples/standalone-inprocess.ts`
+The engine is provably standalone — see `libs/generic/tooldef/examples/standalone-inprocess.ts`
 (registers + dispatches a tool importing **only** `@papercusp/tooldef`). It is also
 mirrored to a standalone `Papercusp/tooldef` repo for external consumers.
 
