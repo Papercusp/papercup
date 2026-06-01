@@ -43,10 +43,18 @@ const NEXT_MODE: Record<VoiceMode, VoiceMode> = {
   'always-on': 'off',
 };
 
+// Short labels so the control fits the slim header box. Longer descriptions
+// live in MODE_TITLE (the tooltip), so terseness here doesn't cost clarity.
 const MODE_LABEL: Record<VoiceMode, string> = {
-  'off': 'Mic off',
-  'push-to-talk': 'PUSH TT',
-  'always-on': 'Always-on',
+  'off': 'Off',
+  'push-to-talk': 'PTT',
+  'always-on': 'On',
+};
+
+const MODE_TITLE: Record<VoiceMode, string> = {
+  'off': 'off',
+  'push-to-talk': 'push-to-talk',
+  'always-on': 'always-on',
 };
 
 const WAKE_HINT_SEEN_KEY = 'pc-voice-wake-hint-seen-v1';
@@ -76,6 +84,28 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (target instanceof HTMLElement && target.isContentEditable) return true;
   return !!target.closest(
     'input, textarea, select, [contenteditable="true"], [contenteditable=""], .cm-editor, .monaco-editor, .xterm, .xterm-screen',
+  );
+}
+
+/** Tiny CSS ring spinner — shown in place of a "Connecting…" word. */
+function VoiceSpinner({ label }: { label: string }): ReactElement {
+  return <span className="pc-voice-spinner" role="status" aria-label={label} />;
+}
+
+/**
+ * Animated three-bar equalizer — the "actively listening" glyph that
+ * replaces the "Listening…" / "Hearing you" text. Bars react bigger while
+ * the mic is actually picking up voice (`hearing`).
+ */
+function VoiceListening({ hearing }: { hearing: boolean }): ReactElement {
+  return (
+    <span
+      className={`pc-voice-listening${hearing ? ' is-hearing' : ''}`}
+      role="status"
+      aria-label={hearing ? 'Hearing you' : 'Listening'}
+    >
+      <i /><i /><i />
+    </span>
   );
 }
 
@@ -261,33 +291,44 @@ export function VoiceButton(): ReactElement {
     vs.status !== 'connecting';
   const { ref: micRef } = useMicLevel(analyserActive, setAudioReceiving, setMicCaptureError);
 
-  // Phase-specific label so the user can tell apart the 5 visible
-  // states. Order matters: speaking > awaiting > processing > pressed-
-  // and-hearing > pressed-no-audio > connecting > default.
-  let labelText: string;
-  if (!vs.supported) labelText = 'No mic';
-  else if (vs.status === 'speaking') labelText = 'Speaking';
-  else if (vs.awaitingResponse) labelText = 'Thinking…';
-  else if (vs.processingTranscript) labelText = 'Processing…';
-  else if (pttHeld && vs.audioReceiving) labelText = 'Hearing you';
-  else if (pttHeld) labelText = 'Listening…';
-  else if (vs.status === 'connecting') labelText = 'Connecting…';
-  else labelText = MODE_LABEL[vs.mode];
+  // Compact, glanceable status for the slim header box. Order matters:
+  // speaking > awaiting > processing > actively-listening > connecting >
+  // default mode. The busy/listening states render as icons (spinner /
+  // equalizer) rather than words so they fit; persistent modes are short
+  // labels (Off / PTT / On).
+  let content: ReactElement;
+  if (!vs.supported) {
+    content = <span className="pc-voice-btn-label">No mic</span>;
+  } else if (vs.status === 'speaking') {
+    content = <span className="pc-voice-btn-label">Speaking</span>;
+  } else if (vs.awaitingResponse) {
+    content = <span className="pc-voice-btn-label">Thinking…</span>;
+  } else if (vs.processingTranscript) {
+    content = <VoiceSpinner label="Processing" />;
+  } else if (pttHeld || vs.audioReceiving) {
+    content = <VoiceListening hearing={vs.audioReceiving} />;
+  } else if (vs.status === 'connecting') {
+    content = <VoiceSpinner label="Connecting" />;
+  } else {
+    content = <span className="pc-voice-btn-label">{MODE_LABEL[vs.mode]}</span>;
+  }
   const title = vs.status === 'connecting'
     ? 'Voice mode: connecting to agent (waiting for WebRTC negotiation)…'
     : vs.supported
-    ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
+    ? `Voice mode: ${MODE_TITLE[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
     : 'Voice mode unsupported in this browser';
   // The hint bubbles ("Say <wakeWord>" / "Hold ` to talk") are persistent
   // affordances — keep them visible whenever the matching mode is active.
   // The historical 'seen' localStorage flags are kept up-to-date so any
   // future opt-out toggle can read them, but they no longer gate render.
-  const showConnectingHint = vs.status === 'connecting' && vs.supported;
-  const showWakeHint = !showConnectingHint && vs.mode === 'always-on' && vs.supported;
-  const showPttHint = !showConnectingHint && vs.mode === 'push-to-talk' && vs.supported;
+  // Connecting is shown only as the in-button spinner now — no "Connecting…"
+  // text hint bubble (keeps the control compact).
+  const isConnecting = vs.status === 'connecting' && vs.supported;
+  const showWakeHint = !isConnecting && vs.mode === 'always-on' && vs.supported;
+  const showPttHint = !isConnecting && vs.mode === 'push-to-talk' && vs.supported;
 
   return (
-    <div className={`pc-voice-control${showWakeHint || showPttHint || showConnectingHint ? ' has-wake-hint' : ''}${showConnectingHint ? ' is-connecting' : ''}`}>
+    <div className={`pc-voice-control${showWakeHint || showPttHint ? ' has-wake-hint' : ''}${isConnecting ? ' is-connecting' : ''}`}>
       <button
         type="button"
         aria-label="Voice mode"
@@ -305,7 +346,7 @@ export function VoiceButton(): ReactElement {
           <span className="pc-voice-btn-level" aria-hidden="true" />
           <span className="pc-voice-btn-icon">{ICON[vs.status]}</span>
         </span>
-        <span className="pc-voice-btn-label">{labelText}</span>
+        {content}
       </button>
       <Tooltip label="Open microphone settings">
         <a
@@ -317,11 +358,9 @@ export function VoiceButton(): ReactElement {
           <span className="pc-voice-settings-text">Voice</span>
         </a>
       </Tooltip>
-      {(showWakeHint || showPttHint || showConnectingHint) && (
+      {(showWakeHint || showPttHint) && (
         <div className="pc-voice-wake-hint" aria-live="polite">
-          {showConnectingHint ? (
-            <>Connecting<span className="pc-voice-wake-hint-dots" aria-hidden="true">…</span></>
-          ) : showWakeHint ? (
+          {showWakeHint ? (
             <>
               Say <strong>{wakeWord}</strong>
             </>

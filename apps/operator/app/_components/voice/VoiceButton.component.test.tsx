@@ -54,7 +54,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   h.state.mode = 'off';
+  h.state.status = 'off';
   h.state.supported = true;
+  h.state.audioReceiving = false;
+  h.state.processingTranscript = false;
+  h.state.awaitingResponse = false;
   // jsdom's localStorage is shadowed by Node's broken `--localstorage-file`
   // built-in in this runner; install a working in-memory one.
   const store = new Map<string, string>();
@@ -125,6 +129,36 @@ describe('VoiceButton — keyboard PTT (Backquote)', () => {
     renderButton();
     fireEvent.keyDown(window, { code: 'KeyA' });
     expect(h.startPushToTalk).not.toHaveBeenCalled();
+  });
+});
+
+describe('VoiceButton — compact status display', () => {
+  it('shows the short "Off" label when off', () => {
+    h.state.mode = 'off'; h.state.status = 'off';
+    renderButton();
+    expect(screen.getByText('Off')).toBeTruthy();
+    expect(screen.queryByText(/mic off/i)).toBeNull();
+  });
+
+  it('shows the short "On" label in always-on idle', () => {
+    h.state.mode = 'always-on'; h.state.status = 'idle';
+    renderButton();
+    expect(screen.getByText('On')).toBeTruthy();
+    expect(screen.queryByText(/always-on/i)).toBeNull();
+  });
+
+  it('shows a spinner (no "connecting" word) while connecting', () => {
+    h.state.mode = 'always-on'; h.state.status = 'connecting';
+    renderButton();
+    expect(screen.getByRole('status', { name: 'Connecting' })).toBeTruthy();
+    expect(screen.queryByText(/connecting/i)).toBeNull();
+  });
+
+  it('shows the listening equalizer (no word) while the mic is hearing voice', () => {
+    h.state.mode = 'always-on'; h.state.status = 'idle'; h.state.audioReceiving = true;
+    renderButton();
+    expect(screen.getByRole('status', { name: 'Hearing you' })).toBeTruthy();
+    expect(screen.queryByText(/listening|hearing/i)).toBeNull();
   });
 });
 
