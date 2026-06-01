@@ -232,9 +232,19 @@ expectation update but I want your ok.
     (chat surfaces wire tools consistently) still valid; needs repointing to the
     relocated `lib/endpoint-route/routes/**` modules or an audit rework. [REWORK]
 
-**Status: 14 of 38 genuine fixed (committed). The 24 above are recorded for your
-review.** Tell me per-item (or per-category) whether to: fix the test, fix the
-product code, rework, or skip — and I'll execute.
+**RESOLVED since recording (verified-intentional SUT changes → test-only fixes,
+committed):** #12 projects (isError envelope), #13 harness-testing
+(Built-in→Universal), #14 roles (agentRoles→roles payload key), #19 steps (4th
+required step `logins`), #20 OperatorChatSidebar (MIN_WIDTH→56), #21
+AddPanelCatalog ("Open panel"), #22 snapshots/page (bumpPatch import). Plus
+sync-resolver (registry 56→57).
+
+**Status: 21 of 38 genuine fixed (committed). 17 still need your call** — the
+real-bug suspects (A: #1–9), test-isolation (B: #10–11), the genuinely-ambiguous
+behavior ones (#15 misc snapshots shape, #16 require-principal, #17
+runner-aggregate scenario-registry 30→37, #18 desktop binary path-resolution),
+and the rework (#23 chat-surface-tools). Tell me per-item (or per-category)
+whether to fix the test, fix the product code, rework, or skip — and I'll execute.
 ---
 
 ## Objective
