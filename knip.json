@@ -8,10 +8,8 @@
     "apps/operator": {
       "vitest": false,
       "entry": [
-        "app/**/{page,layout,loading,error,not-found,template,default,route}.{ts,tsx}",
-        "app/**/{generateStaticParams,generateMetadata,sitemap,robots,manifest}.{ts,tsx}",
+        "app/**/*.{ts,tsx}",
         "lib/**/*.{ts,tsx}",
-        "next.config.*",
         "vitest.config.ts",
         "vitest.integration.config.ts",
         "test/**/*.{ts,tsx}",
@@ -46,7 +44,6 @@
   ],
   "ignore": [
     "**/node_modules/**",
-    "**/.next/**",
     "**/dist/**",
     "libs/papercusp/**"
   ]
