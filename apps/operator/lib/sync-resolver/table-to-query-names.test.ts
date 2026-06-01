@@ -37,7 +37,7 @@ describe('queryNamesForTriggerEvent', () => {
 
   it('handles *Consolidated tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
-      ['featuresConsolidated.bySlug'],
+      expect.arrayContaining(['featuresConsolidated.bySlug', 'featuresConsolidated.byPlanSlug']),
     );
     expect(queryNamesForTriggerEvent('harness_shared.agent_runs_consolidated.changed')).toEqual(
       expect.arrayContaining(['agentRunsConsolidated.bySlug', 'agentRunsConsolidated.recent']),
@@ -79,9 +79,9 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     expect(stillForward.sort()).toEqual(Array.from(FORWARD_DEFINED).sort());
   });
 
-  it('exposes 56 distinct camelCase names through the bridge', () => {
-    // 54 v2-registered + 2 forward-defined = 56.
-    expect(allBridgedQueryNames()).toHaveLength(56);
+  it('exposes 57 distinct camelCase names through the bridge', () => {
+    // 55 v2-registered + 2 forward-defined = 57 (added featuresConsolidated.byPlanSlug).
+    expect(allBridgedQueryNames()).toHaveLength(57);
   });
 });
 
