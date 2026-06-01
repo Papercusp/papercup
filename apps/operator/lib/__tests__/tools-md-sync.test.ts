@@ -26,6 +26,8 @@ const PROMPTS_DIR = join(REPO, 'apps/operator/prompts');
 const KNOWN_ROLES = [
   'operator', 'oracle', 'worker', 'validator', 'scoper',
   'reviewer', 'debugger', 'architect', 'documenter', 'curator',
+  // G2 user-protection gate (P-006): read-only adversarial judgment role.
+  'auditor',
 ];
 
 const CHAT_SURFACES = [
@@ -44,6 +46,8 @@ const CHAT_SURFACES = [
 const NON_CHAT_ROLES = [
   'worker', 'validator', 'scoper', 'reviewer',
   'debugger', 'architect', 'documenter', 'curator',
+  // G2 user-protection gate (P-006): read-only; empty tool catalog (no exec).
+  'auditor',
 ];
 
 // ─── helpers ─────────────────────────────────────────────────────────

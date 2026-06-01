@@ -50,6 +50,10 @@ export const AGENT_ROLES = [
   // it has a live pm-dispatch.ts subsystem that a separate cut must handle.)
   'crosscheck',
   'ui-qa',
+  // G2 user-protection gate (papercusp-user-protection-gate-2026-05-31 P-006):
+  // read-only adversarial judgment role; screens remote-authored features before
+  // they reach the orchestrator pick loop. No execution capability.
+  'auditor',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */

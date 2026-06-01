@@ -74,7 +74,9 @@ export type Role =
   | 'debugger'
   | 'architect'
   | 'documenter'
-  | 'curator';
+  | 'curator'
+  // G2 user-protection gate (P-006): read-only adversarial judgment role.
+  | 'auditor';
 
 export interface AssembledSection {
   name: 'persona' | 'tools-catalog' | 'tools-playbook' | 'runtime';
