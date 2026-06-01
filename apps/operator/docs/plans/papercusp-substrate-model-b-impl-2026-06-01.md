@@ -10,6 +10,12 @@
 
 **Tech Stack:** TypeScript (tsx host), Hypercore/Corestore/Hyperswarm (Holepunch), Postgres (per-harness, via `getOrgPg()`), Vitest 4, Ed25519 device keys (Phase-1b keychain), the Phase-1b two-channel binding service.
 
+> ⚠️ **STAGE 0 CORRECTIONS (2026-06-01, validated against source) — read `model-b-spike-findings-2026-06-01.md` first.** The spike found 3 wrong API references in this plan; all later-stage code uses the corrected forms:
+> 1. **LWW helper is `lwwPick(a,b)`** at `projection.ts:91` — NOT `pickLwwWinner` (doesn't exist). Stages 2 & 6.
+> 2. **Binding verify is `verifyBoth(...)`** in `lib/identity/two-channel-verifier.ts:237` — NOT `binding-service.ts` (which DOES a collaborator/permission check = the gate D-004 forbids). Stage 3. The admission decider must inject the local harness `{repoOwner, repoName, token}` (channel-2 isn't in the announce frame); admit on `status === 'verified'`.
+> 3. **Signing is Node `crypto` Ed25519** (PKCS8/SPKI DER, raw-32-byte **base64** pubkey == the binding's `device_pubkey`) — NOT hypercore-crypto/sodium. Add `signWithDeviceKey` in `lib/identity` (don't reach into keychain). Stage 3.
+> Plus: remote-core reads need `await core.update({wait:true})` each merge pass (Stages 2/4); the announce rides a **protomux** channel `papercusp/announce` (`compact-encoding` `c.json`) on the connection corestore replicates over — switch `swarm.ts` to `store.replicate(socket)` (Stage 4).
+
 **Reused interfaces (verified — do NOT reinvent):**
 - `applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean>` + `getProjection`/`registerProjection` + `pickLwwWinner` in `lib/sync/hyperbee/projection.ts`. `OpEnvelope = {type:'put'|'del'|'addWriter', table?, hbKey?, value?, schema_version?, ts?, writerPubkey?}` (`autobase-setup.ts`).
 - `registerAllHarnessProjections({workspaceId, harnessSlug})` (`projections/register-all.ts`) — the per-table writers stay.
