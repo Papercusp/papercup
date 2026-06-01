@@ -1932,7 +1932,14 @@ export function stopPushToTalk(): void {
  * resample → WAV-encode → POST to whisper and dispatch the transcript.
  */
 async function finalizePttRawCapture(result: PttRawCaptureResult | null): Promise<void> {
+  // TEMP diagnostic: stash the pipeline state on window so the capture→whisper
+  // path can be inspected after a real PTT. Remove once transcription is fixed.
+  const diag: Record<string, unknown> = {
+    captured: result ? { samples: result.samples.length, rate: result.sampleRate, peak: Number(result.peak.toFixed(4)), durSec: Number(result.durationSec.toFixed(2)) } : null,
+  };
+  if (typeof window !== 'undefined') (window as unknown as { __lastPttDiag?: unknown }).__lastPttDiag = diag;
   if (classifyPttResult(result) === 'no-audio') {
+    diag.outcome = 'no-audio';
     dispatchNoAudioToast();
     return;
   }
@@ -1941,16 +1948,25 @@ async function finalizePttRawCapture(result: PttRawCaptureResult | null): Promis
   beginProcessingTranscript();
   try {
     const pcm16k = resampleLinearTo16k(captured.samples, captured.sampleRate);
+    let rpeak = 0;
+    for (let i = 0; i < pcm16k.length; i++) { const a = Math.abs(pcm16k[i]); if (a > rpeak) rpeak = a; }
     const blob = f32ToWav(pcm16k, 16000);
+    diag.resampled = { len: pcm16k.length, peak: Number(rpeak.toFixed(4)) };
+    diag.wavBytes = blob.size;
     const text = (await transcribeChunk(VOICEMODE_WHISPER_URL, blob)).trim();
+    diag.whisperText = text;
     if (!isBlankTranscript(text)) {
+      diag.outcome = 'transcript';
       setState({ lastTranscript: text });
       onUtteranceFinal(text); // clears processing, begins awaiting-response
     } else {
+      diag.outcome = 'blank';
       endProcessingTranscript();
       dispatchNoTranscriptToast();
     }
-  } catch {
+  } catch (e) {
+    diag.outcome = 'error';
+    diag.error = (e as { message?: string })?.message ?? String(e);
     endProcessingTranscript();
     dispatchNoTranscriptToast();
   }
