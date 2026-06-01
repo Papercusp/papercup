@@ -132,7 +132,7 @@ export function StepOsPermissions() {
   // audio mime on the WebKitGTK webview), inline + self-contained so its
   // outcome is observable (recInfo). recStopRef holds a teardown that returns
   // the captured samples + diagnostics.
-  const recStopRef = useRef<null | (() => { samples: Float32Array; rate: number; frames: number; ctxState: string })>(null);
+  const recStopRef = useRef<null | (() => { samples: Float32Array; rate: number })>(null);
   const recTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toneCtxRef = useRef<AudioContext | null>(null);
   const playbackRef = useRef<{ ctx: AudioContext; src: AudioBufferSourceNode } | null>(null);
@@ -292,28 +292,24 @@ export function StepOsPermissions() {
   }, []);
 
   const startRecording = async () => {
-    setRecInfo('opening mic…');
+    setRecInfo('Opening mic…');
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
-    } catch (e) {
-      const name = (e as { name?: string })?.name ?? String(e);
-      setRecInfo(`Couldn't open the microphone (${name}) — it may be in use by another app.`);
+    } catch {
+      setRecInfo("Couldn't open the microphone — it may be in use by another app.");
       return;
     }
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new Ctx();
     if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
     const rate = ctx.sampleRate;
-    const track = stream.getAudioTracks()[0];
     const src = ctx.createMediaStreamSource(stream);
     const node = ctx.createScriptProcessor(4096, 1, 1);
     const chunks: Float32Array[] = [];
-    let frames = 0;
     node.onaudioprocess = (e) => {
-      frames++;
       const d = e.inputBuffer.getChannelData(0);
       const c = new Float32Array(d.length);
       c.set(d);
@@ -324,21 +320,20 @@ export function StepOsPermissions() {
     src.connect(node);
     node.connect(mute);
     mute.connect(ctx.destination);
-    setRecInfo(`recording… (ctx ${ctx.state}, track ${track?.readyState}${track?.muted ? ', MUTED' : ''})`);
+    setRecInfo('Recording…');
     recStopRef.current = () => {
       try { node.onaudioprocess = null; } catch { /* ignore */ }
       try { src.disconnect(); } catch { /* ignore */ }
       try { node.disconnect(); } catch { /* ignore */ }
       try { mute.disconnect(); } catch { /* ignore */ }
       try { stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
-      const ctxState = ctx.state;
       try { void ctx.close(); } catch { /* ignore */ }
       let total = 0;
       for (const c of chunks) total += c.length;
       const samples = new Float32Array(total);
       let off = 0;
       for (const c of chunks) { samples.set(c, off); off += c.length; }
-      return { samples, rate, frames, ctxState };
+      return { samples, rate };
     };
     setRecording(true);
     recTimerRef.current = setTimeout(() => { void stopRecording(); }, 5000);
@@ -349,20 +344,19 @@ export function StepOsPermissions() {
     const teardown = recStopRef.current;
     recStopRef.current = null;
     setRecording(false);
-    if (!teardown) { setRecInfo('recording never started (no teardown)'); return; }
+    if (!teardown) { setRecInfo(''); return; }
     try {
-      const { samples, rate, frames, ctxState } = teardown();
+      const { samples, rate } = teardown();
       let peak = 0;
       for (let i = 0; i < samples.length; i++) { const a = Math.abs(samples[i]); if (a > peak) peak = a; }
       if (samples.length === 0 || peak < 0.002) {
-        setRecInfo(`No audio captured — frames=${frames}, samples=${samples.length}, peak=${peak.toFixed(4)}, ctx=${ctxState}, rate=${rate}. (Check the mic isn't muted / right device selected.)`);
+        setRecInfo("No audio captured — make sure the mic isn't muted and the right input device is selected.");
         return;
       }
       setRecordings((prev) => [{ samples, rate, createdAt: Date.now() }, ...prev].slice(0, 3));
-      setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved. Press play to hear it.`);
-    } catch (e) {
-      // Never fail silently again — surface whatever broke in the save path.
-      setRecInfo(`Save failed: ${(e as { message?: string })?.message ?? String(e)}`);
+      setRecInfo('Saved ✓ — press play to hear it.');
+    } catch {
+      setRecInfo('Could not save the recording — try again.');
     }
   };
 
