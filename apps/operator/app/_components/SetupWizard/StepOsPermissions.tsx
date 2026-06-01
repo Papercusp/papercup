@@ -344,22 +344,27 @@ export function StepOsPermissions() {
     recTimerRef.current = setTimeout(() => { void stopRecording(); }, 5000);
   };
 
-  const stopRecording = async () => {
+  const stopRecording = () => {
     if (recTimerRef.current) { clearTimeout(recTimerRef.current); recTimerRef.current = null; }
     const teardown = recStopRef.current;
     recStopRef.current = null;
     setRecording(false);
     if (!teardown) { setRecInfo('recording never started (no teardown)'); return; }
-    const { samples, rate, frames, ctxState } = teardown();
-    let peak = 0;
-    for (let i = 0; i < samples.length; i++) { const a = Math.abs(samples[i]); if (a > peak) peak = a; }
-    if (samples.length === 0 || peak < 0.002) {
-      setRecInfo(`No audio captured — frames=${frames}, samples=${samples.length}, peak=${peak.toFixed(4)}, ctx=${ctxState}, rate=${rate}. (Check the mic isn't muted / right device selected.)`);
-      return;
+    try {
+      const { samples, rate, frames, ctxState } = teardown();
+      let peak = 0;
+      for (let i = 0; i < samples.length; i++) { const a = Math.abs(samples[i]); if (a > peak) peak = a; }
+      if (samples.length === 0 || peak < 0.002) {
+        setRecInfo(`No audio captured — frames=${frames}, samples=${samples.length}, peak=${peak.toFixed(4)}, ctx=${ctxState}, rate=${rate}. (Check the mic isn't muted / right device selected.)`);
+        return;
+      }
+      const url = URL.createObjectURL(f32ToWav(samples, rate));
+      setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
+      setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved.`);
+    } catch (e) {
+      // Never fail silently again — surface whatever broke in the save path.
+      setRecInfo(`Save failed: ${(e as { message?: string })?.message ?? String(e)}`);
     }
-    const url = URL.createObjectURL(f32ToWav(samples, rate));
-    setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
-    setRecInfo(`captured ${frames} frames, peak=${peak.toFixed(3)} — saved.`);
   };
 
   // 1-second 440Hz tone via Web Audio, routed through an AudioElement
