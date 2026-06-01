@@ -4,7 +4,9 @@ import {
   getPromotePolicy,
   extractPromoteSection,
   buildWaveFeatures,
+  applyInterWaveEdges,
   type PromoteWave,
+  type BuiltFeature,
 } from './promote-policy';
 
 const wrap = (promoteSection: string) =>
@@ -162,5 +164,44 @@ describe('buildWaveFeatures', () => {
     };
     const r = buildWaveFeatures(wave, { generateItems: ['A'] });
     expect(r.features.map((f) => f.title)).toEqual(['static one', 'gen A']);
+  });
+});
+
+describe('applyInterWaveEdges — cross-wave ordering as feature blocked_by (P-044)', () => {
+  const waves: PromoteWave[] = [
+    { id: 'w1' },
+    { id: 'w2', blocked_by: 'w1' },
+    { id: 'w3', blocked_by: 'w2' },
+  ];
+  const make = (): Map<string, BuiltFeature[]> =>
+    new Map([
+      ['w1', [{ title: 'A' }, { title: 'B' }]],
+      ['w2', [{ title: 'C' }]],
+      ['w3', [{ title: 'D', blocked_by: ['C'] }]],
+    ]);
+
+  it('blocks every feature of a wave by every feature title of its prior wave', () => {
+    const m = make();
+    applyInterWaveEdges(waves, m);
+    expect(m.get('w2')![0].blocked_by!.sort()).toEqual(['A', 'B']);
+  });
+
+  it('merges with a feature\'s own blocked_by and dedupes', () => {
+    const m = make();
+    applyInterWaveEdges(waves, m);
+    // w3/D already had blocked_by [C] (its prior wave's only feature) — no dup.
+    expect(m.get('w3')![0].blocked_by).toEqual(['C']);
+  });
+
+  it('leaves the first (unblocked) wave untouched', () => {
+    const m = make();
+    applyInterWaveEdges(waves, m);
+    expect(m.get('w1')!.every((f) => !f.blocked_by)).toBe(true);
+  });
+
+  it('is a no-op when a wave has no blocked_by', () => {
+    const m = new Map<string, BuiltFeature[]>([['w1', [{ title: 'A' }]]]);
+    applyInterWaveEdges([{ id: 'w1' }], m);
+    expect(m.get('w1')![0].blocked_by).toBeUndefined();
   });
 });

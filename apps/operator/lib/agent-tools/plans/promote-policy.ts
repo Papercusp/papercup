@@ -210,6 +210,32 @@ export interface BuiltFeature {
   /** True for features produced by a generative `for_each` rule (P-043) — the
    *  promote step stamps `metadata.generated_by` on these. */
   generated?: boolean;
+  /** The policy wave this feature came from. Set by the all-waves-up-front
+   *  promote (P-044) so each feature records its own wave (consolidated.wave +
+   *  the `## Promoted` row), since one promote spans many waves. */
+  wave?: string;
+}
+
+/**
+ * All-waves-up-front cross-wave wiring (P-044 / Path A). A wave's
+ * `blocked_by: <prior-wave-id>` is turned into FEATURE-level edges: every feature
+ * in the wave becomes `blocked_by` every feature TITLE of the wave it depends on,
+ * so the P-042 frontier alone enforces cross-wave ordering (no 30s wave-advance
+ * poll). Mutates the built features' `blocked_by` in place; titles are resolved
+ * to canonical ids by the import's blocked_by resolver. Idempotent + dedupes.
+ */
+export function applyInterWaveEdges(
+  waves: readonly PromoteWave[],
+  builtByWave: ReadonlyMap<string, BuiltFeature[]>,
+): void {
+  for (const w of waves) {
+    if (!w.blocked_by) continue;
+    const priorTitles = (builtByWave.get(w.blocked_by) ?? []).map((f) => f.title);
+    if (priorTitles.length === 0) continue;
+    for (const f of builtByWave.get(w.id) ?? []) {
+      f.blocked_by = [...new Set([...(f.blocked_by ?? []), ...priorTitles])];
+    }
+  }
 }
 
 export interface BuildWaveResult {
