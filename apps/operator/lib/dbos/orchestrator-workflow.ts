@@ -98,6 +98,30 @@ export function setPipelineFinalizer(fn: PipelineFinalizer): void {
 }
 
 /**
+ * Debugger-before-worker gate (P-012 / D-005). Fired immediately BEFORE a
+ * `worker` dispatch: when the feature has failed enough times
+ * (attempts ≥ `debugger.threshold`) and no debug note exists yet, the hook runs
+ * the read-only `debugger` role so the worker then runs with the root-cause
+ * analysis in context — making `director.md`'s standing promise true under DBOS.
+ *
+ * The hook does the guard-check AND the debugger-invoke INTERNALLY so the whole
+ * thing is one checkpointed DBOS step (D-014 replay-safety: a guard in step A +
+ * an invoke in step B would let a partial replay re-fire the debugger; here a
+ * re-run re-checks the note the debugger itself writes, so it fires at most
+ * once). Injected by the operator; unwired in tests → the gate is skipped.
+ */
+export type PipelineDebuggerHook = (input: {
+  harnessSlug: string;
+  featureId: string;
+  workspaceId?: string;
+}) => Promise<{ fired: boolean }>;
+
+let _debuggerHook: PipelineDebuggerHook | null = null;
+export function setPipelineDebuggerHook(fn: PipelineDebuggerHook): void {
+  _debuggerHook = fn;
+}
+
+/**
  * On-completion refill seam (#1 — continuous dispatch). Fired when a feature's
  * pipeline finishes successfully so the freed concurrency slot can be filled
  * with the next queued feature IMMEDIATELY, instead of waiting up to 30s for the
@@ -163,6 +187,18 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
       // not handled per-feature (D-001). Stop; the dispatcher owns cross-feature work.
       lastVerb = `UNSUPPORTED:${action.verb}`;
       break;
+    }
+
+    // P-012: before a WORKER run, optionally fire the read-only debugger once
+    // (attempts ≥ threshold + no debug note). The hook does the guard-check AND
+    // the invoke inside this SINGLE checkpointed step — D-014 replay-safety.
+    if (action.role === 'worker' && _debuggerHook) {
+      const dh = _debuggerHook;
+      const feature = action.feature;
+      await DBOS.runStep(
+        () => dh({ harnessSlug: input.harnessSlug, featureId: feature, workspaceId: input.workspaceId }),
+        { name: `debugger-gate-${turn}` },
+      );
     }
 
     // dispatch: run the role as an idempotent agent run (checkpointed).

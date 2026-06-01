@@ -19,6 +19,7 @@ import { spawn } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import postgres from 'postgres';
 import {
   readConfig,
   configGet,
@@ -27,17 +28,22 @@ import {
   firePluginHook,
   postCuratorOutputs,
   postArchiveEvent,
+  captureDebuggerOutput,
+  materializeFeatureDebugNote,
 } from '@papercusp/orchestrator';
 import { resolveProject } from '@/lib/harness-core';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import { harnessPackageDir } from '@/lib/harness-paths';
 import { buildInvokeOnce } from '@/lib/harness-invoke-once';
 import {
   setPipelineInvokeRunner,
   setPipelineFinalizer,
   setPipelineSettledHook,
+  setPipelineDebuggerHook,
   type PipelineInvokeRunner,
   type PipelineFinalizer,
+  type PipelineDebuggerHook,
 } from './orchestrator-workflow';
 import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
@@ -148,6 +154,82 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
     extras,
     buildPipelineExtraEnv({ harnessSlug, idempotencyKey, workspaceId }),
   );
+};
+
+/**
+ * Pure guard for debugger-before-worker (P-012 / D-005), mirroring the legacy
+ * main-loop guard (`main-loop.ts:1061-1065`): fire the read-only debugger before
+ * the worker iff the debugger is enabled, the feature has failed enough times
+ * (`attempts ≥ threshold`), and no debug note exists yet (fires at most once).
+ * Exported for unit testing.
+ */
+export function debuggerGateDecision(input: {
+  enabled: boolean;
+  attempts: number;
+  threshold: number;
+  noteExists: boolean;
+}): boolean {
+  return input.enabled && input.attempts >= input.threshold && !input.noteExists;
+}
+
+/**
+ * The real debugger-before-worker hook (P-012). Resolves the harness in the
+ * pipeline's captured workspace, reads `debugger.enabled`/`debugger.threshold`
+ * from config + the feature's current `attempts` from PG, and — when the gate
+ * fires — runs the read-only `debugger` role then captures its `<stateDir>/debug/
+ * <fid>.md` output to PG (canonical). The note (PG-canonical, materialized to FS)
+ * is the once-only dedup the worker also reads. Best-effort: any failure returns
+ * `{ fired: false }` so a debugger problem never blocks the worker.
+ */
+const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, workspaceId }) => {
+  const project = await resolveProject(harnessSlug, workspaceId);
+  if (!project) return { fired: false };
+  const projectDir = project.path;
+  const stateDir = join(projectDir, '.harness');
+  const cfg = readConfig(stateDir);
+  if (configGet<boolean>(cfg, 'debugger.enabled', true) !== true) return { fired: false };
+  const threshold = Number(configGet<unknown>(cfg, 'debugger.threshold', 3));
+  const ws = workspaceId ?? activeWorkspaceId();
+
+  const pg = postgres(getHarnessAdminUrl(), {
+    max: 1,
+    connect_timeout: 5,
+    connection: { search_path: `harness_${harnessSlug},harness_shared,public` },
+  });
+  try {
+    const attRows = await pg<Array<{ attempts: number | bigint | null }>>`
+      SELECT attempts FROM harness_features
+       WHERE workspace_id = ${ws} AND feature_id = ${featureId}
+       LIMIT 1
+    `;
+    const attempts = Number(attRows[0]?.attempts ?? 0);
+    if (attempts < threshold) return { fired: false };
+
+    // PG is canonical for debug notes; materialize PG → FS so (a) the worker
+    // prompt's "read .harness/debug/<fid>.md" sees prior analysis and (b) a note
+    // from an earlier run/process counts as "already debugged" without an
+    // expensive re-run. A note on disk (this same epoch) also counts.
+    const debugNotePath = join(stateDir, 'debug', `${featureId}.md`);
+    const mat = await materializeFeatureDebugNote({ pg: pg as never, workspaceId: ws, harnessSlug, featureId, stateDir });
+    const noteExists = mat.written || existsSync(debugNotePath);
+
+    if (!debuggerGateDecision({ enabled: true, attempts, threshold, noteExists })) {
+      return { fired: false };
+    }
+
+    console.log(`[dbos-debugger] ${harnessSlug}/${featureId} starting (attempts=${attempts} ≥ ${threshold})`);
+    const extraEnv = buildPipelineExtraEnv({ harnessSlug, workspaceId: ws });
+    const r = await spawnInvokeOnce(projectDir, 'debugger', [`FEATURE_ID=${featureId}`], extraEnv);
+    console.log(`[dbos-debugger] ${(r.output || '').slice(0, 200) || '(no output)'}`);
+    // Capture whatever the debugger wrote at <stateDir>/debug/<fid>.md → PG.
+    await captureDebuggerOutput({ pg: pg as never, workspaceId: ws, harnessSlug, featureId, stateDir }).catch(() => {});
+    return { fired: true };
+  } catch (err) {
+    console.warn(`[dbos-debugger] ${harnessSlug}/${featureId} gate error (non-fatal):`, err instanceof Error ? err.message : err);
+    return { fired: false };
+  } finally {
+    await pg.end({ timeout: 2 }).catch(() => {});
+  }
 };
 
 /**
@@ -273,6 +355,9 @@ export function wireOrchestratorInvokeRunner(): void {
   _wired = true;
   setPipelineInvokeRunner(realRunner);
   setPipelineFinalizer(realFinalizer);
+  // P-012: fire the read-only debugger before a worker when the feature has
+  // failed ≥ debugger.threshold times and has no debug note yet.
+  setPipelineDebuggerHook(realDebuggerHook);
   // #1: a finished feature immediately refills its harness's freed slot with the
   // next queued feature, instead of waiting up to 30s for the periodic tick.
   setPipelineSettledHook((slug, workspaceId) =>

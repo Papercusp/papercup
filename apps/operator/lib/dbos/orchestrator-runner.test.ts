@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { extractAgentOutput, formatInvokeStderr } from './orchestrator-runner';
+import { extractAgentOutput, formatInvokeStderr, debuggerGateDecision } from './orchestrator-runner';
 
 describe('extractAgentOutput — strip orchestrator timestamp log lines', () => {
   test('drops [2026-…] timestamp lines, keeps the agent body', () => {
@@ -52,5 +52,30 @@ describe('formatInvokeStderr — surface child stderr on a failed invoke (P-005)
     const out = formatInvokeStderr('worker', 1, huge)!;
     expect(out.length).toBeLessThan(huge.length);
     expect(out).toContain('[stderr truncated: 10000 chars]');
+  });
+});
+
+describe('debuggerGateDecision — fire the debugger before the worker (P-012)', () => {
+  test('fires when enabled, attempts ≥ threshold, and no note exists', () => {
+    expect(debuggerGateDecision({ enabled: true, attempts: 3, threshold: 3, noteExists: false })).toBe(true);
+    expect(debuggerGateDecision({ enabled: true, attempts: 5, threshold: 3, noteExists: false })).toBe(true);
+  });
+
+  test('does NOT fire below the threshold', () => {
+    expect(debuggerGateDecision({ enabled: true, attempts: 2, threshold: 3, noteExists: false })).toBe(false);
+    expect(debuggerGateDecision({ enabled: true, attempts: 0, threshold: 3, noteExists: false })).toBe(false);
+  });
+
+  test('does NOT fire when a debug note already exists (fires at most once)', () => {
+    expect(debuggerGateDecision({ enabled: true, attempts: 9, threshold: 3, noteExists: true })).toBe(false);
+  });
+
+  test('does NOT fire when the debugger is disabled', () => {
+    expect(debuggerGateDecision({ enabled: false, attempts: 9, threshold: 3, noteExists: false })).toBe(false);
+  });
+
+  test('honors a custom threshold', () => {
+    expect(debuggerGateDecision({ enabled: true, attempts: 4, threshold: 5, noteExists: false })).toBe(false);
+    expect(debuggerGateDecision({ enabled: true, attempts: 5, threshold: 5, noteExists: false })).toBe(true);
   });
 });
