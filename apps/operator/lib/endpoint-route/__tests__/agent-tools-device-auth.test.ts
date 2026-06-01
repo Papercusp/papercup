@@ -61,6 +61,10 @@ function makePrincipalEchoTool(): ProjectedTool {
     description: 'echoes the resolved principal slug',
     inputSchema: { type: 'object' },
     capabilities: [],
+    // The dispatcher now default-denies tools with no gate; this fixture is
+    // intentionally ungated (it proves the auth-RESOLUTION path, not gating), so
+    // mark it public to pass the gate and let the resolved principal reach `fn`.
+    public: true,
     expose: {
       http: { path: '/api/agent-tools/fix/whoami', methods: ['POST'] },
       mcp: { name: 'fix:whoami' },
