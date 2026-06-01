@@ -21,8 +21,12 @@ import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent
 import '@/lib/agent-tools/index';
 import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { ADMIN_COORD_UI_OWNER } from '@/lib/agent-tools/coordination/identity';
 
-const ADMIN_UI_CLIENT_ID = 'pc-admin-coord-ui';
+// Shared with the Planning inbox's ack-dismiss filter (plans/attention.ts) so
+// "Acknowledge" actually dismisses: the human acks AS this owner here, and the
+// reader drops messages acked BY this owner.
+const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
 const WRITE_VERBS = new Set(['resolve', 'ack']);
 
 const HOST_EXTRAS: HttpToolHostExtras = {

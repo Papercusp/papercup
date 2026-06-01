@@ -130,22 +130,16 @@ export default defineTool({
     }
 
     // 3. Coord messages addressed to the human (most recent, capped).
-    //    Drop messages the VIEWER has acknowledged so "Acknowledge" dismisses —
-    //    scoped to the viewer's OWN acks (not global), so an agent acking a
-    //    broadcast can't suppress it from the human's inbox. No attributable
-    //    viewer ⇒ dismiss nothing (show all), never global.
+    //    Drop messages acked from the human's admin coord UI so "Acknowledge"
+    //    dismisses. Scoped to ADMIN_COORD_UI_OWNER (the id those acks are
+    //    authored as) — NOT a global ack-set, so an agent acking a broadcast
+    //    can't suppress it from the human's inbox (security review).
     try {
       const { readInbox, readAckedMsgIds } = await import('../coordination/messages');
-      let viewerOwnerId = '';
-      try {
-        const { resolveAgentIdentity } = await import('../coordination/identity');
-        viewerOwnerId = resolveAgentIdentity(ctx).ownerId;
-      } catch {
-        /* no attributable viewer → don't dismiss anything */
-      }
+      const { ADMIN_COORD_UI_OWNER } = await import('../coordination/identity');
       const [msgs, acked] = await Promise.all([
         readInbox('human', { kinds: ['message'] }),
-        viewerOwnerId ? readAckedMsgIds(viewerOwnerId) : Promise.resolve(new Set<string>()),
+        readAckedMsgIds(ADMIN_COORD_UI_OWNER),
       ]);
       for (const m of msgs.slice(-50)) {
         if (acked.has(m.msg_id)) continue;

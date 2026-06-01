@@ -88,6 +88,16 @@ export interface AgentIdentity {
  */
 export const COORDINATION_DEFAULT_DOMAIN = 'default';
 
+/**
+ * The coord owner-id the human's admin coord UI (`/api/admin/coord/*`) acts as
+ * when the human resolves/acks from the Planning inbox. A stable, human-side
+ * identity — distinct from any pipeline agent's ownerId — so the inbox dismisses
+ * exactly the messages the HUMAN acked and an agent's ack of a broadcast can't
+ * suppress them. The admin coord route (its `?client=`) and the inbox
+ * ack-dismiss filter both key off this single constant.
+ */
+export const ADMIN_COORD_UI_OWNER = 'pc-admin-coord-ui';
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
