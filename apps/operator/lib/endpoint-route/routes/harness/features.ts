@@ -343,7 +343,17 @@ const importFeatures = defineTool({
       ctx.params.slug as string,
       phasePhaseLabel(url.searchParams.get('phase') ?? undefined),
     );
-    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    if (!project) {
+      // Diagnostic: resolveProject already scans all workspaces, so a miss means
+      // the slug is registered NOWHERE (a typo, or an e2e/smoketest harness
+      // promoted before it was registered). Echo the slug — plans:promote
+      // re-wraps this as features_import_failed:404, so this is what the caller
+      // sees; "unknown project" alone was undiagnosable.
+      return Response.json(
+        { error: `unknown project '${ctx.params.slug as string}' — not registered in any workspace` },
+        { status: 404 },
+      );
+    }
     const body = (await req.json().catch(() => null)) as null | {
       features?: Array<{
         id?: string;

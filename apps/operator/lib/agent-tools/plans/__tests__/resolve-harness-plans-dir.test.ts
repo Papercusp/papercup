@@ -122,6 +122,15 @@ describe('resolveHarnessPlansDir', () => {
     );
   });
 
+  it("suggests 'papercup' when the unregistered slug is the classic 'papercusp' typo", async () => {
+    mockRegistry([{ slug: 'papercup', path: '/home/u/papercup' }]);
+    mockPapercupDetection('/home/u/papercup');
+    const mod = await import('../source');
+    await expect(mod.resolveHarnessPlansDir('papercusp')).rejects.toThrow(
+      /harness 'papercusp' not registered\. Did you mean 'papercup'\?/,
+    );
+  });
+
   it('P-014: papercup path mismatch with detection → throws', async () => {
     mockRegistry([{ slug: 'papercup', path: '/wrong/path/papercup' }]);
     mockPapercupDetection('/correct/path/papercup');

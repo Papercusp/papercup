@@ -100,8 +100,12 @@ export async function resolveHarnessPlansDir(
     resolved = raw;
     project = reg.projects.find((p) => p.slug === resolved);
     if (!project) {
+      // 'papercusp' (the product/umbrella name) is the classic typo for the
+      // 'papercup' harness — a recurring agent error in the failed-tool-call
+      // data worth a targeted hint.
+      const didYouMean = resolved === 'papercusp' ? ` Did you mean '${PAPERCUP_HARNESS_SLUG}'?` : '';
       throw new Error(
-        `resolveHarnessPlansDir: harness '${resolved}' not registered. ` +
+        `resolveHarnessPlansDir: harness '${resolved}' not registered.${didYouMean} ` +
           `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
       );
     }
