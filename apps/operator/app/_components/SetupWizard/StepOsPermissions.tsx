@@ -122,12 +122,21 @@ export function StepOsPermissions() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
   // The test recording captures PCM via Web Audio (MediaRecorder supports no
-  // audio mime on the WebKitGTK webview) on its OWN fresh getUserMedia stream.
-  // It must NOT reuse the live monitor stream: WebKit feeds only one
-  // MediaStreamAudioSourceNode per stream, so a second source on the monitor
-  // stream records pure silence while the meter (the first source) shows
-  // audio — the exact "level moves but the recording is empty" bug.
-  const recCaptureRef = useRef<{ stop(): { samples: Float32Array; sampleRate: number } } | null>(null);
+  // audio mime on the WebKitGTK webview). It taps the monitor's EXISTING
+  // source node (the one already feeding the level meter) rather than opening
+  // its own stream or a second source. Why:
+  //   - A second MediaStreamAudioSourceNode on the monitor stream records pure
+  //     silence (WebKit feeds only the first source) — the "meter moves but
+  //     recording empty" bug.
+  //   - A fresh getUserMedia stream works in isolation but is flaky under mic
+  //     contention (monitor + other windows + OBS) — getUserMedia can fail and
+  //     the recording silently doesn't appear.
+  // Sharing the one live source that's provably capturing (the meter moves)
+  // avoids both.
+  const monitorSrcRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const recNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const recMuteRef = useRef<GainNode | null>(null);
+  const recChunksRef = useRef<Float32Array[]>([]);
   const recTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toneCtxRef = useRef<AudioContext | null>(null);
   const audioElsRef = useRef<HTMLAudioElement[]>([]);
@@ -225,6 +234,7 @@ export function StepOsPermissions() {
     void audioCtxRef.current?.close();
     audioCtxRef.current = null;
     analyserRef.current = null;
+    monitorSrcRef.current = null;
     setLevel(0);
   }, []);
 
@@ -243,6 +253,7 @@ export function StepOsPermissions() {
       // would sit at zero even with a working mic.
       if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* best effort */ } }
       const src = ctx.createMediaStreamSource(stream);
+      monitorSrcRef.current = src; // shared with the test recording (one source, two taps)
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       src.connect(analyser);
@@ -289,30 +300,58 @@ export function StepOsPermissions() {
     });
   }, [selectedOutput, sinkIdSupported, recordings]);
 
-  const startRecording = async () => {
-    try {
-      const { startPttRawCapture } = await import('../voice/ptt-capture');
-      recCaptureRef.current = await startPttRawCapture();
-      setRecording(true);
-      recTimerRef.current = setTimeout(() => { void stopRecording(); }, 5000);
-    } catch {
-      // mic open failed (denied / busy) — reflect it and bail.
-      setRecording(false);
-      setStates((prev) => ({ ...prev, microphone: 'denied' }));
-    }
+  const startRecording = () => {
+    const ctx = audioCtxRef.current;
+    const src = monitorSrcRef.current;
+    // The monitor must be live (its source is provably capturing — the meter
+    // moves). If it isn't, there's nothing to tap.
+    if (!ctx || !src) return;
+    recChunksRef.current = [];
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (e) => {
+      const d = e.inputBuffer.getChannelData(0);
+      const c = new Float32Array(d.length);
+      c.set(d);
+      recChunksRef.current.push(c);
+    };
+    // Tap the existing source (a second consumer of the SAME source node is
+    // fine — the silent-recording bug was a second SOURCE on the stream, not a
+    // second consumer of one source). Route through a muted gain so it doesn't
+    // echo to the speakers.
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    src.connect(node);
+    node.connect(mute);
+    mute.connect(ctx.destination);
+    recNodeRef.current = node;
+    recMuteRef.current = mute;
+    setRecording(true);
+    recTimerRef.current = setTimeout(() => { void stopRecording(); }, 5000);
   };
 
   const stopRecording = async () => {
     if (recTimerRef.current) { clearTimeout(recTimerRef.current); recTimerRef.current = null; }
-    const cap = recCaptureRef.current;
-    recCaptureRef.current = null;
+    const node = recNodeRef.current;
+    const ctx = audioCtxRef.current;
+    try { if (node) node.onaudioprocess = null; } catch { /* ignore */ }
+    // Disconnect ONLY our node from the source — leave the analyser tap intact.
+    try { if (node) monitorSrcRef.current?.disconnect(node); } catch { /* ignore */ }
+    try { node?.disconnect(); } catch { /* ignore */ }
+    try { recMuteRef.current?.disconnect(); } catch { /* ignore */ }
+    recNodeRef.current = null;
+    recMuteRef.current = null;
     setRecording(false);
-    if (!cap) return;
-    let result: { samples: Float32Array; sampleRate: number } | null = null;
-    try { result = cap.stop(); } catch { result = null; }
-    if (!result || result.samples.length === 0) return;
+
+    const chunks = recChunksRef.current;
+    recChunksRef.current = [];
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    if (total === 0) return;
+    const samples = new Float32Array(total);
+    let off = 0;
+    for (const c of chunks) { samples.set(c, off); off += c.length; }
     const { f32ToWav } = await import('../voice/f32-to-wav');
-    const url = URL.createObjectURL(f32ToWav(result.samples, result.sampleRate));
+    const url = URL.createObjectURL(f32ToWav(samples, ctx?.sampleRate ?? 44100));
     setRecordings((prev) => [{ url, createdAt: Date.now() }, ...prev].slice(0, 3));
   };
 
@@ -517,7 +556,7 @@ export function StepOsPermissions() {
               {tonePlaying ? 'Playing…' : 'Test speaker (1 sec tone)'}
             </button>
             {!recording ? (
-              <button type="button" className="pc-btn pc-btn--primary" onClick={() => void startRecording()}>
+              <button type="button" className="pc-btn pc-btn--primary" onClick={startRecording}>
                 Record 5-second test
               </button>
             ) : (
