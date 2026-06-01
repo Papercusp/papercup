@@ -72,7 +72,7 @@ export default function RouteLink({ className, onClickCapture, ...props }: Route
     beginRoutePending(`${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`);
 
     // Start synchronously so app-shell navigation shows feedback immediately,
-    // before next-transition-router/Next.js pushState can finish a fast route.
+    // before TanStack Router's navigation can finish a fast route.
     progress.set(0.08);
     progress.start(0.08, 0, true);
     window.setTimeout(() => {
