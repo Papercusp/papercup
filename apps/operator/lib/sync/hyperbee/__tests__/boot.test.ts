@@ -145,8 +145,9 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       workspaceId: 'ws-1',
       harnessSlug: 'ann-1',
       mergePollMs: 0, // disable the poll so the only merge is onAnnounce's
-      // binding check returns true → a valid-sig announce is admitted.
-      verifyBindingOverride: async () => true,
+      pendingRetryMs: 0, // disable the retry timer too
+      // binding check returns 'verified' → a valid-sig announce is admitted.
+      verifyBindingOverride: async () => 'verified',
     });
     cleanups.push(() => handle.close());
 
@@ -170,8 +171,9 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       workspaceId: 'ws-1',
       harnessSlug: 'ann-2',
       mergePollMs: 0,
-      // binding check returns false → not admitted (reason binding_invalid).
-      verifyBindingOverride: async () => false,
+      pendingRetryMs: 0, // disable the retry timer
+      // binding check returns 'fail' → not admitted (reason binding_invalid).
+      verifyBindingOverride: async () => 'fail',
     });
     cleanups.push(() => handle.close());
 
@@ -185,12 +187,13 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
   });
 
   it('a FORGED announce (bad sig) → reason bad_sig, binding never consulted', async () => {
-    const verifyBinding = vi.fn(async () => true);
+    const verifyBinding = vi.fn(async () => 'verified' as const);
     const handle = await bootHarnessSubstrate({
       workspaceRoot: tmpWorkspaceRoot(),
       workspaceId: 'ws-1',
       harnessSlug: 'ann-3',
       mergePollMs: 0,
+      pendingRetryMs: 0, // disable the retry timer
       verifyBindingOverride: verifyBinding,
     });
     cleanups.push(() => handle.close());
@@ -212,7 +215,8 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       workspaceId: 'ws-1',
       harnessSlug: 'ann-4',
       mergePollMs: 0,
-      verifyBindingOverride: async () => true,
+      pendingRetryMs: 0, // disable the retry timer
+      verifyBindingOverride: async () => 'verified',
     });
     cleanups.push(() => handle.close());
 
@@ -266,7 +270,8 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
       workspaceId: 'ws-1',
       harnessSlug: 'revoke-1',
       mergePollMs: 0,                       // drive mergeNow by hand
-      verifyBindingOverride: async () => true,
+      pendingRetryMs: 0,                    // disable the retry timer
+      verifyBindingOverride: async () => 'verified',
       applyOverride: async (op) => {
         if (op.table === 'mb_revoke_table') writes.push(op.value as { id: string });
         return true;
@@ -348,7 +353,8 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
       workspaceId: 'ws-1',
       harnessSlug: 'revoke-2',
       mergePollMs: 0,
-      verifyBindingOverride: async () => true,
+      pendingRetryMs: 0, // disable the retry timer
+      verifyBindingOverride: async () => 'verified',
     });
     cleanups.push(() => handle.close());
 

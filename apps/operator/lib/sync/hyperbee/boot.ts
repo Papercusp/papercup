@@ -89,6 +89,19 @@ function peerLabel(keyHex?: string, ip?: string): string {
 /** Polled-merge fallback interval (ms). The own log + admitted remotes are
  *  re-merged on this cadence in addition to the on-admit + initial passes. */
 const MERGE_POLL_MS = 1000;
+/** Default pending-retry interval (ms). A pending peer is re-checked on this
+ *  cadence until it becomes verified, conclusively fails, or exceeds the grace
+ *  window. D-006. */
+const DEFAULT_PENDING_RETRY_MS = 5000;
+/**
+ * Boot-scoped grace window for pending peers (ms). Once a peer has been in the
+ * pending set longer than this, it is removed with 'announce_rejected' rather
+ * than retried forever. This is smaller than the verifier-level
+ * PENDING_GRACE_WINDOW_MS (24h) deliberately: the boot session may not live
+ * that long, and the peer will re-announce on the next boot. 30 minutes is
+ * enough for normal GitHub propagation lag while bounding the retry budget.
+ */
+const BOOT_PENDING_GRACE_MS = 30 * 60 * 1000; // 30 minutes
 // Stage 6 (DoS Phase-4 reshape): cap how many ops the merge ingests from any
 // single author per pass. A noisy/Sybil peer bloats only its OWN log, so this
 // bounds per-pass ingest rather than mitigating a shared-structure flood.
@@ -166,15 +179,23 @@ export interface BootHarnessOpts {
   mergePollMs?: number;
   /**
    * Test seam — override the read-admission binding check. Production leaves
-   * this undefined and the real `buildVerifyBindingAdapter` (verifyBoth over
+   * this undefined and the real `buildVerifyBindingAdapter` (verifyChannel2 over
    * the local harness's shared.json + gh-token) is used. Tests inject a pure
-   * predicate so `onAnnounce` admit/reject can be exercised without network.
+   * predicate so `onAnnounce` admit/reject/pending can be exercised without network.
+   *
+   * Returns `'verified' | 'pending' | 'fail'` (D-002 / D-006 3-state).
    */
   verifyBindingOverride?: (
     devicePubkeyBase64: string,
     githubLogin: string,
     githubUserId: number,
-  ) => Promise<boolean>;
+  ) => Promise<'verified' | 'pending' | 'fail'>;
+  /**
+   * Pending-retry interval override (ms). Tests set this to a small value
+   * (e.g. 10ms) to drive the retry tick without sleeping. Default 5000.
+   * Set to 0 to disable the retry timer entirely (tests that don't need it).
+   */
+  pendingRetryMs?: number;
   /**
    * Test seam — override the projection apply sink. Production leaves this
    * undefined and the per-harness scoped apply (`buildHarnessProjectionApply`,
@@ -380,6 +401,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const revoked = new Set<string>();
   const pubkeyToLogKey = new Map<string, string>();
 
+  // ── Pending-peer retry set (D-006) ── peers whose channel-2 file hasn't
+  // propagated yet. Stored as device_pubkey → {frame, since}. The retry timer
+  // re-runs admission for each pending peer; on 'verified' the peer is admitted
+  // normally; on conclusive failure or grace-window expiry the peer is removed
+  // without admit. Revocation also drops a peer from this set.
+  const pendingPeers = new Map<string, { frame: SignedAnnounce; since: number }>();
+
   // ── Read-merge driver ── replaces the old Autobase read-loop. A pass:
   //   1. update() every REMOTE log first (the spike found remote `length`
   //      is stale until update() — own log is always current so skip it).
@@ -473,11 +501,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     (mergeTimer as { unref: () => void }).unref();
   }
 
-  // ── Read-admission decider (4c) ── the D-004 sig+binding decision applied to
-  // an inbound announce. verifyBinding wires verifyBoth over the LOCAL harness's
-  // {repoOwner, repoName, token} (resolved from shared.json + gh-token, cached).
-  // Fail-closed: a private harness / no-gh-auth context admits nothing, so only
-  // the own log is merged. Admits only on status === 'verified'.
+  // ── Read-admission decider (4c) ── the D-004 + D-002 sig+binding decision
+  // applied to an inbound announce. verifyBinding wires verifyChannel2 (D-002:
+  // channel-2 only) over the LOCAL harness's {repoOwner, repoName, token}
+  // (resolved from shared.json + gh-token, cached). Returns 3-state
+  // 'verified'|'pending'|'fail'. Fail-closed: a private harness / no-gh-auth
+  // context admits nothing, so only the own log is merged.
   const admit = makeAdmissionDecider({
     verifyBinding:
       opts.verifyBindingOverride ??
@@ -495,8 +524,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   /**
    * Admit (or reject) an inbound signed announce. Verifies the sig, runs the
-   * D-004 decision, and on admit opens + admits the peer's remote log and
-   * merges. Defensive: never throws into the swarm handler.
+   * D-004 + D-002 decision, and on admit opens + admits the peer's remote log
+   * and merges. On 'pending', stores the peer for retry (D-006). Defensive:
+   * never throws into the swarm handler.
    */
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
@@ -519,15 +549,36 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       return { admit: false, reason: 'binding_invalid' };
     }
     if (!decision.admit) {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'announce_rejected',
-        `${decision.reason} ${peerLabel(frame.log_core_key)}`,
-      );
+      if (decision.reason === 'pending') {
+        // D-006: channel-2 file not yet visible on GitHub. Store this peer for
+        // retry within the boot grace window; do NOT permanently reject.
+        if (!pendingPeers.has(frame.device_pubkey)) {
+          pendingPeers.set(frame.device_pubkey, { frame, since: Date.now() });
+        }
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_pending',
+          peerLabel(frame.log_core_key),
+        );
+      } else {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'announce_rejected',
+          `${decision.reason} ${peerLabel(frame.log_core_key)}`,
+        );
+      }
       return decision;
     }
-    // Admitted: open the remote log + add to the admitted-set + merge.
+    return admitPeer(frame);
+  }
+
+  /**
+   * Open + admit a peer's remote log and trigger a merge. Extracted so the
+   * pending-retry path can use the same logic as the initial admit path.
+   */
+  async function admitPeer(frame: SignedAnnounce): Promise<AdmissionResult> {
     try {
       // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can find
       // and drop the right admitted log (admitted is keyed by log_core_key).
@@ -551,19 +602,23 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         e instanceof Error ? e.message : String(e),
       );
     }
-    return decision;
+    return { admit: true };
   }
 
   /**
    * Revoke a device pubkey (D-004). Adds it to the `revoked` set (so a future
    * announce is refused), drops its admitted log (so the next merge stops
-   * reading it), and re-merges so the removal takes effect immediately.
+   * reading it), drops it from the pending-retry set (D-006: a revoked peer
+   * must never be retried), and re-merges so the removal takes effect immediately.
    * Best-effort + idempotent: an unknown / already-revoked pubkey still gets
    * added to `revoked` (a no-op for the set) and skips the log drop.
    */
   async function revoke(devicePubkey: string): Promise<void> {
     // (a) Block future admits + re-announces (decider checks `revoked` first).
     revoked.add(devicePubkey);
+    // (a2) Drop from the pending-retry set — a revoked peer must never be
+    // retried even if its channel-2 file eventually appears.
+    pendingPeers.delete(devicePubkey);
     // (b) Drop the already-admitted log for this pubkey, if any.
     const logKey = pubkeyToLogKey.get(devicePubkey);
     if (logKey) {
@@ -578,6 +633,76 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
     // (c) Re-merge so the merge set no longer includes the revoked log.
     await mergeNow();
+  }
+
+  // ── Pending-peer retry timer (D-006) ── revisits peers that returned
+  // 'pending' (channel-2 file not yet visible) at each tick. For each pending
+  // peer the decider is re-run with a fresh sig check; on 'verified' the peer
+  // is admitted normally; on conclusive failure (binding_invalid/bad_sig/revoked)
+  // or once the boot-scoped grace window has passed, the peer is removed
+  // (announce_rejected). `.unref()`'d so the timer never keeps the process alive
+  // and cleared in `close()` alongside the merge timer.
+  const pendingRetryMs = Number.isFinite(opts.pendingRetryMs as number)
+    ? (opts.pendingRetryMs as number)
+    : DEFAULT_PENDING_RETRY_MS;
+  const pendingRetryTimer =
+    pendingRetryMs > 0
+      ? setInterval(async () => {
+          if (stopped || pendingPeers.size === 0) return;
+          const nowMs = Date.now();
+          // Snapshot keys to iterate safely while the map mutates.
+          const keys = [...pendingPeers.keys()];
+          for (const devicePubkey of keys) {
+            const entry = pendingPeers.get(devicePubkey);
+            if (!entry) continue; // removed between snapshot + loop body
+            // Grace-window expiry: remove + reject, don't retry forever.
+            if (nowMs - entry.since > BOOT_PENDING_GRACE_MS) {
+              pendingPeers.delete(devicePubkey);
+              recordBootEvent(
+                opts.workspaceId,
+                opts.harnessSlug,
+                'announce_rejected',
+                `pending_grace_expired ${peerLabel(entry.frame.log_core_key)}`,
+              );
+              continue;
+            }
+            // Re-verify: re-build the AdmissionInput from the stored frame.
+            try {
+              const sigValid = verifyAnnounce(entry.frame);
+              const input: AdmissionInput = {
+                device_pubkey: entry.frame.device_pubkey,
+                github_login: entry.frame.github_login,
+                github_user_id: entry.frame.github_user_id,
+                sigValid,
+              };
+              const decision = await admit(input);
+              if (decision.admit) {
+                // Verified! Remove from pending + admit.
+                pendingPeers.delete(devicePubkey);
+                await admitPeer(entry.frame);
+              } else if (decision.reason !== 'pending') {
+                // Conclusive failure (binding_invalid / bad_sig / revoked) —
+                // stop retrying.
+                pendingPeers.delete(devicePubkey);
+                recordBootEvent(
+                  opts.workspaceId,
+                  opts.harnessSlug,
+                  'announce_rejected',
+                  `${decision.reason} ${peerLabel(entry.frame.log_core_key)}`,
+                );
+              }
+              // If still 'pending', leave in the map for the next tick.
+            } catch {
+              // Defensive: retry errors are silent (observability stays non-fatal).
+            }
+          }
+        }, pendingRetryMs)
+      : null;
+  if (
+    pendingRetryTimer &&
+    typeof (pendingRetryTimer as { unref?: () => void }).unref === 'function'
+  ) {
+    (pendingRetryTimer as { unref: () => void }).unref();
   }
 
   // ── Hyperswarm replication + announce exchange (4b) ──
@@ -684,11 +809,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Stop the progress poller first so it doesn't read ownLog.length on
       // an about-to-close store.
       progressPoller.stop();
-      // Stop the merge poller before the store closes (a get() against a
-      // closing store throws; mergeNow bails on `stopped`, but clear cleanly).
+      // Stop the merge poller + pending-retry timer before the store closes
+      // (a get() against a closing store throws; mergeNow bails on `stopped`,
+      // but clear cleanly).
       if (mergeTimer) {
         try {
           clearInterval(mergeTimer);
+        } catch {
+          // no-op
+        }
+      }
+      if (pendingRetryTimer) {
+        try {
+          clearInterval(pendingRetryTimer);
         } catch {
           // no-op
         }

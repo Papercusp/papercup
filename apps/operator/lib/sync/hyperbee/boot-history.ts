@@ -32,6 +32,9 @@
  *                           dropped from the admitted set + its pubkey blocklisted.
  *   - 'announce_admitted' — an inbound signed announce passed read-admission and
  *                           its per-peer log was added to the admitted set (Model B).
+ *   - 'announce_pending'  — an inbound announce returned a 'pending' binding result
+ *                           (channel-2 file not yet visible on GitHub); the peer
+ *                           is stored for retry within the grace window (D-006).
  *   - 'announce_rejected' — an inbound announce failed the read-admission decision
  *                           (bad_sig / binding_invalid / revoked).
  *   - 'announce_error'    — an exception while handling an announce (defensive).
@@ -55,6 +58,7 @@ export type BootHistoryKind =
   | 'peer_capped'
   | 'peer_revoked'
   | 'announce_admitted'
+  | 'announce_pending'
   | 'announce_rejected'
   | 'announce_error'
   | 'merge_error';

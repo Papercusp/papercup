@@ -3,7 +3,7 @@
  *
  * D-004 (the security core): a peer aggregates another peer's log IFF
  *   (1) the announce `sig` verifies against `device_pubkey`  (→ `sigValid`), AND
- *   (2) `device_pubkey` ↔ `github_login` is a valid two-channel binding for
+ *   (2) `device_pubkey` ↔ `github_login` is a valid channel-2 binding for
  *       ANY real GitHub identity.
  *
  * There is deliberately NO repo-collaborator / permission gate here. GitHub's
@@ -11,17 +11,28 @@
  * replication layer is open to any device that proves a real GitHub identity.
  * Revocation is the only blocklist: a `revoked_pubkeys` set.
  *
- * This module is the PURE decider. The binding check is injected as
- * `verifyBinding(device_pubkey, github_login) => Promise<boolean>`; Stage 4
- * wires it to a thin adapter over `verifyBoth(...)` (two-channel-verifier.ts)
- * that injects the local harness's `{repoOwner, repoName, token}` and admits on
- * `status === 'verified'`. Do NOT call binding-service.ts here — that's the
- * repo↔harness ownership check and DOES gate on collaborator permission, which
- * is the wrong gate for read-admission (Stage-0 spike correction #2).
+ * D-002: admission verifies channel-2 ONLY (publicly-readable device-signed
+ * contributor file). Channel-1 (OAuth GET /user) is a self-attestation the
+ * LOCAL peer runs for publish/self; it is not applicable for remote admission
+ * and always fails `oauth_user_id_mismatch` for any different engineer.
  *
- * Decision precedence: revoked → bad_sig → binding_invalid → admit. Revocation
- * is checked first (a revoked key is denied regardless of sig/binding), and the
- * sig check short-circuits before the (network) binding check.
+ * D-006: `verifyBinding` now returns a 3-state `'verified' | 'pending' | 'fail'`.
+ * A `'pending'` outcome (channel-2 file not yet visible on GitHub due to
+ * propagation lag) maps to `reason:'pending'` — a RETRYABLE outcome that the
+ * boot pending-retry loop handles within a grace window, rather than permanently
+ * rejecting a peer whose file just hasn't propagated yet.
+ *
+ * This module is the PURE decider. The binding check is injected as
+ * `verifyBinding(device_pubkey, github_login, github_user_id) => Promise<'verified'|'pending'|'fail'>`;
+ * Stage 4 wires it to a thin adapter over `verifyChannel2(...)` that injects
+ * the local harness's `{repoOwner, repoName, token}`. Do NOT call
+ * binding-service.ts here — that's the repo↔harness ownership check and DOES
+ * gate on collaborator permission, which is the wrong gate for read-admission
+ * (Stage-0 spike correction #2).
+ *
+ * Decision precedence: revoked → bad_sig → verifyBinding → admit/pending/binding_invalid.
+ * Revocation is checked first (a revoked key is denied regardless of sig/binding),
+ * and the sig check short-circuits before the (network) binding check.
  */
 
 export interface AdmissionInput {
@@ -31,8 +42,7 @@ export interface AdmissionInput {
   /**
    * The announce's numeric GitHub user id. Channel-2 of the binding verify
    * needs BOTH the login (→ contributor-file path) and the id (→ `user/<id>`
-   * branch ref), and channel-1 compares it to the OAuth `GET /user` id, so the
-   * decider threads it to `verifyBinding`.
+   * branch ref), so the decider threads it to `verifyBinding`.
    */
   github_user_id: number;
   /** Whether the announce signature already verified (verifyAnnounce result). */
@@ -41,19 +51,25 @@ export interface AdmissionInput {
 
 export type AdmissionResult =
   | { admit: true }
-  | { admit: false; reason: 'bad_sig' | 'binding_invalid' | 'revoked' };
+  | { admit: false; reason: 'bad_sig' | 'binding_invalid' | 'revoked' | 'pending' };
 
 export interface AdmissionDeciderOptions {
   /**
    * Verify that `device_pubkey` ↔ `github_login`/`github_user_id` is a valid
-   * two-channel binding (any real GitHub identity). Stage 4c wires this to a
-   * verifyBoth adapter over the LOCAL harness's {repoOwner, repoName, token}.
+   * channel-2 binding (any real GitHub identity). Stage 4c wires this to a
+   * verifyChannel2 adapter over the LOCAL harness's {repoOwner, repoName, token}.
+   *
+   * Returns:
+   *   - `'verified'` : channel-2 passed → admit the peer.
+   *   - `'pending'`  : channel-2 file not yet visible (GitHub propagation lag)
+   *                   → retryable; the boot retry loop re-checks within grace.
+   *   - `'fail'`     : channel-2 conclusively failed → reject the peer.
    */
   verifyBinding: (
     devicePubkey: string,
     githubLogin: string,
     githubUserId: number,
-  ) => Promise<boolean>;
+  ) => Promise<'verified' | 'pending' | 'fail'>;
   /** Revoked device pubkeys (base64). A match is denied with reason 'revoked'. */
   revoked?: Set<string>;
 }
@@ -74,9 +90,13 @@ export function makeAdmissionDecider(
     if (!input.sigValid) {
       return { admit: false, reason: 'bad_sig' };
     }
-    if (!(await verifyBinding(input.device_pubkey, input.github_login, input.github_user_id))) {
-      return { admit: false, reason: 'binding_invalid' };
-    }
-    return { admit: true };
+    const bindingResult = await verifyBinding(
+      input.device_pubkey,
+      input.github_login,
+      input.github_user_id,
+    );
+    if (bindingResult === 'verified') return { admit: true };
+    if (bindingResult === 'pending') return { admit: false, reason: 'pending' };
+    return { admit: false, reason: 'binding_invalid' };
   };
 }

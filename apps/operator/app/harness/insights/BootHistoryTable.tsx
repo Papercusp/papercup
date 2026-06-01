@@ -30,6 +30,7 @@ export type BootHistoryKind =
   | 'peer_capped'
   | 'peer_revoked'
   | 'announce_admitted'
+  | 'announce_pending'
   | 'announce_rejected'
   | 'announce_error'
   | 'merge_error';
@@ -60,6 +61,7 @@ const KIND_COLOR: Record<BootHistoryKind, string> = {
   peer_capped: 'var(--fg-warning, #ff9800)',
   peer_revoked: 'var(--fg-danger, #f44336)',
   announce_admitted: 'var(--accent, #4CAF50)',
+  announce_pending: 'var(--fg-warning, #ff9800)',
   announce_rejected: 'var(--fg-warning, #ff9800)',
   announce_error: 'var(--fg-danger, #f44336)',
   merge_error: 'var(--fg-danger, #f44336)',
@@ -77,6 +79,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   peer_capped: '✂',
   peer_revoked: '🚫',
   announce_admitted: '➕',
+  announce_pending: '⏳',
   announce_rejected: '⛔',
   announce_error: '✗',
   merge_error: '✗',

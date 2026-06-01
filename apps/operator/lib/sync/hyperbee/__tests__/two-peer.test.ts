@@ -185,7 +185,7 @@ describe('Model B substrate — two peers on one box', () => {
 
     // Only A's binding is valid; C's binding is forged/unknown.
     const admit = makeAdmissionDecider({
-      verifyBinding: async (pk) => pk === A.devicePubkey,
+      verifyBinding: async (pk) => pk === A.devicePubkey ? 'verified' : 'fail',
     });
 
     // C has a valid sig but an INVALID binding → binding_invalid.
@@ -248,9 +248,9 @@ describe('Model B substrate — two peers on one box', () => {
   it('revocation: a revoked peer is denied and its log\'s ops are not applied', async () => {
     const B = makeDevice('bob', 7);
 
-    // B's binding would otherwise be valid (verifyBinding → true), but B is revoked.
+    // B's binding would otherwise be valid (verifyBinding → 'verified'), but B is revoked.
     const admit = makeAdmissionDecider({
-      verifyBinding: async () => true,
+      verifyBinding: async () => 'verified',
       revoked: new Set([B.devicePubkey]),
     });
 

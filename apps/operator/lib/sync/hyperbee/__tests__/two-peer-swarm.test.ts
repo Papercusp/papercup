@@ -199,9 +199,10 @@ describe('Model B substrate — two peers over REAL Hyperswarm (transport, chann
         harnessSlug,
         swarmBinding: binding,
         swarmOverride: swarmA,
-        verifyBindingOverride: async () => true,
+        verifyBindingOverride: async () => 'verified',
         applyOverride: applyA,
         mergePollMs: 0, // drive mergeNow() by hand — no leaked timer
+        pendingRetryMs: 0, // disable retry timer — not under test here
         announceIdentityOverride: idA.override,
       });
       cleanups.push(async () => {
@@ -215,9 +216,10 @@ describe('Model B substrate — two peers over REAL Hyperswarm (transport, chann
         harnessSlug,
         swarmBinding: binding,
         swarmOverride: swarmB,
-        verifyBindingOverride: async () => true,
+        verifyBindingOverride: async () => 'verified',
         applyOverride: applyB,
         mergePollMs: 0,
+        pendingRetryMs: 0, // disable retry timer — not under test here
         announceIdentityOverride: idB.override,
       });
       cleanups.push(async () => {
