@@ -327,6 +327,33 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
       console.warn(`[dbos-finalize] step ${step.kind} error (non-fatal):`, err instanceof Error ? err.message : err);
     }
   }
+
+  // P-043 / D-019: completion-time generator safety net. The producing feature's
+  // worker normally expands its generative wave at generators:publish-time; this
+  // re-runs that expansion on DONE — idempotent (deterministic child ids), so it's
+  // a no-op if already expanded, but it (a) catches a publish that failed to
+  // expand and (b) ESCALATES if a feature that a `for_each: { from_feature: <this> }`
+  // wave sources from finished WITHOUT publishing any items (never silently yields
+  // zero children — D-012a). Best-effort; never sinks finalization.
+  if (outcome === 'done' && featureId && featureId !== '-') {
+    try {
+      const { expandGeneratorsForFeature } = await import('@/lib/agent-tools/plans/expand-generators');
+      const r = await expandGeneratorsForFeature({
+        harnessSlug,
+        featureId,
+        workspaceId: workspaceId ?? activeWorkspaceId(),
+        requireItems: true,
+      });
+      if (r.expanded > 0) {
+        console.log(`[dbos-finalize] expanded ${r.expanded} generated child feature(s) from ${featureId}`);
+      }
+      for (const esc of r.escalations) {
+        console.warn(`[dbos-finalize] generator escalation (${harnessSlug}/${featureId}): ${esc}`);
+      }
+    } catch (err) {
+      console.warn(`[dbos-finalize] generator expansion error (non-fatal):`, err instanceof Error ? err.message : err);
+    }
+  }
 };
 
 /** Archive the state dir to `<stateDir>/archives/<ts>-done.tar.gz` + post the event. */
