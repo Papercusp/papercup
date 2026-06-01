@@ -34,6 +34,9 @@ export type FinalizationStep =
 
 export interface FinalizationPlanInput {
   outcome: 'done' | 'escalate';
+  /** The feature reaching this terminal outcome — threaded to the documenter
+   *  (P-023: the DONE call previously passed `FEATURE_ID=-`, a no-op). */
+  featureId: string;
   /** Escalation reason (escalate only). */
   reason?: string;
   /** DONE gate: an open needs-human plan item blocks completion. */
@@ -79,7 +82,7 @@ export function planFinalization(input: FinalizationPlanInput): FinalizationPlan
   const steps: FinalizationStep[] = [
     { kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] },
     { kind: 'postCuratorOutputs' },
-    { kind: 'invoke', role: 'documenter', extras: ['TRIGGER=done', 'FEATURE_ID=-'] },
+    { kind: 'invoke', role: 'documenter', extras: ['TRIGGER=done', `FEATURE_ID=${input.featureId}`] },
   ];
   if (input.archiveOnDone) steps.push({ kind: 'archive' });
   steps.push({ kind: 'hook', hook: 'afterDone' });

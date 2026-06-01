@@ -257,7 +257,7 @@ async function needsHumanOpen(slug: string): Promise<boolean> {
   }
 }
 
-const realFinalizer: PipelineFinalizer = async ({ harnessSlug, workspaceId, outcome, reason }) => {
+const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, workspaceId, outcome, reason }) => {
   const project = await resolveProject(harnessSlug, workspaceId);
   if (!project) {
     console.warn(`[dbos-finalize] unknown harness ${harnessSlug} — skipping finalization`);
@@ -275,6 +275,7 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, workspaceId, outc
   const blocked = outcome === 'done' ? await needsHumanOpen(harnessSlug) : false;
   const plan = planFinalization({
     outcome,
+    featureId,
     reason,
     needsHumanOpen: blocked,
     // Smoke gate is config-gated-off for ~all harnesses; not yet ported into the

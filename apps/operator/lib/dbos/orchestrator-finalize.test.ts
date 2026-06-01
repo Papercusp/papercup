@@ -22,6 +22,7 @@ describe('needsHumanGateUrl — harness-scoped needs-human DONE gate (P-008 gate
 describe('planFinalization — DONE (porting legacy handleDone)', () => {
   const base = {
     outcome: 'done' as const,
+    featureId: 'F-001',
     needsHumanOpen: false,
     smokeEnabled: false,
     smokePassed: null,
@@ -34,7 +35,7 @@ describe('planFinalization — DONE (porting legacy handleDone)', () => {
     expect(steps).toEqual([
       { kind: 'invoke', role: 'curator', extras: ['TRIGGER=done'] },
       { kind: 'postCuratorOutputs' },
-      { kind: 'invoke', role: 'documenter', extras: ['TRIGGER=done', 'FEATURE_ID=-'] },
+      { kind: 'invoke', role: 'documenter', extras: ['TRIGGER=done', 'FEATURE_ID=F-001'] },
       { kind: 'hook', hook: 'afterDone' },
     ]);
   });
@@ -76,6 +77,7 @@ describe('planFinalization — ESCALATE (porting legacy handleEscalate)', () => 
   test('escalate → on-escalate hook → curator(TRIGGER=escalate, REASON=…)', () => {
     const { blocked, steps } = planFinalization({
       outcome: 'escalate',
+      featureId: 'F-001',
       reason: 'stuck after 3 attempts',
       needsHumanOpen: false,
       smokeEnabled: false,
@@ -92,6 +94,7 @@ describe('planFinalization — ESCALATE (porting legacy handleEscalate)', () => 
   test('escalate with empty reason → curator still runs, REASON= empty', () => {
     const { steps } = planFinalization({
       outcome: 'escalate',
+      featureId: 'F-001',
       reason: '',
       needsHumanOpen: false,
       smokeEnabled: false,
@@ -108,6 +111,7 @@ describe('planFinalization — ESCALATE (porting legacy handleEscalate)', () => 
   test('escalate ignores done-only gates (needs-human / smoke do not block memory distillation)', () => {
     const { blocked } = planFinalization({
       outcome: 'escalate',
+      featureId: 'F-001',
       reason: 'x',
       needsHumanOpen: true,
       smokeEnabled: true,
