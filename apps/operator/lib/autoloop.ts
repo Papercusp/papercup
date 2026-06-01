@@ -18,6 +18,7 @@
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
+import { dbosAutoloopActive } from './dbos/dbos-flags';
 
 const at = generated.autoloopStateInHarnessShared;
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -234,13 +235,12 @@ function bootstrapState(): { lastAttempt: number; armed: boolean } {
 }
 
 export function startAutoLoopOnce(): void {
-  // Phase 1 A/B (D-011) + P-009: the legacy in-process ticker stands down when
-  // the DBOS AutoLoop is active OR the DBOS orchestrator is the default (the
-  // dispatcher now drives per-feature pipelines; this ticker's fire-and-forget
-  // director invokes are a no-op — their decisions were discarded). Re-enable
-  // only via the legacy-revert PAPERCUSP_DBOS_ORCHESTRATOR=0.
-  if (process.env.PAPERCUSP_DBOS_AUTOLOOP === '1') return;
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0') return;
+  // The legacy in-process ticker stands down EXACTLY when the DBOS autoloop is
+  // active (Option 2: default-on with the orchestrator) — same predicate as the
+  // bootstrap registration, so exactly one fires (no gap, no double-fire). It runs
+  // when the DBOS autoloop is disabled: PAPERCUSP_DBOS_AUTOLOOP=0 (just the autoloop)
+  // or PAPERCUSP_DBOS_ORCHESTRATOR=0 (full legacy revert).
+  if (dbosAutoloopActive()) return;
   if (started) return;
   started = true;
   const state = bootstrapState();

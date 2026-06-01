@@ -89,8 +89,9 @@ export async function runMemoryCleanupOnce(): Promise<void> {
 
 export function startMemoryCleanup(): void {
   // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // when PAPERCUSP_DBOS_TIMERS=1, so the legacy timer stands down.
-  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') return;
+  // by default now (dbosTimersActive); the legacy timer stands down unless DBOS
+  // timers are off: PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0.
+  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0' && process.env.PAPERCUSP_DBOS_TIMERS !== '0') return;
   if (_sweepTimer) return;
   // Initial sweep after 60s of process boot — avoids contending with
   // every other boot-time worker for resources.

@@ -428,8 +428,9 @@ export async function runCompletionRefVerifierOnce(
 export function startCompletionRefVerifier(opts: StartOpts = {}): void {
   if (_g.__completionRefVerifierTimer) return;
   // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // when PAPERCUSP_DBOS_TIMERS=1, so the legacy timer stands down.
-  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') return;
+  // by default now (dbosTimersActive); the legacy timer stands down unless DBOS
+  // timers are off: PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0.
+  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0' && process.env.PAPERCUSP_DBOS_TIMERS !== '0') return;
   const interval = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const runGit = opts.runGitLsRemote ?? defaultRunGitLsRemote;
   const tick = async (): Promise<void> => {

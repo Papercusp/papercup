@@ -271,11 +271,17 @@ export async function register(): Promise<void> {
   // Idempotent: noop if already started in this process. Failures
   // surface in the operator log; backup state is non-critical for
   // serving requests.
-  try {
-    const { startBackupScheduler } = await import('@/lib/backup');
-    startBackupScheduler();
-  } catch (err) {
-    console.warn('[backup-scheduler] failed to start:', err instanceof Error ? err.message : err);
+  // The DBOS backupCadence timer (periodic-workflows) owns this when DBOS timers
+  // are the default; the legacy scheduler stands down unless they're disabled
+  // (PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0). The backup tick
+  // itself is internally deduped, so this is belt-and-suspenders.
+  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR === '0' || process.env.PAPERCUSP_DBOS_TIMERS === '0') {
+    try {
+      const { startBackupScheduler } = await import('@/lib/backup');
+      startBackupScheduler();
+    } catch (err) {
+      console.warn('[backup-scheduler] failed to start:', err instanceof Error ? err.message : err);
+    }
   }
 
   // Backup orphan-snapshot sweep. Marks `running` rows stuck >1h as

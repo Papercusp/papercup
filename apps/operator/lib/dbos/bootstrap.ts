@@ -28,6 +28,7 @@
  *    which handle decorators inconsistently.
  */
 import { getHarnessAdminUrlWithSource } from '@/lib/embedded-pg-discovery';
+import { dbosOrchestratorActive, dbosAutoloopActive, dbosTimersActive } from './dbos-flags';
 
 const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
 
@@ -71,17 +72,21 @@ export async function startDbos(): Promise<void> {
 
   // Register workflows BEFORE launch so recovery + the scheduler can bind them.
   await import('./hello-workflow');
-  if (process.env.PAPERCUSP_DBOS_AUTOLOOP === '1') {
-    // Phase 1: AutoLoop as a scheduled workflow + dedup-keyed fire queue
-    // (D-011 flag-gated; the legacy setInterval ticker stands down).
+  if (dbosAutoloopActive()) {
+    // Phase 1 (default-on with the orchestrator): AutoLoop as a scheduled workflow
+    // + dedup-keyed fire queue — fires per-harness director/coordinator/auditor
+    // durably. The legacy setInterval ticker stands down (same condition). Disable
+    // with PAPERCUSP_DBOS_AUTOLOOP=0.
     await import('./autoloop-workflow');
   }
-  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') {
-    // Phase 2: simple periodic timers (telemetry flush, scratch GC, …) as
-    // scheduled workflows; their legacy setInterval workers stand down.
+  if (dbosTimersActive()) {
+    // Phase 2 (default-on with the orchestrator): periodic timers (telemetry flush,
+    // scratch GC, memory cleanup, completion-ref verify, embed backfill, backup
+    // cadence) as scheduled workflows; their legacy setInterval workers stand down
+    // (same condition). Disable with PAPERCUSP_DBOS_TIMERS=0.
     await import('./periodic-workflows');
   }
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0') {
+  if (dbosOrchestratorActive()) {
     // Phase 3 / P-009: the agent pipeline as a durable workflow is now the DEFAULT
     // orchestrator (on unless PAPERCUSP_DBOS_ORCHESTRATOR=0). The legacy main loop
     // is retired (already out of the live path); set =0 for the instant revert.
