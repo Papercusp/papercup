@@ -3,10 +3,16 @@
  *
  * Single-turn streaming chat against the workspace-scoped Oracle persona.
  * Wraps runAgentChat with the ORACLE_ALLOWED_TOOLS surface (ui:* dispatch,
- * harness:*, agent_chats:*, etc.). Self-contained: prompt assembly +
- * MCP config build live in ./prompts; the Hono shim at /api/oracle/chat
- * forwards args verbatim, which lets the IPC fast-path call this tool
- * directly without an HTTP round-trip for prompt composition.
+ * harness:*, agent_chats:*, etc.). Prompt assembly + MCP config build live
+ * in ./prompts, but this tool is NOT safe for direct IPC endpoint dispatch
+ * and therefore carries no `expose.ipc`: the Hono shim at /api/oracle/chat
+ * resolves the session `userId` (getSessionUserOrDefault → mem0 user-scope)
+ * before dispatching, and a direct `endpoint_invoke('oracle:chat')` would
+ * silently drop it (workspace-scope memory only). Consumers reach it via
+ * `fetch('/api/oracle/chat')`, which on desktop rides the desktop-ipc
+ * `sys:http` bridge — i.e. the route runs over IPC, preserving the userId
+ * resolution. See the `expose.ipc` footgun in plan
+ * desktop-ipc-transport-completion-2026-05-20.
  *
  * Wire format (verified against OracleDock.tsx:840):
  *   event: delta       data: { text: string }                ← JSON
@@ -125,7 +131,10 @@ async function oracleHandler(input: Args, ctx: ChatCtx) {
 
 export const oracleChat = defineTool({
   name: 'oracle:chat',
-  expose: { ipc: true },
+  // No `expose.ipc` (was the footgun): route-dependent — the /api/oracle/chat
+  // shim resolves the session userId before dispatch. Desktop reaches it via
+  // fetch → sys:http (route runs over IPC), so closing the direct-dispatch
+  // door changes nothing for real consumers. See the header comment.
   profile: 'engineer',
   description: 'Single-turn Oracle assistant chat. Streams delta/tool_call/cost events; returns final assistant text.',
   args: ArgsSchema,

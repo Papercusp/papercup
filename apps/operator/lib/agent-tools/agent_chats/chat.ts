@@ -109,7 +109,13 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
 
 export const agentChatsChat = defineTool({
   name: 'agent_chats:chat',
-  expose: { ipc: true },
+  // No `expose.ipc` (was the footgun): route-dependent. The Hono shim at
+  // _hono/agent-chats.ts does the cost-cap / feature-lock / transcript-persist
+  // / prompt-assembly work and passes a pre-assembled `promptText`; a direct
+  // IPC `endpoint_invoke('agent_chats:chat')` would bypass all of it (no
+  // cost caps, no persistence, raw prompt). Consumers reach it via
+  // fetch('/api/…') → sys:http, which runs the route over IPC. See the
+  // expose.ipc footgun note in oracle/chat.ts.
   description:
     'Single-turn streaming chat against an already-assembled role prompt. Returns final text + token/cost rollup; the caller is expected to persist the assistant turn.',
   args: ArgsSchema,
