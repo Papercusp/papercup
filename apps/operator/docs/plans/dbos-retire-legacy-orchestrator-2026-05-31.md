@@ -3,7 +3,7 @@ title: Retire the legacy orchestrator — DBOS becomes the complete, sole, defau
 slug: dbos-retire-legacy-orchestrator-2026-05-31
 status: active
 created: 2026-05-31
-updated: 2026-05-31
+updated: 2026-06-01
 owner: avi@storewolf.com
 ---
 
@@ -159,3 +159,18 @@ This validates the ENTIRE arc end-to-end on a real harness: the HARNESS_SLUG fix
 
 ONE FINDING (pre-existing, ported from legacy handleDone): the needs-human DONE-gate is OVER-BROAD. `/api/admin/plans/items?needsHuman=true&harness_slugs=<slug>` IGNORES harness_slugs — querying a nonexistent slug returns the same 4 operator-level items (coord-channels-pg-port P-014, harness-tests-tab P-070, spec-md-ui-deprecation P-004/010) as `sheets`. None are sheets-harness items. So ANY open operator-level needs-human item blocks EVERY harness's DONE finalization → curator + documenter were SKIPPED this run (the gate fired correctly given the API's response, but the API over-returns). The curator/documenter EXECUTION path is otherwise proven: it's the same spawnInvokeOnce + buildPipelineExtraEnv that director/worker/validator used successfully in this very run, and planFinalization is unit-tested. Fix options: (a) scope the finalizer's needs-human check to the harness's own started plans (harness_plan_status), or (b) fix the plans-items API harness_slugs filter (affects the legacy gate + Plans UI too) — needs a product call on whether needs-human is harness-scoped or operator-global.
 Related: P-008, P-009
+
+### D-009 — D-009 — autoloop+timers migrated (default-on); competition/adaptive/synthesizer = superseded model, recommend NOT porting (merit)
+Date: 2026-06-01
+Background-work audit + parallelism merit assessment (user: alpha, migrate unless a feature isn't good).
+
+MIGRATED (default-on, committed): the DBOS autoloop (Option 2 — fixes the P-009 per-harness director/coordinator/auditor gap) and the Phase-2 periodic timers (telemetry flush, scratch GC, memory cleanup, completion-ref verify, embed backfill, backup cadence). Centralized in dbos-flags.ts (dbosOrchestratorActive/dbosAutoloopActive/dbosTimersActive) so each legacy stand-down shares the exact registration condition (no gap, no double-fire). Master revert: PAPERCUSP_DBOS_ORCHESTRATOR=0.
+
+COMPETITION / ADAPTIVE / SYNTHESIZER — recommend DON'T PORT, on merit:
+- These three ARE the previous-generation worker model (N workers race in per-feature git WORKTREES → synthesizer merges/picks → validator). The repo ALREADY superseded it: `useChunkLoop` defaults TRUE (the canonical lock-free per-chunk worker model, which the DBOS pipeline's worker uses), and branch-iso.ts bypasses worktrees entirely under chunk-loop. Competition/synthesizer require explicitly opting BACK OUT to `useChunkLoop:false` (lanes.ts:246-248 documents this). So porting them = re-introducing the worktree model the repo deliberately replaced — a regression, not a migration.
+- Competition (best-of-N): real technique but N× token cost + needs the abandoned worktree isolation + marginal value over the DBOS retry-with-notes loop (worker fails → director re-dispatches with PRIOR_VALIDATOR_LOG → iterates) is unproven; no telemetry in alpha to justify it.
+- Adaptive tiers: purely the N-selector for competition; moot without it. The difficulty signal it encoded is ALREADY expressed in the DBOS pipeline via the director's NEXT_ARCHITECT verb ("large/ambiguous → plan before worker", director.md) + the retry loop, which is implicitly adaptive (harder features get more turns).
+- Synthesizer: multi-lane needs competition; single-worker (synthesizeSingle) pre-validation review is superseded by the director's discretionary NEXT_ARCHITECT/NEXT_SECURITY/NEXT_TESTER quality verbs.
+
+The genuinely-good kernel (scale scrutiny to difficulty) is already migrated — it's the director's NEXT_ARCHITECT + retry-with-notes. If best-of-N competition is later proven worth it, the DBOS-native build is parallel child-workflows + per-attempt worktrees (L-XL effort) — kept as an offer, not a default.
+Related: P-009
