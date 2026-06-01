@@ -181,6 +181,8 @@ async function postFeaturesImport(
     source_plan_slug?: string;
     source_plan_item_ids?: string[];
     wave?: string;
+    blocked_by?: string[];
+    order?: number;
   }>,
 ): Promise<{
   ids: string[];
@@ -422,7 +424,9 @@ export default defineTool({
       if (f.from_items && f.from_items.length > 0) {
         metadata.from_plan_items = f.from_items;
       }
-      // Per-feature hints → metadata (the orchestrator/director reads these).
+      // Per-feature hints → metadata (kept for any metadata reader). blocked_by
+      // + order are ALSO threaded as first-class import fields below (P-046), so
+      // the import resolves blocked_by refs → canonical ids + cycle-detects.
       if (f.assigned_role) metadata.assigned_role = f.assigned_role;
       if (f.blocked_by && f.blocked_by.length > 0) metadata.blocked_by = f.blocked_by;
       if (f.order != null) metadata.order = f.order;
@@ -438,6 +442,8 @@ export default defineTool({
         source_plan_slug: string;
         source_plan_item_ids: string[];
         wave?: string;
+        blocked_by?: string[];
+        order?: number;
       } = {
         title: f.title,
         metadata,
@@ -445,6 +451,8 @@ export default defineTool({
         source_plan_item_ids: f.from_items ?? [],
         ...(featureClaims.length > 0 && { claims: featureClaims }),
         ...(waveId && { wave: waveId }),
+        ...(f.blocked_by && f.blocked_by.length > 0 && { blocked_by: f.blocked_by }),
+        ...(f.order != null && { order: f.order }),
       };
       if (f.body) out.summary = f.body;
       if (args.feature_ids && args.feature_ids[idx]) {

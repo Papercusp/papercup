@@ -21,6 +21,12 @@ import { phasePhaseLabel } from '@/lib/harness-phases';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { auditFeatureChange } from '@/lib/feature-audit';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
+import {
+  resolveBlockedByRefs,
+  detectDependencyCycle,
+  type FeatureWithRawDeps,
+  type FeatureRef,
+} from '@/lib/feature-deps';
 import { defineTool } from '@papercusp/agent-mcp';
 
 // F-001, PROJ-sheets, DIR-D-001 — verbatim from legacy.
@@ -373,6 +379,11 @@ const importFeatures = defineTool({
         source_plan_slug?: string | null;
         source_plan_item_ids?: string[] | null;
         wave?: string | null;
+        /** First-class deps (P-046): refs (feature ids OR titles) that must
+         *  finish before this feature; resolved → canonical ids at import. */
+        blocked_by?: string[] | null;
+        /** Within-wave ordering hint (the YAML `order`). */
+        order?: number | null;
       }>;
     };
     if (!body?.features || !Array.isArray(body.features) || body.features.length === 0) {
@@ -395,6 +406,60 @@ const importFeatures = defineTool({
       return Response.json({
         error: `every feature requires a valid id (matching ${FEATURE_ID_RE.source}) and title; offender: ${JSON.stringify(invalid).slice(0, 200)}`,
       }, { status: 400 });
+    }
+
+    // P-046: resolve blocked_by refs (ids/titles) → canonical ids and reject
+    // dependency cycles BEFORE any write. Refs may point at batch features or
+    // existing ones; an unresolvable/ambiguous ref or a cycle (a silent
+    // permanent frontier deadlock) fails the WHOLE import loudly.
+    const importWs = activeWorkspaceId();
+    const resolvedBlockedBy = new Map<string, string[]>();
+    const featureOrder = new Map<string, number>();
+    for (const f of features) {
+      if (typeof f.order === 'number') featureOrder.set(f.id, f.order);
+    }
+    if (features.some((f) => (f.blocked_by?.length ?? 0) > 0)) {
+      let existing: Array<{ id: string; title: string; blocked_by: string[] | null }>;
+      try {
+        const { sql } = getOrgPg();
+        const rows = await sql<Array<{ feature_id: string; title: string; blocked_by: string[] | null }>>`
+          SELECT feature_id, title, blocked_by
+            FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id = ${importWs} AND harness_slug = ${project.slug}
+        `;
+        existing = rows.map((r) => ({ id: r.feature_id, title: r.title, blocked_by: r.blocked_by }));
+      } catch (e) {
+        // Deps are correctness-critical — don't silently skip validation.
+        return Response.json(
+          { error: `blocked_by resolution failed (cannot read existing features): ${e instanceof Error ? e.message : String(e)}` },
+          { status: 500 },
+        );
+      }
+      const inBatch = new Set(features.map((f) => f.id));
+      const batchDeps: FeatureWithRawDeps[] = features.map((f) => ({
+        id: f.id,
+        title: f.title,
+        blockedByRefs: f.blocked_by ?? [],
+      }));
+      const existingRefs: FeatureRef[] = existing
+        .filter((e) => !inBatch.has(e.id))
+        .map((e) => ({ id: e.id, title: e.title }));
+      const { resolved, errors } = resolveBlockedByRefs(batchDeps, existingRefs);
+      if (errors.length > 0) {
+        return Response.json({ error: `blocked_by resolution failed: ${errors.join('; ')}` }, { status: 400 });
+      }
+      for (const [id, blockers] of resolved) resolvedBlockedBy.set(id, blockers);
+      // Cycle-detect over the union of batch (resolved) + existing edges.
+      const edges = new Map<string, string[]>();
+      for (const e of existing) if (!inBatch.has(e.id)) edges.set(e.id, e.blocked_by ?? []);
+      for (const [id, blockers] of resolved) edges.set(id, blockers);
+      const cyc = detectDependencyCycle(edges);
+      if (cyc.hasCycle) {
+        return Response.json(
+          { error: `blocked_by introduces a dependency cycle among: ${cyc.cycleNodes.join(', ')}` },
+          { status: 400 },
+        );
+      }
     }
 
     const dbc = dbcFor(project.slug);
@@ -492,6 +557,36 @@ const importFeatures = defineTool({
     const provenanceWritten = provenanceResult.written;
     const provenanceErrors = provenanceResult.errors;
 
+    // P-046: write resolved blocked_by + feature_order to consolidated (parity
+    // with the source_plan_slug provenance write — these first-class columns live
+    // on the consolidated table, which the SELECT*-frozen per-harness view does
+    // not yet surface; the frontier reader reads them from consolidated).
+    const depWrites = features.filter(
+      (f) => (resolvedBlockedBy.get(f.id)?.length ?? 0) > 0 || featureOrder.has(f.id),
+    );
+    let depsWritten = 0;
+    if (depWrites.length > 0) {
+      try {
+        const { sql } = getOrgPg();
+        for (const f of depWrites) {
+          const bb = resolvedBlockedBy.get(f.id) ?? [];
+          const ord = featureOrder.has(f.id) ? featureOrder.get(f.id)! : null;
+          const r = await sql`
+            UPDATE harness_shared.harness_features_consolidated
+               SET blocked_by    = ${bb.length > 0 ? bb : null}
+                 , feature_order = ${ord}
+             WHERE workspace_id = ${importWs}
+               AND harness_slug = ${project.slug}
+               AND feature_id   = ${f.id}
+            RETURNING feature_id
+          `;
+          if ((r as unknown as unknown[]).length > 0) depsWritten++;
+        }
+      } catch (e) {
+        console.warn(`[features/import] blocked_by/order write skipped: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     return Response.json({
       ok: true,
       inserted,
@@ -499,6 +594,7 @@ const importFeatures = defineTool({
       total: features.length,
       skippedKindMismatch,
       ids: allocatedIds,
+      ...(depWrites.length > 0 && { depsWritten }),
       ...(withProvenance.length > 0 && {
         provenanceWritten,
         provenanceFailed: provenanceErrors.length,
