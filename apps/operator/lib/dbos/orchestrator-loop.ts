@@ -44,7 +44,8 @@ import {
   maxFeaturesInFlight,
 } from '@papercusp/orchestrator';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
-import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { activeWorkspaceId, readRegistry } from '@/lib/workspace-registry';
+import { runWithWorkspace } from '@/lib/workspace-als';
 import { listAllHarnesses } from '@/lib/dev-data';
 import { resolveProject } from '@/lib/harness-core';
 import { ensureFeaturePipeline } from './orchestrator-start';
@@ -274,18 +275,47 @@ export async function dispatchOneHarness(
 }
 
 /**
- * One dispatch sweep over the opted-in harnesses (the periodic backstop). Each
- * harness fills its own slots via `dispatchOneHarness`. Returns what was newly
- * started (for logging / tests).
+ * The workspace(s) a single sweep covers (Phase E, P-020).
+ *
+ * One shared operator serves every workspace (D-008), so the single background
+ * orchestrator must decide which workspaces to sweep:
+ *   - `PAPERCUSP_WORKSPACE_ID` pinned (a dedicated single-workspace process) →
+ *     just that one.
+ *   - else, in the shared-operator model (`PAPERCUSP_SHARED_OPERATOR=1`, set
+ *     only by the new desktop shell) → EVERY registered workspace. Each harness
+ *     is still gated by its own concurrency + `maxCostUsd` caps, so cost scales
+ *     with opted-in harnesses, not workspace/window count.
+ *   - else (dev / legacy) → the single global active workspace — today's
+ *     behavior, unchanged (D-009: don't flip the fleet's dispatch scope in dev).
+ */
+export function orchestratorWorkspaceIds(): string[] {
+  const pin = process.env.PAPERCUSP_WORKSPACE_ID?.trim();
+  if (pin) return [pin];
+  if (process.env.PAPERCUSP_SHARED_OPERATOR === '1') {
+    const ids = readRegistry().workspaces.map((w) => w.id).filter(Boolean);
+    if (ids.length) return ids;
+  }
+  return [activeWorkspaceId()];
+}
+
+/**
+ * One dispatch sweep over the opted-in harnesses (the periodic backstop). In the
+ * shared-operator model this sweeps EVERY workspace (P-020); each workspace's
+ * harnesses fill their own slots via `dispatchOneHarness`, run inside that
+ * workspace's ALS scope so any internal `activeWorkspaceId()` read (e.g.
+ * `ensureFeaturePipeline` → `orchestrator-start`) resolves correctly. Returns
+ * what was newly started (for logging / tests).
  */
 export async function runOrchestratorTick(): Promise<OrchestratorTickResult[]> {
-  const workspaceId = activeWorkspaceId();
-  const slugs = await resolveTickHarnesses(workspaceId);
-  if (slugs.length === 0) return [];
   const adminUrl = getHarnessAdminUrl();
   const out: OrchestratorTickResult[] = [];
-  for (const slug of slugs) {
-    out.push(await dispatchOneHarness(slug, workspaceId, adminUrl));
+  for (const workspaceId of orchestratorWorkspaceIds()) {
+    await runWithWorkspace(workspaceId, async () => {
+      const slugs = await resolveTickHarnesses(workspaceId);
+      for (const slug of slugs) {
+        out.push(await dispatchOneHarness(slug, workspaceId, adminUrl));
+      }
+    });
   }
   return out;
 }

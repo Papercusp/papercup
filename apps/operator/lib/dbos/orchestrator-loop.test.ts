@@ -1,9 +1,21 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi, afterEach } from 'vitest';
+
+// Control the workspace registry for orchestratorWorkspaceIds (P-020). Only
+// readRegistry + activeWorkspaceId are consumed by orchestrator-loop here.
+vi.mock('@/lib/workspace-registry', () => ({
+  activeWorkspaceId: () => 'global-ws',
+  readRegistry: () => ({
+    current: 'global-ws',
+    workspaces: [{ id: 'ws-a' }, { id: 'ws-b' }, { id: 'ws-c' }],
+  }),
+}));
+
 import {
   selectFeaturesToDispatch,
   resolveOrchestratorHarnesses,
   shouldScheduleOrchestrator,
   resolvePerHarnessCap,
+  orchestratorWorkspaceIds,
 } from './orchestrator-loop';
 
 const f = (id: string, status: string) => ({ id, status });
@@ -91,6 +103,35 @@ describe('resolvePerHarnessCap — honor the harness parallelism settings (#1)',
 
   test('floors at 1 even with degenerate inputs', () => {
     expect(resolvePerHarnessCap({ parallelMax: 0, maxFeaturesInFlight: 0, envCeiling: 0 })).toBe(1);
+  });
+});
+
+describe('orchestratorWorkspaceIds — which workspaces a sweep covers (Phase E P-020)', () => {
+  const savedPin = process.env.PAPERCUSP_WORKSPACE_ID;
+  const savedShared = process.env.PAPERCUSP_SHARED_OPERATOR;
+  afterEach(() => {
+    if (savedPin === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+    else process.env.PAPERCUSP_WORKSPACE_ID = savedPin;
+    if (savedShared === undefined) delete process.env.PAPERCUSP_SHARED_OPERATOR;
+    else process.env.PAPERCUSP_SHARED_OPERATOR = savedShared;
+  });
+
+  test('PAPERCUSP_WORKSPACE_ID pin → just that one (dedicated single-workspace process), even under shared-operator', () => {
+    process.env.PAPERCUSP_WORKSPACE_ID = 'pinned-ws';
+    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
+    expect(orchestratorWorkspaceIds()).toEqual(['pinned-ws']);
+  });
+
+  test('shared operator, no pin → EVERY registered workspace (P-020)', () => {
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_SHARED_OPERATOR = '1';
+    expect(orchestratorWorkspaceIds()).toEqual(['ws-a', 'ws-b', 'ws-c']);
+  });
+
+  test('dev / legacy (no shared-operator flag) → only the global active workspace (today\'s behavior)', () => {
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    delete process.env.PAPERCUSP_SHARED_OPERATOR;
+    expect(orchestratorWorkspaceIds()).toEqual(['global-ws']);
   });
 });
 
