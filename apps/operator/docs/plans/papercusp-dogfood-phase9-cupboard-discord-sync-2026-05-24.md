@@ -166,7 +166,9 @@ Date: 2026-05-31
 - Desktop UI: `/admin/cupboard-moderation` route in the live operator-vite shell + "Cupboard" admin nav tab; `CupboardModerationClient` (report queue + dismiss/unlist, nuqs status filter); `/api/cupboard/admin/*` operator proxy (adds the gh-token server-side, like the publish proxy).
 - Same commit FIXED a real browse-proxy bug: `cupboard.ts` hit `${CUPBOARD_URL}/api/harnesses` (404s on the worker — it serves `/harnesses`) and read `{harnesses}` (worker returns `{results}`). The operator's Cupboard browse path was broken; now corrected for both list + detail.
 
-**Remaining:** a visual/interaction pass in the Tauri shell (the UI is compile-verified — operator tsc + operator-vite build green, route registered — but not yet clicked through a running desktop). Optional polish: a per-report operator note field (the server accepts `note`; the v1 UI sends action-only).
+**Note field shipped (commit `a2f0ef142`):** pending reports now carry an optional operator note, sent as `note` on resolve (the worker records it in `resolved_by_operator_note` + the audit row). Draft is useState (mid-edit, per the state rule); cleared on success.
+
+**Remaining — visual/interaction pass in the Tauri shell, blocked on a host restart (user's call):** the UI is compile-verified (operator tsc + operator-vite build green, route registered) but not yet clicked through a running desktop. The catch: the server-side `/api/cupboard/admin/*` proxy is in `cupboard.ts`, and the `:3070` hono-host has **no hot-reload** — the currently-running host (PID-checked, started ~3h before the proxy commit) does NOT have the proxy, so a probe 404s as a false negative. Loading it needs a host restart, but ~10+ active `psu-launcher` agent sessions depend on `:3070`, so restarting autonomously would disrupt them. After the next host restart, verify: Admin → Cupboard renders, and `GET /api/cupboard/admin/reports` round-trips (operator → worker → papercupai allowlist → `{reports:[]}`).
 
 ## Named fallback rollout
 
