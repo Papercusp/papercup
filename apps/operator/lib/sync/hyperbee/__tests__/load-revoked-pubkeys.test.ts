@@ -3,7 +3,7 @@ import { loadRevokedPubkeys } from '../load-revoked-pubkeys';
 
 describe('loadRevokedPubkeys', () => {
   it('unions + dedupes revoked_pubkeys across contributor rows', async () => {
-    const runQuery = vi.fn(async () => [
+    const runQuery = vi.fn(async (_q: string, _p: unknown[]) => [
       { revoked_pubkeys: ['PUB_A', 'PUB_B'] },
       { revoked_pubkeys: ['PUB_B', 'PUB_C'] },
       { revoked_pubkeys: [] },
