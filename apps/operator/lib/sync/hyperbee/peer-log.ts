@@ -56,9 +56,12 @@ export interface PeerLogOp {
   author_pubkey: string;
 }
 
-// Compile-time guard that PeerLogOp stays a faithful subset of OpEnvelope's
-// put/del fields (minus addWriter, plus author_pubkey). Purely structural; no
-// runtime cost. If autobase-setup's OpEnvelope drifts, this surfaces it here.
+// Compile-time guard that catches field-REMOVAL drift only: if a field named
+// here is dropped from OpEnvelope, the `Pick` stops compiling. It does NOT
+// catch a type change on those fields — they're all optional on OpEnvelope, so
+// a `PeerLogOp` (with its required versions) still satisfies the `Pick`. Purely
+// structural; no runtime cost. (autobase-setup is being retired; this guard
+// goes with it.)
 type _PeerLogOpSharesEnvelope = Pick<OpEnvelope, 'table' | 'hbKey' | 'value' | 'ts' | 'schema_version'>;
 const _opEnvelopeCompat: (op: PeerLogOp) => _PeerLogOpSharesEnvelope = (op) => op;
 void _opEnvelopeCompat;
@@ -77,7 +80,12 @@ export interface OwnLog {
 
 /** A read-only replica handle to another peer's log. */
 export interface RemoteLog {
-  /** Read the op at index `i` (blocks until downloaded), or `null`. */
+  /**
+   * Read the op at index `i`. Returns `null` if `i` is out of the replica's
+   * known range (negative, or `>= length` — call `update()` first to refresh
+   * `length`); otherwise blocks until the in-range block downloads from the
+   * peer, then returns the decoded op.
+   */
   get(i: number): Promise<PeerLogOp | null>;
   /** Block until the writer's current length is known to this replica. */
   update(): Promise<void>;
@@ -124,7 +132,13 @@ export async function openOwnLog(store: Corestore): Promise<OwnLog> {
       await core.append(op);
     },
     async get(i: number): Promise<PeerLogOp | null> {
-      const v = await core.get(i);
+      // Out-of-range → null. The own core is writable with no peers, so an
+      // unguarded `core.get(i)` for `i >= length` would block forever on
+      // Hypercore's default `wait: true`, and a negative `i` would throw.
+      if (i < 0 || i >= core.length) return null;
+      // `wait: false`: a locally-absent block returns null rather than blocking
+      // (the own log is the source of truth, so present in-range blocks resolve).
+      const v = await core.get(i, { wait: false });
       return (v as PeerLogOp | null) ?? null;
     },
     get length(): number {
@@ -147,6 +161,11 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
 
   return {
     async get(i: number): Promise<PeerLogOp | null> {
+      // Out-of-(known-)range → null: guard before the awaited get so a negative
+      // or past-the-end index returns null instead of throwing/blocking. For an
+      // in-range index `get(i, { wait: true })` blocks until the block downloads
+      // from the peer, then returns the decoded op.
+      if (i < 0 || i >= core.length) return null;
       const v = await core.get(i, { wait: true });
       return (v as PeerLogOp | null) ?? null;
     },

@@ -4,22 +4,44 @@
  *
  * Pure over an injected Corestore so it runs without the network:
  *  - own writable log: append + ordered read + 64-hex key shape;
+ *  - own log out-of-range get → null (never blocks/throws on the writable core);
  *  - a second store reads the first log read-only by key after update()
  *    (Stage-0 finding: store.replicate(bool) piped both ways replicates).
  *
  * Real replication wiring is Stage 4; here we exercise the handle + update().
+ *
+ * Resource hygiene: every temp dir + store is tracked in `cleanups` at creation
+ * and torn down in `afterEach`, so a thrown assertion can't leak a dir or a
+ * still-open store (mirrors __tests__/convergence.test.ts).
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import Corestore from 'corestore';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, openRemoteLog, type PeerLogOp } from './peer-log';
 
+const cleanups: Array<() => void> = [];
+
+afterEach(() => {
+  while (cleanups.length) {
+    try { cleanups.pop()!(); } catch {}
+  }
+});
+
+/** A Corestore over a fresh tmp dir; both are registered for afterEach teardown. */
+function makeStore(prefix: string): Corestore {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+  const store = new Corestore(dir);
+  cleanups.push(() => { void store.close(); });
+  return store;
+}
+
 describe('peer-log', () => {
   it('own log appends + reads ops in order, exposes a 64-hex key', async () => {
-    const store = new Corestore(mkdtempSync(join(tmpdir(), 'mb-own-')));
+    const store = makeStore('mb-own-');
     await store.ready();
     const log = await openOwnLog(store);
     const op: PeerLogOp = { type: 'put', table: 'features_consolidated', hbKey: 'F-1', value: { id: 'F-1' }, ts: 100, schema_version: 1, author_pubkey: 'devkeyA' };
@@ -27,12 +49,30 @@ describe('peer-log', () => {
     expect(log.length).toBe(1);
     expect(await log.get(0)).toMatchObject({ hbKey: 'F-1', ts: 100, author_pubkey: 'devkeyA' });
     expect(log.keyHex).toMatch(/^[0-9a-f]{64}$/);
-    await store.close();
+  });
+
+  it('own log get(i) out of range returns null (does not block or throw)', async () => {
+    const store = makeStore('mb-oor-');
+    await store.ready();
+    const log = await openOwnLog(store);
+
+    // Fresh (empty) log: index 0 is already past the end → null, must not hang.
+    expect(log.length).toBe(0);
+    expect(await log.get(0)).toBeNull();
+
+    // After one append: index 1 is out of range → null (no peers to wait on).
+    await log.append({ type: 'put', table: 'features_consolidated', hbKey: 'F-1', value: { id: 'F-1' }, ts: 1, schema_version: 1, author_pubkey: 'A' });
+    expect(log.length).toBe(1);
+    expect(await log.get(0)).toMatchObject({ hbKey: 'F-1' });
+    expect(await log.get(1)).toBeNull();
+
+    // Negative index → null (must not throw).
+    expect(await log.get(-1)).toBeNull();
   });
 
   it('a second store reads the first log by key after update()', async () => {
-    const s1 = new Corestore(mkdtempSync(join(tmpdir(), 'mb-w-'))); await s1.ready();
-    const s2 = new Corestore(mkdtempSync(join(tmpdir(), 'mb-r-'))); await s2.ready();
+    const s1 = makeStore('mb-w-'); await s1.ready();
+    const s2 = makeStore('mb-r-'); await s2.ready();
     const own = await openOwnLog(s1);
     await own.append({ type: 'put', table: 'features_consolidated', hbKey: 'R-1', value: {}, ts: 10, schema_version: 1, author_pubkey: 'A' });
     // replicate the two stores (mirror Stage-0 finding: store.replicate(bool) → pipe both ways)
@@ -45,6 +85,5 @@ describe('peer-log', () => {
     await remote.update();
     expect(remote.length).toBe(1);
     expect(await remote.get(0)).toMatchObject({ hbKey: 'R-1' });
-    await s1.close(); await s2.close();
   });
 });
