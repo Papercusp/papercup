@@ -66,6 +66,7 @@ import {
   type AdmissionResult,
 } from './read-admission';
 import { resolveLocalAnnounceIdentity } from './local-announce-identity';
+import { buildVerifyBindingAdapter } from './verify-binding-adapter';
 import { signWithDeviceKey } from '@/lib/identity/sign-with-device-key';
 
 /** Short human label for a dropped peer, for the boot-history message field.
@@ -306,14 +307,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     (mergeTimer as { unref: () => void }).unref();
   }
 
-  // ── Read-admission decider ── the D-004 sig+binding decision applied to
-  // an inbound announce. The real verifyBoth-over-harness-context adapter
-  // lands in 4c; until then verifyBinding is fail-closed (admits nothing on
-  // a binding check), so only the own log is ever merged. The swarm announce
-  // EXCHANGE that drives onAnnounce lands in 4b.
-  // TODO(stage-4c): inject buildVerifyBindingAdapter({harness context}).
+  // ── Read-admission decider (4c) ── the D-004 sig+binding decision applied to
+  // an inbound announce. verifyBinding wires verifyBoth over the LOCAL harness's
+  // {repoOwner, repoName, token} (resolved from shared.json + gh-token, cached).
+  // Fail-closed: a private harness / no-gh-auth context admits nothing, so only
+  // the own log is merged. Admits only on status === 'verified'.
   const admit = makeAdmissionDecider({
-    verifyBinding: async () => false,
+    verifyBinding: buildVerifyBindingAdapter({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      workspaceRoot: opts.workspaceRoot,
+    }),
   });
 
   /**
@@ -328,6 +332,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const input: AdmissionInput = {
         device_pubkey: frame.device_pubkey,
         github_login: frame.github_login,
+        github_user_id: frame.github_user_id,
         sigValid,
       };
       decision = await admit(input);

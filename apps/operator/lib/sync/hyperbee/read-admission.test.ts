@@ -19,7 +19,7 @@ describe('read-admission', () => {
     const admit = makeAdmissionDecider({
       verifyBinding: async (pk, login) => pk === 'good' && login === 'alice',
     });
-    expect(await admit({ device_pubkey: 'good', github_login: 'alice', sigValid: true })).toEqual({
+    expect(await admit({ device_pubkey: 'good', github_login: 'alice', github_user_id: 7, sigValid: true })).toEqual({
       admit: true,
     });
   });
@@ -33,7 +33,7 @@ describe('read-admission', () => {
       },
     });
     expect(
-      await admit({ device_pubkey: 'good', github_login: 'alice', sigValid: false }),
+      await admit({ device_pubkey: 'good', github_login: 'alice', github_user_id: 7, sigValid: false }),
     ).toMatchObject({ admit: false, reason: 'bad_sig' });
     // short-circuits: no network binding check when the sig is already bad
     expect(bindingCalled).toBe(false);
@@ -44,7 +44,7 @@ describe('read-admission', () => {
       verifyBinding: async (pk, login) => pk === 'good' && login === 'alice',
     });
     expect(
-      await admit({ device_pubkey: 'bad', github_login: 'alice', sigValid: true }),
+      await admit({ device_pubkey: 'bad', github_login: 'alice', github_user_id: 7, sigValid: true }),
     ).toMatchObject({ admit: false, reason: 'binding_invalid' });
   });
 
@@ -54,7 +54,7 @@ describe('read-admission', () => {
       revoked: new Set(['x']),
     });
     expect(
-      await admit({ device_pubkey: 'x', github_login: 'a', sigValid: true }),
+      await admit({ device_pubkey: 'x', github_login: 'a', github_user_id: 7, sigValid: true }),
     ).toMatchObject({ admit: false, reason: 'revoked' });
   });
 
@@ -68,7 +68,7 @@ describe('read-admission', () => {
       revoked: new Set(['x']),
     });
     expect(
-      await admit({ device_pubkey: 'x', github_login: 'a', sigValid: false }),
+      await admit({ device_pubkey: 'x', github_login: 'a', github_user_id: 7, sigValid: false }),
     ).toMatchObject({ admit: false, reason: 'revoked' });
     expect(bindingCalled).toBe(false);
   });
@@ -78,7 +78,7 @@ describe('read-admission', () => {
     // without any further permission/collaborator check.
     const admit = makeAdmissionDecider({ verifyBinding: async () => true });
     expect(
-      await admit({ device_pubkey: 'anyone', github_login: 'random-outsider', sigValid: true }),
+      await admit({ device_pubkey: 'anyone', github_login: 'random-outsider', github_user_id: 7, sigValid: true }),
     ).toEqual({ admit: true });
   });
 });

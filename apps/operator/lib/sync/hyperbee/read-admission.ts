@@ -28,6 +28,13 @@ export interface AdmissionInput {
   /** Raw 32-byte Ed25519 device pubkey, base64 (the announce's device_pubkey). */
   device_pubkey: string;
   github_login: string;
+  /**
+   * The announce's numeric GitHub user id. Channel-2 of the binding verify
+   * needs BOTH the login (→ contributor-file path) and the id (→ `user/<id>`
+   * branch ref), and channel-1 compares it to the OAuth `GET /user` id, so the
+   * decider threads it to `verifyBinding`.
+   */
+  github_user_id: number;
   /** Whether the announce signature already verified (verifyAnnounce result). */
   sigValid: boolean;
 }
@@ -38,10 +45,15 @@ export type AdmissionResult =
 
 export interface AdmissionDeciderOptions {
   /**
-   * Verify that `device_pubkey` ↔ `github_login` is a valid two-channel
-   * binding (any real GitHub identity). Stage 4 wires this to verifyBoth.
+   * Verify that `device_pubkey` ↔ `github_login`/`github_user_id` is a valid
+   * two-channel binding (any real GitHub identity). Stage 4c wires this to a
+   * verifyBoth adapter over the LOCAL harness's {repoOwner, repoName, token}.
    */
-  verifyBinding: (devicePubkey: string, githubLogin: string) => Promise<boolean>;
+  verifyBinding: (
+    devicePubkey: string,
+    githubLogin: string,
+    githubUserId: number,
+  ) => Promise<boolean>;
   /** Revoked device pubkeys (base64). A match is denied with reason 'revoked'. */
   revoked?: Set<string>;
 }
@@ -62,7 +74,7 @@ export function makeAdmissionDecider(
     if (!input.sigValid) {
       return { admit: false, reason: 'bad_sig' };
     }
-    if (!(await verifyBinding(input.device_pubkey, input.github_login))) {
+    if (!(await verifyBinding(input.device_pubkey, input.github_login, input.github_user_id))) {
       return { admit: false, reason: 'binding_invalid' };
     }
     return { admit: true };
