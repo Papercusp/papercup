@@ -289,6 +289,26 @@ Recon (2026-06-01) to action "do Phase E + P-062". De-risked the gates D-009 fla
 **Recommended sequence:** P-062 first (framework-contained, verifiable without the GUI — grant audit + per-tool tests), then Phase E as one packaged-build-verified effort. Neither was landed in the recon turn (would be reckless: P-051 breaks fleet git creds without provisioning; P-062 role-switch without a grant audit breaks the 27-tool HTTP path; Phase E core unverifiable until multi-window is built).
 Related: P-050, P-051, P-053, P-062, P-020, P-014
 
+
+### D-012 — D-012 — Phase E concrete architecture verified + execution started (one shared sidecar, ?ws= carries workspace, neutral HOME is safe)
+Date: 2026-06-01
+Deep recon (2026-06-01, user said "go on the Phase E unit") mapped the EXISTING per-request mechanism (Phases A/B) and grounded a concrete, more-tractable-than-sketched design. Verified facts:
+
+**Request→workspace chain already complete:** header `x-papercusp-workspace` OR `?ws=` query param → `workspaceContextMiddleware` (apps/operator/bin/host-app.ts:76, on the /api app) → `runWithWorkspace` ALS (workspace-als.ts) → `activeWorkspaceId()` (workspace-registry.ts:102; precedence request-ALS → `PAPERCUSP_WORKSPACE_ID` env → registry.current) → `withWorkspace` sets `app.workspace_id` GUC (db/src/workspace-context.ts:76) for RLS. Client knows its ws via `getBrowserWorkspaceId()` (browser-workspace.ts: `window.__PAPERCUSP_WS__` injected by host-spa, else URL `?ws=`). Fetch wrapper stamps the header (workspace-header-fetch.ts); EventSource wrapper appends `?ws=` (workspace-eventsource.ts).
+
+**Neutral shared sidecar HOME is SAFE** (the keystone risk): P-052 made `papercuspRoot()` (62 consumers) resolve per-workspace via `activeWorkspaceId()` → `workspacesRoot()/<ws>/.papercusp` (papercusp-root.ts:83), NOT `os.homedir()`. `papercuspRootForWorkspace(id)` (line 117) already lets the spawn envelope pin `PAPERCUSP_HOME` to the SELECTED workspace. So operator state is workspace-scoped regardless of process HOME. The only process-HOME-dependent thing left is filesystem CREDS (`~/.claude`,`~/.gitconfig`) for spawned children → that's exactly P-051's per-spawn HOME.
+
+**Multi-window is mostly wired:** each WebviewWindow just loads the SPA at `/harness?ws=<id>`; getBrowserWorkspaceId() + the stamping wrappers do the rest against ONE shared sidecar. Two gaps: (a) host-spa `serveIndexHtmlWithWorkspace` injects `__PAPERCUSP_WS__` from server-global `activeWorkspaceId()` not the request `?ws=` → must honor req `?ws=`; (b) on desktop the primary transport is IPC and `ipcFetch` (libs/generic/desktop-ipc/src/ipc-fetch.ts) keeps only `path+search` (drops headers) → workspace must ride the `?ws=` QUERY PARAM, so the fetch wrapper must append `?ws=` too (not only the dropped header). Middleware already reads both.
+
+**Change set (per repo):**
+- papercusp-desktop main.rs: shared embedded-PG data dir (`workspaces_root()/.shared/embedded-pg-data`) + neutral sidecar HOME (real user home) + code-server data shared; `workspaces_switch` drops kill_sidecar+app.restart (just persist registry.current); ADD `workspaces_open_window(id)` → new WebviewWindow at `/harness?ws=<id>`.
+- papercup TS: workspaces-tauri.ts desktop `switchWorkspace` navigates to `?ws=` (no restart) + `openWorkspaceWindow`; tauri-bindings.ts new command; host-spa honors req `?ws=`; workspace-header-fetch appends `?ws=`; invoke.ts:1561 + plugin-spawn-impl + harness spawn + pty set `spawnEnv.HOME = workspaceDir(jobWs)` gated to the shared-operator model (so dev/old-packaged unaffected); P-020 bg readers iterate per-workspace.
+
+**Data-migration scope assumption (flagged, non-blocking):** D-006 honest-cost #1 (merge N per-`HOME` per-workspace DBs into one shared DB) — on this box dev already runs ONE native PG and there are NO users (alpha), so the only per-workspace embedded-PGs are test artifacts. Proceeding with a fresh shared DB; NOT building an N-DB merge migration (best-effort note only). Surfaced for the user to override.
+
+Verification stays P-014: `npm run build:debug` + drive two windows/two workspaces via tauri-agent-tools, assert no cross-talk. Implementation started this session.
+Related: P-050, P-051, P-053, P-020, P-014
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)

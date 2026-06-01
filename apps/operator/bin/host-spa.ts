@@ -103,9 +103,17 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
   let html = readFileSync(indexPath, 'utf-8');
   let wsId = 'default';
   try {
-    wsId = activeWorkspaceId();
+    // Phase E (P-053): each window self-identifies via `?ws=<id>` in its URL
+    // (the multi-window shell opens `/harness?ws=<id>`). The SPA index route is
+    // NOT under the /api workspace middleware, so prefer the request's `?ws=`
+    // here and fall back to the registry/global `activeWorkspaceId()` only for a
+    // bare load. This makes `window.__PAPERCUSP_WS__` (→ getBrowserWorkspaceId)
+    // match the window's workspace, so its fetch/EventSource stamping scopes to
+    // the right workspace against the one shared sidecar.
+    const reqWs = new URL(req.url).searchParams.get('ws');
+    wsId = reqWs && reqWs.trim() ? reqWs.trim() : activeWorkspaceId();
   } catch {
-    /* registry unreadable — fall back to 'default' */
+    /* registry/url unreadable — fall back to 'default' */
   }
   const globals = [`window.__PAPERCUSP_WS__=${JSON.stringify(wsId)};`];
   try {

@@ -9,6 +9,7 @@ export const commands = {
 	workspacesRename: (id: string, name: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_rename", { id, name })),
 	workspacesDelete: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_delete", { id })),
 	workspacesSwitch: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_switch", { id })),
+	workspacesOpenWindow: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_open_window", { id })),
 	/**
 	 *  Raise a native OS notification (planning-attention-importance D-007).
 	 *  Invoked from the webview's DesktopAttentionNotifier on `attention.notify`

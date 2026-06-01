@@ -81,18 +81,19 @@ export async function deleteWorkspace(id: string): Promise<void> {
 }
 
 /**
- * Switch to a different workspace.
+ * Switch THIS window to a different workspace.
  *
- * In desktop mode, the Tauri shell kills the sidecar + per-workspace PG
- * backend (embedded-postgres-server by default, pglite-server legacy)
- * and then calls app.restart() — the returned promise never resolves;
- * the page reloads under us.
+ * Phase E (P-050): the desktop shell no longer kills the sidecar + restarts.
+ * One shared sidecar serves every workspace and scoping is per-request
+ * (`?ws=` / the workspace header → ALS → RLS GUC), so switching is just a
+ * per-window navigation to `/harness?ws=<id>` — other windows are untouched
+ * (P-031). The desktop branch first calls the Tauri command to persist
+ * `registry.current` (the default for a fresh launch / the first window), then
+ * navigates exactly like the webapp branch.
  *
- * In webapp mode, just write the new `current` to registry.json. The
- * operator's papercuspRoot() invalidates on registry mtime, so the next
- * request transparently reads from the new workspace. We then reload the
- * page so client-side state (cached fetches, plugin host snapshots in
- * the panels) doesn't lag behind.
+ * In webapp mode the HTTP endpoint writes the same `registry.current`; the
+ * operator's papercuspRoot() invalidates on registry mtime, and the navigation
+ * re-scopes client-side state (cached fetches, plugin-host snapshots).
  */
 
 export function resolveWorkspaceSwitchTarget(id: string, opts?: { resetTo?: string }): string {
@@ -102,10 +103,30 @@ export async function switchWorkspace(id: string, opts?: { resetTo?: string }): 
   if (isDesktopRuntime()) {
     const r = await commands.workspacesSwitch(id);
     if (r.status === 'error') throw new Error(r.error);
-    return;
+  } else {
+    await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   }
-  await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   if (typeof window !== 'undefined') {
     navigateClient(resolveWorkspaceSwitchTarget(id, opts));
+  }
+}
+
+/**
+ * Open an ADDITIONAL window pinned to a workspace (Phase E, P-053).
+ *
+ * Desktop: the Tauri shell opens a new `WebviewWindow` at `/harness?ws=<id>`
+ * against the one shared sidecar; the window self-scopes via `?ws=`. Webapp:
+ * there's no multi-window shell, so open a new browser tab at `?ws=<id>` — the
+ * closest equivalent. Re-opening an already-open workspace window focuses it
+ * (handled shell-side).
+ */
+export async function openWorkspaceWindow(id: string): Promise<void> {
+  if (isDesktopRuntime()) {
+    const r = await commands.workspacesOpenWindow(id);
+    if (r.status === 'error') throw new Error(r.error);
+    return;
+  }
+  if (typeof window !== 'undefined') {
+    window.open(`/harness?ws=${encodeURIComponent(id)}`, '_blank', 'noopener');
   }
 }

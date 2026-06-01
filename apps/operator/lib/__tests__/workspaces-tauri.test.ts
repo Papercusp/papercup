@@ -16,6 +16,7 @@ const commands = {
   workspacesRename: vi.fn(),
   workspacesDelete: vi.fn(),
   workspacesSwitch: vi.fn(),
+  workspacesOpenWindow: vi.fn(),
 };
 
 vi.mock('../tauri-bindings', () => ({
@@ -31,6 +32,7 @@ afterEach(() => {
   commands.workspacesRename.mockReset();
   commands.workspacesDelete.mockReset();
   commands.workspacesSwitch.mockReset();
+  commands.workspacesOpenWindow.mockReset();
 });
 
 describe('workspaces-tauri', () => {
@@ -67,25 +69,54 @@ describe('workspaces-tauri', () => {
     await expect(switchWorkspace('delta')).rejects.toThrow('switch-fail');
     expect(navigateClient).not.toHaveBeenCalled();
   });
-  it('uses the desktop command path without soft navigation when Tauri is present', async () => {
+  it('persists registry.current then soft-navigates on the desktop path (Phase E P-050 — no restart)', async () => {
     vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
     commands.workspacesSwitch.mockResolvedValue({ status: 'ok' });
     const { switchWorkspace } = await import('../workspaces-tauri');
 
     await switchWorkspace('gamma', { resetTo: '/harness?ws=gamma' });
 
+    // Desktop persists the registry default via the Tauri command (no
+    // app.restart() anymore) and then re-scopes THIS window by navigating.
     expect(commands.workspacesSwitch).toHaveBeenCalledWith('gamma');
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(navigateClient).not.toHaveBeenCalled();
+    expect(navigateClient).toHaveBeenCalledWith('/harness?ws=gamma');
   });
 
-  it('surfaces desktop command errors', async () => {
+  it('surfaces desktop command errors and does not navigate', async () => {
     vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
     commands.workspacesSwitch.mockResolvedValue({ status: 'error', error: 'boom' });
     const { switchWorkspace } = await import('../workspaces-tauri');
 
     await expect(switchWorkspace('gamma')).rejects.toThrow('boom');
     expect(navigateClient).not.toHaveBeenCalled();
+  });
+
+  it('opens an additional window via the desktop command (Phase E P-053)', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesOpenWindow.mockResolvedValue({ status: 'ok' });
+    const { openWorkspaceWindow } = await import('../workspaces-tauri');
+
+    await expect(openWorkspaceWindow('beta')).resolves.toBeUndefined();
+    expect(commands.workspacesOpenWindow).toHaveBeenCalledWith('beta');
+  });
+
+  it('surfaces desktop open-window errors', async () => {
+    vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
+    commands.workspacesOpenWindow.mockResolvedValue({ status: 'error', error: 'no-window' });
+    const { openWorkspaceWindow } = await import('../workspaces-tauri');
+
+    await expect(openWorkspaceWindow('beta')).rejects.toThrow('no-window');
+  });
+
+  it('opens a new tab on the web/static path (no multi-window shell)', async () => {
+    const windowOpen = vi.fn();
+    vi.stubGlobal('window', { ...window, open: windowOpen });
+    const { openWorkspaceWindow } = await import('../workspaces-tauri');
+
+    await openWorkspaceWindow('beta');
+    expect(windowOpen).toHaveBeenCalledWith('/harness?ws=beta', '_blank', 'noopener');
+    expect(commands.workspacesOpenWindow).not.toHaveBeenCalled();
   });
   it('lists workspaces through the desktop command path when Tauri is present', async () => {
     vi.stubGlobal('window', { ...window, __TAURI_INTERNALS__: {} });
