@@ -23,6 +23,13 @@ vi.mock('../superuser-token', () => ({
 vi.mock('../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(() => 'ws-active'),
 }));
+// principalFromDeviceJwt runs isRevoked (PG-backed): an unknown device reads as
+// revoked → principal null. Stand the synthetic device in as known + live so the
+// device principal resolves and the capability check is what's exercised.
+vi.mock('../device-store', async (orig) => ({
+  ...(await orig<typeof import('../device-store')>()),
+  isRevoked: async () => false,
+}));
 
 import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal } from './require-principal';
 import { getSessionUser } from '../auth';
