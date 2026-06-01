@@ -88,6 +88,7 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
       workspaceId: 'ws-1',
       harnessSlug: 's1',
       mergePollMs: 0, // disable the poll timer; drive mergeNow by hand
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
     });
     cleanups.push(() => handle.close());
 
@@ -109,6 +110,7 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
       workspaceId: 'ws-1',
       harnessSlug: 's2',
       mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       applyOverride: async (op) => {
         if (op.table === 'mb_test_table') writes.push(op.value);
         return true;
@@ -146,6 +148,7 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       harnessSlug: 'ann-1',
       mergePollMs: 0, // disable the poll so the only merge is onAnnounce's
       pendingRetryMs: 0, // disable the retry timer too
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       // binding check returns 'verified' → a valid-sig announce is admitted.
       verifyBindingOverride: async () => 'verified',
     });
@@ -172,6 +175,7 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       harnessSlug: 'ann-2',
       mergePollMs: 0,
       pendingRetryMs: 0, // disable the retry timer
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       // binding check returns 'fail' → not admitted (reason binding_invalid).
       verifyBindingOverride: async () => 'fail',
     });
@@ -194,6 +198,7 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       harnessSlug: 'ann-3',
       mergePollMs: 0,
       pendingRetryMs: 0, // disable the retry timer
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       verifyBindingOverride: verifyBinding,
     });
     cleanups.push(() => handle.close());
@@ -216,6 +221,7 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
       harnessSlug: 'ann-4',
       mergePollMs: 0,
       pendingRetryMs: 0, // disable the retry timer
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       verifyBindingOverride: async () => 'verified',
     });
     cleanups.push(() => handle.close());
@@ -271,6 +277,7 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
       harnessSlug: 'revoke-1',
       mergePollMs: 0,                       // drive mergeNow by hand
       pendingRetryMs: 0,                    // disable the retry timer
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       verifyBindingOverride: async () => 'verified',
       applyOverride: async (op) => {
         if (op.table === 'mb_revoke_table') writes.push(op.value as { id: string });
@@ -354,6 +361,7 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
       harnessSlug: 'revoke-2',
       mergePollMs: 0,
       pendingRetryMs: 0, // disable the retry timer
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
       verifyBindingOverride: async () => 'verified',
     });
     cleanups.push(() => handle.close());

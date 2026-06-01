@@ -189,6 +189,7 @@ describe(
           applyOverride: applyAlice,
           mergePollMs: 0, // drive mergeNow() by hand — no leaked timer
           pendingRetryMs: 0, // disable retry timer — not under test
+          loadRevokedOverride: async () => new Set(), // avoid real PG in tests
           announceIdentityOverride: idAlice.override,
         });
         cleanups.push(async () => {
@@ -208,6 +209,7 @@ describe(
           applyOverride: applyBob,
           mergePollMs: 0,
           pendingRetryMs: 0,
+          loadRevokedOverride: async () => new Set(), // avoid real PG in tests
           announceIdentityOverride: idBob.override,
         });
         cleanups.push(async () => {

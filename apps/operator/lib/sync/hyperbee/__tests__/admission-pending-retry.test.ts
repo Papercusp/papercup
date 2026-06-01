@@ -89,6 +89,7 @@ describe('boot pending-retry loop (D-006)', () => {
         harnessSlug: 'pend-1',
         mergePollMs: 0,
         pendingRetryMs: 20, // fast retry for test
+        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
         verifyBindingOverride,
       });
       cleanups.push(() => handle.close());
@@ -147,6 +148,7 @@ describe('boot pending-retry loop (D-006)', () => {
         harnessSlug: 'pend-2',
         mergePollMs: 0,
         pendingRetryMs: 20,
+        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
         verifyBindingOverride,
       });
       cleanups.push(() => handle.close());
@@ -266,6 +268,7 @@ describe('boot pending-retry loop (D-006)', () => {
           harnessSlug: 'pend-stale2',
           mergePollMs: 0,
           pendingRetryMs: 50,
+          loadRevokedOverride: async () => new Set(), // fake-timer safety: avoids real PG loader
           verifyBindingOverride,
         });
         cleanups.push(() => handle.close());
@@ -321,6 +324,7 @@ describe('boot pending-retry loop (D-006)', () => {
         harnessSlug: 'pend-3',
         mergePollMs: 0,
         pendingRetryMs: 50,
+        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
         verifyBindingOverride,
       });
       cleanups.push(() => handle.close());

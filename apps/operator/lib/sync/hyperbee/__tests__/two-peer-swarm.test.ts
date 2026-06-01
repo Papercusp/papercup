@@ -203,6 +203,7 @@ describe('Model B substrate — two peers over REAL Hyperswarm (transport, chann
         applyOverride: applyA,
         mergePollMs: 0, // drive mergeNow() by hand — no leaked timer
         pendingRetryMs: 0, // disable retry timer — not under test here
+        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
         announceIdentityOverride: idA.override,
       });
       cleanups.push(async () => {
@@ -220,6 +221,7 @@ describe('Model B substrate — two peers over REAL Hyperswarm (transport, chann
         applyOverride: applyB,
         mergePollMs: 0,
         pendingRetryMs: 0, // disable retry timer — not under test here
+        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
         announceIdentityOverride: idB.override,
       });
       cleanups.push(async () => {

@@ -421,43 +421,34 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // ── Startup revocation seed (D-002) ── load PUBLISHED revocations BEFORE the
   // swarm is joined so any already-revoked peer is refused on first contact.
   //
-  // When `loadRevokedOverride` is provided (test-seam path), we call it here
-  // synchronously — overrides are pure in-memory factories, safe under any timer
-  // mode. When `loadRevokedOverride` is NOT provided (production path), the real
-  // `loadRevokedPubkeys` loader is used; it is also called by the poll-timer
-  // callback below so revocations published mid-session are picked up as well.
+  // ALWAYS called unconditionally — both the test-seam path (loadRevokedOverride
+  // is a pure in-memory factory) and the production path (real loadRevokedPubkeys
+  // against PG) seed `revoked` here, before `joinHarnessSwarm`.  This closes the
+  // ~1s window where the swarm is live but the revoked set is still empty.
   //
   // FAKE-TIMER SAFETY: postgres.js uses setTimeout() for connection-pool timeouts.
-  // Calling the real loader under `vi.useFakeTimers()` hangs indefinitely (the
+  // Calling the real PG loader under `vi.useFakeTimers()` hangs indefinitely (the
   // timeout callback never fires until fake time is advanced, which happens AFTER
-  // bootHarnessSubstrate returns). Tests that activate fake timers before calling
-  // bootHarnessSubstrate MUST supply `loadRevokedOverride`; tests that don't
-  // supply it are assumed to run with real timers (or don't care about revocation).
-  // Production callers always have real timers and a live PG, so this is safe.
+  // bootHarnessSubstrate returns). Tests that activate fake timers MUST supply
+  // `loadRevokedOverride: async () => new Set()` (or a populated factory) so they
+  // never reach the real PG loader.  Production callers always have real timers
+  // and a live PG, so this is safe.
   //
   // Fail-open: a load failure records a boot event and continues.
   const loadRevoked =
     opts.loadRevokedOverride ??
     (() => loadRevokedPubkeys({ workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug }));
-  // Startup seed: only call the loader when an override is explicitly supplied.
-  // Overrides are pure in-memory factories, safe under any timer mode. Without
-  // an override the initial seed is skipped here; the production poll-timer
-  // callback below runs the real loader on its first tick (~MERGE_POLL_MS after
-  // boot), giving startup-close-enough semantics without risking a postgres.js
-  // fake-timer hang (see FAKE-TIMER SAFETY comment above).
-  if (opts.loadRevokedOverride) {
-    try {
-      const seeded = await loadRevoked();
-      for (const pk of seeded) revoked.add(pk);
-    } catch (e) {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'merge_error',
-        `revoked-seed failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-      // Fail-open: continue boot without the seeded set.
-    }
+  try {
+    const seeded = await loadRevoked();
+    for (const pk of seeded) revoked.add(pk);
+  } catch (e) {
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'merge_error',
+      `revoked-seed failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    // Fail-open: continue boot without the seeded set.
   }
 
   // ── Pending-peer retry set (D-006) ── peers whose channel-2 file hasn't
@@ -556,14 +547,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         },
       });
 
-      // ── Merge-refresh (test-seam path, D-002): when a loadRevokedOverride is
-      // provided, run the refresh synchronously INSIDE the serialized merge block
-      // (merging=true) so it cannot race a concurrent merge pass. The production
-      // path runs the same refresh in the poll-timer callback below so tests that
-      // use fake timers don't accidentally trigger the real PG loader.
-      if (opts.loadRevokedOverride) {
-        await applyRevocationRefresh();
-      }
+      // ── Merge-refresh (D-002): ALWAYS run inside the serialized merge block
+      // (merging=true) so it cannot race a concurrent merge pass. This collapses
+      // the former test/production asymmetry: the refresh now runs under the lock
+      // on every mergeNow() call regardless of whether an override is in use.
+      // `applyRevocationRefresh` calls `loadRevoked` (which may call the real PG
+      // loader in production) then synchronously drops any newly-revoked peers from
+      // admitted/pubkeyToLogKey/pendingPeers — no re-entrancy into mergeNow.
+      await applyRevocationRefresh();
 
       return applied;
     } catch (e) {
@@ -595,26 +586,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const mergePollMs = Number.isFinite(opts.mergePollMs as number)
     ? (opts.mergePollMs as number)
     : MERGE_POLL_MS;
-  // Production revocation-refresh: for callers without a loadRevokedOverride,
-  // the merge-refresh runs HERE in the poll-timer callback (after mergeNow
-  // awaits, so it's effectively serialized — the `merging` flag is already clear
-  // at this point). This keeps the real PG loader out of the tight `mergeNow`
-  // path and avoids fake-timer interactions in tests that don't supply an
-  // override. Tests that do supply `loadRevokedOverride` get their refresh
-  // synchronously inside `mergeNow` (above).
+  // Poll-driven merge cadence. The revocation refresh now runs INSIDE mergeNow
+  // under the merging lock (see above), so the poll-timer callback only needs
+  // to call mergeNow() — no separate out-of-lock refresh here.
   const mergeTimer =
     mergePollMs > 0
       ? setInterval(async () => {
           await mergeNow();
-          if (stopped) return;
-          if (!opts.loadRevokedOverride) {
-            // Production path: refresh after a successful merge pass.
-            try {
-              await applyRevocationRefresh();
-            } catch {
-              // Fail-open: a refresh load failure never stalls the poll loop.
-            }
-          }
         }, mergePollMs)
       : null;
   if (mergeTimer && typeof (mergeTimer as { unref?: () => void }).unref === 'function') {
