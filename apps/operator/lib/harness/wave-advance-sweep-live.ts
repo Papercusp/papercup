@@ -24,6 +24,7 @@ import { resolveProject } from '../harness-core';
 import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
 import { runWaveAdvanceTick, type WaveSweepDeps, type StartedPlan } from './wave-advance-sweep';
 import type { WaveFeature, WaveForAdvance } from './waves';
+import { loopbackFetch } from '../loopback-fetch';
 
 const SWEEP_INTERVAL_MS = Number(process.env.PAPERCUSP_WAVE_SWEEP_MS ?? 30_000);
 
@@ -89,7 +90,7 @@ export function liveWaveSweepDeps(): WaveSweepDeps {
       // NEEDS_ITEMS from Runtime context). promoteWave throws on non-OK → the tick
       // does NOT advance the cursor → it retries next tick.
       const url = `${operatorBase()}/api/harness/${encodeURIComponent(p.harnessSlug)}/invoke?role=promote`;
-      const res = await fetch(url, {
+      const res = await loopbackFetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({

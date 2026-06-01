@@ -40,6 +40,7 @@ import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
 import { ensureHarnessPlanAssertionsTable } from '../../../ensure-schema';
+import { loopbackFetch } from '../../../loopback-fetch';
 import { getOrgPg } from '@papercusp/db-org';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
@@ -189,7 +190,7 @@ async function postFeaturesImport(
   provenanceFailed?: number;
   provenanceErrors?: Array<{ feature_id: string; error: string }>;
 }> {
-  const r = await fetch(
+  const r = await loopbackFetch(
     `${operatorBase()}/api/harness/${encodeURIComponent(harnessSlug)}/features/import`,
     {
       method: 'POST',

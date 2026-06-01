@@ -8,6 +8,8 @@
  * schema changes without re-implementing them here.
  */
 
+import { loopbackFetch } from './loopback-fetch';
+
 interface AgentRow {
   slug: string;
   role: string;
@@ -46,7 +48,7 @@ const __agentsCache: AgentsCacheEntry = (() => {
 })();
 
 async function fetchOneSlug(slug: string, base: string): Promise<AgentRow[]> {
-  const cr = await fetch(`${base}/api/harness/${encodeURIComponent(slug)}/agent-chats`).catch(() => null);
+  const cr = await loopbackFetch(`${base}/api/harness/${encodeURIComponent(slug)}/agent-chats`).catch(() => null);
   if (!cr || !cr.ok) return [];
   const cd = (await cr.json().catch(() => null)) as { chats?: Array<any> } | null;
   const chats = Array.isArray(cd?.chats) ? cd!.chats : [];
@@ -64,7 +66,7 @@ async function fetchOneSlug(slug: string, base: string): Promise<AgentRow[]> {
 }
 
 async function computeAllAgents(base: string): Promise<AgentRow[]> {
-  const projR = await fetch(`${base}/api/harness/projects`);
+  const projR = await loopbackFetch(`${base}/api/harness/projects`);
   if (!projR.ok) return [];
   const projData = (await projR.json()) as { projects?: Array<{ slug: string }> };
   const slugs = (projData.projects ?? []).map((p) => p.slug);
