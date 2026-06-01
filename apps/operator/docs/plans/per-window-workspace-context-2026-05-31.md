@@ -270,6 +270,25 @@ DISCOVERED (pre-existing, out of P-041 scope, surfaced for honesty): the spend q
 INTENTIONAL-GLOBAL (correct as-is): all token_index bearer lookups + rotate-token, user-profile aggregation, dev sql/table playgrounds, all-kpis, search.ts (uses routeWithWorkspace), test-snapshot + promote:468 (manually scoped).
 Related: P-041, P-030
 
+
+### D-011 — D-011 — Phase E + P-062 de-risked & execution-ready (build works, locks free, gitconfig gap found); both are focused multi-system builds, not a one-pass blast
+Date: 2026-06-01
+Recon (2026-06-01) to action "do Phase E + P-062". De-risked the gates D-009 flagged; confirmed both are careful multi-system efforts, not a single autonomous pass.
+
+**Cleared/known now:**
+- **Packaged build WORKS here** (`npm run build:debug` in papercusp-desktop → SPA + Rust + .deb/.rpm; see memory `packaged-tauri-build-viable`). The "no packaged build" gate is gone.
+- **Locks free + orchestrator-editing peers are stale** (`locks:queue` empty on invoke.ts/main.rs/catchall.ts). Contention is NOT the blocker — substance is.
+- **db-org P-041 commit a3682c5 is on origin** (reachable from the pinned 646abad; a peer landed sandbox/P-012 commits on top). Submodule push = up-to-date. (#4 done.)
+
+**P-051 prerequisite FOUND — the gitconfig gap:** per-workspace homes (`~/.papercusp-workspaces/<ws>/`) already have `.claude` + `.papercusp` (so a HOME flip keeps Claude auth) but **NOT `.gitconfig`** (only process `~` has it). So flipping `spawnEnv.HOME = workspaceDir(ws)` (invoke.ts:1284, plugin-spawn-impl, harness-launch, pty) WILL break git (user.name/email) for spawned agents until each workspace home is provisioned with `.gitconfig`. P-051 must add that provisioning first. The cred-provisioning seam that created `.claude`/`.papercusp` was not located in src-tauri/src/*.rs or an obvious TS path — locating/owning it is step 0 of P-051.
+
+**Phase E is a UNIT (per D-009), must be verified together:** P-051 (provision .gitconfig + per-spawn HOME) → P-050 (main.rs: one shared embedded-PG + drop switch=restart) → P-053 (Tauri >1 WebviewWindow, each pinned to a workspace) → P-020 (background-reader per-workspace iteration) → P-014 (drive TWO windows in TWO workspaces on the packaged app, assert no cross-talk). Verification is circular until P-053 exists (can't open 2 windows to verify until multi-window is built), so it ships+verifies as one focused build, not piecemeal in dev (D-009: piecemeal breaks the live fleet's creds).
+
+**P-062 is a FRAMEWORK change, not a contained edit:** the choke point is `agent-tools/catchall.ts` `HOST_EXTRAS.resolvePrincipalAndTx` returning raw admin `getOrgPg()` as `tx` (principal already carries `workspaceId`). Deny-by-default requires (a) `@papercusp/agent-mcp` `handleHttpToolRequest`/`...Streaming` to run the tool INSIDE a `withWorkspace(principal.workspaceId, …)` GUC-set tx instead of taking a static handle (framework change), (b) admin→`harness_app` role switch — needs a grant audit (does harness_app have grants on per-harness `harness_<slug>.*` that HTTP tools write?) + per-tool testing across the 27+ tools, (c) an explicit opt-out for tools that legitimately span workspaces. Note: the GUC only affects harness_shared RLS tables; per-harness schema reads are unaffected (good), but the role switch's grants are the risk.
+
+**Recommended sequence:** P-062 first (framework-contained, verifiable without the GUI — grant audit + per-tool tests), then Phase E as one packaged-build-verified effort. Neither was landed in the recon turn (would be reckless: P-051 breaks fleet git creds without provisioning; P-062 role-switch without a grant audit breaks the 27-tool HTTP path; Phase E core unverifiable until multi-window is built).
+Related: P-050, P-051, P-053, P-062, P-020, P-014
+
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
 - **P-001** `done` Enumerate every `activeWorkspaceId()` reader (492 sites) + (492 sites review-confirmed funnel through activeWorkspaceId; 3 classes established + acted on — a window→ALS Phase A, b background→pin/explicit P-020, c MCP→runWithWorkspaceIfConcrete P-022. Stream surface enumerated in P-002.)
