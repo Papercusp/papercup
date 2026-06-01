@@ -231,3 +231,6 @@ import './plans/runs-list';
 import './plans/run-status';
 // plan-feature-pipeline-unification P-019: promote:plan block handler.
 import './architect/plan-block-handler';
+
+// substrate-revocation-v1 Task 3 — self-revocation of own device keys.
+import './substrate/revoke-self-device';
