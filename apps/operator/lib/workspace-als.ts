@@ -18,11 +18,21 @@ interface WorkspaceRequestContext {
   workspaceId?: string;
 }
 
-const workspaceCtx = new AsyncLocalStorage<WorkspaceRequestContext>();
+// `AsyncLocalStorage` is Node-only. This module is server-only by intent, but
+// it is transitively reachable from the client (operator-vite) bundle via the
+// workspace-registry import graph — and a bare `new AsyncLocalStorage()` at
+// module load throws "undefined is not a constructor" in the browser and
+// white-screens the app. Guard construction and degrade every accessor to a
+// safe no-op client-side (the browser never runs request-scoped workspace
+// logic — it uses `?ws=` / the global). Full behavior is preserved under Node.
+const workspaceCtx =
+  typeof AsyncLocalStorage === 'function'
+    ? new AsyncLocalStorage<WorkspaceRequestContext>()
+    : undefined;
 
 /** The request-scoped workspace id, or undefined when not inside a request. */
 export function currentRequestWorkspaceId(): string | undefined {
-  return workspaceCtx.getStore()?.workspaceId;
+  return workspaceCtx?.getStore()?.workspaceId;
 }
 
 /**
@@ -32,12 +42,12 @@ export function currentRequestWorkspaceId(): string | undefined {
  * P-021 diagnostic.
  */
 export function isInRequestScope(): boolean {
-  return workspaceCtx.getStore() !== undefined;
+  return workspaceCtx?.getStore() !== undefined;
 }
 
 /** Run `fn` with `workspaceId` attached to its async stack. */
 export function runWithWorkspace<T>(workspaceId: string, fn: () => T): T {
-  return workspaceCtx.run({ workspaceId }, fn);
+  return workspaceCtx ? workspaceCtx.run({ workspaceId }, fn) : fn();
 }
 
 /**
@@ -47,7 +57,7 @@ export function runWithWorkspace<T>(workspaceId: string, fn: () => T): T {
  * diagnostic can flag the fall-through.
  */
 export function runInRequestScope<T>(fn: () => T): T {
-  return workspaceCtx.run({}, fn);
+  return workspaceCtx ? workspaceCtx.run({}, fn) : fn();
 }
 
 /**

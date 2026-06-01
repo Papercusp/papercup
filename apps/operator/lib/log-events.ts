@@ -51,11 +51,18 @@ interface PluginExecutionContext {
   jsonlPath: string;
 }
 
-const pluginExecCtx = new AsyncLocalStorage<PluginExecutionContext>();
+// `AsyncLocalStorage` is Node-only; guard construction so this server module
+// can be transitively imported by the client (operator-vite) bundle without
+// throwing "undefined is not a constructor" at module load. The accessors
+// no-op safely in the browser (plugin-exec context is server-only).
+const pluginExecCtx =
+  typeof AsyncLocalStorage === 'function'
+    ? new AsyncLocalStorage<PluginExecutionContext>()
+    : undefined;
 
 /** Return the active plugin-execution context, if any. */
 export function currentPluginExecCtx(): PluginExecutionContext | undefined {
-  return pluginExecCtx.getStore();
+  return pluginExecCtx?.getStore();
 }
 
 /** Run `fn` with a plugin-execution context attached to its async stack. */
@@ -63,7 +70,7 @@ export function runWithPluginExecCtx<T>(
   ctx: PluginExecutionContext,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
-  return pluginExecCtx.run(ctx, fn);
+  return pluginExecCtx ? pluginExecCtx.run(ctx, fn) : fn();
 }
 
 /**
