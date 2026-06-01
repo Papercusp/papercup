@@ -21,14 +21,14 @@ const domains: TestDomain[] = [
     id: 'endpoints',
     label: 'Endpoints',
     description: 'Endpoint tests.',
-    tier: 'generalized',
+    tier: 'universal',
     sections: [{ id: 'all', label: 'All', role: 'endpoints' }],
   },
   {
     id: 'unit',
     label: 'Unit',
     description: 'Unit tests.',
-    tier: 'generalized',
+    tier: 'universal',
     sections: [
       { id: 'role-based', label: 'By role', role: 'unit' },
       { id: 'fixed', label: 'Fixed', globs: ['always/**/*.test.ts'] },
@@ -67,7 +67,7 @@ describe('defineTestDomain section invariant', () => {
         id: 'role-only',
         label: 'Role only',
         description: '',
-        tier: 'generalized',
+        tier: 'universal',
         sections: [{ id: 'all', label: 'All', role: 'endpoints' }],
       }),
     ).not.toThrow();

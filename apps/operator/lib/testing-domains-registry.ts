@@ -4,12 +4,13 @@
  * Plan: admin-testing-tab-restructure-2026-05-24 (P-002); split in Phase B
  * (P-010/P-011) of harness-tests-tab-and-tester-promotion-2026-05-26.
  *
- * The GENERALIZED domains (test-runs / live / chaos / ai / routes) — the
- * ones that apply to any coding harness — now live in
- * `@papercusp/testing-shell` as `generalizedRegistry` (pure data). This
- * file registers them into the shared `defineTestDomain` Map and declares
- * the 16 Papercusp-only domains inline. The lib↔operator boundary IS the
- * generalized↔Papercusp boundary — there is no separate `.papercusp.ts`.
+ * The portable `routes` domain — the one that applies to any project —
+ * lives in `@papercusp/testing-shell` as `universalDomains` (pure data);
+ * this file resolves its `endpoints` role against the operator's own repo
+ * (OPERATOR_ROLE_GLOBS) and registers it. The Papercusp-runtime-bound
+ * test-runs / live / chaos / ai moved here from the lib (they can't run
+ * against a non-Papercusp project as-is — D-002 option b), alongside the 16
+ * other Papercusp-only domains — 20 in all (testing-shell-cross-project D-007).
  *
  * Importing this module side-effect-registers all 21 domains. The four
  * /admin/testing endpoint routes (P-003) side-effect-import it to populate
@@ -25,15 +26,80 @@
  * generalized 5 carry tier `generalized`.
  */
 
-import { defineTestDomain, getTestDomain, generalizedRegistry, type TestDomain } from './testing-domains';
+import { defineTestDomain, getTestDomain, universalDomains, applyRoleGlobs, type TestDomain } from './testing-domains';
 
-// Register the lib-provided generalized domains into the shared Map so
-// /admin/testing's getTestDomain / listTestDomains see all 21 (P-010).
-for (const d of generalizedRegistry) defineTestDomain(d);
+// The operator's role→globs map for the lib's universal domains: it supplies
+// the concrete endpoint-test paths the lib leaves as the 'endpoints' role
+// (testing-shell-cross-project D-007). applyRoleGlobs fills routes' globs so
+// /admin/testing (and the registered Map) resolve against the operator repo.
+const OPERATOR_ROLE_GLOBS: Record<string, string[]> = {
+  endpoints: ['apps/operator/lib/endpoint-route/__tests__/**/*.test.ts'],
+};
+
+/** The lib's universal domains, resolved against the operator's own repo. */
+const operatorUniversal: TestDomain[] = applyRoleGlobs(universalDomains, OPERATOR_ROLE_GLOBS);
+
+// Register the universal domains (role-resolved) into the shared Map so
+// /admin/testing's getTestDomain / listTestDomains see them.
+for (const d of operatorUniversal) defineTestDomain(d);
 
 /* ---------------------------------------------------------------- *
- * Papercusp-only domains (16). Generalized ones live in the lib.
+ * Papercusp-only domains (20). The portable `routes` domain lives in the lib
+ * (@papercusp/testing-shell, universalDomains). The Papercusp-runtime-bound
+ * test-runs/live/chaos/ai used to live there too but moved here — they can't
+ * run against a non-Papercusp project as-is (D-002 option b; generalizing
+ * them to drive each project's base URL is a deferred follow-up).
  * ---------------------------------------------------------------- */
+
+// — Moved from the lib (formerly the generalized tier; now Papercusp 'quick') —
+defineTestDomain({
+  id: 'test-runs',
+  label: 'Test Runs',
+  description: 'Suite orchestrator: start / poll / cancel named suites.',
+  tier: 'quick',
+  sections: [
+    {
+      id: 'all',
+      label: 'Suites',
+      description: 'All admin-test-suite runs.',
+      runners: [{ kind: 'admin-suite', suiteId: 'desktop-health' }],
+    },
+  ],
+});
+
+defineTestDomain({
+  id: 'live',
+  label: 'Live',
+  description: 'Passive observer: interactions, console, layout, unhandled errors.',
+  tier: 'quick',
+  sections: [
+    { id: 'all', label: 'Observers', globs: ['apps/operator/app/admin/testing/_lib/vitals-*.test.ts'] },
+  ],
+});
+
+defineTestDomain({
+  id: 'chaos',
+  label: 'Chaos',
+  description: 'Autonomous clicker that drives the Tauri shell looking for crashes.',
+  tier: 'quick',
+  sections: [
+    { id: 'host', label: 'Recorder host', globs: ['apps/operator/app/admin/testing/_lib/chaos-*.test.ts'] },
+  ],
+});
+
+defineTestDomain({
+  id: 'ai',
+  label: 'AI Explore',
+  description: 'Stagehand LLM walk over admin routes.',
+  tier: 'quick',
+  sections: [
+    {
+      id: 'prompts',
+      label: 'Prompts',
+      runners: [{ kind: 'admin-suite', suiteId: 'ai-explore-prompts' }],
+    },
+  ],
+});
 
 defineTestDomain({
   id: 'memory',
@@ -403,13 +469,14 @@ defineTestDomain({
 });
 
 /* ---------------------------------------------------------------- *
- * Composed views (P-011). `papercuspRegistry` = the 16 declared above
- * (read back from the Map by id); `adminRegistry` = generalized + papercusp
+ * Composed views (P-011). `papercuspRegistry` = the 20 declared above
+ * (read back from the Map by id); `adminRegistry` = universal + papercusp
  * = the full /admin/testing set. The SPA nav order is TestingClient's own
  * TABS, not these arrays.
  * ---------------------------------------------------------------- */
 
 const PAPERCUSP_IDS = [
+  'test-runs', 'live', 'chaos', 'ai',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
   'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
   'provisioning', 'docs',
@@ -421,4 +488,4 @@ export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {
   return d;
 });
 
-export const adminRegistry: TestDomain[] = [...generalizedRegistry, ...papercuspRegistry];
+export const adminRegistry: TestDomain[] = [...operatorUniversal, ...papercuspRegistry];

@@ -89,12 +89,12 @@ export interface TestSection {
  */
 /**
  * Display tiers a domain can belong to. `quick` / `domain` / `surface` are
- * the /admin/testing taxonomy; `generalized` marks domains that apply to
- * any coding harness (declared in registry/generalized.ts, shown under
- * "Built-in" in the harness Tests tab); `project` is the harness-specific
- * acceptance tier. Each consumer maps these to its own section labels.
+ * the /admin/testing taxonomy; `universal` marks domains that apply to ANY
+ * project (declared in registry/universal.ts, shown under "Universal" in the
+ * harness Tests tab); `project` is the harness-specific acceptance tier.
+ * Each consumer maps these to its own section labels.
  */
-export type TestTier = 'generalized' | 'quick' | 'domain' | 'surface' | 'project';
+export type TestTier = 'universal' | 'quick' | 'domain' | 'surface' | 'project';
 
 export interface TestDomain {
   id: string;
@@ -107,13 +107,13 @@ export interface TestDomain {
 }
 
 /**
- * Generalized domains (apply to any coding harness) are declared in
- * registry/generalized.ts and re-exported here so SERVER-SIDE callers can
+ * Universal domains (apply to any project) are declared in
+ * registry/universal.ts and re-exported here so SERVER-SIDE callers can
  * reach them via the React/CSS-free `@papercusp/testing-shell/registry`
  * entry (and the operator's `./testing-domains` shim) without importing
  * DomainTestPanel / TestingShell (which would crash the Hono/tsx server).
  */
-export { generalizedRegistry } from './registry/generalized';
+export { universalDomains } from './registry/universal';
 
 const _registry = new Map<string, TestDomain>();
 
@@ -166,7 +166,7 @@ export function getTestDomain(id: string): TestDomain | undefined {
 /** Snapshot of every registered domain, ordered by tier then registration order. */
 export function listTestDomains(): TestDomain[] {
   const tierOrder: Record<TestTier, number> = {
-    generalized: -1,
+    universal: -1,
     quick: 0,
     domain: 1,
     surface: 2,

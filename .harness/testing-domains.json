@@ -5,7 +5,7 @@
       "id": "test-runs",
       "label": "Test Runs",
       "description": "Suite orchestrator: start / poll / cancel named suites.",
-      "tier": "generalized",
+      "tier": "universal",
       "sections": [
         {
           "id": "all",
@@ -24,7 +24,7 @@
       "id": "live",
       "label": "Live",
       "description": "Passive observer: interactions, console, layout, unhandled errors.",
-      "tier": "generalized",
+      "tier": "universal",
       "sections": [
         {
           "id": "all",
@@ -39,7 +39,7 @@
       "id": "chaos",
       "label": "Chaos",
       "description": "Autonomous clicker that drives the Tauri shell looking for crashes.",
-      "tier": "generalized",
+      "tier": "universal",
       "sections": [
         {
           "id": "host",
@@ -54,7 +54,7 @@
       "id": "ai",
       "label": "AI Explore",
       "description": "Stagehand LLM walk over admin routes.",
-      "tier": "generalized",
+      "tier": "universal",
       "sections": [
         {
           "id": "prompts",
@@ -72,7 +72,7 @@
       "id": "routes",
       "label": "Routes",
       "description": "Per-route INP rollup + Hono endpoint test surface.",
-      "tier": "generalized",
+      "tier": "universal",
       "sections": [
         {
           "id": "endpoint-tests",
@@ -762,7 +762,7 @@
     }
   ],
   "tierLabels": {
-    "generalized": "Universal",
+    "universal": "Universal",
     "project": "This Harness"
   }
 }
