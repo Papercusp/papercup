@@ -10,20 +10,9 @@ updated: 2026-06-01
 
 ## Now
 
-**State:** Draft — design proposed, awaiting review. No code yet. Follow-on to
-`desktop-ipc-transport-completion-2026-05-20` (Phase 4 / endpoint-IPC).
+**State:** Phase A FOUNDATION landed + committed (operator 0f37e853c). `apps/operator/lib/call-tool.ts` — `callTool` / `callToolStream` / `callRoute` over a registry-injected transport picker (`configureCallTool`). Default = route-preserving `dispatchEndpointStreamHttp` (carried over `sys:http` by the polyfill on desktop — off browser HTTP, route logic intact). Direct dispatch (`dispatchEndpointStreamIpc`) is chosen ONLY for a tool the resolver marks `directEligible` AND only on desktop; the default resolver never does, so direct is OFF (D-001/D-003). 9/9 unit tests (picker default, route/shim override, resolver route, eligibility on/off + desktop gate, error/no_terminal, callRoute→fetch). **P-001 ✓, P-002 ✓.** **P-003:** the `sys:http`/HTTP path already carries workspace scope via the existing `installWorkspaceHeaderFetch` polyfill — no new code needed for Phase A; the direct-path RequestContext (RLS GUC + user) is Phase E (P-008). **Behavior-preserving: zero call sites migrated, zero runtime change** — the seam exists but nothing calls it yet.
 
-**Next:** Review the design + the honest framing below (the seam's value is
-architectural + off-HTTP, NOT a perceptible perf win — direct dispatch saves µs
-against ms/s of PG/LLM work). If greenlit, start **Phase A** (build the seam,
-default everyone to `sys:http`, behavior-preserving).
-
-**Rationale:** Today clients hand-craft `fetch('/api/…')` and the desktop-ipc
-polyfill transparently carries it over IPC via `sys:http` (route-preserving).
-Upgrading an endpoint to *direct in-process dispatch* (skip the loopback-HTTP
-replay) currently needs a per-call-site client rewrite. A single `callTool`
-seam moves the transport decision into one registry-driven place, so the upgrade
-becomes a one-line **server-side** opt-in with zero client churn.
+**Next:** Phase B prerequisite: wire the operator resolver — `configureCallTool` with the real projected registry (canonical route per tool + the custom-shim overrides, e.g. oracle:chat → /api/oracle/chat). Then migrate call sites incrementally onto `callTool`/`callRoute` (polyfill stays as the net). Hold Phase E (direct dispatch) until Phase D (P-007, the SSE-over-IPC reconnect churn) is fixed. Good point to pause for review of the seam API before the migration sweep.
 
 ## Background
 
