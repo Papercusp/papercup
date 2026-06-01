@@ -12,7 +12,7 @@ status: shipped
 
 **State:** **🟢 CODE-COMPLETE + DEPLOYED.** `cupboard.papercusp.com` is live (`GET /harnesses` → 200; `PAPERCUSP_CUPBOARD_URL` set). Remaining is publishing real harnesses (user action), not engineering.
 
-Shipped 2026-05-31 (this loop): **operator moderation surface** (`/admin/*`) — closes the report black-hole flagged in P-051a-3 / D-023. See **D-002**. The only follow-up is an optional desktop-operator moderation UI on top of `/admin` (server side is complete + tested).
+Shipped 2026-05-31 (this loop): **operator moderation, end-to-end** — the Cupboard worker `/admin/*` surface (closes the report black-hole, P-051a-3 / D-023), **deployed** with `CUPBOARD_OPERATOR_GITHUB_IDS="279242982"` (papercupai), **plus** the desktop moderation UI (`/admin/cupboard-moderation` route + "Cupboard" admin nav tab + `/api/cupboard/admin/*` gh-token proxy), **plus** a fix to a real browse-proxy bug. See **D-002**. Remaining: a visual/interaction pass in the Tauri shell (compile-verified only).
 
 Shipped 2026-05-24: P-052 (Cupboard UI), P-054 (Discord deep-link + webhook), P-055 (sync-with-main badge + dialog).
 
@@ -161,7 +161,12 @@ Date: 2026-05-31
 
 **Operator identity = a GitHub-user-id allowlist** (`CUPBOARD_OPERATOR_GITHUB_IDS` var, comma-separated), checked via the existing `resolveGithubBearer` flow. Rationale: no new shared secret (GitHub ids are public, not secret); every moderation action is attributable to a real GitHub identity in the audit log; consistent with Cupboard's "GitHub is the anchor" model. **Empty allowlist ⇒ no operators ⇒ every `/admin` endpoint 403s**, so the change is inert until an operator deploys with the var set. The schema already supported all of this (`reports.status` / `resolved_at` / `resolved_by_operator_note`; `reports_pending_idx`; `harnesses.unlisted_reason='by_operator'`) — no migration. 12 tests; worker suite 59/59 green. (Commit `dd85fffb8`.)
 
-**Remaining (optional):** a desktop-operator moderation UI rendering `/admin/reports` with resolve/unlist buttons. The server side is complete; the UI is a thin client and a nice-to-have, not a blocker.
+**Deployed + UI landed 2026-05-31 (commit `f5b6dd233`; deploy version `a428a522`):**
+- Worker deployed with `CUPBOARD_OPERATOR_GITHUB_IDS="279242982"` (papercupai — the account the desktop authenticates as via `gh auth token`). Verified live: `GET /admin/reports` → 401 missing_bearer (route exists), bogus bearer → 401 github_rejected, `/` + `/harnesses` still 200.
+- Desktop UI: `/admin/cupboard-moderation` route in the live operator-vite shell + "Cupboard" admin nav tab; `CupboardModerationClient` (report queue + dismiss/unlist, nuqs status filter); `/api/cupboard/admin/*` operator proxy (adds the gh-token server-side, like the publish proxy).
+- Same commit FIXED a real browse-proxy bug: `cupboard.ts` hit `${CUPBOARD_URL}/api/harnesses` (404s on the worker — it serves `/harnesses`) and read `{harnesses}` (worker returns `{results}`). The operator's Cupboard browse path was broken; now corrected for both list + detail.
+
+**Remaining:** a visual/interaction pass in the Tauri shell (the UI is compile-verified — operator tsc + operator-vite build green, route registered — but not yet clicked through a running desktop). Optional polish: a per-report operator note field (the server accepts `note`; the v1 UI sends action-only).
 
 ## Named fallback rollout
 
