@@ -192,6 +192,31 @@ post-restart: `GET /api/admin/dogfood-substrate-health` → `{harnesses:[],
 summary.worstVerdict:'healthy', totalHarnesses:0}`. 411 hyperbee+insights unit
 tests green.
 
+**P-079 same-box TRANSPORT surrogate is now BUILT + green** (commit `d75dcfaed`).
+Earlier handoffs said the two-peer test "still needs Tauri + 2 peers" / was the
+user's manual step — that was an over-claim for the *transport* layer.
+`apps/operator/lib/sync/hyperbee/__tests__/two-peer-swarm.test.ts` boots two REAL
+`bootHarnessSubstrate` peers over a **local testnet DHT** (`hyperdht/testnet.js`,
+offline + deterministic), injected via the existing `swarmOverride` seam, and
+proves a write on peer A reaches peer B's apply sink via the ACTUAL wire — DHT
+discovery → `corestore.replicate(socket)` → signed-announce exchange on the
+`papercusp/announce` channel → `onAnnounce` admit → remote-log replicate →
+`mergeNow`. This fills the exact gap `two-peer.test.ts` stubbed (it hand-piped the
+replication stream). Stable across repeated runs (~0.5s; loopback DHT, no
+holepunch delay). One small production-no-op test seam was added to `boot.ts`
+(`announceIdentityOverride` — injects a fake gh user + a self-generated Ed25519
+keypair + a matching signer, so the announce SIGNATURE genuinely verifies over the
+wire without touching `gh`/the OS keychain).
+
+**Still genuinely gated (NOT solo-doable):** the channel-2 GitHub-binding
+admission gate is BYPASSED in this test (`verifyBindingOverride:()=>true`) — the
+real gate needs two GitHub-**published** two-channel bindings (contributor file +
+OAuth `GET /user`), which need a 2nd GitHub identity + the binding-publish /
+ShareWizard pipeline. So the **gate-active, two-real-identities** P-079 (and the
+true cross-MACHINE P-080 soak) remain the user's acceptance steps. The gate LOGIC
+itself is already unit-covered (`read-admission` tests + `two-peer.test.ts`
+Cases 2-3: forged binding / tampered announce / revoke).
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
