@@ -53,7 +53,7 @@ describe('substrate integration smoke', () => {
     expect(out.lines.join('\n')).toContain('· off');
   });
 
-  it('booting state — flag on + no handles → composer says booting → formatter exit 1', () => {
+  it('idle state — substrate on + no handles → composer says healthy → formatter exit 0', () => {
     const status = getInProcessSubstrateStatus();
     const out = formatSubstrateStatus({
       enabled: status.substrateActive,
@@ -61,8 +61,8 @@ describe('substrate integration smoke', () => {
       harnesses: status.harnesses,
       summary: status.summary,
     });
-    expect(status.summary.worstVerdict).toBe('booting');
-    expect(out.exitCode).toBe(1);
+    expect(status.summary.worstVerdict).toBe('healthy');
+    expect(out.exitCode).toBe(0);
   });
 
   it('healthy state — flag on + one handle + no claim errors → exit 0', () => {

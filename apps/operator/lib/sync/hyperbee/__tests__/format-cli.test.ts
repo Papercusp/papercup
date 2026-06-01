@@ -30,11 +30,11 @@ describe('formatSubstrateStatus', () => {
     expect(r.lines.join('\n')).toContain('substrate reported disabled');
   });
 
-  it('on + no boot map → exit 1 + no-handles hint', () => {
+  it('on + no booted → exit 0 + idle hint (always-on substrate, nothing shared)', () => {
     const r = formatSubstrateStatus({ enabled: true, bootedCount: 0 });
-    expect(r.exitCode).toBe(1);
+    expect(r.exitCode).toBe(0);
     expect(r.lines[0]).toContain('✓ ON');
-    expect(r.lines.join('\n')).toContain('no handles in the boot map yet');
+    expect(r.lines.join('\n')).toContain('no shared harnesses booted');
   });
 
   it('singular "harness" for booted=1', () => {

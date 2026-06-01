@@ -8,8 +8,8 @@
  * fetch + process.exit; the logic itself is pure.
  *
  * Exit codes (used by CI / monitoring scripts):
- *   0  flag off OR every harness healthy
- *   1  any harness degraded / unhealthy / booting OR no boot map
+ *   0  substrate off, idle (no harnesses booted), OR every booted harness healthy
+ *   1  any booted harness degraded / unhealthy / booting
  *   2  reserved for the script wrapper to use on fetch failure
  */
 
@@ -73,9 +73,10 @@ function summarySegments(s: WorkspaceSubstrateSummary): string {
  * uses).
  *
  * Behavior matches the CLI:
- *   - Flag off → header + hint, exit 0.
- *   - Flag on + no booted → header + hint, exit 1.
- *   - Flag on + booted → header + summary + table, exit 1 iff any
+ *   - Substrate off → header + hint, exit 0.
+ *   - On + no booted → header + idle hint, exit 0 (idle ground state —
+ *     no harness has been shared; not an alarm).
+ *   - On + booted → header + summary + table, exit 1 iff any
  *     row's verdict is in BAD_VERDICTS.
  */
 export function formatSubstrateStatus(
@@ -96,8 +97,12 @@ export function formatSubstrateStatus(
     return { lines, exitCode: 0 };
   }
   if (input.bootedCount === 0) {
-    lines.push('  → substrate on but no handles in the boot map yet.');
-    return { lines, exitCode: 1 };
+    // Always-on substrate: zero booted harnesses is the idle ground state
+    // (no harness has been shared), not an alarm — so exit 0, not 1. A real
+    // boot failure surfaces as a per-harness 'unhealthy'/'booting' row or a
+    // boot-history boot_fail event, not as "nothing booted".
+    lines.push('  → substrate on; no shared harnesses booted (idle).');
+    return { lines, exitCode: 0 };
   }
 
   if (input.summary) {

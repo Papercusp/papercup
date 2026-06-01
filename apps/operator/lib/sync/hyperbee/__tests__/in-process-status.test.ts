@@ -36,12 +36,12 @@ describe('getInProcessSubstrateStatus', () => {
     expect(r.summary.worstVerdict).toBe('disabled');
   });
 
-  it('active (default) + no handles → booting summary', () => {
+  it('active (default) + no handles → healthy summary (idle — nothing shared)', () => {
     const r = getInProcessSubstrateStatus();
     expect(r.substrateActive).toBe(true);
     expect(r.bootedCount).toBe(0);
     expect(r.harnesses).toEqual([]);
-    expect(r.summary.worstVerdict).toBe('booting');
+    expect(r.summary.worstVerdict).toBe('healthy');
   });
 
   it('active + one healthy handle', () => {

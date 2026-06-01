@@ -38,8 +38,9 @@ export interface WorkspaceSubstrateSummary {
   unhealthy: number;
   disabled: number;
   /**
-   * Worst observed verdict across rows. When `enabled` is false and
-   * no rows are present, the summary is `'disabled'`.
+   * Worst observed verdict across rows. With the substrate always-on,
+   * an empty workspace (no booted harnesses) reports `'healthy'` — idle,
+   * nothing wrong. The legacy flag-off path reports `'disabled'`.
    */
   worstVerdict: SubstrateHealthVerdict;
 }
@@ -70,8 +71,12 @@ export function summariseWorkspaceSubstrate(
     counts[r.verdict] += 1;
     if (RANK[r.verdict] > RANK[worst]) worst = r.verdict;
   }
-  if (rows.length === 0) {
-    worst = flagEnabled ? 'booting' : 'disabled';
+  // Zero rows is not "booting" — with the substrate always-on, an empty
+  // workspace is simply idle (nothing wrong), so `worst` keeps its
+  // enabled init value of 'healthy'. Only the flag-off path (tests /
+  // legacy callers) reports 'disabled'.
+  if (rows.length === 0 && !flagEnabled) {
+    worst = 'disabled';
   }
   return {
     enabled: flagEnabled,

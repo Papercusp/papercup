@@ -76,25 +76,13 @@ const get = defineTool({
       }),
     );
 
-    // Add a workspace-level row when the flag is OFF (no harnesses
-    // booted, but the disabled state itself is the verdict).
-    if (rows.length === 0) {
-      rows.push({
-        workspaceId: '',
-        harnessSlug: '',
-        ...assessHarnessSubstrateHealth({
-          flagEnabled,
-          handlePresent: false,
-        }),
-      });
-    }
-
-    const summary = summariseWorkspaceSubstrate(
-      flagEnabled,
-      // The fallback row's workspaceId/slug are empty strings — drop
-      // those so the summary reflects only real per-harness verdicts.
-      rows.filter((r) => r.workspaceId !== '' && r.harnessSlug !== ''),
-    );
+    // Zero booted harnesses is the idle ground state. The substrate is
+    // always-on (the flag was removed), so there is no workspace-level
+    // "disabled" verdict to synthesise and no phantom placeholder row:
+    // `harnesses: []` lets the UI render its empty state ("No shared
+    // harnesses booted yet"), and the summary reports worstVerdict
+    // 'healthy' — nothing is wrong, there is simply nothing booted.
+    const summary = summariseWorkspaceSubstrate(flagEnabled, rows);
     return Response.json({
       flagEnabled,
       summary,

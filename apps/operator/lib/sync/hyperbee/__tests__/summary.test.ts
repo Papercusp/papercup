@@ -20,9 +20,9 @@ describe('summariseWorkspaceSubstrate', () => {
     });
   });
 
-  it('flag on + no rows → booting summary', () => {
+  it('flag on + no rows → healthy summary (idle — nothing wrong, nothing booted)', () => {
     const s = summariseWorkspaceSubstrate(true, []);
-    expect(s.worstVerdict).toBe('booting');
+    expect(s.worstVerdict).toBe('healthy');
     expect(s.totalHarnesses).toBe(0);
   });
 
