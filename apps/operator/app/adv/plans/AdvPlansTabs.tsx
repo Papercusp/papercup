@@ -147,7 +147,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
   };
 
   return (
-    <>
+    <div className="pc-adv-plans">
       <div className="pc-adv-tabstrip" role="tablist" aria-label="Open plans">
         {tabs.map((t) => {
           const isActive = t.id === activeTabId;
@@ -183,9 +183,22 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
           );
         })}
       </div>
-      {children}
+      <div className="pc-adv-plans__body">{children}</div>
       <style>{`
+        .pc-adv-plans {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+        }
+        .pc-adv-plans__body {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+        }
         .pc-adv-tabstrip {
+          flex: 0 0 auto;
           display: flex;
           align-items: stretch;
           gap: 3px;
@@ -238,7 +251,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
         }
         .pc-adv-tab__close:hover { color: var(--fg, #e7f7ff); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 84%); }
       `}</style>
-    </>
+    </div>
   );
 }
 
