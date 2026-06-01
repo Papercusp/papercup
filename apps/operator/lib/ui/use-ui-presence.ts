@@ -14,12 +14,13 @@
 
 import { useEffect, useRef } from 'react';
 import { getOrCreateClientId } from './client-id';
+import { callRoute } from '../call-tool';
 
 const HEARTBEAT_MS = 15_000;
 
 async function postPresence(clientId: string): Promise<void> {
   try {
-    await fetch('/api/ui/presence', {
+    await callRoute('/api/ui/presence', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
