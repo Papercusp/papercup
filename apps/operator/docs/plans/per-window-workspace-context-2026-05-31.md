@@ -11,9 +11,20 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase A/B/F + P-052 shipped earlier. The 2026-05-31→06-01 continuation closed all non-gated request-path scoping: **P-030** (WorkspaceSwitcher resolves the active workspace from the window, not the global reg.current — commit ee599d266) and **P-041** (audited ~98 getOrgPg sites; fixed the 11 real cross-workspace leaks — commits 14d95cea7 + db-org a3682c5 + f84a39c26). Of the 3 P-041 NEEDS-JUDGMENT items (D-010), **#1 (intel tool_invocations views) and #2 (plugins/tools health aggregate) are now also fixed** with the same explicit `workspace_id` predicate — the views expose workspace_id, so no migration was needed; all three scoped queries verified live against the schema (commit a66390a0e). The 3rd (agent-tools/catchall.ts deny-by-default choke point) is filed as **P-062**. Every request-path getOrgPg leak the audit found is now closed; the only known residue is a pre-existing, non-P-041 bug: the spend queries reference columns absent from tool_invocations (cost_microcents/ts/user_id_text → spend silently returns 0).
+**State:** Phase A/B/F + P-030/P-041/P-052/P-060/P-061 earlier. **2026-06-01: Phase E code complete + P-014 multi-window VERIFIED LIVE** (D-012 arch; D-013 landed; D-014 verification):
+- **P-050** shared sidecar(real HOME)+shared PG/.shared; switch no-restart. desktop `8609fbf`/`c844143`. cargo check clean.
+- **P-051** resolveSpawnHome() gated on PAPERCUSP_SHARED_OPERATOR=1. submodule `adb8167`. 85/85.
+- **P-053** open_window (origin from main-window URL, `5d76cf8`), ws-* capability, host-spa per-window ?ws=, switch→soft-navigate + openWorkspaceWindow + WorkspaceSwitcher ⧉ UI. operator `ab427638f`/`fca43ee0c`. 14/14 + vite build.
+- **P-014 PASS (dev)**: drove a dedicated Xvfb Tauri instance — opened a 2nd window scoped to `test2` (IPC works) while main stayed `papercusp-workspace`, one shared :3070 operator, no cross-talk. host-spa ?ws= curl-verified.
 
-**Next:** Owner decision on **P-062** (catchall deny-by-default choke point — structural, real blast radius, wants its own usage-assessment + per-tool test pass) and on whether to fix the pre-existing tool_invocations spend-column bug (no cost column exists at all). Everything else — P-014 live-SSE, P-020, P-031 no-restart-switch, P-050/P-051/P-053 — stays gated on a packaged Tauri build per D-009. NOTE: the :3070 host needs a restart to serve all the P-041 server-side changes (P-030 SPA changes hot-reload on :3055).
+REMAINING:
+- **P-050 release-BOOT run-check**: NOT done — blocked by other running release desktop instances (peer/test, /tmp homes) holding the binary inode (Text file busy on relink); did NOT force-kill peers. cargo-clean + dev topology demonstrates it. Clean-box follow-up.
+- **P-020** background-reader per-workspace iteration — pending (runtime-diagnostic-driven per D-009; operator-scan-lock is request-scoped, not a site).
+- **Data migration** — start-fresh shared DB assumed (D-012).
+
+User decisions owed (non-Phase-E): P-062 go+timing; Spend card direction + tool_invocations spend-column bug.
+
+**Next:** P-050 release-boot run-check on a clean box (no peer release instances holding the binary) — build release + run under Xvfb + tail for 'shared sidecar home / shared state dir' + embedded-PG at .shared/; then P-020 via the P-021 runtime diagnostic. (Non-Phase-E decisions P-062 / Spend card still owed.)
 
 ## Background
 
@@ -308,6 +319,41 @@ Deep recon (2026-06-01, user said "go on the Phase E unit") mapped the EXISTING 
 
 Verification stays P-014: `npm run build:debug` + drive two windows/two workspaces via tauri-agent-tools, assert no cross-talk. Implementation started this session.
 Related: P-050, P-051, P-053, P-020, P-014
+
+
+### D-013 — D-013 — Phase E foundation landed (P-050/P-051/P-053 mechanics), unit/compile-verified; P-014 integration gate + P-020 + UI affordance remain
+Date: 2026-06-01
+Executed the Phase E unit per D-012, this session. CODE-COMPLETE + unit/compile-verified, committed across 3 repos:
+
+- **desktop `8609fbf`** (P-050+P-053): main.rs boot → one shared sidecar under real user HOME (`shared_sidecar_home`) + shared embedded-PG/pglite/zero/code-server data at `~/.papercusp-workspaces/.shared/` (`shared_data_dir`); `workspaces_switch` drops kill_sidecar+app.restart (persists registry.current only); NEW `workspaces_open_window(id)` → WebviewWindow `/harness?ws=<id>` label `ws-<id>`; capabilities/default.json grants IPC to `ws-*`. `cargo check` clean.
+- **desktop `c844143`** (P-051 signal): sidecar env sets `PAPERCUSP_SHARED_OPERATOR=1` (+ WSLENV).
+- **orchestrator submodule `adb8167`** (P-051): `resolveSpawnHome(workspaceId, env, override)` + `workspaceHomeDir(id, env)`; invoke() flips spawnEnv.HOME/USERPROFILE to the job workspace, gated on `PAPERCUSP_SHARED_OPERATOR=1` so dev/standalone/legacy inherit the process HOME (D-009). +6 tests, 85/85.
+- **operator superproject `ab427638f`** (P-050/P-053): workspaces-tauri switch→soft-navigate (no restart) + `openWorkspaceWindow`; tauri-bindings `workspacesOpenWindow`; host-spa `serveIndexHtmlWithWorkspace` injects per-window `__PAPERCUSP_WS__` from req `?ws=`; tests updated to the no-restart contract + open-window (14/14). Bumps libs/papercusp pointer.
+
+KEY CORRECTION to the recon: `ipcFetch` (ipc-fetch.ts:134-139,169) DOES forward request headers, so `x-papercusp-workspace` rides IPC end-to-end — no `?ws=` fetch hack needed (only host-spa needed the req-`?ws=` read for the initial HTML inject).
+
+REMAINING (unit NOT complete):
+- **P-014** integration gate (NOT started): `npm run build:debug` + run the packaged app + drive two windows/two workspaces via tauri-agent-tools, assert no cross-talk. This is also where the packaged-only unknowns get resolved + likely force iteration on `workspaces_open_window`: (1) frontendDist=`http://127.0.0.1:3070` vs the dynamic free sidecar port — how the main window's origin/IPC actually resolves in packaged; (2) whether a new window at that origin + label `ws-*` truly gets IPC; (3) the open_window URL (currently the dynamic-port base) + the eval-vs-direct-load timing. Verification is disruptive — it needs the shared running desktop stopped/coordinated.
+- **P-020** background-reader per-workspace iteration — NOT started (single-active still correct).
+- **P-053 UI** — no "open in new window" control in WorkspaceSwitcher yet (verification can call the command directly).
+- **Data migration** — assumed start-fresh shared DB (alpha, no users; D-012); NOT building an N-DB merge.
+Related: P-050, P-051, P-053, P-020, P-014
+
+
+### D-014 — D-014 — P-014 multi-window VERIFIED LIVE (dev); P-050 release-boot run-check blocked by peer release instances (not forced)
+Date: 2026-06-01
+Ran the P-014 integration verification (user authorized churning the box).
+
+**Setup:** the systemd `:3070` operator was already restarted (04:21) AFTER the host-spa commit, so it serves my code. Launched a DEDICATED headless Tauri dev instance (`xvfb-run npm run dev`, dev bridge :37925) — separate from the user's live shells (no focus-steal) — webview → the shared `:3070`.
+
+**host-spa per-window `?ws=` (curl, live):** `?ws=test2`→`__PAPERCUSP_WS__="test2"`; `?ws=<arbitrary>`→that; no `?ws=`→`papercusp-workspace` (registry.current). PASS.
+
+**Multi-window (tauri-agent-tools, live):** main window = `papercusp-workspace`. Invoked `workspaces_open_window('test2')` → returned ok → probe showed `Windows: ws-test2, main`. The `ws-test2` window: `__PAPERCUSP_WS__=test2`, URL `/adv?tab=harnesses&ws=test2` (the `/harness?ws=test2`→`/adv` redirect preserved ws), `__TAURI__.core.invoke` = function (so the `ws-*` IPC capability grant WORKS), fetch wrapper installed. The MAIN window stayed `papercusp-workspace` (opening the 2nd window did NOT yank the first — P-031). **Two windows / two workspaces / one shared `:3070` operator / no cross-talk — PASS.** (Server header→ALS→RLS scoping already proven by P-060's in-process test; this confirms the client half + the Tauri shell mechanics live.)
+
+**Found + fixed during setup:** `workspaces_open_window` read `SidecarState.port` (only set on the release path) → would fail in dev. Fixed to derive the origin from the MAIN window's URL (works dev+release). desktop `5d76cf8`.
+
+**P-050 release-BOOT run-check — NOT done (blocked, not forced):** verifying the `is_dev=false` shared-sidecar boot needs a release build. `cargo build --release` failed at link with `Text file busy` — the release binary inode (+ its `deps/papercusp_desktop-*` hardlink) is held by OTHER running release desktop instances (started 04:34–04:55 on `/tmp/p4-fresh-home`/`/tmp/p4h` test homes — a peer's or earlier test runs, on the pre-P-050 binary). Per repo policy ("never route around a block — that's the other agent's in-flight work"), I did NOT kill them. P-050 is cargo-check-clean and the dev `:3070` already demonstrates the shared-operator topology (one operator, many windows, per-workspace scoping). Run-verifying the release boot is a clean-box follow-up: build release + run under Xvfb + tail for the `shared sidecar home / shared state dir` log line + embedded-PG at `.shared/embedded-pg-data`.
+Related: P-014, P-050, P-053
 
 ## Phase 0 — Gate decisions + audit (no shipping code)
 
