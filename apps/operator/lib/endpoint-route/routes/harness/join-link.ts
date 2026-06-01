@@ -7,9 +7,14 @@
  *   token: string,         // GitHub OAuth token
  *   githubUserId: number,
  *   githubLogin: string,
- *   keychainId: string,
  *   existingGistId?: string,
  * }
+ *
+ * The device keychain id is DERIVED server-side from the verified
+ * `githubUserId` via `resolveDeviceKeychainId` (`<github_user_id>:<machine-
+ * fingerprint>`) — the SAME canonical id the swarm announce resolves, so the
+ * contributor file signed here verifies against the announced device_pubkey.
+ * It is NOT taken from the request body.
  *
  * Response: { ok: true, state: JoinState } on success.
  * Errors: 400 for bad input, 409 for slug conflict, 502 for join failure.
@@ -23,6 +28,7 @@ import { loadHarnessRegistry, saveHarnessRegistry } from '@/lib/harness-registry
 import { scaffoldHarnessSchema } from '@/lib/scaffold-harness-schema';
 import { parseHarnessLink } from '@/lib/harness/url-scheme';
 import { joinSharedHarness, JoinStepError } from '@/lib/harness/join-shared-harness';
+import { resolveDeviceKeychainId } from '@/lib/identity/device-keychain-id';
 
 const joinLink = defineTool({
   method: 'POST',
@@ -57,8 +63,10 @@ const joinLink = defineTool({
     const githubLogin = String(body.githubLogin ?? '').trim();
     if (!githubLogin) return Response.json({ error: 'githubLogin required' }, { status: 400 });
 
-    const keychainId = String(body.keychainId ?? '').trim();
-    if (!keychainId) return Response.json({ error: 'keychainId required' }, { status: 400 });
+    // Derive the device keychain id from the verified user id (canonical
+    // `<github_user_id>:<machine-fingerprint>`) — the SAME id the swarm
+    // announce resolves, NOT a client-supplied value.
+    const keychainId = resolveDeviceKeychainId(githubUserId);
 
     const existingGistId =
       typeof body.existingGistId === 'string' ? body.existingGistId.trim() || undefined : undefined;

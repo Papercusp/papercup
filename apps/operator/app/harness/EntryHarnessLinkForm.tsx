@@ -67,10 +67,11 @@ export function EntryHarnessLinkForm({ onBack, onCreated }: Props) {
           // OAuth credentials not yet wired (Phase 1b OAuth plugin).
           // Sending empty strings lets the API return a clean 400 that
           // the UI surfaces as "GitHub authentication required."
+          // keychainId is no longer sent — the API derives it server-side
+          // from the verified githubUserId (canonical device keychain id).
           token: '',
           githubUserId: 0,
           githubLogin: '',
-          keychainId: '',
         }),
       });
 

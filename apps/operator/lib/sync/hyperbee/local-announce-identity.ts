@@ -7,14 +7,22 @@
  *
  * The log core key comes from the boot's own log; the rest of the identity is
  * resolved here:
- *   - keychainId / device_pubkey — the device Ed25519 keypair, loaded (or
- *     generated, idempotent) from the OS keychain under a fixed per-machine id.
- *     The pubkey is the SAME raw-32-byte base64 the two-channel binding uses,
- *     so a verified announce identifies a device whose binding the remote
- *     peer's read-admission can check.
  *   - github_user_id / github_login — the locally-authenticated GitHub user
  *     (gh CLI token → `GET /user`), the channel-1/channel-2 inputs the remote
- *     peer needs to verify our binding.
+ *     peer needs to verify our binding. Resolved FIRST, because the device
+ *     keychain id is keyed by this user id (see below).
+ *   - keychainId / device_pubkey — the device Ed25519 keypair, loaded (or
+ *     generated, idempotent) from the OS keychain under the CANONICAL per-user
+ *     keychain id `<github_user_id>:<machine-fingerprint>` (built by the shared
+ *     `resolveDeviceKeychainId`). This is the SAME id the join path's
+ *     binding/contributor-file publish signs under — so the announced
+ *     `device_pubkey` matches the key the published contributor file was
+ *     signed with, and the remote peer's read-admission channel-2 verify
+ *     (`verifyContributorFileSignature`) passes. Using a DIFFERENT id here
+ *     (e.g. a fixed `'papercusp-device'`) would advertise a key the remote's
+ *     contributor file was NOT signed with, failing every channel-2 check so
+ *     no log is ever admitted. The pubkey is the SAME raw-32-byte base64 the
+ *     two-channel binding uses.
  *
  * Throws when the identity can't be resolved (no gh auth / keychain failure).
  * boot.ts's swarm-join catch treats that as "stay local-only" — a peer that
@@ -23,13 +31,7 @@
 
 import { loadOrGenerateDeviceKeypair } from '@/lib/identity/attest';
 import { getOctokit } from '@/lib/identity/octokit-client';
-
-/**
- * Fixed per-machine keychain id for the device keypair. Matches the keychain
- * service convention (`papercusp-device-keypair`); the SAME id is reused on
- * every boot so the device pubkey is stable across restarts.
- */
-export const DEVICE_KEYCHAIN_ID = 'papercusp-device' as const;
+import { resolveDeviceKeychainId } from '@/lib/identity/device-keychain-id';
 
 export interface LocalAnnounceIdentity {
   keychainId: string;
@@ -42,7 +44,11 @@ export interface LocalAnnounceIdentity {
 export interface ResolveLocalAnnounceIdentityOpts {
   /** 64-hex Hypercore key of our writable log (from boot's own log). */
   logCoreKeyHex: string;
-  /** Override the keychain id (tests / multi-identity dev). */
+  /**
+   * Override the keychain id (tests / multi-identity dev). When omitted the
+   * canonical `<github_user_id>:<machine-fingerprint>` id is derived from the
+   * resolved gh user via `resolveDeviceKeychainId`.
+   */
   keychainId?: string;
   /**
    * Resolve the locally-authenticated GitHub user. Defaults to the gh-token
@@ -51,6 +57,11 @@ export interface ResolveLocalAnnounceIdentityOpts {
   resolveGithubUser?: () => Promise<{ id: number; login: string }>;
   /** Override the keypair loader (tests). */
   loadKeypair?: (keychainId: string) => Promise<{ keychainId: string; pubkeyBase64: string }>;
+  /**
+   * Override the keychain-id builder (tests). Defaults to the canonical
+   * `resolveDeviceKeychainId`.
+   */
+  buildKeychainId?: (githubUserId: number) => string;
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {
@@ -75,11 +86,17 @@ export async function resolveLocalAnnounceIdentity(
   if (!opts.logCoreKeyHex) {
     throw new Error('resolveLocalAnnounceIdentity: logCoreKeyHex required');
   }
-  const keychainId = opts.keychainId ?? DEVICE_KEYCHAIN_ID;
   const loadKeypair = opts.loadKeypair ?? loadOrGenerateDeviceKeypair;
   const resolveUser = opts.resolveGithubUser ?? defaultResolveGithubUser;
+  const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;
 
-  const [keypair, user] = await Promise.all([loadKeypair(keychainId), resolveUser()]);
+  // Resolve the gh user FIRST — the canonical device keychain id is keyed by
+  // the user's id (`<github_user_id>:<machine-fingerprint>`), the SAME id the
+  // join path signs the contributor file under. An explicit `keychainId`
+  // override wins (tests / multi-identity dev).
+  const user = await resolveUser();
+  const keychainId = opts.keychainId ?? buildKeychainId(user.id);
+  const keypair = await loadKeypair(keychainId);
 
   return {
     keychainId,
