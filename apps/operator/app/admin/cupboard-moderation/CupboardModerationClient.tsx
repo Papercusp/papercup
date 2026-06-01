@@ -73,6 +73,8 @@ export default function CupboardModerationClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Per-report operator note draft (mid-edit text → useState, not nuqs).
+  const [notes, setNotes] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,19 +111,24 @@ export default function CupboardModerationClient() {
   }, [load]);
 
   const resolve = useCallback(
-    async (id: string, action: 'unlist' | 'dismiss') => {
+    async (id: string, action: 'unlist' | 'dismiss', note?: string) => {
       setBusyId(id);
       try {
         const res = await fetch(`/api/cupboard/admin/reports/${encodeURIComponent(id)}/resolve`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ action }),
+          body: JSON.stringify({ action, note: note?.trim() || undefined }),
         });
         if (!res.ok) {
           const b = (await res.json().catch(() => ({}))) as { error?: string };
           throw new Error(b.error ?? `HTTP ${res.status}`);
         }
         toast.success(action === 'unlist' ? 'Report resolved — listing taken down' : 'Report dismissed');
+        setNotes((m) => {
+          const next = { ...m };
+          delete next[id];
+          return next;
+        });
         void load();
       } catch (e) {
         toast.error(`Action failed: ${String(e)}`);
@@ -190,23 +197,34 @@ export default function CupboardModerationClient() {
                 )}
               </div>
               {r.status === 'pending' && (
-                <div className="pc-cbmod__actions">
-                  <button
-                    type="button"
-                    className="pc-cbmod__btn pc-cbmod__btn--dismiss"
+                <div className="pc-cbmod__resolve">
+                  <input
+                    type="text"
+                    className="pc-cbmod__note"
+                    placeholder="Optional note (recorded on the report)…"
+                    value={notes[r.id] ?? ''}
+                    maxLength={1000}
                     disabled={busyId === r.id}
-                    onClick={() => void resolve(r.id, 'dismiss')}
-                  >
-                    Dismiss
-                  </button>
-                  <button
-                    type="button"
-                    className="pc-cbmod__btn pc-cbmod__btn--unlist"
-                    disabled={busyId === r.id}
-                    onClick={() => void resolve(r.id, 'unlist')}
-                  >
-                    Unlist harness
-                  </button>
+                    onChange={(e) => setNotes((m) => ({ ...m, [r.id]: e.target.value }))}
+                  />
+                  <div className="pc-cbmod__actions">
+                    <button
+                      type="button"
+                      className="pc-cbmod__btn pc-cbmod__btn--dismiss"
+                      disabled={busyId === r.id}
+                      onClick={() => void resolve(r.id, 'dismiss', notes[r.id])}
+                    >
+                      Dismiss
+                    </button>
+                    <button
+                      type="button"
+                      className="pc-cbmod__btn pc-cbmod__btn--unlist"
+                      disabled={busyId === r.id}
+                      onClick={() => void resolve(r.id, 'unlist', notes[r.id])}
+                    >
+                      Unlist harness
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -242,7 +260,11 @@ export default function CupboardModerationClient() {
         .pc-cbmod__taken { font-size: 10px; font-weight: 600; color: var(--bad, #f87171); }
         .pc-cbmod__reason { margin: 8px 0 6px; font-size: 13px; color: var(--fg, #e7f7ff); white-space: pre-wrap; }
         .pc-cbmod__meta { font-size: 11px; color: var(--fg-mute, #7f9bb4); }
-        .pc-cbmod__actions { display: flex; gap: 8px; margin-top: 10px; }
+        .pc-cbmod__resolve { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .pc-cbmod__note { width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 9px; border-radius: 6px; border: 1px solid var(--border, rgba(125,211,252,0.2)); background: var(--bg-2, rgba(0,0,0,0.2)); color: var(--fg, #e7f7ff); }
+        .pc-cbmod__note::placeholder { color: var(--fg-mute, #7f9bb4); }
+        .pc-cbmod__note:disabled { opacity: 0.5; }
+        .pc-cbmod__actions { display: flex; gap: 8px; }
         .pc-cbmod__btn { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
         .pc-cbmod__btn:disabled { opacity: 0.5; cursor: default; }
         .pc-cbmod__btn--dismiss { background: transparent; color: var(--fg-mute, #7f9bb4); border-color: var(--border, rgba(125,211,252,0.2)); }
