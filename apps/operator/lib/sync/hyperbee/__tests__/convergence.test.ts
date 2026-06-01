@@ -111,7 +111,6 @@ describe('Hyperbee substrate — convergence', () => {
   it('placeholder: substrate modules import without throwing', async () => {
     const mod = await import('../index');
     expect(typeof mod.getHarnessStore).toBe('function');
-    expect(typeof mod.createAutobaseHarness).toBe('function');
     expect(typeof mod.registerProjection).toBe('function');
     expect(typeof mod.applyHyperbeeOpToPg).toBe('function');
     expect(typeof mod.lwwPick).toBe('function');

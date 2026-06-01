@@ -3,19 +3,21 @@
  *
  * `OpEnvelope` was originally declared in `autobase-setup.ts` (the multi-writer
  * Autobase). Stage 4 retired the Autobase data layer (the boot path now runs on
- * per-peer logs + a read-merge), but the PROJECTION layer's op shape is still
- * the contract every projection writer + the read-merge speak. It was relocated
- * here (Stage 4d) so the surviving consumers — `projection.ts`, `read-merge.ts`,
- * `peer-log.ts`, the orchestrator claim adapter — no longer depend on
- * `autobase-setup.ts` being kept.
+ * per-peer logs + a read-merge) and Stage 5 deleted `autobase-setup.ts`
+ * entirely, but the PROJECTION layer's op shape is still the contract every
+ * projection writer + the read-merge speak. It lives here so the surviving
+ * consumers — `projection.ts`, `read-merge.ts`, `peer-log.ts` — own it directly
+ * with no Autobase dependency.
  *
- * `autobase-setup.ts` re-exports `OpEnvelope` from here for any Stage-5 claim
- * code that still imports it from the old path; Stage 5 retires that module.
+ * The `addWriter` variant is a vestige of the retired Autobase admission op; no
+ * Model B code path emits or consumes it. Kept on the union only so historical
+ * shapes parse without a narrowing error; safe to drop once nothing references
+ * it.
  */
 
 export interface OpEnvelope {
   type: 'put' | 'del' | 'addWriter';
-  // For addWriter (legacy Autobase admission op — Stage 5 claim path only):
+  // For addWriter (retired Autobase admission op — no live Model B emitter):
   key?: string;
   // For put/del:
   table?: string;

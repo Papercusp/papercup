@@ -14,12 +14,10 @@ export {
   type HarnessStoreOpts,
 } from './corestore';
 
-export {
-  createAutobaseHarness,
-  type OpEnvelope,
-  type AutobaseHarnessHandle,
-  type CreateAutobaseOpts,
-} from './autobase-setup';
+// The projection-layer op envelope. (The multi-writer Autobase data layer —
+// `autobase-setup.ts` — was retired in the Model B substrate rewrite; the
+// op-envelope contract outlived it and now lives in its own module.)
+export { type OpEnvelope } from './op-envelope-types';
 
 export {
   CURRENT_SCHEMA_VERSION,
