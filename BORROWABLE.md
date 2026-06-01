@@ -58,6 +58,12 @@ their own repo when needed.
 | `@papercusp/grid-core` | Domain-agnostic datagrid primitives: GridTable, DataGridShell, grid-config, grid-theme, use-hover-expand. | `libs/generic/papergrid/grid-core` · [Papercusp/papergrid](https://github.com/Papercusp/papergrid.git) |
 | `@papercusp/ui-primitives` | Shared headless React UI primitives — ANSI/terminal output, markdown (GFM), JSON tree viewer, and virtualized lists — used across Papercusp surfaces. Brand-value-free; styling is injected by consumers. | [Papercusp/ui-primitives](https://github.com/Papercusp/ui-primitives.git) |
 
+## Testing & QA
+
+| Package | What it is | Source |
+|---|---|---|
+| `@papercusp/testing-shell` | Shared testing-domains registry + UI shell. Consumed by /admin/testing (operator-vite) and the harness Tests tab (operator). Registry is pure data; the panel/shell take an injected dataSource so the same component drives both the admin and harness API surfaces. | [Papercusp/testing-shell](https://github.com/Papercusp/testing-shell.git) |
+
 ## Reusable with host wiring (Papercusp tie-in kept by design)
 
 These ship a host-injection seam but deliberately retain a Papercusp
@@ -65,7 +71,7 @@ tie-in (DB/schema/path assumptions). Borrowable with adaptation, not as-is.
 
 | Package | What it is | Source |
 |---|---|---|
-| `@papercusp/locks` | SU-agent file-lock coordinator: PG-backed cross-process file claims over a dedicated papercusp_su side-database with its own pools, pg_advisory_xact_lock serialization, FIFO grant cascade, LISTEN/NOTIFY wait subsystem, and background expiry janitor. Implements @papercusp/file-claim's FileClaimCoordinator (SuLocksCoordinator). Host-agnostic — the embedded-pg admin URL is injected via configureLocks(); coordinationDomain is an opaque caller string. Zero @papercusp/@restart runtime deps besides the @papercusp/file-claim interface. | in-repo · `packages/locks` |
+| `@papercusp/locks` | SU-agent file-lock coordinator: PG-backed cross-process file claims over a dedicated papercusp_su side-database with its own pools, pg_advisory_xact_lock serialization, FIFO grant cascade, LISTEN/NOTIFY wait subsystem, and background expiry janitor. Implements @papercusp/file-claim's FileClaimCoordinator (SuLocksCoordinator). Host-agnostic — the embedded-pg admin URL is injected via configureLocks(); coordinationDomain is an opaque caller string. Zero @papercusp/@restart runtime deps besides the @papercusp/file-claim interface. | `libs/papercusp/packages/locks` · [Papercusp/papercusp](https://github.com/Papercusp/papercusp.git) |
 | `@papercusp/coordination` | Agent coordination substrate, extracted as host-agnostic seams: coord-core (pure envelope types + identity-free fold/merge/glob protocol logic), CoordEventLog (the swappable append-only channel-log seam — fs default + in-memory double + workspace-scoped single-table Postgres backend; covers messages/handoffs/escalations/plan-events), PresenceStore (live presence), WatermarkStore (per-agent read cursors), and SubscriptionStore (path/glob watches) — each over an injected PgHandle with an in-memory double, all passing one conformance suite. No @papercusp/@restart runtime deps; identity resolution stays host-side by design. | in-repo · `packages/coordination` |
 | `@papercusp/backup` | Per-workspace kopia backup system: snapshot/restore/verify/maintenance over the kopia CLI, SQL-backed snapshot+settings+destination metadata, pre-snapshot DB-dump hook, interval+event scheduling, and orphan sweep. Host-agnostic — the org PG handle, workspaces-root path, schema bootstrap, and embedded-pg admin URL are injected via configureBackup(). Zero @papercusp/@restart runtime deps. | in-repo · `packages/backup` |
 | `@papercusp/docs-engine` | Source-agnostic docs retrieval engine. Outline + get + search + MDX-to-markdown pipeline, operating on a pluggable DocSource adapter. | in-repo · `packages/docs-engine` |

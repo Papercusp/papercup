@@ -50,6 +50,7 @@ const BORROWABLE = [
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],
   ['libs/generic/papergrid/bloom-grid',           'UI components'],
+  ['libs/testing-shell',                          'Testing & QA'],
 ];
 
 /**
@@ -58,14 +59,14 @@ const BORROWABLE = [
  * not "borrow as-is".
  */
 const SEAMED = [
-  ['packages/locks',          'Distributed file-lock coordinator (own side-DB + advisory locks); generic via an opaque coordination domain.'],
+  ['libs/papercusp/packages/locks', 'Distributed file-lock coordinator (own side-DB + advisory locks); generic via an opaque coordination domain.'],
   ['packages/coordination',   'Agent coordination substrate (pure core + swappable event-log + presence store).'],
   ['packages/backup',         'Per-workspace kopia backup behind a BackupHost config seam.'],
   ['packages/docs-engine',    'Source-agnostic docs retrieval; ships a generic-fs/starlight adapter plus a harness-fs one.'],
   ['libs/host-platform',      'The host-boundary interface — the ~10% that is genuinely host-specific (fs, PG-DSN resolution).'],
 ];
 
-const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'UI components'];
+const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'UI components', 'Testing & QA'];
 
 function parseGitmodules() {
   const map = {};

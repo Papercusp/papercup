@@ -73,3 +73,6 @@
 [submodule "libs/generic/tooldef-http"]
 	path = libs/generic/tooldef-http
 	url = https://github.com/Papercusp/tooldef-http.git
+[submodule "libs/testing-shell"]
+	path = libs/testing-shell
+	url = https://github.com/Papercusp/testing-shell.git
