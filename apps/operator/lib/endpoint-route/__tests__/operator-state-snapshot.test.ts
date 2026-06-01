@@ -5,7 +5,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/auth', () => ({ getSessionUser: vi.fn() }));
-vi.mock('@/lib/workspace-registry', () => ({ activeWorkspaceId: vi.fn() }));
+vi.mock('@/lib/workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(),
+  // backup seam (pulled in transitively) reads workspacesRoot at import.
+  workspacesRoot: vi.fn(() => '/tmp/papercusp-test-ws'),
+}));
 vi.mock('@/lib/endpoint-route/telemetry', () => ({
   recordRouteInvocation: vi.fn(async () => {}),
 }));
