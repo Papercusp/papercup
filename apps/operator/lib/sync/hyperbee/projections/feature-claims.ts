@@ -30,6 +30,13 @@ export interface FeatureClaimsProjectionOpts {
   harnessSlug: string;
 }
 
+/**
+ * Hyperbee table tag for feature-claim ops. Single source of truth shared
+ * by the projection AND the orchestrator's `claimFeature` writer
+ * (feature-claim.ts) so the appended op routes to this projection.
+ */
+export const CLAIMS_TABLE_TAG = 'claims' as const;
+
 function composeKey(row: FeatureClaimRow): string {
   return `${row.feature_id}/${row.seq}`;
 }
@@ -78,7 +85,7 @@ async function deleteFromPg(opts: FeatureClaimsProjectionOpts, _key: string): Pr
 
 export function buildFeatureClaimsProjection(opts: FeatureClaimsProjectionOpts): TableProjection<FeatureClaimRow> {
   return {
-    tableTag: 'claims',
+    tableTag: CLAIMS_TABLE_TAG,
     composeKey,
     decodeValue,
     writeToPg: (row) => writeToPg(opts, row),
