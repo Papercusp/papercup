@@ -1,34 +1,37 @@
 /**
- * Tests for join-shared-harness.ts (P-009b/c).
+ * Tests for join-shared-harness.ts — 6 Model-B steps (D-005).
  *
- * Each step function is tested in isolation (P-009b: independently testable).
- * The orchestrator test verifies idempotent resume (P-009c).
- *
- * Steps 3, 4, 5, 8 (Hyperswarm/Hyperbee stubs) are tested to confirm
- * they throw JoinStepError with code 'phase_0_pending'.
+ * Coverage:
+ *   - ALL_STEP_IDS / JOIN_STEP_IDS equal the 6 expected step ids (no old stubs)
+ *   - step1_oauthAttest: happy path, gh_auth_required (via channel-1 fail), gist injection
+ *   - step2_cloneRepo: happy path, failure wrapping
+ *   - stepPublishBinding: calls ensureMyBindingPublished with non-empty attestationGistId
+ *   - stepBootFederate: calls injected booter
+ *   - stepAwaitAdmissionMerge: resolves done when reader signals >0 peers; soft phase_0_pending on timeout
+ *   - stepRouteInsights: correct path
+ *   - Orchestrator: full happy-path (6 steps, cloneDir set, completedAt set)
+ *   - Orchestrator: gh_auth_required in oauth_attest → JoinStepError thrown
+ *   - Orchestrator: boot_federate failure → soft phase_0_pending (not hard error)
+ *   - Orchestrator: await_admission_merge timeout → soft phase_0_pending (not hard error)
+ *   - Orchestrator: idempotent resume (already-done steps skipped)
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import {
+  ALL_STEP_IDS,
+  JOIN_STEP_IDS,
   step1_oauthAttest,
   step2_cloneRepo,
-  step3_joinHyperswarm,
-  step4_bootstrapHyperbee,
-  step5_seedPg,
-  step6_createUserBranch,
-  step7_pushContributorFile,
-  step8_publishBinding,
-  step9_verifyBinding,
-  step10_routeInsights,
+  stepPublishBinding,
+  stepBootFederate,
+  stepAwaitAdmissionMerge,
+  stepRouteInsights,
   joinSharedHarness,
   JoinStepError,
   type JoinState,
+  type JoinStepId,
 } from '../join-shared-harness';
-import {
-  CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER,
-  contributorBranchRef,
-} from '../../identity/contributor-file-types';
 
 // ─── shared key fixture ───────────────────────────────────────────────────────
 
@@ -36,28 +39,6 @@ const { publicKey: _pub, privateKey: _priv } = generateKeyPairSync('ed25519');
 const spkiDer = _pub.export({ type: 'spki', format: 'der' }) as Buffer;
 const RAW_PUBKEY = spkiDer.subarray(-32);
 const DEVICE_PUBKEY_B64 = RAW_PUBKEY.toString('base64');
-
-/** Build a signed ContributorFileBody. */
-function makeSignedFileBody(opts: {
-  githubUserId: number;
-  githubLogin: string;
-  pubkeyBase64: string;
-  privateKey: typeof _priv;
-}) {
-  const unsigned = {
-    device_attestation_gist_id: 'gist-abc',
-    device_pubkey: `ed25519:${opts.pubkeyBase64}`,
-    github_login: opts.githubLogin,
-    github_user_id: opts.githubUserId,
-    joined_at: '2026-01-01T00:00:00.000Z',
-    version: 1 as const,
-  };
-  const fields = CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER.filter((f) => f !== 'signature_by_device');
-  const ordered: Record<string, unknown> = {};
-  for (const f of fields) ordered[f] = (unsigned as Record<string, unknown>)[f];
-  const sig = nodeSign(null, Buffer.from(JSON.stringify(ordered), 'utf8'), opts.privateKey).toString('base64');
-  return { ...unsigned, signature_by_device: sig };
-}
 
 // ─── helper: mock fetch ───────────────────────────────────────────────────────
 
@@ -74,45 +55,82 @@ function makeFetch(responses: Array<{ status: number; body: unknown }>): typeof 
   }) as unknown as typeof fetch;
 }
 
-// ─── Step 1: oauth_attest ────────────────────────────────────────────────────
+// ─── Step list assertions ─────────────────────────────────────────────────────
+
+describe('step id constants', () => {
+  it('ALL_STEP_IDS equals the 6 Model-B steps in order', () => {
+    expect(ALL_STEP_IDS).toEqual([
+      'oauth_attest',
+      'clone_repo',
+      'publish_binding',
+      'boot_federate',
+      'await_admission_merge',
+      'route_insights',
+    ]);
+  });
+
+  it('JOIN_STEP_IDS is an alias for ALL_STEP_IDS', () => {
+    expect(JOIN_STEP_IDS).toBe(ALL_STEP_IDS);
+  });
+
+  it('does NOT include old Autobase-era step ids', () => {
+    const old = [
+      'join_hyperswarm',
+      'bootstrap_hyperbee',
+      'seed_pg',
+      'create_user_branch',
+      'push_contributor_file',
+      'verify_binding',
+    ];
+    for (const id of old) {
+      expect(ALL_STEP_IDS).not.toContain(id);
+    }
+  });
+});
+
+// ─── step1_oauthAttest ───────────────────────────────────────────────────────
 
 describe('step1_oauthAttest', () => {
-  it('succeeds when token matches claimed user id', async () => {
-    // Needs a real keychainId for loadOrGenerateDeviceKeypair — use a
-    // temp keychainId so the encrypted-file fallback creates a fresh key.
+  it('succeeds when token matches claimed user id and gist is injected', async () => {
     const keychainId = 'test-step1-' + Date.now();
     const fetchFn = makeFetch([{ status: 200, body: { id: 42, login: 'alice' } }]);
     const result = await step1_oauthAttest({
       token: 'tok-ok',
       claimedGithubUserId: 42,
+      githubLogin: 'alice',
       keychainId,
+      existingGistId: 'gist-injected',
       fetchFn,
     });
     expect(result.channel1).toEqual({ kind: 'ok' });
     expect(typeof result.keypair.pubkeyBase64).toBe('string');
     expect(result.keypair.pubkeyBase64.length).toBeGreaterThan(0);
+    // Injected gist id is returned as-is (no network call to create gist).
+    expect(result.attestationGistId).toBe('gist-injected');
   });
 
-  it('throws JoinStepError when token id mismatches', async () => {
+  it('throws JoinStepError with code matching channel1 reason when token id mismatches', async () => {
     const keychainId = 'test-step1-mismatch-' + Date.now();
     const fetchFn = makeFetch([{ status: 200, body: { id: 99, login: 'bob' } }]);
     await expect(
       step1_oauthAttest({
         token: 'tok-wrong',
         claimedGithubUserId: 42,
+        githubLogin: 'alice',
         keychainId,
         fetchFn,
       }),
     ).rejects.toMatchObject({ name: 'JoinStepError', code: 'oauth_user_id_mismatch' });
   });
 
-  it('throws JoinStepError on 401', async () => {
+  it('throws JoinStepError on 401 (token revoked → gh_auth_required)', async () => {
     const keychainId = 'test-step1-401-' + Date.now();
     const fetchFn = makeFetch([{ status: 401, body: {} }]);
     await expect(
       step1_oauthAttest({
         token: 'tok-revoked',
         claimedGithubUserId: 1,
+        githubLogin: 'alice',
         keychainId,
         fetchFn,
       }),
@@ -120,7 +138,7 @@ describe('step1_oauthAttest', () => {
   });
 });
 
-// ─── Step 2: clone_repo ──────────────────────────────────────────────────────
+// ─── step2_cloneRepo ──────────────────────────────────────────────────────────
 
 describe('step2_cloneRepo', () => {
   it('calls git clone and returns cloneDir', async () => {
@@ -153,333 +171,226 @@ describe('step2_cloneRepo', () => {
   });
 });
 
-// ─── Phase-0 stubs ───────────────────────────────────────────────────────────
+// ─── stepPublishBinding ───────────────────────────────────────────────────────
 
-describe('phase-0 stubs', () => {
-  it('step3_joinHyperswarm throws phase_0_pending', async () => {
-    await expect(step3_joinHyperswarm({ topic: 'a'.repeat(64) })).rejects.toMatchObject({
-      name: 'JoinStepError',
-      code: 'phase_0_pending',
-    });
-  });
-
-  it('step4_bootstrapHyperbee throws phase_0_pending when substrate is not booted', async () => {
-    await expect(
-      step4_bootstrapHyperbee({
-        workspaceId: 'ws-x',
-        harnessSlug: 'h',
-        resolveHandle: async () => null,
-      }),
-    ).rejects.toMatchObject({ name: 'JoinStepError', code: 'phase_0_pending' });
-  });
-
-  it('step4_bootstrapHyperbee returns caughtUp:true when getProgress reports caught up', async () => {
-    const r = await step4_bootstrapHyperbee({
-      workspaceId: 'ws-x',
-      harnessSlug: 'h',
-      resolveHandle: async () => ({}),
-      getProgress: () => ({
-        workspaceId: 'ws-x',
-        harnessSlug: 'h',
-        mergedOps: 10,
-        highestSeen: 10,
-        lastChangeMs: 0,
-        caughtUp: true,
-      }),
-      sleep: async () => {},
-    });
-    expect(r.caughtUp).toBe(true);
-    expect(r.timedOut).toBe(false);
-    expect(r.observed).toBe(10);
-  });
-
-  it('step4_bootstrapHyperbee returns timedOut:true when deadline passes without catch-up', async () => {
-    const fakeNow = (() => {
-      let t = 1_000_000;
-      return () => {
-        const v = t;
-        t += 30;
-        return v;
-      };
-    })();
-    const r = await step4_bootstrapHyperbee({
-      workspaceId: 'ws-x',
-      harnessSlug: 'h',
-      timeoutMs: 50,
-      pollMs: 10,
-      now: fakeNow,
-      resolveHandle: async () => ({}),
-      getProgress: () => ({
-        workspaceId: 'ws-x',
-        harnessSlug: 'h',
-        mergedOps: 3,
-        highestSeen: 3,
-        lastChangeMs: 0,
-        caughtUp: false,
-      }),
-      sleep: async () => {},
-    });
-    expect(r.caughtUp).toBe(false);
-    expect(r.timedOut).toBe(true);
-    expect(r.observed).toBe(3);
-  });
-
-  it('step5_seedPg throws phase_0_pending', async () => {
-    await expect(step5_seedPg({ slug: 'test' })).rejects.toMatchObject({
-      name: 'JoinStepError',
-      code: 'phase_0_pending',
-    });
-  });
-
-  it('step8_publishBinding throws phase_0_pending when substrate is not booted', async () => {
-    await expect(
-      step8_publishBinding({
-        workspaceId: 'ws-x',
-        harnessSlug: 'h',
-        githubUserId: 1,
-        githubLogin: 'alice',
-        pubkeyBase64: DEVICE_PUBKEY_B64,
-        attestationGistId: 'g',
-        resolveHandle: async () => null,
-      }),
-    ).rejects.toMatchObject({ name: 'JoinStepError', code: 'phase_0_pending' });
-  });
-
-  it('step8_publishBinding publishes a ContributorRow on the booted handle', async () => {
-    let captured: { row: unknown } | null = null;
-    await step8_publishBinding({
-      workspaceId: 'ws-x',
-      harnessSlug: 'h',
-      githubUserId: 7,
-      githubLogin: 'bob',
-      pubkeyBase64: DEVICE_PUBKEY_B64,
-      attestationGistId: 'g-123',
-      now: 1700000000000,
-      resolveHandle: async () =>
-        ({
-          workspaceId: 'ws-x',
-          harnessSlug: 'h',
-          store: {} as never,
-          base: { base: {} as never, async close() {}, async append() {} },
-          async close() {},
-        }) as never,
-      publishRow: async (p) => {
-        captured = { row: p.row };
-      },
-    });
-    expect(captured).not.toBeNull();
-    const row = captured!.row as Record<string, unknown>;
-    expect(row.harness_slug).toBe('h');
-    expect(row.github_user_id).toBe(7);
-    expect(row.github_username).toBe('bob');
-    expect(row.binding_status).toBe('pending');
-    expect(row.channel2_branch_ref).toBe('user/7');
-    expect(row.joined_at).toBe(1700000000000);
-    const attestations = row.device_attestations as Array<Record<string, unknown>>;
-    expect(attestations).toHaveLength(1);
-    expect(attestations[0].gist_id).toBe('g-123');
-    expect(attestations[0].device_pubkey).toMatch(/^ed25519:/);
-  });
-
-  it('step8_publishBinding wraps publishRow throws as JoinStepError(publish_failed)', async () => {
-    await expect(
-      step8_publishBinding({
-        workspaceId: 'ws-x',
-        harnessSlug: 'h',
-        githubUserId: 7,
-        githubLogin: 'bob',
-        pubkeyBase64: DEVICE_PUBKEY_B64,
-        attestationGistId: 'g',
-        resolveHandle: async () =>
-          ({
-            workspaceId: 'ws-x',
-            harnessSlug: 'h',
-            store: {} as never,
-            base: { base: {} as never, async close() {}, async append() {} },
-            async close() {},
-          }) as never,
-        publishRow: async () => {
-          throw new Error('autobase append failed');
+describe('stepPublishBinding', () => {
+  it('calls ensureMyBindingPublished with NON-empty attestationGistId', async () => {
+    // Build a fake Octokit that accepts the GET (404 = no existing file) and PUT.
+    // getRef is called twice in ensureBranchExists:
+    //   1st call: check if user/<id> branch exists → 404 (doesn't exist)
+    //   2nd call: get default branch HEAD to create from → success
+    let getRefCallCount = 0;
+    const fakeOctokit = {
+      rest: {
+        git: {
+          getRef: vi.fn().mockImplementation(async () => {
+            getRefCallCount++;
+            if (getRefCallCount === 1) {
+              // Branch doesn't exist yet
+              const e: { status: number } = { status: 404 };
+              throw e;
+            }
+            // 2nd call: return default branch HEAD sha
+            return { data: { object: { sha: 'deadbeef-main-sha' } } };
+          }),
+          createRef: vi.fn().mockResolvedValue({}),
         },
-      }),
-    ).rejects.toMatchObject({
-      name: 'JoinStepError',
-      code: 'publish_failed',
-    });
-  });
-});
+        repos: {
+          getContent: vi.fn().mockRejectedValue({ status: 404 }),
+          createOrUpdateFileContents: vi.fn().mockResolvedValue({
+            data: { commit: { sha: 'abc-commit-sha' } },
+          }),
+        },
+      },
+    };
 
-// ─── Step 6: create_user_branch ──────────────────────────────────────────────
-
-describe('step6_createUserBranch', () => {
-  it('creates branch + worktree when neither exists', async () => {
-    const calls: string[][] = [];
-    const execFileFn = vi.fn().mockImplementation((_f: string, args: string[]) => {
-      calls.push(args);
-      // show-ref --verify fails (branch not found), worktree add succeeds
-      if (args.includes('show-ref')) {
-        const err = new Error('not found') as Error & { code?: number; stderr?: string };
-        err.code = 1;
-        err.stderr = 'fatal: bad reference';
-        throw err;
-      }
-      return Promise.resolve({ stdout: '', stderr: '' });
-    });
-
-    const r = await step6_createUserBranch({
-      cloneDir: '/fake',
-      githubUserId: 42,
-      execFileFn,
-      pathExistsFn: () => false,
-    });
-
-    const branch = contributorBranchRef(42);
-    expect(r.branchRef).toBe(branch);
-    expect(r.worktreeAbsPath).toBe('/fake/.papercusp/user-trees/42');
-    // worktree add -b user/42 <path> origin/main
-    const addArgs = calls.find((a) => a.includes('worktree') && a.includes('-b'));
-    expect(addArgs).toContain(branch);
-    expect(addArgs).toContain('/fake/.papercusp/user-trees/42');
-  });
-
-  it('is a no-op when branch + worktree both already exist', async () => {
-    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-
-    const r = await step6_createUserBranch({
-      cloneDir: '/fake',
-      githubUserId: 42,
-      execFileFn,
-      pathExistsFn: () => true,
-    });
-
-    // Only show-ref ran — no worktree add.
-    expect(execFileFn).toHaveBeenCalledTimes(1);
-    expect(execFileFn.mock.calls[0][1]).toContain('show-ref');
-    expect(r.branchRef).toBe(contributorBranchRef(42));
-  });
-});
-
-// ─── Step 7: push_contributor_file ───────────────────────────────────────────
-
-describe('step7_pushContributorFile', () => {
-  it('writes file, commits, pushes, returns commit sha', async () => {
-    const keychainId = 'test-step7-' + Date.now();
-    // Pre-populate keychain with our test key.
+    // We need a keychain entry for signing.
+    const keychainId = 'test-publish-' + Date.now();
     const { keychainStore } = await import('../../identity/keychain');
     const privDer = _priv.export({ type: 'pkcs8', format: 'der' }) as Buffer;
     await keychainStore(keychainId, privDer);
 
-    const writtenFiles: Record<string, string> = {};
-    const execCalls: { args: string[] }[] = [];
-    const execFileFn = vi.fn().mockImplementation((_f: string, args: string[]) => {
-      execCalls.push({ args });
-      if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
-        return Promise.resolve({ stdout: 'abc123\n', stderr: '' });
-      }
-      return Promise.resolve({ stdout: '', stderr: '' });
-    });
-    const writeFileFn = vi.fn().mockImplementation((p: string, c: string) => {
-      writtenFiles[p] = c;
-      return Promise.resolve();
-    });
-    const mkdirFn = vi.fn().mockResolvedValue(undefined);
-
-    const result = await step7_pushContributorFile({
-      worktreeDir: '/fake/.papercusp/user-trees/1001',
-      githubUserId: 1001,
-      githubLogin: 'alice',
-      devicePubkeyBase64: DEVICE_PUBKEY_B64,
-      attestationGistId: 'gist-abc',
+    const result = await stepPublishBinding({
+      repoOwner: 'myorg',
+      repoName: 'myrepo',
+      defaultBranch: 'main',
+      identity: {
+        token: 'tok-ok',
+        githubUserId: 42,
+        githubLogin: 'alice',
+      },
       keychainId,
-      execFileFn,
-      writeFileFn,
-      mkdirFn,
+      devicePubkeyBase64: DEVICE_PUBKEY_B64,
+      attestationGistId: 'gist-nonempty-123',
+      octokit: fakeOctokit,
     });
 
-    expect(result.commitSha).toBe('abc123');
-    // File was written.
-    const filePath = Object.keys(writtenFiles).find((k) => k.includes('alice'));
-    expect(filePath).toBeDefined();
-    const parsed = JSON.parse(writtenFiles[filePath!]);
-    expect(parsed.github_login).toBe('alice');
-    expect(parsed.github_user_id).toBe(1001);
-    expect(typeof parsed.signature_by_device).toBe('string');
-    // git push was called.
-    expect(execCalls.some((c) => c.args[0] === 'push')).toBe(true);
+    // ensureMyBindingPublished called createOrUpdateFileContents → got commit sha.
+    expect(result.commitSha).toBe('abc-commit-sha');
+    expect(result.devicePubkeyBase64).toBe(DEVICE_PUBKEY_B64);
+
+    // Confirm attestationGistId was embedded in the file (NOT empty).
+    const putCall = fakeOctokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0];
+    const fileContent = Buffer.from(putCall.content, 'base64').toString('utf8');
+    const parsed = JSON.parse(fileContent) as Record<string, unknown>;
+    expect(parsed.device_attestation_gist_id).toBe('gist-nonempty-123');
+  });
+
+  it('propagates errors from ensureMyBindingPublished', async () => {
+    const fakeOctokit = {
+      rest: {
+        git: {
+          getRef: vi.fn().mockRejectedValue({ status: 500, message: 'server error' }),
+        },
+        repos: {},
+      },
+    };
+
+    const keychainId = 'test-publish-fail-' + Date.now();
+    const { keychainStore } = await import('../../identity/keychain');
+    const privDer = _priv.export({ type: 'pkcs8', format: 'der' }) as Buffer;
+    await keychainStore(keychainId, privDer);
+
+    await expect(
+      stepPublishBinding({
+        repoOwner: 'myorg',
+        repoName: 'myrepo',
+        defaultBranch: 'main',
+        identity: { token: 'tok', githubUserId: 1, githubLogin: 'alice' },
+        keychainId,
+        devicePubkeyBase64: DEVICE_PUBKEY_B64,
+        attestationGistId: 'gist-123',
+        octokit: fakeOctokit,
+      }),
+    ).rejects.toBeDefined();
   });
 });
 
-// ─── Step 9: verify_binding ──────────────────────────────────────────────────
+// ─── stepBootFederate ────────────────────────────────────────────────────────
 
-describe('step9_verifyBinding', () => {
-  it('returns verified when both channels pass', async () => {
-    const fileBody = makeSignedFileBody({
-      githubUserId: 42,
-      githubLogin: 'alice',
-      pubkeyBase64: DEVICE_PUBKEY_B64,
-      privateKey: _priv,
+describe('stepBootFederate', () => {
+  it('calls the injected bootFn with workspaceId and harnessSlug', async () => {
+    const bootFn = vi.fn().mockResolvedValue({ state: 'booted' });
+    await stepBootFederate({
+      workspaceId: 'ws-test',
+      harnessSlug: 'h-test',
+      bootFn,
     });
-    const encoded = Buffer.from(JSON.stringify(fileBody)).toString('base64');
-    const fetchFn = makeFetch([
-      // channel 1: /user
-      { status: 200, body: { id: 42, login: 'alice' } },
-      // channel 2: contents API
-      { status: 200, body: { content: encoded + '\n', encoding: 'base64', sha: 'deadbeef' } },
-      // channel 2: commit
-      { status: 200, body: { author: { login: 'alice' }, commit: { verification: { verified: true } } } },
-    ]);
-
-    const result = await step9_verifyBinding({
-      token: 'tok-ok',
-      githubUserId: 42,
-      githubLogin: 'alice',
-      repoOwner: 'org',
-      repoName: 'repo',
-      devicePubkeyBase64: DEVICE_PUBKEY_B64,
-      fetchFn,
-    });
-
-    expect(result.status).toBe('verified');
+    expect(bootFn).toHaveBeenCalledWith('ws-test', 'h-test');
   });
 
-  it('returns pending when channel 2 file not yet visible', async () => {
-    const fetchFn = makeFetch([
-      { status: 200, body: { id: 42, login: 'alice' } },
-      { status: 404, body: {} },
-    ]);
-
-    const result = await step9_verifyBinding({
-      token: 'tok-ok',
-      githubUserId: 42,
-      githubLogin: 'alice',
-      repoOwner: 'org',
-      repoName: 'repo',
-      devicePubkeyBase64: DEVICE_PUBKEY_B64,
-      fetchFn,
-    });
-
-    expect(result.status).toBe('pending');
+  it('throws when injected bootFn rejects', async () => {
+    const bootFn = vi.fn().mockRejectedValue(new Error('DHT unreachable'));
+    await expect(
+      stepBootFederate({ workspaceId: 'ws', harnessSlug: 'h', bootFn }),
+    ).rejects.toThrow('DHT unreachable');
   });
 });
 
-// ─── Step 10: route_insights ─────────────────────────────────────────────────
+// ─── stepAwaitAdmissionMerge ─────────────────────────────────────────────────
 
-describe('step10_routeInsights', () => {
+describe('stepAwaitAdmissionMerge', () => {
+  it('returns remoteOpLanded:true when reader signals >0 peers immediately', async () => {
+    const readAdmittedCountFn = vi.fn().mockReturnValue(1);
+    const result = await stepAwaitAdmissionMerge({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      timeoutMs: 5000,
+      pollMs: 100,
+      readAdmittedCountFn,
+      sleep: async () => {},
+      now: (() => {
+        let t = 0;
+        return () => t++;
+      })(),
+    });
+    expect(result.remoteOpLanded).toBe(true);
+    expect(readAdmittedCountFn).toHaveBeenCalled();
+  });
+
+  it('returns remoteOpLanded:false (soft) when timeout elapses with no peer', async () => {
+    const readAdmittedCountFn = vi.fn().mockReturnValue(0);
+    const fakeNow = (() => {
+      let t = 0;
+      return () => {
+        const v = t;
+        t += 1100; // advance past timeoutMs=1000 quickly
+        return v;
+      };
+    })();
+    const result = await stepAwaitAdmissionMerge({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      timeoutMs: 1000,
+      pollMs: 100,
+      readAdmittedCountFn,
+      sleep: async () => {},
+      now: fakeNow,
+    });
+    expect(result.remoteOpLanded).toBe(false);
+  });
+
+  it('returns remoteOpLanded:false immediately when timeoutMs=0', async () => {
+    const readAdmittedCountFn = vi.fn().mockReturnValue(5);
+    const result = await stepAwaitAdmissionMerge({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      timeoutMs: 0,
+      readAdmittedCountFn,
+    });
+    expect(result.remoteOpLanded).toBe(false);
+    // reader not even called when timeout is 0
+    expect(readAdmittedCountFn).not.toHaveBeenCalled();
+  });
+
+  it('transitions from 0 to 1 peer during polling', async () => {
+    let callCount = 0;
+    const readAdmittedCountFn = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount >= 3 ? 1 : 0; // peer appears on 3rd check
+    });
+    let t = 0;
+    const now = () => {
+      const v = t;
+      t += 200; // advance 200ms per call
+      return v;
+    };
+    const result = await stepAwaitAdmissionMerge({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      timeoutMs: 2000,
+      pollMs: 200,
+      readAdmittedCountFn,
+      sleep: async () => {},
+      now,
+    });
+    expect(result.remoteOpLanded).toBe(true);
+  });
+});
+
+// ─── stepRouteInsights ───────────────────────────────────────────────────────
+
+describe('stepRouteInsights', () => {
   it('returns the correct insights path', () => {
-    const result = step10_routeInsights('my-harness');
+    const result = stepRouteInsights('my-harness');
     expect(result.insightsPath).toBe('/harness/my-harness/insights');
   });
+
+  it('URL-encodes the slug', () => {
+    const result = stepRouteInsights('has spaces');
+    expect(result.insightsPath).toBe('/harness/has%20spaces/insights');
+  });
 });
 
-// ─── orchestrator: happy path ─────────────────────────────────────────────────
+// ─── orchestrator ─────────────────────────────────────────────────────────────
 
 describe('joinSharedHarness orchestrator', () => {
   const TOPIC = 'b'.repeat(64);
-  const SLUG = 'test-harness';
+  const SLUG = 'test-harness-6step';
   const GITHUB_FULL = 'myorg/myrepo';
   const USER_ID = 2001;
   const LOGIN = 'bob';
-  const KEYCHAIN_ID = 'orch-test-' + Date.now();
+  const KEYCHAIN_ID = 'orch-6step-' + Date.now();
 
   const link = {
     topic: TOPIC,
@@ -490,48 +401,58 @@ describe('joinSharedHarness orchestrator', () => {
   };
 
   beforeEach(async () => {
-    // Pre-populate keychain so step1 + step7 work.
+    // Pre-populate keychain so oauth_attest + publish_binding work.
     const { keychainStore } = await import('../../identity/keychain');
     const privDer = _priv.export({ type: 'pkcs8', format: 'der' }) as Buffer;
     await keychainStore(KEYCHAIN_ID, privDer);
   });
 
-  it('completes non-phase-0 steps and marks phase-0 steps as phase_0_pending', async () => {
-    const fileBody = makeSignedFileBody({
-      githubUserId: USER_ID,
-      githubLogin: LOGIN,
-      pubkeyBase64: DEVICE_PUBKEY_B64,
-      privateKey: _priv,
-    });
-    const encoded = Buffer.from(JSON.stringify(fileBody)).toString('base64');
+  /** Build a minimal Octokit fake for publish_binding. */
+  function makeFakeOctokit() {
+    // getRef is called twice in ensureBranchExists:
+    //   1st: check user/<id> branch → 404 (not yet created)
+    //   2nd: get default branch HEAD → return a sha
+    let getRefCallCount = 0;
+    return {
+      rest: {
+        git: {
+          getRef: vi.fn().mockImplementation(async () => {
+            getRefCallCount++;
+            if (getRefCallCount % 2 === 1) {
+              // Odd calls: user branch check → not found
+              const e: { status: number } = { status: 404 };
+              throw e;
+            }
+            // Even calls: default branch HEAD
+            return { data: { object: { sha: 'main-sha-abc' } } };
+          }),
+          createRef: vi.fn().mockResolvedValue({}),
+        },
+        repos: {
+          getContent: vi.fn().mockRejectedValue({ status: 404 }),
+          createOrUpdateFileContents: vi.fn().mockResolvedValue({
+            data: { commit: { sha: 'commit-sha-xyz' } },
+          }),
+        },
+      },
+    };
+  }
 
+  it('completes all 6 steps and sets cloneDir + completedAt', async () => {
+    // step1: channel1 verify (injected gist skips gist creation)
     const fetchFn = makeFetch([
-      // step1: channel1 verify
       { status: 200, body: { id: USER_ID, login: LOGIN } },
-      // step9 channel1
-      { status: 200, body: { id: USER_ID, login: LOGIN } },
-      // step9 channel2 contents
-      { status: 200, body: { content: encoded + '\n', encoding: 'base64', sha: 'sha123' } },
-      // step9 commit
-      { status: 200, body: { author: { login: LOGIN }, commit: { verification: { verified: true } } } },
     ]);
 
-    const execFileFn = vi.fn().mockImplementation((_f: string, args: string[]) => {
-      if (args[0] === 'rev-parse' && args[1] === '--verify') throw new Error('no branch');
-      if (args[0] === 'checkout' && args[1] === '--track') throw new Error('no remote');
-      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return Promise.resolve({ stdout: 'sha123\n', stderr: '' });
-      return Promise.resolve({ stdout: '', stderr: '' });
-    });
-
-    const writeFileFn = vi.fn().mockResolvedValue(undefined);
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
     const mkdirFn = vi.fn().mockResolvedValue(undefined);
 
-    const states: string[][] = [];
     const readStateFn = vi.fn().mockResolvedValue(null);
-    const writeStateFn = vi.fn().mockImplementation((_slug: string, s: JoinState) => {
-      states.push(Object.values(s.steps).map((st) => `${st.id}:${st.status}`));
-      return Promise.resolve();
-    });
+    const writeStateFn = vi.fn().mockResolvedValue(undefined);
+
+    const bootFederateFn = vi.fn().mockResolvedValue({ state: 'booted' });
+    // Simulates peer admitted on first check:
+    const readAdmittedCountFn = vi.fn().mockReturnValue(1);
 
     const finalState = await joinSharedHarness({
       link,
@@ -540,108 +461,290 @@ describe('joinSharedHarness orchestrator', () => {
       githubUserId: USER_ID,
       githubLogin: LOGIN,
       keychainId: KEYCHAIN_ID,
-      existingGistId: 'gist-xyz',
+      existingGistId: 'gist-injected-123', // non-empty → no network gist creation
       fetchFn,
       execFileFn,
-      writeFileFn,
       mkdirFn,
       readStateFn,
       writeStateFn,
+      bootFederateFn,
+      readAdmittedCountFn,
+      awaitAdmissionTimeoutMs: 5000,
+      awaitAdmissionPollMs: 100,
+      sleepFn: async () => {},
+      octokit: makeFakeOctokit(),
     });
 
-    // Non-stub steps are done.
+    // All 6 steps done (or soft-done).
     expect(finalState.steps.oauth_attest.status).toBe('done');
     expect(finalState.steps.clone_repo.status).toBe('done');
-    expect(finalState.steps.create_user_branch.status).toBe('done');
-    expect(finalState.steps.push_contributor_file.status).toBe('done');
-    expect(finalState.steps.verify_binding.status).toBe('done');
+    expect(finalState.steps.publish_binding.status).toBe('done');
+    expect(finalState.steps.boot_federate.status).toBe('done');
+    expect(finalState.steps.await_admission_merge.status).toBe('done');
     expect(finalState.steps.route_insights.status).toBe('done');
 
-    // Stub steps are phase_0_pending.
-    expect(finalState.steps.join_hyperswarm.status).toBe('phase_0_pending');
-    expect(finalState.steps.bootstrap_hyperbee.status).toBe('phase_0_pending');
-    expect(finalState.steps.seed_pg.status).toBe('phase_0_pending');
-    expect(finalState.steps.publish_binding.status).toBe('phase_0_pending');
+    // State has cloneDir and completedAt.
+    expect(typeof finalState.cloneDir).toBe('string');
+    expect(typeof finalState.completedAt).toBe('number');
 
-    // State has a completedAt.
+    // bootFederateFn was called once.
+    expect(bootFederateFn).toHaveBeenCalledTimes(1);
+
+    // readAdmittedCountFn was called (at least once during await_admission_merge).
+    expect(readAdmittedCountFn).toHaveBeenCalled();
+
+    // attestationGistId is set to the injected value.
+    expect(finalState.attestationGistId).toBe('gist-injected-123');
+  });
+
+  it('reports 6-step shape — does NOT contain old step ids', async () => {
+    const fetchFn = makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]);
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const mkdirFn = vi.fn().mockResolvedValue(undefined);
+    const readStateFn = vi.fn().mockResolvedValue(null);
+    let capturedState: JoinState | null = null;
+    const writeStateFn = vi.fn().mockImplementation((_slug: string, s: JoinState) => {
+      capturedState = s;
+      return Promise.resolve();
+    });
+
+    await joinSharedHarness({
+      link,
+      slug: SLUG + '-shape',
+      token: 'tok-ok',
+      githubUserId: USER_ID,
+      githubLogin: LOGIN,
+      keychainId: KEYCHAIN_ID,
+      existingGistId: 'gist-abc',
+      fetchFn,
+      execFileFn,
+      mkdirFn,
+      readStateFn,
+      writeStateFn,
+      bootFederateFn: vi.fn().mockResolvedValue({}),
+      readAdmittedCountFn: vi.fn().mockReturnValue(0),
+      awaitAdmissionTimeoutMs: 0,
+      sleepFn: async () => {},
+      octokit: makeFakeOctokit(),
+    });
+
+    const stepIds = Object.keys(capturedState!.steps) as string[];
+    expect(stepIds.sort()).toEqual(
+      ['oauth_attest', 'clone_repo', 'publish_binding', 'boot_federate', 'await_admission_merge', 'route_insights'].sort(),
+    );
+    // Old ids not present:
+    expect(stepIds).not.toContain('join_hyperswarm');
+    expect(stepIds).not.toContain('seed_pg');
+    expect(stepIds).not.toContain('create_user_branch');
+    expect(stepIds).not.toContain('push_contributor_file');
+    expect(stepIds).not.toContain('verify_binding');
+  });
+
+  it('gh_auth_required in oauth_attest → throws JoinStepError and marks error', async () => {
+    // 401 → channel1 kind='fail', reason='oauth_token_revoked'
+    const fetchFn = makeFetch([{ status: 401, body: {} }]);
+    const readStateFn = vi.fn().mockResolvedValue(null);
+    const writeStateFn = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      joinSharedHarness({
+        link,
+        slug: SLUG + '-gh-auth',
+        token: 'tok-revoked',
+        githubUserId: USER_ID,
+        githubLogin: LOGIN,
+        keychainId: KEYCHAIN_ID,
+        fetchFn,
+        readStateFn,
+        writeStateFn,
+      }),
+    ).rejects.toMatchObject({
+      name: 'JoinStepError',
+      stepId: 'oauth_attest',
+    });
+
+    // The last written state should show oauth_attest as error.
+    const lastState: JoinState = writeStateFn.mock.calls.at(-1)?.[1];
+    expect(lastState?.steps.oauth_attest.status).toBe('error');
+  });
+
+  it('boot_federate failure → soft phase_0_pending, join still completes', async () => {
+    const fetchFn = makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]);
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const mkdirFn = vi.fn().mockResolvedValue(undefined);
+    const readStateFn = vi.fn().mockResolvedValue(null);
+    const writeStateFn = vi.fn().mockResolvedValue(undefined);
+
+    // Boot fails (DHT unreachable)
+    const bootFederateFn = vi.fn().mockRejectedValue(new Error('DHT unreachable'));
+
+    const finalState = await joinSharedHarness({
+      link,
+      slug: SLUG + '-boot-fail',
+      token: 'tok-ok',
+      githubUserId: USER_ID,
+      githubLogin: LOGIN,
+      keychainId: KEYCHAIN_ID,
+      existingGistId: 'gist-abc',
+      fetchFn,
+      execFileFn,
+      mkdirFn,
+      readStateFn,
+      writeStateFn,
+      bootFederateFn,
+      readAdmittedCountFn: vi.fn().mockReturnValue(0),
+      awaitAdmissionTimeoutMs: 0,
+      sleepFn: async () => {},
+      octokit: makeFakeOctokit(),
+    });
+
+    // boot_federate is soft phase_0_pending — NOT an error.
+    expect(finalState.steps.boot_federate.status).toBe('phase_0_pending');
+    // Join still completes (route_insights done).
+    expect(finalState.steps.route_insights.status).toBe('done');
     expect(typeof finalState.completedAt).toBe('number');
   });
 
-  it('resumes from a saved state, skipping already-done steps (P-009c)', async () => {
-    // Pre-build a state where step 1+2 are done.
+  it('await_admission_merge timeout → soft phase_0_pending, join still completes', async () => {
+    const fetchFn = makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]);
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const mkdirFn = vi.fn().mockResolvedValue(undefined);
+    const readStateFn = vi.fn().mockResolvedValue(null);
+    const writeStateFn = vi.fn().mockResolvedValue(undefined);
+
+    const finalState = await joinSharedHarness({
+      link,
+      slug: SLUG + '-aam-timeout',
+      token: 'tok-ok',
+      githubUserId: USER_ID,
+      githubLogin: LOGIN,
+      keychainId: KEYCHAIN_ID,
+      existingGistId: 'gist-abc',
+      fetchFn,
+      execFileFn,
+      mkdirFn,
+      readStateFn,
+      writeStateFn,
+      bootFederateFn: vi.fn().mockResolvedValue({}),
+      // No peers ever appear:
+      readAdmittedCountFn: vi.fn().mockReturnValue(0),
+      awaitAdmissionTimeoutMs: 0, // immediate timeout
+      sleepFn: async () => {},
+      octokit: makeFakeOctokit(),
+    });
+
+    expect(finalState.steps.await_admission_merge.status).toBe('phase_0_pending');
+    expect(finalState.steps.route_insights.status).toBe('done');
+    expect(typeof finalState.completedAt).toBe('number');
+  });
+
+  it('publish_binding receives non-empty attestationGistId from oauth_attest', async () => {
+    // Verify the attestationGistId flows from oauth_attest → publish_binding.
+    const fetchFn = makeFetch([{ status: 200, body: { id: USER_ID, login: LOGIN } }]);
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const mkdirFn = vi.fn().mockResolvedValue(undefined);
+    const readStateFn = vi.fn().mockResolvedValue(null);
+    const writeStateFn = vi.fn().mockResolvedValue(undefined);
+
+    const fakeOctokit = makeFakeOctokit();
+
+    await joinSharedHarness({
+      link,
+      slug: SLUG + '-gist-flow',
+      token: 'tok-ok',
+      githubUserId: USER_ID,
+      githubLogin: LOGIN,
+      keychainId: KEYCHAIN_ID,
+      existingGistId: 'gist-nonempty-flow-test',
+      fetchFn,
+      execFileFn,
+      mkdirFn,
+      readStateFn,
+      writeStateFn,
+      bootFederateFn: vi.fn().mockResolvedValue({}),
+      readAdmittedCountFn: vi.fn().mockReturnValue(1),
+      awaitAdmissionTimeoutMs: 5000,
+      awaitAdmissionPollMs: 100,
+      sleepFn: async () => {},
+      octokit: fakeOctokit,
+    });
+
+    // The Contents API PUT received a file with the non-empty gist id.
+    const putCall = fakeOctokit.rest.repos.createOrUpdateFileContents.mock.calls[0]?.[0];
+    expect(putCall).toBeDefined();
+    const fileContent = Buffer.from(putCall.content, 'base64').toString('utf8');
+    const parsed = JSON.parse(fileContent) as Record<string, unknown>;
+    expect(parsed.device_attestation_gist_id).toBe('gist-nonempty-flow-test');
+    expect(parsed.device_attestation_gist_id).not.toBe('');
+  });
+
+  it('resumes from saved state, skipping already-done steps', async () => {
+    // Pre-build a state where oauth_attest + clone_repo are done.
     const savedState: JoinState = {
-      slug: SLUG,
+      slug: SLUG + '-resume',
       linkTopic: TOPIC,
       startedAt: Date.now() - 10000,
       steps: {
         oauth_attest: { id: 'oauth_attest', status: 'done' },
         clone_repo: { id: 'clone_repo', status: 'done' },
-        join_hyperswarm: { id: 'join_hyperswarm', status: 'phase_0_pending' },
-        bootstrap_hyperbee: { id: 'bootstrap_hyperbee', status: 'phase_0_pending' },
-        seed_pg: { id: 'seed_pg', status: 'phase_0_pending' },
-        create_user_branch: { id: 'create_user_branch', status: 'pending' },
-        push_contributor_file: { id: 'push_contributor_file', status: 'pending' },
-        publish_binding: { id: 'publish_binding', status: 'phase_0_pending' },
-        verify_binding: { id: 'verify_binding', status: 'pending' },
+        publish_binding: { id: 'publish_binding', status: 'pending' },
+        boot_federate: { id: 'boot_federate', status: 'pending' },
+        await_admission_merge: { id: 'await_admission_merge', status: 'pending' },
         route_insights: { id: 'route_insights', status: 'pending' },
       },
-      cloneDir: '/fake/clones/' + SLUG,
+      cloneDir: '/fake/clones/' + SLUG + '-resume',
       pubkeyBase64: DEVICE_PUBKEY_B64,
-      attestationGistId: 'gist-xyz',
+      attestationGistId: 'gist-resume-abc',
       githubUserId: USER_ID,
       githubLogin: LOGIN,
     };
 
-    const fileBody = makeSignedFileBody({
-      githubUserId: USER_ID,
-      githubLogin: LOGIN,
-      pubkeyBase64: DEVICE_PUBKEY_B64,
-      privateKey: _priv,
-    });
-    const encoded = Buffer.from(JSON.stringify(fileBody)).toString('base64');
-
-    const fetchFn = makeFetch([
-      // step9 channel1
-      { status: 200, body: { id: USER_ID, login: LOGIN } },
-      // step9 channel2 contents
-      { status: 200, body: { content: encoded + '\n', encoding: 'base64', sha: 'sha456' } },
-      // step9 commit
-      { status: 200, body: { author: { login: LOGIN }, commit: { verification: { verified: true } } } },
-    ]);
-
-    const execFileFn = vi.fn().mockImplementation((_f: string, args: string[]) => {
-      if (args[0] === 'rev-parse' && args[1] === '--verify') throw new Error('no branch');
-      if (args[0] === 'checkout' && args[1] === '--track') throw new Error('no remote');
-      if (args[0] === 'rev-parse' && args[1] === 'HEAD') return Promise.resolve({ stdout: 'sha456\n', stderr: '' });
-      return Promise.resolve({ stdout: '', stderr: '' });
-    });
+    // No fetch calls expected — oauth_attest + clone_repo are skipped.
+    const fetchFn = makeFetch([]);
+    const execFileFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const mkdirFn = vi.fn().mockResolvedValue(undefined);
 
     const readStateFn = vi.fn().mockResolvedValue(savedState);
     const writeStateFn = vi.fn().mockResolvedValue(undefined);
 
+    const bootFederateFn = vi.fn().mockResolvedValue({ state: 'booted' });
+
+    const fakeOctokit = makeFakeOctokit();
+
     const finalState = await joinSharedHarness({
       link,
-      slug: SLUG,
+      slug: SLUG + '-resume',
       token: 'tok-ok',
       githubUserId: USER_ID,
       githubLogin: LOGIN,
       keychainId: KEYCHAIN_ID,
-      existingGistId: 'gist-xyz',
       fetchFn,
       execFileFn,
-      writeFileFn: vi.fn().mockResolvedValue(undefined),
-      mkdirFn: vi.fn().mockResolvedValue(undefined),
+      mkdirFn,
       readStateFn,
       writeStateFn,
+      bootFederateFn,
+      readAdmittedCountFn: vi.fn().mockReturnValue(1),
+      awaitAdmissionTimeoutMs: 5000,
+      awaitAdmissionPollMs: 100,
+      sleepFn: async () => {},
+      octokit: fakeOctokit,
     });
 
-    // Steps 1+2 were already done, should still be done.
+    // Steps 1+2 were already done.
     expect(finalState.steps.oauth_attest.status).toBe('done');
     expect(finalState.steps.clone_repo.status).toBe('done');
-    // Remaining non-stub steps completed.
-    expect(finalState.steps.create_user_branch.status).toBe('done');
-    expect(finalState.steps.push_contributor_file.status).toBe('done');
-    expect(finalState.steps.verify_binding.status).toBe('done');
+
+    // Remaining steps ran and completed.
+    expect(finalState.steps.publish_binding.status).toBe('done');
+    expect(finalState.steps.boot_federate.status).toBe('done');
+    expect(finalState.steps.await_admission_merge.status).toBe('done');
     expect(finalState.steps.route_insights.status).toBe('done');
+
+    // oauth_attest was skipped (no fetch call happened).
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    // Preserved attestationGistId from saved state.
+    expect(finalState.attestationGistId).toBe('gist-resume-abc');
   });
 });
