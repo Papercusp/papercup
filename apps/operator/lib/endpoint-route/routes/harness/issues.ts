@@ -21,15 +21,15 @@
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
-import { auditFeatureChange } from '@/lib/feature-audit';
 import { phasePhaseLabel } from '@/lib/harness-phases';
 import {
   loadIssuesOrSeed,
   saveIssues,
   readPendingIssues,
 } from '@/lib/harness-issues';
+import { promoteIssueToFeature } from '@/lib/promote-issue';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import type { Issue, IssueSeverity, IssueStatus } from '@/app/harness/issues/types';
@@ -270,9 +270,10 @@ const triage = defineTool({
  * Promote an issue into a feature — appends an F-FIX-### entry to
  * harness_features, links the issue to it, sets status='fixing'.
  *
- * Was deferred in batch 25b because it called `auditFeatureChange`,
- * which still lived in harness.ts at the time; now that 26a relocated
- * that helper to `@/lib/feature-audit`, this route can ship.
+ * The promote logic is shared with the orchestrator's automated
+ * CONVERT_ISSUES sweep (`promoteIssueToFeature` in `@/lib/promote-issue`);
+ * this route is the human-facing entry point. See that module for the
+ * metadata.source_plan / workspace_id correctness notes (D-016).
  */
 const promoteIssue = defineTool({
   method: 'POST',
@@ -282,83 +283,11 @@ const promoteIssue = defineTool({
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const id = ctx.params.id as string;
-    const file = loadIssuesOrSeed(project);
-    const issue = file.issues.find((i) => i.id === id);
-    if (!issue) return Response.json({ error: 'issue not found' }, { status: 404 });
-    if (issue.linkedFeatureId) {
-      return Response.json({ error: 'already linked to ' + issue.linkedFeatureId }, { status: 400 });
-    }
-
-    // Append a F-FIX-### entry to harness_features (PG).
-    const dbc = getLegacyClient(project.slug);
-
-    // Inherit source_plan_slug from the feature the issue was found in so
-    // the orchestrator's plan-scoping filter (P-005) includes this fix.
-    let parentPlanSlug: string | null = null;
-    if (issue.foundDuring) {
-      try {
-        const parentRow = dbc.prepare(`
-          SELECT source_plan_slug FROM harness_features
-           WHERE harness_slug = ? AND feature_id = ? LIMIT 1
-        `).get(project.slug, issue.foundDuring) as { source_plan_slug: string | null } | undefined;
-        parentPlanSlug = parentRow?.source_plan_slug ?? null;
-      } catch { /* non-fatal */ }
-    }
-    const fixRows = await dbc.prepare(`
-      SELECT feature_id FROM harness_features
-       WHERE harness_slug = ? AND feature_id LIKE 'F-FIX-%'
-    `).all(project.slug) as Array<{ feature_id: string }>;
-    const existingFixIds = fixRows
-      .map((r) => Number(r.feature_id.slice(6)))
-      .filter((n) => Number.isFinite(n));
-    const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
-    const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
-    const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
-    const featureNotes = [
-      issue.evidence ?? '',
-      issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '',
-    ].filter(Boolean).join('\n\n');
-    const featureTs = Date.now();
-    await dbc.prepare(`
-      INSERT INTO harness_features
-        (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
-         kind, project_id, expected_cost_cents, tags, needs_human_review,
-         source_plan_slug,
-         ts, created_ts, updated_ts)
-      VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?, ?)
-    `).run(
-      project.slug, featureId, issue.title,
-      claims.length ? JSON.stringify(claims) : null,
-      featureNotes || null,
-      JSON.stringify({ sourceIssueId: issue.id }),
-      parentPlanSlug,
-      featureTs, featureTs, featureTs,
-    );
-    auditFeatureChange(
-      project.slug, featureId, '__created', null,
-      { id: featureId, title: issue.title, sourceIssueId: issue.id },
-      req.headers.get('x-actor') ?? 'issue-promote',
-    );
-    const newFeature = {
-      id: featureId,
-      title: issue.title,
-      claims,
-      status: 'todo',
-      attempts: 0,
-      sourceIssueId: issue.id,
-      notes: featureNotes,
-    };
-
-    issue.linkedFeatureId = featureId;
-    issue.status = 'fixing';
-    issue.notes.push({
-      ts: new Date().toISOString(),
-      by: 'human',
-      text: `Promoted to ${featureId}`,
+    const result = await promoteIssueToFeature(project, id, {
+      actor: req.headers.get('x-actor') ?? 'human',
     });
-    await saveIssues(project, file);
-
-    return Response.json({ ok: true, issue, feature: newFeature });
+    if (!result.ok) return Response.json({ error: result.error }, { status: result.status });
+    return Response.json({ ok: true, issue: result.issue, feature: result.feature });
   },
 });
 

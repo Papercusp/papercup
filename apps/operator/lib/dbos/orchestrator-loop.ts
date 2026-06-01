@@ -48,6 +48,7 @@ import { activeWorkspaceId, readRegistry } from '@/lib/workspace-registry';
 import { runWithWorkspace } from '@/lib/workspace-als';
 import { listAllHarnesses } from '@/lib/dev-data';
 import { resolveProject } from '@/lib/harness-core';
+import { convertOpenIssuesToFeatures } from '@/lib/promote-issue';
 import { ensureFeaturePipeline } from './orchestrator-start';
 
 /**
@@ -234,6 +235,27 @@ export interface OrchestratorTickResult {
 }
 
 /**
+ * P-011 (D-004 / D-016): the automated CONVERT_ISSUES sweep. Promote every open
+ * `critical`/`major` issue with no linked feature to an `F-FIX` feature so the
+ * substrate fixes it under DBOS (the legacy `CONVERTED` verb was just an
+ * agent-side receipt; this is deterministic code). Best-effort and isolated —
+ * any failure is swallowed so it can never sink the dispatch path — and the
+ * sweep's own per-`(workspace, harness)` in-process mutex makes the 30s-tick +
+ * on-settle-refill double-fire idempotent (no double-mint).
+ */
+async function convertIssuesForHarness(slug: string, workspaceId: string): Promise<void> {
+  const project = await resolveProject(slug, workspaceId);
+  if (!project) return;
+  const { promoted } = await convertOpenIssuesToFeatures(project, { workspaceId });
+  if (promoted.length > 0) {
+    console.log(
+      `[dbos-orchestrator] ${slug} converted ${promoted.length} issue(s) → F-FIX: ` +
+        promoted.map((p) => `${p.issueId}→${p.featureId}`).join(', '),
+    );
+  }
+}
+
+/**
  * Dispatch for ONE harness: read eligible (non-owned) features, fill the free
  * slots up to the harness's own concurrency `cap`, and `ensureFeaturePipeline`
  * each. Used by both the periodic sweep and the on-completion refill seam (#1).
@@ -250,6 +272,10 @@ export async function dispatchOneHarness(
     connection: { search_path: `harness_${slug},harness_shared,public` },
   });
   try {
+    // P-011: auto-promote qualifying open issues → F-FIX features BEFORE the
+    // feature read, so a freshly-minted fix is eligible this same tick. Its own
+    // try/catch guarantees a convert failure never sinks dispatch.
+    await convertIssuesForHarness(slug, workspaceId).catch(() => {});
     const eligible = await readFeaturesPg({ pg: pg as never, workspaceId, harnessSlug: slug });
     const liveCount = await liveCountFor(slug);
     const { cap, overCostCap } = await resolveHarnessDispatchGate(slug, workspaceId);
