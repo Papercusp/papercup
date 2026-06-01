@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1–3 BUILT + unit-tested + committed, all behind `PAPERCUSP_FLEET_SANDBOX` (off by default; no behavior change until opt-in). claude-code → built-in sandbox via `--settings` (per-role resolver `fleetSandboxSettingsForRole`, cred denyRead + Read/Edit deny rules + deny-all egress + env-scrub); codex → `-s workspace-write` (flag-off keeps the prior `danger-full-access`); omp → wrapped in `srt`. 76 orchestrator unit tests green; submodule `papercusp@ac955f6`. Each backend's sandbox mechanism verified in isolation on this box (cred-read blocked, cwd-write ok, egress blocked). Host deps installed: `srt` + `ripgrep` (bwrap/socat already present). Known per-backend limits recorded: codex reads broadly (no denyRead — D-007); claude sandbox covers Bash only so cred-reads via the Read tool need the paired deny rules (D-004); cwd is always writable so per-role write tightening isn't a sandbox lever (D-006); containment is defense-in-depth, TLS not inspected (D-005).
+**State:** P-012 (live verification) DONE — and it overturned Phases 2-3. Outcome per backend: **claude** sandbox works (cred/egress/Read-deny verified, no hang) — the ONLY viable one; **codex** FAILS — `-s workspace-write` cancels MCP tool calls (D-009), so codex now always runs `danger-full-access` regardless of the flag; **omp** FAILS/deferred — `srt` wraps omp's whole process and would gate its own model/MCP (D-010), plus omp is mis-configured on this box, so the srt-wrap + helpers were removed and omp runs unsandboxed. Net: `PAPERCUSP_FLEET_SANDBOX` now enables ONLY claude's sandbox; codex+omp keep their working defaults. 72 unit tests; submodule `papercusp@646abad`. P-013 (default-on) NOT done: P-012 didn't fully pass, and even claude's deny-all command egress (`allowedDomains: []`) would break roles that need the network (npm/pip install) — so default-on needs per-role egress allowlisting + a full per-role-on-real-harness pass first. Flag remains off-by-default (opt-in).
 
-**Next:** Run P-012 — the real per-role fleet-spawn verification pass on a running desktop (does each role actually FUNCTION under its sandbox; settle the two gated unknowns: codex MCP under workspace-write, and omp's Python/Bun/loopback under srt) — then P-013 flips default-on.
+**Next:** Before any default-on: give claude's sandbox a per-role EGRESS allowlist (so dep-installing roles aren't broken by deny-all) and run a real per-role pass on a desktop; separately, redesign omp's srt config with a per-omp egress allowlist + verify once omp runs on the box. codex stays uncontained pending MCP-under-sandbox upstream.
 
 ## Background
 
@@ -59,21 +59,21 @@ AppArmor profile) covers every backend.
 
 ## Phase 2 — codex native sandbox
 
-- **P-005** `done` Orchestrator codex spawn uses `--sandbox workspace-write --ask-for-approval never` (config.toml `sandbox_mode`/`approval_policy`), with `sandbox_workspace_write.writable_roots` = the cwd. workspace-write already blocks command network by default (stricter than claude). Gated behind the same flag.
-- **P-006** `done` Decide codex command-network policy: workspace-write denies it by default; if a role needs the operator API from a command, widen writable_roots/network — but note the macOS `network_access` Seatbelt bug (codex#10390), so don't rely on codex command-network on Mac. blocked-by: P-005
-- **P-007** `done` Isolation verification mirroring P-004 for codex (cwd write ok; cred read denied; egress denied; role task completes). blocked-by: P-005 (standalone-verified; codex MCP under workspace-write gated to P-012)
+- **P-005** `dropped` Orchestrator codex spawn uses `--sandbox workspace-write --ask-for-approval never` (config.toml `sandbox_mode`/`approval_policy`), with `sandbox_workspace_write.writable_roots` = the cwd. workspace-write already blocks command network by default (stricter than claude). Gated behind the same flag. (codex sandbox not viable — workspace-write cancels MCP D-009; reverted to always danger-full-access)
+- **P-006** `dropped` Decide codex command-network policy: workspace-write denies it by default; if a role needs the operator API from a command, widen writable_roots/network — but note the macOS `network_access` Seatbelt bug (codex#10390), so don't rely on codex command-network on Mac. blocked-by: P-005 (moot — codex stays danger-full-access D-009)
+- **P-007** `done` Isolation verification mirroring P-004 for codex (cwd write ok; cred read denied; egress denied; role task completes). blocked-by: P-005 (standalone-verified; codex MCP under workspace-write gated to P-012) (verified: codex workspace-write cancels MCP → not viable D-009)
 
 ## Phase 3 — omp via srt wrapper
 
-- **P-008** `done` Add `@anthropic-ai/sandbox-runtime` (`srt`) as the omp containment wrapper: prefix the omp spawn with `srt` carrying an `~/.srt-settings.json` of the common policy (`filesystem.denyRead`/`allowWrite`, `network.allowedDomains`). srt wraps an arbitrary process, cross-platform (same bwrap/Seatbelt+proxy). Gated behind the flag; no-op + warn if `srt`/bwrap absent.
-- **P-009** `done` Isolation verification for the omp+srt path (cwd write ok; cred read denied; egress denied; omp role task completes). blocked-by: P-008 (wrapper-verified; omp-under-srt functioning gated to P-012)
+- **P-008** `dropped` Add `@anthropic-ai/sandbox-runtime` (`srt`) as the omp containment wrapper: prefix the omp spawn with `srt` carrying an `~/.srt-settings.json` of the common policy (`filesystem.denyRead`/`allowWrite`, `network.allowedDomains`). srt wraps an arbitrary process, cross-platform (same bwrap/Seatbelt+proxy). Gated behind the flag; no-op + warn if `srt`/bwrap absent. (srt wraps whole omp process → breaks its own egress D-010; auto-wrap + helpers reverted)
+- **P-009** `done` Isolation verification for the omp+srt path (cwd write ok; cred read denied; egress denied; omp role task completes). blocked-by: P-008 (wrapper-verified; omp-under-srt functioning gated to P-012) (couldn't verify omp mis-configured on box + design flaw found D-010; deferred)
 
 ## Phase 4 — host setup, flag, and default-on gate
 
 - **P-010** `done` Shared policy module: one source of truth for the credential-deny list + egress allowlist, mapped onto each backend's config shape (claude settings / codex toml / srt json). Avoids drift across the three. (FLEET_SANDBOX_DENY_READ/ALLOWED_DOMAINS are the shared source mapped onto claude settings + srt schema)
 - **P-011** `wip` Host dependency check + docs: `bubblewrap` + `socat` + seccomp helper present; Ubuntu 24.04+ `bwrap` AppArmor profile; `enableWeakerNestedSandbox` when the spawn runs inside a container; fallback-safe + Linux/macOS only (no native Windows). (deps installed on this box srt+ripgrep; bwrap/socat present + documented in D-008; formal dep-check/docs page TODO)
-- **P-012** `todo` Per-role real-spawn verification pass (the `#1` gold-standard gate): run each pipeline role under the sandbox against a real harness; catalogue tool breakage (watchman, Go-CLI TLS, docker, etc.) and add per-tool `excludedCommands`/`allowWrite` exceptions. Only after this passes do we flip default-on. blocked-by: P-004, P-007, P-009
-- **P-013** `todo` Flip `PAPERCUSP_FLEET_SANDBOX` default-on once P-012 is green; keep `failIfUnavailable` opt-in for managed/CI deployments. blocked-by: P-012
+- **P-012** `done` Per-role real-spawn verification pass (the `#1` gold-standard gate): run each pipeline role under the sandbox against a real harness; catalogue tool breakage (watchman, Go-CLI TLS, docker, etc.) and add per-tool `excludedCommands`/`allowWrite` exceptions. Only after this passes do we flip default-on. blocked-by: P-004, P-007, P-009 (verification done — revealed codex+omp non-viable D-009/D-010; claude viable for no-network roles)
+- **P-013** `blocked` Flip `PAPERCUSP_FLEET_SANDBOX` default-on once P-012 is green; keep `failIfUnavailable` opt-in for managed/CI deployments. blocked-by: P-012 (not flipped — P-012 didn't fully pass; needs claude per-role egress allowlist + full per-role pass first)
 
 ## Decisions
 
@@ -139,3 +139,17 @@ HOST DEPS (P-011) installed on this dev box: `@anthropic-ai/sandbox-runtime` (sr
 
 OPEN (→ P-012, like codex MCP): whether omp itself FUNCTIONS under srt — omp runs a persistent Python + Bun worker over a loopback bridge, which may need paths/sockets the sandbox restricts. The wrapper is verified (srt sandboxes a command correctly); omp-under-srt working is the real-spawn gate.
 Related: P-008, P-009, P-011
+
+### D-009 — P-012: codex is NOT sandboxable — workspace-write cancels MCP tool calls
+Date: 2026-06-01
+Live verification (codex-su-home MCP config + the operator on :3070, vs codex on this box): under `-s workspace-write`, a codex MCP tool call (`harness:list`) returns **"user cancelled MCP tool call"** (client-side, never reaches the server). Under `--dangerously-bypass-approvals-and-sandbox` the SAME call REACHES the server (returns the `?superuser=1` auth artifact). So codex's sandbox cancels MCP — exactly as the handoff recorded for `read-only`, and now confirmed for `workspace-write` too. A sandboxed codex worker is therefore tool-less, which is fatal for the MCP-dependent fleet.
+
+Resolution: `codexSandboxArgs` now ALWAYS returns `-s danger-full-access --dangerously-bypass-approvals-and-sandbox` regardless of PAPERCUSP_FLEET_SANDBOX — the flag deliberately does NOT switch codex to workspace-write (that would silently disable its tools). Phase 2's flag→workspace-write switch is reverted. codex is uncontained until OpenAI offers MCP-under-sandbox; revisit then. (Why claude can be sandboxed but codex can't: claude's sandbox covers only sub-commands and leaves the agent's own MCP connection intact; codex's sandbox gates the MCP transport itself.)
+Related: P-005, P-007, P-012
+
+### D-010 — P-012: omp srt-wrap removed — srt gates omp's own model/MCP; unverifiable here
+Date: 2026-06-01
+Two findings made Phase 3's omp srt-wrap non-viable as built: (1) DESIGN — `srt` wraps the WHOLE omp process, so its network filter gates omp's OWN model + MCP connections (unlike claude/codex, where the native sandbox wraps only sub-commands and the agent's connections stay outside it). My buildOmpSrtSettings used a deny-all egress (`allowedDomains: []`), which would block omp from reaching its model + the operator — breaking omp outright. (2) VERIFICATION — omp is mis-configured on this box (points at a local ollama that 400s: "failed to unmarshal tool parameters"), so a real omp-under-srt spawn couldn't be run at all.
+
+Resolution: removed the srt auto-wrap + the omp helpers (buildOmpSrtSettings/srtBinOnPath/writeOmpSrtSettings/wrapOmpWithSrt) + their tests; omp runs UNSANDBOXED. The srt *mechanism* is verified (it correctly sandboxes a bash command — cred-hide, cwd-write, egress-block — proven earlier), so the path forward is known: a per-omp egress ALLOWLIST (omp's model endpoint + the operator) instead of deny-all, plus a real-spawn verification once omp runs on the box. Reintroduce the helpers then. Tracked, deferred.
+Related: P-008, P-009, P-012
