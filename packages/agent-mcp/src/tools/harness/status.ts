@@ -41,7 +41,7 @@ export default defineTool({
       })
       .from(projects)
       .where(eq(projects.slug, args.slug))
-      .limit(1)) as Array<Pick<ProjectRow, 'slug' | 'status' | 'updated_ts' | 'spent_cents' | 'budget_cents'>>;
+      .limit(1));
     if (!projectRows.length) {
       return {
         data: null,
@@ -54,7 +54,7 @@ export default defineTool({
       .from(audit)
       .where(eq(audit.subject, args.slug))
       .orderBy(desc(audit.ts))
-      .limit(10)) as Array<Pick<AuditRow, 'ts' | 'action' | 'actor' | 'subject'>>;
+      .limit(10));
     return {
       data: {
         ...projectRows[0],

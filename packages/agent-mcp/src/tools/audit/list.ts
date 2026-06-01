@@ -29,9 +29,7 @@ export default defineTool({
     limit: z.number().int().positive().max(500).default(100),
   }),
   async handler(args, ctx) {
-    const rows = await ctx.tx<
-      Array<{ id: string; ts: number; actor: string; action: string; subject: string; details: unknown }>
-    >`
+    const rows: Array<{ id: string; ts: number; actor: string; action: string; subject: string; details: unknown }> = await ctx.tx`
       SELECT id, ts, actor, action, subject, details
         FROM harness_shared.audit_log
        WHERE (${args.actor ?? null}::text IS NULL OR actor = ${args.actor ?? null})

@@ -43,7 +43,7 @@ export default defineTool({
       })
       .from(projects)
       .orderBy(desc(projects.updatedTs))
-      .limit(args.limit)) as Array<Pick<ProjectRow, 'slug' | 'name' | 'status' | 'updated_ts'>>;
+      .limit(args.limit));
     if (args.detail === 'summary') {
       return { data: rows.map((r) => ({ slug: r.slug, status: r.status })) };
     }

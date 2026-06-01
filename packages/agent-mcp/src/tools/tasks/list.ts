@@ -57,22 +57,7 @@ export default defineTool({
       .from(features)
       .where(preds.length ? and(...preds) : undefined)
       .orderBy(desc(features.updatedTs))
-      .limit(args.limit)) as Array<
-      Pick<
-        FeatureRow,
-        | 'harness_slug'
-        | 'feature_id'
-        | 'title'
-        | 'summary'
-        | 'status'
-        | 'updated_ts'
-        | 'attempts'
-        | 'kind'
-        | 'project_id'
-        | 'expected_cost_cents'
-        | 'goal_id'
-      >
-    >;
+      .limit(args.limit));
 
     if (args.detail === 'summary') {
       return {

@@ -46,7 +46,7 @@ export default defineTool({
       output_ref: string | null;
       output_size: number | null;
     };
-    const rows = await ctx.tx<Row[]>`
+    const rows: Row[] = await ctx.tx`
       SELECT id, plugin_name, tool_name, role, feature_id, run_id, spawn_id,
              invoked_at, duration_ms, output_ref, output_size
         FROM harness_shared.tool_invocations_artifacts

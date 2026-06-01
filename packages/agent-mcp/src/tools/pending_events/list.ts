@@ -47,9 +47,7 @@ export default defineTool({
       .from(pe)
       .where(preds.length ? and(...preds) : undefined)
       .orderBy(desc(pe.createdAt))
-      .limit(args.limit)) as Array<
-      Pick<PERow, 'id' | 'kind' | 'target_role' | 'due_at' | 'created_at' | 'consumed_at'>
-    >;
+      .limit(args.limit));
     return {
       data: rows.map((r) => ({
         id: r.id,

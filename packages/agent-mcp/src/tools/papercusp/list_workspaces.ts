@@ -16,6 +16,9 @@ import { defineTool } from '@papercusp/tooldef';
 export default defineTool({
   name: 'papercusp:list_workspaces',
   profile: 'engineer',
+  // Role-gated (not principal-gated) so crossWorkspace forwards through
+  // registerRoleGatedAsProjected — defineTool routes on requirePrincipal===false.
+  requirePrincipal: false,
   // P-062 Phase 4: enumerates EVERY workspace's harness_registry row — a
   // workspace-scoped RLS tx would hide all but the caller's own. Must run
   // on the admin (rolbypassrls) handle.
@@ -30,8 +33,9 @@ export default defineTool({
     const sql = ctx.tx;
     if (!sql) {
       return {
-        ok: false,
-        error: { code: 'no_tx', message: 'list_workspaces requires a workspace tx (read-only via harness_app role)' },
+        data: { workspaces: [] as Array<{ slug: string; harnesses: string[]; lastActiveTs: number }>, defaultWorkspace: null },
+        degraded: true,
+        degradedReasons: ['list_workspaces requires a DB handle (admin via crossWorkspace)'],
       };
     }
     // int8/BIGINT comes back from postgres-js as a string, so last_active_ts is widened.
@@ -62,12 +66,9 @@ export default defineTool({
       .map(([slug, b]) => ({ slug, harnesses: b.harnesses, lastActiveTs: b.lastActiveTs }))
       .sort((a, b) => b.lastActiveTs - a.lastActiveTs);
     return {
-      ok: true,
-      response: {
-        data: {
-          workspaces,
-          defaultWorkspace: workspaces.find((w) => w.slug === 'default')?.slug ?? workspaces[0]?.slug ?? null,
-        },
+      data: {
+        workspaces,
+        defaultWorkspace: workspaces.find((w) => w.slug === 'default')?.slug ?? workspaces[0]?.slug ?? null,
       },
     };
   },

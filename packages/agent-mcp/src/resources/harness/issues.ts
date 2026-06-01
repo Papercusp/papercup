@@ -20,7 +20,7 @@ export default defineResource({
     'Validator-filed issues for a specific harness. Reads the harness_<slug>.issues table.',
 
   async list(ctx): Promise<ResourceListEntry[]> {
-    const rows = await ctx.tx<Array<{ slug: string; name: string }>>`
+    const rows: Array<{ slug: string; name: string }> = await ctx.tx`
       SELECT slug, name FROM harness_shared.projects ORDER BY slug
     `;
     return rows.map((r) => ({

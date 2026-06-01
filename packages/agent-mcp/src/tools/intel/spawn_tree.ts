@@ -54,7 +54,7 @@ export default defineTool({
       depth: number;
       root_spawn_id: string;
     };
-    const rows = await ctx.tx<Row[]>`
+    const rows: Row[] = await ctx.tx`
       SELECT id, tool_name, plugin_name, role,
              feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
              window_key, invoked_at, duration_ms, status,

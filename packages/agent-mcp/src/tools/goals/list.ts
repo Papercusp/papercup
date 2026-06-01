@@ -42,7 +42,7 @@ export default defineTool({
       })
       .from(goals)
       .orderBy(desc(goals.createdAt))
-      .limit(args.limit)) as Pick<GoalRow, 'id' | 'title' | 'body' | 'parent_id' | 'budget_cents' | 'created_at'>[];
+      .limit(args.limit));
     if (args.detail === 'summary') {
       return { data: rows.map((r) => ({ id: r.id, title: r.title })) };
     }
