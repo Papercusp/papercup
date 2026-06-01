@@ -1,4 +1,36 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// The nonce store is PG-backed via getOrgPg().sql, and getOrgPg()'s Drizzle
+// construct crashes under vitest ("null constructor"). Stub it with an in-memory
+// nonce store that honours the three query shapes the SUT issues (INSERT,
+// the claim CTE, and the reset DELETE) so the consume/replay logic is exercised
+// deterministically without a live PG.
+const __nonces = new Map<string, boolean>(); // nonce → consumed
+vi.mock('@papercusp/db-org', async (orig) => {
+  const sql: any = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const q = strings.join(' ');
+    if (q.includes('INSERT INTO harness_shared.oauth_nonces')) {
+      const n = values[0] as string;
+      if (!__nonces.has(n)) __nonces.set(n, false);
+      return Promise.resolve([]);
+    }
+    if (q.includes('count(*)')) return Promise.resolve([{ n: __nonces.size }]);
+    if (q.includes('WITH lookup')) {
+      const n = values[0] as string;
+      if (!__nonces.has(n)) return Promise.resolve([{ status: 'unknown' }]);
+      if (__nonces.get(n)) return Promise.resolve([{ status: 'already' }]);
+      __nonces.set(n, true);
+      return Promise.resolve([{ status: 'claimed' }]);
+    }
+    if (q.includes('DELETE FROM harness_shared.oauth_nonces')) {
+      if (!q.includes('exp_ms <')) __nonces.clear(); // reset (not the GC sweep)
+      return Promise.resolve([]);
+    }
+    return Promise.resolve([]);
+  };
+  return { ...((await orig()) as object), getOrgPg: () => ({ sql, db: {} }) };
+});
+
 import { __resetForTest, signState, verifyAndConsumeState } from './state';
 
 const baseClaims = {
