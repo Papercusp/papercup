@@ -3,24 +3,15 @@ title: WebKitGTK connection-pool exhaustion — diagnosis & fix plan
 slug: webkit-sse-connection-pool-2026-05-20
 status: active
 created: 2026-05-20
-updated: 2026-05-30
+updated: 2026-06-01
 owner: pandawamble@gmail.com
 ---
 
 ## Now
 
-**State:** **Date:** 2026-05-20 **Status:** Awaiting review **Severity:** High — every `fetch()` in the Tauri desktop webview intermittently hangs forever.
+**State:** Root cause still valid: WebKitGTK/Chromium cap of 6 conns/host; permanent SSE streams camp all slots and starve fetches + the agent-thinking popover. Since written, the FIX track moved to the **desktop IPC transport**: `http2-sse-transport-2026-05-20` (the original HTTP/2 fix) is now `superseded` and explicitly "supersedes the fix section of THIS plan" → `desktop-ipc-transport-completion-2026-05-20` is canonical. On packaged desktop, `IpcEventSource`/`ipcFetch` (apps/operator/lib/transport-adapters) route /api/* SSE+fetch over IPC, bypassing the libsoup cap entirely. 3 pressure-reduction fixes shipped (SSE-only transport, removed duplicate HarnessZeroProvider, batched rest-query). NOT shipped: Option A (SSE mux) + Option B (lazy streams 3/4/5 — OperatorBackgroundScanner / intent-dispatcher / use-state-snapshots are all still always-on). Caveat: dev still uses native EventSource (IPC-SSE caused webview reload churn in dev and was reverted); packaged IPC-SSE was Phase-4-verified under Xvfb but default-gated pending a packaged smoke.
 
-**Next:** Owner: review current state and replace this auto-generated Now block (backfilled 2026-05-20).
-
-
-# WebKitGTK connection-pool exhaustion — diagnosis & fix plan
-
-**Date:** 2026-05-20
-**Status:** Awaiting review
-**Severity:** High — every `fetch()` in the Tauri desktop webview intermittently hangs forever.
-
----
+**Next:** Owner — decide: (a) supersede this into desktop-ipc-transport-completion once a COLD-launch run passes the verification protocol (≤4 ESTAB :3055 sockets, zero "access control" errors on first /harness paint), OR (b) ship Option B (make streams 3/4/5 lazy) as a transport-independent floor that helps even when SSE falls back to native EventSource. Keep this doc as the canonical root-cause diagnosis either way.
 
 ## Symptom
 
