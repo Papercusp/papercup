@@ -317,10 +317,12 @@ export interface BuildSignedContributorFileOpts {
 /**
  * Build a fully-signed `ContributorFileBody`.
  *
- * Extraction point: this was inlined in `join-shared-harness.ts`
- * `step7_pushContributorFile`. Extracting it here makes it reusable by
- * `ensureMyBindingPublished` (Task 2) and by Task 6 when step7 is
- * deleted.
+ * Called by `ensureMyBindingPublished` (which publishes the result via the
+ * GitHub Contents API to produce a GitHub-verified commit — see R-1 in
+ * `papercusp-phase1b-bidirectional-federation-2026-06-01.md`) and by the
+ * join orchestrator's publish-binding step.  The old `step7_pushContributorFile`
+ * from `join-shared-harness.ts` has been deleted; this function is its
+ * replacement and the single canonical signing path.
  *
  * Signing payload: JCS-canonical JSON of all fields EXCEPT
  * `signature_by_device`, ordered per `CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER`.
