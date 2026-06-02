@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** COMPLETE. WS-0/1/5 delivered (~140 new tests, 21 files, all green + committed); WS-2/WS-3 verified already-covered (no redundant tests). WS-4 verified in-session via a dedicated Tauri shell on DISPLAY=:99 (reused existing :3055/:3070 — no collision; killed cleanly after, user's release app untouched): the `dogfood` domain renders AND is selectable in the live /adv Tests tab (page URL reached `testsTab=dogfood`), with dogfood section labels (PR lifecycle, Cupboard) in the DOM; a durable registry guard test locks the domain + its 12 sections so it can't silently regress. tools-md-sync green.
+**State:** COMPLETE incl. the two follow-ups. WS-0/1/5 delivered (~140 tests); WS-2/3 verified already-covered; WS-4 verified live (Tauri+Xvfb). Follow-up #2 DONE: auto-rebase now escalates gracefully (sentinel path) when a rebase conflict lists zero unmerged files, instead of throwing (fix + test). Follow-up #1 DONE: the full federation round-trip is already proven by feature-content-federation.integration.test.ts (real swarm + 2 real PGs, both directions — re-verified green) + two-peer-swarm-bidi + join-shared-harness; the one untested production seam (joinSharedHarness DEFAULT boot path → boot-all.bootSingleHarness) is now closed by join-default-boot-wiring.test.ts.
 
-**Next:** None — suite shipped. Optional future follow-up (not started): a committed tauri-driver/automated browser-E2E spec for the full collab share/join flow once GitHub-OAuth + 2-peer fixtures exist (today that path needs real creds + a second peer, so it was verified at the render/nav level, not the full federation round-trip).
+**Next:** None — suite + both follow-ups shipped. The sole remaining manual step is P-079: the real two-machine GitHub-OAuth channel-2 handshake (needs two real accounts on two machines), genuinely un-automatable headless — run it once before GA as a human acceptance check.
 
 ## Background
 
