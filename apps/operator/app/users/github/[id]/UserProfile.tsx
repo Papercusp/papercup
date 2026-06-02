@@ -7,21 +7,29 @@
  * v5 addendum 3 §18 + D-028: route at `/users/github/<github_user_id>`;
  * username route redirects to numeric.
  *
- * This is the SHELL implementation — the data dependencies (per-harness
- * stat rollups, recent activity feed, claim-list) are stubbed via
- * props so the page can render with mock data today + the real wiring
- * lands incrementally as the projection-fed PG tables get UI queries.
+ * Render component fed real PG-backed data by `lib/user-profile/load.ts`
+ * (via the SSR Next page + the GET /api/users/github/:id endpoint that
+ * the Vite route consumes).
  *
- * Sub-acceptances covered by this shell:
+ * Sub-acceptances rendered here:
  *   P-072a — header (avatar, name, login, verified-binding badge, GH link).
- *   P-072b — per-harness collapsible blocks (one per visible harness).
+ *   P-072b — per-harness collapsible blocks (one per visible harness),
+ *            tier-A PRs / tier-B features-shipped / tier-C activity.
  *   P-072c — recent activity feed (last ~30 events).
- *   P-072d — footer claimed harnesses.
+ *   P-072d — footer: verified-claimant harnesses.
  *
- * NOT yet wired (follow-up):
- *   - The hook that fetches user + per-harness rollups from PG.
- *   - The privacy filter for shared-private harnesses (Q-2 in plan).
- *   - The Marketplace publishedBy switch-over to this page (P-072f).
+ * Wiring (shipped in the P-072b–f real-data follow-up):
+ *   - `loadUserProfile` fetches the user + per-harness tier rollups (PRs
+ *     from auto_review_audit, features from harness_features_consolidated,
+ *     activity from contributor_usage_events) + cross-harness feed.
+ *   - The §18 privacy filter runs through the pure
+ *     `visibleHarnessesForViewer` seam. NOTE: the real viewer-identity
+ *     filter is the KNOWN SHARED GAP — the live /adv shell has no
+ *     viewer-identity resolution, so the viewer defaults to anonymous
+ *     (shared-public harnesses only). The seam drops the real filter in
+ *     at the call site without touching this component.
+ *   - The Marketplace `publishedBy` link now targets this profile
+ *     (P-072f); the GitHub link still lives in the header above.
  */
 
 import type { CSSProperties, ReactNode } from 'react';

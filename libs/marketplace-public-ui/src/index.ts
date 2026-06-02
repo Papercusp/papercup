@@ -14,3 +14,4 @@ export type { InstallResult } from './InstallButton';
 export { TemplateConfigTab } from './TemplateConfigTab';
 export type { ConfigFileSpec } from './TemplateConfigTab';
 export { SnapshotStateTab } from './SnapshotStateTab';
+export { publisherProfileHref } from './publisherProfileHref';

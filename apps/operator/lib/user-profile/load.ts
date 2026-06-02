@@ -26,6 +26,7 @@ import type {
 import type { BindingStatus } from '../../app/_components/BindingStatusBadge';
 import type { ClaimStatus } from '../../app/_components/ClaimStatusBadge';
 import { loadUserRecentActivity } from './load-activity';
+import { visibleHarnessesForViewer } from './visible-harnesses';
 
 export interface UserProfileLoadOpts {
   github_user_id: number;
@@ -91,6 +92,11 @@ function normalizeClaimStatus(s: string): ClaimStatus {
     return s;
   }
   return 'unclaimed';
+}
+
+/** Coerce a PG COUNT(*) (returned as a string by node-postgres) to int. */
+function toInt(v: string | number): number {
+  return typeof v === 'string' ? Number.parseInt(v, 10) || 0 : Number(v) || 0;
 }
 
 /**
@@ -171,15 +177,24 @@ export async function loadUserProfile(
     }
   }
 
+  // §18 privacy filter via the `visibleHarnessesForViewer` SEAM. The seam
+  // is PURE (no PG) so the real viewer-identity wiring (a known SHARED GAP
+  // — the live /adv shell has no viewer-identity resolution; absent it,
+  // viewerId is null = anonymous = shared-public-only) is a one-line change
+  // at the call site, not a rewrite. See visible-harnesses.ts.
+  const visibleSlugSet = new Set(
+    visibleHarnessesForViewer({
+      subjectGithubUserId: github_user_id,
+      viewerGithubUserId: viewerId,
+      harnesses: contribRows.map((r) => ({
+        harness_slug: r.harness_slug,
+        privacy: bindingBySlug.get(r.harness_slug)?.privacy,
+      })),
+      viewerMembership: viewerHarnessMembership,
+    }).map((h) => h.harness_slug),
+  );
   function visible(harness_slug: string): boolean {
-    const b = bindingBySlug.get(harness_slug);
-    // Default to visible when binding row is missing (e.g. ensure hasn't
-    // run or shared_repo_binding_cache is sparse) — surfacing the row
-    // beats silently dropping a real contributor's harness.
-    if (!b) return true;
-    if (b.privacy === 'shared-public') return true;
-    if (viewerId != null && viewerId === github_user_id) return true;
-    return viewerHarnessMembership.has(harness_slug);
+    return visibleSlugSet.has(harness_slug);
   }
 
   const visibleContribRows = contribRows.filter((r) => visible(r.harness_slug));
@@ -201,24 +216,63 @@ export async function loadUserProfile(
   const shippedBySlug = new Map<string, number>(
     featuresShippedRows.map((r) => [
       r.harness_slug,
-      typeof r.features_shipped === 'string'
-        ? Number.parseInt(r.features_shipped, 10) || 0
-        : Number(r.features_shipped),
+      toInt(r.features_shipped),
     ]),
+  );
+
+  // 3a) Per-harness tier-A PRs-merged count — auto_review_audit rows this
+  //     user authored that were merged (auto or manual). Mirrors the
+  //     loadUserRecentActivity pr_merged source but as a GROUP BY count.
+  let prsMergedRows: Array<{ harness_slug: string; prs_merged: string | number }> = [];
+  try {
+    prsMergedRows = await runQuery(
+      `SELECT harness_slug, COUNT(*) AS prs_merged
+         FROM harness_shared.auto_review_audit
+        WHERE author_github_id = $1
+          AND action IN ('auto_merge', 'manual_merge')
+        GROUP BY harness_slug`,
+      [github_user_id],
+    );
+  } catch {
+    prsMergedRows = [];
+  }
+  const prsMergedBySlug = new Map<string, number>(
+    prsMergedRows.map((r) => [r.harness_slug, toInt(r.prs_merged)]),
+  );
+
+  // 3b) Per-harness tier-C activity count — contributor_usage_events is the
+  //     source of truth for all tier-C activity stats (v5 §7.1 / D-027;
+  //     rollups derived on read, never stored as a mutable counter).
+  let activityRows: Array<{ harness_slug: string; activity_events: string | number }> = [];
+  try {
+    activityRows = await runQuery(
+      `SELECT harness_slug, COUNT(*) AS activity_events
+         FROM harness_shared.contributor_usage_events
+        WHERE github_user_id = $1
+        GROUP BY harness_slug`,
+      [github_user_id],
+    );
+  } catch {
+    activityRows = [];
+  }
+  const activityBySlug = new Map<string, number>(
+    activityRows.map((r) => [r.harness_slug, toInt(r.activity_events)]),
   );
 
   const harnesses: HarnessBlock[] = visibleContribRows.map((r) => ({
     harness_slug: r.harness_slug,
     display_title: r.harness_slug,
     href: `/harness/${r.harness_slug}`,
-    prs_merged: 0,
+    prs_merged: prsMergedBySlug.get(r.harness_slug) ?? 0,
     features_shipped: shippedBySlug.get(r.harness_slug) ?? 0,
-    activity_events: 0,
+    activity_events: activityBySlug.get(r.harness_slug) ?? 0,
   }));
 
-  // 4) Claimed harnesses — rows where this user is in claimed_by_github_user_ids.
-  //    For now, derive from shared_repo_binding_cache rows whose claim_status
-  //    is `claimed` and whose claimed_by_github_user_ids contains this id.
+  // 4) Claimed harnesses — VERIFIED-claimant rows only (P-072d / §5.1).
+  //    A verified claimant holds an active GitHub repo permission, i.e.
+  //    claim_status='claimed'. `stale` means all claimants LOST that
+  //    permission on the daily re-check, so a stale binding is NOT a
+  //    verified claim and is omitted from the profile footer.
   //    Falls back to empty when the table isn't present.
   let claimedRows: Array<{
     harness_slug: string;
@@ -228,9 +282,9 @@ export async function loadUserProfile(
     claimedRows = await runQuery(
       `SELECT harness_slug, claim_status
          FROM harness_shared.shared_repo_binding_cache
-        WHERE claim_status IN ('claimed', 'stale')
+        WHERE claim_status = 'claimed'
           AND $1 = ANY(claimed_by_github_user_ids)`,
-      [String(github_user_id)],
+      [github_user_id],
     );
   } catch {
     claimedRows = [];

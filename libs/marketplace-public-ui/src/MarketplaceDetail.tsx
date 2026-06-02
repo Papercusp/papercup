@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { TemplateConfigTab } from './TemplateConfigTab';
 import { SnapshotStateTab } from './SnapshotStateTab';
+import { publisherProfileHref } from './publisherProfileHref';
 
 export interface DetailResponse {
   slug: string;
@@ -144,7 +145,7 @@ export function MarketplaceDetail({ slug, detail, apiBase }: Props) {
           <div className="pc-marketplace-detail-meta">
             <code>v{m.version}</code>
             <span>{m.license ?? 'unspecified'}</span>
-            <span>by {m.publishedBy ? <a href={`https://github.com/${m.publishedBy}`} target="_blank" rel="noreferrer">@{m.publishedBy}</a> : (m.author ?? 'unknown')}</span>
+            <span>by {m.publishedBy ? <a href={publisherProfileHref(m.publishedBy)}>@{m.publishedBy}</a> : (m.author ?? 'unknown')}</span>
             {m.publishedAt && <span>published {new Date(m.publishedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>}
             {m.homepage && <a href={m.homepage} target="_blank" rel="noreferrer">homepage</a>}
           </div>

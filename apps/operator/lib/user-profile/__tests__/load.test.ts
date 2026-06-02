@@ -255,7 +255,11 @@ describe('loadUserProfile', () => {
     expect(profile.harnesses.map((h) => h.harness_slug)).toEqual(['team-only']);
   });
 
-  it('collects claimed_harnesses from binding cache', async () => {
+  it('collects only verified-claimant (claimed) harnesses for the footer', async () => {
+    // §5.1: a verified claimant holds an active GitHub repo permission —
+    // i.e. claim_status='claimed'. `stale` means the claimants LOST that
+    // permission, so a stale row is NOT a verified claimant and must be
+    // omitted from the profile footer.
     const profile = await loadUserProfile({
       github_user_id: 42,
       runQuery: makeRunQuery([
@@ -275,11 +279,8 @@ describe('loadUserProfile', () => {
           ],
         },
         {
-          match: /shared_repo_binding_cache\b[\s\S]*claim_status IN \('claimed', 'stale'\)/,
-          rows: [
-            { harness_slug: 'a', claim_status: 'claimed' },
-            { harness_slug: 'b', claim_status: 'stale' },
-          ],
+          match: /shared_repo_binding_cache\b[\s\S]*claim_status = 'claimed'/,
+          rows: [{ harness_slug: 'a', claim_status: 'claimed' }],
         },
       ]),
     });
@@ -290,11 +291,86 @@ describe('loadUserProfile', () => {
         href: '/harness/a',
         claim_status: 'claimed',
       },
+    ]);
+  });
+
+  it('computes per-harness prs_merged (tier-A) and activity_events (tier-C)', async () => {
+    const profile = await loadUserProfile({
+      github_user_id: 42,
+      runQuery: makeRunQuery([
+        {
+          match: /FROM harness_shared\.contributors\b[\s\S]*WHERE github_user_id = \$1\b/,
+          rows: [
+            {
+              workspace_id: 'ws-1',
+              harness_slug: 'sheets',
+              github_user_id: 42,
+              github_username: 'alice',
+              display_name: 'Alice',
+              avatar_url: null,
+              device_attestations: [{ verified: true }],
+              joined_at: '2026-01-01',
+            },
+          ],
+        },
+        {
+          match: /harness_features_consolidated/,
+          rows: [{ harness_slug: 'sheets', features_shipped: '3' }],
+        },
+        {
+          match: /FROM harness_shared\.auto_review_audit\b[\s\S]*GROUP BY harness_slug/,
+          rows: [{ harness_slug: 'sheets', prs_merged: '7' }],
+        },
+        {
+          match: /FROM harness_shared\.contributor_usage_events\b[\s\S]*GROUP BY harness_slug/,
+          rows: [{ harness_slug: 'sheets', activity_events: '42' }],
+        },
+      ]),
+    });
+    expect(profile.harnesses).toEqual([
       {
-        harness_slug: 'b',
-        display_title: 'b',
-        href: '/harness/b',
-        claim_status: 'stale',
+        harness_slug: 'sheets',
+        display_title: 'sheets',
+        href: '/harness/sheets',
+        prs_merged: 7,
+        features_shipped: 3,
+        activity_events: 42,
+      },
+    ]);
+  });
+
+  it('per-harness aggregate sources missing → zeroed, not thrown', async () => {
+    const profile = await loadUserProfile({
+      github_user_id: 42,
+      runQuery: vi.fn(async (query: string) => {
+        if (/FROM harness_shared\.contributors\b[\s\S]*WHERE github_user_id = \$1\b/.test(query)) {
+          return [
+            {
+              workspace_id: 'ws-1',
+              harness_slug: 'sheets',
+              github_user_id: 42,
+              github_username: 'alice',
+              display_name: null,
+              avatar_url: null,
+              device_attestations: [],
+              joined_at: '2026-01-01',
+            },
+          ];
+        }
+        if (/auto_review_audit|contributor_usage_events/.test(query)) {
+          throw new Error('relation does not exist');
+        }
+        return [];
+      }) as unknown as RunQuery,
+    });
+    expect(profile.harnesses).toEqual([
+      {
+        harness_slug: 'sheets',
+        display_title: 'sheets',
+        href: '/harness/sheets',
+        prs_merged: 0,
+        features_shipped: 0,
+        activity_events: 0,
       },
     ]);
   });
@@ -329,7 +405,9 @@ describe('loadUserProfile', () => {
     expect(profile.claimed_harnesses).toEqual([]);
   });
 
-  it('falls back to unclaimed for unknown claim_status strings', async () => {
+  it('normalizeClaimStatus defends against malformed claim_status strings', async () => {
+    // The footer SQL filters to claim_status='claimed', but the normalizer
+    // still guards against malformed rows that slip through.
     const profile = await loadUserProfile({
       github_user_id: 42,
       runQuery: makeRunQuery([
@@ -349,7 +427,7 @@ describe('loadUserProfile', () => {
           ],
         },
         {
-          match: /claim_status IN \('claimed', 'stale'\)/,
+          match: /shared_repo_binding_cache\b[\s\S]*claim_status = 'claimed'/,
           rows: [{ harness_slug: 'a', claim_status: 'mystery' }],
         },
       ]),

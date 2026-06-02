@@ -4,6 +4,7 @@ import { requireFlag } from '../../lib/require-flag';
 import * as Lucide from 'lucide-react';
 import RouteLink from '@/app/_components/RouteLink';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
+import { publisherProfileHref } from '@papercup/marketplace-public-ui';
 
 /**
  * /marketplace/$slug — package detail. Translated from
@@ -146,7 +147,7 @@ function HarnessDetailPage() {
           <div className="pc-marketplace-detail-meta">
             <code>v{m.version}</code>
             <span>{m.license ?? 'unspecified'}</span>
-            <span>by {m.publishedBy ? <a href={`https://github.com/${m.publishedBy}`} target="_blank" rel="noreferrer">@{m.publishedBy}</a> : (m.author ?? 'unknown')}</span>
+            <span>by {m.publishedBy ? <RouteLink href={publisherProfileHref(m.publishedBy)}>@{m.publishedBy}</RouteLink> : (m.author ?? 'unknown')}</span>
             {m.publishedAt && <span>published {new Date(m.publishedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>}
             {m.homepage && <a href={m.homepage} target="_blank" rel="noreferrer">homepage</a>}
           </div>
