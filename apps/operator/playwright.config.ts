@@ -43,5 +43,11 @@ export default defineConfig({
         timeout: 120_000,
         stdout: 'ignore',
         stderr: 'pipe',
+        // Activate the fake-LLM injection seam so the chat-streaming +
+        // plan-agent-launch specs RUN (scripted deltas) instead of auto-skipping
+        // — they gate on PAPERCUSP_FAKE_LLM=1 (P-028 de-skip). When reusing an
+        // external server (OPERATOR_E2E_REUSE_SERVER=1, e.g. a Tauri shell) that
+        // server must carry PAPERCUSP_FAKE_LLM=1 itself for those specs to run.
+        env: { ...process.env, PAPERCUSP_FAKE_LLM: '1' },
       },
 });

@@ -71,7 +71,7 @@ Full per-subsystem audit with file:line cites lives in the session transcript th
 - **P-025** `done` Handler-level tests for read tools: `features:*`, `issues:*`, `harness:*`, `tasks:*` (only `artifacts:*` is tested today). (read-tools.integration.test.ts 24/24 vs throwaway PG — features:*/harness:*/tasks:*/issues:list happy+degraded+scoping+capability gate. Tables built head-faithfully from the generated drizzle schema via getTableConfig dodges D-004 prefix drift. Bonus: fixed a real features:search bug undefined status → postgres.js throw → silent [].)
 - **P-026** `done` Coord tool-handler layer: `whoami`, `watermark(-set)`, `watch/unwatch`, `thread`, `ack`. (coord-tools.test.ts 4/4 — whoami/thread/ack handlers coordLog-only, in-memory. watermark/watch/unwatch/watches handlers are WatermarkStore/SubscriptionStore-coupled stores conformance-tested separately; not driven at the handler layer.)
 - **P-027** `done` Rust: `dev_bridge.rs` (the agent-test bridge), `custom_protocol.rs`, `wsl_setup.rs` (no tests). (Done — see P-031 Rust tests landed in papercusp-desktop b77a07c. wsl_setup logic is Windows-gated.)
-- **P-028** `todo` Triage/de-skip the 4 skipped E2E specs: chat-streaming, admin-routes, ui-flow-login-prefs, plan-agent-launch.
+- **P-028** `done` Triage/de-skip the 4 skipped E2E specs: chat-streaming, admin-routes, ui-flow-login-prefs, plan-agent-launch. (Triaged: all 4 parse+register 21 tests, test live surfaces admin routes, login/signup, chat, plan verbs — none obsolete. All correctly conditionally-gated FAKE_LLM / PG. De-skip enabler: added PAPERCUSP_FAKE_LLM=1 to the launched E2E webServer env so chat-streaming+plan-agent-launch RUN. Full live run needs a FAKE_LLM dev server — not run autonomously.)
 
 
 ## Phase 4 — Meta / role-wiring
