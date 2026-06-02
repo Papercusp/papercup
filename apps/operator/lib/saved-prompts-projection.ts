@@ -118,3 +118,46 @@ export function pruneManagedCommands(dir: string, keep: Set<string>): { removed:
   }
   return { removed };
 }
+
+export interface MaterializeResult {
+  written: number;
+  skipped: number;
+}
+
+/**
+ * Render `prompts` with `render` and write each into `dir`, then prune our
+ * stale managed files. Rows with an invalid name are skipped (counted), as
+ * are unmanaged-file collisions. The full set of valid names is the keep-set
+ * for pruning, so a removed/renamed prompt's file is cleaned up.
+ */
+function writeCommands(
+  dir: string,
+  prompts: readonly ProjectablePrompt[],
+  render: (p: ProjectablePrompt) => string,
+): MaterializeResult {
+  let written = 0;
+  let skipped = 0;
+  const keep = new Set<string>();
+  for (const p of prompts) {
+    if (!validatePromptName(p.name)) {
+      skipped++;
+      continue;
+    }
+    keep.add(p.name);
+    const res = writeManagedCommandFile(dir, `${p.name}.md`, render(p));
+    if (res.written) written++;
+    else skipped++;
+  }
+  pruneManagedCommands(dir, keep);
+  return { written, skipped };
+}
+
+/** Materialize the Claude/OMP command files for a scope's prompts into `dir`. */
+export function writeClaudeCommands(dir: string, prompts: readonly ProjectablePrompt[]): MaterializeResult {
+  return writeCommands(dir, prompts, renderClaudeCommand);
+}
+
+/** Materialize the Codex prompt files for a scope's prompts into `dir`. */
+export function writeCodexPrompts(dir: string, prompts: readonly ProjectablePrompt[]): MaterializeResult {
+  return writeCommands(dir, prompts, renderCodexPrompt);
+}

@@ -13,6 +13,8 @@ import {
   writeManagedCommandFile,
   removeManagedCommandFile,
   pruneManagedCommands,
+  writeClaudeCommands,
+  writeCodexPrompts,
   MANAGED_MARKER,
   type ProjectablePrompt,
 } from './saved-prompts-projection';
@@ -158,5 +160,50 @@ describe('pruneManagedCommands', () => {
   it('is a no-op when the directory does not exist', () => {
     const res = pruneManagedCommands(join(dir, 'nope'), new Set(['x']));
     expect(res.removed).toEqual([]);
+  });
+});
+
+describe('writeClaudeCommands', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sp-proj-'));
+  });
+
+  it('writes one Claude command file per valid row and reports the count', () => {
+    const res = writeClaudeCommands(dir, [full, bare]);
+    expect(res.written).toBe(2);
+    expect(readdirSync(dir).sort()).toEqual(['note.md', 'ship-it.md']);
+    expect(readFileSync(join(dir, 'ship-it.md'), 'utf8')).toContain('argument-hint: <area>');
+  });
+
+  it('skips rows with an invalid name without writing them', () => {
+    const res = writeClaudeCommands(dir, [{ name: 'Bad Name', body: 'x' }, bare]);
+    expect(res.written).toBe(1);
+    expect(res.skipped).toBe(1);
+    expect(readdirSync(dir)).toEqual(['note.md']);
+  });
+
+  it('prunes a previously-managed file whose row is no longer present', () => {
+    writeClaudeCommands(dir, [full, bare]);
+    const res = writeClaudeCommands(dir, [bare]);
+    expect(existsSync(join(dir, 'ship-it.md'))).toBe(false);
+    expect(existsSync(join(dir, 'note.md'))).toBe(true);
+    expect(res.written).toBe(1);
+  });
+});
+
+describe('writeCodexPrompts', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sp-proj-'));
+  });
+
+  it('writes marked plain-markdown prompt files with no frontmatter', () => {
+    const res = writeCodexPrompts(dir, [full]);
+    expect(res.written).toBe(1);
+    const out = readFileSync(join(dir, 'ship-it.md'), 'utf8');
+    expect(out.startsWith('---')).toBe(false);
+    expect(out).toContain(MANAGED_MARKER);
+    expect(out).not.toContain('argument-hint:');
   });
 });

@@ -7,6 +7,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { mkdtempSync, readdirSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import postgres from 'postgres';
 import { withTestSchema, teardownTestPg } from '@papercusp/test-config';
 import {
@@ -14,6 +17,10 @@ import {
   upsertSavedPrompt,
   removeSavedPrompt,
 } from '../lib/saved-prompts-store';
+import {
+  materializeWorkspacePrompts,
+  materializeCodexPrompts,
+} from '../lib/saved-prompts-materialize';
 
 let sql: postgres.Sql;
 
@@ -109,5 +116,29 @@ describe('saved-prompts-store', () => {
     expect(await removeSavedPrompt(sql, w, { kind: 'workspace' }, 'temp')).toBe(true);
     expect(await listSavedPrompts(sql, w, { kind: 'workspace' })).toHaveLength(0);
     expect(await removeSavedPrompt(sql, w, { kind: 'workspace' }, 'temp')).toBe(false);
+  });
+});
+
+describe('saved-prompts-materialize (store → files)', () => {
+  it('materializes a workspace scope to Claude command files in the target dir', async () => {
+    const w = ws();
+    await upsertSavedPrompt(sql, { workspaceId: w, scope: { kind: 'workspace' }, name: 'ship', body: 'do it', description: 'd' });
+    const dir = mkdtempSync(join(tmpdir(), 'sp-mat-'));
+    const res = await materializeWorkspacePrompts(w, { sql, dir });
+    expect(res.written).toBe(1);
+    expect(readdirSync(dir)).toEqual(['ship.md']);
+    expect(readFileSync(join(dir, 'ship.md'), 'utf8')).toContain('<!-- papercusp:managed -->');
+  });
+
+  it('writes workspace + harness prompts into a Codex home prompts/ dir, harness overlaying on name clash', async () => {
+    const w = ws();
+    await upsertSavedPrompt(sql, { workspaceId: w, scope: { kind: 'workspace' }, name: 'dup', body: 'WS-BODY' });
+    await upsertSavedPrompt(sql, { workspaceId: w, scope: { kind: 'workspace' }, name: 'only-ws', body: 'x' });
+    await upsertSavedPrompt(sql, { workspaceId: w, scope: { kind: 'harness', slug: 'papercup' }, name: 'dup', body: 'HARNESS-BODY' });
+    const home = mkdtempSync(join(tmpdir(), 'sp-codex-'));
+    await materializeCodexPrompts(home, w, 'papercup', { sql });
+    const promptsDir = join(home, 'prompts');
+    expect(existsSync(join(promptsDir, 'only-ws.md'))).toBe(true);
+    expect(readFileSync(join(promptsDir, 'dup.md'), 'utf8')).toContain('HARNESS-BODY');
   });
 });
