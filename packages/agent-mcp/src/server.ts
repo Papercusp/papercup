@@ -27,6 +27,7 @@ import {
 import { z } from 'zod';
 import { withWorkspace } from '@papercusp/db-org';
 import { resolveBearer } from './auth';
+import { sanitizeToolSchema } from './tool-schema-sanitize';
 import { getCatalog, lookup, standardValidate, formatIssues } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
 import {
@@ -376,7 +377,9 @@ export async function startServer(opts: StartServerOptions = {}): Promise<void> 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const inputSchema = (z as any).toJSONSchema(t.args) as Record<string, unknown>;
         delete (inputSchema as Record<string, unknown>).$schema;
-        return { name: t.name, description: t.description, inputSchema };
+        // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
+        // consumers (Ollama) can parse the tool surface. See tool-schema-sanitize.ts.
+        return { name: t.name, description: t.description, inputSchema: sanitizeToolSchema(inputSchema) };
       });
     // Pin to the tool manifest (if configured) for cache-stable parity with
     // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.

@@ -51,6 +51,7 @@ export {
 } from '@papercusp/tooldef';
 export { getPromptCatalog, lookupPrompt } from '@papercusp/tooldef';
 export { resolveBearer } from './auth';
+export { sanitizeToolSchema } from './tool-schema-sanitize';
 export {
   onWorkspaceSwitch,
   dispatchWorkspaceSwitch,

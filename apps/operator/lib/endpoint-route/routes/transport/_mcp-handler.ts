@@ -38,6 +38,7 @@ import {
   listMcpProjections,
   applyToolManifest,
   papercuspGateBypass,
+  sanitizeToolSchema,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
@@ -372,7 +373,9 @@ function builtinInputSchema(tool: ReturnType<typeof getCatalog>[number]): Record
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const json = (z as any).toJSONSchema(tool.args) as Record<string, unknown>;
   delete (json as Record<string, unknown>).$schema;
-  return json;
+  // Objectify boolean sub-schemas (z.unknown() → `true`) so strict consumers
+  // (Ollama's Go tool-schema parser) accept the surface. See tool-schema-sanitize.ts.
+  return sanitizeToolSchema(json);
 }
 
 /* ─── Resolved tool-context helpers ──────────────────────────────────── */
