@@ -19,6 +19,17 @@
  *   - harness_features.claims = orchestrator worker dispatch (machine).
  * The orchestrator's claim-eligibility check excludes any feature with
  * a non-empty working set (P-038b).
+ *
+ * ── working_users[] reconciliation (Phase 8 P-038) ──
+ * This per-(user, feature) pointer table is the DETAIL layer. The
+ * CANONICAL "working_users projection" the rest of the app reads is the
+ * `harness_features_consolidated.working_users BIGINT[]` array (v5 §0.5 /
+ * §7.1 / D-016: `current_worker = working_users[0]` is DERIVED, never
+ * stored). That array is what the UI's already-wired
+ * `featuresConsolidated.bySlug` SSE query carries — so this projection
+ * keeps it in sync: every put/del recomputes the feature's array from the
+ * live (non-cleared) pointer rows. Without this the column stays at its
+ * `'{}'` default and the "who's working" UI surface reads nothing.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -73,6 +84,65 @@ function decodeValue(raw: unknown): FeatureWorkingSetRow | null {
   return isFeatureWorkingSetRow(raw) ? raw : null;
 }
 
+export interface RecomputeWorkingUsersArgs {
+  workspaceId: string;
+  harnessSlug: string;
+  featureId: string;
+}
+
+/**
+ * Build the parameterized statement that re-derives a feature's canonical
+ * `harness_features_consolidated.working_users` BIGINT[] from the live
+ * (non-cleared) pointer rows of `feature_working_set`. Pure (returns
+ * `{ query, params }`) so it is unit-testable without a DB and so both the
+ * put and del paths share one definition.
+ *
+ * `working_users[0]` is the earliest worker → `current_worker` per D-016, so
+ * the array is ordered by `started_at ASC`. COALESCE keeps the column at the
+ * `'{}'` empty-array default (never NULL) when nobody is working.
+ *
+ * Scoping: `$1` (workspace_id) scopes the pointer sub-select. The UPDATE
+ * target matches on `(harness_slug, feature_id)` — the consolidated row's PK —
+ * exactly as the sibling `harness-features` projection scopes its writes
+ * (harness_slug is globally unique across workspaces today; per-workspace
+ * partitioning of the consolidated view is future work).
+ */
+export function buildRecomputeWorkingUsersQuery(
+  args: RecomputeWorkingUsersArgs,
+): { query: string; params: unknown[] } {
+  const query = `
+    UPDATE harness_shared.harness_features_consolidated AS f
+    SET working_users = COALESCE(
+      (
+        SELECT array_agg(w.github_user_id ORDER BY w.started_at ASC, w.github_user_id ASC)
+        FROM harness_shared.feature_working_set w
+        WHERE w.workspace_id = $1
+          AND w.harness_slug = $2
+          AND w.feature_id = $3
+          AND w.cleared_at IS NULL
+      ),
+      '{}'::bigint[]
+    )
+    WHERE f.harness_slug = $2
+      AND f.feature_id = $3
+  `;
+  return { query, params: [args.workspaceId, args.harnessSlug, args.featureId] };
+}
+
+async function recomputeWorkingUsers(
+  opts: FeatureWorkingSetProjectionOpts,
+  featureId: string,
+): Promise<void> {
+  if (!featureId) return;
+  const { sql } = getOrgPg();
+  const { query, params } = buildRecomputeWorkingUsersQuery({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    featureId,
+  });
+  await sql.unsafe(query, params as never);
+}
+
 async function writeToPg(
   opts: FeatureWorkingSetProjectionOpts,
   row: FeatureWorkingSetRow,
@@ -98,6 +168,10 @@ async function writeToPg(
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin
   `;
+  // Reconcile the canonical working_users[] array (Phase 8 P-038): a put may
+  // start work (cleared_at NULL) or tombstone it (cleared_at set), both of
+  // which change the live set. Recompute from the pointer rows.
+  await recomputeWorkingUsers(opts, row.feature_id);
 }
 
 async function deleteFromPg(
@@ -119,6 +193,8 @@ async function deleteFromPg(
       AND github_user_id = ${userId}
       AND feature_id = ${featureId}
   `;
+  // A hard delete removes a worker → recompute the canonical array.
+  await recomputeWorkingUsers(opts, featureId);
 }
 
 export function buildFeatureWorkingSetProjection(
@@ -137,4 +213,5 @@ export const _testing = {
   composeKey,
   decodeValue,
   isFeatureWorkingSetRow,
+  buildRecomputeWorkingUsersQuery,
 };

@@ -10,9 +10,24 @@ status: active
 
 ## Now
 
-**State:** Sidebar tabs + Insights tab + contributor stats + user profile + claimed/unclaimed harness UI. Core UI shipped (sidebar, Insights, the 1028-line DetailPanel). Remaining: **P-003** (ActivityFeedCard tier-A merged-PR/commit events) was blocked on the trust-model decision, which **has now landed** (`papercusp-trust-model-2026-05-31` / `papercusp-user-protection-gate-2026-05-31`) — so P-003 is now actionable; **P-038** (working_users projection) needs reconciliation with the **Model-B** projection layer (the Hyperbee projection it assumed was rewritten); **P-072b–f** (user-profile per-harness blocks, activity feed, footer, username redirect, Marketplace link) — only P-072a shipped, the rest of the profile is still a gap.
+**State:** Sidebar tabs + Insights tab + contributor stats + user profile + claimed/unclaimed harness UI. Core UI shipped (sidebar, Insights, the 1028-line DetailPanel). Remaining: **P-003** (ActivityFeedCard tier-A merged-PR/commit events) was blocked on the trust-model decision, which **has now landed** (`papercusp-trust-model-2026-05-31` / `papercusp-user-protection-gate-2026-05-31`) — so P-003 is now actionable; **P-038** (working_users projection) **`done` ✅ RECONCILED 2026-06-01** (see below); **P-072b–f** (user-profile per-harness blocks, activity feed, footer, username redirect, Marketplace link) — only P-072a shipped, the rest of the profile is still a gap.
 
-**Next:** Owner — P-003 is now unblocked (trust-model landed); pick it up. Confirm P-038's projection against Model B before building it, and finish the P-072b–f profile blocks.
+**Next:** Owner — P-003 is now unblocked (trust-model landed); pick it up. Finish the P-072b–f profile blocks.
+
+### P-038 — working_users projection (Model-B reconciliation) `done` ✅ RECONCILED 2026-06-01
+
+**Scope finding.** "working_users" has two representations in v5: the canonical `harness_features_consolidated.working_users BIGINT[]` array (§0.5 / §7.1 / D-016: `current_worker = working_users[0]`, DERIVED) and the Model-B Hyperbee per-(user,feature) `harness_shared.feature_working_set` pointer table. The **substrate** is fully live + tested under Model B (Phase-6 P-038: `feature-working-set.ts` projection registered in `register-all.ts`, `setActiveFeature`/`clearActiveFeature`, `loadWorkingSet`, the `GET/POST /api/harness/:slug/working-set/*` endpoints, and the P-038b orchestrator eligibility check in `claim-feature.ts`).
+
+**The gap (two parts):**
+1. The Model-B projection wrote **only** the pointer table and **never maintained** the canonical `working_users[]` array — so the column the v5 design names as the "projection" target stayed at its `'{}'` default. (Nothing wrote it; the `decideShouldAttemptClaim` reader has no production caller.)
+2. The `working_users` column (+ the other three P-015 columns) was added to the DB by migration 080 but was **missing from the introspected Drizzle schema** (drift) — so `featuresConsolidated.bySlug` (`db.select()`) never carried it. And Phase-6 P-038's working-set UI (`useWorkingSet` + `SetActiveButton`) was **orphan-deleted** in `1c2731697` (the HarnessDashboard removal); the live `/adv` `FeaturesPanel` had no working surface.
+
+**Reconciled (read path, faithful to Model B + D-016):**
+- `feature-working-set.ts`: every put/del now recomputes the canonical `working_users[]` array from the live (non-cleared) pointer rows (`buildRecomputeWorkingUsersQuery`, ordered `started_at ASC` so `[0]` = current_worker, COALESCE to `'{}'`). Mirrors the sibling projection pattern; verified end-to-end against live PG.
+- Added `workingUsers` to the Drizzle schema (`schema.ts` + `generated.ts`) so the existing consolidated SSE query carries it — no new SSE plumbing.
+- `useHarnessData.ts`: `HarnessFeature.workingUsers` + `parseWorkingUsers` normalizer (number[]/string[]/JSON/PG-literal). `FeaturesPanel.tsx`: a read-only green "working" pill (count + current-worker tooltip).
+
+**Deferred (write path — surfaced, NOT silently dropped):** the live `/adv` shell has **no viewer-identity resolution** and **no feature-queue membership surface** (both were part of the deleted FeatureList). Re-wiring a "Start working / Stop working" write button needs that viewer-identity infra, which is a separate UI-infra concern (also blocks the P-048/P-072 viewer-specific surfaces). The HTTP write endpoints already exist; only the live-shell button + identity hook are missing.
 
 ## Background
 

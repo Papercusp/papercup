@@ -37,6 +37,13 @@ export interface HarnessFeature {
   claims?: string[];
   sourcePlanSlug?: string;
   tags?: string[];
+  /**
+   * github_user_ids actively working this feature (v5 §0.5 working_users;
+   * `current_worker = workingUsers[0]` per D-016). Maintained by the
+   * feature_working_set Hyperbee→PG projection (Phase 8 P-038) and carried
+   * here via the consolidated SSE overlay. Empty/undefined = nobody working.
+   */
+  workingUsers?: number[];
 }
 
 type RestFeature = {
@@ -63,6 +70,10 @@ type ZeroFeatureRow = {
   needsHumanReview?: boolean;
   needs_human_review?: boolean;
   tags?: string[] | string | null;
+  // BIGINT[] working_users; postgres-js / the SSE serializer may hand it back
+  // as number[], string[], or a "{1,2}" array literal — normalize defensively.
+  workingUsers?: Array<number | string> | string | null;
+  working_users?: Array<number | string> | string | null;
 };
 
 function parseClaims(raw: unknown): string[] | undefined {
@@ -77,6 +88,37 @@ function parseClaims(raw: unknown): string[] | undefined {
     }
   }
   return undefined;
+}
+
+// working_users is a BIGINT[] — depending on the transport it arrives as
+// number[], string[], a JSON array string, or a Postgres array literal
+// ("{1,2}"). Normalize to a number[] of positive ids; empty → undefined.
+export function parseWorkingUsers(raw: unknown): number[] | undefined {
+  if (raw == null) return undefined;
+  let arr: unknown[];
+  if (Array.isArray(raw)) {
+    arr = raw;
+  } else if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s || s === '{}' || s === '[]') return undefined;
+    if (s.startsWith('{') && s.endsWith('}')) {
+      // Postgres array literal: {1,2,3}
+      arr = s.slice(1, -1).split(',');
+    } else {
+      try {
+        const v = JSON.parse(s);
+        arr = Array.isArray(v) ? v : [];
+      } catch {
+        return undefined;
+      }
+    }
+  } else {
+    return undefined;
+  }
+  const ids = arr
+    .map((v) => (typeof v === 'number' ? v : Number.parseInt(String(v).trim(), 10)))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length > 0 ? ids : undefined;
 }
 
 export function useHarnessFeatures(slug: string): {
@@ -143,6 +185,7 @@ export function useHarnessFeatures(slug: string): {
           sourcePlanSlug: zf.sourcePlanSlug ?? undefined,
           needsReview: zf.needsHumanReview ?? zf.needs_human_review ?? undefined,
           tags: parseClaims(zf.tags),
+          workingUsers: parseWorkingUsers(zf.workingUsers ?? zf.working_users),
         }),
       ),
     );

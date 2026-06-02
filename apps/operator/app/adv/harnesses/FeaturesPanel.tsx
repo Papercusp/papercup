@@ -266,6 +266,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       render: ({ row }) => {
         const attempts = row.attempts ?? 0;
         const claimsCount = row.claims?.length ?? 0;
+        const workingCount = row.workingUsers?.length ?? 0;
         return (
           <span className="pc-adv-features__meta">
             {row.sourcePlanSlug && (
@@ -277,6 +278,18 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
                 >
                   ↗ plan
                 </a>
+              </Tooltip>
+            )}
+            {workingCount > 0 && (
+              <Tooltip
+                label={`Working now: ${row.workingUsers?.map((id) => `#${id}`).join(', ')}${
+                  workingCount > 1 ? ` (current: #${row.workingUsers?.[0]})` : ''
+                }`}
+              >
+                <span className="pc-adv-features__working" aria-label="Actively being worked">
+                  <span className="pc-adv-features__working-dot" aria-hidden />
+                  {workingCount === 1 ? 'working' : `${workingCount} working`}
+                </span>
               </Tooltip>
             )}
             {claimsCount > 0 && (
@@ -588,6 +601,25 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
           padding: 1px 6px;
           border-radius: 999px;
           white-space: nowrap;
+        }
+        .pc-adv-features__working {
+          display: inline-flex;
+          gap: 4px;
+          align-items: center;
+          font-size: 10px;
+          font-weight: 600;
+          color: var(--ok, #34d399);
+          background: color-mix(in oklab, var(--ok, #34d399), transparent 86%);
+          padding: 1px 6px;
+          border-radius: 999px;
+          white-space: nowrap;
+        }
+        .pc-adv-features__working-dot {
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: var(--ok, #34d399);
+          box-shadow: 0 0 0 2px color-mix(in oklab, var(--ok, #34d399), transparent 70%);
         }
         .pc-adv-features__attempts {
           font-size: 10px;
