@@ -98,7 +98,10 @@ export function formatInvokeStderr(role: string, exitCode: number, stderr: strin
  * + captured stderr; never rejects. On a non-zero exit the child's stderr is
  * surfaced to the operator run log (P-005) so a throw-before-run isn't silent.
  */
-async function spawnInvokeOnce(
+// Exported for unit testing (P-012): the subprocess spawn + timeout-kill +
+// stdout/stderr-capture path. Tests mock `buildInvokeOnce` to drive a fake
+// process; production callers go through realRunner / realFinalizer.
+export async function spawnInvokeOnce(
   projectDir: string,
   role: string,
   extras: string[],
