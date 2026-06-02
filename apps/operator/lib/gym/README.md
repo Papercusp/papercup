@@ -92,3 +92,55 @@ gym-operator, bounded by the DBOS pipeline queue concurrency.
 
 Full integration (a real gym-operator + a real pipeline on a real A/B) is validated at
 the **P-014** milestone, not in unit tests.
+
+## Status & runbook (overnight build, 2026-06-02)
+
+**Built + tested + committed:** every plan item's logic/cores (P-001..P-030 except the
+human gates) — 194 unit tests + live-PG integration, green. Modules cover the spine
+(runner/clone/identity/boot-spec/schema/collector/signals/cost/concurrency), task side
+(task-generator/probe-generator/task-pools/real-anchor), judge (judge-scoring/judge/
+distill/rejudge), and the full loop (proposer/changelog/gates/frontier/gate-engine/loop/
+promotion/circuit-breaker/optin/variance/grader-opt). Plus `runner-ports.ts`
+(createGymRunnerPorts) + `../harness-seed.ts` (shared w/ harness-test-coverage) +
+`gym-db-init.ts` (provisionGymDatabase).
+
+**SPINE validated end-to-end** by `smoke.ts` (zero LLM spend): provision dedicated gym
+PG → boot headless gym-operator (DBOS launches on the gym DB) → register harness →
+file feature (direct PG) → deterministic start (admin route + `~/.papercusp/superuser-token`
+bearer) → pipeline runs to terminal SUCCESS → process-group teardown. Run it:
+`cd apps/operator && npx tsx lib/gym/smoke.ts`.
+
+### Open item 1 — worker invoke `harness_features` (the last mile to REAL work)
+
+The fake-agent pipeline reaches terminal, but the WORKER invoke throws Postgres
+`relation "harness_features" does not exist`, so no real diff/transcript is produced
+(`runOutputRows: 0`, `workerCommitted: false`). Ruled out: hyphen in slug (fixed →
+hyphen-free), missing view (the per-harness `harness_features` view IS created),
+clone-dir basename (now == slug), `HARNESS_SLUG` env, DBOS-on-gym-DB (confirmed via the
+boot log's "System Database URL"). **Hypothesis:** invoke-once's PG state client
+(`state-pg.ts readFeaturesPg` → unqualified `FROM harness_features`, relying on
+`pg-bootstrap.ts` setting `search_path = harness_<slug>,harness_shared,public`) resolves
+to the wrong schema/DB for the role subprocess. **To pin it:** run the smoke to a
+SUCCESS, read `report.workerPgDiag` (now captured in the smoke's finally — the worker's
+`PG bootstrap: connected (search_path=…)` line + the DB it hit). If it shows the wrong
+DB → fix the gym-side spawn env (ensure `HARNESS_ADMIN_DATABASE_URL`/`DATABASE_URL`
+reaches invoke-once, not the live `embedded-pg.json`/native fallback). If wrong
+search_path with a hyphen-free slug → deeper orchestrator-state issue (don't edit shared
+code unattended; bring to avi). **Blocker on the dev box:** capturing `workerPgDiag` was
+repeatedly blocked by testcontainer ECONNREFUSED flakes (a reused-container/teardown race,
+worse under load). For a reliable run, point the smoke's gym PG at a DEDICATED, non-reused
+superuser PG (the desktop's embedded-pg, or a fresh `docker run` of the pgvector image)
+instead of `getTestPg()`.
+
+### Open item 2 — P-014 (human gate): the real A/B
+
+Once the worker does real work: run a bounded A/B (≤2 variants × ≤3 tasks, 1 run each;
+D-019 bounded spend) → measure judge-composite variance (`variance.ts` → ε/δ/min-n),
+the cost estimate (`cost.ts`), and real-anchor correlation (`real-anchor.ts`). This is
+the milestone gate before building/running the autonomous loop unattended.
+
+### Open item 3 — P-024 dashboard (UI)
+
+Deferred: the `read-api.ts` data layer (compareVariants/frontierView/cycleHistory/
+variantLineage) is ready; the nuqs operator UI is a focused design-aware task (Tauri-only
+operator UI can't be driven autonomously without focus-stealing; importance: low).
