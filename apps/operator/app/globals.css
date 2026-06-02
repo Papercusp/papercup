@@ -22,6 +22,58 @@
 
 :root {
   color-scheme: dark;
+
+  /* ── Semantic aliases for ad-hoc token names used across ~30 components ──
+   * These names (--text, --surface, --error, --pc-color-*, etc.) were referenced
+   * in component CSS but never defined, so they silently fell back. Map them to
+   * the canonical design tokens here (the `css-tokens` lint guard sanctions
+   * defining one-off semantic aliases in globals.css :root). Follow-up:
+   * consolidate components onto the canonical names and delete these aliases. */
+  --text: var(--fg);
+  --pc-color-text: var(--fg);
+  --muted: var(--fg-mute);
+  --mut: var(--fg-mute);
+  --pc-color-muted: var(--fg-mute);
+  --surface: var(--bg-raised);
+  --surface-1: var(--bg-1);
+  --surface-2: var(--bg-2);
+  --pc-color-surface-2: var(--bg-2);
+  --bg-soft: var(--bg-2);
+  --accent-2: var(--accent-strong);
+  --accent-fg: var(--accent-ink);
+  --chip-accent: var(--accent);
+  --chip-tint: var(--accent-soft);
+  --stat-accent: var(--accent);
+  --pc-color-primary: var(--accent);
+  --fg-link: var(--accent);
+  --border-dim: var(--border);
+  --border-subtle: var(--border);
+  --border-warning: var(--warn-border);
+  /* success / ok → green */
+  --success: var(--good);
+  --ok: var(--good);
+  --pc-color-success: var(--good);
+  --pc-color-success-text: var(--good);
+  --pc-color-success-bg: rgba(52, 211, 153, 0.1); /* emerald-400 @ 0.1 */
+  /* danger / error → red */
+  --danger: var(--bad);
+  --error: var(--bad);
+  --red: var(--bad);
+  --fg-danger: var(--bad);
+  --pc-color-danger: var(--bad);
+  --pc-color-danger-text: var(--bad);
+  --bg-danger: rgba(251, 113, 133, 0.1); /* rose-400 @ 0.1 */
+  --bad-bg: rgba(251, 113, 133, 0.1);
+  --error-bg: rgba(251, 113, 133, 0.1);
+  --pc-color-danger-bg: rgba(251, 113, 133, 0.1);
+  /* warning → amber */
+  --warning: var(--warn);
+  --needs: var(--warn);
+  --fg-warning: var(--warn);
+  --pc-color-warning-text: var(--warn);
+  --bg-warning: var(--warn-bg);
+  --amber-100: #fef3c7; /* light amber tint */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   /*
    * --card-shadow, --frost, --ease-*, --dur-* migrated to DTCG tokens.
    * Source: design-tokens/desktop.motion.tokens.json. Generated to _semantic.css.

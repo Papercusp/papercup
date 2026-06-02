@@ -23,6 +23,11 @@
  * If you're using a token that the browser / framework sets at runtime
  * (Radix sizes its content via --radix-XXX, Vaul sets vaul-side, etc.),
  * add it to RUNTIME_TOKENS below.
+ *
+ * Component-LOCAL custom properties — a `--name:` both defined and used
+ * inside the same .tsx (e.g. a styled-jsx <style> block) — are recognized
+ * automatically: they're satisfied within the component, even though the
+ * global CSS-source scan can't see a definition that lives in a .tsx.
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -107,12 +112,23 @@ function collectUsedTokens(): Map<string, string[]> {
     } catch {
       continue;
     }
+    // Component-local custom properties: a `--name:` defined inside this same
+    // file (e.g. a styled-jsx <style> block) is satisfied within the component.
+    // The global CSS-source scan can't see definitions that live in a .tsx, so
+    // collect this file's own definitions and treat self-references as defined.
+    const localDefs = new Set<string>();
+    const defRe = /^\s*(--[a-z0-9_-]+)\s*:/gim;
+    let dm: RegExpExecArray | null;
+    while ((dm = defRe.exec(content)) !== null) {
+      localDefs.add(dm[1].toLowerCase());
+    }
     // Match var(--name) or var(--name, fallback).
     // We deliberately stop the name capture at the comma or close-paren.
     const re = /var\(\s*(--[a-z0-9_-]+)\s*[,)]/gi;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       const name = m[1].toLowerCase();
+      if (localDefs.has(name)) continue; // defined in this same component
       const arr = used.get(name) ?? [];
       const rel = file.replace(OPERATOR_ROOT + '/', '');
       if (!arr.includes(rel)) arr.push(rel);
