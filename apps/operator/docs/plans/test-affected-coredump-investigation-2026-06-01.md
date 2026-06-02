@@ -343,6 +343,36 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
+### ROUND 9 (avi: "retire #2, chase #1") — **all genuine tests resolved.** Only the experts feature-removal + 78-file contamination remain (neither is a failing test).
+
+- **chat-surface-tools — TEST RETIRED** (`02ef65e2f`). Confirmed fully obsolete: its
+  per-surface `SURFACES` audit reads `app/api/agent-mcp/**/route.ts` + `_hono/oracle.ts`
+  — all retired (the dir no longer exists; it ENOENTs at collection). The wiring it
+  audited was centralized into `agent-mcp/spawn-pi.ts` + `agent-tools/oracle/prompts.ts`;
+  intent is now covered structurally. Per avi: retire it.
+- **branch-actions — FIXED** (`d43922be6`, 31/31 green, no FileHandle GC error). ⚠ The
+  round-5/6/7 diagnosis ("confirmed REAL Node-25 spawn/stream-completion product bug",
+  "the stderr-writing spawn's `close` never fires") was **WRONG** on two counts, proven by:
+  (a) a standalone Node-25 repro of the exact spawn+stream+FileHandle flow that completes
+  fine, and (b) an in-vitest probe showing a **STDOUT-only** script hangs as the *first*
+  `runAction` call while an **stderr** script passes when *warm*. **Real root cause:** an
+  `await import('./branch-action-bus')` sat BETWEEN `spawn()` and the `child.on('close')`
+  registration. On the first call per worker that dynamic import is cold; the trivial child
+  (echo+exit) runs, exits, and closes both stdio streams *during* the import await, so
+  `'close'` is emitted before the listener attaches → lost → `handle.done` hangs forever →
+  the never-closed log FileHandle later GC-errors (`ERR_INVALID_STATE`). stderr was a
+  coincidence — that test was just the *first* `runAction` call. **Fix:** hoist the bus
+  import (and channelKey) to before `spawn()`, so no `await` sits between spawn and listener
+  registration; added an invariant comment. Instrumented evidence + a standalone repro
+  confirmed each step (systematic-debugging, not guess-and-check).
+  - **Bug-class note (surfaced, NOT yet audited):** 10 other `lib/**` files pair `spawn(`
+    with `await import` — *if* any registers a child `close`/`exit` listener after an
+    `await`, it shares this latent first-call hang. Candidates: `expert-dispatcher`,
+    `plugin-host-runtime`, `harness-launch`, `provision/sandbox`, `harness/orchestration-actions`,
+    `marketplace/install(-plugin)`, `plugins/uninstall`, `dbos/orchestrator-runner`,
+    `dbos/auditor-lane-wiring`. Each needs reading to confirm the structural pattern — a
+    separate audit, not done here.
+
 ### ROUND 8 (avi's 3 directives) — **37 of 38 genuine tests green** (+ core dump). 1 product bug + 1 design rework remain.
 
 avi directed: **experts → deprecated, update relevant locations**; **perf-anti-patterns → fix it**; **css-tokens → fix it.** All three executed:
