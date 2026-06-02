@@ -126,3 +126,26 @@ These are **real operator voice-persona gaps**, not test-infra issues — the su
 is correctly catching that the voice operator isn't production-ready. Fixing them
 (terseness within 220, card-based disambiguation, grounded tool use) is a focused
 voice-persona design effort, tracked separately.
+
+## Deferred-MCP-tool flailing (the dominant behavioral blocker, 2026-06-02)
+
+The biggest operator quality problem is NOT prompt-shaped: the brain's mcpConfig
+uses `?superuser=1`, exposing **all ~226 agentmcp tools**, and **Claude Code defers
+a tool set that large** — each tool must be activated with **`ToolSearch` before it
+can be called**. The brain then flails: 4+ `ToolSearch`es/turn, tries `harness_list`
+/ `harness:list` / `harness:list({})` (the persona advertises **colon** names but
+the real tools are **underscore**), can't reliably surface a card (`chat_ask_choice`
+never lands), runs 11 tool calls / 121 s for one turn, and occasionally loops to the
+**600 s `operator:converse` cap**. Two hard-won lessons:
+
+- **Do NOT add `ToolSearch` to a `disallowBuiltins` deny-list.** It is the mechanism
+  that activates deferred MCP tools — deny it and the brain calls ZERO tools, just
+  narrating "checking…" forever (verified regression). `disallowBuiltins` (in
+  chat-stream) correctly KEEPS `ToolSearch` + the MCP-resource tools and denies only
+  the dangerous action built-ins (`Bash`/`Edit`/`Write`/`Read`/`Task`/`Web*`/…).
+- **The fix is to shrink the brain's exposed MCP surface** so the ~15-40 tools it
+  needs load DIRECTLY (no deferral → no `ToolSearch`). See plan
+  `voice-persona-production-readiness-2026-06-02` P-009 (optional `?tools=` allowlist
+  on the agent-mcp endpoint — additive, only `converse.ts` passes it) + P-010
+  (reconcile persona tool names to underscore). No persona prompt tweak overcomes
+  the deferral; this is infra.
