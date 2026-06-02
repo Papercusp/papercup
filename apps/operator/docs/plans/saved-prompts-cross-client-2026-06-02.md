@@ -11,9 +11,9 @@ owner: aviynw10@gmail.com
 
 ## Now
 
-**State:** Design approved via brainstorming (2026-06-01); plan drafted, no code yet. The four forks are locked (see Decisions): PG is the canonical store and the on-disk command files are a deterministic projection (D-001); the Claude command format is the shared surface for Claude **and** OMP, with Codex the only second format (D-002); harness-scoped prompt files are committed to the harness repo (D-003); only interactive sessions consume these — no orchestrator/autonomous-spawn changes (D-004); CRUD is exposed as principal-gated `defineTool` tools, not bespoke REST (D-005).
+**State:** Phases 1–2 implemented + committed, TDD throughout. DONE: P-001 migration 105 (applied to live native PG), P-002 saved-prompts-store (6 PG integration tests), P-003 projector + materializers (18 unit + 2 composition tests), P-005 the route-shaped CRUD endpoint at `/api/agent-mcp/saved-prompts` (GET/PUT/DELETE), live-verified end-to-end (create→materialize→delete→prune, both scopes; invalid-name→400). D-007 supersedes D-005: CRUD is route-shaped `defineTool` (auth:public, loopback) like every other settings page, so P-004 (capability tiers) + P-006 (tools-md-sync) are DROPPED. OPEN: P-012 — workspace-global prompts materialize to `~/.papercusp-workspaces/<ws>/.claude/commands` (the per-workspace HOME, correct for the desktop product); still need to confirm each launch path (psu / desktop) points the client's $HOME there so they're read. Harness scope writes to `<repo>/.claude/commands`, read universally.
 
-**Next:** Human reviews this plan. On approval, execute Phase 1 (PG table + store + projector) before any UI.
+**Next:** Phase 3 — build the shared SavedPromptsSection.tsx settings module (nuqs state, fetch the CRUD endpoint) and mount it in HarnessSettingsPanel + the personalization page.
 
 ## Background
 
@@ -82,19 +82,19 @@ Each is principal-gated (handler gets `ctx.tx`, the workspace-scoped/RLS transac
 
 ## Phase 1 — Data + core (no UI)
 
-- **P-001** `todo` PG migration `libs/papercusp/libs/db/sql/<NNN>-saved-prompts.sql` creating `harness_shared.saved_prompts` (columns above) + the unique index on `(workspace_id, coalesce(harness_slug,''), name)` + RLS policy keyed on `app.workspace_id` (mirror an existing workspace-scoped table). Apply manually on `:5432`; embedded-pg auto-applies.
+- **P-001** `done` PG migration `libs/papercusp/libs/db/sql/<NNN>-saved-prompts.sql` creating `harness_shared.saved_prompts` (columns above) + the unique index on `(workspace_id, coalesce(harness_slug,''), name)` + RLS policy keyed on `app.workspace_id` (mirror an existing workspace-scoped table). Apply manually on `:5432`; embedded-pg auto-applies. (migration 105 applied to live native PG)
 
-- **P-002** `todo` `apps/operator/lib/saved-prompts-store.ts` — transport-agnostic PG CRUD (`list({workspaceId, harnessSlug?})`, `upsert(...)`, `remove(...)`), using the workspace-scoped `tx` (the `set_config('app.workspace_id', $1, true)` discipline; never `SET LOCAL … = $1`). blocked-by: P-001.
+- **P-002** `done` `apps/operator/lib/saved-prompts-store.ts` — transport-agnostic PG CRUD (`list({workspaceId, harnessSlug?})`, `upsert(...)`, `remove(...)`), using the workspace-scoped `tx` (the `set_config('app.workspace_id', $1, true)` discipline; never `SET LOCAL … = $1`). blocked-by: P-001.
 
-- **P-003** `todo` `apps/operator/lib/saved-prompts-projection.ts` — pure PG-row → file emitters (Claude/OMP frontmatter+marker; Codex plain) + `materializeWorkspacePrompts` / `materializeHarnessPrompts` + the managed-marker overwrite guard. Filesystem-only, no transport awareness. blocked-by: P-002.
+- **P-003** `done` `apps/operator/lib/saved-prompts-projection.ts` — pure PG-row → file emitters (Claude/OMP frontmatter+marker; Codex plain) + `materializeWorkspacePrompts` / `materializeHarnessPrompts` + the managed-marker overwrite guard. Filesystem-only, no transport awareness. blocked-by: P-002.
 
 ## Phase 2 — Tool surface (defineTool)
 
-- **P-004** `todo` Register `savedprompts:read` / `savedprompts:write` capability→tier mappings in Papercusp's capability-tier resolver (`packages/agent-mcp/src/.../capability-tiers-papercusp.ts`), mirroring the tiers of existing settings read/write built-ins.
+- **P-004** `dropped` Register `savedprompts:read` / `savedprompts:write` capability→tier mappings in Papercusp's capability-tier resolver (`packages/agent-mcp/src/.../capability-tiers-papercusp.ts`), mirroring the tiers of existing settings read/write built-ins. (D-007: route-shaped endpoint has no capability)
 
-- **P-005** `todo` Principal-gated `defineTool` tools `saved_prompts:{list,upsert,remove}` in `apps/operator/lib/agent-tools/saved_prompts/` (explicit `name`, `capability`, Zod `args`, `guidance.when`, handler using `ctx.tx`), delegating to the store; `upsert`/`remove` call the projector after the PG write. Add the three `import './saved_prompts/<verb>'` lines to `apps/operator/lib/agent-tools/index.ts`. blocked-by: P-002, P-003, P-004.
+- **P-005** `done` Principal-gated `defineTool` tools `saved_prompts:{list,upsert,remove}` in `apps/operator/lib/agent-tools/saved_prompts/` (explicit `name`, `capability`, Zod `args`, `guidance.when`, handler using `ctx.tx`), delegating to the store; `upsert`/`remove` call the projector after the PG write. Add the three `import './saved_prompts/<verb>'` lines to `apps/operator/lib/agent-tools/index.ts`. blocked-by: P-002, P-003, P-004. (route-shaped endpoint, live-verified D-007)
 
-- **P-006** `todo` Keep `apps/operator/lib/__tests__/tools-md-sync.test.ts` green: every new tool has `guidance.when`; if any chat surface should list them, add `mcp__agentmcp__saved_prompts:<verb>` to that surface's `allowedTools`. blocked-by: P-005.
+- **P-006** `dropped` Keep `apps/operator/lib/__tests__/tools-md-sync.test.ts` green: every new tool has `guidance.when`; if any chat surface should list them, add `mcp__agentmcp__saved_prompts:<verb>` to that surface's `allowedTools`. blocked-by: P-005. (D-007: not in MCP/agent catalog)
 
 ## Phase 3 — Settings UI (one module, two mounts)
 
@@ -141,3 +141,8 @@ Each is principal-gated (handler gets `ctx.tx`, the workspace-scoped/RLS transac
 
 ### D-006 — Managed-marker overwrite guard
 2026-06-01 — Projected files carry a `<!-- papercusp:managed -->` marker; the projector refuses to overwrite a same-named file that lacks the marker (warns instead), so a user's hand-authored `.claude/commands/<name>.md` is never clobbered. Deletes only remove files we own.
+
+### D-007 — CRUD is route-shaped defineTool (auth:public), not principal-gated — supersedes D-005
+Date: 2026-06-02
+Implementation finding: every existing settings surface (operator-config, operator-credentials, omp-config, operator-budget, operator-preferences) is a **route-shaped `defineTool`** with `auth: 'public'` (loopback-trusted) that the dashboard `fetch`es directly — the dashboard has no bearer/principal path, so principal-gated tools (D-005) are not in fact dashboard-callable here. The plan's own P-010 named route-shaped public as the fallback; confirming the dashboard reality makes it the primary path. CRUD now lives at `apps/operator/lib/endpoint-route/routes/agent-mcp/saved-prompts.ts` (GET/PUT/DELETE), registered in routes/index.ts, mirroring operator-config.ts exactly. Consequence: P-004 (capability tiers) and P-006 (tools-md-sync) are **dropped** — route-shaped endpoints carry no capability and are deliberately NOT in the MCP/agent tool catalog. Trade-off vs D-005: superuser/agents cannot manage prompts via MCP. The user's stated goal (type `/name` in a client) is met by the on-disk materialization regardless; if MCP management is wanted later, add a thin principal-gated `saved_prompts:list` read tool. Verified live (host restarted): GET/PUT/DELETE round-trip, invalid-name→400, and writes materialize to the workspace HOME (`~/.papercusp-workspaces/<ws>/.claude/commands`) + the harness repo (`<repo>/.claude/commands`), with DELETE pruning the file.
+Related: P-004, P-005, P-006
