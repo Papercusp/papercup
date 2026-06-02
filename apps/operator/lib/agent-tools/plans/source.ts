@@ -283,6 +283,8 @@ export async function readPlanBySlug(
   const plansDir = getPlansDir(opts);
   const archiveDir = getArchiveDir(opts);
 
+  // perf:allow A1 — find-first over ≤4 bounded candidate paths (dir×ext) with
+  // early return on the first hit; parallelizing would read all candidates.
   for (const [dir, archived] of [
     [plansDir, false],
     [archiveDir, true],

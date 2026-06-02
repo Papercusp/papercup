@@ -179,11 +179,10 @@ const BASELINE: Array<{ rule: string; fileSuffix: string }> = [
   // should migrate to LazyDetails when convenient).
   { rule: 'A6', fileSuffix: '_components/OperatorPanel.tsx' },
 
-  // A1: serial fs.readFile in for loops. Only one site remains:
-  // plugin-runtime's small-N candidates list, where parallelization
-  // adds wasted reads without measurable benefit (3-5 paths). See
-  // /docs/performance #A1 and the route file's header comment.
-  { rule: 'A1', fileSuffix: 'app/api/plugin-runtime/[slug]/[plugin]/[...path]/route.ts' },
+  // (A1 plugin-runtime entry removed: the Next route was retired; its
+  // migrated successor lib/endpoint-route/routes/plugin-runtime/catchall.ts —
+  // and the other small-N find-first sites — now carry inline `// perf:allow A1`
+  // directives instead of a baseline entry.)
 
   // A7: 500ms safety poll for SpeechSynthesis.voiceschanged event. Bounded
   // to 5 attempts (5 × 500ms = 2.5s) and stops as soon as voices arrive

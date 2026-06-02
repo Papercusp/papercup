@@ -28,6 +28,7 @@ async function readManifestForPlugin(slug: string, pluginName: string): Promise<
     join(papercuspRoot(), 'harnesses', slug, 'plugins', pluginName, 'papercusp.json'),
     join(papercuspRoot(), 'global-plugins', pluginName, 'papercusp.json'),
   ];
+  // perf:allow A1 — find-first over 2 bounded manifest candidates, return on first valid.
   for (const path of candidates) {
     try {
       const raw = await fs.readFile(path, 'utf8');

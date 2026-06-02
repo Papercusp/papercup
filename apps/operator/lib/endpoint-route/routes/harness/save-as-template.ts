@@ -138,6 +138,7 @@ export default defineTool({
       join(project.path, '.harness', 'papercusp.json'),
       join(project.path, 'papercusp.json'),
     ];
+    // perf:allow A1 — find-first over 2 bounded manifest candidates, break on first.
     for (const candidate of harnessManifestCandidates) {
       if (!existsSync(candidate)) continue;
       try {

@@ -61,6 +61,8 @@ export function useUiPresence(): void {
     // not every router.push goes through history.pushState in dev.
     // Poll the URL every 500ms as a safety net; the diff check keeps
     // POST volume low.
+    // perf:allow A7 — diff-guarded URL-change safety poll; flush only POSTs on an
+    // actual URL change, so the steady-state cost is a 500ms string compare.
     const poll = window.setInterval(flush, 500);
     const heartbeat = window.setInterval(() => void postPresence(clientId), HEARTBEAT_MS);
 
