@@ -139,12 +139,37 @@ config + view were fine and isolating it to the wrong *database*.)
 - `runner-ports.ts` `registerThrowawayHarness` now **fails loud** on
   `provisioning.ok===false` instead of swallowing a scaffold failure (defensive).
 
-### Open item 1 — P-014 (human gate): the real A/B
+### Open item 1 — P-014 (human gate): the real A/B  ← **the next action, needs a human**
 
-Once the worker does real work: run a bounded A/B (≤2 variants × ≤3 tasks, 1 run each;
-D-019 bounded spend) → measure judge-composite variance (`variance.ts` → ε/δ/min-n),
-the cost estimate (`cost.ts`), and real-anchor correlation (`real-anchor.ts`). This is
-the milestone gate before building/running the autonomous loop unattended.
+The worker now does real work (the hermeticity fix above), so the spine is ready for the
+real-LLM milestone. This gate is a **STOP**: it needs real coding-agent + Opus-4-8 spend
+**and** a human go/no-go on whether the signal is sound enough to trust the loop (P-015+).
+Deliberately not run unattended (D-019: fake-agent-first is the unattended deliverable;
+real agents are slow/nondeterministic and the go/no-go is a human call).
+
+**Runbook (for a human, bounded per D-019 — ≤2 variants × ≤3 tasks, 1 run each):**
+
+1. **Real agent instead of the fake.** `smoke.ts` boots the gym-operator via
+   `buildGymOperatorBootSpec` with `agentCmd` (→ `AGENT_CMD`) pointing at the fake
+   (`fixtures/fake-agent.mjs`). Point it at a real CLI (`claude -p` / `omp -p`) — and set
+   `agentModels` (→ `AGENT_MODELS`) per-role if you want a stronger worker model.
+2. **Two variants.** Run baseline (empty overlay) + one candidate (a `{promptOverrides}`
+   overlay) over the same ≤3 train tasks (`task-generator.ts` / `task-pools.ts`), via
+   `runGymPipeline` + `createGymRunnerPorts` (the real adapter). Each run → `gym_runs`.
+3. **Real judge.** Score each run's distilled trace with the frozen Opus-4-8 judge
+   (`judge.ts` `judgeGymRun`, `judge-scoring.ts` — pinned model/weights/temp/`rubric_hash`)
+   → `gym_scores`. Capture per-run `$`/tokens via `cost.ts`.
+4. **Measure + decide (the gate):** `variance.ts` over the per-(task) composites →
+   derive **ε/δ/min-n** (is 1 run too noisy? if so promote **P-025** repeats into v1);
+   `cost.ts` → the **$/cycle + $/converged-run** estimate; **real-anchor correlation**
+   (`real-anchor.ts` + `read-api.ts`) → does the gym score track the held-out real-anchor
+   (D-014 falsifiability)? Read the A/B via `read-api.ts` `compareVariants`/`frontierView`.
+5. **Human go/no-go:** only if variance supports a usable ε/δ at acceptable cost **and**
+   the real-anchor correlates, proceed to wire/run the proposer→loop (P-015–P-022). If
+   the signal is noisy or the anchor doesn't move, the optimization premise is unproven —
+   fix that before building the loop. **Never** point a real *production* harness at a
+   champion without P-023 sign-off (the gym's own harness is promoted unattended; a prod
+   harness is not).
 
 ### Open item 2 — P-024 dashboard (UI)
 
