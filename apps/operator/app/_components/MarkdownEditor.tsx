@@ -11,6 +11,64 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { hardReload } from '@/lib/hard-reload';
+
+/**
+ * Inline fallback when the lazy `import('vditor')` chunk fails to load — which
+ * happens when the bundle was rebuilt underneath an open page (`vite build
+ * --watch` rewrites `dist/`, so the running page references a now-404'd chunk).
+ * Without this the markdown pane just renders blank ("config tab not loading
+ * markdown via vditor"). The global ChunkReloadPrompt also fires on the
+ * `vite:preloadError`, but an inline notice with a working reload is clearer at
+ * the point of use.
+ */
+function VditorUnavailable({
+  style,
+  className,
+}: {
+  style?: React.CSSProperties;
+  className?: string;
+}) {
+  return (
+    <div
+      className={className}
+      style={{
+        display: 'grid',
+        placeItems: 'center',
+        minHeight: 120,
+        padding: 16,
+        textAlign: 'center',
+        fontSize: 13,
+        color: 'var(--fg-mute, #7f9bb4)',
+        ...style,
+      }}
+    >
+      <div>
+        <div>Couldn&rsquo;t load the markdown renderer.</div>
+        <div style={{ marginTop: 4, fontSize: 12 }}>
+          The app was likely updated underneath this page.
+        </div>
+        <button
+          type="button"
+          onClick={() => hardReload()}
+          style={{
+            marginTop: 10,
+            padding: '4px 14px',
+            fontSize: 12,
+            fontWeight: 600,
+            color: '#06121b',
+            background: 'var(--accent, #57d7ff)',
+            border: 0,
+            borderRadius: 6,
+            cursor: 'pointer',
+          }}
+        >
+          Reload
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // Vditor's CSS (~45 KB / 302 rules) is loaded lazily alongside the editor
 // JS. Importing it at module level pulls the whole stylesheet into every
@@ -130,9 +188,11 @@ export function MarkdownPreview({
   renderersRef.current = renderers;
   const onParsedRef = useRef(onParsed);
   onParsedRef.current = onParsed;
+  const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     if (!ref.current) return;
     let cancelled = false;
+    setLoadError(false);
     (async () => {
       await loadVditorCss();
       const Vditor = (await import('vditor')).default;
@@ -174,9 +234,20 @@ export function MarkdownPreview({
         };
         outlineRef.current.addEventListener('click', onClick, true);
       }
-    })();
+    })().catch((err: unknown) => {
+      if (cancelled) return;
+      // The lazy vditor chunk 404'd (bundle rebuilt underneath the page).
+      // Surface a reload affordance instead of a silently blank pane.
+      setLoadError(true);
+      // eslint-disable-next-line no-console
+      console.error('[MarkdownPreview] vditor failed to load:', err);
+    });
     return () => { cancelled = true; };
   }, [value, outline]);
+
+  if (loadError) {
+    return <VditorUnavailable className={className} style={style} />;
+  }
 
   if (outline) {
     const position = outline === 'right' ? 'right' : 'left';
@@ -258,10 +329,12 @@ export function MarkdownEditor({
   onInstanceRef.current = onInstance;
   const initialValueRef = useRef(value);
   const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   // Mount: deps are config-only so value changes don't remount.
   useEffect(() => {
     let cancelled = false;
+    setLoadError(false);
     (async () => {
       await loadVditorCss();
       const Vditor = (await import('vditor')).default;
@@ -328,7 +401,14 @@ export function MarkdownEditor({
           try { onInstanceRef.current?.(inst); } catch { /* consumer error shouldn't abort mount */ }
         },
       });
-    })();
+    })().catch((err: unknown) => {
+      if (cancelled) return;
+      // The lazy vditor chunk 404'd (bundle rebuilt underneath the page).
+      // Surface a reload affordance instead of a silently empty editor.
+      setLoadError(true);
+      // eslint-disable-next-line no-console
+      console.error('[MarkdownEditor] vditor failed to load:', err);
+    });
     return () => {
       cancelled = true;
       try { onInstanceRef.current?.(null); } catch { /* ignore */ }
@@ -360,6 +440,10 @@ export function MarkdownEditor({
     if (readOnly) editorRef.current.disabled();
     else editorRef.current.enable();
   }, [readOnly, ready]);
+
+  if (loadError) {
+    return <VditorUnavailable className={className} style={{ height, ...style }} />;
+  }
 
   return (
     <>

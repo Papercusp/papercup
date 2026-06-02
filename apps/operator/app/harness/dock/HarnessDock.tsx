@@ -34,7 +34,7 @@ import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import { useRegisterPluginPanels } from './useRegisterPluginPanels';
 import { useFocusedPanelTracker } from './useFocusedPanelTracker';
 import { destroy as destroyIframe } from './iframe-host';
-import type { LayoutDoc } from '../../../lib/dock-layouts';
+import { isWellFormedLayout, type LayoutDoc } from '../../../lib/dock-layouts';
 
 interface HarnessDockProps {
   /**
@@ -118,16 +118,21 @@ function useComponentsForLayout(layout: LayoutDoc | null): Record<string, PanelC
 }
 
 function collectTypes(doc: LayoutDoc, into: Set<string>): void {
-  function walk(n: LayoutDoc['root']): void {
+  function walk(n: LayoutDoc['root'] | null | undefined): void {
+    // Defense-in-depth: a malformed node must never throw here. The caller
+    // already gates on isWellFormedLayout, but this render-path walk is exactly
+    // where a stray null node used to crash the whole route (e.kind on
+    // undefined), so guard the node and its child arrays.
+    if (!n) return;
     if (n.kind === 'tabs') {
-      for (const p of n.panels) into.add(p.type);
+      for (const p of n.panels ?? []) into.add(p.type);
     } else {
-      for (const c of n.children) walk(c);
+      for (const c of n.children ?? []) walk(c);
     }
   }
-  walk(doc.root);
-  for (const f of doc.floating ?? []) {
-    for (const p of f.panels) into.add(p.type);
+  walk(doc?.root);
+  for (const f of doc?.floating ?? []) {
+    for (const p of f.panels ?? []) into.add(p.type);
   }
 }
 
@@ -158,12 +163,36 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
   // context defaults track whichever panel the user is looking at.
   useFocusedPanelTracker();
 
-  const layoutDoc: LayoutDoc | null =
+  // A "ready" v1 row is NOT guaranteed to carry a well-formed `root`: a
+  // save/fetch race against the dock-layouts API can surface a transient
+  // null-root body. Validate before use — feeding a malformed layout to the
+  // render path (useComponentsForLayout → collectTypes, and toDockviewJson)
+  // threw `undefined is not an object (evaluating 'e.kind')` during render and
+  // latched the /adv route error boundary, blanking every tab. A malformed
+  // body renders as "no layout" (empty dock) and the one-shot refetch below
+  // picks up the body the dock's own auto-save heals a moment later.
+  const rawLayout: LayoutDoc | null =
     state.status === 'ready' && state.row.schemaVersion === 1
       ? (state.row.layoutJson as LayoutDoc)
       : null;
+  const layoutDoc: LayoutDoc | null = isWellFormedLayout(rawLayout)
+    ? rawLayout
+    : null;
+  const malformedRow = rawLayout !== null && layoutDoc === null;
 
   const components = useComponentsForLayout(layoutDoc);
+
+  // Recover from a transient malformed layout: refetch once (keyed by
+  // updatedTs so a persistently-bad row is retried at most once — no loop).
+  const recoveredTsRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!malformedRow || state.status !== 'ready') return;
+    const ts = state.row.updatedTs;
+    if (recoveredTsRef.current === ts) return;
+    recoveredTsRef.current = ts;
+    const t = setTimeout(() => void refresh(), 300);
+    return () => clearTimeout(t);
+  }, [malformedRow, state, refresh]);
 
   // Hydrate once the layout AND the dockview API are both ready.
   useEffect(() => {
@@ -185,6 +214,11 @@ export function HarnessDock({ layoutName: initialLayoutName, className, slug }: 
       const dv = apiRef.current?.toJSON() as unknown as DockviewLayout | undefined;
       if (!dv) return;
       const doc = toLayoutDoc(dv);
+      // Never persist a degenerate layout. dockview can emit a rootless/empty
+      // grid mid-teardown; writing that body is what let a later read surface a
+      // null-root layout and crash the render path. Skip — the next real layout
+      // change persists a good body.
+      if (!isWellFormedLayout(doc)) return;
       save(doc).catch((err: Error & { conflict?: boolean }) => {
         if (err.conflict) {
           // Another tab wrote first. useDockLayout refreshed state; next

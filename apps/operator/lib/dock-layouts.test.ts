@@ -8,9 +8,11 @@ import {
   CURRENT_LAYOUT_SCHEMA_VERSION,
   LayoutValidationError,
   OPAQUE_SCHEMA_VERSION,
+  defaultAdvGitLayout,
   defaultAdvHarnessesLayout,
   defaultDashboardLayout,
   defaultPiTerminalsLayout,
+  isWellFormedLayout,
   validateLayoutDoc,
   type LayoutDoc,
 } from './dock-layouts';
@@ -143,6 +145,72 @@ describe('dock-layouts validation', () => {
       },
     };
     expect(() => validateLayoutDoc(doc)).toThrow(/missing type/);
+  });
+});
+
+describe('isWellFormedLayout (non-throwing guard for the render path)', () => {
+  const validDoc: LayoutDoc = {
+    schemaVersion: CURRENT_LAYOUT_SCHEMA_VERSION,
+    root: {
+      kind: 'tabs',
+      id: 'root',
+      activePanelId: 'a',
+      panels: [{ id: 'a', type: 'data:features' }],
+    },
+  };
+
+  it('accepts a well-formed v1 layout', () => {
+    expect(isWellFormedLayout(validDoc)).toBe(true);
+  });
+
+  it('accepts every default seed', () => {
+    expect(isWellFormedLayout(defaultDashboardLayout('papercup'))).toBe(true);
+    expect(isWellFormedLayout(defaultAdvHarnessesLayout('papercup'))).toBe(true);
+    expect(isWellFormedLayout(defaultAdvGitLayout('papercup'))).toBe(true);
+    expect(isWellFormedLayout(defaultPiTerminalsLayout())).toBe(true);
+  });
+
+  // The exact corruption that crashed /adv: a v1 body whose `root` is null.
+  it('rejects a v1 body with a null root', () => {
+    expect(isWellFormedLayout({ schemaVersion: 1, root: null })).toBe(false);
+  });
+
+  it('rejects a v1 body with no root key', () => {
+    expect(isWellFormedLayout({ schemaVersion: 1 })).toBe(false);
+  });
+
+  it('rejects a layout with a null node inside children', () => {
+    expect(
+      isWellFormedLayout({
+        schemaVersion: 1,
+        root: { kind: 'group', id: 'g', children: [null] },
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects null / undefined / non-objects', () => {
+    expect(isWellFormedLayout(null)).toBe(false);
+    expect(isWellFormedLayout(undefined)).toBe(false);
+    expect(isWellFormedLayout('nope')).toBe(false);
+    expect(isWellFormedLayout(42)).toBe(false);
+  });
+
+  it('rejects an opaque (v0) body — no structural guarantee for the render path', () => {
+    expect(isWellFormedLayout({ schemaVersion: OPAQUE_SCHEMA_VERSION, blob: 1 })).toBe(false);
+  });
+
+  it('rejects an unknown schemaVersion', () => {
+    expect(isWellFormedLayout({ schemaVersion: 99, root: validDoc.root })).toBe(false);
+  });
+
+  it('narrows the type (predicate) when true', () => {
+    const maybe: unknown = validDoc;
+    if (isWellFormedLayout(maybe)) {
+      // Type-level assertion: maybe is LayoutDoc here.
+      expect(maybe.root.kind).toBe('tabs');
+    } else {
+      throw new Error('expected well-formed');
+    }
   });
 });
 

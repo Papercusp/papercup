@@ -442,6 +442,39 @@ export function validateLayoutDoc(doc: unknown): asserts doc is LayoutDoc {
   }
 }
 
+/**
+ * Non-throwing structural check for a v1 LayoutDoc. Returns true only when the
+ * body is schemaVersion 1 AND `root` (plus every descendant node) is
+ * well-formed.
+ *
+ * Use at trust boundaries that must NOT crash on a malformed layout. The dock
+ * reads a layout from the API/PG that, during a save/fetch race, can
+ * transiently come back with a null/absent `root`; feeding that to the render
+ * path threw `undefined is not an object (evaluating 'e.kind')` (HarnessDock's
+ * collectTypes → walk(doc.root)) and latched the whole /adv route error
+ * boundary, taking down every tab. Callers treat `false` as "no usable layout"
+ * (render empty / refetch / reseed) instead of trusting `schemaVersion === 1`
+ * to imply a valid tree.
+ */
+export function isWellFormedLayout(doc: unknown): doc is LayoutDoc {
+  if (!doc || typeof doc !== 'object') return false;
+  if (
+    (doc as { schemaVersion?: unknown }).schemaVersion !==
+    CURRENT_LAYOUT_SCHEMA_VERSION
+  ) {
+    // Opaque (v0) and unknown bodies have no structural guarantee — not usable
+    // by the render path. validateLayoutDoc would pass v0 (it skips structural
+    // checks), so gate on v1 here before delegating.
+    return false;
+  }
+  try {
+    validateLayoutDoc(doc);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function validateNode(n: GroupNode | TabStrip): void {
   if (n.kind === 'group') {
     if (!Array.isArray(n.children)) {

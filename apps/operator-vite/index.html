@@ -17,6 +17,14 @@
           const originalReload = location.reload.bind(location);
           const originalAssign = location.assign.bind(location);
           const originalReplace = location.replace.bind(location);
+          // Stash the genuine reload FIRST — before the reload/assign/replace
+          // overrides below, which can throw on some webviews (WebKitGTK) and
+          // would otherwise abort this block before the escape hatch is set,
+          // leaving hardReload() (lib/hard-reload.ts) with no working reload.
+          Object.defineProperty(window, '__papercuspOriginalReload', {
+            configurable: true,
+            value: originalReload,
+          });
           const softNavigate = (target, replace) => {
             try {
               const next = new URL(String(target), location.href);
@@ -49,10 +57,6 @@
               if (softNavigate(target, true)) return;
               originalReplace(target);
             },
-          });
-          Object.defineProperty(window, '__papercuspOriginalReload', {
-            configurable: true,
-            value: originalReload,
           });
           document.addEventListener('click', (event) => {
             const target = event.target;

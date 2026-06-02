@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { toast } from 'sonner';
+import { hardReload } from '@/lib/hard-reload';
 
 /**
  * Surfaces a user-controlled reload when a code-split chunk fails to load.
@@ -32,7 +33,11 @@ export default function ChunkReloadPrompt() {
         description:
           'Some content failed to load because the app was updated underneath it. Reload to get the latest.',
         duration: Infinity,
-        action: { label: 'Reload', onClick: () => window.location.reload() },
+        // `window.location.reload()` is a no-op on the desktop host (it
+        // overrides reload to keep `vite build --watch` from yanking the
+        // session); hardReload() uses the host's stashed genuine reload so the
+        // button actually picks up the new build.
+        action: { label: 'Reload', onClick: () => hardReload() },
       });
     };
     window.addEventListener('vite:preloadError', onPreloadError);

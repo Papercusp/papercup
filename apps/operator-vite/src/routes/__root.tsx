@@ -24,6 +24,7 @@ import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
 import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
+import RouteErrorBoundary from '../components/RouteErrorBoundary';
 import '@/app/globals.css';
 // App-wide command-palette chrome (⌘K / Ctrl+P). The palette markup uses
 // `.h-cmd*` classes that used to live in harness.css; they now live here.
@@ -117,7 +118,16 @@ function RootComponent() {
                           the alias shim now resolves that.) */}
                       <ChromeShell />
                       <main data-route-transition-page="true">
-                        <Outlet />
+                        {/* Route-content error boundary: keeps ChromeShell
+                            mounted on a route crash (so the user can navigate
+                            away), resets on navigation, and offers a working
+                            reload. Without it, a route throw bubbled to
+                            TanStack's bare root boundary and blanked the whole
+                            shell — and because /adv is one route, one tab's
+                            crash latched every tab. */}
+                        <RouteErrorBoundary>
+                          <Outlet />
+                        </RouteErrorBoundary>
                       </main>
                     </PostHogProvider>
                   </OperatorConversationProvider>

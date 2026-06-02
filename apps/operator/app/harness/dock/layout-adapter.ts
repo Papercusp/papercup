@@ -98,9 +98,13 @@ export function toDockviewJson(doc: LayoutDoc): DockviewLayout {
     };
   }
 
-  function nodeToBranch(n: GroupNode | TabStrip): DvSerializedGridNode {
+  function nodeToBranch(n: GroupNode | TabStrip | null | undefined): DvSerializedGridNode {
+    // Defensive: a malformed node yields an empty branch instead of throwing
+    // (`n.kind` on undefined). Callers pass a validated LayoutDoc, but this is
+    // the other render-path walker that touches `.kind`, so guard it too.
+    if (!n) return { type: 'branch', data: [] };
     if (n.kind === 'tabs') return leafFromTabs(n);
-    const children = n.children.map(nodeToBranch);
+    const children = (n.children ?? []).map(nodeToBranch);
     return {
       type: 'branch',
       data: children,
@@ -112,7 +116,7 @@ export function toDockviewJson(doc: LayoutDoc): DockviewLayout {
   // dockview's grid orientation: if the root group is 'col', the top-level
   // orientation is VERTICAL (children stack vertically); 'row' = HORIZONTAL.
   const rootDir =
-    doc.root.kind === 'group' ? doc.root.direction ?? 'row' : 'row';
+    doc.root?.kind === 'group' ? doc.root.direction ?? 'row' : 'row';
 
   const floatingGroups: DvSerializedFloatingGroup[] = (doc.floating ?? []).map((f) => {
     const leaf: DvSerializedGridLeaf = {
