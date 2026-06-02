@@ -343,6 +343,41 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
+### ROUND 8 (avi's 3 directives) — **37 of 38 genuine tests green** (+ core dump). 1 product bug + 1 design rework remain.
+
+avi directed: **experts → deprecated, update relevant locations**; **perf-anti-patterns → fix it**; **css-tokens → fix it.** All three executed:
+
+- **experts — TEST RETIRED** (`07bf3676b`). Per the deprecation, we don't invest in
+  fixing tests for deprecated functionality, so the broken
+  `endpoint-route/__tests__/experts.test.ts` is dropped. ⚠ **Surfaced, not done:**
+  the experts *feature* is still deeply wired into live code (testing-domains-registry,
+  role-registry, plugin-host-runtime, harness-launch / harness-invoke-once,
+  harness-paths, 7 agent-tools, the `/experts` route, 4 other passing test files).
+  A full feature rip-out is a large, separate refactor that needs an explicit ask —
+  **not done here**; only the failing test is retired.
+- **perf-anti-patterns — FIXED** (`76e9f9449`, 2/2 green). The 4 NEW hits were all
+  legitimate (3× A1 find-first-existing bounded fallback loops with early-return;
+  1× A7 diff-guarded 500ms safety-net poll) → documented `// perf:allow` directives;
+  the lone STALE baseline entry (retired Next plugin-runtime route) removed.
+- **css-tokens — FIXED** (`7986f03c9`, 2/2 green, 0 undefined tokens). Mapped the 42
+  ad-hoc semantic token names used across ~30 components to the canonical design
+  tokens in `globals.css :root` (sanctioned home). Final straggler `--_a` was a
+  component-LOCAL styled-jsx var (Issues/FeaturesPanel) the lint couldn't see; taught
+  `css-tokens.test.ts` to recognize same-file `--name:` self-references as defined
+  (correct + general; avoids a pseudo-runtime-token allowlist entry). Follow-up:
+  consolidate components onto canonical names and delete the aliases.
+
+**STILL OUTSTANDING (need avi's direction — not silently dropped):**
+1. **branch-actions** — confirmed REAL Node-25 spawn/stream-completion **product bug**
+   (the stderr-writing spawn's `child.on('close')` never fires → `handle.done` hangs).
+   Needs product-side runtime instrumentation, not a test patch.
+2. **chat-surface-tools** — audit **rework**: the per-surface `SURFACES` model is
+   obsolete (MCP-wiring centralized into `agent-mcp/spawn-pi.ts` +
+   `agent-tools/oracle/prompts.ts`); needs rewriting against the new wiring or retiring.
+3. **experts feature removal** — full rip-out of the wired surface (above), if desired.
+4. **78 contamination files** (pass alone, fail only in the full suite) — a separate
+   shared-external-state root-cause workstream; never in this plan's scope.
+
 ### TALLY (end of round 7): **34 of 38 genuine tests green** (+ core dump). 4 remain.
 
 **Round 7 fixes (committed):**
