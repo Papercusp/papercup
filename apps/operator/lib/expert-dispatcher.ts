@@ -18,6 +18,7 @@
  * Spec: see /docs/experts/authoring (per the substrate plan).
  */
 import { spawn } from 'node:child_process';
+import { governorForBackend } from '@papercusp/papercup-shared/agent';
 import { existsSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -312,6 +313,19 @@ export async function dispatchExpert(
             EXPERT_BUDGET_CENTS: budgetCents != null ? String(budgetCents) : '',
           },
         });
+        // Pace the expert spawn through the shared governor (RB-012, flag-gated): acquire a
+        // concurrency permit before spawning so a background expert doesn't pile onto a
+        // pipeline burst against the same provider bucket. Held until finalise() (alongside
+        // the file-lock release — the universal cleanup), so it can't leak. Flag OFF (default)
+        // = null → byte-identical legacy spawn. On a bail (bucket paused past maxWait) acquire
+        // returns null after the wait and we proceed ungoverned for this one low-burst dispatch.
+        let governorRelease: (() => void) | null = null;
+        if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
+          governorRelease = await governorForBackend('claude-code', '').acquire(
+            {},
+            { maxWaitMs: Number(process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS ?? 1_800_000) },
+          );
+        }
         const child = spawn(command, args, {
           cwd: project.path,
           env: invokeEnv,
@@ -371,6 +385,7 @@ export async function dispatchExpert(
             try { rmSync(promptShadowDir, { recursive: true, force: true }); } catch { /* best-effort */ }
           }
           releaseLock(project.path, role);
+          governorRelease?.(); // release the shared governor permit (RB-012); noop when flag OFF
           // Compute cost vs budget for telemetry. If we're over budget,
           // append a warning to the summary so the OperatorActionLog row
           // surfaces it; downstream tuning of the role's whenUseful or

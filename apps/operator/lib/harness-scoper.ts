@@ -14,7 +14,7 @@
  */
 import { mkdirSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawnInvokeOnceBackground } from './governed-background-spawn';
 import { join } from 'node:path';
 import { harnessDir } from '@/lib/harness-core';
 import { type ProjectEntry } from '@/lib/harness-registry';
@@ -54,12 +54,10 @@ export function invokeScoperBackground(
     resultPath, // invoke-once tees output here + appends __INVOCATION_DONE__
     extraEnv: { SCOPER_INVOCATION_ID: invocationId, SCOPER_OUTPUT_MODE: outputMode },
   });
-  const child = spawn(command, args, {
-    cwd: project.path,
-    env,
-    detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  child.unref();
+  // Fire-and-forget detached spawn, governed (RB-012): paced through the shared governor
+  // when PAPERCUSP_AGENT_GOVERNOR=1 so a background scoper doesn't pile onto a pipeline
+  // burst; flag OFF = the legacy synchronous detached spawn. The result is polled via
+  // resultPath's __INVOCATION_DONE__ sentinel (no child handle needed).
+  spawnInvokeOnceBackground({ command, args, cwd: project.path, env, resultPath });
   return { invocationId };
 }
