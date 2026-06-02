@@ -117,3 +117,20 @@ describe('every spawnable AGENT_ROLES role has a prompt (registry ↔ prompt con
     }
   });
 });
+
+describe('the acceptance/test gate is instructed (validator prompt)', () => {
+  // The deterministic half of "tests ship with the feature": the validator is
+  // the gate that verifies a feature against its acceptance claims. This pins
+  // that its prompt still INSTRUCTS that gate (claim verification + PASS/FAIL +
+  // adversarial edge-probing). A prompt edit that drops the gate fails here.
+  // (The behavioral "validator actually fails an untested feature" is P-030.)
+  it('validator.md instructs per-claim verification with PASS/FAIL and edge-probing', () => {
+    const path = resolvePromptFile({ harnessDir: HARNESS_DIR, phase: '', dept: '' }, 'validator');
+    expect(path, 'validator prompt must resolve').toBeTruthy();
+    const prompt = readFileSync(path!, 'utf8');
+    expect(prompt).toMatch(/claims|VAL-|assertion/i); // verifies the acceptance claims
+    expect(prompt).toMatch(/\[?PASS\]?/);
+    expect(prompt).toMatch(/\[?FAIL\]?/);
+    expect(prompt).toMatch(/edge|pentester|should be tested/i); // probes untested gaps
+  });
+});
