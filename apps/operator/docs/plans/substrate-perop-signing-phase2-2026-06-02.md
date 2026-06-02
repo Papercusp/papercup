@@ -11,129 +11,193 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** DRAFT FOR REVIEW — design only, no code. This is Phase 2 of
-[[security/shared-harnesses]] / `papercusp-trust-model-2026-05-31`. It exists because
-shipping an L–XL cryptographic change to the substrate's apply/projection path
-unsupervised would be reckless; the three policy forks below must be decided in review
-before any implementation.
+**State:** DRAFT FOR REVIEW — **re-grounded 2026-06-02 against source.** The original premise (ops
+arrive unsigned/unauthenticated, so add per-op Ed25519 signing + verify-on-receipt + replay-state)
+is **largely already satisfied** by the per-peer-Hypercore + channel-2-admitted-merge architecture:
+every replicated op is already cryptographically attributable to a GitHub identity, and in-log
+replay is structurally prevented by Hypercore's append-only Merkle index. **D-004 records this
+re-grounding and supersedes D-001..D-003** (all of which were predicated on adding per-op
+signatures). The residual work is small and is NOT the L–XL crypto change the draft assumed.
 
-**Next:** review the three open decisions (D-001..D-003 record the *recommended*
-resolutions — accept/amend), then convert "Proposed implementation" into tracked items.
+**Next:** review D-004; if accepted, convert its two residual fixes — (1) bind the `lwwPick`
+tiebreak + the projected `author_pubkey` column to the unforgeable `sourceLogKeyHex`, (2) assert the
+admission invariant with tests — into tracked items, and close the per-op-signing scope as not-needed.
 
-## Background — the gap
+## Background — the gap (re-grounded)
 
-Replicated Autobase/Hyperbee ops are **not signed, authenticated, or authorized on
-receipt** — the only admission check today is a schema-version filter plus the
-channel-2 *peer-admission* gate. Because the swarm topic is derivable from the public
-GitHub repo id, **any peer who reaches the DHT can write forged feature/PR/contributor/
-claim rows into every other peer's local DB/UI.** Phase 1 (advisory + re-derive
-decision-bearing facts from GitHub) neutralises what *matters*; Phase 2 is
-defence-in-depth / UX-integrity for the *advisory* layer: stop peers from poisoning each
-other's local state with plausible-but-forged rows.
+Phase 1 (`papercusp-trust-model-2026-05-31`) neutralised what *matters* by re-deriving
+decision-bearing facts from GitHub. This plan originally proposed Phase 2 as defence-in-depth for the
+*advisory* swarm rows: stop an arbitrary DHT peer from poisoning other peers' local state with
+plausible-but-forged feature/PR/contributor/claim rows, by signing and verifying every op.
 
-Phase 2 is **NOT** the authority of record — GitHub remains that (merge state, write
-access, "shipped"). It raises the cost of advisory-row forgery from "any DHT peer" to "an
-admitted, channel-2-bound writer" and makes tampering detectable.
+**The 2026-06-02 source review found that threat is already closed at the log layer**, so the per-op
+layer the plan was built around is mostly redundant. The evidence is in "Current state".
 
 ## Current state (verified against source 2026-06-02)
 
-**Already built — the primitives:**
-- Device Ed25519 keypair in the OS keychain; `signWithDeviceKey(keychainId, bytes)`
-  (`apps/operator/lib/identity/sign-with-device-key.ts`) + `loadOrGenerateDeviceKeypair`
-  (`attest.ts`). Channel-2 binds device-pubkey ↔ GitHub login (gist attestation).
-- Peer admission re-verifies channel-2 periodically (`read-admission.ts`, `boot.ts`,
-  `load-revoked-pubkeys.ts`) — so "which pubkey maps to which identity / is revoked" is
-  already maintained.
+The substrate is **NOT** the Autobase multi-writer model the original draft assumed — Stage 4/5
+retired Autobase (`op-envelope-types.ts` header). It is **per-peer single-writer Hypercore logs +
+a read-merge over admitted logs** (`peer-log.ts`, `read-merge.ts`, `boot.ts`). That reframes the
+threat model entirely.
 
-**Not built — the per-op layer:**
-- `OpEnvelope` (`apps/operator/lib/sync/hyperbee/op-envelope-types.ts`) carries **no
-  signature / seq / writer-pubkey** fields.
-- The apply/projection path (`projection.ts`, `projections/register-all.ts` +
-  per-table `projections/{feature-queue,contributors,feature-claims,issues,prs,...}.ts`)
-  does **no** per-op signature check.
-- Write sites (`peer-log.ts` append + the per-table writers) append ops **unsigned**.
-- No per-writer freshness/replay tracking.
+**The trust chain is already complete, end-to-end:**
 
-## The three policy forks (decide in review)
+1. **GitHub identity → device pubkey** — channel-2 gist attestation (`verify-binding-adapter.ts` →
+   `verifyAttestation`) binds a device Ed25519 pubkey to a GitHub login / userId.
+2. **Device pubkey → log core key** — the swarm **announce** frame (`announce.ts`) carries
+   `device_pubkey` + `log_core_key` + `ts`/`nonce`, and `sig` is an Ed25519 signature **by the
+   device key over all of it**; `log_core_key` is explicitly "covered by the signature, so it cannot
+   be substituted in transit." Admission (`read-admission.ts`) admits a log **only** on `sig` valid
+   + binding valid + not revoked (else `bad_sig` / `binding_invalid` / `revoked` / `pending`). The
+   announce's `ts`-window + `nonce` give the announce itself replay protection.
+3. **Log core key → every op** — a Hypercore is self-certifying: blocks are Merkle-verified against
+   the (signed) core key, at fixed monotonic indices. You cannot inject, modify, reorder, or
+   duplicate a block without the core's secret key.
 
-1. **Replay-state durability — in-memory vs PG.** To reject replays we track each writer's
-   highest-seen `seq` per harness. In-memory: simplest, but resets on reboot (a replay in
-   the window after boot, before the high-water mark is re-learned from the log, could slip).
-   PG: durable across reboots, +1 write per applied op. *(Radicle's 2026 replay-CVE is the
-   cautionary tale — sign seq+freshness, not just content.)*
-2. **Invalid-op handling — drop vs quarantine.** Drop = fail-closed, clean, but a signing
-   bug silently vanishes data (hard to debug). Quarantine (keep, flag `valid:false`, audit)
-   = debuggable, but invalid rows linger and every consumer must respect the flag.
-3. **Coverage — sign-all vs opt-in + grandfather.** Sign-all is strict but a **flag day**:
-   existing **unsigned** ops already in every peer's log must be grandfathered (accepted as
-   legacy) or they'd all drop. Opt-in/gradual leaves a forgery gap during rollout. The
-   grandfather cutoff (by op-key epoch? by a schema-version bump?) is the crux.
+**Consequences for the three original forks:**
 
-## Proposed design (pending the forks above)
+- **Replay (old D-001)** — Hypercore's append-only Merkle index already prevents in-log
+  replay/dup/reorder, and the read loop advances by `(core_key, index)`. **No op ever leaves the
+  Hypercore framing**: the only op *sources* are local own-log appends (`write-*`, `outbox-drain`
+  CDC → own log, `boot.ts`) and remote **admitted** logs via `read-merge` (which stamps
+  `sourceLogKeyHex` = the source core key). The gist is channel-2 *identity attestation only* —
+  there is no op-over-gist/file path. So a per-op `seq` + per-writer high-water map would
+  re-implement the Hypercore index for no gain.
+- **Authenticity** — already established per-log by (1)+(2)+(3). A per-op *device* signature
+  re-proves, per op, what is already proven per log — not worth the canonicalisation-drift risk.
+- **The one real gap is attribution, not signing.** The op's `author_pubkey` is a **self-declared
+  field inside the op value**, distinct from the cryptographic `sourceLogKeyHex` (`peer-log.ts`
+  explicitly: "do not conflate them"). The security-relevant local/remote `origin` split already
+  (correctly) keys off `sourceLogKeyHex` (`projection.ts`, D-006 — "cannot be forged by a remote
+  peer"). BUT two places still trust the self-declared field:
+  - `lwwPick` (`projection.ts`) breaks an **exact-`ts`, same-type** conflict on the
+    lexicographically-greater `writerPubkey` — a (minor) decision-bearing use a peer can bias by
+    self-declaring an all-`f` pubkey.
+  - the projected `author_pubkey` column (issues / feature-queue / feature-working-set /
+    harness-features) is written from the self-declared field — misattributable.
 
-- **Envelope:** add `sig?: string` (base64 Ed25519), `seq?: number`, `writer_pubkey?:
-  string` to `OpEnvelope`. Sign the **canonical (JCS) op content + seq + harness topic** —
-  not content alone.
-- **Write path:** a `signOp(op, keychainId, nextSeq)` wrapper at the `peer-log.ts` append
-  seam (single choke point preferred over editing every per-table writer).
-- **Read path:** `verifySignedOp(op, knownWriterPubkeys, maxSeqSeen)` invoked in
-  `projection.ts`/`register-all.ts` before an op mutates local state. Drops (or quarantines)
-  ops that are unsigned (post-grandfather), badly signed, from a non-admitted/revoked
-  pubkey, or stale (`seq <= maxSeen`).
-- **Writer-pubkey resolution** reuses the channel-2 admission set already loaded at boot
-  (`load-revoked-pubkeys.ts` + the admission map) — Phase 2 adds *op* verification, it does
-  not add a new identity gate.
-- **Fail-open on infra error** (consistent with rev-v1/v2 D-006/D-004): a transient
-  verify-state load failure must not evict the whole log; it's visible + self-heals.
+## What Phase 2 actually is (narrowed scope)
 
-## Test matrix (must cover before ship)
+Per-op Ed25519 signing + verify-on-receipt + replay-state is **NOT needed** for the threat model as
+it stands. Drop it. The residual, much smaller work:
 
-Property/integration tests, not just examples — `fast-check` for the canonicalisation:
-- valid signed op → applied; tampered content → dropped; unsigned post-grandfather →
-  dropped; **grandfathered legacy unsigned** → accepted; replayed `seq` → dropped;
-  op from a revoked/never-admitted pubkey → dropped; key-rotation (old pubkey retired, new
-  admitted) → old dropped, new applied; reboot → replay-state correctly re-derived (if
-  in-memory) or reloaded (if PG); two-peer bidi swarm still converges
-  (extend `__tests__/two-peer-swarm-bidi.test.ts`).
+1. **Bind authorization + attribution to the admitted log identity** (`sourceLogKeyHex` → its
+   admitted device / GitHub identity), never the self-declared `author_pubkey` / `writerPubkey`:
+   - `lwwPick` tiebreak → use `sourceLogKeyHex` (unforgeable, peer-stable — keeps the
+     order-independent-fold property the original D-003 wanted, without the spoof).
+   - projected `author_pubkey` column → derive from the source log's admitted identity.
+2. **Assert the admission invariant with tests** — only sig-valid + binding-valid + not-revoked logs
+   become `AdmittedLog`s and project; a forged / non-admitted / revoked log's ops never reach PG.
+   The mechanism exists (`read-admission.ts`, `boot.ts` `pubkeyToLogKey` + `revoked`); Phase 2's
+   value is making it the explicit, audited, regression-tested invariant. Admission-rejection events
+   can ride the existing PostHog `TELEMETRY_KINDS` taxonomy (`telemetry-kinds.ts`) for cheap
+   fleet-health observability — a one-kind edit, no bespoke audit table.
 
-## Proposed phasing
+**Explicitly out of scope (unchanged):** equivocation by an admitted-then-malicious writer
+(Kleppmann) — a validly-admitted peer can still write false rows into its own log; advisory + GitHub
+re-derivation covers it; a BFT-CRDT ACL is not in scope.
 
-- **2a** — envelope fields + `signOp`/`verifySignedOp` modules + unit/property tests (no
-  wiring; behind a flag). Pure, reviewable in isolation.
-- **2b** — wire `signOp` at the write choke point; ship **sign-all-new** with legacy
-  grandfathering; verify-but-don't-drop (quarantine + audit) to shake out false negatives.
-- **2c** — flip to drop-invalid once 2b's audit stream is clean; remove the flag.
+**When to re-open per-op signing:** only if a future path moves ops *outside* the Hypercore framing
+— an HTTP/gist op-sync, or importing ops from an untrusted serialized blob — where the
+`(core_key, index)` provenance is stripped. That is the Radicle-2026 shape (signed refs with no
+nonce/parent → replayable; fixed by signing the parent link). If that path is ever built, sign
+`content + seq + topic` and track a per-writer high-water mark *for that path only*.
 
-## Risks / why this is gated
+## Test matrix (narrowed)
 
-- **Canonicalisation drift** = mass false-drops across the fleet (every peer must
-  byte-identically canonicalise). The #1 reason this is review-gated, not autonomously built.
-- **Grandfather miss** = existing logs wiped on rollout.
-- **Equivocation still possible** (Kleppmann): a validly-admitted-then-malicious writer can
-  sign false/equivocating rows — Phase 2 does NOT solve this (accepted; advisory + GitHub
-  re-derivation covers it; a BFT-CRDT ACL is explicitly out of scope).
+- **admission:** sig-invalid announce → not admitted; revoked pubkey → not admitted; binding-invalid
+  → not admitted; admitted log's ops → project; non-admitted / forged log's ops → never project.
+- **attribution:** a forged self-declared `author_pubkey` on an admitted log → both the `lwwPick`
+  winner and the stored attribution follow `sourceLogKeyHex`, not the self-declared field.
+- **convergence:** two-peer bidi swarm still converges with the `sourceLogKeyHex` tiebreak (extend
+  `__tests__/two-peer-swarm-bidi.test.ts`).
+
+## Risks (re-grounded)
+
+The original plan's #1 risk — **canonicalisation drift mass-dropping legitimate rows across the
+fleet** — **disappears**, because there is no per-op canonicalise-and-verify step. The remaining
+risks are ordinary:
+- the `lwwPick` / attribution change must stay deterministic across peers (covered by the
+  convergence test);
+- the admission gate must remain the *sole* path to `AdmittedLog[]` (covered by the admission tests).
 
 ## Relation to other work
 
-- Parent: `papercusp-trust-model-2026-05-31` (this is its Phase 2).
-- Sibling (built): `papercusp-substrate-revocation-v1/v2` (self + owner revocation, channel-2
-  re-verify) — Phase 2 reuses their admission/revocation set.
-- Independent of the Cupboard work (`cupboard-provisional-listing-trust-2026-06-02`,
-  `cupboard-abuse-surface-review-2026-06-02`) — Cupboard's listing copy is GitHub-bearer
-  authenticated, a different surface from the swarm advisory rows this plan signs.
+- Parent: `papercusp-trust-model-2026-05-31` (Phase 1 — advisory + GitHub re-derivation).
+- Siblings (built): `papercusp-substrate-revocation-v1/v2` — this plan reuses their
+  admission/revocation set, the very mechanism that makes per-op signing redundant.
+- Architecture references verified 2026-06-02: `peer-log.ts`, `read-merge.ts`, `announce.ts`,
+  `read-admission.ts`, `verify-binding-adapter.ts`, `projection.ts`, `boot.ts`.
+- Independent of the Cupboard work (GitHub-bearer-authenticated listing copy — a different surface).
 
 ## Decisions
 
-(Recorded below — D-001..D-003 are RECOMMENDED resolutions of the three forks, pending review.)
+(D-001..D-003 are the original recommended resolutions of the three forks; **all superseded by
+D-004** after the 2026-06-02 source re-grounding. Their bodies are kept verbatim as the reasoning
+trail.)
 
-### D-001 — Recommended: PG-backed replay state (per-writer max seq), not in-memory
+### D-001 — [SUPERSEDED by D-004] Recommended: PG-backed replay state (per-writer max seq), not in-memory
 Date: 2026-06-02
-RECOMMENDED, pending review. Persist `(harness, writer_pubkey) → max_seq_seen` in Postgres rather than an in-memory map. Rationale: the in-memory variant resets on every operator/desktop reboot, opening a post-boot replay window until the high-water mark is re-derived from the full log; on a desktop that restarts often, that window is frequent. PG costs one small upsert per applied op (the operator already writes PG on the projection path), and it's the durable store-of-record per the storage policy. Re-derivation-from-log can be the fallback/seed, not the source of truth. Revisit only if the per-op PG write shows up as a projection-throughput regression in the Day-0 benchmark.
+**SUPERSEDED by D-004** — Hypercore's append-only Merkle index already prevents in-log replay and no
+op leaves the Hypercore framing, so there is no per-op `seq` to track a high-water mark for.
+*(Original:)* RECOMMENDED, pending review. Persist `(harness, writer_pubkey) → max_seq_seen` in
+Postgres rather than an in-memory map. Rationale: the in-memory variant resets on every
+operator/desktop reboot, opening a post-boot replay window until the high-water mark is re-derived
+from the full log; on a desktop that restarts often, that window is frequent. PG costs one small
+upsert per applied op (the operator already writes PG on the projection path), and it's the durable
+store-of-record per the storage policy. Re-derivation-from-log can be the fallback/seed, not the
+source of truth. Revisit only if the per-op PG write shows up as a projection-throughput regression
+in the Day-0 benchmark.
 
-### D-002 — Recommended: quarantine-then-drop (2b quarantines + audits, 2c drops)
+### D-002 — [SUPERSEDED by D-004] Recommended: quarantine-then-drop (2b quarantines + audits, 2c drops)
 Date: 2026-06-02
-RECOMMENDED, pending review. Don't go straight to fail-closed drop. In phase 2b, verify-but-keep: mark a failing op `valid:false`, exclude it from the projected view, and emit an audit event — but don't discard it. Run the fleet on real data until the `attestation`/`verify_failed` audit stream is clean (proving no canonicalisation drift or grandfather miss is silently nuking valid ops). Only in 2c flip to hard drop and stop persisting invalid ops. Rationale: the catastrophic failure mode here is a canonicalisation mismatch mass-dropping legitimate rows across every peer; quarantine makes that visible and reversible before it destroys data, at the cost of carrying flagged rows for one rollout phase.
+**SUPERSEDED by D-004** — there is no per-op verify step producing invalid ops to quarantine;
+admission rejection happens at the merge boundary (a non-admitted log is simply never merged), so the
+quarantine→drop rollout doesn't apply. (The observability instinct survives as admission-rejection
+telemetry on the existing PostHog taxonomy — see "narrowed scope".) *(Original:)* RECOMMENDED,
+pending review. Don't go straight to fail-closed drop. In phase 2b, verify-but-keep: mark a failing
+op `valid:false`, exclude it from the projected view, and emit an audit event — but don't discard it.
+Run the fleet on real data until the `attestation`/`verify_failed` audit stream is clean (proving no
+canonicalisation drift or grandfather miss is silently nuking valid ops). Only in 2c flip to hard
+drop and stop persisting invalid ops. Rationale: the catastrophic failure mode here is a
+canonicalisation mismatch mass-dropping legitimate rows across every peer; quarantine makes that
+visible and reversible before it destroys data, at the cost of carrying flagged rows for one rollout
+phase.
 
-### D-003 — Recommended: sign all new ops; grandfather pre-cutoff unsigned ops via a schema-version epoch
+### D-003 — [SUPERSEDED by D-004] Recommended: sign all new ops; grandfather pre-cutoff unsigned ops via a schema-version epoch
 Date: 2026-06-02
-RECOMMENDED, pending review. Every op written after the cutoff MUST be signed; ops written before are grandfathered (accepted unsigned) so existing logs aren't wiped on rollout. Anchor the cutoff on the substrate schema-version bump (`schema-version.ts`) rather than a wall-clock time: bump the version when 2b ships; the verifier treats "unsigned AND schema-version < cutoff" as legacy-accept, "unsigned AND >= cutoff" as invalid. This is deterministic across peers (no clock dependence) and self-documenting. Do NOT attempt to retroactively sign old ops (impossible — the original device key may be gone). Accept that grandfathered ops remain forgeable-in-principle; they age out as the queue churns, and nothing decision-bearing rests on them (GitHub re-derivation).
+**SUPERSEDED by D-004** — with no per-op signing there is no signed/unsigned distinction to
+grandfather. (Aviynw's alpha instinct — "just drop the old logs" rather than build grandfather
+machinery — is correct and now moot for signing; it remains fine as general reset hygiene if a log
+reset is ever wanted for another reason.) *(Original:)* RECOMMENDED, pending review. Every op written
+after the cutoff MUST be signed; ops written before are grandfathered (accepted unsigned) so existing
+logs aren't wiped on rollout. Anchor the cutoff on the substrate schema-version bump
+(`schema-version.ts`) rather than a wall-clock time: bump the version when 2b ships; the verifier
+treats "unsigned AND schema-version < cutoff" as legacy-accept, "unsigned AND >= cutoff" as invalid.
+This is deterministic across peers (no clock dependence) and self-documenting. Do NOT attempt to
+retroactively sign old ops (impossible — the original device key may be gone). Accept that
+grandfathered ops remain forgeable-in-principle; they age out as the queue churns, and nothing
+decision-bearing rests on them (GitHub re-derivation).
+
+### D-004 — Re-grounding: per-op signing is redundant given per-peer-Hypercore + channel-2-admitted-merge; narrow to attribution-binding + admission tests
+Date: 2026-06-02
+ACCEPTED-PENDING-REVIEW. A source review (2026-06-02, verified against `peer-log.ts`, `announce.ts`,
+`read-admission.ts`, `verify-binding-adapter.ts`, `read-merge.ts`, `projection.ts`, `boot.ts`)
+established that the trust chain is already complete at the log layer: **GitHub → device** (channel-2
+gist attestation), **device → log_core_key** (device-signed announce; `log_core_key` is covered by
+the sig; `ts`-window + `nonce` guard announce replay), **log_core_key → every op** (Hypercore
+self-certifying Merkle blocks at monotonic indices). Admission merges only sig-valid + binding-valid
++ not-revoked logs, and **no op leaves the Hypercore framing** (the gist is attestation only; the
+only op sources are local own-log appends and `read-merge` over admitted remote logs). Therefore
+per-op Ed25519 signing + verify-on-receipt + replay-state (D-001) is **redundant**, and the
+quarantine / grandfather rollout machinery (D-002 / D-003) is **moot**. The original plan's stated
+#1 risk — canonicalisation drift mass-dropping legitimate rows — disappears with the per-op verify
+step. **Narrow Phase 2 to two residual fixes:** (1) bind the `lwwPick` tiebreak + the projected
+`author_pubkey` column to the unforgeable `sourceLogKeyHex` instead of the self-declared
+`author_pubkey` / `writerPubkey` (the only two places that still trust the self-declared field; the
+security-relevant `origin` split already uses `sourceLogKeyHex` per D-006); (2) assert the admission
+invariant with tests, optionally surfacing admission-rejection counts via the existing PostHog
+`TELEMETRY_KINDS` taxonomy. **Re-open per-op signing only** if a future path moves ops outside the
+Hypercore framing (HTTP/gist op-sync, untrusted serialized import) — the Radicle-2026 shape (signed
+refs without a nonce/parent → replayable). Equivocation by an admitted-then-malicious writer remains
+out of scope (GitHub re-derivation covers decision-bearing facts).
