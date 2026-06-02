@@ -21,4 +21,9 @@ describe('telemetry-kinds', () => {
       expect(v).toBe(k);
     }
   });
+
+  it('includes the substrate admission-rejection kind (P-004)', () => {
+    expect(TELEMETRY_KINDS.substrate_admission_rejected).toBe('substrate_admission_rejected');
+    expect(isTelemetryKind('substrate_admission_rejected')).toBe(true);
+  });
 });

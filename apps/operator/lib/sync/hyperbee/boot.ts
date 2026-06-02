@@ -77,6 +77,8 @@ import {
 } from './local-announce-identity';
 import { buildVerifyBindingAdapter } from './verify-binding-adapter';
 import { signWithDeviceKey } from '@/lib/identity/sign-with-device-key';
+import { recordTelemetryReport } from '@/lib/record-telemetry';
+import { TELEMETRY_KINDS, type TelemetryKind } from '@/lib/telemetry-kinds';
 
 /** Short human label for a dropped peer, for the boot-history message field.
  *  Truncates the (long) Noise key to its first 8 hex chars. */
@@ -284,6 +286,15 @@ export interface BootHarnessOpts {
    * (tests drive `reverifyAdmitted()` by hand via the handle). Default 15 min.
    */
   reverifyIntervalMs?: number;
+  /**
+   * Telemetry sink for conclusive admission rejections (P-004). Defaults to
+   * enqueuing a `substrate_admission_rejected` diagnostic report via
+   * `recordTelemetryReport` (which `flushTelemetry` forwards to PostHog when the
+   * user has opted in). Injected in tests to assert the emit without touching
+   * PG/PostHog. MUST be best-effort — telemetry never gates admission, so the
+   * default swallows errors and the call site does not await it.
+   */
+  recordTelemetryOverride?: (kind: TelemetryKind, payload: Record<string, unknown>) => void;
 }
 
 export interface BootedHarnessHandle {
@@ -815,6 +826,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * and merges. On 'pending', stores the peer for retry (D-006). Defensive:
    * never throws into the swarm handler.
    */
+  // P-004: best-effort telemetry sink for conclusive admission rejections.
+  // Defaults to enqueuing a diagnostic report (flushTelemetry forwards it to
+  // PostHog when the user has opted in); never awaited and never throws, so it
+  // can't add latency to or fail the admission path. Tests inject a capturing
+  // override.
+  const emitTelemetry: (kind: TelemetryKind, payload: Record<string, unknown>) => void =
+    opts.recordTelemetryOverride ??
+    ((kind, payload) => {
+      void recordTelemetryReport({ kind, payload }).catch(() => {});
+    });
+
   async function onAnnounce(frame: SignedAnnounce): Promise<AdmissionResult> {
     let decision: AdmissionResult;
     try {
@@ -856,6 +878,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'announce_rejected',
           `${decision.reason} ${peerLabel(frame.log_core_key)}`,
         );
+        // P-004: forward the rejection to the diagnostic-telemetry pipeline
+        // (PostHog when opted in) — a fleet-health signal for canonicalisation
+        // drift / stale revocation / forgery attempts. Truncated peer label only.
+        emitTelemetry(TELEMETRY_KINDS.substrate_admission_rejected, {
+          harness_slug: opts.harnessSlug,
+          reason: decision.reason,
+          peer: peerLabel(frame.log_core_key),
+        });
       }
       return decision;
     }

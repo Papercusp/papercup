@@ -528,6 +528,42 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
     expect(writes.some((w) => w.id === 'A-1')).toBe(true);
     expect(writes.some((w) => w.id === 'B-1')).toBe(false);
   });
+
+  it('a conclusive admission rejection emits substrate_admission_rejected telemetry (P-004)', async () => {
+    // The rejection is forwarded to the diagnostic-telemetry pipeline (which
+    // flushTelemetry sends to PostHog when opted in) via an injectable sink —
+    // captured here so the assertion needs no PG/PostHog.
+    const telemetry: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-tel-host-'),
+      workspaceId: 'ws-1',
+      harnessSlug: 'tel-1',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'fail', // every peer conclusively rejected
+      recordTelemetryOverride: (kind, payload) => { telemetry.push({ kind, payload }); },
+    });
+    cleanups.push(() => handle.close());
+
+    const P = makeDevice('rejected-peer', 9);
+    const announce = await buildAnnounce(
+      {
+        device_pubkey: P.devicePubkey,
+        github_user_id: P.githubUserId,
+        github_login: P.githubLogin,
+        attestation_gist_id: 'gist-test',
+        log_core_key: 'ab'.repeat(32),
+      },
+      P.sign,
+    );
+    const decision = await handle.onAnnounce(announce);
+    expect(decision).toMatchObject({ admit: false, reason: 'binding_invalid' });
+
+    const ev = telemetry.find((t) => t.kind === 'substrate_admission_rejected');
+    expect(ev).toBeDefined();
+    expect(ev!.payload).toMatchObject({ harness_slug: 'tel-1', reason: 'binding_invalid' });
+  });
 });
 
 describe('onSchemaVersionAlert', () => {

@@ -5,23 +5,15 @@
  *
  * Ported from app/api/desktop/telemetry-report/route.ts. `auth: {}`.
  */
-import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
+import { readOperatorState } from '@/lib/operator-state-pg';
+import { recordTelemetryReport, type StoredTelemetryReport } from '@/lib/record-telemetry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const REPORTS_KEY = 'telemetry_reports';
 const WIZARD_KEY = 'setup_wizard_state';
-const MAX_REPORTS = 100;
-
-interface StoredReport {
-  received_at: string;
-  kind: string;
-  app_version?: string;
-  os?: string;
-  payload: unknown;
-}
 
 interface ReportsState {
-  reports: StoredReport[];
+  reports: StoredTelemetryReport[];
 }
 
 function defaults(): ReportsState {
@@ -62,22 +54,17 @@ const post = defineTool({
       knownKind = isTelemetryKind(kind);
     } catch { /* taxonomy module unavailable — fail-open */ }
 
-    const report: StoredReport = {
-      received_at: new Date().toISOString(),
+    // Enqueue via the shared server-side helper (single ring-buffer impl,
+    // reused by operator-internal emitters like the substrate admission path).
+    const stored = await recordTelemetryReport({
       kind,
       app_version: typeof body.app_version === 'string' ? body.app_version : undefined,
       os: typeof body.os === 'string' ? body.os : undefined,
       payload: knownKind
         ? (body.payload ?? null)
         : { _wireDrift: true, kind, original: body.payload ?? null },
-    };
-
-    const current = (await readOperatorState<ReportsState>(REPORTS_KEY)) ?? defaults();
-    const next: ReportsState = {
-      reports: [report, ...current.reports].slice(0, MAX_REPORTS),
-    };
-    await writeOperatorState(REPORTS_KEY, next);
-    return Response.json({ ok: true, stored: report });
+    });
+    return Response.json({ ok: true, stored });
   },
 });
 

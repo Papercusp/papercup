@@ -47,6 +47,16 @@ export const TELEMETRY_KINDS = {
    *  drop-off through the 12-step flow. Payload: stepId, action
    *  ('view'|'skip'|'complete'|'finish'). */
   setup_step: 'setup_step',
+
+  /** A swarm peer's announce was conclusively REFUSED admission to the
+   *  substrate (per-peer-Hypercore + channel-2-admitted-merge boundary,
+   *  D-004). Fleet-health signal: a spike means canonicalisation drift,
+   *  a stale revocation set, or active forgery attempts. Payload:
+   *  harness_slug, reason ('bad_sig'|'binding_invalid'|'revoked'), and a
+   *  truncated peer label (NOT the full device pubkey). The same event is
+   *  recorded locally on the boot-history channel; this kind forwards the
+   *  count off-device when the user has opted in. */
+  substrate_admission_rejected: 'substrate_admission_rejected',
 } as const;
 
 export type TelemetryKind = (typeof TELEMETRY_KINDS)[keyof typeof TELEMETRY_KINDS];
@@ -65,6 +75,12 @@ export interface TelemetryPayloads {
   hang_detected: { operation: string; elapsedMs: number; lastEventTs?: string };
   feature_unavailable: { route: string; flagKey: string };
   setup_step: { stepId: string; action: 'view' | 'skip' | 'complete' | 'finish' };
+  substrate_admission_rejected: {
+    harness_slug: string;
+    reason: 'bad_sig' | 'binding_invalid' | 'revoked';
+    /** Truncated peer label (e.g. first bytes of the log key) — NOT the full pubkey. */
+    peer?: string;
+  };
 }
 
 export function isTelemetryKind(s: string): s is TelemetryKind {
