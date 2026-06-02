@@ -359,6 +359,12 @@ const resumable = defineTool({
 const roster = defineTool({
   method: 'GET',
   path: '/adv/roster',
+  // auth:'public' is deliberate + consistent with the 6 sibling /adv routes and
+  // the whole /coord/* surface: the operator binds loopback-only (127.0.0.1) and
+  // the desktop webview has no principal/bearer path to these UI content routes.
+  // The data is already public via GET /coord/presence (the presence half) and
+  // GET /adv/sessions (the session half), and is single-user (no tenant boundary
+  // to IDOR; ?workspace= only selects among the one owner's own workspaces).
   auth: 'public',
   async handler(req) {
     const url = new URL(req.url);
