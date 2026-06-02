@@ -293,6 +293,61 @@ projection → the column T1 reads → T2 enforces). Suites green.
 (kicking a bad actor — an authority-model question, same class as the no-collaborator-gate
 decision); un-revoke; a revocation UI.
 
+## Session 8 (2026-06-02) — P-070 contributor usage-events wired END-TO-END
+
+The audit's "P-070 usage-events — still types-only (no emit/rollup impl)" is now
+**stale**: the engine (`emitUsageEvent`/`rollupForContributor`) already existed +
+was unit-tested but had ZERO callers and ZERO consumers — a fully-built, inert
+ledger. This session made it live (5 commits; per-commit tsc + tests green):
+
+- **Emit foundation** (`937899915`): `lib/harness/usage-actor.ts`
+  (`resolveUsageActor` — cached `{githubUserId, devicePubkey}` from gh + device
+  key, NO booted-log needed; null when gh-unauth → emit skipped) +
+  `lib/harness/emit-usage.ts` (`emitUsageEventBestEffort` — the never-throws seam
+  every call site uses).
+- **8 emitters** (`00ecf2566`): `lib/harness/usage-emitters.ts` (8 unit-tested
+  mapping helpers) wired at the canonical sites: feature_authored + feature_queued
+  (`routes/harness/features.ts` create + reset→todo), decision_added
+  (`plans/add-decision`), plan_authored (`plans/new`), pr_opened (`pr-host/
+  poll-daemon.ts`, with a per-harness `seeded` flag so a daemon restart doesn't
+  re-emit for already-open PRs), feature_worked_start/end + agent_run_completed
+  (`dbos/orchestrator-runner.ts` `realRunner`, run_id = idempotency key).
+- **Read route + Contributors per-kind breakdown** (`c86fd86ba`): `GET
+  /api/harness/:slug/contributor-usage?github_user_id=` → `rollupForContributor`;
+  `AdvContributorsPanel` activity badge expands a `?cusage=`-backed per-kind view.
+  (The flat "N act" total was ALREADY wired — `/contributors` + user-profile COUNT
+  the ledger inline — so the emitters light those up automatically.)
+- **Federation send-side** (`4d35d4183`): the usage projection was already
+  registered (tableTag `'usage'`, receive side) but nothing SENT. Added the
+  `contributor_usage_events → 'usage'` map + `toUsageValue` (ISO-ts→epoch-ms) in
+  `feature-issue-op-keys.ts`, the `origin` echo-guard column + the
+  `OUTBOX_CAPTURE_TARGETS` entry (`event_id` key) in `ensure-schema-dogfood.ts`,
+  and `origin`-from-provenance in `projections/usage.ts`. Capture + echo-guard
+  verified live in a ROLLED-BACK tx (local emit captured; remote-origin skipped).
+- **Cleanup** (`510e82ca5` + `2604a9f6b`): deleted the zero-importer stale
+  duplicate `lib/sync/usage-events-types.ts` (the divergent 10-kind module); the
+  live contract is `lib/harness/contributor-usage-event-types.ts` (8 kinds, ULID).
+
+### ⚠️ Deploys on the NEXT host restart — not live on the running :3070 yet
+The `:3070` host has no hot-reload, so the running operator still serves the OLD
+code (no emitters, no usage capture trigger). On the next host restart the new
+code + `ensureContributorUsageEventsTable` (adds the `origin` column) +
+`wireDogfoodTriggers` (adds the capture trigger) all load **atomically** — which
+matters: applying the capture trigger BEFORE the new drain code would make the old
+`outboxRowToLocalWriteOp` throw on usage rows. So do NOT hand-apply the trigger to
+the live DB ahead of a restart. Verification done at the code level (all unit
+suites + 502 hyperbee tests green, tsc clean) + DB level (rolled-back capture/
+rollup round-trips); the live emit-on-real-activity → panel path is confirmable
+once the host restarts.
+
+### Still genuinely remaining (P-070)
+- The finalizer's curator/documenter runs (`realFinalizer`) emit no
+  `agent_run_completed` (they have no per-run idempotency key) — a small tracked
+  follow-up, NOT silently skipped. `realRunner` covers the main pipeline roles.
+- Cross-MACHINE federation of usage events is exercised only at the unit/DB level;
+  the real two-peer P-079 (user's manual acceptance step) would confirm it on the
+  wire alongside feature/issue federation.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
