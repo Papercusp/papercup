@@ -13,8 +13,15 @@
  * so every consumer of the shared lib gets the same hardened path.
  */
 
-import { runAgentChat, type AgentBackend } from '../agent-chat-stream';
+import { runAgentChat, classifyHttpError, type AgentBackend, type TurnError, type TurnProvider } from '../agent-chat-stream';
 import { readCredentials } from '../credentials';
+import { LlmCallError } from './llm-error';
+
+/** Provider label for classifying a backend's error message (labeling only — rate detection is
+    status/regex-based, so this never changes the class). */
+function providerForBackend(backend: AgentBackend): TurnProvider {
+  return backend === 'codex' ? 'openai' : backend === 'omp' ? 'unknown' : 'anthropic';
+}
 
 /**
  * Backend for the sim-user + judge calls. Defaults to `meridian` (Claude Max
@@ -92,7 +99,8 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let inputTokens = 0;
   let outputTokens = 0;
   let costUsd = 0;
-  let lastErr: unknown;
+  let lastErrMsg: string | undefined;
+  let lastErrTurn: TurnError | undefined;
   let sawResult = false;
 
   // Subprocess backends (claude-code / omp / codex) ignore `messages` and use
@@ -139,11 +147,17 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       outputTokens = ev.tokensOut;
       costUsd = ev.costUsd;
     } else if (ev.type === 'error') {
-      lastErr = new Error(ev.message);
+      lastErrMsg = ev.message;
+      // Prefer the structured turn the governed path attaches; else classify the message so a
+      // rate-limit is still detected on the un-governed path (RB-006).
+      lastErrTurn = ev.turn;
     }
   }
 
-  if (lastErr) throw lastErr;
+  if (lastErrMsg !== undefined) {
+    const turn = lastErrTurn ?? classifyHttpError({ message: lastErrMsg }, providerForBackend(TEST_BACKEND));
+    throw new LlmCallError(turn);
+  }
   if (!sawResult) throw new Error('llmCall: meridian backend produced no result event');
 
   let json: unknown;

@@ -21,6 +21,8 @@ import { judgeGymRun, type GymScore, type JudgeLlmCall } from './judge';
 import { rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantComparisonRow } from './store';
+import { rateLimitInfo } from '../llm-testing/llm-error';
+import { runWithRatePause } from './rate-pause';
 
 export interface AbVariant {
   variantId: string;
@@ -100,6 +102,8 @@ export interface AbDeps {
   llmCall: JudgeLlmCall;
   newRunId(variantId: string, taskId: string, repeat: number): string;
   now(): number;
+  /** RB-006: injected for the rate-limit pause+resume wait (defaults to real setTimeout). */
+  sleep?(ms: number): Promise<void>;
 }
 
 export interface AbRunOutcome {
@@ -115,6 +119,15 @@ export interface AbRunOutcome {
   composite: number;
   pipelineUsd: number;
   judgeUsd: number;
+  /**
+   * RB-006: disposition of this run's EVALUATION. `'scored'` (default/absent) = judged
+   * normally; `'rate_limited'` = the judge turn stayed rate-limited past our bounded pause, so
+   * the run is recorded (not scored) and the A/B continues instead of aborting; `'errored'` =
+   * any other failure in the run/judge. Non-`'scored'` outcomes are EXCLUDED from variance.
+   */
+  status?: 'scored' | 'rate_limited' | 'errored';
+  /** The failure message for a non-`'scored'` outcome (observability). */
+  error?: string;
 }
 
 export interface PerTaskVariance extends DerivedThresholds {
@@ -138,69 +151,106 @@ export interface AbResult {
 export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<AbResult> {
   const rh = rubricHash(config.rubric);
   const outcomes: AbRunOutcome[] = [];
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
   for (const v of config.variants) await deps.store.upsertVariant(v);
   for (const t of config.tasks) await deps.store.upsertTask(t);
 
   // One row per (variant × task × repeat). Sequential by design: bounded spend + the
-  // shared LLM session has a rate limit, so we don't fan out concurrently here.
+  // shared LLM session has a rate limit, so we don't fan out concurrently here. Each run is
+  // wrapped so a single failed turn (a rate-limited judge, a pipeline error) is RECORDED and
+  // the A/B continues — never aborting every remaining run (RB-006). A rate-limited judge is
+  // first PAUSED+RESUMED (judgeWithPause); only a far-off reset falls through to a recorded
+  // 'rate_limited' outcome.
   for (const variant of config.variants) {
     for (const task of config.tasks) {
       for (let repeat = 0; repeat < config.repeats; repeat++) {
         const runId = deps.newRunId(variant.variantId, task.taskId, repeat);
-        const handle = await deps.runPipeline({
-          variant,
-          task,
-          repeat,
-          cycle: 0,
-          harnessCommit: config.harnessCommit,
-          workspaceId: config.workspaceId,
-          scratchRoot: config.scratchRoot,
-        });
-        await deps.store.startRun({
-          runId,
-          variantId: variant.variantId,
-          taskId: task.taskId,
-          cycle: 0,
-          repeat,
-          harnessSlug: handle.harnessSlug,
-          workflowId: handle.workflowID,
-        });
-        const { distilledTrace, traceRef, rawSignals } = await deps.collectAndDistill({
-          handle,
-          task,
-          maxChars: config.maxDistillChars,
-        });
-        await deps.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
-        const score = await judgeGymRun(
-          { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric: config.rubric },
-          { llmCall: deps.llmCall },
-        );
-        await deps.store.recordScore(runId, score);
-        outcomes.push({
-          variantId: variant.variantId,
-          taskId: task.taskId,
-          repeat,
-          runId,
-          harnessSlug: handle.harnessSlug,
-          outcome: handle.outcome,
-          d1: score.d1,
-          d2: score.d2,
-          d3: score.d3,
-          composite: score.composite,
-          pipelineUsd: handle.pipelineUsd,
-          judgeUsd: score.costUsd,
-        });
+        let handle: AbRunHandle | undefined;
+        try {
+          handle = await deps.runPipeline({
+            variant,
+            task,
+            repeat,
+            cycle: 0,
+            harnessCommit: config.harnessCommit,
+            workspaceId: config.workspaceId,
+            scratchRoot: config.scratchRoot,
+          });
+          await deps.store.startRun({
+            runId,
+            variantId: variant.variantId,
+            taskId: task.taskId,
+            cycle: 0,
+            repeat,
+            harnessSlug: handle.harnessSlug,
+            workflowId: handle.workflowID,
+          });
+          const { distilledTrace, traceRef, rawSignals } = await deps.collectAndDistill({
+            handle,
+            task,
+            maxChars: config.maxDistillChars,
+          });
+          await deps.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
+          const score = await runWithRatePause(
+            () =>
+              judgeGymRun(
+                { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric: config.rubric },
+                { llmCall: deps.llmCall },
+              ),
+            { now: deps.now, sleep },
+          );
+          await deps.store.recordScore(runId, score);
+          outcomes.push({
+            variantId: variant.variantId,
+            taskId: task.taskId,
+            repeat,
+            runId,
+            harnessSlug: handle.harnessSlug,
+            outcome: handle.outcome,
+            d1: score.d1,
+            d2: score.d2,
+            d3: score.d3,
+            composite: score.composite,
+            pipelineUsd: handle.pipelineUsd,
+            judgeUsd: score.costUsd,
+            status: 'scored',
+          });
+        } catch (err) {
+          // Never abort the A/B on one run. A rate-limited turn (past the bounded pause) →
+          // 'rate_limited'; anything else → 'errored'. Recorded + EXCLUDED from variance.
+          // The structured outcome below IS the record (status + error); RB-009 surfaces
+          // rate-limit events to telemetry/coord. No raw console logging in this hot path.
+          const status: 'rate_limited' | 'errored' = rateLimitInfo(err) ? 'rate_limited' : 'errored';
+          const message = err instanceof Error ? err.message : String(err);
+          outcomes.push({
+            variantId: variant.variantId,
+            taskId: task.taskId,
+            repeat,
+            runId,
+            harnessSlug: handle?.harnessSlug ?? '',
+            outcome: handle?.outcome ?? status,
+            d1: 0,
+            d2: 0,
+            d3: 0,
+            composite: 0,
+            pipelineUsd: handle?.pipelineUsd ?? 0,
+            judgeUsd: 0,
+            status,
+            error: message,
+          });
+        }
       }
     }
   }
 
-  // 1. Per-(variant,task) variance → ε/δ/min-repeats.
+  // 1. Per-(variant,task) variance → ε/δ/min-repeats. Non-scored runs (rate_limited/errored)
+  //    carry no real composite, so they are EXCLUDED from the variance sample (RB-006).
   const perTaskVariance: PerTaskVariance[] = [];
   for (const variant of config.variants) {
     for (const task of config.tasks) {
       const composites = outcomes
-        .filter((o) => o.variantId === variant.variantId && o.taskId === task.taskId)
+        .filter((o) => o.variantId === variant.variantId && o.taskId === task.taskId && (o.status ?? 'scored') === 'scored')
         .map((o) => o.composite);
       if (composites.length === 0) continue;
       const stats = aggregateRepeats(composites);

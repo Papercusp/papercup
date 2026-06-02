@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
 import type { VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
+import { LlmCallError } from '../../llm-testing/llm-error';
+import type { TurnError } from '../../agent-chat-stream';
+
+const rateLimited = (resetAt?: number): LlmCallError =>
+  new LlmCallError({ class: 'rate_limited', message: '429', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
 
 /**
  * Continuous loop driver (P-022): select parent → propose → evaluate → gate →
@@ -95,5 +100,58 @@ describe('runOptimizationLoop', () => {
     const res = await runOptimizationLoop(config, d);
     expect(recorded).toHaveLength(res.cycles);
     expect(calls.filter((c) => c === 'promote').length).toBeGreaterThanOrEqual(1);
+  });
+
+  // RB-006 — a rate-limited (or otherwise failed) propose/evaluate must SKIP the cycle, never
+  // crash the loop or lose the progress accrued so far.
+  it('skips a cycle whose propose is rate-limited (far reset) and keeps going', async () => {
+    let proposeN = 0;
+    const { d } = baseDeps({
+      now: () => 0, // so resetAt=1e9ms reads as ~11 days out (> maxPause) → skip, not retry
+      sleep: async () => {},
+      async propose() {
+        proposeN++;
+        if (proposeN === 2) throw rateLimited(1_000_000_000); // far reset → no pause, skip cycle 2
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker' } as CandidateProposal;
+      },
+    });
+    const res = await runOptimizationLoop(config, d); // maxCycles 3
+    expect(res.skipped).toBe(1);
+    expect(res.cycles).toBe(3); // loop did NOT abort
+    expect(res.accepts).toBe(2); // cycles 1 + 3 (cycle 2 skipped)
+  });
+
+  it('PAUSES+RESUMES a near-reset rate-limited evaluate (injected clock), no skip', async () => {
+    let clock = 0;
+    let candEvalN = 0;
+    const { d } = baseDeps({
+      now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+      async evaluate(variantId) {
+        if (variantId !== 'baseline') {
+          candEvalN++;
+          if (candEvalN === 1) throw rateLimited(5000); // first candidate eval 429s; retry succeeds
+        }
+        return { evalResult: evalOf(variantId, variantId === 'baseline' ? 7.0 : 7.5), worstTraces: [], costUsd: 1.0 };
+      },
+    });
+    const res = await runOptimizationLoop({ ...config, maxCycles: 1 }, d);
+    expect(res.skipped).toBe(0);
+    expect(clock).toBe(5000); // waited out the reset
+    expect(res.cycles).toBe(1);
+  });
+
+  it('skips a cycle on a NON-rate propose error (never crashes)', async () => {
+    let proposeN = 0;
+    const { d } = baseDeps({
+      async propose() {
+        proposeN++;
+        if (proposeN === 1) throw new Error('proposer boom');
+        return { overlay: { promptOverrides: { worker: 'improved' } }, rationale: 'better', diffFromParent: 'worker' } as CandidateProposal;
+      },
+    });
+    const res = await runOptimizationLoop(config, d);
+    expect(res.skipped).toBe(1);
+    expect(res.cycles).toBe(3);
   });
 });

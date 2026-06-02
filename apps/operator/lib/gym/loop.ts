@@ -15,6 +15,7 @@ import { paretoFrontier } from './frontier';
 import { decideAccept, selectParent, type AcceptThresholds, type VariantEval } from './gate-engine';
 import { appendChangelog } from './changelog';
 import { circuitBreakerTripped } from './circuit-breaker';
+import { runWithRatePause } from './rate-pause';
 import type { VariantOverlay } from './variant-overlay';
 import type { CandidateProposal, WorstTrace } from './proposer';
 
@@ -83,6 +84,9 @@ export interface LoopDeps {
    */
   recordProposal?(rec: LoopProposalRecord): Promise<void>;
   newVariantId(cycle: number): string;
+  /** RB-006: injected clock + sleep for the rate-limit pause+resume (default real time). */
+  now?(): number;
+  sleep?(ms: number): Promise<void>;
 }
 
 export interface LoopResult {
@@ -91,6 +95,9 @@ export interface LoopResult {
   championId: string;
   spentUsd: number;
   breakerTripped: boolean;
+  /** RB-006: cycles skipped because their propose/evaluate failed (rate-limit past the pause,
+      or another error) — recorded instead of crashing the loop. */
+  skipped: number;
 }
 
 interface Tracked {
@@ -101,9 +108,14 @@ interface Tracked {
 
 export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): Promise<LoopResult> {
   const variants = new Map<string, Tracked>();
+  const now = deps.now ?? (() => Date.now());
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // RB-006: a rate-limited turn pauses+resumes (near reset) rather than aborting the loop.
+  let skipped = 0;
 
-  // Seed: evaluate the baseline.
-  const base = await deps.evaluate(deps.baseline.variantId, deps.baseline.overlay);
+  // Seed: evaluate the baseline. A transient rate-limit is waited out; a persistent failure
+  // here genuinely can't start the loop, so it propagates to the (unattended) caller.
+  const base = await runWithRatePause(() => deps.evaluate(deps.baseline.variantId, deps.baseline.overlay), { now, sleep });
   let spentUsd = base.costUsd;
   variants.set(deps.baseline.variantId, {
     evalResult: base.evalResult,
@@ -127,12 +139,24 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     const parentId = parentPick?.variantId ?? championId;
     const parent = variants.get(parentId)!;
 
-    // Reflect & propose.
-    const proposal = await deps.propose(parent.overlay, parent.worstTraces, changelog);
-    const candidateId = deps.newVariantId(cycle);
-
-    // Evaluate the candidate.
-    const evalRes = await deps.evaluate(candidateId, proposal.overlay);
+    // Reflect & propose, then evaluate the candidate. Wrapped so a rate-limited (or otherwise
+    // failed) turn never aborts the whole loop: a near reset is paused+resumed; a far-off
+    // reset / other failure SKIPS this cycle, preserving the champion + frontier + accepts
+    // accrued so far (RB-006). propose + evaluate are wrapped separately so a rate-limited
+    // evaluate doesn't re-propose (which would mint a second candidate id).
+    let proposal: CandidateProposal;
+    let candidateId: string;
+    let evalRes: EvaluateResult;
+    try {
+      proposal = await runWithRatePause(() => deps.propose(parent.overlay, parent.worstTraces, changelog), { now, sleep });
+      candidateId = deps.newVariantId(cycle);
+      evalRes = await runWithRatePause(() => deps.evaluate(candidateId, proposal.overlay), { now, sleep });
+    } catch {
+      // Rate-limited past the bounded pause, or a non-rate failure → skip this cycle and
+      // continue (the loop's progress is preserved). Surfacing is RB-009's job.
+      skipped++;
+      continue;
+    }
     spentUsd += evalRes.costUsd;
     variants.set(candidateId, { evalResult: evalRes.evalResult, overlay: proposal.overlay, worstTraces: evalRes.worstTraces });
 
@@ -213,5 +237,5 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     }
   }
 
-  return { cycles, accepts, championId, spentUsd, breakerTripped };
+  return { cycles, accepts, championId, spentUsd, breakerTripped, skipped };
 }

@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { runAbEvaluation, type AbConfig, type AbDeps, type AbStore } from '../ab-runner';
+import { runWithRatePause } from '../rate-pause';
 import { GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
 import type { GymScore } from '../judge';
 import type { VariantComparisonRow } from '../store';
+import { LlmCallError } from '../../llm-testing/llm-error';
+import type { TurnError } from '../../agent-chat-stream';
+
+const rateLimited = (resetAt?: number): LlmCallError =>
+  new LlmCallError({ class: 'rate_limited', message: '429 rate limited', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
 
 /**
  * P-014 bounded A/B harness: for each (variant × task × repeat) it runs the pipeline →
@@ -142,5 +148,147 @@ describe('runAbEvaluation', () => {
     const { deps } = makeDeps({ store, composites: [6, 6, 9, 9] }); // baseline max 6, cand-1 max 9
     const res = await runAbEvaluation(cfg(), deps);
     expect(res.comparison).toEqual([{ taskId: 'task-a', aComposite: 6, bComposite: 9, delta: 3 }]);
+  });
+});
+
+/**
+ * RB-006 — a rate-limited (or otherwise failed) turn must PAUSE+RESUME (near reset) or be
+ * RECORDED + skipped (far reset / non-rate error), never abort the whole A/B run. Fake clock +
+ * fake llmCall that throws `LlmCallError` on chosen judge calls.
+ */
+function makeFailingDeps(opts: {
+  store: AbStore;
+  composite?: number;
+  throwOnCall?: (call: number) => Error | null; // 1-based judge-call index → Error to throw, or null
+}) {
+  const calls = { pipeline: 0, collect: 0, judge: 0, sleep: 0 };
+  const clock = { t: 0 };
+  const composite = opts.composite ?? 7;
+  const deps: AbDeps = {
+    store: opts.store,
+    async runPipeline(input) {
+      calls.pipeline++;
+      const slug = `gym${input.variant.variantId}${input.task.taskId}r${input.repeat}`.replace(/[^a-z0-9]/g, '');
+      return { harnessSlug: slug, clonePath: `${input.scratchRoot}/${slug}`, workflowID: `wf:${slug}`, outcome: 'passed', pipelineUsd: 0.4 };
+    },
+    async collectAndDistill() {
+      calls.collect++;
+      return { distilledTrace: '## Diff\n+health()', traceRef: '/t/x.json', rawSignals: { ok: true } };
+    },
+    llmCall: async () => {
+      calls.judge++;
+      const err = opts.throwOnCall?.(calls.judge);
+      if (err) throw err;
+      return { text: JSON.stringify({ d1: composite, d2: composite, d3: composite, rationale: 'ok' }), costUsd: 2.5, inputTokens: 100, outputTokens: 200 };
+    },
+    newRunId: (v, t, r) => `${v}:${t}:r${r}`,
+    now: () => clock.t,
+    sleep: async (ms) => { calls.sleep++; clock.t += ms; },
+  };
+  return { deps, calls, clock };
+}
+
+const oneVariant = (over: Partial<AbConfig> = {}): AbConfig =>
+  cfg({ variants: [{ variantId: 'baseline', label: 'baseline', overlay: { promptOverrides: {} } }], ...over });
+
+describe('runAbEvaluation — RB-006 never-crash + pause/resume', () => {
+  it('PAUSES then RESUMES a near-reset rate-limited judge → run is scored normally', async () => {
+    const { store } = makeStore();
+    // First judge call rate-limited with a reset 1s out; retry succeeds.
+    const { deps, calls } = makeFailingDeps({ store, composite: 8, throwOnCall: (n) => (n === 1 ? rateLimited(1000) : null) });
+    const res = await runAbEvaluation(oneVariant({ repeats: 1 }), deps);
+
+    expect(calls.judge).toBe(2); // initial (429) + 1 resumed retry
+    expect(calls.sleep).toBe(1); // waited out the reset
+    expect(res.outcomes).toHaveLength(1);
+    expect(res.outcomes[0].status).toBe('scored');
+    expect(res.outcomes[0].composite).toBeCloseTo(8);
+  });
+
+  it('records a FAR-off-reset rate-limit as rate_limited and CONTINUES the A/B (no abort)', async () => {
+    const { store } = makeStore();
+    // Run #1 (judge call 1) rate-limited with a reset ~11 days out (> maxPause) → recorded; run #2 scored.
+    const { deps, calls } = makeFailingDeps({ store, composite: 6, throwOnCall: (n) => (n === 1 ? rateLimited(1_000_000_000) : null) });
+    const res = await runAbEvaluation(oneVariant({ repeats: 2 }), deps);
+
+    expect(calls.judge).toBe(2); // far reset → no retry on run #1; run #2 succeeds
+    expect(calls.sleep).toBe(0);
+    expect(res.outcomes).toHaveLength(2);
+    expect(res.outcomes[0].status).toBe('rate_limited');
+    expect(res.outcomes[1].status).toBe('scored');
+    // Non-scored run is EXCLUDED from variance (only the 1 scored run counts).
+    const v = res.perTaskVariance.find((x) => x.variantId === 'baseline' && x.taskId === 'task-a')!;
+    expect(v.n).toBe(1);
+  });
+
+  it('records a NON-rate judge error as errored and continues (never crashes the run)', async () => {
+    const { store } = makeStore();
+    const { deps, calls } = makeFailingDeps({ store, composite: 5, throwOnCall: (n) => (n === 1 ? new Error('judge boom') : null) });
+    const res = await runAbEvaluation(oneVariant({ repeats: 2 }), deps);
+
+    expect(calls.judge).toBe(2); // non-rate → immediate rethrow, no retry; run #2 ok
+    expect(res.outcomes[0].status).toBe('errored');
+    expect(res.outcomes[0].error).toBe('judge boom');
+    expect(res.outcomes[1].status).toBe('scored');
+  });
+
+  it('a pipeline failure (not the judge) is also recorded, not thrown', async () => {
+    const { store } = makeStore();
+    const { deps } = makeFailingDeps({ store });
+    deps.runPipeline = async () => { throw new Error('clone failed'); };
+    const res = await runAbEvaluation(oneVariant({ repeats: 1 }), deps);
+    expect(res.outcomes).toHaveLength(1);
+    expect(res.outcomes[0].status).toBe('errored');
+    expect(res.outcomes[0].error).toBe('clone failed');
+  });
+});
+
+describe('runWithRatePause', () => {
+  const okScore: GymScore = {
+    d1: 7, d2: 7, d3: 7, composite: 7, rationale: 'x', judgeModel: 'm', rubricHash: 'h', judgeTemp: 0,
+    weights: { d1: 1, d2: 1, d3: 1 }, costUsd: 0, inputTokens: 0, outputTokens: 0,
+  };
+
+  it('returns immediately on success (no sleep)', async () => {
+    let slept = 0;
+    const r = await runWithRatePause(async () => okScore, { now: () => 0, sleep: async (ms) => { slept += ms; } });
+    expect(r.composite).toBe(7);
+    expect(slept).toBe(0);
+  });
+
+  it('waits out a near reset then resumes', async () => {
+    let clock = 0;
+    let n = 0;
+    const r = await runWithRatePause(
+      async () => { if (n++ === 0) throw rateLimited(5000); return okScore; },
+      { now: () => clock, sleep: async (ms) => { clock += ms; } },
+    );
+    expect(r.composite).toBe(7);
+    expect(clock).toBe(5000);
+  });
+
+  it('rethrows a far-off reset WITHOUT retrying (caller records rate_limited)', async () => {
+    let n = 0;
+    await expect(
+      runWithRatePause(async () => { n++; throw rateLimited(1_000_000_000); }, { now: () => 0, sleep: async () => {}, maxPauseMs: 60_000 }),
+    ).rejects.toThrow(LlmCallError);
+    expect(n).toBe(1); // no retry
+  });
+
+  it('rethrows a non-rate error immediately', async () => {
+    let n = 0;
+    await expect(
+      runWithRatePause(async () => { n++; throw new Error('permanent'); }, { now: () => 0, sleep: async () => {} }),
+    ).rejects.toThrow('permanent');
+    expect(n).toBe(1);
+  });
+
+  it('gives up after maxRetries of persistent near-reset rate limits', async () => {
+    let n = 0;
+    let clock = 0;
+    await expect(
+      runWithRatePause(async () => { n++; throw rateLimited(clock + 100); }, { now: () => clock, sleep: async (ms) => { clock += ms; }, maxRetries: 3 }),
+    ).rejects.toThrow(LlmCallError);
+    expect(n).toBe(4); // initial + 3 retries
   });
 });

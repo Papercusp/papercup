@@ -19,9 +19,14 @@
 import {
   runAgentChat as realRunAgentChat,
   setAgentConfigBootstrap,
+  classifyHttpError,
+  classifyTurnError,
   type AgentBackend,
   type ChatEvent,
   type RunAgentChatOptions,
+  type TurnError,
+  type TurnProvider,
+  type TurnBackend,
 } from '@papercusp/papercup-shared/agent';
 import { applyToProcessEnv, readAgentConfig } from './agent-config';
 
@@ -59,4 +64,8 @@ export async function* runAgentChat(
   yield* realRunAgentChat(opts);
 }
 
-export type { AgentBackend, ChatEvent, RunAgentChatOptions };
+export type { AgentBackend, ChatEvent, RunAgentChatOptions, TurnError, TurnProvider, TurnBackend };
+// Re-export the turn-error classifiers so operator modules import the agent taxonomy through
+// this one shim (a direct `@papercusp/papercup-shared/agent` value-import from a test-loaded
+// operator module trips vitest's `@/`-alias resolution on the transitive agent-config chain).
+export { classifyHttpError, classifyTurnError };
