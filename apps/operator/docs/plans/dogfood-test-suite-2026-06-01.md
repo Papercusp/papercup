@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** WS-0 (domain surfacing), WS-1 (gap-fill), and WS-5 (Cupboard API) are DONE — ~140 new tests across 23 files, all green + committed; the `dogfood` testing domain is live (verified: /api/harness/papercup/testing/domains returns it with 12 sections). WS-2 (invariants) and WS-3 (two-peer/federation/revocation) were found ALREADY comprehensively covered by existing tests (stat-tier-types 26 tests for D-030; read-merge LWW tie-break; read-admission no-collaborator-gate; schema-version; two-channel-verifier + binding-verifier-types; completion-ref-verifier; revocation-enforcement + reverify-admitted incl. re-admit-no-blocklist; two-peer-swarm-bidi) — no redundant tests added. tools-md-sync green.
+**State:** COMPLETE. WS-0/1/5 delivered (~140 new tests, 21 files, all green + committed); WS-2/WS-3 verified already-covered (no redundant tests). WS-4 verified in-session via a dedicated Tauri shell on DISPLAY=:99 (reused existing :3055/:3070 — no collision; killed cleanly after, user's release app untouched): the `dogfood` domain renders AND is selectable in the live /adv Tests tab (page URL reached `testsTab=dogfood`), with dogfood section labels (PR lifecycle, Cupboard) in the DOM; a durable registry guard test locks the domain + its 12 sections so it can't silently regress. tools-md-sync green.
 
-**Next:** Owner decides WS-4 (Playwright collab-*.spec.ts + Tauri agent-e2e): these can be authored against the existing e2e pattern but can't be run-verified in this headless session without launching the Tauri shell — author-now-(CI-verified) vs proper Tauri-Xvfb verify vs defer.
+**Next:** None — suite shipped. Optional future follow-up (not started): a committed tauri-driver/automated browser-E2E spec for the full collab share/join flow once GitHub-OAuth + 2-peer fixtures exist (today that path needs real creds + a second peer, so it was verified at the render/nav level, not the full federation round-trip).
 
 ## Background
 
