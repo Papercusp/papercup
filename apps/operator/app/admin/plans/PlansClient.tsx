@@ -677,48 +677,12 @@ export default function PlansClient() {
       </aside>
 
       <main className="pc-plans__main">
-        {view === 'sessions' ? (
-          /* Sessions — the live agent roster (3rd view), now on the shared
-             TwoPaneShell: roster LIST + dossier DETAIL share one /api/adv/roster
-             poll via SessionsRosterProvider (mounted only here, so it polls only
-             on this view). The rail's plan selection filters the plan-grouped
-             section; No-plan + presence-only groups always show. */
-          <SessionsRosterProvider workspaceId={null}>
-            <TwoPaneShell
-              className="pc-twopane--sessions"
-              list={
-                <SessionsRosterList
-                  planFilters={itemPlans}
-                  planTitleBySlug={planTitleBySlug}
-                  selectedAgent={selectedAgent}
-                  onSelectAgent={(id) => void setSelectedAgent(id)}
-                  filters={
-                    {
-                      client: sClient,
-                      liveness: sLive,
-                      role: sRole,
-                      file: sFile,
-                    } as RosterFilters
-                  }
-                  onFilterChange={(next) => {
-                    void setSClient(next.client);
-                    void setSLive(next.liveness);
-                    void setSRole(next.role);
-                    void setSFile(next.file);
-                  }}
-                  showStale={sStale}
-                  onToggleStale={() => void setSStale(!sStale)}
-                />
-              }
-              detail={
-                <SessionsRosterDetail
-                  selectedAgent={selectedAgent}
-                  onSelectAgent={(id) => void setSelectedAgent(id)}
-                />
-              }
-            />
-          </SessionsRosterProvider>
-        ) : slug ? (
+        {/* Plans/Inbox open a full-width plan editor (?plan=) or search (?q=);
+            Sessions ignores those. Otherwise ALL THREE views render through ONE
+            persistent TwoPaneShell so switching view swaps the list/detail
+            content without remounting the 2-pane frame. The roster poll is
+            enabled only on Sessions (the provider stays mounted regardless). */}
+        {view !== 'sessions' && slug ? (
           <PlanDetail
             key={slug}
             slug={slug}
@@ -740,74 +704,95 @@ export default function PlansClient() {
               }
             }}
           />
-        ) : q.trim() ? (
+        ) : view !== 'sessions' && q.trim() ? (
           <PlanSearchResults
             query={q}
             onPick={(s) => navSlug(s)}
             needsHumanPlans={needsHumanPlans}
             needsDecisionPlans={needsDecisionPlans}
           />
-        ) : view !== 'inbox' ? (
-          /* Plans (default) — the already-implemented two-pane split:
-             grouped item list + read-only plan preview. Clicking an item
-             shows its plan in the right pane (not a full-screen redirect).
-             Restored after a bad single-pane detour. */
-          <PlanItemsList
-            items={filteredItems}
-            loading={itemsLoading}
-            error={itemsError}
-            refresh={refreshItems}
-            onPick={navPlanTarget}
-            harnessByPlan={harnessByPlan}
-            planMeta={planMetaBySlug}
-            planFilters={itemPlans}
-            title={itemTitle}
-            subtitle={itemSubtitle}
-          />
         ) : (
-          <div className="pc-inbox">
-            {/* Item filters live here on the Inbox page (moved off the rail). */}
-            <nav className="pc-inbox__filters" aria-label="Inbox item filters">
-              {ITEM_FILTERS.map((f) => {
-                const active = istatus.includes(f.id);
-                return (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className={`pc-inbox__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
-                    aria-pressed={active}
-                    onClick={() => toggleItemStatus(f.id)}
-                    title={f.hint}
-                  >
-                    <span className="pc-inbox__filter-label">{f.label}</span>
-                    <span className="pc-inbox__filter-count">
-                      {itemsLoading ? '…' : itemStatusCounts[f.id]}
-                    </span>
-                  </button>
-                );
-              })}
-            </nav>
-            {/* One two-pane layout: both lists stack in the left column, a
-                single sticky preview on the right renders whichever item is
-                selected. (Previously each list owned its own detail pane, which
-                stranded a selected plan-item's preview far down the page.) */}
-            <div className="pc-items pc-items--mixed pc-inbox__panes">
-              <div className="pc-items__layout">
-                <div className="pc-items__listpane">
-                  {showOther ? (
-                    <PlanOtherList
-                      embedded
-                      groups={attention.data?.groups ?? []}
-                      loading={attention.loading}
-                      error={attention.error}
-                      refresh={attention.refresh}
-                      title="Other"
-                      subtitle={itemSubtitle}
-                      kinds={otherFacets}
-                      planFilters={itemPlans}
-                    />
-                  ) : null}
-                  {showPlanItems ? (
+          <SessionsRosterProvider enabled={view === 'sessions'}>
+            <TwoPaneShell
+              className={view === 'sessions' ? 'pc-twopane--sessions' : undefined}
+              list={
+                view === 'sessions' ? (
+                  <SessionsRosterList
+                    planFilters={itemPlans}
+                    planTitleBySlug={planTitleBySlug}
+                    selectedAgent={selectedAgent}
+                    onSelectAgent={(id) => void setSelectedAgent(id)}
+                    filters={
+                      { client: sClient, liveness: sLive, role: sRole, file: sFile } as RosterFilters
+                    }
+                    onFilterChange={(next) => {
+                      void setSClient(next.client);
+                      void setSLive(next.liveness);
+                      void setSRole(next.role);
+                      void setSFile(next.file);
+                    }}
+                    showStale={sStale}
+                    onToggleStale={() => void setSStale(!sStale)}
+                  />
+                ) : view === 'inbox' ? (
+                  <div className="pc-inbox__list">
+                    {/* Item filters, sticky atop the inbox list column. */}
+                    <nav className="pc-inbox__filters" aria-label="Inbox item filters">
+                      {ITEM_FILTERS.map((f) => {
+                        const active = istatus.includes(f.id);
+                        return (
+                          <button
+                            key={f.id}
+                            type="button"
+                            className={`pc-inbox__filter pc-plans__view--${f.id} ${active ? 'is-active' : ''}`}
+                            aria-pressed={active}
+                            onClick={() => toggleItemStatus(f.id)}
+                            title={f.hint}
+                          >
+                            <span className="pc-inbox__filter-label">{f.label}</span>
+                            <span className="pc-inbox__filter-count">
+                              {itemsLoading ? '…' : itemStatusCounts[f.id]}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </nav>
+                    <div className="pc-items__listpane">
+                      {showOther ? (
+                        <PlanOtherList
+                          embedded
+                          groups={attention.data?.groups ?? []}
+                          loading={attention.loading}
+                          error={attention.error}
+                          refresh={attention.refresh}
+                          title="Other"
+                          subtitle={itemSubtitle}
+                          kinds={otherFacets}
+                          planFilters={itemPlans}
+                        />
+                      ) : null}
+                      {showPlanItems ? (
+                        <PlanItemsList
+                          embedded
+                          items={filteredItems}
+                          loading={itemsLoading}
+                          error={itemsError}
+                          refresh={refreshItems}
+                          onPick={navPlanTarget}
+                          harnessByPlan={harnessByPlan}
+                          planMeta={planMetaBySlug}
+                          planFilters={itemPlans}
+                          title={itemTitle}
+                          subtitle={itemSubtitle}
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                ) : (
+                  /* Plans — the grouped item list (list-only via `embedded`).
+                     The selected item's read-only preview shows in the shared
+                     detail pane; "Open full plan" sets ?plan= to the editor. */
+                  <div className="pc-items__listpane pc-plans__items">
                     <PlanItemsList
                       embedded
                       items={filteredItems}
@@ -821,12 +806,21 @@ export default function PlansClient() {
                       title={itemTitle}
                       subtitle={itemSubtitle}
                     />
-                  ) : null}
-                </div>
-                {renderInboxPreview()}
-              </div>
-            </div>
-          </div>
+                  </div>
+                )
+              }
+              detail={
+                view === 'sessions' ? (
+                  <SessionsRosterDetail
+                    selectedAgent={selectedAgent}
+                    onSelectAgent={(id) => void setSelectedAgent(id)}
+                  />
+                ) : (
+                  renderInboxPreview()
+                )
+              }
+            />
+          </SessionsRosterProvider>
         )}
       </main>
     </div>

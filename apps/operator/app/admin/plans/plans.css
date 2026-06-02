@@ -170,6 +170,12 @@
   gap: 6px;
   padding: 10px 14px;
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong), transparent 88%);
+  /* Sticky atop the shell's scrolling list column (like the Sessions header). */
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: color-mix(in oklab, var(--bg), transparent 8%);
+  backdrop-filter: blur(8px);
 }
 /* Same accent treatment as the Draft/Ready/Running/… bucket tabs (driven
    by --pc-view-accent from the chip's pc-plans__view--<id> class), but kept
@@ -1570,6 +1576,14 @@
 
 .pc-items__listpane {
   min-width: 0;
+  padding: 12px 14px 28px;
+}
+
+/* Inbox/Plans left-column wrapper inside the shared shell. */
+.pc-inbox__list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 /* Inbox unified left column: the Other + item lists render as stacked
@@ -1592,21 +1606,15 @@
   color: var(--pc-items-accent);
 }
 
-/* Detail pane: sticky within the scrolling .pc-plans__main, scrolls its
-   own body. Same surface treatment as the Sessions detail pane. */
+/* Detail content for Inbox/Plans, now FLUSH like the Sessions dossier: the
+   shared shell's .pc-twopane__detail column owns the surface (left border +
+   gradient + full-height internal scroll), so this is just a transparent flex
+   column. Its toolbar / actions / body keep their own styling untouched. */
 .pc-items__detail {
-  position: sticky;
-  top: 18px;
-  align-self: start;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 150px);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background:
-    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), transparent 4%));
+  height: 100%;
 }
 
 .pc-items__detail-empty {

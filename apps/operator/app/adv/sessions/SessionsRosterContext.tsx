@@ -20,8 +20,16 @@ export interface RosterState {
   refresh: () => void;
 }
 
-/** Poll /api/adv/roster while the tab is visible (pause when hidden). */
-function useRoster(workspaceId: string | null | undefined, intervalMs = 4000): RosterState {
+/**
+ * Poll /api/adv/roster while enabled and the tab is visible. `enabled` lets the
+ * provider stay mounted across view switches (so the shared shell never
+ * remounts) while polling only on the Sessions view.
+ */
+function useRoster(
+  workspaceId: string | null | undefined,
+  enabled: boolean,
+  intervalMs = 4000,
+): RosterState {
   const url = `/api/adv/roster${workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : ''}`;
   const [data, setData] = useState<RosterResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,12 +49,13 @@ function useRoster(workspaceId: string | null | undefined, intervalMs = 4000): R
   }, [url]);
 
   useEffect(() => {
+    if (!enabled) return;
     refresh();
     const id = window.setInterval(() => {
       if (!document.hidden) void refresh();
     }, intervalMs);
     return () => window.clearInterval(id);
-  }, [refresh, intervalMs]);
+  }, [refresh, intervalMs, enabled]);
 
   return { data, error, loading, refresh };
 }
@@ -55,12 +64,16 @@ const RosterCtx = createContext<RosterState | null>(null);
 
 export function SessionsRosterProvider({
   workspaceId = null,
+  enabled = true,
   children,
 }: {
   workspaceId?: string | null;
+  /** Poll only while true. Lets the provider stay mounted across views (so the
+   *  shared shell isn't remounted) yet poll only on the Sessions view. */
+  enabled?: boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
-  const state = useRoster(workspaceId);
+  const state = useRoster(workspaceId, enabled);
   return <RosterCtx.Provider value={state}>{children}</RosterCtx.Provider>;
 }
 
