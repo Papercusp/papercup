@@ -26,14 +26,12 @@
  * - `appSql`   — harness_app role, SUBJECT to RLS (what withWorkspace uses).
  * - `adminSql` — harness_admin (superuser), RLS-BYPASS, for test assertions.
  *
- * ## Schema caveat (until the owed baseline rebuild lands)
- * The migration set isn't self-contained from empty, so only the applied PREFIX
- * (≈ up to migration 056) is present — the auth tables + RLS (004/008/009/010)
- * are, but later changes are NOT. Notably migration 091 (token_index
- * UNIQUE(harness_slug) → UNIQUE(workspace_id, harness_slug)) is absent, so
- * harness_slug is GLOBALLY unique here — tests must use globally-distinct
- * slugs/names. When fresh-migrate.integration.test.ts's tripwire flips, this
- * fixture applies the full head schema for free.
+ * ## Full schema (post baseline rebuild)
+ * The migration set is now self-contained (self-contained-migration-baseline-2026-06-02):
+ * applying 000-baseline.sql (+ 107/108/109) builds the COMPLETE head schema — all tables,
+ * the auth/audit schemas, RLS, and grants — so this fixture stands up the real full schema.
+ * (The old "only a ~056 prefix is present / harness_slug globally unique" caveat is gone;
+ * token_index is UNIQUE(workspace_id, harness_slug) as in head.)
  */
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
@@ -47,7 +45,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 
-const FRAMEWORK_ROLES_DDL = `
+// Boot pre-step — roles + the 3 extensions the baseline references — mirrors
+// embedded-postgres-server/src/index.js. The squashed 000-baseline.sql uses
+// vector()/gen_random_uuid()/trigram ops, so the extensions MUST exist before
+// applyPendingMigrations or the baseline throws.
+const FRAMEWORK_PREREQS_DDL = `
   DO $pg$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_app') THEN
       CREATE ROLE harness_app LOGIN PASSWORD 'harness_app_pwd';
@@ -59,6 +61,9 @@ const FRAMEWORK_ROLES_DDL = `
       CREATE ROLE harness_zero LOGIN REPLICATION SUPERUSER PASSWORD 'harness_zero_pwd';
     END IF;
   END $pg$;
+  CREATE EXTENSION IF NOT EXISTS pgcrypto;
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE EXTENSION IF NOT EXISTS vector;
 `;
 
 export interface OrgTestDb {
@@ -90,10 +95,11 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const u = new URL(containerUri);
   u.pathname = `/${dbName}`;
   const boot = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await boot.unsafe(FRAMEWORK_ROLES_DDL);
-  // Empty→head isn't self-contained (throws ~migration 056); the auth tables +
-  // RLS (004/008/009/010) are in the applied prefix, which is what we need.
-  await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR }).catch(() => {});
+  await boot.unsafe(FRAMEWORK_PREREQS_DDL);
+  // The migration set is now self-contained (000-baseline.sql + 107+): empty→head
+  // builds the COMPLETE schema, so this throws loudly on any real failure rather than
+  // silently leaving a partial prefix (self-contained-migration-baseline-2026-06-02).
+  await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
   await boot.end({ timeout: 5 });
 
   const host = u.hostname;

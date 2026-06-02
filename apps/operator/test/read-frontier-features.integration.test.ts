@@ -78,13 +78,16 @@ beforeAll(async () => {
     // Use sql.json() with an OBJECT — `${jsonString}::jsonb` double-encodes into a
     // jsonb *string*, so metadata->>'source_plan' would come back null.
     const metadata = sourcePlan ? db.adminSql.json({ source_plan: sourcePlan }) : null;
+    // origin is NOT NULL DEFAULT 'local' in the real schema (was nullable in the old
+    // pre-baseline prefix this fixture used to build). A "no remote-origin concern"
+    // feature is represented as 'local' — so coalesce the test's null to 'local'.
     await db.adminSql`
       INSERT INTO harness_shared.harness_features_consolidated
         (harness_slug, feature_id, status, metadata, workspace_id, origin, audit_verdict, feature_order)
-      VALUES (${SLUG}, ${feature_id}, 'todo', ${metadata}, ${WS}, ${origin}, ${audit_verdict}, ${order})`;
+      VALUES (${SLUG}, ${feature_id}, 'todo', ${metadata}, ${WS}, ${origin ?? 'local'}, ${audit_verdict}, ${order})`;
   };
   await f('F-LOCAL', 'local', null, null, 1);
-  await f('F-NULLORIGIN', null, null, null, 2); // pre-G1 back-compat → pickable
+  await f('F-NULLORIGIN', null, null, null, 2); // origin→'local' (real schema is NOT NULL); pickable
   await f('F-REMOTE-PENDING', 'remote', 'pending', null, 3); // quarantined
   await f('F-REMOTE-ADMIT', 'remote', 'admit', null, 4); // admitted → pickable
   await f('F-PLAN-STARTED', 'local', null, 'p-on', 5); // plan started → pickable
