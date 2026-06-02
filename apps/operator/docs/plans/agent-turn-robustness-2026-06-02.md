@@ -61,6 +61,31 @@ crashes the parent** pipeline/run/loop.
   short-window rate limit *and* a separate rolling usage limit — distinct axes. This
   plan targets the **rate** axis (the 429s); the usage axis is a spend/scheduling concern.
 
+### The other two backends are different providers with different limit models
+
+- **codex → OpenAI.** Codex bills on **API token usage** (as of Apr 2026). Two limit
+  models by auth: **ChatGPT subscription** (Plus/Pro/Business/Enterprise) = rolling-window
+  message/usage caps (per-few-hours + weekly), 429 on exhaustion, coarse reset;
+  **OpenAI API key** = RPM/TPM token-bucket with `Retry-After` + `x-ratelimit-{limit,remaining,reset}-{requests,tokens}`
+  headers. Either way it's a **separate budget bucket from Anthropic** (different account,
+  different reset clock). Codex runs its own internal retries.
+- **omp (Oh My Pi) → model-agnostic, 40+ providers, per-role routing, built-in fallback
+  chaining.** Critically: omp encodes **no explicit rate-limit policy beyond generic
+  provider failure handling + fallback chaining**, and which provider/model a given omp
+  call hits is decided *inside* the omp subprocess (and can fall over to another provider
+  mid-turn). So (a) omp's per-call provider/limit is **not statically known to us**, (b)
+  omp **already self-heals** across providers, and (c) its hashline edits cut output
+  tokens (~61% on one bench) → lighter OTPM. Implication: we do NOT pace omp's internal
+  calls; we govern omp at the **subprocess-turn** level and let its fallback chain do the
+  per-provider recovery.
+- **Consequence — granularity is backend-dependent.** In-process meridian calls: we own
+  each HTTP call → govern per-call with full header honoring. Subprocess agents
+  (claude-CLI / omp / codex): the LLM calls are **opaque inside the subprocess**, which
+  runs its OWN retries/fallbacks → our levers are **(i) a concurrency + spawn-rate cap**
+  (the actual burst control), **(ii) turn-level error classification** from exit code +
+  stderr, and **(iii) NOT double-retrying** on top of the CLI's own retries (our-retry ×
+  CLI-retry = amplification that makes 429s worse).
+
 ## Design
 
 A single choke point + a single wrapper that every backend goes through.
@@ -92,6 +117,20 @@ A single choke point + a single wrapper that every backend goes through.
    prompt prefixes to cut ITPM.
 7. **Observable.** Emit headroom + 429 events to telemetry; surface a
    "rate-limited — paused until <reset>" status to coord/UI.
+8. **Govern at the right granularity; don't fight the backend's own resilience.**
+   In-process meridian = per-HTTP-call token-bucket + header honoring. Subprocess
+   agents (claude-CLI/omp/codex) = **per-spawn concurrency + spawn-rate cap** (we can't
+   see their internal calls), plus turn-level classification of the *outcome*. We do
+   **not** re-retry an LLM call the CLI already retried (avoid our-retry × CLI-retry
+   amplification); omp's fallback chaining and codex/claude's internal retries handle the
+   per-call layer — our job is to not over-spawn and to handle the *turn* result.
+9. **Provider/account/limit-model is DECLARED per backend, not guessed.** A
+   `backendProviderProfile` says: claude→Anthropic(subscription|apiKey),
+   codex→OpenAI(subscription|apiKey), omp→{multi-provider, self-pacing}. The governor
+   keys budgets by the declared provider+account and picks the right limit model
+   (header-driven for API keys; coarse rolling-window + conservative concurrency for
+   subscriptions, where per-minute headroom isn't visible). omp is marked self-pacing →
+   concurrency-capped only.
 
 ### Components
 
@@ -117,31 +156,63 @@ A single choke point + a single wrapper that every backend goes through.
 
 ### Backend specifics
 
-- **claude** — meridian: SDK `APIError.status` + response headers (read `retry-after` +
-  `anthropic-ratelimit-*`); CLI (`claude -p`): exit code + stderr ("rate limit"/"429"/
-  "overloaded"). Anthropic bucket.
-- **omp** — CLI subprocess; detect 429/overload from its output/exit; Anthropic bucket
-  (it proxies Anthropic) — shares the claude governor for the same account/model-class.
-- **codex** — CLI subprocess; OpenAI-style limits → a **separate** governor bucket
-  (provider=openai); detect 429 from exit/stderr.
+- **claude — two surfaces, Anthropic bucket.**
+  - *meridian (in-process: judge / sim-user / operator+oracle brains)* — we own the HTTP
+    call → full governance: token-bucket + read `retry-after` + `anthropic-ratelimit-*`
+    headers, wait to `*-reset`, slow as `*-remaining` drops. **This is P-004, the highest-
+    impact fix** (it's what the judge/gym hit).
+  - *CLI (`claude -p`, pipeline agents)* — opaque internal calls; we **cap concurrency +
+    spawn-rate**, classify the *turn* from exit code + stderr ("rate limit"/"429"/
+    "overloaded"/"5-hour limit"), and back off / pause at the turn level. Don't re-retry
+    its internal calls.
+  - Auth here is the Max **subscription** (OAuth) → coarse limit model: react to 429 +
+    `retry-after`, pace conservatively, no per-minute header headroom to read.
+- **codex — OpenAI, SEPARATE bucket.** CLI subprocess; opaque internal calls + its own
+  retries → concurrency/spawn-rate cap + turn-level classification. Limit model depends
+  on auth: **API key** → OpenAI RPM/TPM + `Retry-After`/`x-ratelimit-*` (precise, if we
+  can surface headers; from a subprocess we usually only see the 429 in stderr → treat
+  coarse); **ChatGPT subscription** → rolling-window caps (coarse). Governed independently
+  from Anthropic — codex turns don't draw from the claude budget.
+- **omp — model-agnostic, SELF-PACING.** CLI subprocess that routes to any of 40+
+  providers per-role *with internal fallback chaining*, and has no explicit rate-limit
+  policy of its own. We therefore: **only cap concurrency/spawn-rate** for omp (no
+  per-provider budget — we don't know which provider a call hit), let omp's fallback
+  chain absorb per-provider 429s, and classify only the *terminal* turn outcome (the
+  whole omp turn failed after its fallbacks → our policy applies). If omp is configured
+  to route to the SAME Anthropic account as claude, its spawns should count against the
+  shared concurrency cap to avoid co-bursting that account (config-declared overlap).
 
 ## Items
 
 - **P-001** `todo` `TurnError` taxonomy + `classifyTurnError(backend, raw)` — pure +
   table-driven; unit tests incl. claude/omp/codex stderr + meridian-APIError fixtures.
   importance: high
-- **P-002** `todo` `RateLimitGovernor` (in-process token-bucket RPM/ITPM/OTPM +
-  concurrency cap + `retry-after`/reset honoring + pre-emptive slow on low remaining);
-  property/unit tests with a fake clock. blocked-by: P-001 importance: high
+- **P-002** `todo` `RateLimitGovernor` — supports BOTH limit models: (a) **header-driven**
+  token-bucket RPM/ITPM/OTPM + `retry-after`/reset honoring + pre-emptive slow on low
+  remaining (API-key providers / in-process meridian), and (b) **coarse** mode for
+  subscriptions (no per-minute headroom: conservative concurrency + react to 429 +
+  `retry-after`). Plus a **concurrency + spawn-rate cap** primitive used for subprocess
+  backends. Keyed by `(provider, account, modelClass)`; OpenAI (codex) and Anthropic
+  (claude) are separate buckets. Property/unit tests with a fake clock. blocked-by: P-001
+  importance: high
+- **P-011** `todo` `backendProviderProfile` config + per-backend turn-error extractors:
+  declare provider/account/limit-model/self-pacing for claude(meridian+CLI)/codex/omp;
+  CLI **stderr+exit classifiers** with real fixtures for each (claude "5-hour limit"/429,
+  codex 429/quota, omp terminal-fallback-exhausted). Marks omp self-pacing
+  (concurrency-only) and declares any shared-account overlap (e.g. omp→Anthropic). 
+  blocked-by: P-001 importance: high
 - **P-003** `todo` `runAgentTurn()` wrapper (governor.acquire → backend → record →
   classify → policy; returns `TurnResult|TurnError`, never throws on handled classes).
   blocked-by: P-001, P-002 importance: high
 - **P-004** `todo` Rewrite `meridianAgentChat` to honor `retry-after` + `*-reset` headers
   and go through `runAgentTurn` (the immediate fix for judge/gym/brains). blocked-by:
   P-003 importance: high
-- **P-005** `todo` Wrap the CLI spawn path (claude/omp/codex) in `runAgentChat` —
-  classify 429/overload from exit+stderr, route through the governor. blocked-by: P-003
-  importance: high
+- **P-005** `todo` Wrap the CLI spawn path (claude/omp/codex) in `runAgentChat` at the
+  **subprocess-turn** granularity: enforce the concurrency + spawn-rate cap (the burst
+  fix), classify the turn outcome from exit+stderr (P-011 extractors), apply policy
+  (wait-until-reset/backoff/pause/escalate) — and **do NOT re-retry the CLI's own
+  internal LLM retries**. omp = concurrency-cap only (self-pacing); codex = OpenAI bucket;
+  claude-CLI = Anthropic bucket. blocked-by: P-003, P-011 importance: high
 - **P-006** `todo` Orchestrator/DBOS + gym integration — `rate_limited` → wait-until-reset
   + a rate-limit-pause/resume state (not a crash); gym `evaluate` resilient to per-run
   `TurnError`. blocked-by: P-004, P-005 importance: high
@@ -169,3 +240,23 @@ A single choke point + a single wrapper that every backend goes through.
 - **D-003** Read limits dynamically from headers (auto-tune) + a conservative static
   floor for the cold start (before we've seen headers). Confirm the floor source
   (config vs hard-coded conservative default).
+- **D-004** **omp granularity:** treat omp as self-pacing (rely on its fallback chaining
+  for per-provider 429s) and govern it with a **concurrency cap only** — vs trying to
+  parse/pace omp's internal multi-provider calls (opaque, and we'd fight its fallback).
+  Recommend concurrency-only. Confirm.
+- **D-005** **Subprocess granularity:** for claude-CLI/codex/omp, govern at the
+  spawn/turn level (concurrency + spawn-rate + turn-outcome classification), NOT
+  per-internal-LLM-call (opaque + would double-retry). Confirm this is acceptable (it
+  means our pacing for subprocess agents is coarser than for meridian — the lever is
+  "how many agents we run at once," which is the actual burst cause).
+- **D-006** **Subscription vs API key:** the meridian/claude path is on the Max
+  *subscription* (coarse, no per-minute headroom) — so the precise header-driven
+  token-bucket only fully applies if/when we point a backend at a raw **API key**.
+  Question: do we want a config option to run the gym judge (and/or pipeline) on a
+  dedicated **Anthropic API key** (precise limits + separate bucket from the shared Max
+  account) — which also unblocks the P-014 run independent of the Max rate window? This
+  is the cleanest path to both robustness AND immediate capacity.
+- **D-007** **Provider buckets:** confirm separate governor buckets per provider —
+  Anthropic (claude meridian+CLI, + omp-if-routed-to-Anthropic) and OpenAI (codex, +
+  omp-if-routed-to-OpenAI) — with omp's shared-account overlap declared in config so it
+  shares the relevant concurrency cap.
