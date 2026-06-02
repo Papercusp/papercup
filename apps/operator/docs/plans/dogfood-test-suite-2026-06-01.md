@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Approved (2026-06-01). Scope = built + live surfaces only; one new sectioned `dogfood` testing domain; all four canonical frameworks. Tests target **Model B** (per-peer signed logs + local LWW read-merge), never the dead v5 §6/§0.6/§7.1/§12. Recheck confirmed Phases 5b–9 are substantially built (149 dogfood artifacts, ~79% already tested) — this is a gap-fill + invariant-lock + surface-the-suite effort, not net-new feature testing.
+**State:** WS-0 (domain surfacing), WS-1 (gap-fill), and WS-5 (Cupboard API) are DONE — ~140 new tests across 23 files, all green + committed; the `dogfood` testing domain is live (verified: /api/harness/papercup/testing/domains returns it with 12 sections). WS-2 (invariants) and WS-3 (two-peer/federation/revocation) were found ALREADY comprehensively covered by existing tests (stat-tier-types 26 tests for D-030; read-merge LWW tie-break; read-admission no-collaborator-gate; schema-version; two-channel-verifier + binding-verifier-types; completion-ref-verifier; revocation-enforcement + reverify-admitted incl. re-admit-no-blocklist; two-peer-swarm-bidi) — no redundant tests added. tools-md-sync green.
 
-**Next:** Owner executes WS-0 (register the `dogfood` domain so every subsequent test is visible in the /adv Tests tab), then WS-1 → WS-5.
+**Next:** Owner decides WS-4 (Playwright collab-*.spec.ts + Tauri agent-e2e): these can be authored against the existing e2e pattern but can't be run-verified in this headless session without launching the Tauri shell — author-now-(CI-verified) vs proper Tauri-Xvfb verify vs defer.
 
 ## Background
 
@@ -83,3 +83,7 @@ Unit + integration + invariant guards + two-peer integration + Playwright/agent-
 ### D-004 Cupboard UI tests exclude retired marketplace tabs (2026-06-01)
 
 `templates`/`plugins`/`snapshots` are V1-cut/flag-gated (CLAUDE.md). Cupboard UI coverage is scoped to the harness-listing + `cupboard-moderation` routes; the exclusion is documented, not silent.
+
+### D-005 — WS-2 + WS-3 invariants/flows were already covered — no redundant tests added
+Date: 2026-06-02
+During execution, the WS-2 invariants (LWW tie-break, read-admission no-collaborator-gate, schema-version ignore-and-toast, binding state machine, completion_ref cache/divergence, trust-tier no-cross-aggregation D-030) and WS-3 flows (two-peer federation, admit→revoke→reverify-drop→re-publish→re-admit-no-blocklist) were found to be comprehensively covered by EXISTING tests — notably `lib/harness/stat-tier-types.test.ts` (26 tests, the full D-030 honest-stats guard incl. sumWithinTier cross-tier refusal + Cupboard tier-A-only + zeroIfUnverified), `read-merge.test.ts`, `read-admission.test.ts`, `schema-version.test.ts`, `two-channel-verifier.test.ts` + `binding-verifier-types.test.ts`, `completion-ref-verifier.test.ts`, `revocation-enforcement.test.ts`, `reverify-admitted.test.ts` (explicit "pubkey NOT in revoked / re-admittable"), and `two-peer*.test.ts`. Per the "don't write redundant tests" discipline, no new WS-2/WS-3 files were added; the value delivered was (a) surfacing all of them under the new `dogfood` domain so they're browsable/runnable, and (b) verifying the coverage. The Explore-agent's initial gap report over-counted gaps because it only checked colocated `<name>.test.ts` and missed `__tests__/` siblings; every WS-1 gap was re-verified before writing.
