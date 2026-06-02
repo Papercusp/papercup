@@ -117,10 +117,16 @@ describe('applyRoleModel — per-role model override', () => {
     expect(applyRoleModel('claude -p --model haiku', 'scoper')).toBe('claude -p --model haiku');
   });
 
-  it('buildInvokeOnce threads the per-role model into CLAUDE', () => {
+  it('buildInvokeOnce overrides BOTH AGENT_CMD and CLAUDE per-role (resolveAgentCmd prefers AGENT_CMD)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
-    expect(buildInvokeOnce(spec({ role: 'worker' })).env.CLAUDE).toBe('claude -p --model sonnet');
-    expect(buildInvokeOnce(spec({ role: 'director' })).env.CLAUDE).toBe('claude -p --model haiku');
+    const w = buildInvokeOnce(spec({ role: 'worker' })).env;
+    // Both must be the role command — only setting CLAUDE is masked by the
+    // inherited AGENT_CMD (resolveAgentCmd reads AGENT_CMD ?? CLAUDE).
+    expect(w.AGENT_CMD).toBe('claude -p --model sonnet');
+    expect(w.CLAUDE).toBe('claude -p --model sonnet');
+    const d = buildInvokeOnce(spec({ role: 'director' })).env;
+    expect(d.AGENT_CMD).toBe('claude -p --model haiku');
+    expect(d.CLAUDE).toBe('claude -p --model haiku');
   });
 });

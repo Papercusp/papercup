@@ -71,6 +71,12 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   args: string[];
   env: NodeJS.ProcessEnv;
 } {
+  // Per-role model override (AGENT_MODELS): lets the worker run a stronger model
+  // than the fast reasoning roles. invoke-once's resolveAgentCmd() reads
+  // `AGENT_CMD ?? CLAUDE`, so we MUST override AGENT_CMD (the preferred var) —
+  // setting only CLAUDE is masked by the inherited global AGENT_CMD. Set both so
+  // whichever resolveAgentCmd reads gets the per-role command.
+  const roleAgentCmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spec.role);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PROJECT_DIR: spec.projectDir,
@@ -79,10 +85,8 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     LOG_DIR: `${spec.stateDir}/logs`,
     ROLE: spec.role,
     EXTRAS_JSON: JSON.stringify(spec.extras),
-    // invoke-once → env.ts resolveAgentCmd() reads AGENT_CMD ?? CLAUDE.
-    // Per-role model override (AGENT_MODELS): lets the worker run a stronger
-    // model than the fast reasoning roles without per-role AGENT_CMDs.
-    CLAUDE: applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spec.role),
+    AGENT_CMD: roleAgentCmd,
+    CLAUDE: roleAgentCmd,
     // Production launchers must enable the PG state path + provide the DSN — the
     // pg-bootstrap otherwise runs with empty in-memory state and the spawned
     // agent's tools (spawn-mcp) fail "no PG DSN in env". Mirrors harness-launch.ts
