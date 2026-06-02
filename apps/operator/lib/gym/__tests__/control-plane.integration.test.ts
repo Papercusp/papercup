@@ -87,6 +87,20 @@ describe('gym control plane — proposals', () => {
     expect(stillPending.map((r) => r.id)).not.toContain(id);
   });
 
+  it('decides correctly when called INSIDE an outer transaction (route path: tx has no .begin)', async () => {
+    // Regression: the gym:accept route runs decideProposal via routeWithWorkspace, which
+    // passes a TransactionSql (no `.begin`). decideProposal must NOT try to open a nested
+    // transaction there — it should run directly in the outer tx. (Caught by live e2e.)
+    const id = await recordProposal(sql, {
+      workspaceId: WS, harnessSlug: 'tx', cycle: 1, variantId: 'v-tx', role: 'reviewer', proposedMd: 'tx reviewer',
+    });
+    const res = await sql.begin((tx) => decideProposal(tx as typeof sql, { id, workspaceId: WS, harnessSlug: 'tx', decision: 'accepted' }));
+    expect(res.ok).toBe(true);
+    expect(res.promoted).toBe(true);
+    const prompts = await getPrompts(sql, { workspaceId: WS, harnessSlug: 'tx' });
+    expect(prompts.roles.reviewer).toBe('tx reviewer');
+  });
+
   it('rejects a proposal without promoting', async () => {
     const id = await recordProposal(sql, {
       workspaceId: WS, harnessSlug: 'beta', cycle: 2, variantId: 'v-2', role: 'worker', proposedMd: 'risky worker',

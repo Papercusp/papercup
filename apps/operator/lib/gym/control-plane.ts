@@ -246,7 +246,7 @@ export async function decideProposal(
   q: { id: string; workspaceId: string; harnessSlug: string; decision: 'accepted' | 'rejected'; now?: number },
 ): Promise<DecideResult> {
   const now = q.now ?? Date.now();
-  return (await sql.begin(async (tx) => {
+  const run = async (tx: Sql): Promise<DecideResult> => {
     const rows = (await tx`
       SELECT * FROM harness_shared.gym_proposals
        WHERE id = ${q.id} AND workspace_id = ${q.workspaceId} AND harness_slug = ${q.harnessSlug}
@@ -265,7 +265,12 @@ export async function decideProposal(
     }
     await tx`UPDATE harness_shared.gym_proposals SET status = ${q.decision}, decided_at = ${now} WHERE id = ${q.id}`;
     return { ok: true, promoted, proposal: { ...row, status: q.decision, decidedAt: now } };
-  })) as DecideResult;
+  };
+  // Accept's promote + status-update must be atomic. Open our own transaction when handed a
+  // top-level client; when the caller already runs us inside one (routeWithWorkspace passes a
+  // TransactionSql, which has no `.begin`), run directly — it's already atomic in the outer tx.
+  const begin = (sql as unknown as { begin?: unknown }).begin;
+  return typeof begin === 'function' ? ((await sql.begin(run)) as DecideResult) : run(sql);
 }
 
 // ---------------------------------------------------------------------------
