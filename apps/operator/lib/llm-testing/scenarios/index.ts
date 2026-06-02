@@ -27,6 +27,11 @@ import { S10_ASK_CHOICE } from './operator/S10-ask-choice';
 import { S11_VOICE_CARD_ANSWER } from './operator/S11-voice-card-answer';
 import { S12_TOOL_ERROR_RECOVERY } from './operator/S12-tool-error-recovery';
 import { S12B_TOOL_ERROR_INJECTED } from './operator/S12b-tool-error-injected';
+// S13–S16: voice-production-test-coverage-2026-06-01 (P-019, voice-mode brain behaviors)
+import { S13_VOICE_TERSE_COMPLEX } from './operator/S13-voice-terse-complex';
+import { S14_VOICE_NO_CODE } from './operator/S14-voice-no-code';
+import { S15_VOICE_ERROR_RECOVERY } from './operator/S15-voice-error-recovery';
+import { S16_VOICE_DISAMBIGUATION } from './operator/S16-voice-disambiguation';
 // M1–M12: operator-behavior-tests-2026-05-14 (brain-emission contracts)
 import { M1_CONTINUE_PAIRED_WITH_SAY } from './operator/M1-continue-paired-with-say';
 import { M2_MUTEX_CARD_VS_CONTINUE } from './operator/M2-mutex-card-vs-continue';
@@ -68,6 +73,11 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   S11_VOICE_CARD_ANSWER,
   S12_TOOL_ERROR_RECOVERY,
   S12B_TOOL_ERROR_INJECTED,
+  // operator voice-mode brain behaviors (S13–S16, P-019)
+  S13_VOICE_TERSE_COMPLEX,
+  S14_VOICE_NO_CODE,
+  S15_VOICE_ERROR_RECOVERY,
+  S16_VOICE_DISAMBIGUATION,
   // operator brain-emission contracts (M1–M12)
   M1_CONTINUE_PAIRED_WITH_SAY,
   M2_MUTEX_CARD_VS_CONTINUE,
