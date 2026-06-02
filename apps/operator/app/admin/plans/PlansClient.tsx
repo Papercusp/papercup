@@ -30,7 +30,7 @@ import PlanItemsList from './PlanItemsList';
 import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
 import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
-import SessionsRosterView from '@/app/adv/sessions/SessionsRosterView';
+import SessionsRosterView, { type RosterFilters } from '@/app/adv/sessions/SessionsRosterView';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
@@ -133,6 +133,11 @@ export default function PlansClient() {
 
   // Sessions view (P-007): the agent whose dossier is open in the right pane.
   const [selectedAgent, setSelectedAgent] = useQueryState('agent', parseAsString);
+  // Sessions roster facet filters (P-010) — each its own URL param.
+  const [sClient, setSClient] = useQueryState('sClient', parseAsString);
+  const [sLive, setSLive] = useQueryState('sLive', parseAsString);
+  const [sRole, setSRole] = useQueryState('sRole', parseAsString);
+  const [sFile, setSFile] = useQueryState('sFile', parseAsString.withDefault(''));
 
   // Additive filter facets.
   const [istatus, setIstatus] = useQueryState(
@@ -663,6 +668,20 @@ export default function PlansClient() {
             planFilters={itemPlans}
             selectedAgent={selectedAgent}
             onSelectAgent={(id) => void setSelectedAgent(id)}
+            filters={
+              {
+                client: sClient,
+                liveness: sLive,
+                role: sRole,
+                file: sFile,
+              } as RosterFilters
+            }
+            onFilterChange={(next) => {
+              void setSClient(next.client);
+              void setSLive(next.liveness);
+              void setSRole(next.role);
+              void setSFile(next.file);
+            }}
           />
         ) : slug ? (
           <PlanDetail

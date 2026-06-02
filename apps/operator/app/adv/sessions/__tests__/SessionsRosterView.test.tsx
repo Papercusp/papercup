@@ -12,6 +12,8 @@ import SessionsRosterView, {
   groupRoster,
   buildFilesInPlay,
   isZombie,
+  applyRosterFilters,
+  EMPTY_FILTERS,
   type RosterEntry,
 } from '../SessionsRosterView';
 
@@ -104,6 +106,35 @@ describe('buildFilesInPlay', () => {
   });
 });
 
+describe('applyRosterFilters (P-010)', () => {
+  const roster = [
+    entry({ ownerId: 'a', agent: 'claude', liveness: 'live', role: 'worker', currentFiles: ['x.ts'] }),
+    entry({ ownerId: 'b', agent: 'codex', liveness: 'idle', role: 'architect', currentFiles: ['y.ts'] }),
+    entry({ ownerId: 'c', agent: null, source: 'omp-hook-session', liveness: 'live', role: null, currentFiles: [] }),
+  ];
+
+  it('no filters = pass-through', () => {
+    expect(applyRosterFilters(roster, EMPTY_FILTERS).map((e) => e.ownerId)).toEqual(['a', 'b', 'c']);
+  });
+  it('filters by client (derives from source when agent is null)', () => {
+    expect(applyRosterFilters(roster, { ...EMPTY_FILTERS, client: 'omp' }).map((e) => e.ownerId)).toEqual(['c']);
+  });
+  it('filters by liveness', () => {
+    expect(applyRosterFilters(roster, { ...EMPTY_FILTERS, liveness: 'live' }).map((e) => e.ownerId)).toEqual(['a', 'c']);
+  });
+  it('filters by role', () => {
+    expect(applyRosterFilters(roster, { ...EMPTY_FILTERS, role: 'architect' }).map((e) => e.ownerId)).toEqual(['b']);
+  });
+  it('filters by file substring (who is editing X), case-insensitive', () => {
+    expect(applyRosterFilters(roster, { ...EMPTY_FILTERS, file: 'X.TS' }).map((e) => e.ownerId)).toEqual(['a']);
+  });
+  it('combines facets (AND)', () => {
+    expect(
+      applyRosterFilters(roster, { ...EMPTY_FILTERS, client: 'claude', liveness: 'live' }).map((e) => e.ownerId),
+    ).toEqual(['a']);
+  });
+});
+
 describe('SessionsRosterView', () => {
   const fetchMock = vi.fn();
   beforeEach(() => {
@@ -142,7 +173,10 @@ describe('SessionsRosterView', () => {
       <SessionsRosterView planFilters={[]} workspaceId="ws1" />,
     );
     await findByText('dbos-retire'); // plan group header
-    expect(getByText('worker')).toBeTruthy(); // role chip
+    // 'worker' also appears as a role-filter <option>; assert via the row chip.
+    expect(
+      [...container.querySelectorAll('.pc-roster__chip')].some((c) => c.textContent === 'worker'),
+    ).toBe(true);
     expect(getByText('F-012')).toBeTruthy(); // feature chip
     expect(getByText('refactoring attempt-claim')).toBeTruthy(); // intent line
     // file basename appears in the row chip (also in the files-in-play map) →
@@ -200,5 +234,28 @@ describe('SessionsRosterView', () => {
     await waitFor(() =>
       expect(container.querySelector('[data-selected]')).toBeTruthy(),
     );
+  });
+
+  it('changing a filter dropdown emits the next filters (P-010)', async () => {
+    const onFilterChange = vi.fn();
+    const { findByLabelText } = render(
+      <SessionsRosterView planFilters={[]} onFilterChange={onFilterChange} />,
+    );
+    const sel = await findByLabelText('Filter by liveness');
+    fireEvent.change(sel, { target: { value: 'idle' } });
+    expect(onFilterChange).toHaveBeenCalledWith(
+      expect.objectContaining({ liveness: 'idle' }),
+    );
+  });
+
+  it('applies passed filters to the rendered roster (P-010)', async () => {
+    const { findByText, queryByText } = render(
+      <SessionsRosterView
+        planFilters={[]}
+        filters={{ client: null, liveness: 'idle', role: null, file: '' }}
+      />,
+    );
+    expect(await findByText('omp-4471')).toBeTruthy(); // the idle agent stays
+    expect(queryByText('dbos-retire')).toBeNull(); // the live agent's plan group is filtered out
   });
 });

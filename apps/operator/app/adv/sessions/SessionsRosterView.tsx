@@ -78,6 +78,43 @@ function shortSource(s: string): string {
   return s || '—';
 }
 
+/** Facet filters for the roster (P-010). Each null/'' = unset (no constraint). */
+export interface RosterFilters {
+  /** client/source: claude · codex · omp */
+  client: string | null;
+  liveness: Liveness | null;
+  role: string | null;
+  /** substring match against an agent's current files ("who's editing X"). */
+  file: string;
+}
+
+export const EMPTY_FILTERS: RosterFilters = {
+  client: null,
+  liveness: null,
+  role: null,
+  file: '',
+};
+
+export function hasActiveFilters(f: RosterFilters): boolean {
+  return !!(f.client || f.liveness || f.role || f.file.trim());
+}
+
+/**
+ * Apply the facet filters to the active roster (P-010). Unlike the plan rail
+ * (D-005, which never hides no-plan/presence-only groups), these are EXPLICIT
+ * user filters and apply uniformly to every agent. Pure → unit-tested.
+ */
+export function applyRosterFilters(active: RosterEntry[], f: RosterFilters): RosterEntry[] {
+  const fileQ = f.file.trim().toLowerCase();
+  return active.filter((e) => {
+    if (f.client && (e.agent ?? shortSource(e.source)) !== f.client) return false;
+    if (f.liveness && e.liveness !== f.liveness) return false;
+    if (f.role && (e.role ?? '') !== f.role) return false;
+    if (fileQ && !e.currentFiles.some((p) => p.toLowerCase().includes(fileQ))) return false;
+    return true;
+  });
+}
+
 function basename(p: string): string {
   const parts = p.split('/');
   return parts[parts.length - 1] || p;
@@ -309,6 +346,83 @@ function GroupSection({
 }
 
 /**
+ * Roster facet filters (P-010): client / liveness / role dropdowns + a
+ * "who's editing <file>" substring box. Each change emits the full next
+ * RosterFilters so the parent shell persists it to the URL (nuqs).
+ */
+function FilterBar({
+  filters,
+  roleOptions,
+  onChange,
+}: {
+  filters: RosterFilters;
+  roleOptions: string[];
+  onChange: (next: RosterFilters) => void;
+}): React.JSX.Element {
+  const active = hasActiveFilters(filters);
+  return (
+    <div className="pc-roster__filters">
+      <select
+        className="pc-roster__filter-sel"
+        aria-label="Filter by client"
+        value={filters.client ?? ''}
+        onChange={(e) => onChange({ ...filters, client: e.target.value || null })}
+      >
+        <option value="">all clients</option>
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+        <option value="omp">omp</option>
+      </select>
+      <select
+        className="pc-roster__filter-sel"
+        aria-label="Filter by liveness"
+        value={filters.liveness ?? ''}
+        onChange={(e) =>
+          onChange({ ...filters, liveness: (e.target.value || null) as Liveness | null })
+        }
+      >
+        <option value="">any liveness</option>
+        <option value="live">live</option>
+        <option value="idle">idle</option>
+        <option value="stale">stale</option>
+      </select>
+      <select
+        className="pc-roster__filter-sel"
+        aria-label="Filter by role"
+        value={filters.role ?? ''}
+        onChange={(e) => onChange({ ...filters, role: e.target.value || null })}
+        disabled={roleOptions.length === 0}
+      >
+        <option value="">any role</option>
+        {roleOptions.map((r) => (
+          <option key={r} value={r}>
+            {r}
+          </option>
+        ))}
+      </select>
+      <input
+        className="pc-roster__filter-file"
+        type="search"
+        aria-label="Who's editing file"
+        placeholder="who's editing file…"
+        value={filters.file}
+        onChange={(e) => onChange({ ...filters, file: e.target.value })}
+      />
+      {active ? (
+        <button
+          type="button"
+          className="pc-roster__filter-clear"
+          onClick={() => onChange(EMPTY_FILTERS)}
+          title="Clear all filters"
+        >
+          clear
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * Files-in-play inverse map (P-008): each declared file → the agents on it,
  * contended files (2+) headlined. Agent chips select the agent's dossier.
  */
@@ -372,6 +486,8 @@ export default function SessionsRosterView({
   workspaceId = null,
   selectedAgent = null,
   onSelectAgent,
+  filters = EMPTY_FILTERS,
+  onFilterChange,
 }: {
   planFilters?: string[];
   workspaceId?: string | null;
@@ -379,10 +495,22 @@ export default function SessionsRosterView({
   selectedAgent?: string | null;
   /** Open/close the dossier. Owned by the parent shell's nuqs ?agent= param. */
   onSelectAgent?: (ownerId: string | null) => void;
+  /** Facet filters (P-010), owned by the parent shell's nuqs params. */
+  filters?: RosterFilters;
+  onFilterChange?: (next: RosterFilters) => void;
 }): React.JSX.Element {
   const { data, error, loading } = useRoster(workspaceId);
-  const active = data?.active ?? [];
+  const rawActive = data?.active ?? [];
   const ended = data?.ended ?? [];
+
+  // Role options come from the UNfiltered roster so picking a role never empties
+  // its own dropdown.
+  const roleOptions = useMemo(
+    () => [...new Set(rawActive.map((e) => e.role).filter((r): r is string => !!r))].sort(),
+    [rawActive],
+  );
+  const active = useMemo(() => applyRosterFilters(rawActive, filters), [rawActive, filters]);
+
   const { planGroups, noPlan, presenceOnly } = useMemo(
     () => groupRoster(active, planFilters),
     [active, planFilters],
@@ -392,6 +520,7 @@ export default function SessionsRosterView({
   const live = active.filter((e) => e.liveness === 'live').length;
   const idle = active.filter((e) => e.liveness === 'idle').length;
   const stale = active.filter((e) => e.liveness === 'stale').length;
+  const filtered = hasActiveFilters(filters);
 
   const select = useCallback(
     (ownerId: string) => {
@@ -409,16 +538,29 @@ export default function SessionsRosterView({
       <div className="pc-roster">
         <header className="pc-roster__head">
           <span className="pc-roster__head-title">Active agents</span>
-          <span className="pc-roster__head-summary">
-            {active.length} total · {live} live · {idle} idle
+          <span
+            className="pc-roster__head-summary"
+            title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
+          >
+            {active.length}
+            {filtered ? ` / ${rawActive.length}` : ''} total · {live} live · {idle} idle
             {stale ? ` · ${stale} stale` : ''}
           </span>
         </header>
 
+        <FilterBar
+          filters={filters}
+          roleOptions={roleOptions}
+          onChange={(next) => onFilterChange?.(next)}
+        />
+
         {error ? <div className="pc-roster__error">Couldn’t load roster: {error}</div> : null}
-        {loading && active.length === 0 ? <div className="pc-roster__loading">Loading roster…</div> : null}
-        {!loading && active.length === 0 && !error ? (
+        {loading && rawActive.length === 0 ? <div className="pc-roster__loading">Loading roster…</div> : null}
+        {!loading && rawActive.length === 0 && !error ? (
           <div className="pc-roster__empty">No active agents right now.</div>
+        ) : null}
+        {!loading && rawActive.length > 0 && active.length === 0 ? (
+          <div className="pc-roster__empty">No agents match the current filters.</div>
         ) : null}
 
         {planGroups.map((g) => (
