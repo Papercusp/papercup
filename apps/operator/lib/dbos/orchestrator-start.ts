@@ -67,21 +67,30 @@ export interface EnsurePipelineResult extends PipelineDecision {
  * ownership. Lists prior pipeline lifetimes from DBOS, reuses a live one if
  * present, else starts a fresh epoch. Idempotent under concurrency.
  */
-/** The workspace to PIN a pipeline to: the active one when the harness is a
- *  member there (the common case — preserves prior behavior), else the harness's
- *  first home workspace, else active. A harness lives in exactly one workspace, so
- *  this lets a manual trigger (or a tick for a non-active workspace) resolve any
- *  harness instead of nulling `resolveProject` against the volatile active one. */
+/**
+ * PURE home-workspace selection (exported for unit testing): the active workspace
+ * when the harness is a member there (the common case — preserves prior behavior),
+ * else the harness's first home workspace, else active. A harness lives in exactly
+ * one workspace, so this lets a manual trigger (or a tick for a non-active
+ * workspace) resolve any harness instead of nulling `resolveProject` against the
+ * volatile active one. Kept free of I/O so the selection is directly testable —
+ * the async wrapper feeds it `activeWorkspaceId()` + `workspacesForHarness()`.
+ */
+export function pickHomeWorkspace(active: string, members: readonly string[]): string {
+  if (members.includes(active)) return active;
+  if (members.length > 0) return members[0];
+  return active;
+}
+
+/** The workspace to PIN a pipeline to — see {@link pickHomeWorkspace}. Falls back
+ *  to the active workspace when the registry is unreadable. */
 async function resolveHomeWorkspace(harnessSlug: string): Promise<string> {
   const active = activeWorkspaceId();
   try {
-    const members = await workspacesForHarness(harnessSlug);
-    if (members.includes(active)) return active;
-    if (members.length > 0) return members[0];
+    return pickHomeWorkspace(active, await workspacesForHarness(harnessSlug));
   } catch {
-    /* registry unreadable → fall back to active */
+    return active; // registry unreadable → fall back to active
   }
-  return active;
 }
 
 export async function ensureFeaturePipeline(

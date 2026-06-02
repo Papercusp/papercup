@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { decidePipelineStart, epochOf } from './orchestrator-start';
+import { decidePipelineStart, epochOf, pickHomeWorkspace } from './orchestrator-start';
 
 describe('epochOf', () => {
   test('parses the :e<N> suffix', () => {
@@ -70,5 +70,36 @@ describe('decidePipelineStart — ownership + epoch (D-011)', () => {
       workflowID: 'pipeline:papercup:F-1:e1',
       epoch: 1,
     });
+  });
+});
+
+// Regression guard for the workspace-resolution bug found by the agent-e2e: a
+// durable pipeline PINS its workspace at start time, and `ensureFeaturePipeline`
+// used to pin `activeWorkspaceId()` — so a feature in a harness whose home
+// workspace != the (volatile) active one nulled `resolveProject`, the director
+// invoke got empty output, and the pipeline ERRORed. `pickHomeWorkspace` is the
+// pure selector that fixed it (the async wrapper feeds it active + members).
+describe('pickHomeWorkspace — pin the harness home workspace, not the active one', () => {
+  test('active IS a member → keep active (common case, behavior preserved)', () => {
+    expect(pickHomeWorkspace('default', ['default'])).toBe('default');
+    expect(pickHomeWorkspace('ws-a', ['ws-b', 'ws-a'])).toBe('ws-a');
+  });
+
+  test('active is NOT a member → the harness home (first member) — THE BUG FIX', () => {
+    // active=papercusp-workspace, but `sheets` lives only in `default`: must pin
+    // `default`, not the active one (which would null resolveProject).
+    expect(pickHomeWorkspace('papercusp-workspace', ['default'])).toBe('default');
+  });
+
+  test('multiple members, active not among them → first member', () => {
+    expect(pickHomeWorkspace('other', ['ws1', 'ws2'])).toBe('ws1');
+  });
+
+  test('no members (unknown/unresolvable harness) → fall back to active', () => {
+    expect(pickHomeWorkspace('default', [])).toBe('default');
+  });
+
+  test('active membership wins even when other members exist (no needless switch)', () => {
+    expect(pickHomeWorkspace('ws2', ['ws1', 'ws2', 'ws3'])).toBe('ws2');
   });
 });
