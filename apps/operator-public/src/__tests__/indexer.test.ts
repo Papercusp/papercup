@@ -68,6 +68,17 @@ class FakeStore {
       }
       return 0;
     }
+    if (upper.includes('UPDATE HARNESSES') && upper.includes('PUBLISHER_DEVICE_PUBKEY = NULL')) {
+      const [updated_at, id] = binds;
+      const row = this.tables.harnesses.find((r) => r.id === id);
+      if (row) {
+        row.publisher_device_pubkey = null;
+        row.publisher_attestation_gist_id = null;
+        row.updated_at = updated_at;
+        return 1;
+      }
+      return 0;
+    }
     if (upper.startsWith('INSERT INTO AUDIT')) {
       const [ts, kind, detail] = binds;
       this.tables.audit.push({ ts, kind, detail });
@@ -106,6 +117,7 @@ function harness(over: Partial<HarnessRow> = {}): HarnessRow {
     id: 'h1', github_repository_id: 42, github_owner: 'alice', github_name: 'cool',
     github_url: 'https://github.com/alice/cool', title: 'Cool', description: null,
     topic_hex: 'a'.repeat(64), publisher_github_user_id: 1, publisher_github_login: 'alice',
+    publisher_permission: null, publisher_device_pubkey: null, publisher_attestation_gist_id: null,
     claim_status: 'unclaimed', claimant_github_user_id: null, claimant_github_login: null,
     superseded_by: null, stars: 0, contributor_count: 0, last_activity_at: null,
     languages: null, stats_refreshed_at: null,
@@ -244,6 +256,64 @@ describe('indexOneHarness', () => {
     const r = await indexOneHarness(env, store.tables.harnesses[0] as HarnessRow, fetchImpl);
     expect(r.outcome).toBe('skipped_error');
     expect(r.detail).toContain('503');
+  });
+});
+
+// ── indexOneHarness: channel-2 attestation verify + revocation (item 1) ──
+
+describe('indexOneHarness — channel-2 attestation (item 1)', () => {
+  let env: Env; let store: FakeStore;
+  beforeEach(() => { ({ env, store } = makeEnv()); });
+
+  const repoOk = () =>
+    new Response(JSON.stringify({ stargazers_count: 1, pushed_at: '2026-05-25T00:00:00Z' }), { status: 200 });
+  const attested = () =>
+    harness({ publisher_github_user_id: 1, publisher_device_pubkey: 'PK', publisher_attestation_gist_id: 'g1' });
+
+  it('keeps a valid attestation (gist owner + pubkey match)', async () => {
+    store.tables.harnesses.push(attested());
+    const fetchImpl = makeFetch({
+      '/gists/g1': () => new Response(JSON.stringify({ owner: { id: 1 }, files: { 'x.json': { content: JSON.stringify({ device_pubkey: 'PK' }) } } }), { status: 200 }),
+      '/repos/': repoOk,
+    });
+    await indexOneHarness(env, store.tables.harnesses[0] as HarnessRow, fetchImpl);
+    expect(store.tables.harnesses[0].publisher_device_pubkey).toBe('PK');
+    expect(store.tables.audit.some((a) => (a as { kind: string }).kind === 'attestation_cleared')).toBe(false);
+  });
+
+  it('clears attestation when the gist is gone (404 = revocation)', async () => {
+    store.tables.harnesses.push(attested());
+    const fetchImpl = makeFetch({
+      '/gists/g1': () => new Response('', { status: 404 }),
+      '/repos/': repoOk,
+    });
+    await indexOneHarness(env, store.tables.harnesses[0] as HarnessRow, fetchImpl);
+    expect(store.tables.harnesses[0].publisher_device_pubkey).toBeNull();
+    expect(store.tables.harnesses[0].publisher_attestation_gist_id).toBeNull();
+    const cleared = store.tables.audit.find((a) => (a as { kind: string }).kind === 'attestation_cleared');
+    expect((cleared as { detail: string })?.detail).toContain('gist_not_found');
+  });
+
+  it('clears attestation on gist owner mismatch', async () => {
+    store.tables.harnesses.push(attested());
+    const fetchImpl = makeFetch({
+      '/gists/g1': () => new Response(JSON.stringify({ owner: { id: 999 }, files: { 'x.json': { content: JSON.stringify({ device_pubkey: 'PK' }) } } }), { status: 200 }),
+      '/repos/': repoOk,
+    });
+    await indexOneHarness(env, store.tables.harnesses[0] as HarnessRow, fetchImpl);
+    expect(store.tables.harnesses[0].publisher_device_pubkey).toBeNull();
+    const cleared = store.tables.audit.find((a) => (a as { kind: string }).kind === 'attestation_cleared');
+    expect((cleared as { detail: string })?.detail).toContain('mismatch');
+  });
+
+  it('leaves attestation untouched on a gist rate-limit (re-checked next pass)', async () => {
+    store.tables.harnesses.push(attested());
+    const fetchImpl = makeFetch({
+      '/gists/g1': () => new Response('', { status: 429 }),
+      '/repos/': repoOk,
+    });
+    await indexOneHarness(env, store.tables.harnesses[0] as HarnessRow, fetchImpl);
+    expect(store.tables.harnesses[0].publisher_device_pubkey).toBe('PK');
   });
 });
 

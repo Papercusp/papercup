@@ -25,6 +25,7 @@
 import type { Env } from './env';
 import {
   audit,
+  clearHarnessAttestation,
   listHarnesses,
   markHarnessUnlisted,
   updateHarnessStats,
@@ -149,6 +150,53 @@ export async function fetchGhContributorCount(
   return { count: 1, rate_limited: false };
 }
 
+interface GhGistInfo {
+  found: boolean;
+  rate_limited: boolean;
+  ownerId: number | null;
+  devicePubkey: string | null;
+}
+
+/**
+ * GET /gists/:id — fetch a channel-2 device-binding attestation gist (item 1).
+ * Used to verify (gist owner + bound device pubkey) and detect revocation
+ * (404 = the publisher deleted the gist). Parses `device_pubkey` out of the
+ * first file's JSON body. Unauthenticated, like the other indexer fetches.
+ */
+export async function fetchGhGist(
+  gistId: string, fetchImpl: FetchFn = fetch,
+): Promise<GhGistInfo> {
+  const url = `${GH_API}/gists/${encodeURIComponent(gistId)}`;
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'papercusp-cupboard-indexer' },
+    });
+  } catch {
+    return { found: false, rate_limited: false, ownerId: null, devicePubkey: null };
+  }
+  if (res.status === 404) return { found: false, rate_limited: false, ownerId: null, devicePubkey: null };
+  if (res.status === 429 || res.headers.get('x-ratelimit-remaining') === '0') {
+    return { found: false, rate_limited: true, ownerId: null, devicePubkey: null };
+  }
+  if (!res.ok) return { found: false, rate_limited: false, ownerId: null, devicePubkey: null };
+  const body = (await res.json()) as {
+    owner?: { id?: number };
+    files?: Record<string, { content?: string }>;
+  };
+  let devicePubkey: string | null = null;
+  const file = Object.values(body.files ?? {})[0];
+  if (file?.content) {
+    try {
+      const att = JSON.parse(file.content) as { device_pubkey?: unknown };
+      if (typeof att.device_pubkey === 'string') devicePubkey = att.device_pubkey;
+    } catch {
+      // unparseable gist body — treated as a mismatch (devicePubkey stays null)
+    }
+  }
+  return { found: true, rate_limited: false, ownerId: body.owner?.id ?? null, devicePubkey };
+}
+
 export interface IndexOneResult {
   harness_id: string;
   outcome: 'updated' | 'unlisted' | 'rate_limited' | 'skipped_error';
@@ -190,6 +238,28 @@ export async function indexOneHarness(
     },
     Date.now(),
   );
+  // Channel-2 attestation verify + revocation (item 1). If this listing
+  // carries an attestation, confirm the gist still exists, is owned by the
+  // publisher, and still binds the stored device pubkey; otherwise clear it
+  // (gist deletion = revocation, per the substrate-revocation model). A
+  // transient rate-limit leaves it untouched (re-checked next pass).
+  if (harness.publisher_attestation_gist_id && harness.publisher_device_pubkey) {
+    const gist = await fetchGhGist(harness.publisher_attestation_gist_id, fetchImpl);
+    if (!gist.rate_limited) {
+      const valid =
+        gist.found &&
+        gist.ownerId === harness.publisher_github_user_id &&
+        gist.devicePubkey === harness.publisher_device_pubkey;
+      if (!valid) {
+        const clearedAt = Date.now();
+        await clearHarnessAttestation(env.DB, id, clearedAt);
+        await audit(env.DB, clearedAt, 'attestation_cleared', {
+          harness_id: id,
+          reason: gist.found ? 'mismatch' : 'gist_not_found',
+        });
+      }
+    }
+  }
   return { harness_id: id, outcome: 'updated' };
 }
 

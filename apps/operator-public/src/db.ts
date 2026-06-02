@@ -197,6 +197,29 @@ export async function updateHarnessStats(
     .run();
 }
 
+/**
+ * Clear a listing's channel-2 attestation (item 1). Called by the indexer
+ * when the attestation gist is deleted (revocation) or no longer binds the
+ * stored device pubkey to the publisher (invalid). Leaves the listing up —
+ * it just loses its verified-publisher signal.
+ */
+export async function clearHarnessAttestation(
+  db: D1Database,
+  id: string,
+  now_ms: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE harnesses
+         SET publisher_device_pubkey = NULL,
+             publisher_attestation_gist_id = NULL,
+             updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(now_ms, id)
+    .run();
+}
+
 export async function setHarnessClaim(
   db: D1Database,
   id: string,
