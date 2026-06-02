@@ -1,0 +1,93 @@
+---
+title: Running operator LLM-test scenarios live (claude-code backend)
+description: Five non-obvious requirements to get `npm run llm-test` operator scenarios producing real evaluations instead of turns=0 — persona delivery, spawn isolation, and the workspace/principal gate that silently makes the brain tool-less.
+---
+
+# Running operator LLM-test scenarios live (claude-code backend)
+
+## Context
+
+The LLM-test SUT is the operator brain (`POST /api/agent-mcp/operator-converse`
+→ `converse.ts` → `runAgentChat({ backend: 'claude-code' })`). When live runs
+return **`turns=0`** / the judge's `meta: "environment/SUT-health failure"`, the
+problem is almost never the scenario — it's one of five setup issues below. All
+were fixed in `operator-brain-test-isolation-2026-06-02` (commit `433ff44dd`),
+but they recur whenever the harness/box config drifts.
+
+## The symptom decoder
+
+`turns=0` has several distinct causes; read the host log (`/tmp/dev-api.log` on
+the systemd dev box — `StandardOutput=append:/tmp/dev-api.log`, **not** the
+journal) and the runner output together:
+
+- **"sim-user JSON parse failed twice" / sim-user replies "what would you like
+  to work on?"** → the sim-user spawn has no persona (see #2) or is non-isolated
+  and flaking (#4).
+- **`claude-code exited 1`** → usually a transient `529 Overloaded` (the shared
+  Claude-Max account is rate-limited; `rate_limit_event … five_hour … overage
+  rejected`), OR a non-isolated spawn doing a heavy 13-server MCP init that
+  flakes (#4).
+- **Brain answers but says "I don't have those tools wired up" / calls the
+  built-in `Agent`/`Bash`** → the brain is **tool-less** because of the
+  workspace/principal gate (#5).
+
+## The five requirements
+
+1. **Isolate the spawn from the host `~/.claude`.** `runAgentChat` must be
+   called with `isolateConfig: true` (the brain via `converse.ts`, sim/judge via
+   `llm-client.ts`). Without it the spawn runs `spawnEnv = process.env` and loads
+   the dev box's MCP servers + SessionStart/plugin hooks + built-ins → goes
+   agentic. The option points `CLAUDE_CONFIG_DIR` at a clean tmpdir with only a
+   symlink to `~/.claude/.credentials.json` (OAuth carries over; no API key).
+
+2. **The persona MUST be delivered via `--system-prompt-file`.** The `claude-code`
+   branch historically dropped `systemPromptText` entirely (only `omp` passed
+   `--append-system-prompt`). With no system prompt the spawn IS the default
+   Claude Code coding agent, not the operator/sim/judge persona. We pass it as
+   `--system-prompt-file` (REPLACE, matching the meridian `params.system`).
+
+3. **Neutral cwd.** An isolated spawn runs with cwd = its clean config dir, so it
+   does NOT pick up the repo's `CLAUDE.md` as context. (If you ever see the brain
+   talk about "the papercup codebase / CLAUDE.md", its cwd leaked.)
+
+4. **sim-user + judge need isolation too.** They use `llm-client.ts` (set
+   `LLM_TEST_BACKEND=claude-code` + `LLM_TEST_SIM_MODEL`/`LLM_TEST_JUDGE_MODEL=haiku`).
+   Don't assume "stateless one-shot, no isolation needed" — under the concurrent
+   sim+judge+brain load the non-isolated 13-server MCP init flakes and the
+   sim-user emits unparseable output → give-up at turn 0.
+
+5. **Stamp the workspace, or the brain is silently TOOL-LESS.** `converse.ts`
+   only sets `mcpConfig` when
+   `principalOk = readSystemPrincipal('operator') !== null && ws matches`. The
+   operator system principal lives in workspace **`default`** (see
+   `harness_shared.system_principals` / `token_index` rows
+   `kind=system, harness_slug=system:operator`). If the request carries no
+   `x-papercusp-workspace` header, `activeWorkspaceId()` falls to
+   `registry.current` — on the dev box that's **`papercusp-workspace`**, which has
+   **no operator principal** → `mcpConfig=undefined` → the brain runs with only
+   built-ins and deflects on every tool. The LLM-test operator target therefore
+   stamps `x-papercusp-workspace=default` (override with
+   `PAPERCUSP_LLM_TEST_WORKSPACE`). The scenario harnesses (e.g. `sheets`) also
+   live in `default`, so this is the right target.
+
+## Verifying the SUT in isolation (cheap)
+
+To check the brain end-to-end without a full scenario, `curl` the converse SSE
+with the runner's body shape **plus the workspace header**:
+
+```
+curl -sN http://127.0.0.1:3070/api/agent-mcp/operator-converse \
+  -H 'content-type: application/json' -H 'accept: text/event-stream' \
+  -H 'x-papercusp-workspace: default' \
+  -d '{"messages":[{"role":"user","content":"status of the sheets harness?"}],
+       "trigger":"user_message","mayAskActive":true,"modality":"text",
+       "uiClientId":"llm-testing/00000000-0000-4000-8000-00000000beef",
+       "conversationId":"22222222-2222-4222-8222-000000002222"}'
+```
+
+A healthy turn calls `mcp__agentmcp__harness_status` (underscore — MCP tool names
+can't contain `:`; `ALL_AGENT_MCP_TOOLS` lists colon forms but `--allowed-tools`
+is moot under `bypassPermissions`, so the format mismatch is harmless) and emits
+a `<say>` block. Note the brain's model is operator agent-config
+`models['operator']` (pinned default `claude-opus-4-7`); set it to `haiku` for
+cheap test runs and restore after.

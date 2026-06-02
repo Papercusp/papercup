@@ -1,7 +1,7 @@
 ---
 title: Operator brain isolation for headless LLM-scenario testing
 slug: operator-brain-test-isolation-2026-06-02
-status: ready
+status: shipped
 created: 2026-06-02
 updated: 2026-06-02
 owner: aviynw@gmail.com
@@ -11,6 +11,78 @@ companion-to: [voice-production-test-coverage-2026-06-01]
 # Operator brain isolation for headless LLM-scenario testing
 
 ## Now
+
+**SHIPPED 2026-06-02 (commit `433ff44dd`).** Live `npm run llm-test` now produces real,
+evaluated operator runs instead of `turns=0`/SUT-health failures. The root cause was
+**deeper and five-fold** — the original "host `~/.claude` inheritance" hypothesis (below)
+was correct but only 1 of 5 issues. Full breakdown + verification in **§ Outcome**. The
+companion voice scenarios (`op-S13..S16`) now run and the judge evaluates real voice
+behavior (S14 passes; S13/S15/S16 surface genuine voice-format findings). Done.
+
+## Outcome (2026-06-02) — five root causes, all fixed
+
+Live runs failed for FIVE distinct reasons in the `claude-code` backend, found by
+working down from the `turns=0` symptom. All fixed in `433ff44dd`
+(`libs/papercup-shared/src/agent/chat-stream.ts` swept into submodule `ab91f94`;
+`converse.ts`, `llm-client.ts`, `llm-testing/targets/operator.ts`):
+
+1. **Host `~/.claude` inheritance** (the original hypothesis). The brain spawn ran with
+   `spawnEnv = process.env`, so it loaded the dev box's MCP servers + SessionStart/plugin
+   hooks + built-ins → went agentic. **Fix:** `isolateConfig` option → clean per-spawn
+   `CLAUDE_CONFIG_DIR` (tmpdir) holding only a symlink to the real
+   `~/.claude/.credentials.json` (OAuth carries over; mirrors the codex `auth.json` symlink).
+
+2. **The persona was SILENTLY DROPPED.** The `claude-code` branch never passed any
+   `--system-prompt` flag (only `omp` got `--append-system-prompt`), so `systemPromptText`
+   (the 59 KB operator persona) never reached the model — the brain ran as the *default
+   Claude Code coding agent*. This is why it "went agentic" even harder than #1 alone
+   explains, and why the sim-user replied "what would you like to work on?". **Fix:**
+   pass the persona via `--system-prompt-file` (REPLACE, matching the meridian backend's
+   `params.system = systemPromptText`).
+
+3. **It read the repo `CLAUDE.md`** via the spawn cwd (= repo root). **Fix:** isolated
+   spawns run with cwd = the clean config dir (no project `CLAUDE.md`).
+
+4. **The sim-user + judge spawns were ALSO non-isolated** (the `llm-client` path D-002
+   said "already works" — it did not). Each did a 13-server MCP init (context7/github/
+   cloudflare plugins via npx) + host hooks; under the concurrent sim+judge+brain load
+   they flaked/`exited 1`, so the sim-user emitted unparseable output and gave up at
+   turn 0. **Fix:** `llm-client.ts` passes `isolateConfig` too (no-op for `meridian`).
+
+5. **Workspace mismatch → tool-less brain.** With #1–#4 fixed the brain had its persona
+   but still deflected on every tool. `converse.ts` gates `mcpConfig` on
+   `principalOk = readSystemPrincipal('operator') && ws match`. The LLM-test target sent
+   no workspace, so `activeWorkspaceId()` resolved to `registry.current` =
+   **`papercusp-workspace`**, which has **no operator system principal** (principals +
+   the scenario harnesses live in **`default`**) → `mcpConfig=undefined` → the brain ran
+   **tool-less**. **Fix:** the operator target stamps `x-papercusp-workspace=default`
+   (overridable via `PAPERCUSP_LLM_TEST_WORKSPACE`). See agent-insight
+   `llm-test-operator-workspace-principal`.
+
+### Verification (haiku brain, sim+judge haiku, `--no-matrix`)
+
+- **S01** `op-S01-status-quick`: `turns=4`, `harness:status` **called** (assert passes),
+  judge gives real behavioral findings (operator over-asks instead of `<continue/>`) —
+  NOT the `meta` inconclusive error. The D-003 success criterion is met.
+- **Voice:** `op-S14-voice-no-code` **PASSES**; `op-S13`/`op-S15`/`op-S16` run and fail on
+  **genuine voice findings** (say-blocks 246/225/301 > 220-char cap; S16 didn't surface a
+  voice-answerable choice card; S15 over-asks + acts without user direction). These are
+  real production-readiness signals for the voice persona, not test-infra failures.
+
+### Follow-ups (NOT part of this plan — surfaced for the owner)
+
+- **Brain model pin.** Production default is `anthropic/claude-opus-4-7` (opus → lowest
+  Claude-Max rate limits); the `.env.local` `AGENT_CMD="claude -p --model haiku"` override
+  is *dead* (the branch's own `--model` wins, last-flag), so the brain actually runs on
+  opus. Decide the intended production brain model + set it via agent-config, not AGENT_CMD.
+- **Voice persona findings** (over-length `<say>`, missing choice-card, over-asking) are
+  operator-persona tuning items for the voice-production effort, not this isolation plan.
+- These were run on **haiku** for cost (per D-003); a representative-model pass (sonnet/opus)
+  may shift some pass/fail verdicts.
+
+---
+
+## Original plan (for reference — the "Next" below is superseded by § Outcome)
 
 **State:** Live `npm run llm-test` runs return **`turns=0` for EVERY operator scenario** (verified on S01 too, not just the new voice ones) on a dev box. Root-caused: the embedded operator brain's `claude-code` spawn inherits the developer's `~/.claude` environment, so it behaves like a general Claude Code agent instead of the operator persona. The voice-scenario authoring + the test-framework plumbing are already DONE (see companion plan `voice-production-test-coverage-2026-06-01`, P-019 + commit `7ddd7815a`); this plan is the ONE remaining piece to make live scenario runs green for all scenarios.
 
@@ -33,10 +105,10 @@ Proof points captured:
 
 ## Phase 1 — the isolation seam
 
-- **P-001** `todo` Add a per-spawn isolation option to the claude-code backend in `libs/papercup-shared/src/agent/chat-stream.ts`. When set, point the `claude` spawn at a CLEAN config (set `CLAUDE_CONFIG_DIR` — or `HOME` — to a fresh `mkdtempSync` dir in `spawnEnv`, mirroring the existing `codexHome` pattern at ~lines 577–601) so it loads NONE of the host `~/.claude` (no SessionStart hooks, no `~/.claude.json` MCP servers, no skills) and sees ONLY the operator's `--mcp-config` tools + its persona system prompt. Clean up the tmpdir on child exit (alongside `ompAgentDir`/`codexHome`).
-- **P-002** `todo` Preserve auth: the clean config dir must still authenticate. Find where the `claude` CLI stores credentials on this box (likely `~/.claude/.credentials.json`; may be an OS keychain) and **symlink it into the clean dir** (exactly like codex symlinks `~/.codex/auth.json`). If auth is keychain-only and can't be relocated, fall back to a real `ANTHROPIC_API_KEY` for the brain spawn.
-- **P-003** `todo` Scope it to the operator brain ONLY: add the option to `RunAgentChatOptions` and have `lib/agent-tools/operator/converse.ts`'s `runAgentChat({…})` call pass it. Do NOT change the stateless sim/judge path (`lib/llm-testing/llm-client.ts`) — it already works on claude-code (no isolation needed for one-shot completions).
-- **P-004** `todo` Restart the operator after editing the submodule (`:3070` host = `systemctl --user restart papercup-dev-api.service`; tsx, no hot-reload), then verify (see Decisions for exact commands). On success, commit the submodule + pin in the superproject.
+- **P-001** `done` Per-spawn isolation option (`isolateConfig`) added to the claude-code backend: clean `CLAUDE_CONFIG_DIR` tmpdir + tmpdir cleanup on exit. (chat-stream.ts)
+- **P-002** `done` Auth preserved: symlink `~/.claude/.credentials.json` into the clean dir (OAuth carries over; no API key needed). Credentials are a file here, not a keychain.
+- **P-003** `done` (REVISED) `isolateConfig` wired to `converse.ts` (brain) AND `llm-client.ts` (sim/judge). D-002's "sim/judge already work" was WRONG — they flaked under load (root cause #4 in § Outcome), so they needed isolation too. Plus two issues the original plan didn't anticipate: `--system-prompt-file` (#2) and the `x-papercusp-workspace` header (#5).
+- **P-004** `done` Host restarted; S01 + all 4 voice scenarios run live; submodule committed (`ab91f94`) + pinned. See § Outcome → Verification.
 
 ## Decisions
 
