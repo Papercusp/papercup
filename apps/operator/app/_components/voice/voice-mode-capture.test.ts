@@ -265,4 +265,23 @@ describe('shouldSkipVoicemodeWhisperOnThisRuntime', () => {
     setRuntime({ ua: WEBKIT_UA, tauri: false, coi: false });
     expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
   });
+
+  // P-008 (voice-production-test-coverage): the isWebKit check excludes
+  // Chromium-engine UAs via /(Chrome|Chromium|Edg)\//. Cover the Edge and
+  // Chromium alternation branches the Chrome case above doesn't exercise — a
+  // Chromium-based webview inside Tauri must NOT be treated as WebKitGTK.
+  const EDGE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36 Edg/120.0';
+  const CHROMIUM_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chromium/120.0 Safari/537.36';
+
+  it('returns false for an Edge (Chromium) webview inside Tauri', async () => {
+    const mod = await import('./voice-mode');
+    setRuntime({ ua: EDGE_UA, tauri: true, coi: false });
+    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
+  });
+
+  it('returns false for a Chromium-branded webview inside Tauri', async () => {
+    const mod = await import('./voice-mode');
+    setRuntime({ ua: CHROMIUM_UA, tauri: true, coi: false });
+    expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
+  });
 });
