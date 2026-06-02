@@ -112,9 +112,9 @@ export async function startDbos(): Promise<void> {
     await import('./orchestrator-loop');
   }
   if (dbosProvisionActive()) {
-    // dbos-flows P-001 (opt-in, PAPERCUSP_DBOS_PROVISION=1): the plugin
-    // setup/teardown/verify provision as a durable workflow — register it before
-    // launch so DBOS recovery can resume an interrupted provision. The legacy
+    // dbos-flows P-001/P-002 (default-on; disable with PAPERCUSP_DBOS_PROVISION=0):
+    // the plugin setup/teardown/verify provision as a durable workflow — register it
+    // before launch so DBOS recovery can resume an interrupted provision. The legacy
     // claim path in provision/runner stands down when this is active.
     await import('./provision-workflow');
   }

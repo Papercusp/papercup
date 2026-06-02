@@ -33,15 +33,13 @@ describe('dbosTimersActive — Phase-2 timers default-on with the orchestrator',
     expect(dbosTimersActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
 });
 
-describe('dbosProvisionActive — NEW migration, opt-in (default OFF)', () => {
-  test('unset → INACTIVE (opt-in, unlike orchestrator/timers)', () =>
-    expect(dbosProvisionActive({})).toBe(false));
-  test('PROVISION=1 → active', () =>
+describe('dbosProvisionActive — default-on with the orchestrator (off only when =0)', () => {
+  test('unset → active (default-on, like orchestrator/timers)', () =>
+    expect(dbosProvisionActive({})).toBe(true));
+  test('PROVISION=1 explicit → active', () =>
     expect(dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '1' })).toBe(true));
-  test('PROVISION=0 explicit → inactive', () =>
+  test('PROVISION=0 → the legacy claim-path revert', () =>
     expect(dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '0' })).toBe(false));
-  test('ORCHESTRATOR=0 forces it off even with PROVISION=1 (full legacy revert)', () =>
-    expect(
-      dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' }),
-    ).toBe(false));
+  test('ORCHESTRATOR=0 forces it off too (full legacy revert)', () =>
+    expect(dbosProvisionActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
 });

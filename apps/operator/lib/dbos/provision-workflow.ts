@@ -17,11 +17,12 @@
  *   - runtime DDL (`ensureClaimsTable`'s `CREATE TABLE IF NOT EXISTS`, which
  *     violated the no-runtime-DDL policy) → gone entirely on this path.
  *
- * A/B + instantly revertible: flag-gated by `dbosProvisionActive()` (opt-in,
- * default OFF — D-002). When OFF, `runner.runPhase` does the legacy claim path
- * unchanged and the route calls it directly; when ON, the runner skips the claim
- * and the route routes through `startProvisionWorkflow`. The verify-then-DELETE
- * of the hand-rolled machinery is P-002 (left for the user — a risky cutover).
+ * A/B + instantly revertible: flag-gated by `dbosProvisionActive()` (now default-on
+ * — D-002; disable with PAPERCUSP_DBOS_PROVISION=0). When OFF, `runner.runPhase`
+ * does the legacy claim path unchanged and the route calls it directly; when ON
+ * (the default), the runner skips the claim and the route routes through
+ * `startProvisionWorkflow`. The verify-then-DELETE of the hand-rolled machinery is
+ * the remaining P-002 cutover step (no shim — pre-alpha).
  *
  * Testability mirrors `orchestrator-workflow`: the phase executor is INJECTED
  * (`setProvisionExecutor`), defaulting to the real `runPhase` (lazily imported so
