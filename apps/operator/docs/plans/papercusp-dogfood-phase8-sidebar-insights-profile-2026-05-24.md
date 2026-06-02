@@ -63,16 +63,16 @@ v5 §9.2 + addendum-3 update: binding-status badges, tier-labeled activity badge
 - **P-048c** — Sortable by joined-recency, PRs-merged (✓ A), features-shipped (✓ B), activity (C). Visual grouping by tier so users see what they're sorting on.
 - **P-048d** — Unverified contributors render with zeroed stats + greyed appearance.
 
-### P-049 — PR-reviewer settings modal [S]
+### P-049 — PR-reviewer settings modal [S] — **DONE 2026-06-02**
 
 v5 §9.4.
 
-**Files:** `apps/operator/app/harness/PrReviewerSettings.tsx` (new), gear icon in PRs tab (Phase 7 P-043).
+**Files:** `apps/operator/app/harness/PrReviewerSettings.tsx` (new, Radix `Modal`), gear icon wired into `apps/operator/app/harness/PrsTab.tsx` (Phase 7 P-043) with a nuqs `prs_settings` modal-open flag; backend `apps/operator/lib/endpoint-route/routes/harness/pr-reviewer-settings.ts` (GET settings+trust+audit / POST settings patch / POST trust-remove), registered in `routes/index.ts`. Per-viewer settings + trust keyed by the server-resolved local GitHub identity (`resolveLocalGithubIdentity`); writes require a resolved viewer (anonymous → 401, UI read-only). Tests: route 16/16 (`__tests__/pr-reviewer-settings.test.ts`), UI helpers 10/10 (`PrReviewerSettings.test.ts`). Live `/adv` visual check pending a Tauri run (renders only in the desktop shell).
 
 **Sub-acceptances:**
-- **P-049a** — Per-harness toggles: `pr_reviewer_role_enabled`, `auto_review`, `auto_merge`, `merge_method`.
-- **P-049b** — Trust list view + remove inline.
-- **P-049c** — Audit log: recent auto-review + auto-merge actions from LOCAL `auto_review_audit`.
+- **P-049a** — DONE. Per-harness/per-viewer toggles: `pr_reviewer_role_enabled` (master kill-switch — disables the auto_* sub-toggles when off), `auto_review`, `auto_merge`, `merge_method` (squash/merge/rebase select). Optimistic + persist via the POST patch endpoint.
+- **P-049b** — DONE. Trust list view (joins `contributors` for display logins) + inline remove (gated to the viewer's own `trusted_by` rows).
+- **P-049c** — DONE. Recent audit log (≤50) from LOCAL `harness_shared.auto_review_audit`, friendly action labels + tone tints, PR links.
 
 ### P-050 — vditor integration [M]
 

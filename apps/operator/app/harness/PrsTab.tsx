@@ -9,10 +9,11 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsStringLiteral } from 'nuqs';
+import { useQueryState, parseAsStringLiteral, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
-import { GitPullRequest, RefreshCw } from 'lucide-react';
+import { GitPullRequest, RefreshCw, Settings } from 'lucide-react';
 import { PrRow, type PrRowData } from './PrRow';
+import { PrReviewerSettings } from './PrReviewerSettings';
 
 const PR_FILTERS = ['all', 'mine', 'awaiting-me', 'approved', 'merged'] as const;
 type PrFilter = (typeof PR_FILTERS)[number];
@@ -61,6 +62,12 @@ export function PrsTab({
   const [filter, setFilter] = useQueryState(
     'prs_filter',
     parseAsStringLiteral(PR_FILTERS).withDefault('all'),
+  );
+  // Modal-open is user-meaningful URL state (deep-linkable, agent-driveable)
+  // → nuqs. The setting VALUES are server state, kept in the modal's useState.
+  const [settingsOpen, setSettingsOpen] = useQueryState(
+    'prs_settings',
+    parseAsBoolean.withDefault(false),
   );
   const [prs, setPrs] = useState<PrRowData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,6 +163,14 @@ export function PrsTab({
         >
           <RefreshCw size={13} aria-hidden />
         </button>
+        <button
+          type="button"
+          className="pc-adv-prs__settings"
+          onClick={() => void setSettingsOpen(true)}
+          aria-label="PR-reviewer settings"
+        >
+          <Settings size={13} aria-hidden />
+        </button>
       </div>
 
       <div className="pc-adv-prs__list">
@@ -222,6 +237,11 @@ export function PrsTab({
           color: var(--fg-mute, #7f9bb4); background: transparent; border: 0; border-radius: 4px; cursor: pointer;
         }
         .pc-adv-prs__refresh:hover { color: var(--fg, #e7f7ff); }
+        .pc-adv-prs__settings {
+          display: inline-flex; align-items: center; padding: 4px;
+          color: var(--fg-mute, #7f9bb4); background: transparent; border: 0; border-radius: 4px; cursor: pointer;
+        }
+        .pc-adv-prs__settings:hover { color: var(--fg, #e7f7ff); }
         .pc-adv-prs__list {
           flex: 1; min-height: 0; overflow: auto;
           padding: 10px 12px; display: grid; gap: 8px; align-content: start;
@@ -229,6 +249,12 @@ export function PrsTab({
         .pc-adv-prs__msg { color: var(--fg-mute, #7f9bb4); font-size: 13px; padding: 16px; text-align: center; }
         .pc-adv-prs__msg--err { color: var(--bad, #f87171); }
       `}</style>
+
+      <PrReviewerSettings
+        harnessSlug={harnessSlug}
+        open={settingsOpen}
+        onOpenChange={(o) => void setSettingsOpen(o)}
+      />
     </div>
   );
 }
