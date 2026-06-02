@@ -7,7 +7,7 @@
  * bias (a gap the generator plants being one the judge is primed to reward). LLM
  * injected so build → call → parse → assemble is unit-tested without the network.
  */
-import { tryParseJson } from '../llm-testing/llm-client';
+import { tryParseJson } from './parse-json';
 
 export interface GymLlmCall {
   (opts: {

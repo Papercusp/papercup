@@ -10,7 +10,7 @@
  * is unit-tested without the network; the wiring passes the real `llmCall`, which
  * routes opus-4-8 with extended thinking through the shared meridian backend.
  */
-import { tryParseJson } from '../llm-testing/llm-client';
+import { tryParseJson } from './parse-json';
 import {
   composite,
   parseJudgeOutput,
