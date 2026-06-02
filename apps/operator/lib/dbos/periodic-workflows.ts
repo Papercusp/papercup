@@ -23,6 +23,7 @@ import { runCompletionRefVerifierOnce } from '@/lib/harness/completion-ref-verif
 import { runEmbedBackfillOnce } from '@/lib/search/embed-backfill';
 import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '@/lib/agent-tools/coordination/subscriptions';
+import { runServiceHealthTick } from '@/lib/service-health';
 import { readRegistry } from '@/lib/workspace-registry';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
@@ -100,3 +101,15 @@ const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
   name: 'coordNotifyGc', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });
+
+// Every minute: probe the dev endpoints (:3070/:3055/:4321/:4848/…) and
+// broadcast a coord message on each up/down TRANSITION (fleet-coordination-
+// painpoints Phase 3b). External liveness has no event source, so this is the
+// one irreducible poll (D-006); transition-only, never a per-tick firehose.
+async function serviceHealthTick(): Promise<void> {
+  await DBOS.runStep(() => runServiceHealthTick(), { name: 'service-health' });
+}
+const serviceHealthWorkflow = DBOS.registerWorkflow(serviceHealthTick, {
+  name: 'serviceHealth', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(serviceHealthWorkflow, { name: 'serviceHealth', crontab: '0 * * * * *' });

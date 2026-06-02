@@ -175,6 +175,7 @@ import './locks/list';
 import './locks/check_command';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
+import './dev/service_health';
 import './db/migrate';
 import './db/check_drift';
 
