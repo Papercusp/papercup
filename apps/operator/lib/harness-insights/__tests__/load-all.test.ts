@@ -116,6 +116,48 @@ describe('loadHarnessInsights', () => {
     expect(capturedPeopleLimit).toBe(11);
   });
 
+  it('interleaves githubActivityEvents (tier-A merged PRs) into the activity feed', async () => {
+    const now = Date.now();
+    const runQuery = vi.fn(async (query: string) => {
+      if (
+        /harness_features_consolidated/.test(query) &&
+        /status = 'shipped'/.test(query)
+      ) {
+        return [
+          {
+            feature_id: 'F-1',
+            title: 'Shipped feature',
+            updated_ts: now - 600_000, // 10m ago
+            taken_by: 'alice',
+          },
+        ];
+      }
+      return [];
+    }) as unknown as RunQuery;
+    const props = await loadHarnessInsights({
+      workspace_id: 'ws-1',
+      harness_slug: 'papercup',
+      viewer_github_user_id: 42,
+      runQuery,
+      githubActivityEvents: [
+        {
+          id: 'pr-gh-500',
+          kind: 'pr_merged',
+          text: 'merged PR #500',
+          actorLogin: 'octocat',
+          whenLabel: '1m ago',
+          href: 'https://github.com/x/y/pull/500',
+          tsEpoch: now - 60_000, // 1m ago — newer than the shipped feature
+          dedupKey: 'pr:500',
+        },
+      ],
+    });
+    expect(props.activity.events.map((e) => e.id)).toEqual([
+      'pr-gh-500',
+      'feature-F-1',
+    ]);
+  });
+
   it('runs all loaders in parallel (single await point)', async () => {
     const order: string[] = [];
     const runQuery = vi.fn(async (query: string) => {

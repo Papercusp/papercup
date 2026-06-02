@@ -19,6 +19,7 @@ import {
   loadProjectCardFromGithub,
   loadGithubContributorCommits,
   loadRepoReadme,
+  loadGithubMergedPrEvents,
 } from '@/lib/harness-insights/github-facts';
 import { getSessionUserOrDefault } from '@/lib/auth';
 
@@ -76,6 +77,14 @@ const get = defineTool({
     // Tier-A repo README for the HowItWorksHere card's orientation (P-004).
     // Same degrade-to-fallback contract: undefined when no token / remote / README.
     const readme = await loadRepoReadme({ workspaceId, harnessSlug: slug });
+    // Tier-A merged-PR activity events from the GitHub API (P-003), interleaved
+    // with the PG ledger in the ActivityFeedCard and deduped by PR number.
+    // Same degrade-to-fallback contract: undefined when no token / remote / PRs.
+    const githubActivityEvents = await loadGithubMergedPrEvents({
+      workspaceId,
+      harnessSlug: slug,
+      limit: activityLimit,
+    });
     const props = await loadHarnessInsights({
       workspace_id: workspaceId,
       harness_slug: slug,
@@ -85,6 +94,7 @@ const get = defineTool({
       peopleCommits,
       howItWorks: { readme },
       activityLimit,
+      githubActivityEvents,
     });
     return Response.json({ insights: props });
   },

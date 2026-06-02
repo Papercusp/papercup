@@ -20,6 +20,7 @@ import type {
   HowItWorksHereCardProps,
 } from '../../app/harness/insights/HowItWorksHereCard';
 import type { PeopleCardPerson } from '../../app/harness/insights/PeopleCard';
+import type { ActivityFeedEvent } from '../../app/harness/insights/ActivityFeedCard';
 import { loadHarnessActivity } from '../harness-activity/load';
 import { loadHarnessPeople } from './load-people';
 import { loadYourPlace } from './load-your-place';
@@ -40,6 +41,12 @@ export interface LoadHarnessInsightsOpts {
   peopleLimit?: number;
   /** Tier-A per-login GitHub commit counts, merged into People rows. */
   peopleCommits?: Record<string, number>;
+  /**
+   * Tier-A GitHub-sourced activity events (merged PRs) to interleave with
+   * the PG-ledger activity feed. Deduped by PR number against the PG
+   * `pr_merged` events. Omitted (no token / no remote) → PG-only feed.
+   */
+  githubActivityEvents?: ActivityFeedEvent[];
 }
 
 /** Merge tier-A GitHub commit counts onto People rows (matched by login). */
@@ -114,6 +121,7 @@ export async function loadHarnessInsights(
         harness_slug,
         limit: opts.activityLimit ?? 20,
         runQuery,
+        githubEvents: opts.githubActivityEvents,
       }),
       loadHarnessPeople({
         workspace_id,

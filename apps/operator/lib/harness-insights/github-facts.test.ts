@@ -15,9 +15,13 @@ import {
   loadGithubContributorCommits,
   decodeGithubReadme,
   loadRepoReadme,
+  mapMergedPrsToActivityEvents,
+  loadGithubMergedPrEvents,
+  prDedupKey,
   _clearGithubFactsCacheForTests,
   type GithubRepoResponse,
   type GithubReleaseResponse,
+  type GithubPullEntry,
 } from './github-facts';
 
 const REPO: GithubRepoResponse = {
@@ -341,5 +345,172 @@ describe('loadRepoReadme', () => {
     await loadRepoReadme({ ...base, now: () => 1000 });
     await loadRepoReadme({ ...base, now: () => 1000 + 60_000 });
     expect(getReadme).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Merged-PR activity events (tier-A, P-003) ───────────────────────
+
+const NOW = Date.parse('2026-06-01T00:00:00Z');
+
+const MERGED_PR: GithubPullEntry = {
+  number: 123,
+  title: 'Wire the activity feed',
+  html_url: 'https://github.com/Papercusp/papercup/pull/123',
+  merged_at: '2026-05-31T23:59:00Z', // 1m before NOW
+  merge_commit_sha: 'abcdef1234567890',
+  user: { login: 'Alice' },
+};
+
+describe('mapMergedPrsToActivityEvents', () => {
+  it('maps a merged PR to a tier-A pr_merged event with sha + dedupKey + tsEpoch', () => {
+    const [e] = mapMergedPrsToActivityEvents([MERGED_PR], { now: () => NOW });
+    expect(e?.kind).toBe('pr_merged');
+    expect(e?.id).toBe('pr-gh-123');
+    expect(e?.text).toContain('#123');
+    expect(e?.text).toContain('Wire the activity feed');
+    expect(e?.text).toContain('abcdef1'); // 7-char short sha
+    expect(e?.actorLogin).toBe('Alice');
+    expect(e?.href).toBe('https://github.com/Papercusp/papercup/pull/123');
+    expect(e?.whenLabel).toBe('1m ago');
+    expect(e?.tsEpoch).toBe(Date.parse('2026-05-31T23:59:00Z'));
+    expect(e?.dedupKey).toBe(prDedupKey(123));
+    expect(e?.dedupKey).toBe('pr:123');
+  });
+
+  it('drops closed-but-not-merged PRs (merged_at null/absent)', () => {
+    const events = mapMergedPrsToActivityEvents(
+      [
+        MERGED_PR,
+        { number: 200, title: 'closed not merged', merged_at: null },
+        { number: 201, title: 'just closed' }, // no merged_at
+        { number: undefined as unknown as number, merged_at: '2026-05-30T00:00:00Z' },
+      ],
+      { now: () => NOW },
+    );
+    expect(events.map((e) => e.id)).toEqual(['pr-gh-123']);
+  });
+
+  it('sorts merged PRs most-recent-first and clamps to limit', () => {
+    const events = mapMergedPrsToActivityEvents(
+      [
+        { number: 1, merged_at: '2026-05-20T00:00:00Z', user: { login: 'a' } },
+        { number: 2, merged_at: '2026-05-31T00:00:00Z', user: { login: 'b' } },
+        { number: 3, merged_at: '2026-05-25T00:00:00Z', user: { login: 'c' } },
+      ],
+      { now: () => NOW, limit: 2 },
+    );
+    expect(events.map((e) => e.id)).toEqual(['pr-gh-2', 'pr-gh-3']);
+  });
+
+  it('falls back to buildHref then null when html_url is absent', () => {
+    const withBuild = mapMergedPrsToActivityEvents(
+      [{ number: 9, merged_at: '2026-05-30T00:00:00Z' }],
+      { now: () => NOW, buildHref: (n) => `/pr/${n}` },
+    );
+    expect(withBuild[0]?.href).toBe('/pr/9');
+    const noBuild = mapMergedPrsToActivityEvents(
+      [{ number: 9, merged_at: '2026-05-30T00:00:00Z' }],
+      { now: () => NOW },
+    );
+    expect(noBuild[0]?.href).toBeNull();
+  });
+
+  it('returns [] for empty / null input', () => {
+    expect(mapMergedPrsToActivityEvents([])).toEqual([]);
+    expect(mapMergedPrsToActivityEvents(null)).toEqual([]);
+    expect(mapMergedPrsToActivityEvents(undefined)).toEqual([]);
+  });
+});
+
+function fakePullsOctokit(list: GithubPullEntry[]) {
+  const pullsList = vi.fn(async () => ({ data: list }));
+  return { octokit: { rest: { pulls: { list: pullsList } } } as any, pullsList };
+}
+
+describe('loadGithubMergedPrEvents', () => {
+  it('returns tier-A merged-PR events via injected octokit', async () => {
+    _clearGithubFactsCacheForTests();
+    const { octokit } = fakePullsOctokit([
+      MERGED_PR,
+      { number: 99, merged_at: null }, // un-merged, dropped
+    ]);
+    const events = await loadGithubMergedPrEvents({
+      workspaceId: 'ws',
+      harnessSlug: 'papercup',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+      now: () => NOW,
+    });
+    expect(events).toHaveLength(1);
+    expect(events?.[0]?.kind).toBe('pr_merged');
+    expect(events?.[0]?.dedupKey).toBe('pr:123');
+  });
+
+  it('returns undefined with no token (degrade to PG-only feed)', async () => {
+    _clearGithubFactsCacheForTests();
+    expect(
+      await loadGithubMergedPrEvents({
+        workspaceId: 'ws',
+        harnessSlug: 'x',
+        octokit: null,
+        resolveRepoPath: async () => '/r',
+        ownerName: async () => ({ owner: 'O', name: 'R' }),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when no repo/remote resolves', async () => {
+    _clearGithubFactsCacheForTests();
+    const { octokit } = fakePullsOctokit([MERGED_PR]);
+    expect(
+      await loadGithubMergedPrEvents({
+        workspaceId: 'ws',
+        harnessSlug: 'x',
+        octokit,
+        resolveRepoPath: async () => null,
+      }),
+    ).toBeUndefined();
+    expect(
+      await loadGithubMergedPrEvents({
+        workspaceId: 'ws',
+        harnessSlug: 'x',
+        octokit,
+        resolveRepoPath: async () => '/r',
+        ownerName: async () => null,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when no PRs are merged', async () => {
+    _clearGithubFactsCacheForTests();
+    const { octokit } = fakePullsOctokit([{ number: 1, merged_at: null }]);
+    expect(
+      await loadGithubMergedPrEvents({
+        workspaceId: 'ws',
+        harnessSlug: 'x',
+        octokit,
+        resolveRepoPath: async () => '/r',
+        ownerName: async () => ({ owner: 'O', name: 'R' }),
+        now: () => NOW,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('caches the PR list per repo for the TTL', async () => {
+    _clearGithubFactsCacheForTests();
+    const { octokit, pullsList } = fakePullsOctokit([MERGED_PR]);
+    const base = {
+      workspaceId: 'ws',
+      harnessSlug: 'papercup',
+      octokit,
+      resolveRepoPath: async () => '/r',
+      ownerName: async () => ({ owner: 'O', name: 'R' }),
+    };
+    await loadGithubMergedPrEvents({ ...base, now: () => NOW });
+    await loadGithubMergedPrEvents({ ...base, now: () => NOW + 60_000 }); // within 1h
+    expect(pullsList).toHaveBeenCalledTimes(1);
+    await loadGithubMergedPrEvents({ ...base, now: () => NOW + 2 * 60 * 60 * 1000 });
+    expect(pullsList).toHaveBeenCalledTimes(2);
   });
 });

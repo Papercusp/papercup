@@ -140,6 +140,21 @@ export interface ActivityFeedEvent {
   whenLabel: string;
   /** Click target. Optional — if absent, row is non-clickable. */
   href?: string | null;
+  /**
+   * Source timestamp (epoch ms). Used by the loader to sort + interleave
+   * events across sources (PG + GitHub) recency-correctly, and to dedupe.
+   * Not rendered (the card shows `whenLabel`). Optional so older callers
+   * that only set `whenLabel` keep working.
+   */
+  tsEpoch?: number;
+  /**
+   * Stable dedupe key for cross-source merges. Two events with the same
+   * key are the same real-world event surfaced by different sources (e.g.
+   * a merged PR seen both via the local `auto_review_audit` ledger and the
+   * GitHub API) — the merge keeps one. Optional; events without a key are
+   * never deduped against each other.
+   */
+  dedupKey?: string | null;
 }
 
 export interface ActivityFeedCardProps {

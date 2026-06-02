@@ -10,7 +10,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadHarnessActivity } from '../load';
+import { loadHarnessActivity, mergeActivityEvents } from '../load';
+import type { ActivityFeedEvent } from '../../../app/harness/insights/ActivityFeedCard';
 
 type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 
@@ -248,5 +249,148 @@ describe('loadHarnessActivity', () => {
       ]),
     });
     expect(events[0]?.href).toBe('/test/feature_shipped/F-1');
+  });
+
+  it('interleaves githubEvents with the PG ledger by tsEpoch desc', async () => {
+    const now = Date.now();
+    const ghPr: ActivityFeedEvent = {
+      id: 'pr-gh-500',
+      kind: 'pr_merged',
+      text: 'merged PR #500 — from GitHub',
+      actorLogin: 'octocat',
+      whenLabel: '2m ago',
+      href: 'https://github.com/x/y/pull/500',
+      tsEpoch: now - 120_000, // 2m ago — between the two PG events below
+      dedupKey: 'pr:500',
+    };
+    const events = await loadHarnessActivity({
+      workspace_id: 'ws-1',
+      harness_slug: 'papercup',
+      githubEvents: [ghPr],
+      runQuery: makeRunQuery([
+        {
+          match: /harness_features_consolidated/,
+          rows: [
+            {
+              feature_id: 'F-RECENT',
+              title: 'Recent',
+              updated_ts: now - 30_000, // 30s ago — newest
+              taken_by: 'a',
+            },
+          ],
+        },
+        {
+          match: /FROM harness_shared\.contributors/,
+          rows: [
+            { github_username: 'old', joined_at: new Date(now - 7 * 86_400_000) }, // 7d ago — oldest
+          ],
+        },
+      ]),
+    });
+    expect(events.map((e) => e.id)).toEqual([
+      'feature-F-RECENT',
+      'pr-gh-500',
+      'contrib-old-' + (now - 7 * 86_400_000),
+    ]);
+  });
+
+  it('dedupes a PR present in both PG and GitHub (GitHub wins)', async () => {
+    const now = Date.now();
+    const ghPr: ActivityFeedEvent = {
+      id: 'pr-gh-77',
+      kind: 'pr_merged',
+      text: 'merged PR #77 — verified from GitHub',
+      actorLogin: 'octocat',
+      whenLabel: '1m ago',
+      href: 'https://github.com/x/y/pull/77',
+      tsEpoch: now - 60_000,
+      dedupKey: 'pr:77',
+    };
+    const events = await loadHarnessActivity({
+      workspace_id: 'ws-1',
+      harness_slug: 'papercup',
+      githubEvents: [ghPr],
+      runQuery: makeRunQuery([
+        {
+          match: /auto_review_audit/,
+          rows: [
+            {
+              id: '999',
+              pr_number: 77, // same PR as the GitHub event → dedup key pr:77
+              pr_url: null,
+              author_github_id: 42,
+              ts: new Date(now - 65_000),
+            },
+          ],
+        },
+      ]),
+    });
+    // Only one PR #77 row, and it's the GitHub (tier-A) one.
+    const prRows = events.filter((e) => e.kind === 'pr_merged');
+    expect(prRows).toHaveLength(1);
+    expect(prRows[0]?.id).toBe('pr-gh-77');
+    expect(prRows[0]?.text).toContain('verified from GitHub');
+  });
+});
+
+function ev(
+  id: string,
+  tsEpoch: number,
+  overrides: Partial<ActivityFeedEvent> = {},
+): ActivityFeedEvent {
+  return {
+    id,
+    kind: 'pr_merged',
+    text: id,
+    actorLogin: 'x',
+    whenLabel: 'now',
+    tsEpoch,
+    ...overrides,
+  };
+}
+
+describe('mergeActivityEvents', () => {
+  it('sorts both streams by tsEpoch desc', () => {
+    const out = mergeActivityEvents(
+      [ev('pg-old', 100), ev('pg-new', 300)],
+      [ev('gh-mid', 200, { dedupKey: 'pr:1' })],
+      10,
+    );
+    expect(out.map((e) => e.id)).toEqual(['pg-new', 'gh-mid', 'pg-old']);
+  });
+
+  it('dedupes by dedupKey, keeping the GitHub event over the PG one', () => {
+    const out = mergeActivityEvents(
+      [ev('pg-pr', 100, { dedupKey: 'pr:5', text: 'pg copy' })],
+      [ev('gh-pr', 100, { dedupKey: 'pr:5', text: 'gh copy' })],
+      10,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]?.id).toBe('gh-pr');
+    expect(out[0]?.text).toBe('gh copy');
+  });
+
+  it('never dedupes unkeyed events against each other', () => {
+    const out = mergeActivityEvents(
+      [ev('a', 100), ev('b', 90)],
+      [ev('c', 110)],
+      10,
+    );
+    expect(out).toHaveLength(3);
+  });
+
+  it('caps to limit', () => {
+    const pg = Array.from({ length: 30 }, (_, i) => ev(`e${i}`, 1000 - i));
+    expect(mergeActivityEvents(pg, [], 20)).toHaveLength(20);
+  });
+
+  it('sorts events without tsEpoch last', () => {
+    const out = mergeActivityEvents(
+      [ev('has-ts', 500), { ...ev('no-ts', 0), tsEpoch: undefined }],
+      [],
+      10,
+    );
+    expect(out[0]?.id).toBe('has-ts');
+    expect(out[1]?.id).toBe('no-ts');
   });
 });

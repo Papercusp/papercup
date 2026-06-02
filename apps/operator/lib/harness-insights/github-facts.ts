@@ -31,6 +31,7 @@ import type {
   ProjectCardProps,
   ProjectCardLanguage,
 } from '../../app/harness/insights/ProjectCard';
+import type { ActivityFeedEvent } from '../../app/harness/insights/ActivityFeedCard';
 import { getOctokit } from '../identity/octokit-client';
 import { resolveProject } from '../harness-core';
 
@@ -437,9 +438,189 @@ export async function loadRepoReadme(
   }
 }
 
+// ── Merged-PR activity events (tier-A, P-003) ───────────────────────
+
+/**
+ * Subset of a GitHub `GET /repos/:owner/:repo/pulls` (or search) entry we
+ * consume to build a tier-A merged-PR activity event.
+ */
+export interface GithubPullEntry {
+  number?: number;
+  title?: string | null;
+  html_url?: string | null;
+  /** Non-null iff the PR was actually merged (not just closed). */
+  merged_at?: string | null;
+  /** The merge-commit SHA — the tier-B completion anchor (Phase-2). */
+  merge_commit_sha?: string | null;
+  user?: { login?: string | null } | null;
+}
+
+/**
+ * Stable dedupe key for a merged PR, shared by the GitHub-sourced event
+ * and the PG `auto_review_audit`-sourced event so the merge collapses the
+ * two into one. Keyed on PR number — the stable cross-source identity.
+ */
+export function prDedupKey(prNumber: number): string {
+  return `pr:${prNumber}`;
+}
+
+export interface MapMergedPrsOpts {
+  /** Clamp the produced events to this many (most-recent-first). */
+  limit?: number;
+  /** Build a click target for a PR with no html_url. Optional. */
+  buildHref?: (prNumber: number) => string | null;
+  /** Clock seam for the relative-time label. */
+  now?: () => number;
+}
+
+/**
+ * PURE: GitHub closed-PR list → tier-A `pr_merged` activity events.
+ * Drops un-merged (closed-but-not-merged) PRs, sorts by merge time desc,
+ * stamps `tsEpoch` (for the cross-source sort) + `dedupKey` (PR number) so
+ * `loadHarnessActivity` can interleave + dedupe against the PG ledger.
+ */
+export function mapMergedPrsToActivityEvents(
+  pulls: GithubPullEntry[] | null | undefined,
+  opts: MapMergedPrsOpts = {},
+): ActivityFeedEvent[] {
+  const nowMs = (opts.now ?? Date.now)();
+  const buildHref = opts.buildHref;
+  const events: ActivityFeedEvent[] = [];
+  for (const pr of pulls ?? []) {
+    if (!pr || typeof pr.number !== 'number') continue;
+    if (typeof pr.merged_at !== 'string' || pr.merged_at.length === 0) continue;
+    const ts = new Date(pr.merged_at).getTime();
+    if (Number.isNaN(ts)) continue;
+    const login = pr.user?.login || 'unknown';
+    const title = (pr.title || '').trim();
+    const shaShort = pr.merge_commit_sha
+      ? ` (${pr.merge_commit_sha.slice(0, 7)})`
+      : '';
+    events.push({
+      id: `pr-gh-${pr.number}`,
+      kind: 'pr_merged',
+      text: title
+        ? `merged PR #${pr.number} — ${title}${shaShort}`
+        : `merged PR #${pr.number}${shaShort}`,
+      actorLogin: login,
+      whenLabel: relTimeLabel(nowMs - ts),
+      href: pr.html_url || (buildHref ? buildHref(pr.number) : null),
+      tsEpoch: ts,
+      dedupKey: prDedupKey(pr.number),
+    });
+  }
+  events.sort((a, b) => (b.tsEpoch ?? 0) - (a.tsEpoch ?? 0));
+  const limit = opts.limit;
+  return typeof limit === 'number' ? events.slice(0, Math.max(0, limit)) : events;
+}
+
+/**
+ * Relative-time label (`3m ago`). Mirrors harness-activity/load.ts `relTime`
+ * but takes an explicit age so it's testable with an injected clock.
+ */
+function relTimeLabel(ageMs: number): string {
+  if (ageMs < 0) return 'just now';
+  const sec = Math.floor(ageMs / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.floor(hr / 24);
+  if (d < 7) return `${d}d ago`;
+  const w = Math.floor(d / 7);
+  return `${w}w ago`;
+}
+
+/** Fetch the recently-merged PRs for one repo via an injected Octokit. */
+export async function fetchGithubMergedPrs(
+  owner: string,
+  name: string,
+  octokit: Octokit,
+  perPage = 30,
+): Promise<GithubPullEntry[] | null> {
+  try {
+    // Closed PRs, most-recently-updated first; the pure mapper drops the
+    // closed-but-not-merged ones. (state='closed' covers merged, since a
+    // merged PR is also closed.)
+    const res = await octokit.rest.pulls.list({
+      owner,
+      repo: name,
+      state: 'closed',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: perPage,
+    });
+    return res.data as GithubPullEntry[];
+  } catch {
+    return null;
+  }
+}
+
+const mergedPrCache = new Map<
+  string,
+  { value: GithubPullEntry[] | null; expiresAt: number }
+>();
+
+export interface LoadMergedPrEventsOpts extends LoadProjectCardOpts {
+  /** Clamp the produced events. Default 20 (the card's cap). */
+  limit?: number;
+  /** Build a click target for a PR with no html_url. Optional. */
+  buildHref?: (prNumber: number) => string | null;
+}
+
+/**
+ * Resolve the harness's GitHub repo and return its recently-merged PRs as
+ * tier-A `pr_merged` activity events (verifiable via the GitHub API), or
+ * `undefined` to leave the feed GitHub-event-less. Same resolution + 1h
+ * cache + graceful degradation as the sibling loaders. Never throws.
+ *
+ * The endpoint passes the result into `loadHarnessActivity({ githubEvents })`,
+ * which interleaves them with the PG ledger by `tsEpoch` and dedupes by
+ * `dedupKey` (PR number) so a PR seen in both sources renders once.
+ */
+export async function loadGithubMergedPrEvents(
+  opts: LoadMergedPrEventsOpts,
+): Promise<ActivityFeedEvent[] | undefined> {
+  try {
+    const now = (opts.now ?? Date.now)();
+    const resolveRepoPath = opts.resolveRepoPath ?? defaultResolveRepoPath;
+    const ownerName = opts.ownerName ?? defaultOwnerName;
+
+    const repoPath = await resolveRepoPath(opts.workspaceId, opts.harnessSlug);
+    if (!repoPath) return undefined;
+    const on = await ownerName(repoPath);
+    if (!on) return undefined;
+
+    const key = `${on.owner}/${on.name}`.toLowerCase();
+    let pulls: GithubPullEntry[] | null;
+    const hit = mergedPrCache.get(key);
+    if (hit && hit.expiresAt > now) {
+      pulls = hit.value;
+    } else {
+      const octokit =
+        opts.octokit !== undefined ? opts.octokit : await getOctokit();
+      if (!octokit) return undefined; // no token — degrade to PG-only feed
+      pulls = await fetchGithubMergedPrs(on.owner, on.name, octokit);
+      mergedPrCache.set(key, { value: pulls, expiresAt: now + TTL_MS });
+    }
+
+    if (!pulls) return undefined;
+    const events = mapMergedPrsToActivityEvents(pulls, {
+      limit: opts.limit ?? 20,
+      buildHref: opts.buildHref,
+      now: () => now,
+    });
+    return events.length > 0 ? events : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Test-only: clear the module caches between cases. */
 export function _clearGithubFactsCacheForTests(): void {
   cache.clear();
   commitsCache.clear();
   readmeCache.clear();
+  mergedPrCache.clear();
 }
