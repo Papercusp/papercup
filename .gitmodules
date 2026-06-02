@@ -76,3 +76,6 @@
 [submodule "libs/testing-shell"]
 	path = libs/testing-shell
 	url = https://github.com/Papercusp/testing-shell.git
+[submodule "libs/test-config"]
+	path = libs/test-config
+	url = https://github.com/Papercusp/test-config.git

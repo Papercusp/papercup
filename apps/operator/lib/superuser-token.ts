@@ -60,17 +60,43 @@ export function isValidSuperuserBearer(bearer: string | null | undefined): boole
   return timingSafeEqual(a, b);
 }
 
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * Extract the hostname from a `Host` header value, dropping the port.
+ * Handles bracketed IPv6 (`[::1]:3070` → `[::1]`), bare IPv6 (`::1`, kept
+ * whole — it has no port), and the IPv4/hostname `name:port` form. A naive
+ * `split(':')[0]` mangles both IPv6 shapes, which is why the `[::1]`/`::1`
+ * loopback branches used to be unreachable.
+ */
+function hostnameOf(rawHost: string): string {
+  const host = rawHost.toLowerCase().trim();
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    return end >= 0 ? host.slice(0, end + 1) : host;
+  }
+  const colonCount = (host.match(/:/g) ?? []).length;
+  return colonCount === 1 ? host.slice(0, host.indexOf(':')) : host;
+}
+
 /** Loopback check — refuses superuser unless origin is 127.0.0.1 / ::1 / localhost. */
 export function isLoopbackRequest(headers: Headers): boolean {
-  const host = (headers.get('host') ?? '').toLowerCase().split(':')[0];
-  if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1') {
+  const host = hostnameOf(headers.get('host') ?? '');
+  if (LOOPBACK_HOSTS.has(host)) {
     return true;
   }
   const fwd = (headers.get('x-forwarded-for') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   if (fwd.length > 0) {
     return fwd.every((ip) => ip === '127.0.0.1' || ip === '::1' || ip === 'localhost');
   }
-  return true;
+  // Fail closed: a request whose Host is non-loopback and that carries no
+  // x-forwarded-for is NOT provably loopback. The previous `return true`
+  // here contradicted this function's contract ("refuses unless loopback")
+  // and would admit a direct connection to a non-loopback interface. The
+  // desktop's local superuser path always carries a loopback Host
+  // (127.0.0.1/localhost) or rides the separate IPC server, so this does
+  // not affect it. (Bearer validation is a second gate either way.)
+  return false;
 }
 
 export const SUPERUSER_TOKEN_PATH = TOKEN_PATH;
