@@ -63,12 +63,10 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
 
     const abs = join(root, gitFilePath('harness_decisions', 'D-001'));
     const parsed = parseFile('harness_decisions', await readFile(abs, 'utf8'));
-    expect(parsed).toMatchObject({
-      id: 'D-001',
-      harness_slug: SLUG,
-      title: 'T',
-      content: '# Use PG\n\nruntime store-of-record',
-    });
+    // context cols (workspace_id/harness_slug/origin) are stripped from the file.
+    expect(parsed).toMatchObject({ id: 'D-001', title: 'T', content: '# Use PG\n\nruntime store-of-record' });
+    expect(parsed).not.toHaveProperty('harness_slug');
+    expect(parsed).not.toHaveProperty('workspace_id');
 
     // second drain is a no-op (exported_at marked)
     const res2 = await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root });
@@ -114,11 +112,21 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
     await db.sql`DELETE FROM harness_shared.harness_decisions WHERE id = 'D-rt'`;
     expect((await db.sql`SELECT 1 FROM harness_shared.harness_decisions WHERE id='D-rt'`).length).toBe(0);
 
-    const n = await hydrateGitTable({ sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'] });
+    const n = await hydrateGitTable({
+      sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'],
+      workspaceId: WS, harnessSlug: SLUG,
+    });
     expect(n).toBeGreaterThanOrEqual(1);
-    const after = await db.sql<{ id: string; title: string; content: string }[]>`
-      SELECT id, title, content FROM harness_shared.harness_decisions WHERE id = 'D-rt'`;
-    expect(after[0]).toMatchObject({ id: 'D-rt', title: 'RT', content: 'body text\n\nx' });
+    const after = await db.sql<
+      { id: string; title: string; content: string; workspace_id: string; harness_slug: string; origin: string }[]
+    >`
+      SELECT id, title, content, workspace_id, harness_slug, origin
+        FROM harness_shared.harness_decisions WHERE id = 'D-rt'`;
+    // content restored; context/provenance cols re-injected from the harness context.
+    expect(after[0]).toMatchObject({
+      id: 'D-rt', title: 'RT', content: 'body text\n\nx',
+      workspace_id: WS, harness_slug: SLUG, origin: 'remote',
+    });
   });
 
   it('hydrate does NOT re-enqueue an export (capture trigger disabled during load)', async () => {
@@ -126,7 +134,10 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
       SELECT count(*)::int AS c FROM harness_shared.git_export_outbox
        WHERE table_name = 'harness_decisions' AND key = 'D-rt' AND op = 'put'`;
     const before = (await q)[0].c;
-    await hydrateGitTable({ sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'] });
+    await hydrateGitTable({
+      sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'],
+      workspaceId: WS, harnessSlug: SLUG,
+    });
     const after = (await db.sql<{ c: number }[]>`
       SELECT count(*)::int AS c FROM harness_shared.git_export_outbox
        WHERE table_name = 'harness_decisions' AND key = 'D-rt' AND op = 'put'`)[0].c;

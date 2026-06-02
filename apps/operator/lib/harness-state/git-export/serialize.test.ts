@@ -36,14 +36,13 @@ describe('git-export serialize (P-003b foundation)', () => {
   });
 
   it('round-trips a structured (json) row', () => {
-    const row = { harness_slug: 'papercup', feature_id: 'F-1', chunk: 2, tags: ['a', 'b'], meta: { x: 1 }, done: false, n: null };
+    const row = { feature_id: 'F-1', chunk: 2, tags: ['a', 'b'], meta: { x: 1 }, done: false, n: null };
     const back = parseFile('harness_chunk_plans', serializeRow('harness_chunk_plans', row));
     expect(back).toEqual(row);
   });
 
   it('round-trips a prose (md) row with frontmatter + body', () => {
     const row = {
-      harness_slug: 'papercup',
       id: 'D-001',
       created_ts: 1730000000000,
       tags: ['arch', 'storage'],
@@ -56,7 +55,7 @@ describe('git-export serialize (P-003b foundation)', () => {
   });
 
   it('round-trips a prose row with no body field (frontmatter only)', () => {
-    const row = { harness_slug: 'papercup', id: 'x', n: 3 };
+    const row = { id: 'x', n: 3 };
     expect(parseFile('harness_skills', serializeRow('harness_skills', row))).toEqual(row);
   });
 
@@ -64,5 +63,19 @@ describe('git-export serialize (P-003b foundation)', () => {
     const a = serializeRow('harness_chunk_plans', { b: 1, a: 2 });
     const b = serializeRow('harness_chunk_plans', { a: 2, b: 1 });
     expect(a).toBe(b);
+  });
+
+  it('strips context/provenance cols (workspace_id/harness_slug/origin) from the file', () => {
+    const back = parseFile(
+      'harness_chunk_plans',
+      serializeRow('harness_chunk_plans', {
+        workspace_id: 'ws1',
+        harness_slug: 'h',
+        origin: 'local',
+        feature_id: 'F-1',
+        chunk: 2,
+      }),
+    );
+    expect(back).toEqual({ feature_id: 'F-1', chunk: 2 }); // context cols gone from the file
   });
 });

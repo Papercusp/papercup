@@ -12,16 +12,11 @@
  *     in git (dogfood D-020) while every scalar/JSONB field still round-trips.
  *   • everything else → pretty `.json` (deterministic key order → clean diffs).
  *
- * KNOWN REFINEMENT (P-003b follow-up, correctness): the serialized row still
- * includes per-install PROVENANCE/CONTEXT columns (`workspace_id`, `origin`,
- * and the redundant `harness_slug`). Those should NOT live in a committed git
- * file — `workspace_id`/`harness_slug` are implied by which harness's
- * `.harness/state/` dir the file is in, and `origin` is local provenance.
- * Committing them leaks one peer's `workspace_id` to others on `git pull`. The
- * fix is to strip them on serialize and re-inject them on hydrate (from the
- * harness context + `origin='remote'`) — which needs the per-table column set,
- * so it's deferred, not done here. Today the path round-trips faithfully on a
- * single install.
+ * Per-install PROVENANCE/CONTEXT columns (`workspace_id`, `harness_slug`,
+ * `origin`) are STRIPPED from the file (see CONTEXT_COLS) and re-injected by
+ * `hydrate` from the harness context (`origin='remote'`) — so a committed file
+ * never leaks one peer's `workspace_id` to others on `git pull`, and the file
+ * is the same regardless of which workspace exported it.
  */
 
 /** Tables whose body column holds human-authored markdown → `.md` + frontmatter. */
@@ -74,8 +69,19 @@ export function gitFilePath(table: string, key: string): string {
 
 type Row = Record<string, unknown>;
 
+/**
+ * Per-install provenance/context columns — stripped from the committed file and
+ * re-injected by `hydrate` from the harness context. See the file header.
+ */
+export const CONTEXT_COLS = new Set(['workspace_id', 'harness_slug', 'origin']);
+
 function sortedEntries(row: Row): [string, unknown][] {
   return Object.entries(row).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Sorted entries with the context/provenance columns stripped (git-file content). */
+function contentEntries(row: Row): [string, unknown][] {
+  return sortedEntries(row).filter(([k]) => !CONTEXT_COLS.has(k));
 }
 
 function pickBodyField(row: Row): string | null {
@@ -85,14 +91,14 @@ function pickBodyField(row: Row): string | null {
   return null;
 }
 
-/** Row → file content. */
+/** Row → file content (context/provenance columns stripped). */
 export function serializeRow(table: string, row: Row): string {
   if (formatFor(table) === 'json') {
-    return JSON.stringify(Object.fromEntries(sortedEntries(row)), null, 2) + '\n';
+    return JSON.stringify(Object.fromEntries(contentEntries(row)), null, 2) + '\n';
   }
   const bodyField = pickBodyField(row);
   const fmLines: string[] = [];
-  for (const [k, v] of sortedEntries(row)) {
+  for (const [k, v] of contentEntries(row)) {
     if (k === bodyField) continue;
     fmLines.push(`${k}: ${JSON.stringify(v)}`);
   }

@@ -26,11 +26,15 @@ export interface HydrateGitTableOpts {
   table: string;
   /** The table's FULL primary key (ON CONFLICT target). */
   conflictCols: string[];
+  /** This install's workspace id — re-injected (stripped from the git file). */
+  workspaceId: string;
+  /** This harness's slug — re-injected (stripped from the git file). */
+  harnessSlug: string;
 }
 
 /** Hydrate one git table from its `.harness/state` files into PG. Returns rows upserted. */
 export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number> {
-  const { sql, harnessRoot, table, conflictCols } = opts;
+  const { sql, harnessRoot, table, conflictCols, workspaceId, harnessSlug } = opts;
   const dir = join(harnessRoot, stateDirFor(table));
   let files: string[];
   try {
@@ -69,6 +73,13 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
   try {
     for (const f of files) {
       const row = parseFile(table, await readFile(join(dir, f), 'utf8')) as Record<string, unknown>;
+      // Re-inject the context/provenance columns stripped on serialize, from the
+      // harness context (origin='remote' — it came from git, not a local edit).
+      // Only for columns the table actually has, so it works for tables lacking
+      // one of them (e.g. no workspace_id) without a bad-column INSERT.
+      if (allowed.has('workspace_id') && row.workspace_id === undefined) row.workspace_id = workspaceId;
+      if (allowed.has('harness_slug') && row.harness_slug === undefined) row.harness_slug = harnessSlug;
+      if (allowed.has('origin') && row.origin === undefined) row.origin = 'remote';
       const cols = Object.keys(row);
       if (cols.length === 0) continue;
       // Reject any column the committed file claims that isn't in the real
