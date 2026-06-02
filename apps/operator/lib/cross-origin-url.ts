@@ -34,6 +34,17 @@
  */
 export function crossOriginUrl(path: string): string {
   if (typeof window === 'undefined') return path;
+  // Inside the Tauri desktop webview, same-origin `/api/*` rides the desktop-ipc
+  // polyfill (fetch + EventSource over IPC — no HTTP socket pool at all), so there
+  // is nothing to shard. This holds for BOTH the production `papercusp://` custom
+  // scheme AND the dev shell's `http://localhost:3070` (which the protocol/hostname
+  // checks below would otherwise wrongly shard). Sharding in the webview is doubly
+  // broken on WebKitGTK: libsoup pools `localhost` and `127.0.0.1` as ONE host (the
+  // sibling yields no extra sockets), and the cross-origin loopback fetch is rejected
+  // outright (`TypeError: Load failed`) — which broke clicking a commit (`git/show`)
+  // and saved-prompts on the desktop. Detect the webview via the injected IPC bridge.
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  if (typeof w.__TAURI_INTERNALS__?.invoke === 'function') return path;
   const { protocol, hostname, port } = window.location;
   if (protocol !== 'http:' && protocol !== 'https:') return path;
   const sibling =

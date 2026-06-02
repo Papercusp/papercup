@@ -40,6 +40,19 @@ describe('crossOriginUrl', () => {
     expect(crossOriginUrl('/p')).toBe('/p');
   });
 
+  it('no-ops inside the Tauri webview even on http://localhost (same-origin /api rides IPC)', () => {
+    // The dev desktop shell loads the webview on http://localhost:3070 — which
+    // passes the http guard with a loopback hostname and WOULD shard to the
+    // 127.0.0.1 sibling. But the webview's /api fetch rides the desktop-ipc
+    // polyfill, and the cross-origin loopback fetch is rejected by WebKitGTK
+    // ("Load failed", broke commit-diff). The __TAURI_INTERNALS__ guard no-ops.
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', hostname: 'localhost', port: '3070' },
+      __TAURI_INTERNALS__: { invoke: () => {} },
+    });
+    expect(crossOriginUrl('/api/harness/p/git/show/abc')).toBe('/api/harness/p/git/show/abc');
+  });
+
   it('no-ops under the desktop papercusp:// custom scheme (same-origin /api rides the IPC polyfill)', () => {
     // Linux/macOS desktop origin is papercusp://localhost. hostname IS
     // "localhost", so without the http(s) guard this would wrongly shard to
