@@ -478,6 +478,35 @@ The catchall at `/api/agent-tools/*` works because external callers ARE bearer-a
 
 The other working option is bypassing `handleHttpToolRequest` entirely and calling `tool.fn(input, ctx)` directly with a hand-built ctx — that works but loses the dispatcher’s role/quota/audit pipeline. Prefer the proxy pattern.
 
+# An /adv dock panel must be registered in TWO places to be reachable
+
+> Registering a panel type in HarnessesDock's panelRegistry only makes it restorable/openable-by-id — a user can only OPEN it from the "Add panel" catalog if its type is ALSO in the HarnessTopBar allowedTypes allowlist (and has a label/icon in AddPanelCatalog). Miss the second and the panel ships invisible.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+Adding a panel to the `/adv` harness dock feels like one step:
+
+```ts
+// app/adv/harnesses/HarnessesDock.tsx — ensureRegistered()
+panelRegistry.register('adv:contributors', AdvContributorsPanel, { title: 'Contributors' });
+```
+
+That registration is **necessary but not sufficient**. It only lets the panel be (a) restored from a saved layout and (b) opened programmatically by type id. It does **not** put the panel in the **“Add panel” catalog** — so a user has no way to open it from a fresh layout. The panel ships *registered but invisible*.
+
+This actually happened: P-048 Contributors and P-073 Insights were registered in `HarnessesDock` but omitted from the catalog allowlist, so they were unreachable in the UI until 2026-06-02 (commit on `main`; caught by the first live e2e of the `/adv` dock, `apps/operator/e2e/adv-contributors-panel.spec.ts`). Neither the jsdom render test nor the registration could catch it — only driving the real catalog flow did.
+
+## The second place (and a third)
+
+[Section titled “The second place (and a third)”](#the-second-place-and-a-third)
+
+1. **Register** in `app/adv/harnesses/HarnessesDock.tsx` → `panelRegistry.register(...)`.
+2. **Allowlist** the type in `app/adv/harnesses/HarnessTopBar.tsx` — the `allowedTypes={[...]}` prop passed to `<AddPanelCatalog>`. The catalog shows ONLY these types; this is the curated user-facing list.
+3. **Label + icon** in `app/harness/dock/AddPanelCatalog.tsx` — add entries to the `LABELS` and `ICON_MAP` records (both fall back gracefully, but an unlabelled type reads as its raw `adv:foo` id and gets the `SquareDashed` placeholder glyph).
+
+If you add an `/adv` panel and “it doesn’t show up in Add panel,” you skipped step 2. Verify with the e2e spec above (it asserts both Contributors and Insights appear in the catalog) or by opening the catalog in the prebuilt bundle — **not** the HMR dev server on `:3055`, which currently has a `'/@vite/client' … createHotContext` mismatch that renders `/adv` blank in a fresh browser (the desktop is unaffected — it loads the prebuilt bundle).
+
 # The attention/importance system (Planning tab)
 
 > How plan-item importance + the unified AttentionItem feed fit together, and two non-obvious gotchas — parseWarnings become lint ERRORS, and the Plans tab has no in-app chat host.
@@ -4288,6 +4317,59 @@ The user can also help by reviewing your commits before they push; your acknowle
 * `feedback_git_status_before_commit_shared_checkout.md` — the underlying memory rule this insight expands.
 * `feedback_paperclip_collision_race.md` — paperclip-specific case of the same hazard.
 * Other agent insights in this directory exemplify the discipline: small commits, one item per commit, explicit cross-references.
+
+# Never put an `await` between `spawn()` and the child's `close`/`exit` listener
+
+> A short-lived child process can run, exit, and close its stdio streams *during* a cold `await import()` (or any await) that sits between spawn() and the child.on('close') registration — so 'close' fires before the listener attaches, is lost, and the done-promise hangs forever. It only bites the FIRST call per worker (cold import), so it masquerades as a flake or a "stderr-only" / "Node-version" bug.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+```ts
+const child = spawn('bash', [script], { cwd, env });
+const { publish } = await import('./branch-action-bus');   // ⬅ COLD on first call
+child.stdout.on('data', …);
+const done = new Promise((res) => child.on('close', … res(meta) …));  // ⬅ attached too late
+```
+
+`spawn()` returns instantly, but the `await import(...)` yields the event loop. On the **first call per worker** that dynamic import is **cold** (it has to load the module + its deps), so it can take several ms. A trivial child (`echo` + `exit`) finishes in \~1ms — so during that import await the child **runs, exits, and both its stdio streams close**. Node emits `'close'` on the `ChildProcess` *before* the `child.on('close')` listener is attached. The event is lost; the `done` promise never resolves and the caller hangs forever. (Any FileHandle the close handler was going to `.close()` then leaks and later throws `ERR_INVALID_STATE` “closed during garbage collection”.)
+
+On **warm** calls the same `import()` resolves in the same microtask tick, so the listener attaches before the child exits and wins the race — which is exactly why it looks like a flake.
+
+## Why it fools you
+
+[Section titled “Why it fools you”](#why-it-fools-you)
+
+This is `branch-actions.runAction`’s real bug (`d43922be6`). It was mis-diagnosed for several rounds as:
+
+* a **“Node-25 spawn/stream-completion product bug”** — disproved by a standalone Node-25 repro of the exact `spawn` + stream + FileHandle flow that completes fine;
+* a **“stderr-only”** failure — disproved by an in-vitest probe where a **stdout-only** script hangs as the *first* `runAction` call while an **stderr** script passes when *warm*. The original failing test just happened to be both the first `runAction` call **and** the one that wrote to stderr.
+
+The tell: it always hangs on the **first** invocation in a fresh process/worker and passes thereafter. That points at a cold-`import()` (or any one-time async) sitting in front of the listener registration — not at the child, the streams, or the OS.
+
+## The rule
+
+[Section titled “The rule”](#the-rule)
+
+**Register a `ChildProcess`’s `close`/`exit`/`data` listeners synchronously, immediately after `spawn()`, with NO `await` in between.** Hoist any `await import`, `await fs.open`, channel lookup, etc. to **before** the `spawn()` call:
+
+```ts
+const { publish } = await import('./branch-action-bus');   // resolve BEFORE spawn
+const child = spawn('bash', [script], { cwd, env });
+child.stdout.on('data', …);
+child.on('close', … );                                     // same synchronous tick — safe
+```
+
+Same hazard for `'message'` on forked children and `'data'` on any pipe whose source can EOF before you subscribe. If you genuinely must await after spawn, capture the result first: `const exited = once(child, 'close')` (subscribe synchronously) and `await exited` later.
+
+## How to confirm a suspected instance
+
+[Section titled “How to confirm a suspected instance”](#how-to-confirm-a-suspected-instance)
+
+1. Standalone-repro the bare `spawn`/stream flow in plain `node` — if it completes, the child/stream/OS layer is innocent.
+2. In the real environment, run the suspect path as the **first** call (cold) vs a **warm** repeat. First-only hang ⇒ this race.
+3. Instrument (file-append, not console) `spawn`, `child.on('exit')`, stdout/stderr `end`/`close`, and the moment you attach the `close` listener. If `close`/`exit` timestamps precede the “attaching listener” timestamp, you’ve found it.
 
 # Lazy UI silently dies on a long-open desktop window — the dev:nohmr chunk-invalidation trap
 
@@ -38312,13 +38394,19 @@ For a **release build** (no dev bridge) screenshots are your *only* window intro
 
 > **Webapp retired.** Every `localhost:3055`/`localhost:3070` URL here is only reachable while the **Tauri dev shell** is running (`cd papercusp-desktop && npm run dev`). Drive the operator through the Tauri shell, not a browser (see [Agent E2E playbook](/internal/docs/testing/agent-e2e)).
 
-This is the **manual acceptance test** for Phase-1b bidirectional federation: two **different** GitHub engineers join/share a harness and sync state **both ways** over the Model B Hyperswarm substrate. It is the gate that closes implementation **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
+This is the acceptance test for Phase-1b bidirectional federation: two **different** GitHub engineers join/share a harness and sync state **both ways** over the Model B Hyperswarm substrate. It is the gate that closes implementation **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
 
 Design: `apps/operator/docs/plans/papercusp-phase1b-bidirectional-federation-2026-06-01.md`. The deterministic offline proof (module + transport, gate stubbed) already exists at `apps/operator/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`; this runbook covers what that test *can’t*: the real GitHub publish→verify loop with two real identities.
 
-Verified live 2026-06-01 (gist-level)
+Most of P-079 is now an automatable gated test (2026-06-02)
 
-The **channel-2 publish→verify loop** — the offline-impossible crux — was run live with two genuinely distinct GitHub accounts (`papercupai` + `aviynw`): each created a real attestation **gist** under its own account, and the **real** `verifyAttestation` / `verifyChannel2` accepted each peer for the correct identity **bidirectionally**, while a *forged* identity claim (one account’s gist claimed as the other’s id) was rejected with `github_user_id_mismatch` (D-006 holds live). That run also surfaced + fixed a real bug: the attestation **gist filename** used a raw base64 pubkey prefix, but a gist filename can’t contain `/` (\~11% of device keys) — fixed in `attestationGistFilename` (commit `ae5e25be3`). What remains for a *full* Mode-A pass is the two-Tauri-instance swarm/transport half (steps 4–7), which the offline `two-peer-swarm-bidi` test already proves at the module level.
+The **whole identity path** — not just the gist crux — now runs **in-process with two real GitHub identities** as a creds-gated acceptance test: `apps/operator/lib/identity/p079-live-federation.live.test.ts` (`P079_LIVE=1 npx vitest run p079-live-federation.live`). With both accounts authed on one box, “two machines” collapses to “two distinct GitHub identities”, which IS automatable. The test stubs **nothing** on the identity path: real OAuth `verifyChannel1` (`GET /user`), real attestation gists owned by each account, real device-signed contributor files on `user/<id>` branches of a real shared repo, the **real `verifyChannel2` (no override)** admitting each peer **both ways**, forgery rejection (`oauth_user_id_mismatch` + `github_user_id_mismatch`), and a **real-Hyperswarm bidirectional feature federation gated by the real `verifyChannel2` adapter** (local testnet DHT). It self-cleans its gists + `user/<id>` branches + throwaway keychain entries. The **manual** steps below are now only needed for **Mode B** — two real *machines*, where NAT/firewall/public-DHT reachability is the thing that can’t be faked on one host.
+
+Verified live — gist crux 2026-06-01, full in-process pass 2026-06-02
+
+The **channel-2 publish→verify loop** — the offline-impossible crux — was first run live 2026-06-01 with two genuinely distinct GitHub accounts (`papercupai` + `aviynw`): each created a real attestation **gist** under its own account, and the **real** `verifyAttestation` / `verifyChannel2` accepted each peer for the correct identity **bidirectionally**, while a *forged* identity claim (one account’s gist claimed as the other’s id) was rejected with `github_user_id_mismatch` (D-006 holds live). That run also surfaced + fixed a real bug: the attestation **gist filename** used a raw base64 pubkey prefix, but a gist filename can’t contain `/` (\~11% of device keys) — fixed in `attestationGistFilename` (commit `ae5e25be3`).
+
+On **2026-06-02** this was extended to a **full in-process Mode-A pass** and captured as the gated `p079-live-federation.live.test.ts` (above): the same two real identities published real gists **and** real signed contributor files to a real shared repo, the **real `verifyChannel2` (no override)** admitted each peer both ways, and they **federated a feature bidirectionally over the real Hyperswarm transport with the real channel-2 adapter as the admission gate** — i.e. the swarm/transport half (steps 4–7) is now exercised against the real gate, not just the `two-peer-swarm-bidi` stub. The only thing left for a *true* Mode-B pass is two real **machines** (public-DHT/NAT reachability).
 
 R-1 — RESOLVED: channel-2(c) anchors on gist ownership, not a verified commit
 

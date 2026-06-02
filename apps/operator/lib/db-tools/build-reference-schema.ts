@@ -24,6 +24,7 @@ import postgres from 'postgres';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve } from 'node:path';
+import { readdirSync } from 'node:fs';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations } from '../../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -31,6 +32,13 @@ const execFileP = promisify(execFile);
 
 const REPO_ROOT = resolve(process.cwd(), '../..'); // run from apps/operator → repo root
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
+// The SECOND, un-unified migration system (applied manually in prod, no runner).
+// Creates Group-A ghost tables (agent_actions, agent_queries, el_conv_calls,
+// voice_utterances) and renames claude_sessions → delegates (002 → 003).
+const COMMANDS_MIGRATIONS_DIR = resolve(REPO_ROOT, 'apps/operator/lib/commands/migrations');
+// Captured DDL for the 9 tables the reference build can't reach via migrations/
+// ensures: Group B (inline TS runtime DDL) + Group C (true orphans). See the file.
+const EXTRA_TABLES_SQL = resolve(REPO_ROOT, 'apps/operator/lib/db-tools/baseline-extra-tables.sql');
 const OUT = process.argv[2] ?? '/tmp/papercusp-reference-schema.raw.sql';
 
 // Framework roles the production boot pre-creates. harness_admin is SUPERUSER here
@@ -166,6 +174,34 @@ async function main() {
       console.log(`[ref-build] migration retry pass ${pass + 1}: +${applied}`);
       if (applied === 0) break;
     }
+
+    // 5c. Apply the SECOND migration system + the captured extra-tables fragment so
+    //     the dump is the COMPLETE schema (184 tables), not just the migration+ensure
+    //     subset (170). These cover the 14 "ghost" tables a pure reference build misses:
+    //       • apps/operator/lib/commands/migrations/*.sql — Group A (agent_actions,
+    //         agent_queries, el_conv_calls, voice_utterances) + the claude_sessions →
+    //         delegates rename (002 → 003). Applied as harness_admin (SUPERUSER here, so
+    //         the GRANTs land). Run via psql for multi-statement/dollar-quote fidelity.
+    //       • baseline-extra-tables.sql — Group B (inline TS runtime DDL) + Group C (true
+    //         orphans with no active creator). Captured DDL.
+    const cmdFiles = readdirSync(COMMANDS_MIGRATIONS_DIR)
+      .filter((f) => /^\d+_.*\.sql$/.test(f))
+      .sort();
+    console.log(`[ref-build] applying ${cmdFiles.length} commands/migrations + extra-tables fragment…`);
+    const psqlFail = new Map<string, string>();
+    for (const f of [...cmdFiles.map((f) => resolve(COMMANDS_MIGRATIONS_DIR, f)), EXTRA_TABLES_SQL]) {
+      try {
+        await execFileP('psql', [adminDsn, '-v', 'ON_ERROR_STOP=1', '-q', '-f', f]);
+      } catch (err) {
+        psqlFail.set(f, (err as { stderr?: string })?.stderr?.split('\n').slice(-3).join(' ') ?? String(err));
+      }
+    }
+    if (psqlFail.size > 0) {
+      console.error('[ref-build] commands/migrations + fragment files that errored:');
+      for (const [f, e] of psqlFail) console.error(`  ${f.replace(REPO_ROOT, '.')}: ${e}`);
+      throw new Error(`${psqlFail.size} commands-migration/fragment file(s) failed`);
+    }
+    console.log('[ref-build] 2nd migration system + extra-tables fragment applied');
 
     // 6. Dump the global schemas (schema-only, no owner/privs — the sanitizer
     //    handles idempotency; ownership/GRANT are stripped here).
