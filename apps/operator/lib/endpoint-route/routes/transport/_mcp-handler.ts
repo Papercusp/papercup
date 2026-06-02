@@ -50,7 +50,7 @@ import {
   headersFromExtra,
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
-import { withWorkspace } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { dispatchNeedsTx, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '@/lib/workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
@@ -733,6 +733,21 @@ const handler = createMcpHandler(
           // — harness resolution, not just the PG GUC `withWorkspace` sets — see
           // the CALLER's workspace, not the process-global `reg.current`. '*'
           // (superuser with no chosen workspace) stays unpinned.
+          // P-062 — crossWorkspace tools span workspaces: hand them the admin
+          // (rolbypassrls) handle, never a workspace-scoped harness_app tx, so
+          // RLS never hides another workspace's rows. Mirrors the HTTP catchall's
+          // chooseScopedHandle. Checked before needsTx so it also covers the
+          // superuser/'*' discovery case (e.g. papercusp:list_workspaces). Tools
+          // that read getOrgPg() directly are unaffected (they ignore ctx.tx).
+          if (projected.crossWorkspace === true) {
+            const { sql: adminTx } = getOrgPg();
+            const ctx: UnifiedToolContext = {
+              ...baseCtx,
+              tx: adminTx,
+              principal: await synthesizeDispatchPrincipal(adminTx, spawnRes.ctx),
+            };
+            return await runWithWorkspaceIfConcrete(spawnRes.ctx.workspaceId, () => runDispatch(ctx));
+          }
           if (needsTx) {
             const ctxWs = spawnRes.ctx.workspaceId;
             return await runWithWorkspaceIfConcrete(ctxWs, () =>
