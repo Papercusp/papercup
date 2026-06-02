@@ -1,5 +1,5 @@
 ---
-title: Sessions tab — live all-psu-agent roster (heartbeat-backed)
+title: Sessions view — live all-psu-agent roster (heartbeat-backed)
 slug: adv-sessions-live-roster-2026-06-02
 status: draft
 created: 2026-06-02
@@ -7,104 +7,121 @@ updated: 2026-06-02
 owner: avi@storewolf.com
 ---
 
-# Sessions tab — live all-psu-agent roster (heartbeat-backed)
+# Sessions view — live all-psu-agent roster (heartbeat-backed)
 
 ## Now
 
-**State:** Draft — design complete (functionality + UI), grounded in the live code. Awaiting review of the two load-bearing decisions before Phase 1.
+**State:** Draft — architecture + UI settled with the human (2026-06-02). Sessions becomes the **third view in the combined Plans/Inbox shell** (Plans · Inbox · Sessions), reusing the left plan rail as a filter; it stops being a standalone `?tab=sessions` peer. Roster is presence-primary (every active agent), rich multi-line rows, and the No-plan / presence-only groups are always shown. The one remaining open input is D-001 (the join column); everything else is decided.
 
-**Next:** Human reviews D-001 (the `adv_sessions` ↔ `coord_presence` join key) and D-003 (merge vs separate tab); then Phase 1 (P-001, `coord_owner_id`) begins.
+**Next:** Human signs off on D-001 (`coord_owner_id` on `adv_sessions`); then Phase 1 (P-001) begins.
 
 ## Background
 
 ### The problem / why now
 
-The `/adv` "sessions" tab today shows only **plan-tied terminal launches** (the `adv_sessions` table), grouped by plan. Free / ad-hoc psu agents — the SU engineer shells, anything not launched against a plan — and the **live state** of every agent (what it's doing, which files it's on) aren't visible.
+The `/adv` Sessions tab today is a **standalone `?tab=sessions` peer** showing only **plan-tied terminal launches** (`adv_sessions`), grouped by plan, with no live signal. Free / ad-hoc psu agents (plain SU/engineer shells) and the **live state** of every agent — what it's doing, which files it's on, whether it's even alive — are invisible.
 
-As of commit `d33d07837`, **`coord:inbox` bumps a presence heartbeat on every tool call**, so `harness_shared.coord_presence` is now a *complete, fresh* roster of every active psu agent — carrying its declared intent + current files. That's the missing live layer. This plan expands the sessions tab into a live "who's active, on what, touching which files" view, while keeping the existing plan-grouped interface for plan-associated agents (which the user confirmed is good).
+Two things changed that make a real live roster possible *and* make a better home for it obvious:
 
-It is also the human-facing twin of the `holder_intent` / `holder_focused` added to lock blocks (commit `14bb9fb0c`): the same presence data, surfaced as a dashboard instead of just-in-time on contention.
+1. As of `d33d07837`, **`coord:inbox` bumps a presence heartbeat on every tool call**, so `harness_shared.coord_presence` is now a *complete, fresh* roster of every active psu agent — carrying declared intent + current files. That is the missing live layer.
+2. Plans and Inbox were merged into **one shell** (`PlansClient.tsx`) with a `?view=plans|inbox` toggle that shares a single left **plan rail** (`?itemPlans=`); Inbox reuses the rail as its filter (`planFilters`). Sessions belongs in that same shell as a third lens on the same plan-scoped world — not off in its own tab.
+
+So: promote Sessions into the combined shell as a third `?view=`, make it presence-primary, and reuse the rail to filter the roster by plan exactly as Inbox does. It is also the human-facing twin of the `holder_intent` / `holder_focused` lock enrichment (`14bb9fb0c`): the same presence data, surfaced as a dashboard instead of just-in-time on contention.
 
 ### Current state (grounded)
 
-- **Tab component:** `apps/operator/app/adv/sessions/AdvSessionsClient.tsx` (rendered in the Vite SPA via the `@/app` alias; `AdvShell` tab config at `apps/operator-vite/src/components/adv/AdvShell.tsx:52`, already `supportsAll: true`).
-- **Data:** `GET /api/adv/sessions` → `listAdvSessions(200)` over `harness_shared.adv_sessions`; polled every **3s** while visible; grouped by `plan_slug` (harness derived via plan→harness); pid-liveness via `/api/adv/sessions/alive?pid=N`.
-- **`adv_sessions`** (`apps/operator/lib/ensure-schema.ts:1965`): durable psu-launch record — `plan_slug`, `agent` (claude/codex/omp), `role`, `feature`, `pid`, `omp_thread_id`, `started_at`, `ended_at`. Plan-tied; **not** a general live roster.
-- **`coord_presence`** (the new live layer, `ensure-schema.ts:1777`): `owner_id` PK, `owner_label`, `source`, `intent`, `current_plan_slug`, `current_files`, `host`, `pid`, `started_at`, `heartbeat_at`. `stale` = `heartbeat_at` older than `PRESENCE_STALE_MS` (10m). Read via `listPresence()` / `GET /api/coord/presence` (`{active, stale}`); LEFT JOINs `power_user_sessions` for `user_id` / `revoked`.
-- **Reuse candidate:** `apps/operator/app/coord/CoordDashboard.tsx` already renders active + stale presence — extract its row/section into a shared component.
-- `formatRelativeUpdated` (`@/lib/format/relative-time`) + the existing agent badges are already in the tab.
+- **Combined shell:** `apps/operator/app/admin/plans/PlansClient.tsx` renders the `Plans | Inbox` toggle (`?view=`, buttons ~L561–579) and the shared left rail `aside.pc-plans__rail` (~L544–630). The rail's plan selection is `?itemPlans=` (nuqs array); Inbox passes it down as `planFilters` to `PlanItemsList` / `PlanOtherList` (~L719/732).
+- **Standalone Sessions tab (to be removed as a peer):** `AdvShell.tsx` registers `{ id:'sessions', label:'Sessions', icon:Terminal, supportsAll:true }` in `ADV_TABS` (~L36–60); `routes/adv/index.tsx` switch renders `<AdvSessionsClient/>` for `?tab=sessions` (~L54). The component is `apps/operator/app/adv/sessions/AdvSessionsClient.tsx` — grouped-by-plan `Collapsible`s; row = `[agent badge][role][feature][harness][label][times][RowUsagePills] → [Focus/Fresh/Resume]`; a right `SessionDetail` pane.
+- **Data today:** `GET /api/adv/sessions` → `listAdvSessions(200)` over `harness_shared.adv_sessions`; polled every **3s** while visible; grouped by `plan_slug`; pid-liveness via `/api/adv/sessions/alive?pid=N`.
+- **`adv_sessions`** (`ensure-schema.ts:1965`): durable psu-launch record — `plan_slug, mode(omp|console), terminal_bin, pid, window_id, omp_thread_id, label, cwd, agent, role, feature, started_at, ended_at, exit_code`. Plan-tied; not a live roster.
+- **`coord_presence`** (`ensure-schema.ts:1777`, the new live layer): `owner_id` PK, `owner_label, workspace_id, source, intent, current_plan_slug, current_files(jsonb), host, pid, started_at, heartbeat_at`. `stale` = heartbeat older than `PRESENCE_STALE_MS` (10m). `listPresence()` LEFT JOINs `power_user_sessions` → `user_id` / `revoked`.
+- **Reuse:** `apps/operator/app/coord/CoordDashboard.tsx` already renders active + stale presence rows; `formatRelativeUpdated`; the existing agent badges.
 
 ### Data model & the join
 
-`coord_presence` is keyed by **`owner_id`** (the coord identity: `PAPERCUSP_SID` for Claude/Codex SU, `omp-<auth>-<pid>` for OMP). `adv_sessions` is keyed by a `bigserial id` with **no owner column**, so the two don't join cleanly today — this is the one real design dependency (see D-001).
+`coord_presence` is keyed by **`owner_id`** (the coord identity: `PAPERCUSP_SID` for Claude/Codex SU, `omp-<auth>-<pid>` for OMP). `adv_sessions` is keyed by a `bigserial id` with **no owner column**, so the two don't join today — the one real dependency (D-001). **`coord_presence` is the primary live roster** (every active agent, plan + non-plan); `adv_sessions` is the **enrichment** (plan/role/feature + durable ended history). A plain SU shell with no `adv_sessions` row still appears from presence; a plan-tied agent gets the richer metadata + grouped view (D-002).
 
-**`coord_presence` is the primary live roster** (every active agent, plan + non-plan); `adv_sessions` is the **enrichment** (plan/role/feature + durable history incl. ended sessions) joined where possible. An agent with no `adv_sessions` row (a plain SU shell) still appears from presence; a plan-tied agent gets the richer metadata and the existing grouped view (see D-002).
+### Agent information available (what we can display)
 
-### Functionality (data layer)
+Grouped by source + cost-to-fetch, so row vs. detail-pane placement is deliberate:
 
-- A merged roster endpoint (extend `GET /api/adv/sessions` or add `GET /api/adv/roster`) returns, per active agent: `{ owner_id, label, source, intent, current_files, current_plan_slug, host, pid, heartbeat_at, liveness, user_id }` + the `adv_sessions` enrichment (`plan`, `role`, `feature`, `started_at`, `ended_at`) when joinable, plus recent ended `adv_sessions` rows for the durable history.
-- **Liveness** is derived from `heartbeat_at`, **not** `adv_sessions.pid`: `live` < ~60s · `idle` < `PRESENCE_STALE_MS` · `stale` ≥ `PRESENCE_STALE_MS`. Keep the pid check as a *secondary* signal and surface any presence↔pid discrepancy (zombie / orphan).
+**Tier 1 — free (coord_presence + its power_user_sessions join):** client (`source`: claude/codex/omp) · `owner_label` · liveness dot + "active Ns ago" (`heartbeat_at`) · `intent` one-liner · `current_plan_slug` · `current_files[]` · `host`/`pid` · session age (`started_at`) · `user_id` + `revoked`.
+
+**Tier 2 — one join to adv_sessions (via coord_owner_id):** `role` (worker/validator/…/SU) · `feature` (F-NNN) · `mode`/`terminal_bin`/`window_id`(→ Focus)/`omp_thread_id`(→ Resume)/`cwd` · usage `summary` (latest model, total tokens, $cost, user-message count) · `ended_at`/`exit_code` history.
+
+**Tier 3 — richer joins/parses (detail pane, lazy):** locks **held** (files + lock intent + expiry, `locks:queue` / papercusp_su) and **blocked-waiting** queue position · coord (last message, open handoffs/escalations, unread inbox count, `coord_event_log`) · transcript/progress (todos & phases, latest messages, per-tool call/error counts, goals/jobs/compactions, full token in/out/cache breakdown — the `OmpSessionState` we already parse for OMP; a claude/codex analog).
+
+**Tier 4 — derived (no new data):** live/idle/stale counts per group · "files in play" inverse map (file → agents) · contention (2+ agents on one file) · zombie/orphan (heartbeat-vs-pid disagreement).
 
 ### UI design
 
-- **Two sections** (preserve + extend):
-  1. **Plan-associated** (`current_plan_slug` set) → the existing plan-grouped collapsible view, now driven by the merged model (liveness from presence).
-  2. **Other active agents** (no plan) → new section: ad-hoc SU / engineer shells, grouped by harness/workspace or flat.
-- **Per row:** a **3-state liveness dot** (live <60s · idle <10m · stale) + "active Ns ago"; a **source** icon (claude/codex/omp); `owner_label`; the **declared intent** one-liner; **`current_files`** as chips (the live "who's on X" map); plan/role/feature link when present; host/pid.
-- **Filters:** client, liveness, harness/workspace, has-plan vs none; a "who's editing `<file>`" lookup off `current_files`.
-- **Detail pane:** reuse the existing `SessionDetail`; add a presence panel (intent, current_files, heartbeat timeline) for agents lacking an `adv_sessions` row.
-- **Real-time:** poll the merged endpoint every **3–5s** while visible (match the existing poll; pause when hidden). **No per-heartbeat SSE** — heartbeats are too frequent to push individually.
-- **Reuse:** a shared `PresenceRow` + `LivenessDot` extracted from `CoordDashboard`; `formatRelativeUpdated`; existing badge styles; design tokens per `/internal/docs/design`.
-- **Tooltip caveat:** "idle" = *no recent tool call* (could be mid-reasoning), not "gone" — the dot tracks tool-call cadence, since the heartbeat only fires on tool boundaries.
+**Placement:** Sessions is the **third `?view=`** in `PlansClient`'s shell — a `Plans | Inbox | Sessions` toggle — reusing the existing left **plan rail**. Selecting plans in the rail filters the roster to agents whose `current_plan_slug` is in the selection, exactly as it filters inbox items via `planFilters` (D-003). The standalone `?tab=sessions` peer is removed from `AdvShell`.
+
+**Three panes** (rail | roster | detail), matching Inbox's rail + two-pane (list + preview):
+
+```
+RAIL (shared) │ Plans │ Inbox │ *Sessions               │ AGENT DETAIL
+ [+ New Plan]  │ Filter:[client v][live v][role v] file_ │ * claude · session-188
+ (o)Plans      │                                          │ worker · F-012
+ ( )Inbox      │ v dbos-retire-legacy-orchestrator *2 ~1 │ Intent "refactoring
+ (*)Sessions   │  * claude·worker·F-012·session-188  4s  │  attempt-claim split"
+ [Active|Stale]│    "refactoring attempt-claim split"    │ Files(3) attempt-claim L
+ search ____   │    [F]attempt-claim.ts x3  L2  W0       │  distributed-claim
+ harness v     │    23m · 1.2M tok · $0.84 · opus-4.8    │  feature-claim L
+ PLANS(filter) │    [Focus window] [Resume]              │ Locks held(2)
+ > dbos-retire2│  * codex·architect·session-190     9s   │  attempt-claim  19m
+ > prod-readi 0│    "reviewing claim-handle adapter"     │  feature-claim  19m
+ > next-remov 1│    [F]claim-handle.ts x1  L1           │ Coord  handoff -> codex
+ > (no plan)  1│ v No plan · ad-hoc SU sessions      *1  │  last "pushed the fix"
+               │  * claude·papercup·session-201     2s   │ Usage in 980k out 41k
+ selecting a   │    "investigating OMP 400 schema"       │  cache-rd 1.1M  $0.84
+ plan filters  │    [F]tool-schema-sanitize.ts x2        │ Transcript >  Todos >
+ the roster    │ v Other active agents (presence-only)~1 │ host avi-dev pid 33417
+ (Inbox-style);│  ~ omp·~/papercup·omp-..4471  idle 4m   │ started 14:02 · console
+ no-plan groups│ -- Files in play(4) -- attempt-claim.ts │
+ ALWAYS shown  │   *claude/188 L · ~codex/190?  ...      │
+```
+
+(Legend: `*` live dot · `~` idle dot · `L` holds-lock · `W` waiting-on-lock · `[F]` file chip · `>` collapsed.)
+
+- **Grouping:** by plan (rail-filtered) **then** an always-visible `No plan · ad-hoc SU` group **and** an `Other active agents (presence-only)` group — rail selection never hides these (D-005).
+- **Rich rows (D-006):** dot · client · role · feature · session-id · "Ns ago" → intent → file chips + `L held` / `W waiting` counts → `age · tokens · $ · model` → contextual actions (Focus/Resume for terminal-backed rows; none for presence-only).
+- **Liveness:** dot from `heartbeat_at` — live <60s · idle <`PRESENCE_STALE_MS` · stale. Tooltip: "idle = no recent tool call (may be mid-reasoning), not gone."
+- **Detail dossier** (right pane, `SessionDetail` extended): the full Tier-1..3 set for ANY agent incl. presence-only — intent, files w/ lock markers, locks-held + expiry, coord (handoffs / last-said), usage breakdown, expandable transcript/todos.
+- **Files in play:** a Tier-4 inverse-map strip/section (file → agents on it) headlining contention.
+- **Realtime:** poll the merged endpoint every 3–5s while visible (pause when hidden); no per-heartbeat SSE (D-004).
+- **Reuse:** shared `LivenessDot` + `PresenceRow` extracted from `CoordDashboard`; `formatRelativeUpdated`; existing badges; tokens per `/internal/docs/design`.
 
 ### Risks & open questions
 
-- **`coord_owner_id` backfill:** existing `adv_sessions` rows predate the new column → they show durable metadata only (no live join) until relaunched. Acceptable.
-- **Ephemeral clutter:** one-off agents create presence rows; mitigated by the stale (>10m) age-out + the liveness filter.
-- **Workspace scope:** presence is workspace-scoped; the tab must scope to the current workspace (as `listAdvSessions` already does).
-- **"idle vs gone"** ambiguity (the tooltip).
+- **coord_owner_id backfill:** pre-existing adv_sessions rows lack the column → durable metadata only (no live join) until relaunched. Acceptable.
+- **current_files reliability:** only populated when an agent calls declare-intent / writePresence with files — the heartbeat alone does not set them. So file-chip / file-map coverage depends on agents declaring; show "—" when empty, don't imply "touching nothing."
+- **Tier-3 cross-DB:** locks live in papercusp_su, coord in harness_shared — the dossier joins across DBs; keep it lazy (detail-pane only) so the roster stays one cheap query.
+- **Ephemeral clutter:** one-off agents create presence rows; mitigated by stale (>10m) age-out + the liveness filter.
+- **Workspace scope:** presence is workspace-scoped; scope the roster to the current workspace (as `listAdvSessions` already does).
+- **idle vs gone** ambiguity (the tooltip).
 
 ## Phase 1 — Data join + presence merge
-- **P-001** `todo` Add coord_owner_id TEXT to harness_shared.adv_sessions (SQL migration in libs/papercusp/libs/db/sql + ensure-schema). Set it in the psu launcher's recordAdvSession to the PAPERCUSP_SID it exports (the coord owner_id the hooks use) → deterministic adv_sessions ↔ coord_presence join. (D-001) importance: high
-- **P-002** `todo` Build mergeRoster(): coord_presence as the primary live roster (scoped to current workspace) LEFT JOIN adv_sessions on coord_owner_id for plan/role/feature/history; derive liveness (live<60s / idle<PRESENCE_STALE_MS / stale) from heartbeat_at. Needs the join column from the prior item. (D-002) importance: high
 
+- **P-001** `todo` Add `coord_owner_id TEXT` to harness_shared.adv_sessions (SQL migration in libs/papercusp/libs/db/sql + ensure-schema). Set it in the psu launcher's recordAdvSession to the PAPERCUSP_SID it exports → deterministic adv_sessions ↔ coord_presence join. (D-001) importance: high
+- **P-002** `todo` Build mergeRoster(): coord_presence as the primary live roster (current-workspace-scoped) LEFT JOIN adv_sessions on coord_owner_id for plan/role/feature/history; derive liveness (live<60s / idle<PRESENCE_STALE_MS / stale) from heartbeat_at. Needs P-001. (D-002) importance: high
 
+## Phase 2 — Endpoint (merged roster + enrichment)
 
-## Phase 2 — Endpoint (merged roster)
+- **P-003** `todo` Merged roster endpoint (extend GET /api/adv/sessions or add GET /api/adv/roster): active agents (presence-primary) + adv_sessions enrichment + recent ended sessions for the durable list. Consumes mergeRoster().
+- **P-009** `todo` Tier-3 enrichment for the detail dossier: per-agent locks-held + expiry (locks:queue / papercusp_su) and coord state (last message, open handoffs/escalations, unread count from coord_event_log). Lazy / per-agent so the roster query stays cheap. importance: low
 
-## Phase 3 — UI (sections, liveness, detail)
+## Phase 3 — Shell integration (Sessions = 3rd view)
 
-## Phase 4 — Polish (filters, file-map, tokens)
+- **P-004** `todo` Extract a shared LivenessDot + PresenceRow from CoordDashboard.tsx (3-state dot keyed on heartbeat age + relative "active Ns ago" + source icon).
+- **P-005** `todo` Fold Sessions into the combined Plans/Inbox shell as a third ?view= (Plans|Inbox|Sessions) in PlansClient; remove the standalone ?tab=sessions peer from AdvShell + routes/adv/index.tsx; consume the rail's ?itemPlans as planFilters to scope the roster; always-render the No-plan + presence-only groups regardless of rail selection. (D-003, D-005) importance: high
+- **P-006** `todo` Rich roster rows wired to the merged endpoint: grouped (plan / No-plan / presence-only); per-row liveness dot, intent, current_files chips, held/waiting lock counts, age·tokens·$·model line; Focus/Resume for terminal-backed rows. (D-006)
 
+## Phase 4 — Detail dossier + polish
 
-## Phase 2 — Endpoint (merged roster)
-
-- **P-003** `todo` Extend GET /api/adv/sessions (or add GET /api/adv/roster) to return the merged model: active agents (presence-primary) + adv_sessions enrichment + recent ended sessions for the durable list. Consumes mergeRoster().
-
-
-## Phase 3 — UI (sections, liveness, detail)
-
-- **P-004** `todo` Extract a shared LivenessDot + PresenceRow component from CoordDashboard.tsx (3-state dot keyed on heartbeat age + relative "active Ns ago" + source icon).
-
-
-## Phase 3 — UI (sections, liveness, detail)
-
-- **P-005** `todo` Wire AdvSessionsClient to the merged endpoint: two sections — (1) plan-associated (existing grouped collapsible view, liveness from presence) and (2) Other active agents (no plan); per-row liveness dot, declared intent, current_files chips. Needs the endpoint + the shared LivenessDot. (D-003)
-
-
-## Phase 3 — UI (sections, liveness, detail)
-
-- **P-006** `todo` Detail pane: a presence panel (intent, current_files, heartbeat timeline) for agents that have no adv_sessions row, alongside the existing SessionDetail for plan/terminal sessions. importance: low
-
-
-## Phase 4 — Polish (filters, file-map, tokens)
-
-- **P-007** `todo` Filters: client (claude/codex/omp), liveness (live/idle/stale), harness/workspace, has-plan vs none; plus a "who's editing <file>" lookup driven by current_files.
-
-
-## Phase 4 — Polish (filters, file-map, tokens)
-
-- **P-008** `todo` Polish: "idle != gone" tooltip, empty states, a design-token pass per /internal/docs/design, and surface any presence-vs-pid discrepancy (zombie/orphan) as a warning. importance: low
+- **P-007** `todo` Full agent dossier detail pane (extend SessionDetail): intent, files w/ lock markers, locks-held + expiry, coord (handoffs / last-said), usage breakdown, expandable transcript/todos — for ANY agent incl. presence-only (no adv_sessions row).
+- **P-008** `todo` "Files in play" inverse map (current_files → which agents) with contention (2+ agents/file) + zombie/orphan (heartbeat-vs-pid) markers.
+- **P-010** `todo` Filters (client / liveness / role + "who's editing <file>" search) + polish: idle != gone tooltip, empty states, design-token pass per /internal/docs/design. importance: low
 
 ## Decisions
 
@@ -116,10 +133,18 @@ adv_sessions (bigserial id) and coord_presence (owner_id PK = PAPERCUSP_SID for 
 Date: 2026-06-02
 coord_presence is now complete (every active agent heartbeats on each tool call) and carries liveness + intent + current_files — exactly the live signal. adv_sessions is plan-tied and a poor liveness signal (pid-only), but holds the durable launch metadata (plan/role/feature) + ended history. So presence is the primary list; adv_sessions is a LEFT-JOIN enrichment. An agent with no adv_sessions row (a plain SU shell) still appears; a plan-tied one gets the richer grouped view.
 
-### D-003 — Merge into the one sessions tab (two sections), not a separate Agents tab
+### D-003 — Sessions becomes the 3rd view in the combined Plans/Inbox shell (shares the rail), not a standalone tab
 Date: 2026-06-02
-Render plan-associated agents in the existing grouped collapsible view, and add an "Other active agents" section beneath, in the SAME sessions tab. Rejected: a parallel "Agents" tab — the user confirmed the plan-associated interface is good and wants the other agents alongside it, not split across two surfaces.
+Plans and Inbox already live in one shell (PlansClient, ?view=plans|inbox) sharing a single left plan rail (?itemPlans); Inbox reuses the rail as its filter (planFilters). Make Sessions a third ?view= in that same shell so the rail filters the roster by plan exactly as it filters inbox items, and remove the standalone ?tab=sessions peer from AdvShell. Rejected: (a) keep it a standalone tab — splits the plan-scoped world across two surfaces with a duplicate filter; (b) a separate "Agents" tab — the human confirmed the plan-associated interface is good and wants the other agents alongside it, in one place.
 
 ### D-004 — Realtime by short poll, not per-heartbeat SSE
 Date: 2026-06-02
 Poll the merged roster every 3-5s while the tab is visible (pause when hidden), matching the existing sessions tab. Heartbeats fire on every tool call across the fleet — far too frequent to push individually over SSE; a short poll is cheap and smooth for a slower-moving roster.
+
+### D-005 — Rail selection never hides no-plan / presence-only agents
+Date: 2026-06-02
+Selecting plans in the rail filters plan-tied agents (current_plan_slug in selection), but the "No plan · ad-hoc SU" and "Other active agents (presence-only)" groups stay visible below the filtered set regardless of selection. Rejected: mirror Inbox's hide-on-any-selection — live SU/engineer shells (often the most interesting agents) would vanish whenever a plan filter is active.
+
+### D-006 — Rich multi-line rows as the default density
+Date: 2026-06-02
+Default row shows dot + client + role + feature + id + age, the intent line, current_files chips with held/waiting lock counts, and the age·tokens·$·model line; the detail pane adds locks-held, coord, and transcript. Rejected (for now): a one-line compact row — denser but defers the at-a-glance "what is this agent doing / touching" signal that is the whole point. Compact can return later as a view toggle if the list gets long.
