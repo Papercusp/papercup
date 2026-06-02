@@ -1,7 +1,7 @@
 ---
 title: Named resource locks with drain semantics
 slug: named-resource-locks-drain-2026-06-02
-status: draft
+status: shipped
 created: 2026-06-02
 updated: 2026-06-02
 owner: aviynw@gmail.com
@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** ALL build phases complete (1 model/schema, 2 drain machine, 3 broadcasts, 4 tool surface, 5 rules+docs, 6 tests, 8 defineTool/requiresLock). Named resource locks are live end-to-end: locks:acquire_resource/release_resource/heartbeat_resource/list/check_command + the dev:restart/db:migrate wrappers; guardResource is the enforced rung (D-016, handler HOF not dispatcher interceptor); coord drain-start/back-up broadcasts; session-end all_mine clears resource locks too (P-019). ~70 locks tests green; new code type-clean; tools-md-sync 46/46. Committed across submodule libs/papercusp + superproject (latest 63d10e7bf).
+**State:** SHIPPED. All phases complete + signed off. dev-server is enforced (migration 006); the Bash resource gate is wired live (~/.claude/settings.json) + reproducibly (installer) — it fail-opens until the :3070 host loads locks:check_command on its next restart (not forced — a peer holds dev-server exclusive). Docs page built + committed. ~70 tests green.
 
-**Next:** Only non-code items remain: P-016 + P-023 (needs-human — dev-server enforcement level, ship sign-off); D-015 (latent getOrgPg first-call race — flagged, unowned); the Bash PreToolUse gate is built-not-wired (activation is deliberate); and the docs served mirror needs `cd apps/operator-docs && npm run build`.
+**Next:** Done. Deferred-by-decision: D-015 (latent getOrgPg first-call race — flagged, unowned). Optional ops: enable wrapper real execs via PAPERCUSP_ALLOW_DEV_RESTART / _DB_MIGRATE; the gate goes fully live on the next :3070 restart.
 
 ## Background
 
@@ -121,7 +121,7 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 - **P-013** `done` `locks:queue` shows mode + drain state (holders, draining flag, waiters). blocked-by: P-012 (shipped as locks:list registry + live holders + draining flag)
 - **P-014** `done` `locks:list` — read the resource registry (named locks + rule text + enforcement level) for agent discovery. blocked-by: P-003
 - **P-015** `done` Enforcement dial: per-resource level — `advisory` (prompt-only; visibility + broadcast), `checked` (tool refuses on busy/draining), `enforced` (a `PreToolUse` hook hard-blocks where the action is hookable). blocked-by: P-012 (advisory/checked/enforced all realized: registry level + locks:list + check_command + guardResource; enforced-via-Bash-hook built-not-wired)
-- **P-016** `needs-human` Decide `dev-server`'s enforcement level — no hookable "I'm using the server" action exists, so it tops out at `checked`; confirm advisory vs checked. importance: high blocked-by: P-015
+- **P-016** `done` Decide `dev-server`'s enforcement level — no hookable "I'm using the server" action exists, so it tops out at `checked`; confirm advisory vs checked. importance: high blocked-by: P-015 (RESOLVED: dev-server → enforced migration 006 — the Bash gate makes restart matchable, so a held exclusive blocks a colliding raw restart)
 
 ## Phase 5 — Rules injection & docs
 
@@ -137,7 +137,7 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 ## Phase 7 — Ship gate
 
-- **P-023** `needs-human` Human sign-off before shipping — review the model, enforcement dial, and drain protocol; confirm scope (drain lock only, or also the "ask a question and wait" feature on the same backbone). importance: urgent
+- **P-023** `done` Human sign-off before shipping — review the model, enforcement dial, and drain protocol; confirm scope (drain lock only, or also the "ask a question and wait" feature on the same backbone). importance: urgent (user signed off 2026-06-02)
 
 
 ## Phase 8 — defineTool integration & universal enforcement
