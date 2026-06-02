@@ -18,10 +18,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
-// Import the PG-container helpers DIRECTLY (the package index pulls in msw→vitest,
-// which can't load outside a vitest runner; pg-container.ts only needs testcontainers).
-// eslint-disable-next-line import/no-relative-packages
-import { getTestPg, teardownTestPg } from '../../../../libs/test-config/src/pg-container.ts';
+// A DEDICATED (non-reused) PG container for the smoke. The shared test-config
+// getTestPg() uses .withReuse() + teardownTestPg() stops it, so a concurrent test (or
+// another smoke run) stopping the shared container mid-run causes ECONNREFUSED — fatal
+// to the long-lived operator the smoke boots. A dedicated container isolates the smoke.
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 
@@ -56,10 +57,11 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<boolean> {
 
 async function main(): Promise<void> {
   // The gym needs a PG where it can CREATE EXTENSION (superuser) — the dev box's
-  // harness_admin is not superuser, so the smoke provisions its gym DB in a dedicated
-  // superuser testcontainer (the ship target uses embedded-pg's superuser). This also
-  // keeps the smoke fully self-contained: zero dev-box PG involvement.
-  const maintenanceUri = await getTestPg();
+  // harness_admin is not superuser. A DEDICATED pgvector container (NOT the shared
+  // reused getTestPg one) gives a superuser PG isolated from cross-process churn.
+  let pgContainer: StartedPostgreSqlContainer | undefined;
+  pgContainer = await new PostgreSqlContainer('pgvector/pgvector:pg16').withDatabase('papercusp_smoke').start();
+  const maintenanceUri = pgContainer.getConnectionUri();
 
   let operator: ChildProcess | undefined;
   let logFd: number | undefined;
@@ -121,7 +123,7 @@ async function main(): Promise<void> {
       detached: true, // own process group → teardown kills the whole npx→node tree
     });
 
-    const up = await waitForHttp(`http://127.0.0.1:${PORT}/llms.txt`, 90_000);
+    const up = await waitForHttp(`http://127.0.0.1:${PORT}/llms.txt`, 120_000);
     if (!up) throw new Error(`gym-operator did not come up on :${PORT} within 90s (see ${opLogPath})`);
     log('operator responding; giving DBOS a moment to launch …');
     await sleep(4000);
@@ -255,8 +257,8 @@ async function main(): Promise<void> {
       report.workerPgDiag = `capture err: ${String(e)}`;
     }
     try { rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
-    // Stop the dedicated gym testcontainer (drops the gym DB with it).
-    try { await teardownTestPg(); } catch { /* ignore */ }
+    // Stop the dedicated gym container (drops the gym DB with it).
+    try { if (pgContainer) await pgContainer.stop(); } catch { /* ignore */ }
   }
 
   process.stdout.write('\n===== GYM SMOKE REPORT =====\n' + mask(JSON.stringify(report, null, 2)) + '\n');
