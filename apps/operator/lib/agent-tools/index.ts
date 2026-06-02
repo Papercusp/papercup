@@ -172,6 +172,7 @@ import './locks/acquire_resource';
 import './locks/release_resource';
 import './locks/heartbeat_resource';
 import './locks/list';
+import './locks/check_command';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './db/migrate';
