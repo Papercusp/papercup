@@ -72,7 +72,7 @@ describe('runGymPipeline', () => {
     expect(result.outcome).toBe('passed');
     expect(result.terminal).toBe(true);
     expect(result.workflowID).toBe('pipeline:gym-x:F-GYM-AA:e0');
-    expect(result.harnessSlug).toMatch(/^gym-/);
+    expect(result.harnessSlug).toMatch(/^gym[a-z0-9]+$/); // hyphen-free (valid PG schema)
     expect(result.clonePath).toBe(`/scratch/gym/clones/${result.harnessSlug}`);
     // Setup happens before the first poll; the runner does NOT tear down.
     expect(calls.slice(0, 5)).toEqual([
