@@ -11,39 +11,39 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design locked via brainstorming (2026-06-02). All keystone decisions ratified (D-001–D-010); no code yet. The system runs the Papercusp harness's own pipeline on synthetic feature tasks, scores the result with a frozen Opus 4.8 judge that grades the layer the harness *can't* check itself, compares prompt/orchestration variants on equal footing, and closes a fully-autonomous propose→apply→rerun→keep-if-better loop (GEPA-style reflective mutation + Pareto frontier). Build order is **measurement-spine-first** (Phase 0–3 are usable manually for A/B before any optimizer exists), then the autonomous loop (Phase 4–5).
+**State:** Design revised after review round 1 (2026-06-02). Two load-bearing review objections resolved by decision: (1) **promotion targets a single dedicated harness's `promptOverrides`, never the shared default prompt files the live fleet reads** (D-012, supersedes D-006) — this dissolves the shared-`main`-tree concurrency hazard while keeping promotion immediate + autonomous; (2) **pass-count is demoted from optimization reward to an observability stat** (D-011) so the validator can stay mutable (D-003 holds) with no incentive to weaken it — the frozen Opus judge's holistic scores are the reward. Plus accepted review fixes: three task pools train/anchor/monitor (D-013), a real-feature correlation anchor in v1 (D-014), prompts-only proposer + generator/judge model decorrelation (D-015), reproducibility pins (D-016), trace distillation + a cost model (D-017). Spine-first build order unchanged; no code yet.
 
-**Next:** Human (avi) reviews this spec; on approval an agent picks up **P-001** (Phase 0 hermetic runner — the riskiest infra, proven first).
+**Next:** Human (avi) re-reviews this revision; on approval an agent picks up **P-001** (Phase 0 hermetic runner).
 
 ## Background
 
-Papercusp can already *judge a single feature internally* (the `validator` + `crosscheck` roles do evidence-based pass/fail against `VAL-###` acceptance criteria; `competition` mode already scores N workers on one feature; the `curator` dedups issues) and already *captures telemetry* (cost, tokens, attempts, pass/fail in `harness_features` + `.jsonl` run logs + the status API). Two adjacent frameworks shipped: `llm-testing-framework-2026-05-14` (a judge + cached-transcript re-evaluation + `ChatTarget`, but aimed at *chat surfaces* over HTTP/SSE, not the feature pipeline) and `su-scenario-suite-2026-05-31` (behavioral prompt testing with a sim-user + *deterministic asserts + LLM judge*, with the hard-won lesson: **don't lean on the judge alone — it's noisy**). Prompts are already swappable per-run via `promptOverrides.<role>` + per-role `models.<role>` in harness config, loaded per-launch.
+Papercusp can already *judge a single feature internally* (the `validator` + `crosscheck` roles do evidence-based pass/fail against `VAL-###` acceptance criteria; `competition` mode scores N workers on one feature; the `curator` dedups issues) and already *captures telemetry* (cost, tokens, attempts, pass/fail in `harness_features` + `.jsonl` run logs + the status API). Two adjacent frameworks shipped: `llm-testing-framework-2026-05-14` (judge + cached-transcript re-evaluation + `ChatTarget`, aimed at *chat surfaces*) and `su-scenario-suite-2026-05-31` (behavioral prompt testing, sim-user + *deterministic asserts + LLM judge*, lesson: **don't lean on the judge alone — it's noisy**). Prompts are already swappable per-run via `promptOverrides.<role>` + per-role `models.<role>` in harness config — and that per-harness override mechanism is exactly what promotion writes into (D-012).
 
-**The gap:** nothing runs the *whole pipeline* on a benchmark of features, scores the *resulting work*, compares prompt/orchestration *variants* on equal footing, and closes a *propose→apply→rerun* improvement loop. This plan builds that — a **"harness gym"**: an eval-driven optimizer for the harness itself (the coding-agent analogue of DSPy/GEPA).
+**The gap:** nothing runs the *whole pipeline* on a benchmark of features, scores the *resulting work*, compares prompt variants on equal footing, and closes a *propose→apply→rerun* improvement loop. This plan builds that — a **"harness gym"**: an eval-driven optimizer for the harness itself (the coding-agent analogue of DSPy/GEPA).
 
 ## Goals / Non-goals
 
 **Goals**
 - Run the real multi-agent pipeline on reproducible synthetic feature tasks, hermetically and in parallel.
-- Score each run on the dimensions the harness *cannot self-check*: high-level intent achievement, spec gaps/misspecification given the project, subjective code quality, and process correctness — via a frozen Opus 4.8 judge.
-- Track cost/tokens/wall-clock deterministically as a side metric + guardrail (never fed to the judge).
-- Compare variants (`{promptOverrides, orchestration params, models}`) on equal footing, with per-task breakdowns and a Pareto frontier.
-- Close a **fully autonomous** loop: judge-driven reflective proposal → apply as overlay → rerun → keep-if-better → immediate canonical promotion, with deterministic safety gates + circuit-breaker.
+- Score each run on what the harness *cannot self-check* — high-level intent achievement, spec gaps/misspecification given the project, subjective code quality, process correctness — via a **frozen Opus 4.8 judge using generic, judgment-based reasoning** (not a rigid checkbox rubric).
+- Track cost/tokens/wall-clock deterministically as a guardrail + tiebreaker (never fed to the judge).
+- Compare variants (prompt overlays) with per-task breakdowns and a Pareto frontier.
+- Close a **fully autonomous** loop: judge-driven reflective proposal → apply as overlay → rerun → keep-if-better → **immediate promotion into a dedicated harness's overrides**, with deterministic guardrails + a circuit-breaker.
 
 **Non-goals**
-- Re-checking the literal functional spec the harness's own validator/tester already enforces. If a run fails the strict spec, that is a bug in *that* layer, not something the gym's judge re-litigates.
-- Optimizing for cost inside the judge (cost is deterministic and compared by us).
-- Driving any UI; this evaluates the backend pipeline only.
-- Adopting DSPy/GEPA as a framework (we borrow two of its ideas — see D-007).
+- Re-checking the literal functional spec the harness's own validator/tester already enforces (D-001).
+- **Optimizing for pass-count.** "How many features passed" is an observability stat, not a reward — it is gameable by a mutable validator and is deliberately kept out of the optimization signal (D-011).
+- Optimizing for cost inside the judge (cost is deterministic, compared by us).
+- Writing to the shared default prompt files the live fleet reads (D-012). Driving any UI. Adopting DSPy/GEPA as a framework (D-007).
 
 ## Core concepts
 
-- **Task** — a synthetic feature request `{repo@pinned-commit, spec, intent, planted_bug?}`. `kind` ∈ `train | held_out | probe`. Generated intent-first, then a deliberately-realistic (mildly underspecified) spec, so spec-gaps exist to find.
-- **Variant** — the unit the optimizer mutates and you A/B: `{ promptOverrides per role, orchestration params, models per role }`. A versioned overlay config — **never an in-place edit of the canonical prompt files** (D-010).
-- **Run** — one `(variant × task)` execution of the full pipeline, hermetic. Produces deterministic signals + a cached trace.
-- **Trace** — the full record the judge reads: terminal state, attempts, the diff, every role transcript, tests written, cost/tokens.
-- **Score** — frozen Opus judge output: three dimensions + rationale (§ Scoring rubric).
-- **Frontier / Champion / Canonical** — three tiers of state (D-005): the Pareto frontier (drives parent selection), the single champion (held-out best, the deploy candidate), and canonical (the live prompt files).
+- **Task** — a synthetic feature request `{repo@pinned-commit, spec, intent, planted_bug?}`. Generated intent-first, then a deliberately-realistic (mildly underspecified) spec so spec-gaps exist to find.
+- **Task pools (D-013)** — `train` (drives the proposer) · **`dev-anchor`** (frozen for the whole run → champion comparison + circuit-breaker are apples-to-apples) · **`monitor`** (regenerated each cycle, never feeds an accept decision — only alarms on overfitting-to-anchor) · `probe` (planted-bug) · **`real-anchor`** (a small fixed set of real shipped features, scored but never optimized — the falsifiability check, D-014).
+- **Variant** — a prompt overlay: `{ promptOverrides per role }`. **v1 mutates prompts only** (D-015); `models`/orchestration params exist in the schema but are reserved for a later phase. Never an in-place edit of canonical files (D-010).
+- **Run** — one `(variant × task)` execution of the full pipeline, hermetic. Produces deterministic signals + a cached (distilled) trace.
+- **Score** — frozen Opus judge output: three dimensions + rationale (§ Scoring rubric). The judge's composite is **the reward**.
+- **Frontier / Champion / Promotion target** — three tiers (D-005): the Pareto frontier (train vectors, drives parent selection) → the champion (dev-anchor best, subject to gates) → the **dedicated gym harness's overrides** (immediate, autonomous promotion — D-012).
 
 ## Architecture
 
@@ -52,199 +52,233 @@ Papercusp can already *judge a single feature internally* (the `validator` + `cr
                           │              HARNESS GYM (new)                │
                           └─────────────────────────────────────────────┘
 
-  ① TASK GENERATOR ────────► synthetic feature task
-     (Opus, grounded in       { repo@pinned-commit, spec, intent,
-      a real repo)              optional planted-bug }
-                                    │
+  ① TASK GENERATOR ────────► synthetic feature task   (generator model ≠ judge model, D-015)
+     (grounded in a real     { repo@pinned-commit, spec, intent, planted-bug? }
+      repo, intent-first)          │
                                     ▼
-  ② RUNNER / ISOLATION ──► spins an isolated harness instance per (task × variant)
-     (worktree + own DB/        runs the REAL pipeline: scoper→…→curator
-      ports, hermetic)          applying VARIANT's promptOverrides+models
-                                    │
+  ② RUNNER / ISOLATION ──► isolated harness instance per (task × variant), headless backend-only
+     (worktree + own DB/        runs the REAL pipeline scoper→…→curator with the VARIANT's prompt
+      ports; pins substrate     overlay. Validator stays MUTABLE but pass-count is not a reward.
+      AND harness commit)            │
                                     ▼
-  ③ TRACE COLLECTOR ──────► { terminal state, attempts, tests written,
-     (reuses .jsonl + PG)       diff, full role transcript, cost, tokens }
+  ③ TRACE COLLECTOR ──────► run record (PG) + cached trace bundle (files, retention) →
+     (.jsonl + files)         ③b DISTILLATION: select/summarize into a judge-sized input
                                     │
                         ┌───────────┴───────────┐
                         ▼                        ▼
-  ④ DETERMINISTIC SIGNALS          ⑤ OPUS JUDGE (frozen)
-     reached-pass? cost?              scores 3 dims on the TRACE:
-     planted-bug caught?             intent+spec-gaps · code-quality ·
-     regressions? (un-gameable)       process-correctness → composite
+  ④ DETERMINISTIC SIGNALS          ⑤ OPUS JUDGE (frozen: model+weights+temp+rubric_hash)
+     un-gameable: regressions,        generic, judgment-based scoring on the distilled trace:
+     planted-bug-caught; cost         intent+spec-gaps · code-quality · process-correctness
+     guardrail; pass-count =          → composite = THE REWARD
+     OBSERVABILITY ONLY               │
                         └───────────┬───────────┘
                                     ▼
-  ⑥ EXPERIMENT STORE (PG) ─► variant × task → {score breakdown, signals}
-                                    │   (the comparison/dashboard surface)
-                                    ▼
-  ⑦ OPUS PROPOSER ────────► reads worst-scoring traces + breakdown,
-     (reflective mutation)     emits targeted prompt diffs for specific
-                                roles → candidate VARIANT
+  ⑥ EXPERIMENT STORE (PG) ─► variant × task → {judge scores, signals, frozen run-params}
                                     │
                                     ▼
-  ⑧ ACCEPT / ROLLBACK ────► rerun benchmark on candidate; keep on Pareto
-     (the autonomous gate)     frontier iff train↑ AND held-out no-regress
-                                AND probe-caught AND cost-ok; else rollback
+  ⑦ OPUS PROPOSER ────────► reads worst train traces + judge rationales + changelog,
+     (reflective, prompts-only) emits a targeted PROMPT diff → candidate VARIANT
+                                    │
+                                    ▼
+  ⑧ ACCEPT / PROMOTE ─────► rerun; keep on frontier iff judge↑ (margin) AND dev-anchor
+     (autonomous)              no-regress AND probe-caught AND no-new-regressions AND cost-ok;
+                               champion → write overrides into the DEDICATED gym harness (D-012)
 ```
 
-The **evaluable unit** is "one full harness run on one synthetic task." The left column (①–⑥) is the **measurement spine** — usable *manually* to A/B two prompt sets before ⑦–⑧ exist (also the safe build order).
+The **evaluable unit** is "one full harness run on one synthetic task." The left column (①–⑥) is the **measurement spine** — usable manually to A/B two prompt sets before ⑦–⑧ exist (also the safe build order).
 
 ## Scoring rubric
 
-A `(variant × task)` evaluation yields **two independent kinds of signal that never merge into one number** — this separation is what stops "buy a higher judge score with 5× the cost or a weakened validator" from ever looking like a win.
+A `(variant × task)` evaluation yields two kinds of signal that never merge into one number.
 
-**A. Deterministic signals** (computed, never judged, un-gameable):
+**A. Deterministic signals** (computed):
 
 | Signal | Meaning | Role |
 | --- | --- | --- |
-| `terminal_state` | passed / escalated / timed-out / cost-capped | success-rate gate |
-| `worker_retries`, `escalations`, `architect_calls` | thrash to get there | efficiency context |
-| `cost_usd`, `tokens`, `wall_clock_s` | deterministic cost metric | guardrail + tiebreaker |
-| `regressions` | did the diff break previously-passing repo tests? | gate |
-| `planted_bug_caught` | (probe tasks) did the harness's own validator flag the injected defect? | **anti-gaming backstop** |
+| `regressions` | did the diff break the repo's pre-existing tests? | **un-gameable gate** |
+| `planted_bug_caught` | (probe tasks) did the harness catch the injected defect? | **un-gameable guardrail/monitor** |
+| `cost_usd`, `tokens`, `wall_clock_s` | deterministic cost | guardrail + tiebreaker (never judged) |
+| `terminal_state` / pass-count | the validator's pass/fail verdict | **observability only** — NOT a reward and NOT a gameable gate (the validator is mutable; D-011) |
+| `worker_retries`, `escalations`, `architect_calls` | thrash | diagnostic |
 
-**B. The frozen Opus 4.8 judge** (extra-high thinking) scores the *trace*, three dimensions, 0–10 each with explicit rubric anchors + a written rationale (the anchors cut judge variance; the rationale is the signal the proposer reflects on):
+Only `regressions` and `planted_bug_caught` are truly un-gameable (the optimizer can't touch the repo's own tests or the planted defect). Pass-count is produced by the mutable validator, so it is deliberately demoted to a watched stat — see D-011.
 
-- **D1 — Intent & spec fidelity** *(primary)*: did the work achieve the high-level intent, and — given the rest of the project — was the spec itself gappy/misspecified? Penalizes literal-but-useless, missed implied requirements, broken unstated invariants. This is the "stress what the harness's own tests don't cover" layer.
-- **D2 — Code quality** *(subjective, Opus's call)*: clarity, minimality, convention-fit, no needless complexity/tech-debt.
-- **D3 — Process correctness**: did each role behave well — scoper chunked sensibly, worker didn't thrash, **validator caught real issues / didn't rubber-stamp**, architect diagnosed correctly, orchestrator routed efficiently. The judge must cite specific trace evidence. *This dimension is where a weakened internal grader gets penalized.*
+**B. The frozen Opus 4.8 judge** (extra-high thinking) is **the reward**. It reads the *distilled* trace (③b) and scores three dimensions with **generic, judgment-based reasoning** — given the intent + project context + a definition of each dimension, it reasons and justifies rather than ticking a rigid 0–10 anchor table (leaning on the model's actual judgment; it drifts less than the weak models the "noisy judge" literature was built on). It emits a score per dimension + a written rationale (the rationale is the signal the proposer reflects on):
 
-`composite = 0.5·D1 + 0.2·D2 + 0.3·D3` (weights configurable; D1 dominant per the intent steer, D3 weighted real because it is the anti-gaming dimension). The judge never sees cost. Runs that didn't ship get D1/D2 floored (nothing to assess) but D3 still scored (was the failure handled/escalated well?); success-rate is enforced as an aggregate gate, not folded into per-run composite. A and B combine only as **gates/tiebreakers at accept-time** (§ Autonomous loop), never as one scalar.
+- **D1 — Intent & spec fidelity** *(primary)*: did the work achieve the high-level intent, and was the spec itself gappy/misspecified given the project? The layer the harness's own tests don't cover.
+- **D2 — Code quality** *(subjective)*: clarity, minimality, convention-fit, no needless complexity/tech-debt.
+- **D3 — Process correctness**: did each role behave well — incl. did the (mutable) validator catch real issues / not rubber-stamp. With pass-count out of the reward, this is a quality observation, not the anti-gaming linchpin.
+
+`composite` is the judge's weighted aggregate. **Weights, model, sampling temperature, and rubric are all frozen for an optimization run** (alongside `rubric_hash`, D-016) — configurable only between runs. A and B combine only as **gates/tiebreakers at accept-time**, never as one scalar.
 
 ## The autonomous loop
 
-Three tiers of state (D-005): **Frontier** (Pareto-non-dominated on train task vectors; drives parent selection so diversity isn't collapsed) → **Champion** (single best by held-out aggregate, subject to all gates; the deploy candidate) → **Canonical** (the real prompt files; immediate promotion on champion update — D-006). Variants are **overlays**; baseline files always intact, so "rollback" = don't advance the pointer (nothing destructive).
+Three tiers (D-005): **Frontier** (Pareto-non-dominated on train vectors; drives parent selection) → **Champion** (best on the **frozen dev-anchor**, subject to gates) → **Promotion target** = a dedicated gym harness's `promptOverrides` (immediate, autonomous — D-012). Variants are overlays; baseline always intact.
 
 One cycle:
 
 1. **Select parent** from the frontier (biased toward under-served task categories).
-2. **Reflect & propose** (⑦): Opus reads the parent's worst-scoring train traces + judge rationales + the running changelog, picks **one or few** role prompts to mutate, emits a diff + rationale → `candidate`.
-3. **Evaluate** candidate × train tasks → traces, deterministic signals, judge scores.
+2. **Reflect & propose** (⑦): Opus reads the parent's worst-scoring train traces + judge rationales + the running changelog, emits a **prompt-only** diff (one/few roles) → `candidate`.
+3. **Evaluate** candidate × train tasks → distilled traces, deterministic signals, judge scores.
 4. **Gates — accept into frontier iff ALL hold:**
-   - **Improvement**: train composite ≥ parent + ε (ε margin beats single-run noise), **or** Pareto-expands (best on ≥1 task, no large loss elsewhere).
-   - **Held-out no-regress**: on a **fresh** held-out set (cheap synthetic generation ⇒ can't overfit the frozen judge), aggregate ≥ champion − δ.
-   - **Probe**: still catches *all* planted-bug probes — deterministic hard reject otherwise. (The anti-gaming firewall: a variant that quietly weakened the validator dies here regardless of judge opinion.)
-   - **Cost guardrail**: mean cost ≤ baseline × `cost_ceiling` (e.g. 1.5×).
-5. **Accept** → add to frontier, prune dominated; update champion if a new held-out best; **immediately promote champion to canonical** (a git commit). **Reject** → record the diff + failing gate as a *negative example* the proposer avoids repeating.
+   - **Improvement**: train judge-composite ≥ parent + ε, **or** Pareto-expands. ε is **derived from measured variance** (D-013), not guessed.
+   - **Dev-anchor no-regress**: on the **frozen** dev-anchor (apples-to-apples vs champion), aggregate ≥ champion − δ.
+   - **No new regressions** + **probe-caught** (un-gameable deterministic gates).
+   - **Cost guardrail**: mean cost ≤ baseline × `cost_ceiling`.
+5. **Accept** → frontier (prune dominated); update champion if a new dev-anchor best; **immediately write the champion's overrides into the dedicated gym harness** (D-012). **Reject** → record diff + failing gate as a negative example.
 6. Loop until budget spent / K cycles with no accept / human stop.
 
-**Two safety mechanisms make immediate promotion safe (D-006):**
-- **Judge running-changelog** (*augmentation, not the safety net*): a per-cycle entry **anchored to hard numbers** (held-out Δ, cost Δ, probe status) plus narrative, fed into proposer + judge context. Job: avoid dead-ends + detect non-stationarity/oscillation. Anchoring to numbers (not the judge's prose impressions) prevents self-reference poisoning.
-- **Arithmetic circuit-breaker** (*the actual safety net*): keep a `baseline-of-record` held-out score; track canonical's held-out aggregate over a rolling window; if it drifts below baseline-of-record by more than a threshold, **auto-revert canonical to last-known-good + flag**. Deterministic, doesn't slow the loop, catches slow-Goodhart drift that no LLM self-summary reliably catches over noise.
+**Safety (D-006 as revised by D-012):**
+- **Judge running-changelog** (augmentation): per-cycle entry anchored to hard numbers (dev-anchor Δ, cost Δ, probe status) + narrative, fed into proposer + judge context. Avoids dead-ends + detects oscillation.
+- **Arithmetic circuit-breaker** (the real safety net): track the dedicated harness's **dev-anchor** aggregate (frozen set ⇒ valid comparison) vs `baseline-of-record`; on drift below threshold, **auto-revert the harness's overrides to last-known-good** (a cheap config rewrite, not a fleet-racing git revert) + flag.
+- **Monitor-set alarm**: if the dev-anchor keeps climbing while the fresh `monitor` set stalls, that is overfitting-to-anchor → flag / pause / refresh anchor.
+- **Real-anchor correlation** (D-014): periodically score the champion on the fixed real-feature set; if gym score rises but real-anchor doesn't move, the loop is optimizing a proxy — surface it.
 
 ## Data model (new `harness_gym` PG schema)
 
 | Table | Holds | Note |
 | --- | --- | --- |
-| `gym_tasks` | `{kind, repo_url, repo_commit, spec, intent, planted_bug?, generated_by}` | synthetic task defs |
-| `gym_variants` | `{parent_id, label, config(jsonb), diff_from_parent, proposer_rationale, status}` | optimizer lineage tree |
-| `gym_runs` | `{variant_id, task_id, cycle, terminal_state, deterministic_signals(jsonb), trace_ref}` | one per `variant×task`; trace cached |
-| `gym_scores` | `{run_id, judge_model, rubric_hash, d1, d2, d3, composite, rationale}` | **separate from runs** |
+| `gym_tasks` | `{pool: train/dev-anchor/monitor/probe/real-anchor, repo_url, repo_commit, spec, intent, planted_bug?, generated_by}` | task defs |
+| `gym_variants` | `{parent_id, label, prompt_overrides(jsonb), diff_from_parent, proposer_rationale, status}` | overlay lineage |
+| `gym_runs` | `{variant_id, task_id, cycle, terminal_state, deterministic_signals(jsonb), trace_ref, distilled_ref}` | trace bundles stored as **files** (high-volume-log exception) + retention; PG holds refs |
+| `gym_scores` | `{run_id, judge_model, rubric_hash, judge_temp, weights, d1, d2, d3, composite, rationale}` | re-judge-from-cache keyed on rubric_hash |
 | `gym_cycles` | `{parent_id, candidate_id, decision, gate_results(jsonb), budget_spent}` | loop audit trail |
-
-The `gym_runs` (cached trace) / `gym_scores` (references `rubric_hash`) split is deliberate — it reuses the `llm-testing-framework` "judge-only re-evaluation" trick: change the rubric → re-score cached traces cheaply without re-running the expensive pipeline.
+| `gym_runs_params` | `{run_id, harness_commit, substrate_commit, mutable_roles, judge_model, judge_temp, weights, rubric_hash}` | the frozen run-params that make variants comparable (D-016) |
 
 ## Reuse map
 
-- `promptOverrides.<role>` + `models.<role>` harness config → the variant overlay mechanism (already exists).
-- Isolated harness instances (own DB/ports, Xvfb/dedicated-port patterns) + git worktrees → the hermetic runner.
-- `.jsonl` run logs + status API (cost/tokens/attempts) → deterministic signals + trace collector.
-- `llm-testing-framework` judge + cached-transcript re-eval + `ChatTarget` → the judge + re-judge-from-cache.
-- `competition` mode's scoring instincts → prior art for multi-variant comparison.
+- **`promptOverrides.<role>` harness config → both the variant overlay AND the promotion target** (D-012 writes the champion here for one dedicated harness).
+- Isolated harness instances (own DB/ports) + git worktrees → the hermetic, headless runner.
+- `.jsonl` run logs + status API → deterministic signals + trace collector.
+- `llm-testing-framework` judge + cached-transcript re-eval → the judge + re-judge-from-cache.
 
 ## Risks & mitigations
 
-- **Judge noise at 1 run/task** → rubric anchors + accept only on a clear margin + held-out no-regress + tolerant judge tests (rank, don't pin exact scores).
-- **Reward hacking / weakened internal grader** → D3 process-correctness penalty + deterministic probe gate + circuit-breaker; only the judge is frozen.
-- **Overfitting the frozen judge** → fresh held-out tasks every cycle (synthetic makes this cheap).
-- **Bad synthetic tasks pollute signal** → task-validation filter (drop tasks the baseline can't even attempt).
-- **Runner isolation at scale** → bounded by "small & fast"; parallel isolated instances; never the live working tree (D-009).
-- **Wall-clock honesty** → "small & fast" = few tasks + parallelism; one cycle is still tens-of-minutes-to-hours, not seconds.
+- **Judge noise / unquantified variance** → P-014 measures per-run SD of the judge composite; ε/δ/min-n derived from it; repeats (P-025) promoted to v1 if 1-run is too noisy.
+- **Optimizer overfits the frozen judge** (independent of model smartness — the optimizer is adversarial and hunts blind spots) → fresh `monitor` set + `real-anchor` correlation + frozen `dev-anchor` for honest comparison.
+- **Proxy ≠ reality** → the `real-anchor` falsifiability check (D-014).
+- **Correlated Opus bias** (generator plants gaps the judge rewards finding) → generator model ≠ judge model (D-015).
+- **Comparison drift on the shared tree** → pin BOTH substrate and harness-under-test commits per run (D-016).
+- **Cost** → instrument $/run; P-014 produces a $/cycle + $/converged-run estimate before the loop is built.
+- **Trace too big for context** → distillation step (③b) — itself a noise source, validated in P-029.
 
 ## Phase 0 — Hermetic runner
 
-- **P-001** `todo` Hermetic runner: given `(repo@commit, spec, variant config)`, spin an isolated harness instance (own DB/ports/worktree) on a throwaway clone and run the real scoper→…→curator pipeline applying the variant's `promptOverrides`+`models`. importance: high
-- **P-002** `todo` Trace collector: capture terminal_state, attempts/retries/escalations, the diff, full per-role transcript, cost/tokens/wall-clock into a structured run record + a cached trace bundle. blocked-by: P-001
-- **P-003** `todo` Deterministic signal computation: reached-pass, regressions (run the repo's existing tests pre/post), `planted_bug_caught` probe check. blocked-by: P-002
+- **P-001** `todo` Hermetic runner: given `(repo@commit, spec, variant overlay)`, spin an isolated **headless backend-only** harness instance (operator-sidecar + orchestrator/DBOS + PG per instance; no Tauri/Xvfb) on a throwaway clone and run the real scoper→…→curator pipeline. **Pin both the substrate commit AND the harness-under-test commit.** State the minimal bootable unit. importance: high
+- **P-002** `todo` Trace collector: capture terminal_state, attempts/retries/escalations, the diff, full per-role transcript, cost/tokens/wall-clock; store trace bundles as **files** (+ retention), PG holds refs. blocked-by: P-001
+- **P-003** `todo` Deterministic signals: regressions (repo's own tests pre/post), `planted_bug_caught`, cost; pass-count recorded as observability only. blocked-by: P-002
 - **P-004** `todo` Parallel isolation: run N `(task×variant)` evaluations concurrently without port/DB/worktree collision. blocked-by: P-001
+- **P-027** `todo` Cost instrumentation: per-run $/token accounting feeding a $/cycle + $/converged-run estimate. blocked-by: P-002
 
 ## Phase 1 — Task generator
 
-- **P-005** `todo` Opus task generator: intent-first, then derive a deliberately-realistic (mildly underspecified) spec so spec-gaps exist to find; grounded in a real substrate repo. Emit `gym_tasks` rows. importance: high
-- **P-006** `todo` Planted-bug probe generator: synthesize tasks carrying a known injected defect for the deterministic anti-gaming gate. blocked-by: P-005
-- **P-007** `todo` Task validation/filtering + held-out generation: drop tasks the baseline can't even attempt; keep a stable train pool + a fresh-per-cycle held-out generator. blocked-by: P-005
+- **P-005** `todo` Task generator (model ≠ judge model): intent-first, then a deliberately-realistic, mildly-underspecified spec so spec-gaps exist; grounded in a real substrate repo. importance: high
+- **P-006** `todo` Planted-bug probe generator: spell out **where the planted bug lives and what the harness must do with it** so the gate is not vacuous (e.g. a pre-existing defect in the touched area the validator must catch). blocked-by: P-005
+- **P-007** `todo` Task pools + filter: produce `train`, a **frozen `dev-anchor`** (fixed for the run), and a **fresh `monitor`** set (regenerated each cycle); drop tasks the baseline can't even attempt. blocked-by: P-005
+- **P-028** `todo` Real-feature correlation anchor: a small **fixed** `real-anchor` set of real shipped features, scored but never optimized — the falsifiability check (D-014). importance: high
 
 ## Phase 2 — Judge + scoring
 
-- **P-008** `todo` Frozen Opus judge: rubric prompt (D1 intent+spec-gaps, D2 code quality, D3 process correctness) scoring the trace; structured per-dim scores + rationale; `rubric_hash` pinned. importance: high
-- **P-009** `todo` Composite + gate computation: weighted composite (0.5/0.2/0.3), success-rate aggregate gate, cost guardrail, probe gate. blocked-by: P-008, P-003
-- **P-010** `todo` Re-judge-from-cache: re-score cached traces when the rubric changes, no pipeline rerun. blocked-by: P-008
-- **P-011** `todo` Judge ranking tests: pin cached traces with known good/bad outcomes; assert the judge *ranks* them correctly (tolerant ranges, not exact scores). blocked-by: P-008
+- **P-008** `todo` Frozen Opus judge: **generic, judgment-based** prompt (D1 intent+spec-gaps, D2 code quality, D3 process correctness); pin model + weights + **sampling temperature** + `rubric_hash`; emit per-dim scores + rationale. importance: high
+- **P-029** `todo` Trace distillation: select/summarize a multi-hour multi-agent run into a judge-sized input; validate it as a noise source. blocked-by: P-002
+- **P-009** `todo` Composite + gates: judge composite = reward; pass-count = observability; gates = dev-anchor no-regress + probe + no-new-regressions + cost. blocked-by: P-008, P-003
+- **P-010** `todo` Re-judge-from-cache: re-score cached distilled traces on rubric change, no pipeline rerun. blocked-by: P-008
+- **P-011** `todo` Judge tests: assert ranking **and absolute stability** (the circuit-breaker compares absolute aggregates over time). blocked-by: P-008
 
 ## Phase 3 — Experiment store + comparison
 
-- **P-012** `todo` PG schema `harness_gym`: gym_tasks, gym_variants, gym_runs, gym_scores, gym_cycles. importance: high
-- **P-013** `todo` Comparison read API: variant-A-vs-B per-task score diff, frontier view, cycle history. blocked-by: P-012
-- **P-014** `needs-human` Milestone gate: review the measurement spine (P0–3) on a real A/B (two prompt sets, scored) before building the autonomous loop. importance: urgent blocked-by: P-013
+- **P-012** `todo` PG schema `harness_gym`: gym_tasks (with pool), gym_variants, gym_runs, gym_scores, gym_cycles, gym_runs_params (frozen run-params). importance: high
+- **P-013** `todo` Comparison read API: variant-A-vs-B per-task diff, frontier view, cycle history, real-anchor + monitor surfacing. blocked-by: P-012
+- **P-014** `needs-human` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028
 
 ## Phase 4 — Proposer
 
-- **P-015** `todo` Reflective proposer: Opus reads worst-scoring train traces + judge rationales, mutates one/few role prompts, emits diff + rationale → candidate variant. blocked-by: P-014
-- **P-016** `todo` Variant overlay model: variant = `{promptOverrides, orchestration params, models}`; never edits canonical files in place. blocked-by: P-012
-- **P-017** `todo` Judge running-changelog: per-cycle entry anchored to hard numbers (held-out Δ, cost Δ, probe status) + narrative, fed into proposer+judge context. blocked-by: P-015
+- **P-015** `todo` Reflective proposer (**prompts-only in v1**): reads worst train traces + judge rationales + changelog, emits a prompt diff → candidate. blocked-by: P-014
+- **P-016** `todo` Variant overlay model: `{promptOverrides}`; models/orchestration params reserved (not mutated in v1). blocked-by: P-012
+- **P-017** `todo` Judge running-changelog: per-cycle entry anchored to hard numbers (dev-anchor Δ, cost Δ, probe status) + narrative. blocked-by: P-015
 
 ## Phase 5 — Autonomous loop
 
-- **P-018** `todo` Accept/reject gate engine: improvement+margin OR Pareto-expand; held-out no-regress; probe; cost guardrail. blocked-by: P-009, P-015
-- **P-019** `todo` Three-tier state: Pareto frontier (parent selection) + champion (held-out best) + canonical pointer. blocked-by: P-018
-- **P-020** `todo` Immediate canonical promotion: champion update commits to the real prompt files (git). blocked-by: P-019
-- **P-021** `todo` Arithmetic circuit-breaker: rolling held-out drift vs baseline-of-record → auto-revert canonical to last-known-good + flag. blocked-by: P-020
+- **P-018** `todo` Accept/reject gate engine: judge improvement+margin OR Pareto-expand; dev-anchor no-regress; probe; no-new-regressions; cost. blocked-by: P-009, P-015
+- **P-019** `todo` Three-tier state: frontier (train vectors) + champion (dev-anchor best) + dedicated-harness promotion target. blocked-by: P-018
+- **P-020** `todo` Immediate promotion: write champion overrides into the **dedicated gym harness's config** (D-012); never the shared default prompt files. blocked-by: P-019
+- **P-021** `todo` Circuit-breaker + monitor alarm: dev-anchor drift vs baseline-of-record → auto-revert the harness override; monitor-set stall while dev-anchor climbs → overfitting flag. blocked-by: P-020
 - **P-022** `todo` Continuous loop driver: `gym optimize --repo R --budget $X` — propose→evaluate→gate→accept/rollback→frontier, budget-capped, unattended. blocked-by: P-018, P-019
-- **P-023** `needs-human` Pre-autonomy sign-off: eyeball the first proposer outputs + dry-run the loop before enabling unattended canonical promotion. importance: urgent blocked-by: P-022
+- **P-023** `needs-human` Opt-in sign-off: human approval before pointing a **real production harness** at the gym champion (the gym's own harness is promoted unattended). importance: urgent blocked-by: P-022
 
 ## Phase 6 — Later
 
 - **P-024** `todo` nuqs operator dashboard for variants/scores/frontier/cycles. importance: low blocked-by: P-013
-- **P-025** `todo` Repeats-per-task knob + variance handling (scale up from 1 run). importance: low
-- **P-026** `todo` Real-feature *replay* tasks alongside synthetic. importance: low
+- **P-025** `todo` Repeats-per-task / variance handling — promote into v1 if P-014 shows 1-run is too noisy. importance: normal
+- **P-026** `todo` Expand real-feature replay as a *training* source (beyond the P-028 anchor). importance: low
+- **P-030** `todo` Grader-optimization phase: optimize validator/crosscheck/tester in a **separate run with an inverted objective** (recall on held-out planted defects — catch *more*, never fewer), external judge as arbiter. importance: low
 
 ## Decisions
 
 ### D-001 — The judge sits ABOVE the harness's own gate
 Date: 2026-06-02
-Functional pass/fail against the literal spec is already the harness's job (validator/tester). If a run doesn't meet the strict spec, that's a bug in *that* layer, not something the gym judge re-litigates. So Opus judges what the harness can't check itself: high-level intent achievement, spec gaps/misspecification given the project, subjective code quality, and process correctness. Stress the layer the harness's own features don't cover.
+Functional pass/fail against the literal spec is already the harness's job (validator/tester). If a run doesn't meet the strict spec, that's a bug in *that* layer, not something the gym judge re-litigates. So Opus judges what the harness can't check itself: high-level intent achievement, spec gaps/misspecification given the project, subjective code quality, and process correctness.
 
 ### D-002 — Rubric: three judge dimensions, cost excluded
 Date: 2026-06-02
-Judge dims = D1 intent & spec fidelity (primary, weight 0.5), D2 code quality (subjective, 0.2), D3 process correctness (0.3). Cost is computed deterministically and compared by us as a side metric + guardrail; it is never fed to the judge. Weights configurable.
+Judge dims = D1 intent & spec fidelity (primary), D2 code quality (subjective), D3 process correctness. Cost is computed deterministically and compared by us as a side metric + guardrail; never fed to the judge. *Refined by D-011:* pass-count is demoted from any reward, the judge composite is the sole reward, and the judge reasons generically rather than against a rigid anchor table; weights are frozen per run (D-016).
 
-### D-003 — Anti-gaming: freeze ONLY the judge; probes are the deterministic backstop
+### D-003 — Anti-gaming: freeze ONLY the judge
 Date: 2026-06-02
-The external Opus judge is the only grader of record, so the optimizer may mutate every `AGENT_ROLES` role (incl. validator). Weakening the internal validator doesn't raise the external score, and D3 actively penalizes a rubber-stamp. This holds only if the judge (a) scores the full trace, (b) is backed by un-gameable deterministic signals — reached-pass, cost, and **planted-bug probe tasks** the validator must catch — and (c) faces fresh held-out tasks each cycle. A frozen-but-blind judge rubber-stamps as easily as a lenient validator; the trace + probes + held-out are what make "the judge polices it" real.
+The external Opus judge is the only grader of record, so the optimizer may mutate every `AGENT_ROLES` role (incl. validator). *Reaffirmed after review round 1:* the review showed the anti-gaming firewall (probe + D3) is thinner than first claimed, but the right fix is to remove the *incentive* to weaken the validator — pass-count is no longer a reward (D-011) — not to freeze the validator. Weakening a mutable validator now only lets junk through, which the judge scores low. Producer roles and the validator all stay mutable; only the judge (model+weights+temp+rubric) is frozen.
 
 ### D-004 — Synthetic tasks, intent-first, grounded in real repos
 Date: 2026-06-02
-Benchmark tasks are synthetically generated against real repos as substrate (that's the "real-world data"). Generate the high-level intent first, then derive a deliberately-realistic, mildly-underspecified spec from it, so spec-gap detection (D1) has something to find. Fresh held-out tasks each cycle defend the frozen judge against overfitting. Real-feature replay is a later add (P-026), not v1.
+Benchmark tasks are synthetically generated against real repos. Generate the high-level intent first, then derive a deliberately-realistic, mildly-underspecified spec, so spec-gap detection (D1) has something to find. *Refined by D-013 (the train/dev-anchor/monitor pool split) and D-014 (a fixed real-feature anchor added to v1 as a falsifiability check).*
 
-### D-005 — Three tiers: frontier / champion / canonical
+### D-005 — Three tiers: frontier / champion / promotion target
 Date: 2026-06-02
-Pareto frontier (non-dominated on train vectors) drives parent selection so diversity isn't collapsed (a variant best only on one task category survives). Champion = single best by held-out aggregate subject to all gates = the deploy candidate. Canonical = the live prompt files. This gives GEPA's exploration diversity without losing a single deployable answer.
+Pareto frontier (non-dominated on train vectors) drives parent selection so diversity isn't collapsed. Champion = single best on the held-out set, subject to gates. *Promotion tier revised by D-012:* the third tier is a dedicated harness's overrides, not the shared default prompt files; and "held-out" is specifically the frozen `dev-anchor` pool (D-013) so champion comparison is apples-to-apples.
 
 ### D-006 — Immediate canonical promotion + judge changelog + arithmetic circuit-breaker
 Date: 2026-06-02
-Champion updates promote to canonical immediately (the speed win; pre-alpha + git-reversible makes the downside cheap). Safe because what promotes already cleared four gates. The judge-written running-changelog (anchored to hard numbers) makes the *search* smarter (avoids dead-ends, detects oscillation) but is an augmentation, NOT the safety net. The load-bearing safety is a deterministic circuit-breaker: rolling held-out drift below baseline-of-record auto-reverts canonical to last-known-good. Trivially flippable to a sustained-win bar or manual promotion if churn proves bad.
+*Superseded by D-012.* Original intent — promote champions immediately and unattended, with a judge running-changelog (smarter search) and a deterministic circuit-breaker (the real safety net) — is kept. What changed: the promotion *target* is no longer the shared canonical prompt files (that collides with the live fleet on the shared `main` tree); it is a dedicated harness's `promptOverrides` (D-012).
 
 ### D-007 — Borrow GEPA's ideas, don't adopt the framework
 Date: 2026-06-02
-We reimplement GEPA's two load-bearing mechanisms — reflective mutation (LLM reads the trace, diagnoses, rewrites one prompt) and the Pareto frontier (keep candidates each best on ≥1 task, sample parents from the set) — against our own evaluable-unit. We do NOT adopt DSPy/GEPA: it optimizes pipelines of single cheap LLM calls, whereas one evaluation here is an entire multi-hour, worktree-isolated, multi-agent run. The impedance mismatch (cost, isolation, statefulness) is severe.
+Reimplement GEPA's two load-bearing mechanisms — reflective mutation and the Pareto frontier — against our own evaluable-unit. Don't adopt DSPy/GEPA: it optimizes pipelines of single cheap LLM calls, whereas one evaluation here is an entire multi-hour, worktree-isolated, multi-agent run.
 
 ### D-008 — Small & fast scale for v1
 Date: 2026-06-02
-~15 train + ~5 fresh held-out + ~3 probes, 1 run each, 1 candidate/cycle ≈ ~23 full pipeline runs/cycle, parallelized. Fast iteration to prove the loop; per-task signal is noisy, so v1 accepts only on a clear aggregate train improvement AND no held-out regression. Repeats-per-task is a deferred knob (P-025).
+~15 train + a small dev-anchor + a few probes + a real-anchor, 1 run each, 1 candidate/cycle, parallelized. *Refined by D-013:* per-task signal is noisy and 1-run may be insufficient — accept thresholds (ε/δ) are derived from variance measured at P-014, not guessed, and repeats-per-task (P-025) is promoted into v1 if that measurement shows 1-run is too noisy.
 
 ### D-009 — Substrate = throwaway clones at pinned commits
 Date: 2026-06-02
-The runner operates on throwaway clones at pinned commits in an isolated scratch dir, never the user's live working trees. Proposer + task-generator both run on Opus.
+The runner operates on throwaway clones at pinned commits in an isolated scratch dir, never the user's live working trees. *Refined by D-015 (the task generator runs on a model distinct from the judge) and D-016 (pin the harness-under-test commit too, not just the substrate).*
 
 ### D-010 — Variant = overlay config, never in-place prompt edits
 Date: 2026-06-02
-A variant is a `{promptOverrides, orchestration params, models}` overlay object in PG; the canonical prompt files are mutated only by the explicit promotion step (D-006). This makes every non-promotion operation cheap and reversible, and keeps the baseline always intact as the measuring stick.
+A variant is a prompt-override overlay object in PG; canonical prompt files are never mutated. Every non-promotion operation is cheap and reversible, and the baseline stays intact as the measuring stick. (Promotion itself, per D-012, writes only to a dedicated harness's override config — still not the shared default files.)
+
+### D-011 — Pass-count is observability, not a reward; the judge is the reward
+Date: 2026-06-02
+"How many features passed" is produced by the mutable validator and is therefore gameable (a lenient validator passes more). Rather than freeze the validator, we remove the incentive: **pass-count is demoted to a watched stat and is not part of the optimization signal.** The frozen Opus 4.8 judge's holistic scores (intent, code quality, process) are the sole reward — and the judge uses **generic, judgment-based reasoning** (intent + context + dimension definitions), not a rigid checkbox rubric, because a frontier model's judgment is more reliable and lower-drift than the weak-model era the "noisy judge" caution came from. Deterministic `regressions` + `planted_bug_caught` remain as cheap un-gameable guardrails/monitors, not targets. (Decided by avi, 2026-06-02, overriding the freeze-the-validator option.)
+
+### D-012 — Promotion writes to a dedicated harness's overrides, not the shared default files (supersedes D-006)
+Date: 2026-06-02
+The canonical default prompt files are shared live-fleet state on the same `main` tree every concurrent agent uses; an autonomous git-commit to them collides with the lock/coord discipline and the circuit-breaker's auto-revert would race other agents. Instead, reuse the existing per-harness `promptOverrides` mechanism: **immediate, autonomous promotion writes the champion overrides into one dedicated gym harness's config.** That harness runs the optimized prompts; the global defaults and the rest of the fleet are untouched; the circuit-breaker's revert is a cheap config rewrite. The human gate (P-023) moves to the *opt-in* step — a human pointing a real production harness at the champion. (Decided by avi, 2026-06-02.)
+
+### D-013 — Three task pools + variance-derived gate thresholds
+Date: 2026-06-02
+A single "fresh held-out each cycle" set cannot serve both overfitting-defense (wants fresh tasks) and regression-detection (wants a fixed anchor) — comparing scores across different task draws conflates variant effect with luck of the draw. So: `train` (drives the proposer), a **frozen `dev-anchor`** held fixed for the whole run (champion comparison + circuit-breaker are apples-to-apples), and a **fresh `monitor`** set regenerated each cycle that never feeds an accept decision (it only alarms when the dev-anchor climbs while the monitor stalls — the signature of overfitting *to the anchor*). The system is doubly-stochastic (pipeline + judge), so accept thresholds ε/δ and a minimum task/repeat count are **derived from variance measured at P-014**, not guessed. (Resolves review #1 + #2.)
+
+### D-014 — A fixed real-feature correlation anchor in v1
+Date: 2026-06-02
+Without any tie to reality the headline metric is unfalsifiable — the loop could "improve 20%" on an Opus-judged proxy and mean nothing. v1 includes a small **fixed** set of real shipped features (`real-anchor`) that is **scored but never optimized**: a non-training falsifiability check answering "does gym score move with real-feature success?" If gym score rises while the real-anchor doesn't, the loop is surfaced as optimizing a proxy. (Resolves review #6; pulls a slice of P-026 forward.)
+
+### D-015 — v1 mutates prompts only; generator model decorrelated from the judge
+Date: 2026-06-02
+The variant schema carries `promptOverrides`, `models`, and orchestration params, but the v1 proposer's action space is **prompt overrides only** — model swaps and orchestration-param mutation (routing/attempt thresholds, competition N, chunk size, crosscheck on/off) are enumerated and deferred to a later phase. Separately, to avoid correlated bias (a spec-gap the Opus generator plants is one the Opus judge is primed to reward finding), the **task generator runs on a model distinct from the judge model.** (Resolves review #5 + #7.)
+
+### D-016 — Reproducibility pins: harness commit + judge weights + judge temperature
+Date: 2026-06-02
+A variant = (harness-under-test code + prompt overlay); if harness code on the shared `main` tree shifts mid-run, comparisons drift — so each run **pins the harness-under-test commit** as well as the substrate commit (D-009). The circuit-breaker compares absolute aggregates over time, so the **judge's sampling temperature** must be pinned (and stated), and the **rubric weights frozen** alongside `rubric_hash`, for the duration of an optimization run. All frozen run-params live in `gym_runs_params`. (Resolves the review's pin-version / freeze-weights / pin-temp points.)
+
+### D-017 — Trace distillation + file storage + a cost model
+Date: 2026-06-02
+A full multi-hour multi-agent transcript doesn't fit the judge's context even at 1M tokens, so a **distillation step** (③b) selects/summarizes each run into a judge-sized input — itself a noise source, validated in P-029. Trace bundles are stored as **files** with a retention policy (the storage policy's high-volume-log exception), with PG holding refs. The economics are non-trivial (~tens of full pipeline runs/cycle + Opus judge/proposer/generator), so a **$/cycle + $/converged-run estimate** is a required P-014 deliverable before the loop is built. (Resolves review #8 + trace-storage.)
