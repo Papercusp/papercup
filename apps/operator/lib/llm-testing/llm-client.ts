@@ -13,8 +13,18 @@
  * so every consumer of the shared lib gets the same hardened path.
  */
 
-import { runAgentChat } from '../agent-chat-stream';
+import { runAgentChat, type AgentBackend } from '../agent-chat-stream';
 import { readCredentials } from '../credentials';
+
+/**
+ * Backend for the sim-user + judge calls. Defaults to `meridian` (Claude Max
+ * via the local router) but is overridable to any agent backend — set
+ * `LLM_TEST_BACKEND=claude-code` to route through the claude CLI instead (e.g.
+ * to dodge a Meridian rate-limit window, paired with a lighter model via
+ * LLM_TEST_SIM_MODEL / LLM_TEST_JUDGE_MODEL).
+ */
+const TEST_BACKEND: AgentBackend =
+  (process.env.LLM_TEST_BACKEND as AgentBackend | undefined) ?? 'meridian';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -76,12 +86,24 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   let lastErr: unknown;
   let sawResult = false;
 
+  // Subprocess backends (claude-code / omp / codex) ignore `messages` and use
+  // ONLY `promptText` as the user turn, whereas `meridian` uses `messages`. To
+  // work under either, flatten the (usually single-user) message list into a
+  // promptText too — a lone user message passes through verbatim; a multi-turn
+  // list is role-labelled.
+  const promptText =
+    opts.messages.length === 1 && opts.messages[0].role === 'user'
+      ? opts.messages[0].content
+      : opts.messages
+          .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
+          .join('\n\n');
+
   for await (const ev of runAgentChat({
-    backend: 'meridian',
+    backend: TEST_BACKEND,
     model: opts.model,
     systemPromptText: opts.system,
     messages: opts.messages,
-    promptText: '', // ignored when `messages` is supplied
+    promptText,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
   })) {
