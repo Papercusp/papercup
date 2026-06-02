@@ -34,6 +34,11 @@ import { roleConsumes } from '@/lib/role-registry';
 import { buildRoleLaunchSpec } from '@/lib/role-launch-spec';
 import { getPlanContextBySlug } from '@/lib/plan-context-for-feature';
 import { writeRoleCodexHome } from '@/lib/role-codex-home';
+import {
+  materializeCodexPrompts,
+  materializeWorkspacePrompts,
+  materializeHarnessPrompts,
+} from '@/lib/saved-prompts-materialize';
 import { launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
 
 const CORS_HEADERS: Record<string, string> = {
@@ -236,6 +241,24 @@ const post = defineTool({
       } catch (e: any) {
         return jsonRes({ status: 'error', error: `write role prompt: ${e?.message}` }, 500);
       }
+    }
+
+    // Materialize this harness's + the workspace's saved prompts into the
+    // locations this client reads, so the session starts with the `/name`
+    // commands available (plan saved-prompts-cross-client; interactive only,
+    // D-004). Codex needs them written into its ephemeral per-session home;
+    // claude/omp read the on-disk .claude/commands files (kept fresh on save,
+    // refreshed here belt-and-suspenders). Best-effort — a projection hiccup
+    // must never block a launch.
+    try {
+      if (agent === 'codex' && codexHome) {
+        await materializeCodexPrompts(codexHome, workspace, harnessSlug);
+      } else {
+        await materializeWorkspacePrompts(workspace);
+        await materializeHarnessPrompts(workspace, harnessSlug);
+      }
+    } catch (e: any) {
+      console.warn('[bootstrap-role] saved-prompts materialize failed (non-fatal):', e?.message);
     }
 
     const result: BootstrapRoleResult = {

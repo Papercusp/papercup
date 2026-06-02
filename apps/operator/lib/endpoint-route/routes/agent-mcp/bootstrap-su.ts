@@ -30,6 +30,11 @@ import { isSuAgent, type SuAgent } from '@/lib/su-agents';
 import { launchContextDir, launchContextPathFor } from '@/lib/su-launch-context';
 import { buildLaunchSpec } from '@/lib/role-launch-spec';
 import { writeSuCodexHome } from '@/lib/role-codex-home';
+import {
+  materializeCodexPrompts,
+  materializeWorkspacePrompts,
+  materializeHarnessPrompts,
+} from '@/lib/saved-prompts-materialize';
 import { resolveInstallPaths } from '@/lib/desktop-install/papercusp-files';
 import { readSuperuserToken } from '@/lib/superuser-token';
 import { homedir } from 'node:os';
@@ -340,6 +345,22 @@ const post = defineTool({
       }
     } catch (e: any) {
       return jsonRes({ status: 'error', error: `write su launch artifacts: ${e?.message}` }, 500);
+    }
+
+    // Materialize saved prompts so the session starts with the workspace's
+    // `/name` commands (+ the harness's, when this su session is harness-
+    // scoped) available in this client (plan saved-prompts-cross-client).
+    // Codex needs them in its ephemeral home; claude/omp read .claude/commands.
+    // Best-effort — never block a launch.
+    try {
+      if (agent === 'codex' && codexHome) {
+        await materializeCodexPrompts(codexHome, workspace, harnessSlug);
+      } else {
+        await materializeWorkspacePrompts(workspace);
+        if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
+      }
+    } catch (e: any) {
+      console.warn('[bootstrap-su] saved-prompts materialize failed (non-fatal):', e?.message);
     }
 
     // omp loads the coordination extension via -e for lock enforcement.
