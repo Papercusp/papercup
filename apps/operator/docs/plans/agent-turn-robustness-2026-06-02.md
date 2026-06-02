@@ -322,7 +322,9 @@ A strong peer review confirmed the diagnosis and found real defects. Accepted + 
   delegate-chat, operator-scan); the orchestrator `invoke`/`invoke-once` agent spawn
   (the pipeline burst path); the `runAgentChat` CLI spawn (claude/omp/codex brains); the
   DBOS orchestrator-runner spawn. Each flag-gated → validated → flipped. importance: high
-- **RB-013** `todo` Extract the generic core — token-bucket + concurrency + exponential
+- **RB-013** `done` (governor → `src/resilience/governor.ts`; `runWithRetry` →
+  `src/resilience/retry.ts`; agent `turn-runner` now a thin wrapper; 49 tests) Extract the
+  generic core — token-bucket + concurrency + exponential
   backoff + abortable/bounded waits + the retry-with-classification *policy loop* + a store
   seam (PG/in-memory, mirroring `@papercusp/rate-limit`'s `BucketStore`) — into an
   **agent-independent** module. PRAGMATIC TARGET: start as
