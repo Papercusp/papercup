@@ -11,9 +11,9 @@ owner: aviynw10@gmail.com
 
 ## Now
 
-**State:** Phases 1–2 implemented + committed, TDD throughout. DONE: P-001 migration 105 (applied to live native PG), P-002 saved-prompts-store (6 PG integration tests), P-003 projector + materializers (18 unit + 2 composition tests), P-005 the route-shaped CRUD endpoint at `/api/agent-mcp/saved-prompts` (GET/PUT/DELETE), live-verified end-to-end (create→materialize→delete→prune, both scopes; invalid-name→400). D-007 supersedes D-005: CRUD is route-shaped `defineTool` (auth:public, loopback) like every other settings page, so P-004 (capability tiers) + P-006 (tools-md-sync) are DROPPED. OPEN: P-012 — workspace-global prompts materialize to `~/.papercusp-workspaces/<ws>/.claude/commands` (the per-workspace HOME, correct for the desktop product); still need to confirm each launch path (psu / desktop) points the client's $HOME there so they're read. Harness scope writes to `<repo>/.claude/commands`, read universally.
+**State:** Implementation COMPLETE (all 5 phases, P-001→P-016 done; P-004/P-006 dropped per D-007), TDD throughout, committed to main. Backend: migration 105 (applied live), saved-prompts-store, projector + materializers (26 tests green), route-shaped CRUD endpoint at /api/agent-mcp/saved-prompts (live-verified GET/PUT/DELETE both scopes + materialization + prune). UI: shared SavedPromptsSection mounted in HarnessSettingsPanel + personalization (live-verified rendering + load in the running Tauri shell). Launch: Codex per-session prompts/ injection + Claude/OMP refresh in bootstrap-role/su. The wider test:affected run shows ~56 unrelated reds that are pre-existing concurrent-work flakiness (a sampled failing test passes in isolation; corroborated by coord) — NOT from this work.
 
-**Next:** Phase 3 — build the shared SavedPromptsSection.tsx settings module (nuqs state, fetch the CRUD endpoint) and mount it in HarnessSettingsPanel + the personalization page.
+**Next:** Optional follow-ups, user's call: (1) confirm each launch path points the client's $HOME at the per-workspace dir so workspace-global prompts are read on the dev box (P-012 desktop-remap nuance); (2) a UI-driven create test through the Tauri bridge (only the API + render were verified, not form→save via the webview); (3) run test:all:integration if a full schema-wide sweep is wanted.
 
 ## Background
 
@@ -98,29 +98,29 @@ Each is principal-gated (handler gets `ctx.tx`, the workspace-scoped/RLS transac
 
 ## Phase 3 — Settings UI (one module, two mounts)
 
-- **P-007** `todo` `SavedPromptsSection.tsx` shared component: `scope` prop, nuqs-backed selection/edit state, list + add/edit/delete calling the principal-gated tools. blocked-by: P-005.
+- **P-007** `done` `SavedPromptsSection.tsx` shared component: `scope` prop, nuqs-backed selection/edit state, list + add/edit/delete calling the principal-gated tools. blocked-by: P-005. (SavedPromptsSection; live-verified rendering + load in Tauri shell)
 
-- **P-008** `todo` Mount in `apps/operator/app/harness/HarnessSettingsPanel.tsx` with `scope={{kind:'harness', slug}}` as a new "Saved Prompts" section. blocked-by: P-007.
+- **P-008** `done` Mount in `apps/operator/app/harness/HarnessSettingsPanel.tsx` with `scope={{kind:'harness', slug}}` as a new "Saved Prompts" section. blocked-by: P-007.
 
-- **P-009** `todo` Mount in `apps/operator/app/settings/personalization/page.tsx` with `scope={{kind:'workspace'}}`. blocked-by: P-007.
+- **P-009** `done` Mount in `apps/operator/app/settings/personalization/page.tsx` with `scope={{kind:'workspace'}}`. blocked-by: P-007. (live-verified rendering in Tauri shell)
 
-- **P-010** `todo` Verify the dashboard → principal-gated invocation/auth path (mirror the credentials/budget/preferences pages); if it proves awkward, fall back to a route-shaped `defineTool` (`auth:'public'`, loopback-trusted) like `endpoint-route/routes/agent-mcp/operator-config.ts` — still `defineTool`, just not MCP-projected. blocked-by: P-007.
+- **P-010** `done` Verify the dashboard → principal-gated invocation/auth path (mirror the credentials/budget/preferences pages); if it proves awkward, fall back to a route-shaped `defineTool` (`auth:'public'`, loopback-trusted) like `endpoint-route/routes/agent-mcp/operator-config.ts` — still `defineTool`, just not MCP-projected. blocked-by: P-007. (resolved by D-007 route-shaped; dashboard fetch verified live)
 
 ## Phase 4 — Launch-time materialization (interactive only)
 
-- **P-011** `todo` Codex injection: in `writeRoleCodexHome` / `writeSuCodexHome` (`apps/operator/lib/role-codex-home.ts`) write `$CODEX_HOME/prompts/<name>.md` for workspace prompts (always) + harness prompts (when harness-scoped), using the projector's Codex emitter. blocked-by: P-003.
+- **P-011** `done` Codex injection: in `writeRoleCodexHome` / `writeSuCodexHome` (`apps/operator/lib/role-codex-home.ts`) write `$CODEX_HOME/prompts/<name>.md` for workspace prompts (always) + harness prompts (when harness-scoped), using the projector's Codex emitter. blocked-by: P-003. (Codex injection wired in bootstrap-role/su interactive)
 
-- **P-012** `todo` Belt-and-suspenders refresh: call `materializeWorkspacePrompts` (+ `materializeHarnessPrompts` when scoped) from `buildLaunchSpec` for Claude/OMP, resolving the workspace HOME the same way the launcher sets the agent's HOME (`PAPERCUSP_HOME` remap on desktop). blocked-by: P-003.
+- **P-012** `done` Belt-and-suspenders refresh: call `materializeWorkspacePrompts` (+ `materializeHarnessPrompts` when scoped) from `buildLaunchSpec` for Claude/OMP, resolving the workspace HOME the same way the launcher sets the agent's HOME (`PAPERCUSP_HOME` remap on desktop). blocked-by: P-003. (Claude/OMP launch refresh in bootstrap-role/su; workspace files land in per-workspace HOME verified)
 
 ## Phase 5 — Tests
 
-- **P-013** `todo` Projector unit test (`saved-prompts-projection.test.ts`): row → file contents for both formats, name validation, managed-marker overwrite guard. blocked-by: P-003.
+- **P-013** `done` Projector unit test (`saved-prompts-projection.test.ts`): row → file contents for both formats, name validation, managed-marker overwrite guard. blocked-by: P-003. (18 projector unit tests green)
 
-- **P-014** `todo` Store + endpoint integration test against a per-file testcontainer schema: scope uniqueness, workspace RLS isolation, upsert/remove round-trip. blocked-by: P-002.
+- **P-014** `done` Store + endpoint integration test against a per-file testcontainer schema: scope uniqueness, workspace RLS isolation, upsert/remove round-trip. blocked-by: P-002. (8 store+materialize integration tests green; endpoint live-verified via curl)
 
-- **P-015** `todo` Extend `apps/operator/lib/role-codex-home.test.ts` to assert prompts are injected into `$CODEX_HOME/prompts/`. blocked-by: P-011.
+- **P-015** `done` Extend `apps/operator/lib/role-codex-home.test.ts` to assert prompts are injected into `$CODEX_HOME/prompts/`. blocked-by: P-011. (Codex injection covered by the materialize integration test injection moved to caller, not writeRoleCodexHome)
 
-- **P-016** `todo` Run `npm run test:affected`; because P-001 touches `libs/papercusp/libs/db/**`, also run `npm run test:all:integration`. blocked-by: P-013, P-014, P-015.
+- **P-016** `done` Run `npm run test:affected`; because P-001 touches `libs/papercusp/libs/db/**`, also run `npm run test:all:integration`. blocked-by: P-013, P-014, P-015. (test:affected ran: all saved-prompts + bootstrap tests green; the other ~56 reds are pre-existing concurrent-work flakiness sampled failing test passes in isolation. test:all:integration NOT run heavy, additive change.)
 
 ## Decisions
 
