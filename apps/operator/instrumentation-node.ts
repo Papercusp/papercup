@@ -166,6 +166,20 @@ export async function register(): Promise<void> {
       } finally {
         await sql.end({ timeout: 2 });
       }
+      // P-006 (fleet-coordination-painpoints): after the boot apply, any
+      // REMAINING drift means a migration failed to apply (or is manual-only)
+      // — surface it loudly here rather than let an agent hit it at runtime.
+      try {
+        const { checkMigrationDrift } = await import('@/lib/migration-drift');
+        const drift = await checkMigrationDrift();
+        if (!drift.inSync) {
+          console.warn(
+            `[migration-drift] DB not in sync after boot apply — missing: ${drift.missing.join(', ') || '∅'}; extra: ${drift.extra.join(', ') || '∅'}. Inspect with db:check_drift.`,
+          );
+        }
+      } catch {
+        // best-effort — never block boot on the drift check.
+      }
     } catch (err) {
       console.warn('[migration-runner] non-fatal failure:', (err as Error)?.message ?? err);
     }

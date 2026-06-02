@@ -176,6 +176,7 @@ import './locks/check_command';
 // Blessed wrappers for destructive shared actions (requiresLock via guardResource)
 import './dev/restart';
 import './db/migrate';
+import './db/check_drift';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md
