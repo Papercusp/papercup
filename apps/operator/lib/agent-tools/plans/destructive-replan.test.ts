@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeDestructiveReplanDiff,
+  decideDestructiveReplan,
   DEFAULT_PROTECTED_STATUSES,
   type ExistingPlanFeature,
 } from './destructive-replan';
@@ -135,19 +136,54 @@ describe('computeDestructiveReplanDiff — input normalization', () => {
   });
 });
 
+describe('decideDestructiveReplan — fail-closed / force policy', () => {
+  it('applies a safe non-empty diff, passing through toDeprecate + protectedHeld', () => {
+    const diff = computeDestructiveReplanDiff(['F-1'], [feat('F-1'), feat('F-2'), feat('F-9', 'passed')]);
+    const dec = decideDestructiveReplan(diff);
+    expect(dec.action).toBe('apply');
+    expect(dec.toDeprecate).toEqual(['F-2']);
+    expect(dec.protectedHeld).toEqual(['F-9']); // passed → held back, reported
+  });
+
+  it('REFUSES unsafe_empty_replan (empty plan + existing features) when not forced', () => {
+    const diff = computeDestructiveReplanDiff([], [feat('F-1'), feat('F-2')]);
+    const dec = decideDestructiveReplan(diff);
+    expect(dec.action).toBe('refuse');
+    expect(dec.refusalCode).toBe('unsafe_empty_replan');
+    expect(dec.toDeprecate).toEqual([]); // refuse deprecates nothing
+    expect(dec.refusalDetail).toMatch(/force/);
+  });
+
+  it('force overrides the empty-wipe refusal → applies (deprecating everything)', () => {
+    // force ⇒ the diff is computed with protectStatuses:[] (nothing protected).
+    const diff = computeDestructiveReplanDiff([], [feat('F-1'), feat('F-2', 'passed')], {
+      protectStatuses: [],
+    });
+    const dec = decideDestructiveReplan(diff, { force: true });
+    expect(dec.action).toBe('apply');
+    expect(dec.toDeprecate).toEqual(['F-1', 'F-2']);
+    expect(dec.protectedHeld).toEqual([]);
+  });
+
+  it('a non-empty plan is never refused, even with protected drops', () => {
+    const diff = computeDestructiveReplanDiff(['F-1'], [feat('F-1'), feat('F-2', 'in_progress')]);
+    const dec = decideDestructiveReplan(diff);
+    expect(dec.action).toBe('apply');
+    expect(dec.toDeprecate).toEqual([]); // F-2 is in_progress → protected
+    expect(dec.protectedHeld).toEqual(['F-2']);
+  });
+});
+
 // ── Handler route-change contract (plans:promote `destructive: true`) ──────────
-// Spec for whoever lands the route change. These describe the PG-wired behavior
-// the pure diff above is the core of. Kept as `todo` so they document the
-// contract without failing CI on the shared tree.
-describe('plans:promote destructive mode — route-change contract (TODO: wire the handler)', () => {
-  it.todo('accepts a `destructive: true` arg (default false = today’s additive re-promote)');
-  it.todo(
-    'apply=false preview reports { toMint, toKeep, toDeprecate, protectedFromDeprecation } without mutating',
-  );
-  it.todo('scopes the existing-feature set to source_plan = slug before diffing (never touches other plans)');
-  it.todo('routes deprecations through the canonical feature-state path, NOT a raw harness_features write');
-  it.todo('fails closed with `unsafe_empty_replan` when the plan resolves to zero features (policy-less + no explicit features)');
-  it.todo('a `force: true` override is required to (a) wipe an empty-plan queue and (b) deprecate passed/in_progress work');
-  it.todo('protected (passed/in_progress) drops are reported back to the caller for a human retire decision');
-  it.todo('is idempotent: a second destructive promote of the same plan is a no-op');
+// The pure core (diff + decision) above is fully green. These remaining specs
+// are PG/loopback integration (a live harness schema + the features import/PATCH
+// routes) — kept as `todo` rather than shipping a heavy integration test on the
+// shared tree. The handler in promote.ts implements all of them
+// (runDestructiveReplan): scoped source_plan read, importRes.ids diff, canonical
+// PATCH deprecations, fail-closed refuse, force overrides, preview-without-mutate.
+describe('plans:promote destructive mode — PG/loopback integration (TODO: integration test)', () => {
+  it.todo('apply=false preview reports the diff (read-only — no import, no PATCH) using supplied feature_ids');
+  it.todo('apply diffs importRes.ids against the source_plan=slug read and PATCHes drops to status=deprecated');
+  it.todo('scopes the existing-feature read to (workspace_id, source_plan_slug, harness_slug) — never other plans');
+  it.todo('is idempotent: a second destructive promote of the same plan deprecates nothing new');
 });

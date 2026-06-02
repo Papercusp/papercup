@@ -37,6 +37,11 @@ import { emitPlanEventForCaller } from '../plan-events';
 import { readPlanBySlug } from '../../plans/source';
 import { parsePromotePolicy, buildWaveFeatures, applyInterWaveEdges, type BuiltFeature } from '../../plans/promote-policy';
 import {
+  computeDestructiveReplanDiff,
+  decideDestructiveReplan,
+  DEFAULT_PROTECTED_STATUSES,
+} from '../../plans/destructive-replan';
+import {
   resolveForEach,
   isForEachResolver,
   isCompletionTimeForEach,
@@ -327,6 +332,98 @@ async function postFeaturesImport(
   };
 }
 
+/** Read the harness features minted from `planSlug` (the destructive diff input). */
+async function readExistingPlanFeatures(
+  harnessSlug: string,
+  planSlug: string,
+  workspaceId: string,
+): Promise<Array<{ featureId: string; status: string }>> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_id: string; status: string }[]>`
+    SELECT feature_id, status FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id     = ${workspaceId}
+       AND source_plan_slug = ${planSlug}
+       AND harness_slug     = ${harnessSlug}
+  `;
+  return rows.map((r) => ({ featureId: r.feature_id, status: r.status }));
+}
+
+interface DestructiveReplanOutcome {
+  toMint: string[];
+  toKeep: string[];
+  toDeprecate: string[];
+  protectedFromDeprecation: string[];
+  /** Set only after a real apply: the features actually deprecated + any errors. */
+  deprecated?: string[];
+  deprecateErrors?: string[];
+}
+
+/**
+ * Destructive replan: converge the harness to the plan's CURRENT feature set by
+ * deprecating features the plan dropped. `currentFeatureIds` is the canonical id
+ * set the plan now declares (importRes.ids on apply; caller `feature_ids` on
+ * preview). When `apply` is false, no writes happen — the diff is returned for the
+ * preview. Returns `{ refuse }` (caller fails closed) on an unsafe empty-plan wipe.
+ */
+async function runDestructiveReplan(opts: {
+  harnessSlug: string;
+  planSlug: string;
+  workspaceId: string;
+  currentFeatureIds: string[];
+  force: boolean;
+  apply: boolean;
+}): Promise<
+  | { refuse: { code: 'unsafe_empty_replan'; detail: string; wouldDeprecate: string[] } }
+  | { outcome: DestructiveReplanOutcome }
+> {
+  const existing = await readExistingPlanFeatures(opts.harnessSlug, opts.planSlug, opts.workspaceId);
+  const diff = computeDestructiveReplanDiff(opts.currentFeatureIds, existing, {
+    protectStatuses: opts.force ? [] : DEFAULT_PROTECTED_STATUSES,
+  });
+  const decision = decideDestructiveReplan(diff, { force: opts.force });
+  if (decision.action === 'refuse') {
+    return {
+      refuse: {
+        code: 'unsafe_empty_replan',
+        detail: decision.refusalDetail ?? 'destructive replan refused (empty plan)',
+        wouldDeprecate: diff.toDeprecate,
+      },
+    };
+  }
+  const base: DestructiveReplanOutcome = {
+    toMint: diff.toMint,
+    toKeep: diff.toKeep,
+    toDeprecate: decision.toDeprecate,
+    protectedFromDeprecation: decision.protectedHeld,
+  };
+  if (!opts.apply) return { outcome: base };
+
+  // Apply: deprecate each dropped feature through the canonical PATCH path
+  // (records feature_audit; the route requires a deprecation_reason).
+  const deprecated: string[] = [];
+  const deprecateErrors: string[] = [];
+  for (const fid of decision.toDeprecate) {
+    try {
+      const r = await loopbackFetch(
+        `${operatorBase()}/api/harness/${encodeURIComponent(opts.harnessSlug)}/features/${encodeURIComponent(fid)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            status: 'deprecated',
+            deprecation_reason: `destructive-replan: dropped from plan ${opts.planSlug}`,
+          }),
+        },
+      );
+      if (r.ok) deprecated.push(fid);
+      else deprecateErrors.push(`${fid}: HTTP ${r.status}`);
+    } catch (e) {
+      deprecateErrors.push(`${fid}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { outcome: { ...base, deprecated, deprecateErrors } };
+}
+
 export default defineTool({
   name: 'plans:promote',
   profile: 'engineer',
@@ -383,6 +480,16 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Policy-mode (P-044): promote EVERY wave at once instead of one `wave`. Cross-wave ordering is written as feature `blocked_by` edges so the dispatch frontier sequences the waves — no wave-advance poll. Completion-time `for_each: { from_feature }` waves stay deferred (expand on publish). Mutually exclusive with `wave`.'),
+    destructive: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('DESTRUCTIVE replan: after the (additive) import, deprecate harness features minted from THIS plan (source_plan=slug) that the plan no longer declares, so the queue converges to exactly the plan\'s current set. Default false = today\'s additive re-promote. Matches existing features by feature id, so the plan must use stable ids (caller `feature_ids` or policy-assigned). Passed/in_progress work is NEVER auto-deprecated (reported instead) and an empty-plan wipe is refused — unless `force`.'),
+    force: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Destructive-only: override both safety guards — (a) deprecate even passed/in_progress work the plan dropped, and (b) allow wiping the whole plan queue when the plan resolves to zero features.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -572,6 +679,28 @@ export default defineTool({
         detail: `previewed promote to ${harnessSlug}: ${promoteFeatures.length} feature(s), ${previewAssertions.length} assertion(s)`,
       });
 
+      // Destructive preview: report what a destructive apply WOULD deprecate
+      // (read-only). Needs the plan's stable ids to diff — on apply those come
+      // from importRes; in preview they must be supplied via `feature_ids`.
+      let destructivePreview: DestructiveReplanOutcome | { note: string } | undefined;
+      if (args.destructive) {
+        if (args.feature_ids && args.feature_ids.length > 0) {
+          const dr = await runDestructiveReplan({
+            harnessSlug,
+            planSlug: args.slug,
+            workspaceId: ctx.workspaceId ?? '',
+            currentFeatureIds: args.feature_ids,
+            force: args.force,
+            apply: false,
+          });
+          destructivePreview = 'refuse' in dr ? { note: `would refuse: ${dr.refuse.detail}` } : dr.outcome;
+        } else {
+          destructivePreview = {
+            note: 'destructive preview needs explicit feature_ids (the plan’s stable ids) to diff against existing features; apply diffs against the imported ids',
+          };
+        }
+      }
+
       return {
         content: [
           {
@@ -589,6 +718,7 @@ export default defineTool({
                 features_import_endpoint: `/api/harness/${harnessSlug}/features/import`,
                 note: 'Re-call with apply=true to import features + store assertions + mark plan items.',
               },
+              ...(destructivePreview && { destructive: destructivePreview }),
             }),
           },
         ],
@@ -663,6 +793,23 @@ export default defineTool({
       return out;
     });
     const importRes = await postFeaturesImport(harnessSlug, importPayload);
+
+    // Destructive replan: the import above is additive; now converge the harness
+    // to the plan's CURRENT set by deprecating features it dropped (source_plan=
+    // slug, no longer in importRes.ids). Fail closed on an empty-plan wipe.
+    let destructive: DestructiveReplanOutcome | undefined;
+    if (args.destructive) {
+      const dr = await runDestructiveReplan({
+        harnessSlug,
+        planSlug: args.slug,
+        workspaceId: ctx.workspaceId ?? '',
+        currentFeatureIds: importRes.ids,
+        force: args.force,
+        apply: true,
+      });
+      if ('refuse' in dr) return fail(dr.refuse.code, dr.refuse.detail);
+      destructive = dr.outcome;
+    }
 
     // Store assertions in harness_plan_assertions (PG). Best-effort — features
     // are already imported with their claims, so assertion lookup failures
@@ -854,6 +1001,15 @@ export default defineTool({
               ...(importRes.provenanceFailed != null && importRes.provenanceFailed > 0 && {
                 provenance_failed: importRes.provenanceFailed,
                 provenance_errors: importRes.provenanceErrors ?? [],
+              }),
+              ...(destructive && {
+                destructive: {
+                  deprecated: destructive.deprecated ?? [],
+                  protected_from_deprecation: destructive.protectedFromDeprecation,
+                  ...(destructive.deprecateErrors && destructive.deprecateErrors.length > 0 && {
+                    deprecate_errors: destructive.deprecateErrors,
+                  }),
+                },
               }),
             },
           }),

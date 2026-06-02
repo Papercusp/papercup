@@ -112,3 +112,48 @@ export function computeDestructiveReplanDiff(
 
   return { toMint, toKeep, toDeprecate, protectedFromDeprecation, unsafeEmptyReplan };
 }
+
+/** The fail-closed / force decision the handler acts on. */
+export interface DestructiveReplanDecision {
+  action: 'apply' | 'refuse';
+  /** Set when action==='refuse'. */
+  refusalCode?: 'unsafe_empty_replan';
+  refusalDetail?: string;
+  /** Features to deprecate when applying (empty on refuse). */
+  toDeprecate: string[];
+  /**
+   * Dropped-from-plan features held back by the protected-status guard — present
+   * regardless of action so the caller can surface them for a human retire call.
+   * Empty when `force` was used (the diff was computed with no protected set).
+   */
+  protectedHeld: string[];
+}
+
+/**
+ * Apply the destructive-replan safety policy over a {@link computeDestructiveReplanDiff}
+ * result: refuse (fail closed) on an empty-plan wipe unless `force`, else apply.
+ *
+ * `force` is expected to ALSO have been threaded into the diff (as
+ * `protectStatuses: []`), so a forced decision deprecates protected work too and
+ * `protectedHeld` is empty; an unforced decision keeps protected work and reports
+ * it. Pure — the handler does the PG read + the deprecation writes around it.
+ */
+export function decideDestructiveReplan(
+  diff: DestructiveReplanDiff,
+  opts?: { force?: boolean },
+): DestructiveReplanDecision {
+  const force = opts?.force ?? false;
+  if (diff.unsafeEmptyReplan && !force) {
+    return {
+      action: 'refuse',
+      refusalCode: 'unsafe_empty_replan',
+      refusalDetail:
+        `the plan resolved to zero features, so a destructive replan would deprecate ` +
+        `all ${diff.toDeprecate.length + diff.protectedFromDeprecation.length} feature(s) it minted — ` +
+        `pass force:true to confirm wiping the plan's queue`,
+      toDeprecate: [],
+      protectedHeld: diff.protectedFromDeprecation,
+    };
+  }
+  return { action: 'apply', toDeprecate: diff.toDeprecate, protectedHeld: diff.protectedFromDeprecation };
+}
