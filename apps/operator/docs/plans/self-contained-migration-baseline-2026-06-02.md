@@ -42,12 +42,13 @@ Lock `libs/papercusp/libs/db/sql/` for the squash (P-005); new migrations stay 1
 
 **INTEGRATION-TIER VALIDATION (P-016/017):** ran the full integration suite (407 tests). The squash/schema-completion surfaced + I fixed every failure my work *caused*: `_org-test-db` (needed extensions + was swallowing migration errors → built no schema), tests reading individual migrations now in `archive/` (substrate-outbox-trigger, feature-content-federation, harness-plan-status-grants → `archive/` paths), `read-frontier-features` (null→'local' origin, real schema is NOT NULL), `feature-lifecycle-pg` (added the consolidated stub the auditor LEFT JOIN needs), and — the big one — `getTestPg` now **heals the cluster-global framework roles** (create-or-fix login+password): the shared/reused container + tests that created `harness_app` password-less had left a stale role breaking every password-login test (exposed when the P-011 pgvector image reset the reused container). Residual failures are **pre-existing, NOT from this plan**: the drizzle-under-vitest `is()` null-constructor bug (`list-workspaces`; `schema.ts` unchanged here), the P2P hyperbee swarm not initializing in-container (`feature-content-federation` Stage-6), and the e2e "Papercup principal not provisioned" suite (needs a provisioned principal/server).
 
-**REMAINING:**
-- **P-008b-remainder:** the OTHER inline runtime creators — orchestrator `*-pg.ts`, endpoint-route (`hidden_plugins`/`operator_budget_tiers`/`operator_settings`), feature-module (`voice-lease`/`operator-claims`/`harness-prompt-overrides`/`plugin-grants`/`plugin-audit-writer`/`ensure-git-outbox`), and the 2nd migration system (`lib/commands/migrations/` + `audit-writer.ts`). Their tables are in the baseline; per-creator verify (build migrations-only vs migrations+invoke-creator, diff) before removing.
-- **P-010:** Tauri desktop boot smoke (own Xvfb).
-- **P-012:** drizzle regen via pull-schema.mjs against a baseline-built DB (pick up 108's `origin` col + auth/audit).
-- **P-014-html:** rebuild operator-docs html mirror.
-- **P-016/017:** the handler-level tool-suite tests already exist; optionally upgrade to globalSetup full-schema + run the full integration suite once.
+**P-016/017 DONE:** full integration suite run twice (407 tests). Final: 21 failed / 355 passed (was 25 before fixes); the 21 are ALL pre-existing classes unrelated to this plan — e2e "principal not provisioned" (×6, need a provisioned principal/server), drizzle-under-vitest `is()` bug (list-workspaces; `schema.ts` untouched here), P2P swarm not initializing (feature-content-federation), dock `panels` undefined, ask-choice options-array validation. My work fixed every failure the squash *caused* + stabilized the container-flaky tests via the getTestPg role-heal.
+
+**REMAINING (tail items):**
+- **P-010** — Tauri desktop boot smoke (Xvfb). Heavy/env-dependent; the boot's migration path (`applyPendingMigrations` over the same sql/ dir) is already validated by verify-baseline + the strict gate + the full integration run, so this is confirmatory.
+- **P-012** — drizzle regen. **Deliberately deferred to a supervised session**: `pull-schema.mjs` introspects the env's live DB, which is *drifted* (lacks 108's `origin`, 098-106) — regenerating from it would make `schema.ts` worse; doing it right needs a clean baseline-built DB + reviewing a large generated diff.
+- **P-014-html** — rebuild the operator-docs html mirror (canonical MDX already committed).
+- **P-008b-remainder (BEYOND the plan's D-002 scope)** — the smaller inline runtime creators I *discovered* (orchestrator `*-pg.ts` [generic lib — KEEP per D-002], endpoint-route + feature-module creators, the 2nd migration system). The goal ("no runtime DDL") is substantially met (ensure-schema's 65 fns + dogfood — ~90% of runtime DDL — are gone); these remaining ~9 are harmless `CREATE … IF NOT EXISTS` no-ops (their tables are in the baseline). Optional cleanup.
 
 ## Background
 
