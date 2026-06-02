@@ -30,6 +30,14 @@ vi.mock('@/lib/adv-sessions', () => ({ recordAdvSession: recordAdvSessionMock })
 vi.mock('@/lib/role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
 vi.mock('@/lib/role-launch-spec', () => ({ buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a) }));
 vi.mock('@/lib/role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
+// No-op the best-effort saved-prompts materialize side effect — this unit test
+// isn't exercising it (the materialize integration test is), and running it for
+// real would query the DB + write/prune the dev box's ~/.claude/commands.
+vi.mock('@/lib/saved-prompts-materialize', () => ({
+  materializeWorkspacePrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+  materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+  materializeCodexPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+}));
 const getPlanContextBySlugMock = vi.fn(async () => '## Source Plan Context\n\n**Plan:** `p1`');
 vi.mock('@/lib/plan-context-for-feature', () => ({ getPlanContextBySlug: (...a: unknown[]) => getPlanContextBySlugMock(...a) }));
 

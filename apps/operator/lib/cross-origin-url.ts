@@ -18,12 +18,24 @@
  * `Access-Control-Allow-Origin: *` so the cross-origin GET is permitted
  * (it is an unauthenticated, loopback-only read — no credentials sent).
  *
- * SSR-safe: returns the path unchanged when `window` is absent or the page
- * is not on a loopback host (nothing to shard against).
+ * HTTP(S) only — the sharding helps exclusively where the browser enforces a
+ * per-host socket pool over real HTTP. On the desktop the webview runs under
+ * the `papercusp://localhost` custom scheme (custom_protocol.rs, Phase 4),
+ * where the SPA's same-origin `/api/*` fetch is intercepted by the desktop-ipc
+ * polyfill and routed over IPC (no HTTP socket pool at all). Rewriting the host
+ * there would be doubly wrong: it breaks the polyfill's same-origin match so
+ * the call escapes IPC, AND it yields a cross-origin custom-scheme URL that the
+ * `/api/*` CORS layer (which only allows http/https/tauri/capacitor/ionic)
+ * rejects. So under any non-http(s) scheme we no-op and let the same-origin
+ * path ride the IPC polyfill.
+ *
+ * SSR-safe: returns the path unchanged when `window` is absent, the origin is
+ * not http(s), or the page is not on a loopback host (nothing to shard).
  */
 export function crossOriginUrl(path: string): string {
   if (typeof window === 'undefined') return path;
   const { protocol, hostname, port } = window.location;
+  if (protocol !== 'http:' && protocol !== 'https:') return path;
   const sibling =
     hostname === 'localhost' ? '127.0.0.1'
     : hostname === '127.0.0.1' ? 'localhost'

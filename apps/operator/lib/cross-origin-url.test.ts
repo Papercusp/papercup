@@ -39,4 +39,19 @@ describe('crossOriginUrl', () => {
     stubLocation({ protocol: 'https:', hostname: 'app.example.com', port: '443' });
     expect(crossOriginUrl('/p')).toBe('/p');
   });
+
+  it('no-ops under the desktop papercusp:// custom scheme (same-origin /api rides the IPC polyfill)', () => {
+    // Linux/macOS desktop origin is papercusp://localhost. hostname IS
+    // "localhost", so without the http(s) guard this would wrongly shard to
+    // papercusp://127.0.0.1 — escaping the desktop-ipc polyfill + failing CORS.
+    stubLocation({ protocol: 'papercusp:', hostname: 'localhost', port: '' });
+    expect(crossOriginUrl('/api/agent-mcp/saved-prompts')).toBe('/api/agent-mcp/saved-prompts');
+  });
+
+  it('no-ops under the Windows http://papercusp.localhost custom-scheme mapping', () => {
+    // Windows maps the scheme onto http://papercusp.localhost; protocol passes
+    // the http guard but the hostname isn't a loopback sibling, so still no-op.
+    stubLocation({ protocol: 'http:', hostname: 'papercusp.localhost', port: '' });
+    expect(crossOriginUrl('/api/x')).toBe('/api/x');
+  });
 });

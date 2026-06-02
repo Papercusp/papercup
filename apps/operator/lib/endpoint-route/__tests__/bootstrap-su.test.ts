@@ -73,6 +73,15 @@ vi.mock('@/lib/role-launch-spec', () => ({
 vi.mock('@/lib/role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
 }));
+// The bootstrap handler fires a best-effort saved-prompts materialize side
+// effect; this unit test isn't exercising it (the materialize integration test
+// is), and running it for real would query the DB + write/prune the dev box's
+// ~/.claude/commands. No-op it here.
+vi.mock('@/lib/saved-prompts-materialize', () => ({
+  materializeWorkspacePrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+  materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+  materializeCodexPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+}));
 vi.mock('@/lib/desktop-install/papercusp-files', () => ({
   resolveInstallPaths: () => ({ extensionPath: COORD_EXT }),
 }));
