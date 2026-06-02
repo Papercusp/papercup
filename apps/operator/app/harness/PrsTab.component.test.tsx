@@ -38,6 +38,9 @@ vi.mock('nuqs', async () => {
     useQueryState: (_key: string, parser?: { __default?: unknown }) =>
       React.useState(parser?.__default ?? null),
     parseAsStringLiteral: () => ({ withDefault: (d: unknown) => ({ __default: d }) }),
+    // P-049 added `prs_settings` via `parseAsBoolean.withDefault(false)`. Unlike
+    // parseAsStringLiteral, parseAsBoolean is a bare parser object (not a factory).
+    parseAsBoolean: { withDefault: (d: unknown) => ({ __default: d }) },
   };
 });
 
