@@ -305,6 +305,38 @@ A strong peer review confirmed the diagnosis and found real defects. Accepted + 
   new `@papercusp/agent-governor`); note the relationship to `@papercusp/rate-limit` (different
   algorithm, same store-seam pattern to reuse).
 
+## Scope additions (2026-06-02 — user directives #1–#3)
+
+- **(#1) The framework is generic; the REGULAR fleet must benefit, not just the gym.** The
+  core (`turn-error`/`governor`/`runAgentTurn`) is already backend-agnostic + harness-agnostic
+  — nothing gym-specific. The gap is wiring: only the meridian path (RB-004) is wired. The
+  regular fleet benefits via RB-012 below.
+- **(#2) Migrate ALL existing agent surfaces — now in scope (RB-012).**
+- **(#3) Split the GENERIC retry/governor out of the agent layer (RB-013).** Retry +
+  backoff + rate-limit-governance is a universal concern, so it belongs in an
+  agent-independent shared lib; the agent-specific taxonomy/classification depends on it.
+
+- **RB-012** `todo` Migrate every agent-calling surface onto `runAgentTurn` + the shared
+  governor (so the WHOLE fleet gets pacing + never-crash, not just the gym). Surfaces:
+  meridian `llmCall` callers (gym judge, sim-user, operator brain, oracle brain,
+  delegate-chat, operator-scan); the orchestrator `invoke`/`invoke-once` agent spawn
+  (the pipeline burst path); the `runAgentChat` CLI spawn (claude/omp/codex brains); the
+  DBOS orchestrator-runner spawn. Each flag-gated → validated → flipped. importance: high
+- **RB-013** `todo` Extract the generic core — token-bucket + concurrency + exponential
+  backoff + abortable/bounded waits + the retry-with-classification *policy loop* + a store
+  seam (PG/in-memory, mirroring `@papercusp/rate-limit`'s `BucketStore`) — into an
+  **agent-independent** module. PRAGMATIC TARGET: start as
+  `libs/papercup-shared/src/resilience/*` (clean generic/agent split inside the existing
+  shared submodule — no new submodule/repo to provision), promotable to a standalone
+  `libs/generic/@papercusp/resilience` per BORROWABLE.md later. (rate-limit is a different
+  algorithm — auth lockout — so a separate resilience module is justified, per reviewer.)
+  The agent layer
+  (`papercup-shared/src/agent/*`: TurnError taxonomy, `classifyTurnError`, backend profiles,
+  the agent `runAgentTurn` wrapper) then **depends on** the generic lib. Reusable by any
+  rate-limited/flaky I/O (substrate sync, external APIs, PG pools). The store seam also makes
+  cross-process (RB-007) a swap, not a rewrite. importance: high blocked-by: (refactor of
+  RB-002/003)
+
 ## Decisions (open)
 
 - **D-001** Governor scope first: in-process (P-002) is enough for a single runner; the
