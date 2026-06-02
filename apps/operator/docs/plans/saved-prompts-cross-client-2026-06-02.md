@@ -156,3 +156,25 @@ Related: P-012
 Date: 2026-06-02
 Drove the live Tauri webview via the dev bridge: navigated to /settings/personalization, opened the editor, set name+body through React's native value setter, clicked Save. Result: the section RENDERS and the load (GET) resolves, but the Save (PUT) HANGS — the button stays on "Saving…", editor open, no console error, and nothing lands in PG. This is the pre-documented headless-Xvfb libsoup write-fetch hang (memory tauri-verify-writes-via-mcp-not-webview: the ~6-conn pool is exhausted by SSE, so a webview write fetch can't get a connection), NOT a bug in onSave — the handler fires the fetch and awaits it. The CRUD endpoint itself is verified working independently via curl (create/delete, both scopes, materialization, prune). Conclusion: the feature's UI is correct; the webview write-path hang is a platform characteristic affecting all webview writes in this verify env, tracked separately. A real (non-headless) desktop should be spot-checked for the same; if it reproduces there, it's a platform libsoup fix, not a saved-prompts change.
 Related: P-007, P-014
+
+### D-010 — Harden the WebView write path — CORS-simple POST via the sibling host
+Date: 2026-06-02
+Date: 2026-06-02 (session 2ade4d9e). Resolves the D-009 UI-Save hang in the code, not just by waiting for a desktop spot-check. Two WebView hazards, both dodged the way the rest of the app already does:
+
+1. SSE socket-pool starvation — the settings shell holds long-lived SSE streams that consume the WebView's 6-socket/origin budget (Chromium/WebKitGTK), so a same-origin write can hang waiting for a free socket (this is the documented git/show "loading diff forever" failure, project_harness_sse_pool_exhaustion). Fix: route every saved-prompts request through crossOriginUrl() (the localhost⇄127.0.0.1 sibling loopback host) — a distinct origin with its own fresh 6-socket pool the SSE streams never touch. No-op off a loopback host (e.g. tauri.localhost), so it stays same-origin where sharding doesn't apply.
+
+2. WebKitGTK silently fails CORS preflight handshakes (see native-console.ts). Going cross-origin would trigger a preflight for a PUT/DELETE (never CORS-"simple"). So writes are CORS-simple requests instead: method POST + content-type:text/plain + no custom headers ⇒ no preflight. Server writes moved PUT→POST /agent-mcp/saved-prompts (upsert) and DELETE→POST /agent-mcp/saved-prompts/remove (body {name,harness}). req.json() parses the text/plain body regardless of content-type. The global /api/* host CORS (bin/host-cors.ts) reflects the loopback origin on the response, so no per-route `cors` field is needed (mirrors the git/show read).
+
+Client function signatures (fetchSavedPrompts/saveSavedPrompt/deleteSavedPrompt) are unchanged, so SavedPromptsSection.tsx needed no edit. Verified live (host restarted): curl POST upsert with text/plain body + cross-origin Origin → 200 with access-control-allow-origin reflected; GET lists it; file materialized to ~/.claude/commands with frontmatter+managed-marker; invalid-name → 400; POST /remove → file pruned. Unit+integration green (65 unit incl. tools-md-sync + 8 integration); operator typecheck clean for all changed files.
+
+Residual (re-surfaced, not closed): crossOriginUrl is a no-op when the page origin is tauri.localhost (not localhost/127.0.0.1). If the shipping desktop loads content from tauri.localhost rather than http://localhost:PORT, the sibling-pool relief won't apply there and a real-desktop Save could still starve — the deeper fix would be the Tauri IPC bridge (no libsoup slot), as native-console.ts uses. Still worth the real-non-headless-desktop spot-check.
+Related: P-007
+
+### D-011 — Added the D-007 saved_prompts:list MCP read tool
+Date: 2026-06-02
+Date: 2026-06-02 (session 2ade4d9e). Took up D-007's standing offer: a thin read tool so superuser/agents can inspect saved prompts via the MCP catalog (the route-shaped dashboard endpoint is not MCP-projected by design). apps/operator/lib/agent-tools/saved_prompts/list.ts — defineTool name 'saved_prompts:list', profile 'engineer', capability 'intel:read', agentRoles ['operator'], args { harness_slug? }, guidance.when/notWhen. Registered via `import './saved_prompts/list'` in agent-tools/index.ts.
+
+Implementation note: the handler mirrors the GET route exactly — listSavedPrompts(getOrgPg().sql, ctx.principal?.workspaceId ?? activeWorkspaceId(), scope) — rather than ctx.tx, because UnifiedToolContext.tx is `any` and may be undefined when the call isn't withWorkspace-wrapped (e.g. superuser); the store already filters by workspace_id explicitly and the intel:read capability gate still applies. Mutation deliberately stays OFF the agent catalog (read-only tool); create/edit/delete remain on the dashboard endpoint.
+
+Verified: tools-md-sync green (registration + guidance.when); agent_tools:list shows saved_prompts:list allowed for the operator role with guidance; operator typecheck clean for the file.
+Related: P-005
