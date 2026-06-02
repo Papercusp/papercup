@@ -70,6 +70,7 @@ import harnessClobberStream from './harness/clobber-stream';
 import harnessWorkingSet from './harness/working-set';
 import usersByGithubId from './users/by-github-id';
 import usersByLogin from './users/by-login';
+import usersViewer from './users/viewer';
 import harnessPrs from './harness/prs';
 import harnessProjectDocs from './harness/project-docs';
 import harnessSync from './harness/sync';
@@ -498,6 +499,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessWorkingSet as AnyRoute[]),
   ...flatten(usersByGithubId as AnyRoute[]),
   ...flatten(usersByLogin as AnyRoute[]),
+  ...flatten(usersViewer as AnyRoute[]),
   ...flatten(harnessPrs as AnyRoute[]),
   ...flatten(harnessProjectDocs as AnyRoute[]),
   ...flatten(harnessSync as AnyRoute[]),

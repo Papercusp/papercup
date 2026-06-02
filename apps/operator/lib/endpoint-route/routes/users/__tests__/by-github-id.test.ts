@@ -10,7 +10,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/tooldef';
 
 const H = vi.hoisted(() => {
-  const state: { sessionUser: unknown; sessionThrows: boolean } = { sessionUser: null, sessionThrows: false };
+  const state: {
+    sessionUser: unknown;
+    sessionThrows: boolean;
+    localIdentity: unknown;
+  } = { sessionUser: null, sessionThrows: false, localIdentity: { kind: 'gh_auth_required' } };
   return {
     state,
     loadUserProfile: vi.fn(async () => ({ github_user_id: 0, harnesses: [] })),
@@ -18,11 +22,15 @@ const H = vi.hoisted(() => {
       if (state.sessionThrows) throw new Error('no session');
       return state.sessionUser;
     }),
+    resolveLocalGithubIdentity: vi.fn(async () => state.localIdentity),
   };
 });
 
 vi.mock('@/lib/user-profile/load', () => ({ loadUserProfile: H.loadUserProfile }));
 vi.mock('@/lib/auth', () => ({ getSessionUserOrDefault: H.getSessionUserOrDefault }));
+vi.mock('@/lib/identity/resolve-local-github-identity', () => ({
+  resolveLocalGithubIdentity: H.resolveLocalGithubIdentity,
+}));
 // Spread the real module — agent-mcp bootstrap imports `generated` from here.
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -39,8 +47,11 @@ const req = () => new Request('http://localhost/api/users/github/1');
 beforeEach(() => {
   H.state.sessionUser = null;
   H.state.sessionThrows = false;
+  H.state.localIdentity = { kind: 'gh_auth_required' };
   H.loadUserProfile.mockClear();
   H.loadUserProfile.mockResolvedValue({ github_user_id: 0, harnesses: [] });
+  H.resolveLocalGithubIdentity.mockClear();
+  H.getSessionUserOrDefault.mockClear();
 });
 
 describe('by-github-id route metadata', () => {
@@ -80,9 +91,25 @@ describe('GET /users/github/:id', () => {
     expect(H.loadUserProfile).toHaveBeenCalledWith(expect.objectContaining({ viewer_github_user_id: 99 }));
   });
 
-  it('falls back to a null viewer id when no session resolves', async () => {
+  it('falls back to the LOCAL github identity (desktop viewer) when no session resolves', async () => {
     H.state.sessionThrows = true;
+    H.state.localIdentity = { kind: 'ok', token: 'gho_x', githubUserId: 777, githubLogin: 'localdev' };
+    await route[0].handler(req(), ctx('12345'));
+    expect(H.loadUserProfile).toHaveBeenCalledWith(expect.objectContaining({ viewer_github_user_id: 777 }));
+  });
+
+  it('falls back to a null viewer id when neither session nor local identity resolves', async () => {
+    H.state.sessionThrows = true;
+    H.state.localIdentity = { kind: 'gh_auth_required' };
     await route[0].handler(req(), ctx('12345'));
     expect(H.loadUserProfile).toHaveBeenCalledWith(expect.objectContaining({ viewer_github_user_id: null }));
+  });
+
+  it('prefers the session viewer over the local identity (does not consult local when session resolves)', async () => {
+    H.state.sessionUser = { github_user_id: 99 };
+    H.state.localIdentity = { kind: 'ok', token: 'gho_x', githubUserId: 777, githubLogin: 'localdev' };
+    await route[0].handler(req(), ctx('12345'));
+    expect(H.loadUserProfile).toHaveBeenCalledWith(expect.objectContaining({ viewer_github_user_id: 99 }));
+    expect(H.resolveLocalGithubIdentity).not.toHaveBeenCalled();
   });
 });

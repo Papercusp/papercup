@@ -23,7 +23,19 @@ import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { loadUserProfile } from '@/lib/user-profile/load';
 import { getSessionUserOrDefault } from '@/lib/auth';
+import { resolveLocalGithubIdentity } from '@/lib/identity/resolve-local-github-identity';
 
+/**
+ * Resolve the viewing user's github id for the §18 privacy filter.
+ *
+ * Two sources, in order: (1) a web/multi-user session via
+ * `getSessionUserOrDefault`; (2) — the desktop case — the LOCAL machine's
+ * GitHub identity (`resolveLocalGithubIdentity`), which IS the viewer on a
+ * single-user, loopback-bound desktop. Before the local fallback the desktop
+ * always resolved to `null` → anonymous → public-only profiles, which is the
+ * P-072 "viewer-identity infra" gap this closes. Returns `null` (anonymous,
+ * public-only) when neither source yields an id — never throws.
+ */
 async function viewerGithubUserId(): Promise<number | null> {
   try {
     const user = await getSessionUserOrDefault();
@@ -31,12 +43,18 @@ async function viewerGithubUserId(): Promise<number | null> {
     if (typeof ghId === 'number' && Number.isFinite(ghId)) return ghId;
     if (typeof ghId === 'string') {
       const parsed = Number.parseInt(ghId, 10);
-      return Number.isFinite(parsed) ? parsed : null;
+      if (Number.isFinite(parsed)) return parsed;
     }
-    return null;
   } catch {
-    return null;
+    /* fall through to the local-identity resolver */
   }
+  try {
+    const local = await resolveLocalGithubIdentity();
+    if (local.kind === 'ok') return local.githubUserId;
+  } catch {
+    /* no gh auth → anonymous */
+  }
+  return null;
 }
 
 const get = defineTool({
