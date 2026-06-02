@@ -12,16 +12,18 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { getOrgPg } from '@papercusp/db-org';
 
 export default defineTool({
   name: 'papercusp:list_workspaces',
   profile: 'engineer',
-  // Role-gated (not principal-gated) so crossWorkspace forwards through
-  // registerRoleGatedAsProjected — defineTool routes on requirePrincipal===false.
+  // Role-gated (no principal needed) — it's a discovery tool that reads the
+  // admin handle directly (below), so it must not be on the principal-gated
+  // legacy path that hard-requires ctx.tx.
   requirePrincipal: false,
-  // P-062 Phase 4: enumerates EVERY workspace's harness_registry row — a
-  // workspace-scoped RLS tx would hide all but the caller's own. Must run
-  // on the admin (rolbypassrls) handle.
+  // P-062 Phase 4: inherently cross-workspace (enumerates EVERY workspace's
+  // harness_registry row). It reads getOrgPg() directly, so the catchall's
+  // ctx.tx scoping never applies; the flag documents intent + belt-and-suspenders.
   crossWorkspace: true,
   guidance: {
     when: 'Discovery helper for superuser shells — list all workspaces in the installation. Used when scope-switching.',
@@ -29,15 +31,13 @@ export default defineTool({
   },
   capability: 'workspaces:read',
   args: z.object({}).strict(),
-  async handler(_args, ctx) {
-    const sql = ctx.tx;
-    if (!sql) {
-      return {
-        data: { workspaces: [] as Array<{ slug: string; harnesses: string[]; lastActiveTs: number }>, defaultWorkspace: null },
-        degraded: true,
-        degradedReasons: ['list_workspaces requires a DB handle (admin via crossWorkspace)'],
-      };
-    }
+  async handler() {
+    // Cross-workspace enumerator: read the admin (rolbypassrls) handle directly
+    // so it returns every workspace regardless of transport scoping. The MCP
+    // transport only opens a workspace-scoped tx for concrete-workspace calls,
+    // so ctx.tx is absent for the superuser/'*' discovery case this tool exists
+    // for — getOrgPg() sidesteps that (matches multi_workspace / generators:*).
+    const { sql } = getOrgPg();
     // int8/BIGINT comes back from postgres-js as a string, so last_active_ts is widened.
     interface Row { workspace_id: string; harness_slug: string | null; last_active_ts: string | number | null }
     // harness_registry is ONE JSONB-blob row per workspace
