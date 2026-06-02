@@ -57,15 +57,42 @@
   gap: 12px;
 }
 .pc-roster__head-title {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: -0.01em;
   color: var(--fg);
 }
+/* Summary doubles as a quick health read: live in --good, idle in --warn,
+   so the header alone tells you the fleet's pulse before you scan rows. */
 .pc-roster__head-summary {
+  display: inline-flex;
+  align-items: baseline;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-mute);
+}
+.pc-roster__count {
+  white-space: nowrap;
+}
+.pc-roster__count:not(:first-child)::before {
+  content: '·';
+  margin: 0 8px;
+  color: var(--fg-mute);
+  opacity: 0.5;
+}
+.pc-roster__count--shown {
+  color: var(--fg-dim);
+}
+.pc-roster__count--shown b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.pc-roster__count--live {
+  color: var(--good);
+  font-weight: 600;
+}
+.pc-roster__count--idle {
+  color: var(--warn);
 }
 .pc-roster__stale-toggle {
   font-size: 10.5px;
@@ -165,30 +192,46 @@
 }
 .pc-roster__group-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  padding: 2px 4px 6px;
+  padding: 4px 4px 7px;
   border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 25%);
 }
 .pc-roster__group-title {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 700;
+  letter-spacing: -0.005em;
   color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 60%;
+  max-width: 70%;
 }
 .pc-roster__group-count {
-  font-size: 11px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-mute);
+  background: var(--bg-2);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 .pc-roster__group-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
   font-size: 10px;
   font-weight: 600;
   color: var(--good);
+}
+/* A small dot prefix so "N live" reads as a status, matching the row dots. */
+.pc-roster__group-live::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--good);
+  box-shadow: 0 0 5px color-mix(in oklab, var(--good), transparent 45%);
 }
 
 /* ───────────────────────── rows ────────────────────────────────────────── */
@@ -198,17 +241,17 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .pc-roster__row {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 11px 8px 13px;
+  gap: 5px;
+  padding: 9px 12px 9px 15px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 12px;
   background: color-mix(in oklab, var(--bg-2), transparent 18%);
   cursor: pointer;
   transition: border-color 120ms ease, background-color 120ms ease;
@@ -227,12 +270,29 @@
 .pc-roster__row[data-liveness='live']::before {
   background: var(--good);
   box-shadow: 0 0 6px color-mix(in oklab, var(--good), transparent 55%);
+  /* Opacity-only breathe (no transform — freeze-proof) so genuinely-live
+     agents read at a glance vs. idle/stale. Calmed for reduced-motion below. */
+  animation: pc-roster-live-pulse 2.6s var(--ease-mid, ease-in-out) infinite;
 }
 .pc-roster__row[data-liveness='idle']::before {
   background: var(--warn);
 }
 .pc-roster__row[data-liveness='stale'] {
-  opacity: 0.55;
+  opacity: 0.5;
+}
+@keyframes pc-roster-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pc-roster__row[data-liveness='live']::before {
+    animation: none;
+  }
 }
 .pc-roster__row:hover {
   border-color: var(--border-strong);
@@ -243,8 +303,11 @@
   outline-offset: -1px;
 }
 .pc-roster__row[data-selected] {
-  border-color: color-mix(in oklab, var(--accent), transparent 35%);
-  background: color-mix(in oklab, var(--accent), transparent 86%);
+  border-color: color-mix(in oklab, var(--accent), transparent 22%);
+  background: color-mix(in oklab, var(--accent), transparent 82%);
+}
+.pc-roster__row[data-selected]:hover {
+  background: color-mix(in oklab, var(--accent), transparent 78%);
 }
 
 .pc-roster__row--ended {
@@ -303,13 +366,14 @@
   background: color-mix(in oklab, var(--bad), transparent 82%);
 }
 .pc-roster__label {
-  font-size: 12px;
+  flex: 1 1 90px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--fg);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 240px;
 }
 .pc-roster__age {
   margin-left: auto;
@@ -320,8 +384,8 @@
 }
 
 .pc-roster__intent {
-  font-size: 11.5px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--fg-dim);
 }
 
@@ -430,34 +494,40 @@
 
 /* ───────────────────────── agent dossier (P-007) ───────────────────────── */
 .pc-dossier {
-  flex: 0 0 340px;
-  width: 340px;
+  flex: 0 0 348px;
+  width: 348px;
   height: 100%;
   overflow-y: auto;
-  padding: 12px 14px 28px;
+  padding: 14px 16px 28px;
   border-left: 1px solid var(--border);
-  background: var(--surface);
+  /* Subtle vertical gradient, matching the sibling Plans/Inbox detail surfaces
+     (plans.css) instead of a flat fill — gives the pane gentle depth. */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-raised), transparent 3%),
+    color-mix(in srgb, var(--bg-1), transparent 4%)
+  );
   color: var(--fg);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 /* Empty state — keeps the 2-pane structure when no agent is selected. */
 .pc-dossier__placeholder {
-  margin-top: 4px;
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .pc-dossier__placeholder-title {
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--fg-dim);
 }
 .pc-dossier__placeholder-hint {
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--fg-mute);
 }
 
@@ -494,13 +564,15 @@
   outline-offset: -1px;
 }
 .pc-dossier__id {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 700;
+  line-height: 1.3;
   color: var(--fg);
   word-break: break-all;
 }
 .pc-dossier__intent {
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 1.45;
   font-style: italic;
   color: var(--fg-dim);
 }
@@ -511,8 +583,8 @@
 .pc-dossier__section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-top: 6px;
+  gap: 5px;
+  padding-top: 10px;
   border-top: 1px solid var(--border);
 }
 .pc-dossier__h {
@@ -546,20 +618,24 @@
 }
 .pc-dossier__meta-row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
 .pc-dossier__meta-key {
-  flex: 0 0 78px;
+  flex: 0 0 76px;
   color: var(--fg-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 9.5px;
+  line-height: 1.7;
 }
 .pc-dossier__meta-val {
   color: var(--fg-dim);
   min-width: 0;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .pc-dossier__files {
   list-style: none;

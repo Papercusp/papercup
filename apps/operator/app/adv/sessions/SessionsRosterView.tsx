@@ -577,8 +577,15 @@ export default function SessionsRosterView({
               className="pc-roster__head-summary"
               title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
             >
-              {visibleActive.length}
-              {filtered ? ` / ${rawActive.length}` : ''} shown · {live} live · {idle} idle
+              <span className="pc-roster__count pc-roster__count--shown">
+                <b>
+                  {visibleActive.length}
+                  {filtered ? ` / ${rawActive.length}` : ''}
+                </b>{' '}
+                shown
+              </span>
+              <span className="pc-roster__count pc-roster__count--live">{live} live</span>
+              <span className="pc-roster__count pc-roster__count--idle">{idle} idle</span>
             </span>
             {staleCount > 0 && filters.liveness !== 'stale' ? (
               <button
