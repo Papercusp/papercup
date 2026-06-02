@@ -13,26 +13,23 @@
 /* Two independently-scrolling columns: the roster scrolls on the left, the
    dossier is a flush full-height panel on the right (the "before" pane the
    user preferred over a floating card). */
-.pc-sessions {
-  display: flex;
-  min-height: 0;
-  height: 100%;
-  /* Brighter text scale scoped to this view. The default --fg-dim/--fg-mute
-     read too dark at 10–12px on the near-black bg; lift each tier toward --fg
-     so everything is legible while the fg → dim → mute hierarchy is preserved.
-     This brightens every descendant uniformly (roster + dossier) in one place. */
+/* The 2-pane layout now lives in the shared TwoPaneShell (.pc-twopane). This is
+   the Sessions-only token override applied on the shell frame: a brighter text
+   scale (the default --fg-dim/--fg-mute read too dark at 10–12px on the
+   near-black bg for the dense roster), lifted toward --fg while keeping the
+   fg → dim → mute hierarchy. Plans/Inbox keep the default scale. */
+.pc-twopane--sessions {
   --fg-dim: #d2e6f4;
   --fg-mute: #a7c1d8;
 }
 
+/* The roster is the LIST slot's inner content; the shell's .pc-twopane__list
+   owns the scroll + flex sizing. */
 .pc-roster {
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 12px 14px 28px;
-  overflow-y: auto;
-  height: 100%;
-  flex: 1 1 0;
   min-width: 0;
   color: var(--fg);
 }
@@ -513,20 +510,10 @@
 }
 
 /* ───────────────────────── agent dossier (P-007) ───────────────────────── */
+/* The dossier is the DETAIL slot's inner content; the shell's
+   .pc-twopane__detail owns the column geometry + left border + gradient. */
 .pc-dossier {
-  flex: 0 0 348px;
-  width: 348px;
-  height: 100%;
-  overflow-y: auto;
   padding: 14px 16px 28px;
-  border-left: 1px solid var(--border);
-  /* Subtle vertical gradient, matching the sibling Plans/Inbox detail surfaces
-     (plans.css) instead of a flat fill — gives the pane gentle depth. */
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg-raised), transparent 3%),
-    color-mix(in srgb, var(--bg-1), transparent 4%)
-  );
   color: var(--fg);
   display: flex;
   flex-direction: column;
@@ -755,26 +742,4 @@
   color: var(--fg-mute);
 }
 
-/* ───────────────────────── responsive ──────────────────────────────────── */
-@media (max-width: 920px) {
-  .pc-dossier {
-    flex-basis: 300px;
-    width: 300px;
-  }
-}
-@media (max-width: 760px) {
-  .pc-sessions {
-    flex-direction: column;
-    height: auto;
-  }
-  .pc-roster {
-    height: auto;
-  }
-  .pc-dossier {
-    width: 100%;
-    flex-basis: auto;
-    height: auto;
-    border-left: none;
-    border-top: 1px solid var(--border);
-  }
-}
+/* Responsive 2-pane stacking is owned by the shared shell (TwoPaneShell.css). */

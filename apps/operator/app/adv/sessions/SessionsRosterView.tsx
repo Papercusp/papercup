@@ -12,11 +12,12 @@
  * the files-in-play map (P-008) come later; this is the grouped rich-row list.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { formatRelativeUpdated } from '@/lib/format/relative-time';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { Select } from '@/app/harness/Select';
 import AgentDossier from './AgentDossier';
+import { useRosterData } from './SessionsRosterContext';
 import './SessionsRosterView.css';
 
 /**
@@ -132,40 +133,6 @@ export function applyRosterFilters(active: RosterEntry[], f: RosterFilters): Ros
 function basename(p: string): string {
   const parts = p.split('/');
   return parts[parts.length - 1] || p;
-}
-
-/** Poll /api/adv/roster while the tab is visible (pause when hidden). */
-function useRoster(
-  workspaceId: string | null | undefined,
-  intervalMs = 4000,
-): { data: RosterResponse | null; error: string | null; loading: boolean; refresh: () => void } {
-  const url = `/api/adv/roster${workspaceId ? `?workspace=${encodeURIComponent(workspaceId)}` : ''}`;
-  const [data, setData] = useState<RosterResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const refresh = useCallback(async () => {
-    try {
-      const r = await fetch(url, { cache: 'no-store' });
-      if (!r.ok) throw new Error(`status ${r.status}`);
-      setData((await r.json()) as RosterResponse);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [url]);
-
-  useEffect(() => {
-    refresh();
-    const id = window.setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, intervalMs);
-    return () => window.clearInterval(id);
-  }, [refresh, intervalMs]);
-
-  return { data, error, loading, refresh };
 }
 
 interface Grouped {
@@ -493,9 +460,13 @@ function FilesInPlaySection({
   );
 }
 
-export default function SessionsRosterView({
+/**
+ * SessionsRosterList — the left LIST slot of the Sessions 2-pane: the grouped
+ * rich-row roster + filters + files-in-play + ended section. Reads the shared
+ * roster poll via `useRosterData()`; the dossier slot reads the same poll.
+ */
+export function SessionsRosterList({
   planFilters = [],
-  workspaceId = null,
   selectedAgent = null,
   onSelectAgent,
   filters = EMPTY_FILTERS,
@@ -505,7 +476,6 @@ export default function SessionsRosterView({
   onToggleStale,
 }: {
   planFilters?: string[];
-  workspaceId?: string | null;
   /** Owner id of the agent whose dossier is open (P-007); null = none. */
   selectedAgent?: string | null;
   /** Open/close the dossier. Owned by the parent shell's nuqs ?agent= param. */
@@ -523,7 +493,7 @@ export default function SessionsRosterView({
   showStale?: boolean;
   onToggleStale?: () => void;
 }): React.JSX.Element {
-  const { data, error, loading } = useRoster(workspaceId);
+  const { data, error, loading } = useRosterData();
   const rawActive = data?.active ?? [];
   const ended = data?.ended ?? [];
 
@@ -563,14 +533,9 @@ export default function SessionsRosterView({
     },
     [onSelectAgent, selectedAgent],
   );
-  const selectedEntry = selectedAgent
-    ? active.find((e) => e.ownerId === selectedAgent) ?? null
-    : null;
-
   return (
-    <div className="pc-sessions">
-      <div className="pc-roster">
-        <div className="pc-roster__sticky">
+    <div className="pc-roster">
+      <div className="pc-roster__sticky">
           <header className="pc-roster__head">
             <span className="pc-roster__head-title">Active agents</span>
             <span
@@ -672,25 +637,45 @@ export default function SessionsRosterView({
           </section>
         ) : null}
       </div>
+  );
+}
 
-      {selectedAgent ? (
-        <AgentDossier
-          ownerId={selectedAgent}
-          entry={selectedEntry}
-          onClose={() => onSelectAgent?.(null)}
-        />
-      ) : (
-        <aside className="pc-dossier pc-dossier--empty" aria-label="Agent detail">
-          <div className="pc-dossier__placeholder">
-            <span className="pc-dossier__placeholder-title">No agent selected</span>
-            <span className="pc-dossier__placeholder-hint">
-              Pick an agent from the roster — or a file’s agent chip below — to see its
-              live detail: declared intent, files in play, locks held &amp; waiting, and
-              recent coordination (messages, handoffs, escalations).
-            </span>
-          </div>
-        </aside>
-      )}
-    </div>
+/**
+ * SessionsRosterDetail — the right DETAIL slot of the Sessions 2-pane: the
+ * dossier for the selected agent, or the persistent empty placeholder. Reads
+ * the same shared roster poll (`useRosterData`) to resolve the selected entry's
+ * Tier-1/2 fields. The entry is taken from the UNfiltered roster so a filter
+ * change can't blank out an already-open dossier.
+ */
+export function SessionsRosterDetail({
+  selectedAgent = null,
+  onSelectAgent,
+}: {
+  selectedAgent?: string | null;
+  onSelectAgent?: (ownerId: string | null) => void;
+}): React.JSX.Element {
+  const { data } = useRosterData();
+  const rawActive = data?.active ?? [];
+  const selectedEntry = selectedAgent
+    ? rawActive.find((e) => e.ownerId === selectedAgent) ?? null
+    : null;
+
+  return selectedAgent ? (
+    <AgentDossier
+      ownerId={selectedAgent}
+      entry={selectedEntry}
+      onClose={() => onSelectAgent?.(null)}
+    />
+  ) : (
+    <aside className="pc-dossier pc-dossier--empty" aria-label="Agent detail">
+      <div className="pc-dossier__placeholder">
+        <span className="pc-dossier__placeholder-title">No agent selected</span>
+        <span className="pc-dossier__placeholder-hint">
+          Pick an agent from the roster — or a file’s agent chip below — to see its
+          live detail: declared intent, files in play, locks held &amp; waiting, and
+          recent coordination (messages, handoffs, escalations).
+        </span>
+      </div>
+    </aside>
   );
 }

@@ -8,7 +8,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
-import SessionsRosterView, {
+import {
+  SessionsRosterList,
+  SessionsRosterDetail,
   groupRoster,
   buildFilesInPlay,
   isZombie,
@@ -16,6 +18,24 @@ import SessionsRosterView, {
   EMPTY_FILTERS,
   type RosterEntry,
 } from '../SessionsRosterView';
+import { SessionsRosterProvider } from '../SessionsRosterContext';
+
+/**
+ * The roster is now a split 2-pane (list + detail) sharing one poll via the
+ * provider. This thin wrapper renders both under the provider so the existing
+ * single-component test cases keep exercising the full roster + dossier.
+ */
+function SessionsRosterView(
+  props: React.ComponentProps<typeof SessionsRosterList> & { workspaceId?: string | null },
+): React.JSX.Element {
+  const { workspaceId = null, selectedAgent = null, onSelectAgent, ...rest } = props;
+  return (
+    <SessionsRosterProvider workspaceId={workspaceId}>
+      <SessionsRosterList selectedAgent={selectedAgent} onSelectAgent={onSelectAgent} {...rest} />
+      <SessionsRosterDetail selectedAgent={selectedAgent} onSelectAgent={onSelectAgent} />
+    </SessionsRosterProvider>
+  );
+}
 
 function entry(over: Partial<RosterEntry> = {}): RosterEntry {
   return {

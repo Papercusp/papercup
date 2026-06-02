@@ -30,7 +30,13 @@ import PlanItemsList from './PlanItemsList';
 import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
 import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
-import SessionsRosterView, { type RosterFilters } from '@/app/adv/sessions/SessionsRosterView';
+import {
+  SessionsRosterList,
+  SessionsRosterDetail,
+  type RosterFilters,
+} from '@/app/adv/sessions/SessionsRosterView';
+import { SessionsRosterProvider } from '@/app/adv/sessions/SessionsRosterContext';
+import TwoPaneShell from '@/app/_components/layout/TwoPaneShell';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
@@ -672,32 +678,46 @@ export default function PlansClient() {
 
       <main className="pc-plans__main">
         {view === 'sessions' ? (
-          /* Sessions — the live agent roster (3rd view). The rail's plan
-             selection filters the plan-grouped section; No-plan + presence-only
-             groups always show. Workspace scope is left open (every workspace)
-             for now; the rail plan-filter is the primary scoping. */
-          <SessionsRosterView
-            planFilters={itemPlans}
-            planTitleBySlug={planTitleBySlug}
-            selectedAgent={selectedAgent}
-            onSelectAgent={(id) => void setSelectedAgent(id)}
-            filters={
-              {
-                client: sClient,
-                liveness: sLive,
-                role: sRole,
-                file: sFile,
-              } as RosterFilters
-            }
-            onFilterChange={(next) => {
-              void setSClient(next.client);
-              void setSLive(next.liveness);
-              void setSRole(next.role);
-              void setSFile(next.file);
-            }}
-            showStale={sStale}
-            onToggleStale={() => void setSStale(!sStale)}
-          />
+          /* Sessions — the live agent roster (3rd view), now on the shared
+             TwoPaneShell: roster LIST + dossier DETAIL share one /api/adv/roster
+             poll via SessionsRosterProvider (mounted only here, so it polls only
+             on this view). The rail's plan selection filters the plan-grouped
+             section; No-plan + presence-only groups always show. */
+          <SessionsRosterProvider workspaceId={null}>
+            <TwoPaneShell
+              className="pc-twopane--sessions"
+              list={
+                <SessionsRosterList
+                  planFilters={itemPlans}
+                  planTitleBySlug={planTitleBySlug}
+                  selectedAgent={selectedAgent}
+                  onSelectAgent={(id) => void setSelectedAgent(id)}
+                  filters={
+                    {
+                      client: sClient,
+                      liveness: sLive,
+                      role: sRole,
+                      file: sFile,
+                    } as RosterFilters
+                  }
+                  onFilterChange={(next) => {
+                    void setSClient(next.client);
+                    void setSLive(next.liveness);
+                    void setSRole(next.role);
+                    void setSFile(next.file);
+                  }}
+                  showStale={sStale}
+                  onToggleStale={() => void setSStale(!sStale)}
+                />
+              }
+              detail={
+                <SessionsRosterDetail
+                  selectedAgent={selectedAgent}
+                  onSelectAgent={(id) => void setSelectedAgent(id)}
+                />
+              }
+            />
+          </SessionsRosterProvider>
         ) : slug ? (
           <PlanDetail
             key={slug}
