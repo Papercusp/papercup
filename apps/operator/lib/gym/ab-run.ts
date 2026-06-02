@@ -38,6 +38,13 @@ import { GYM_JUDGE_RUBRIC_V1 } from './judge-scoring';
 import { estimateConvergence } from './cost';
 import type { JudgeLlmCall } from './judge';
 
+// The gym judge + all gym agents use the CODE backend (the `claude` CLI), NOT meridian.
+// The CLI drives the Anthropic subscription session (it paces/retries against the sub),
+// whereas meridian hammers api.anthropic.com directly — which is what tripped the rate
+// limit. Must be set BEFORE llm-client loads (its TEST_BACKEND is read at module init), so
+// set it at module top; ab-run imports llm-client lazily inside main(). Overridable.
+process.env.LLM_TEST_BACKEND = process.env.LLM_TEST_BACKEND ?? 'claude-code';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
 const FAKE_AGENT = join(__dirname, 'fixtures/fake-agent.mjs');
