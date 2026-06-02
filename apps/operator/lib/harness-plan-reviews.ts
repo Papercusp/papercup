@@ -12,7 +12,6 @@
  */
 
 import { getOrgPg, generated } from '@papercusp/db-org';
-import { ensureHarnessPlanReviewTable } from './ensure-schema';
 
 const hpr = generated.harnessPlanReviewInHarnessShared;
 
@@ -38,7 +37,6 @@ function parseVerdict(line: string): PlanReviewVerdict {
 }
 
 export async function loadHarnessPlanReviews(): Promise<PlanReviewEntry[]> {
-  await ensureHarnessPlanReviewTable();
   const { db } = getOrgPg();
   const rows = await db
     .select({ harness_slug: hpr.harnessSlug, content: hpr.content, mtime_ms: hpr.mtimeMs })

@@ -6,7 +6,6 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
-import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 import { deriveAssertionStatus } from '@/lib/harness-test-rollup';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -68,7 +67,6 @@ export default defineTool({
     // and skipped entirely for harnesses not yet on the inline-VAL flow.
     if (keep.length > 0) {
       try {
-        await ensureHarnessPlanAssertionsTable();
         const assertions = await sql<
           { val_id: string; plan_slug: string; item_id: string; requires_test: boolean }[]
         >`

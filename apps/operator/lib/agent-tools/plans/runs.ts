@@ -16,10 +16,6 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import {
-  ensurePlanRunsTable,
-  ensurePlanRunTurnsTable,
-} from '../../ensure-schema';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 
 /**
@@ -83,7 +79,6 @@ export interface InsertPlanRunArgs {
 /** Insert a `plan_runs` row; returns its id. Throws on DB failure — a
  *  launch with no run record genuinely failed. */
 export async function insertPlanRun(args: InsertPlanRunArgs): Promise<number> {
-  await ensurePlanRunsTable();
   const now = Date.now();
   const harnessSlug = args.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
@@ -107,7 +102,6 @@ export async function setPlanRunStatus(
   runId: number,
   status: PlanRunStatus,
 ): Promise<void> {
-  await ensurePlanRunsTable();
   await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     await tx`
       UPDATE harness_shared.plan_runs
@@ -149,7 +143,6 @@ export interface SweepPlanRunsResult {
 export async function sweepPlanRuns(
   now: number = Date.now(),
 ): Promise<SweepPlanRunsResult> {
-  await ensurePlanRunsTable();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const failedRows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
@@ -219,7 +212,6 @@ export function mapPlanRunRow(r: RawPlanRunRow): PlanRunRow {
 /** Fetch a single run by id, or `null` when no such run exists. Used
  *  by resume (P-013) to recover a run's `session_id` + `plan_slug`. */
 export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
-  await ensurePlanRunsTable();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<RawPlanRunRow[]>`
       SELECT id, plan_slug, plan_content_hash, session_id, note,
@@ -244,7 +236,6 @@ export async function markPlanRunResumed(
   runId: number,
   planContentHash: string,
 ): Promise<void> {
-  await ensurePlanRunsTable();
   await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     await tx`
       UPDATE harness_shared.plan_runs
@@ -268,16 +259,11 @@ export interface PlanRunSummary extends PlanRunRow {
  * history behind `plans:runs` (P-015) and the Agents tab's past-runs
  * list (P-021). Each row carries its transcript turn count via a
  * correlated subquery so the list view needs no follow-up query.
- *
- * `ensurePlanRunTurnsTable()` ensures `plan_runs` too (it depends on
- * it for its FK), so one call materialises both tables this query
- * touches.
  */
 export async function listPlanRuns(
   planSlug: string,
   opts: { harnessSlug?: string } = {},
 ): Promise<PlanRunSummary[]> {
-  await ensurePlanRunTurnsTable();
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<(RawPlanRunRow & { turn_count: number | string })[]>`
@@ -318,7 +304,6 @@ export interface AppendPlanRunTurnArgs {
 export async function appendPlanRunTurn(
   args: AppendPlanRunTurnArgs,
 ): Promise<number> {
-  await ensurePlanRunTurnsTable();
   const now = Date.now();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<{ seq: number }[]>`
@@ -405,7 +390,6 @@ export async function readPlanRunTranscript(
   sessionId: string,
   opts: ReadPlanRunTranscriptOpts = {},
 ): Promise<PlanRunTranscriptPage> {
-  await ensurePlanRunTurnsTable();
   const limit = clampTranscriptLimit(opts.limit);
   const cursor =
     typeof opts.cursor === 'number' && Number.isFinite(opts.cursor)

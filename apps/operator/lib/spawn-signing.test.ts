@@ -26,10 +26,6 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return { ...actual, getOrgPg: () => ({ db: H.db }) };
 });
-vi.mock('./ensure-schema', () => ({
-  ensureOperatorSecretsTable: vi.fn(async () => {}),
-  ensureSpawnSigVerificationFailuresTable: vi.fn(async () => {}),
-}));
 
 import { signSpawnParams, verifySpawnParams, _resetSpawnSigningKeyCache } from './spawn-signing';
 

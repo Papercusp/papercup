@@ -18,7 +18,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureHarnessEscalationsTable } from '../ensure-schema';
 import {
   buildRebaseConflictEscalation,
   composeStashBranchRef,
@@ -161,7 +160,6 @@ async function writeEscalation(
   harnessSlug: string,
   escalation: ReturnType<typeof buildRebaseConflictEscalation>,
 ): Promise<void> {
-  await ensureHarnessEscalationsTable();
   const { sql } = getOrgPg();
   const body = JSON.stringify(escalation);
   await sql.unsafe(

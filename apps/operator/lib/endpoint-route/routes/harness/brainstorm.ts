@@ -38,8 +38,6 @@ const brainstormMindmapPath = (p: ProjectEntry) => join(harnessDir(p), 'brainsto
  * exists; otherwise we fall back to the FS file (legacy harnesses).
  */
 async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: unknown; mindmap: unknown }> {
-  const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
-  await ensureBrainstormTable();
   const { db } = (await import('@papercusp/db-org')).getOrgPg();
   const { generated } = await import('@papercusp/db-org');
   const { and, eq } = await import('drizzle-orm');
@@ -53,8 +51,6 @@ async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: 
 }
 
 async function saveBrainstorm(slug: string, patch: { content?: string; canvas?: unknown; mindmap?: unknown }): Promise<void> {
-  const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
-  await ensureBrainstormTable();
   const { db } = (await import('@papercusp/db-org')).getOrgPg();
   const { generated } = await import('@papercusp/db-org');
   const { sql: dsql } = await import('drizzle-orm');

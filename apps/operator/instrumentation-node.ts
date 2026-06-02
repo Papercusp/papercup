@@ -171,21 +171,6 @@ export async function register(): Promise<void> {
     }
   })();
 
-  // Pre-warm lazy schema-ensure tables so the first user request doesn't
-  // pay for DDL + the first PG connection (~1.1s on a cold pool).
-  // Diagnostic 2026-05-06: desktop's first /api/user-actions/<slug> hit
-  // was 2.3s steady because the route's ensureUserActionsTable() ran
-  // inline. Pre-warming overlaps with the rest of the boot sequence —
-  // ensure-schema's `flags.*` (pinned to globalThis) make subsequent
-  // calls no-ops across bundles. Don't await this — let it run
-  // alongside the rest of boot. Failures (e.g. PG not yet reachable on
-  // a desktop sidecar that starts before PG is ready) are non-fatal:
-  // the lazy path will retry on first request and surface the real
-  // error there.
-  void prewarmSchema().catch((err) => {
-    console.warn('[ensure-schema-prewarm] non-fatal failure:', err?.message ?? err);
-  });
-
   // Pre-warm common API routes so the first user fetch doesn't pay for
   // Turbopack's per-route lazy-compile (5-25s on this monorepo).
   // WebKitGTK aborts slow same-origin fetches with the misleading
@@ -526,61 +511,6 @@ async function maybeStartPtyWsServer(): Promise<void> {
   } catch (err) {
     console.error('[pty-ws] failed to start:', err);
   }
-}
-
-async function prewarmSchema(): Promise<void> {
-  const t0 = Date.now();
-  const { getOrgPg } = await import('@papercusp/db-org');
-  // First touch establishes the PG pool; subsequent ensure calls reuse it.
-  try {
-    const { sql } = getOrgPg();
-    await sql`SELECT 1`;
-  } catch (err: unknown) {
-    // PG not ready yet (desktop sidecar vs embedded-pg startup race).
-    // Skip pre-warm; the lazy ensure path will run on first request and
-    // surface the real error. Log so we can see when the race fires.
-    const msg = (err as { message?: string })?.message ?? String(err);
-    console.warn(
-      `[ensure-schema-prewarm] PG SELECT 1 failed (${msg}) — skipping pre-warm; lazy ensure will run on first request`,
-    );
-    return;
-  }
-  console.log('[ensure-schema-prewarm] starting');
-  const ensure = await import('./lib/ensure-schema');
-  // Run pre-warms SEQUENTIALLY. The admin PG pool maxes at 4 connections
-  // (per memory feedback_pg_pool_idle_timeout); 9 parallel ensures
-  // saturate it and any user request that arrives during boot queues
-  // behind the ensure work. Diagnostic 2026-05-06: parallel pre-warm
-  // *regressed* /api/user-actions cold from 2.3s to 6.7s.
-  // Each ensure is idempotent (CREATE TABLE IF NOT EXISTS + ALTERs); run
-  // them one at a time with .catch so a single failure doesn't abort
-  // the rest. Total wall-time on a fresh data dir is ~1-2s, and runs
-  // without blocking incoming HTTP because we don't await prewarmSchema
-  // from register().
-  const fns: Array<[string, () => Promise<void>]> = [
-    ['userActions', ensure.ensureUserActionsTable],
-    ['toastLog', ensure.ensureToastLogTable],
-    ['snapshotFeatures', ensure.ensureSnapshotFeaturesTable],
-    ['operatorScans', ensure.ensureOperatorScansTable],
-    ['harnessSummaries', ensure.ensureHarnessSummariesTable],
-    ['pendingReviews', ensure.ensurePendingReviewsTable],
-    ['harnessProposalsShared', ensure.ensureHarnessProposalsSharedTable],
-    ['harnessStatus', ensure.ensureHarnessStatusTable],
-    ['harnessLanes', ensure.ensureHarnessLanesTable],
-    ['planRevisions', ensure.ensurePlanRevisionsTable],
-    ['planRuns', ensure.ensurePlanRunsTable],
-    ['planRunTurns', ensure.ensurePlanRunTurnsTable],
-    ['backup', ensure.ensureBackupTables],
-  ];
-  for (const [name, fn] of fns) {
-    try {
-      await fn();
-    } catch (err: unknown) {
-      const msg = (err as { message?: string })?.message ?? String(err);
-      console.warn(`[ensure-schema-prewarm] ${name} failed: ${msg}`);
-    }
-  }
-  console.log(`[ensure-schema-prewarm] done in ${Date.now() - t0}ms`);
 }
 
 let _voicePrefsMigrateRan = false;

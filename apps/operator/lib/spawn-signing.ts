@@ -47,10 +47,6 @@ import { eq, sql as dsql } from 'drizzle-orm';
 
 const os = generated.operatorSecretsInHarnessShared;
 const sf = generated.spawnSigVerificationFailuresInHarnessShared;
-import {
-  ensureOperatorSecretsTable,
-  ensureSpawnSigVerificationFailuresTable,
-} from './ensure-schema';
 
 const KEY_NAME = 'spawn-signing-key';
 
@@ -97,7 +93,6 @@ export function _resetSpawnSigningKeyCache(): void {
  * mechanism.
  */
 async function loadOrCreateKey(): Promise<Buffer> {
-  await ensureOperatorSecretsTable();
   const { db } = getOrgPg();
   const rows = await db
     .select({ value_b64: os.valueB64, rotated_at: os.rotatedAt })
@@ -248,7 +243,6 @@ export interface VerificationFailureRecord {
 /** Persist a verification failure for the dashboard / on-call review. */
 export async function logVerificationFailure(rec: VerificationFailureRecord): Promise<void> {
   try {
-    await ensureSpawnSigVerificationFailuresTable();
     const { db } = getOrgPg();
     await db.insert(sf).values({
       reason: rec.reason,
@@ -273,7 +267,6 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
  * Loopback + superuser-bearer gated at the route level.
  */
 export async function rotateSpawnSigningKey(): Promise<void> {
-  await ensureOperatorSecretsTable();
   const { db } = getOrgPg();
   const fresh_b64 = randomBytes(32).toString('base64');
   await db

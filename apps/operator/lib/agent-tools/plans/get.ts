@@ -17,7 +17,6 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { hashPlanContent } from './content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { ensureHarnessPlanAssertionsTable } from '../../ensure-schema';
 import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
 
 const ALL_ROLES = [
@@ -121,7 +120,6 @@ export default defineTool({
     // has no inline-VAL assertions. Non-fatal.
     let planItemTests: Record<string, PlanItemTestStatus> = {};
     try {
-      await ensureHarnessPlanAssertionsTable();
       planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
         const assertions = await tx<{ val_id: string; item_id: string; requires_test: boolean }[]>`
           SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions

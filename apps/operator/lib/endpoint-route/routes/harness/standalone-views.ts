@@ -28,8 +28,6 @@ const getIdentity = defineTool({
     // identity/<role>.md remain the source of truth for the orchestrator
     // subprocess; the operator-side watcher mirrors them in so the UI
     // doesn't readdir per request and Zero subscribers wake up on changes.
-    const { ensureIdentityFilesTable } = await import('@/lib/ensure-schema');
-    await ensureIdentityFilesTable();
     const { db } = (await import('@papercusp/db-org')).getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { asc } = await import('drizzle-orm');

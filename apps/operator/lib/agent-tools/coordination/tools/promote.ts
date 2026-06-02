@@ -51,7 +51,6 @@ import {
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions } from '../../plans/val-assertions';
-import { ensureHarnessPlanAssertionsTable } from '../../../ensure-schema';
 import { loopbackFetch } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
 import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
@@ -818,7 +817,6 @@ export default defineTool({
     const assertionErrors: string[] = [];
     if (allAssertions.length > 0) {
       try {
-        await ensureHarnessPlanAssertionsTable();
         const { sql } = getOrgPg();
         const workspaceId = ctx.workspaceId ?? '';
         for (const a of allAssertions) {

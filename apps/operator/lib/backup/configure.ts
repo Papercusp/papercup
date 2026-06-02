@@ -23,12 +23,9 @@ configureBackup({
   // detection fires — see getOrgPg's own doc-comment.
   getSql: () => getOrgPg().sql,
   workspacesRoot,
-  // Kept lazy (dynamic import) — ensure-schema is a large module and the
-  // original code only loaded it on demand inside ensureRepo/getSettings.
-  ensureSchema: async () => {
-    const { ensureBackupTables } = await import('@/lib/ensure-schema');
-    await ensureBackupTables();
-  },
+  // Backup tables are defined by the migration baseline now; the host seam
+  // is a no-op.
+  ensureSchema: async () => {},
   getHarnessAdminUrl: getHarnessAdminUrlWithSource,
   // Battery-aware pause for the orphan sweep. Resilient: any failure
   // resolving the decision means "don't pause" (the sweep is cheap).

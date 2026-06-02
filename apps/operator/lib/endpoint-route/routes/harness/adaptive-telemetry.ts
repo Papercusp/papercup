@@ -16,7 +16,6 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '@/lib/harness-core';
-import { ensureAdaptiveTelemetryTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -29,7 +28,6 @@ const getTelemetry = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const limitRaw = Number(new URL(req.url).searchParams.get('limit') ?? 200);
     const limit = Math.max(1, Math.min(1000, Number.isFinite(limitRaw) ? limitRaw : 200));
-    await ensureAdaptiveTelemetryTable();
     const { db } = getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { desc, eq } = await import('drizzle-orm');
@@ -86,7 +84,6 @@ const postTelemetry = defineTool({
     if (!Number.isInteger(requestedN) || !Number.isInteger(actualN) || actualN < 1) {
       return Response.json({ error: 'requestedN/actualN must be positive integers' }, { status: 400 });
     }
-    await ensureAdaptiveTelemetryTable();
     const { db } = getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const at = generated.adaptiveTelemetryInHarnessShared;
@@ -137,7 +134,6 @@ const patchTelemetry = defineTool({
     if (hasOutcome && !['pass', 'fail', 'cancelled'].includes(body.outcome!)) {
       return Response.json({ error: "outcome must be one of 'pass'|'fail'|'cancelled'" }, { status: 400 });
     }
-    await ensureAdaptiveTelemetryTable();
     const { db } = getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { and, eq } = await import('drizzle-orm');

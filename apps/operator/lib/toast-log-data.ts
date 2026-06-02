@@ -8,7 +8,6 @@
 
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, gte } from 'drizzle-orm';
-import { ensureToastLogTable } from './ensure-schema';
 
 const t = generated.toastLogInHarnessShared;
 
@@ -47,7 +46,6 @@ export async function listToasts(input: ListToastsInput = {}): Promise<{ toasts:
   const since = Number(input.since ?? 0) || 0;
   const slugClause = input.slug && SLUG_RE.test(input.slug) ? input.slug : null;
 
-  await ensureToastLogTable();
   const { db } = getOrgPg();
   const where = slugClause
     ? and(gte(t.createdAt, since), eq(t.harnessSlug, slugClause))

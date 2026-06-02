@@ -2,8 +2,8 @@
  * autoRebaseOnPush — §16.3 auto-rebase-on-push.
  *
  * All side effects are injected via module mocks: `git` (node:child_process
- * execFile), the org PG pool (getOrgPg), and the escalations-table ensure.
- * The pure escalation/stash-ref builders (sync-with-main-types) run for real.
+ * execFile) and the org PG pool (getOrgPg). The pure escalation/stash-ref
+ * builders (sync-with-main-types) run for real.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,7 +17,6 @@ interface GitCfg {
 
 let gitCalls: string[][] = [];
 const sqlUnsafe = vi.fn(async () => [] as unknown[]);
-const ensureEscTable = vi.fn(async () => {});
 
 function makeExecFile(cfg: GitCfg) {
   return (_cmd: string, args: string[], _opts: unknown, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
@@ -37,12 +36,10 @@ function makeExecFile(cfg: GitCfg) {
 async function loadAutoRebase(cfg: GitCfg, opts: { sqlThrows?: boolean } = {}) {
   gitCalls = [];
   sqlUnsafe.mockReset();
-  ensureEscTable.mockReset();
   if (opts.sqlThrows) sqlUnsafe.mockImplementation(async () => { throw new Error('PG down'); });
   else sqlUnsafe.mockImplementation(async () => []);
   vi.doMock('node:child_process', () => ({ execFile: makeExecFile(cfg) }));
   vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { unsafe: sqlUnsafe } }) }));
-  vi.doMock('@/lib/ensure-schema', () => ({ ensureHarnessEscalationsTable: ensureEscTable }));
   const mod = await import('@/lib/harness/auto-rebase');
   return mod.autoRebaseOnPush;
 }
@@ -55,7 +52,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.doUnmock('node:child_process');
   vi.doUnmock('@papercusp/db-org');
-  vi.doUnmock('@/lib/ensure-schema');
 });
 
 const BASE = { repoPath: '/repo', featureId: 'F-42', harnessSlug: 'myharness' };
@@ -66,7 +62,8 @@ describe('autoRebaseOnPush', () => {
     const run = await loadAutoRebase({ rebaseErr: null });
     const res = await run({ ...BASE, githubUserId: 7 });
     expect(res).toEqual({ ok: true });
-    expect(ensureEscTable).not.toHaveBeenCalled();
+    // No escalation row written on a clean rebase.
+    expect(unsafeCalls().some((q) => /harness_escalations/.test(q))).toBe(false);
     expect(gitCalls.some((a) => a[0] === 'push')).toBe(false);
   });
 
@@ -101,8 +98,7 @@ describe('autoRebaseOnPush', () => {
     expect(gitCalls.some((a) => a[0] === 'rebase' && a[1] === '--abort')).toBe(true);
     // WIP pushed to the stash ref
     expect(gitCalls.some((a) => a[0] === 'push' && a.includes('HEAD:refs/heads/wip/conflict-F-42-1000'))).toBe(true);
-    // escalation table ensured + INSERT with rebase_conflict shape
-    expect(ensureEscTable).toHaveBeenCalledTimes(1);
+    // escalation row INSERTed with rebase_conflict shape
     expect(unsafeCalls().some((q) => /INSERT INTO harness_shared\.harness_escalations/.test(q))).toBe(true);
     // feature reset to in_queue + working_users cleared
     expect(unsafeCalls().some((q) => /UPDATE .*\.features/.test(q) && /in_queue/.test(q))).toBe(true);
@@ -139,7 +135,6 @@ describe('autoRebaseOnPush', () => {
       throw new Error('expected a graceful conflict result, not ' + JSON.stringify(res));
     }
     // the conflict still lands an escalation + resets the feature
-    expect(ensureEscTable).toHaveBeenCalledTimes(1);
     expect(unsafeCalls().some((q) => /INSERT INTO harness_shared\.harness_escalations/.test(q))).toBe(true);
     expect(unsafeCalls().some((q) => /UPDATE .*\.features/.test(q) && /in_queue/.test(q))).toBe(true);
   });

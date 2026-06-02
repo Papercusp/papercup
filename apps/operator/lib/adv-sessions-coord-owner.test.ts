@@ -26,14 +26,12 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
   afterEach(() => {
     vi.resetModules();
     vi.doUnmock('@papercusp/db-org');
-    vi.doUnmock('./ensure-schema');
     vi.doUnmock('./workspace-registry');
   });
 
   function mockSql(impl: (...a: unknown[]) => Promise<unknown>): ReturnType<typeof vi.fn> {
     const sql = vi.fn(impl);
     vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
-    vi.doMock('./ensure-schema', () => ({ ensureAdvSessionsTable: vi.fn(async () => {}) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     return sql;
   }

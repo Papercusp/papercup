@@ -18,7 +18,6 @@ import { join } from 'node:path';
 import { getOrgPg, getHarnessPg } from '@papercusp/db-org';
 import { resolvePhasedProject, harnessDir } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
-import { ensureSnapshotFeaturesTable } from '@/lib/ensure-schema';
 import { SNAPSHOT_FILES } from '@/lib/harness-state-files';
 import type { ProjectEntry } from '@/lib/harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -43,7 +42,6 @@ async function scanSnapshots(project: ProjectEntry): Promise<SnapshotMeta[]> {
   // pre-mirror snapshots — listable from FS only).
   const countsBySnapshot: Map<string, Record<string, number>> = new Map();
   try {
-    await ensureSnapshotFeaturesTable();
     const { sql } = getOrgPg();
     const rows = await sql<{ snapshot_id: string; status: string; n: string }[]>`
       SELECT snapshot_id, status, COUNT(*)::text AS n
@@ -140,7 +138,6 @@ const recordPgState = defineTool({
     if (!id || !/^\d+-iter-\d+$/.test(id)) {
       return Response.json({ error: 'invalid snapshot id' }, { status: 400 });
     }
-    await ensureSnapshotFeaturesTable();
     try {
       const { sql } = getHarnessPg(project.slug);
       const now = Date.now();
@@ -181,7 +178,6 @@ const restoreSnapshot = defineTool({
     }
     const snapDir = join(harnessDir(project), 'snapshots', id);
     if (!existsSync(snapDir)) return Response.json({ error: 'snapshot not found' }, { status: 404 });
-    await ensureSnapshotFeaturesTable();
 
     const body = (await req.json().catch(() => ({}))) as {
       includeSupervisorNotes?: boolean; includeConfig?: boolean; includeFeatures?: boolean;

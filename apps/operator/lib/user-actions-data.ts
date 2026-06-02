@@ -10,7 +10,6 @@
 
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, gte } from 'drizzle-orm';
-import { ensureUserActionsTable } from './ensure-schema';
 
 const t = generated.userActionsInHarnessShared;
 
@@ -97,7 +96,6 @@ export async function listUserActions(input: ListUserActionsInput): Promise<List
   }
 
   const queryPromise = (async (): Promise<UserActionRow[]> => {
-    await ensureUserActionsTable();
     const { db } = getOrgPg();
     const rows = await db
       .select({

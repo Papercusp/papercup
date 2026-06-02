@@ -35,11 +35,6 @@ import { and, eq } from 'drizzle-orm';
 
 const hl = generated.harnessLanesInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
-import {
-  ensureHarnessStatusTable,
-  ensureHarnessLanesTable,
-} from './ensure-schema';
-
 const SWEEP_INTERVAL_MS = 30_000;
 // Lane rows are PID-tagged by run.sh's pg_write_lane. As long as the PID is
 // alive, the lane is legitimately running — agent invocations can take an
@@ -167,14 +162,6 @@ async function tick(): Promise<void> {
  */
 export function ensureHarnessStatusSweep(): SweepState {
   if (_g.__harnessStatusSweep) return _g.__harnessStatusSweep;
-
-  // Best-effort table ensure. Failure here just delays the first sweep.
-  void Promise.all([
-    ensureHarnessStatusTable(),
-    ensureHarnessLanesTable(),
-  ]).catch((e) => {
-    console.warn('[harness-status-sweep] schema ensure failed:', e?.message ?? e);
-  });
 
   const state: SweepState = {
     timer: setInterval(() => {

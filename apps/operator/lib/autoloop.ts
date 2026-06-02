@@ -45,40 +45,6 @@ let started = false;
 let stopped = false;
 let timer: NodeJS.Timeout | null = null;
 
-async function ensureTable(): Promise<void> {
-  const { sql } = getOrgPg();
-  await sql`
-    CREATE TABLE IF NOT EXISTS harness_shared.autoloop_state (
-      harness_slug TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'director',
-      last_fired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_status TEXT,
-      consecutive_errors INT NOT NULL DEFAULT 0,
-      workspace_id TEXT NOT NULL DEFAULT '',
-      PRIMARY KEY (workspace_id, harness_slug, role)
-    )
-  `;
-  // Backwards-compat: add `role` and `workspace_id` columns if upgrading.
-  await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'director'`);
-  await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`);
-  // Phase E (P-020): widen an existing (harness_slug, role) PK to include
-  // workspace_id so the autoloop keeps per-workspace fire-state (mirror of
-  // migration 093 for the native dev box, where migrations are applied by hand).
-  await sql.unsafe(`
-    DO $$ BEGIN
-      IF EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'harness_shared.autoloop_state'::regclass
-          AND contype = 'p' AND array_length(conkey, 1) = 2
-      ) THEN
-        ALTER TABLE harness_shared.autoloop_state DROP CONSTRAINT autoloop_state_pkey;
-        ALTER TABLE harness_shared.autoloop_state
-          ADD CONSTRAINT autoloop_state_pkey PRIMARY KEY (workspace_id, harness_slug, role);
-      END IF;
-    END $$;
-  `);
-}
-
 export async function listHarnesses(operatorBase: string, workspaceId?: string): Promise<HarnessRow[]> {
   try {
     // /projects/lite returns slug+path+harnessDir without the per-project
@@ -285,29 +251,20 @@ export function startAutoLoopOnce(): void {
 
   const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
 
-  ensureTable()
-    .then(() => {
-      state.armed = true;
+  // The autoloop_state table is defined by the migration baseline now — no
+  // runtime DDL to await before arming the ticker.
+  state.armed = true;
+  // eslint-disable-next-line no-console
+  console.log(`[autoloop] armed (tick=${TICK_INTERVAL_MS}ms, op=${operatorBase})`);
+  const tick = async () => {
+    if (stopped) return;
+    try { await tickOnce(operatorBase); } catch (e) {
       // eslint-disable-next-line no-console
-      console.log(`[autoloop] armed (tick=${TICK_INTERVAL_MS}ms, op=${operatorBase})`);
-      const tick = async () => {
-        if (stopped) return;
-        try { await tickOnce(operatorBase); } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn('[autoloop] tick error:', e);
-        }
-        if (!stopped) timer = setTimeout(tick, TICK_INTERVAL_MS);
-      };
-      timer = setTimeout(tick, 5_000); // first tick after 5s warmup
-    })
-    .catch((e: any) => {
-      // Compact one-line warning instead of dumping a FATAL Postgres stack
-      // across the log every retry — bootstrap will be re-attempted after
-      // BOOTSTRAP_BACKOFF_MS, no need to scare on each one.
-      const msg = String(e?.message ?? e).slice(0, 160);
-      // eslint-disable-next-line no-console
-      console.warn(`[autoloop] bootstrap deferred (${Math.round(BOOTSTRAP_BACKOFF_MS / 1000)}s): ${msg}`);
-    });
+      console.warn('[autoloop] tick error:', e);
+    }
+    if (!stopped) timer = setTimeout(tick, TICK_INTERVAL_MS);
+  };
+  timer = setTimeout(tick, 5_000); // first tick after 5s warmup
 }
 
 export function stopAutoLoop(): void {

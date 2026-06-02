@@ -19,7 +19,6 @@
 
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
-import { ensureUserActionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
 
@@ -66,7 +65,6 @@ export async function recordUserAction<T>(
   fn: (id: number) => Promise<ActionResult<T>>,
   opts: RecordOpts = {},
 ): Promise<T> {
-  await ensureUserActionsTable();
   const { db } = getOrgPg();
   const now = Date.now();
   const inserted = await db
@@ -136,7 +134,6 @@ export async function updateUserAction(args: {
   detailUrl?: string;
   errorText?: string;
 }): Promise<void> {
-  await ensureUserActionsTable();
   const { db, sql: rawSql } = getOrgPg();
   // COALESCE on the existing column requires either a raw sql snippet or
   // a conditional set; drizzle's set object doesn't have a built-in

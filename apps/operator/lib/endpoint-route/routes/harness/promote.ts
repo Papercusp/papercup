@@ -246,8 +246,6 @@ const confirmPromotion = defineTool({
     let newSha = '';
     try { newSha = execFileSync('git', ['-C', toPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch { /* ignore */ }
     {
-      const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
-      await ensureHarnessPromotionsTable();
       const { db } = (await import('@papercusp/db-org')).getOrgPg();
       const { generated } = await import('@papercusp/db-org');
       const hp = generated.harnessPromotionsInHarnessShared;
@@ -310,8 +308,6 @@ const rollback = defineTool({
     const path = phasePath(project, phase);
     if (!existsSync(path)) return Response.json({ error: `no worktree for ${phase}` }, { status: 400 });
 
-    const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
-    await ensureHarnessPromotionsTable();
     const { db } = (await import('@papercusp/db-org')).getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { and, desc, eq } = await import('drizzle-orm');

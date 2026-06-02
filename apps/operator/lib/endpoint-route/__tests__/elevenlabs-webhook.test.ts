@@ -58,7 +58,6 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...actual, getOrgPg: () => ({ db: fakeDb, sql: sqlMock }) };
 });
-vi.mock('@/lib/ensure-schema', () => ({ ensureOperatorConversationsTable: vi.fn(async () => {}) }));
 
 import webhookTool from '../routes/elevenlabs/webhook';
 import postCallTool from '../routes/elevenlabs/post-call';

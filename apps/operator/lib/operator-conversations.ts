@@ -15,7 +15,6 @@
 
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
-import { ensureOperatorConversationsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 
 const oc = generated.operatorConversationsInHarnessShared;
@@ -100,7 +99,6 @@ export interface TurnRow {
  * `harness_slug` column is always written as NULL on new rows.
  */
 export async function getOrCreateActiveConversation(): Promise<ConversationRow> {
-  await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
 
@@ -122,7 +120,6 @@ export async function getOrCreateActiveConversation(): Promise<ConversationRow> 
 }
 
 export async function listTurns(conversationId: string): Promise<TurnRow[]> {
-  await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
   const rows = await db
     .select(turnCols)
@@ -153,7 +150,6 @@ export async function listTurnsRecent(args: {
   beforeSeq?: number | null;
   limit?: number;
 }): Promise<TurnsPage> {
-  await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
   const limit = Math.max(1, Math.min(args.limit ?? 50, 500));
   const beforeSeq = args.beforeSeq ?? null;
@@ -198,7 +194,6 @@ export async function appendTurn(input: {
    */
   tools?: TurnToolCall[] | null;
 }): Promise<TurnRow> {
-  await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
 
   // Compute next seq. We collide-tolerate via the UNIQUE (conv,seq) constraint
@@ -255,7 +250,6 @@ export async function correctLastAssistantTurn(
   conversationId: string,
   newText: string,
 ): Promise<TurnRow | null> {
-  await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
   // UPDATE ... WHERE id = (SELECT id ... ORDER BY ... LIMIT 1) — drizzle
   // doesn't have a direct subquery-in-WHERE primitive that's cleaner than

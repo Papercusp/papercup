@@ -18,7 +18,6 @@
  */
 
 import { withWorkspace } from '@papercusp/db-org';
-import { ensurePlanRevisionsTable } from '../../ensure-schema';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { hashPlanContent } from './content-hash';
 import {
@@ -97,7 +96,6 @@ export async function recordPlanRevision(
   args: RecordPlanRevisionArgs,
 ): Promise<RecordedRevision | null> {
   try {
-    await ensurePlanRevisionsTable();
     const contentHash = hashPlanContent(args.content);
     const authorKind = classifyAuthor(args.identity);
     const createdAt = Date.now();
@@ -337,7 +335,6 @@ export async function listPlanRevisions(
   planSlug: string,
   opts: { harnessSlug?: string } = {},
 ): Promise<PlanRevisionRow[]> {
-  await ensurePlanRevisionsTable();
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     return tx<PlanRevisionDbRow[]>`
@@ -394,7 +391,6 @@ export interface PlanRevisionRef {
 export async function getPlanRevisionById(
   revisionId: number,
 ): Promise<PlanRevisionRef | null> {
-  await ensurePlanRevisionsTable();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<
       {
@@ -447,7 +443,6 @@ export interface PlanRevisionPair {
 export async function getPlanRevisionPairById(
   revisionId: number,
 ): Promise<PlanRevisionPair | null> {
-  await ensurePlanRevisionsTable();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<
       {
@@ -504,7 +499,6 @@ export async function setPlanRevisionRationale(
   revisionId: number,
   rationale: string,
 ): Promise<boolean> {
-  await ensurePlanRevisionsTable();
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_revisions
@@ -527,7 +521,6 @@ export async function countPlanRevisions(
   planSlug: string,
   opts: { harnessSlug?: string } = {},
 ): Promise<number> {
-  await ensurePlanRevisionsTable();
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     const rows = await tx<{ n: number }[]>`
@@ -575,7 +568,6 @@ export async function insertBackfillRevisions(
   opts: { harnessSlug?: string } = {},
 ): Promise<number> {
   if (revisions.length === 0) return 0;
-  await ensurePlanRevisionsTable();
   const harnessSlug = opts.harnessSlug?.trim() || 'papercup';
   return withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     let seq = 0;

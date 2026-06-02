@@ -10,7 +10,6 @@
  * Server-only.
  */
 import { withWorkspace } from '@papercusp/db-org';
-import { ensureDelegateInboxTable } from './ensure-schema';
 
 export interface DelegateInboxRow {
   id: number;
@@ -28,7 +27,6 @@ export async function pushDelegateInbox(args: {
   kind?: string;
   agentSessionId?: string | null;
 }): Promise<number> {
-  await ensureDelegateInboxTable();
   return withWorkspace(args.workspaceId, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       INSERT INTO harness_shared.delegate_inbox (
@@ -58,7 +56,6 @@ export async function drainDelegateInbox(opts: {
   workspaceId: string;
   limit?: number;
 }): Promise<DelegateInboxRow[]> {
-  await ensureDelegateInboxTable();
   const limit = Math.max(1, Math.min(50, opts.limit ?? 20));
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<any[]>`
@@ -79,7 +76,6 @@ export async function drainDelegateInbox(opts: {
 export async function peekDelegateInbox(opts: {
   workspaceId: string;
 }): Promise<{ pending: number }> {
-  await ensureDelegateInboxTable();
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<{ count: string }[]>`
       SELECT COUNT(*)::text AS count FROM harness_shared.delegate_inbox

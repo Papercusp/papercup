@@ -21,8 +21,6 @@ export interface ProjectFiles {
 }
 
 export async function loadProjectFiles(slug: string): Promise<ProjectFiles> {
-  const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
-  await ensureProjectFilesTable();
   const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const rows = await sql<Array<ProjectFiles>>`
     SELECT spec, agents, contract, config, version
@@ -52,8 +50,6 @@ export async function saveProjectFiles(
   patch: { spec?: string; agents?: string; contract?: string; config?: string },
   opts: { expectedVersion?: number } = {},
 ): Promise<{ version: number }> {
-  const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
-  await ensureProjectFilesTable();
   const { sql } = (await import('@papercusp/db-org')).getOrgPg();
   const now = Date.now();
 

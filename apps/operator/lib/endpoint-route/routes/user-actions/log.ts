@@ -9,7 +9,6 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq } from 'drizzle-orm';
-import { ensureUserActionsTable } from '@/lib/ensure-schema';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -30,7 +29,6 @@ export default defineTool({
     const project = reg.projects.find((p) => p.slug === slug);
     if (!project) return Response.json({ error: 'unknown harness' }, { status: 404 });
 
-    await ensureUserActionsTable();
     const { db } = getOrgPg();
     const rows = await db
       .select({ detail_url: ua.detailUrl, kind: ua.kind, status: ua.status })

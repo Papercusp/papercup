@@ -6,7 +6,6 @@
 import crypto from 'node:crypto';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
-import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -69,7 +68,6 @@ export default defineTool({
       return Response.json({ error: 'invalid json' }, { status: 400 });
     }
 
-    await ensureOperatorConversationsTable();
     const { db, sql } = getOrgPg();
     const elConvId = (event as TranscriptionPayload).data?.conversation_id ?? null;
     if (!elConvId) return Response.json({ received: true, note: 'no conversation_id' });

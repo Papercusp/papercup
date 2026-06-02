@@ -7,7 +7,6 @@
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
-import { ensureUiClientsTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const BodySchema = z.object({
@@ -34,7 +33,6 @@ export default defineTool({
     }
     const { client_id, url, title, workspace_id, viewport } = parsed.data;
 
-    await ensureUiClientsTable();
     const { sql } = getOrgPg();
     const viewportJson = viewport ? JSON.stringify(viewport) : null;
     await sql`

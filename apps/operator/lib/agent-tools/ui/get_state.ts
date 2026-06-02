@@ -10,7 +10,6 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureUiClientsTable } from '@/lib/ensure-schema';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
@@ -54,7 +53,6 @@ export default defineTool({
         }],
       };
     }
-    await ensureUiClientsTable();
     const { sql } = getOrgPg();
     const rows = await sql<Array<{ url: string; title: string | null; workspace_id: string | null; last_seen_at: Date | string; opened_at: Date | string }>>`
       SELECT url, title, workspace_id, last_seen_at, opened_at

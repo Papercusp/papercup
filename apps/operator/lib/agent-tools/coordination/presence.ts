@@ -13,7 +13,6 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureCoordPresenceTable } from '@/lib/ensure-schema';
 import {
   PgPresenceStore,
   PRESENCE_STALE_MS,
@@ -27,7 +26,8 @@ export type { PresenceInput, PresenceRecord };
 
 const store = new PgPresenceStore({
   getSql: () => getOrgPg().sql,
-  ensureSchema: ensureCoordPresenceTable,
+  // Tables are defined by the migration baseline now; the host seam is a no-op.
+  ensureSchema: async () => {},
 });
 
 /**

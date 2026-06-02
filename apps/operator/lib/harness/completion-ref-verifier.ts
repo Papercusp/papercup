@@ -41,7 +41,6 @@
 import { spawn } from 'node:child_process';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { ensureToastLogTable } from '../ensure-schema';
 import { notifySyncInvalidate } from '../sync-sse';
 
 export type CompletionRef = {
@@ -134,7 +133,6 @@ async function writeVerifierWarningToast(
 ): Promise<void> {
   try {
     const tl = generated.toastLogInHarnessShared;
-    await ensureToastLogTable();
     const { db } = getOrgPg();
     const RING_BUFFER_SIZE = 2000;
     await db.insert(tl).values({

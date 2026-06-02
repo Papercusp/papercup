@@ -15,7 +15,6 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { ensurePowerUserSessionsTable } from './ensure-schema';
 import { newAuthSessionId } from './power-user-token';
 
 export interface PowerUserSessionRow {
@@ -32,7 +31,6 @@ export async function createPowerUserSession(opts: {
   workspaceId: string;
   userId: string;
 }): Promise<{ authSessionId: string }> {
-  await ensurePowerUserSessionsTable();
   const { sql } = getOrgPg();
   const authSessionId = newAuthSessionId();
   await sql`
@@ -52,7 +50,6 @@ export async function createPowerUserSession(opts: {
 export async function getActivePowerUserSession(
   authSessionId: string,
 ): Promise<PowerUserSessionRow | null> {
-  await ensurePowerUserSessionsTable();
   const { sql } = getOrgPg();
   const rows = await sql<
     Array<{
@@ -85,7 +82,6 @@ export async function getActivePowerUserSession(
 
 /** Stamp `revoked_at` — stops the refresh chain. Idempotent. */
 export async function revokePowerUserSession(authSessionId: string): Promise<void> {
-  await ensurePowerUserSessionsTable();
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.power_user_sessions
@@ -99,7 +95,6 @@ export async function revokePowerUserSession(authSessionId: string): Promise<voi
 export async function listActivePowerUserSessions(
   workspaceId: string,
 ): Promise<PowerUserSessionRow[]> {
-  await ensurePowerUserSessionsTable();
   const { sql } = getOrgPg();
   const rows = await sql<
     Array<{

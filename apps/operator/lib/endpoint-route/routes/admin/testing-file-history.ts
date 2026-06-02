@@ -9,7 +9,6 @@
 
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureTestRunsTable } from '@/lib/ensure-schema';
 
 function toIso(v: unknown): string | null {
   if (!v) return null;
@@ -34,7 +33,6 @@ export default defineTool({
     const limitRaw = url.searchParams.get('limit');
     const limit = Math.min(Math.max(Number(limitRaw) || 20, 1), 200);
 
-    await ensureTestRunsTable();
     const { sql } = getOrgPg();
 
     const rows = await sql<{

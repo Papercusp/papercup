@@ -40,7 +40,6 @@ import { harnessTestingRegistry, HARNESS_TESTING_TIER_LABELS, ACCEPTANCE_DOMAIN_
 import { type TestDomain, type ChipStatus, type FileStatusEntry } from '@/lib/testing-domains';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 import { computePlanItemTestStatus } from '@/lib/harness-test-rollup';
 
 interface HarnessTestRow {
@@ -293,7 +292,6 @@ const listAssertions = defineTool({
     const slug = ctx.params.slug as string;
     const planSlug = new URL(req.url).searchParams.get('plan');
     try {
-      await ensureHarnessPlanAssertionsTable();
       const { sql } = getOrgPg();
       const ws = activeWorkspaceId();
       const rows = planSlug
@@ -326,7 +324,6 @@ const patchAssertion = defineTool({
     if (typeof body.requires_test !== 'boolean') {
       return Response.json({ error: 'requires_test (boolean) required' }, { status: 400 });
     }
-    await ensureHarnessPlanAssertionsTable();
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
     const rows = await sql<{ val_id: string; requires_test: boolean }[]>`
@@ -352,7 +349,6 @@ const planItemsTestStatus = defineTool({
     const slug = ctx.params.slug as string;
     const planSlug = new URL(req.url).searchParams.get('plan');
     try {
-      await ensureHarnessPlanAssertionsTable();
       const { sql } = getOrgPg();
       const ws = activeWorkspaceId();
       const assertions = planSlug

@@ -24,7 +24,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { getOrgPg, generated, typedSql } from '@papercusp/db-org';
 import { and, eq, sql } from 'drizzle-orm';
-import { ensureTextArtifactsTable } from './ensure-schema';
 
 const t = generated.harnessTextArtifactsInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
@@ -71,7 +70,6 @@ async function mirrorToDisk(slug: string, key: string, content: string): Promise
 }
 
 export async function loadTextArtifact(slug: string, relPath: string): Promise<string | null> {
-  await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
   const { db } = getOrgPg();
   const rows = await db
@@ -91,7 +89,6 @@ export interface SaveTextArtifactOpts {
 }
 
 export async function saveTextArtifact(slug: string, relPath: string, content: string, opts: SaveTextArtifactOpts = {}): Promise<void> {
-  await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
   const { db } = getOrgPg();
   const now = Date.now();
@@ -114,7 +111,6 @@ export async function saveTextArtifact(slug: string, relPath: string, content: s
 }
 
 export async function appendTextArtifact(slug: string, relPath: string, suffix: string): Promise<void> {
-  await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
   const { db } = getOrgPg();
   const now = Date.now();
@@ -138,7 +134,6 @@ export async function appendTextArtifact(slug: string, relPath: string, suffix: 
 }
 
 export async function deleteTextArtifact(slug: string, relPath: string): Promise<void> {
-  await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
   const { db } = getOrgPg();
   await db.delete(t).where(and(eq(t.harnessSlug, slug), eq(t.relPath, key)));

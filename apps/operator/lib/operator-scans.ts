@@ -14,7 +14,6 @@
  * (HTTP) instead of importing this module directly.
  */
 import { withWorkspace, getOrgPg } from '@papercusp/db-org';
-import { ensureOperatorScansTable } from './ensure-schema';
 import { notifySyncInvalidate } from './sync-sse';
 
 export interface OperatorScanRow {
@@ -61,7 +60,6 @@ interface FailScanArgs {
  * when the SSE stream finishes (or errors).
  */
 export async function startOperatorScan(args: InsertScanArgs): Promise<number> {
-  await ensureOperatorScansTable();
   const id = await withWorkspace(args.workspaceId, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       INSERT INTO harness_shared.operator_scans (
@@ -81,7 +79,6 @@ export async function startOperatorScan(args: InsertScanArgs): Promise<number> {
 }
 
 export async function completeOperatorScan(args: CompleteScanArgs): Promise<void> {
-  await ensureOperatorScansTable();
   // By-id finalize: the id is unique across workspaces, so this targets exactly
   // one row regardless of workspace. Run via the admin handle (rolbypassrls) — a
   // withWorkspace() update would be RLS-scoped to one workspace (P-062 Phase 2),
@@ -102,7 +99,6 @@ export async function completeOperatorScan(args: CompleteScanArgs): Promise<void
 }
 
 export async function failOperatorScan(args: FailScanArgs): Promise<void> {
-  await ensureOperatorScansTable();
   // By-id finalize via the admin handle — see completeOperatorScan().
   const { sql } = getOrgPg();
   await sql`
@@ -118,7 +114,6 @@ export async function listOperatorScans(opts: {
   workspaceId: string;
   limit?: number;
 }): Promise<OperatorScanRow[]> {
-  await ensureOperatorScansTable();
   const limit = Math.max(1, Math.min(100, opts.limit ?? 20));
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<any[]>`
@@ -140,7 +135,6 @@ export async function searchOperatorScans(opts: {
   query: string;
   limit?: number;
 }): Promise<OperatorScanRow[]> {
-  await ensureOperatorScansTable();
   const limit = Math.max(1, Math.min(50, opts.limit ?? 10));
   const needle = `%${opts.query.replace(/[%_]/g, (c) => '\\' + c)}%`;
   return withWorkspace(opts.workspaceId, async (tx) => {
@@ -167,7 +161,6 @@ export async function getOperatorScan(opts: {
   workspaceId: string;
   id: number;
 }): Promise<OperatorScanRow | null> {
-  await ensureOperatorScansTable();
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<any[]>`
       SELECT

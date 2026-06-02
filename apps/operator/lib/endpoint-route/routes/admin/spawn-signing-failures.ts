@@ -7,7 +7,6 @@
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, count, desc, eq, gt, sql as dsql } from 'drizzle-orm';
-import { ensureSpawnSigVerificationFailuresTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const sf = generated.spawnSigVerificationFailuresInHarnessShared;
@@ -22,7 +21,6 @@ export default defineTool({
     const since = url.searchParams.get('since');
     const reason = url.searchParams.get('reason');
 
-    await ensureSpawnSigVerificationFailuresTable();
     const { db } = getOrgPg();
 
     const sinceTs = since ? new Date(since) : null;

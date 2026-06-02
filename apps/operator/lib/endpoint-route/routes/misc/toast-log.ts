@@ -4,7 +4,6 @@
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { ensureToastLogTable } from '@/lib/ensure-schema';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { listToasts } from '@/lib/toast-log-data';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -56,7 +55,6 @@ export default [
           : null;
       const createdAt = Date.now();
 
-      await ensureToastLogTable();
       const { db } = getOrgPg();
       const [row] = await db
         .insert(tl)
@@ -96,7 +94,6 @@ export default [
     auth: 'public',
     async handler(req) {
       const all = new URL(req.url).searchParams.get('all') === '1';
-      await ensureToastLogTable();
       const { db } = getOrgPg();
       if (all) {
         await db.delete(tl);

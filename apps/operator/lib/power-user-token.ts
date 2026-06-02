@@ -32,7 +32,6 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { getOrgPg } from '@papercusp/db-org';
 import { generated } from '@papercusp/db-org';
 import { eq } from 'drizzle-orm';
-import { ensureOperatorSecretsTable } from './ensure-schema';
 
 const os = generated.operatorSecretsInHarnessShared;
 const KEY_NAME = 'power-user-token-key';
@@ -80,7 +79,6 @@ export function _resetPowerUserTokenKeyCache(): void {
  * discipline as spawn-signing.ts:loadOrCreateKey.
  */
 async function loadOrCreateKey(): Promise<Buffer> {
-  await ensureOperatorSecretsTable();
   const { db } = getOrgPg();
   const rows = await db
     .select({ valueB64: os.valueB64, rotatedAt: os.rotatedAt })

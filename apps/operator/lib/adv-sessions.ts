@@ -13,7 +13,6 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureAdvSessionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
 
@@ -113,7 +112,6 @@ function mapAdvSessionRow(r: {
 
 export async function recordAdvSession(opts: RecordOpts): Promise<number | null> {
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
@@ -133,7 +131,6 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
 }
 export async function setAdvSessionPid(id: number, pid: number | null): Promise<void> {
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     await sql`
       UPDATE harness_shared.adv_sessions
@@ -150,7 +147,6 @@ export async function setAdvSessionWindowId(id: number, windowId: string | null)
   const trimmed = windowId?.trim() || null;
   if (!trimmed) return;
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     await sql`
       UPDATE harness_shared.adv_sessions
@@ -176,7 +172,6 @@ export async function setAdvSessionOmpThreadId(
   const trimmed = ompThreadId.trim();
   if (!trimmed) return 'not_found';
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     const currentRows = await sql<Array<{ omp_thread_id: string | null }>>`
       SELECT omp_thread_id
@@ -217,7 +212,6 @@ export async function markAdvSessionEnded(id: number, exitCode: number | null): 
 
 export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     // Filter "dead-on-arrival" rows — a terminal that ended within 5
     // seconds of launch and never recorded an omp_thread_id never
@@ -274,7 +268,6 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
  */
 export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]> {
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     const rows = await sql<Array<{
       id: number;
@@ -312,7 +305,6 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
 
 export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     const rows = await sql<Array<{
       id: number;
@@ -364,7 +356,6 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
 export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, AdvSessionRow>> {
   const out = new Map<string, AdvSessionRow>();
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     const rows = await sql<Array<{
       id: number;
@@ -415,7 +406,6 @@ export async function listEndedAdvSessions(
   const limit = opts.limit ?? 50;
   const ws = opts.workspaceId ?? null;
   try {
-    await ensureAdvSessionsTable();
     const { sql } = getOrgPg();
     const rows = await sql<Array<{
       id: number;

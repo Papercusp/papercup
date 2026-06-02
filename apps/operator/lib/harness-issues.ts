@@ -207,8 +207,6 @@ export function loadIssuesOrSeed(project: ProjectEntry): IssuesFile {
  * Read-only from the UI's perspective — promotion goes through the curator.
  */
 export async function readPendingIssues(project: ProjectEntry): Promise<Issue[]> {
-  const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
-  await ensureHarnessPendingIssuesTable();
   const { db } = (await import('@papercusp/db-org')).getOrgPg();
   const { generated } = await import('@papercusp/db-org');
   const { asc, eq } = await import('drizzle-orm');

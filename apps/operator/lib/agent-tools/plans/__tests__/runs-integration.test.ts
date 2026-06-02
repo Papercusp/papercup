@@ -25,10 +25,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ensureBootstrap } from '../../locks/su-lock-store';
 import {
-  ensurePlanRunsTable,
-  ensurePlanRunTurnsTable,
-} from '@/lib/ensure-schema';
-import {
   appendPlanRunTurn,
   getPlanRun,
   insertPlanRun,
@@ -45,8 +41,7 @@ const NOW = Date.now();
 
 beforeAll(async () => {
   await ensureBootstrap();
-  await ensurePlanRunsTable();
-  await ensurePlanRunTurnsTable();
+  // plan_runs / plan_run_turns are defined by the migration baseline.
 });
 
 afterAll(async () => {

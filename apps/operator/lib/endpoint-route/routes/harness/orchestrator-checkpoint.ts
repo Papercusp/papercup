@@ -15,7 +15,6 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getOrgPg, getHarnessPg } from '@papercusp/db-org';
 import { resolveProject, harnessDir } from '@/lib/harness-core';
-import { ensureHarnessStatusTable, ensureHarnessLanesTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -41,7 +40,6 @@ const orchestratorStatus = defineTool({
     if (!body.status || !allowed.has(body.status)) {
       return Response.json({ error: 'status must be one of idle/running/stalled/paused/error' }, { status: 400 });
     }
-    await ensureHarnessStatusTable();
     const { db } = getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { sql: dsql } = await import('drizzle-orm');
@@ -105,7 +103,6 @@ const orchestratorLane = defineTool({
     if (!body.role || typeof body.role !== 'string') {
       return Response.json({ error: 'role required' }, { status: 400 });
     }
-    await ensureHarnessLanesTable();
     const { db } = getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { sql: dsql } = await import('drizzle-orm');
@@ -144,7 +141,6 @@ const orchestratorLanesDelete = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const qPhase = new URL(req.url).searchParams.get('phase');
     const phase = qPhase === 'testing' || qPhase === 'production' ? qPhase : 'staging';
-    await ensureHarnessLanesTable();
     const { db } = getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const { and, eq } = await import('drizzle-orm');

@@ -77,41 +77,6 @@ import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { activeWorkspaceId } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';
 import { notifySyncInvalidate } from './sync-sse';
-import {
-  ensureHarnessSummariesTable,
-  ensurePendingReviewsTable,
-  ensureHarnessProposalsSharedTable,
-  ensureHarnessPendingIssuesTable,
-  ensureHarnessPhasesTable,
-  ensureHarnessTestsTable,
-  ensureHarnessEscalationsTable,
-  ensureHarnessArchivesTable,
-  ensureHarnessPlanReviewTable,
-  ensureHarnessSmokeTestTable,
-  ensureHarnessCheckpointsTable,
-  ensureHarnessHookLogsTable,
-  ensureHarnessScreenshotsTable,
-  ensureHarnessDecisionsTable,
-  ensureHarnessGitLogTable,
-  ensureHarnessHealthTable,
-  ensureHarnessBranchActionsTable,
-  ensureOrgCharterTable,
-  ensureOrgDepartmentsTable,
-  ensureOrgProjectsTable,
-  ensureOrgInboxTable,
-  ensureOrgOutboxTable,
-  ensureOrgNotesTable,
-  ensureOrgDecisionsTable,
-  ensureHarnessMissionStateTable,
-  ensureHarnessDispatchesTable,
-  ensureHarnessRunOutputTable,
-  ensureHarnessSnapshotsTable,
-  ensureHarnessRunChunksTable,
-  ensureHarnessPromotionsTable,
-  ensureHarnessExpertFeedbackTable,
-  ensureHarnessExpertTurnsTable,
-  ensureOrchestratorCheckpointsAddon,
-} from './ensure-schema';
 
 // Currently there's one org root (slug='org' in the registry, harness_kind='org').
 // The org_id column anticipates multi-org without a schema change.
@@ -1614,47 +1579,6 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
     .on('error', (e) => {
       console.warn('[harness-fs-watcher] enabled-plugins chokidar error:', (e as Error)?.message ?? e);
     });
-
-  // Ensure tables exist before any write.
-  void Promise.all([
-    ensureHarnessSummariesTable(),
-    ensurePendingReviewsTable(),
-    ensureHarnessProposalsSharedTable(),
-    ensureHarnessPendingIssuesTable(),
-    ensureHarnessPhasesTable(),
-    ensureHarnessTestsTable(),
-    ensureHarnessEscalationsTable(),
-    ensureHarnessArchivesTable(),
-    ensureHarnessPlanReviewTable(),
-    ensureHarnessSmokeTestTable(),
-    ensureHarnessCheckpointsTable(),
-    ensureHarnessHookLogsTable(),
-    ensureHarnessScreenshotsTable(),
-    ensureHarnessDecisionsTable(),
-    ensureHarnessGitLogTable(),
-    ensureHarnessHealthTable(),
-    ensureHarnessBranchActionsTable(),
-    ensureOrgCharterTable(),
-    ensureOrgDepartmentsTable(),
-    ensureOrgProjectsTable(),
-    ensureOrgInboxTable(),
-    ensureOrgOutboxTable(),
-    ensureOrgNotesTable(),
-    ensureOrgDecisionsTable(),
-    // Orchestrator → PG arc Phase 2/3/4/7 schemas. Idempotent CREATE
-    // TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN IF NOT EXISTS.
-    ensureHarnessMissionStateTable(),
-    ensureHarnessDispatchesTable(),
-    ensureHarnessRunOutputTable(),
-    ensureHarnessSnapshotsTable(),
-    ensureHarnessRunChunksTable(),
-    ensureHarnessPromotionsTable(),
-    ensureHarnessExpertFeedbackTable(),
-    ensureHarnessExpertTurnsTable(),
-    ensureOrchestratorCheckpointsAddon(),
-  ]).catch((e) => {
-    console.warn('[harness-fs-watcher] schema ensure failed:', e?.message ?? e);
-  });
 
   // Initial reconcile so cold-boot picks up anything that existed before
   // the watcher started.

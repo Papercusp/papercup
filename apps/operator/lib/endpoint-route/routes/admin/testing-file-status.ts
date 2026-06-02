@@ -21,7 +21,6 @@ import '@/lib/testing-domains-registry';
 import { getTestDomain } from '@/lib/testing-domains';
 import { expandGlobs, inferWorkspaceRoot } from '@/lib/testing-domain-glob';
 import { resolveGitContext } from '@/lib/testing-branch-resolve';
-import { ensureTestRunsTable } from '@/lib/ensure-schema';
 
 function toIso(v: unknown): string | null {
   if (!v) return null;
@@ -68,7 +67,6 @@ export default defineTool({
       );
     }
 
-    await ensureTestRunsTable();
     const root = inferWorkspaceRoot();
     const allGlobs = domain.sections.flatMap((s) => s.globs ?? []);
     const hits = allGlobs.length > 0 ? await expandGlobs(root, allGlobs) : [];

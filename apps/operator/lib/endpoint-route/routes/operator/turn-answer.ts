@@ -8,7 +8,6 @@
  * Ported from app/api/operator/conversations/[id]/turn-answer/route.ts. `auth: 'public'`.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -51,7 +50,6 @@ export default defineTool({
       );
     }
 
-    await ensureOperatorConversationsTable();
     const { sql } = getOrgPg();
     const now = Date.now();
     const answeredJson = JSON.stringify({ picks: body.picks, at: now });

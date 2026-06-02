@@ -9,7 +9,6 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { ensureHarnessPlanAssertionsTable } from '@/lib/ensure-schema';
 
 interface AssertionRow {
   val_id: string;
@@ -38,7 +37,6 @@ export default defineTool({
     }
 
     try {
-      await ensureHarnessPlanAssertionsTable();
       const { sql } = getOrgPg();
       const workspaceId = activeWorkspaceId();
 

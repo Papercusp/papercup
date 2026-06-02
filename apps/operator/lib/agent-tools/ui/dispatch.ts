@@ -24,7 +24,6 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureUiIntentsTable } from '@/lib/ensure-schema';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
@@ -70,7 +69,6 @@ export default defineTool({
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
     const intentArgs = args.args ?? {};
 
-    await ensureUiIntentsTable();
     const { sql } = getOrgPg();
 
     const principalSlug = ctx.principal?.slug ?? (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);

@@ -13,10 +13,6 @@ import { randomBytes } from 'node:crypto';
 const FIXED_KEY_B64 = randomBytes(32).toString('base64');
 const FIXED_ROTATED_AT = new Date('2026-05-20T00:00:00.000Z');
 
-vi.mock('./ensure-schema', () => ({
-  ensureOperatorSecretsTable: vi.fn(async () => {}),
-}));
-
 vi.mock('@papercusp/db-org', () => ({
   generated: {
     operatorSecretsInHarnessShared: { name: 'name', valueB64: 'value_b64', rotatedAt: 'rotated_at' },

@@ -11,7 +11,6 @@ import {
   listTurns,
   listTurnsRecent,
 } from '@/lib/operator-conversations';
-import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -45,7 +44,6 @@ const post = defineTool({
   path: '/operator/conversations',
   auth: 'public',
   async handler() {
-    await ensureOperatorConversationsTable();
     const ws = activeWorkspaceId();
     const { db } = getOrgPg();
 

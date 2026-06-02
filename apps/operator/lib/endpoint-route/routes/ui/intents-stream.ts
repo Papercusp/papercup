@@ -9,7 +9,6 @@
 import { sseResponse } from '@papercusp/sse';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
-import { ensureUiIntentsTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const POLL_MS = 250;
@@ -33,7 +32,6 @@ export default defineTool({
     const clientId = (url.searchParams.get('client_id') ?? '').trim();
     if (!clientId) return Response.json({ error: 'client_id_required' }, { status: 400 });
 
-    await ensureUiIntentsTable();
     const { sql } = getOrgPg();
 
     return sseResponse<Events>({

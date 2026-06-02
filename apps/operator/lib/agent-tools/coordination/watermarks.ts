@@ -14,7 +14,6 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureCoordWatermarksTable } from '@/lib/ensure-schema';
 import {
   PgWatermarkStore,
   type WatermarkStore,
@@ -27,7 +26,8 @@ export type { Watermark };
 function makeDefaultStore(): WatermarkStore {
   return new PgWatermarkStore({
     getSql: () => getOrgPg().sql,
-    ensureSchema: ensureCoordWatermarksTable,
+    // Tables are defined by the migration baseline now; the host seam is a no-op.
+    ensureSchema: async () => {},
   });
 }
 

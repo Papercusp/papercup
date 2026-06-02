@@ -15,12 +15,12 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { PgCoordLog } from '@papercusp/coordination/event-log';
 import type { CoordEventLog } from '@papercusp/coordination/event-log';
-import { ensureCoordEventLogTable } from '@/lib/ensure-schema';
 
 function makeDefaultLog(): CoordEventLog {
   return new PgCoordLog({
     getSql: () => getOrgPg().sql,
-    ensureSchema: ensureCoordEventLogTable,
+    // Tables are defined by the migration baseline now; the host seam is a no-op.
+    ensureSchema: async () => {},
   });
 }
 

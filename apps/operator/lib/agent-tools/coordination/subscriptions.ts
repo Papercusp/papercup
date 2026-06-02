@@ -22,7 +22,6 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { ensureCoordSubscriptionsTable } from '@/lib/ensure-schema';
 import { PgSubscriptionStore } from '@papercusp/coordination/subscription-store';
 import {
   newMsgId,
@@ -42,7 +41,8 @@ export type { WatchTrigger };
 
 const store = new PgSubscriptionStore({
   getSql: () => getOrgPg().sql,
-  ensureSchema: ensureCoordSubscriptionsTable,
+  // Tables are defined by the migration baseline now; the host seam is a no-op.
+  ensureSchema: async () => {},
 });
 
 export interface WatchInput {

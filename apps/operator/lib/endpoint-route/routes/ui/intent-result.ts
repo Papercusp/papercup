@@ -7,7 +7,6 @@
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
-import { ensureUiIntentsTable } from '@/lib/ensure-schema';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const BodySchema = z.object({
@@ -36,7 +35,6 @@ export default defineTool({
     }
     const { result, error } = parsed.data;
 
-    await ensureUiIntentsTable();
     const { sql } = getOrgPg();
 
     const status = error ? 'error' : 'done';

@@ -24,7 +24,6 @@ import { ensureHarnessStatusSweep } from '../lib/harness-status-sweep';
 import { registerAllExpirables } from '../lib/expirable-registrations';
 import { startMobileVoiceWs } from '../lib/device-voice-ws';
 import { startPushCredentialRefresher } from '../lib/device-push-credentials';
-import { ensureMobileDevicesTable } from '../lib/ensure-schema';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -146,17 +145,6 @@ export function runBootstrap(): void {
   // device-intervention-watcher (60s poll) retired (P-021) — escalation /
   // smoke-fail / plan-review now push at the source via notifyAttention from
   // their /api/internal/*-event producers; needs-human≥high from set-status.
-
-  // Mobile DDL at host startup (Phase E3, endpoint-unification-2026-05-21).
-  // Previously ran lazily on the first `/api/device/*` request inside the
-  // legacy `_hono/mobile.ts` router; moved here so a mobile `defineTool`
-  // (which never touches that router) finds the tables already present.
-  // `ensureMobileDevicesTable` is globalThis-guarded + `CREATE … IF NOT
-  // EXISTS`, so this is idempotent and safe alongside the legacy lazy call
-  // that remains until `_hono/mobile.ts` is deleted (Phase E5).
-  void ensureMobileDevicesTable().catch((e) => {
-    console.warn('[api] ensureMobileDevicesTable failed:', (e as Error)?.message ?? e);
-  });
 
   // Harness FS watcher — mirrors .harness/{summary.md,pending-reviews,proposals}
   // to PG so panels can read via Zero push instead of polling. Idempotent;

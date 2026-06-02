@@ -129,8 +129,6 @@ const appendPendingIssue = defineTool({
       attempts: 1,
       notes: [],
     };
-    const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
-    await ensureHarnessPendingIssuesTable();
     const { db } = (await import('@papercusp/db-org')).getOrgPg();
     const { generated } = await import('@papercusp/db-org');
     const hpi = generated.harnessPendingIssuesInHarnessShared;
@@ -248,8 +246,6 @@ const triage = defineTool({
     // feed (the watcher would mirror the empty file → DELETE anyway,
     // idempotent with the explicit DELETE here).
     {
-      const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
-      await ensureHarnessPendingIssuesTable();
       const { db } = (await import('@papercusp/db-org')).getOrgPg();
       const { generated } = await import('@papercusp/db-org');
       const { and, eq } = await import('drizzle-orm');
