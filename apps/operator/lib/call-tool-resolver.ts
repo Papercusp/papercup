@@ -37,14 +37,41 @@ const TOOL_ROUTES: Record<string, string> = {
   'oracle:chat': '/api/oracle/chat',
   'operator:scan': '/api/agent-mcp/operator-scan',
   'operator:converse': '/api/agent-mcp/operator-converse',
+  'operator:delegate': '/api/agent-mcp/delegate-chat',
 };
+
+/**
+ * Phase E — tools eligible for DIRECT in-process dispatch on desktop (endpoint
+ * _invoke bypasses the loopback-HTTP route replay; lower latency). A tool is
+ * eligible ONLY if it is SELF-CONTAINED — every auth/session, budget, and
+ * persistence side-effect lives in the HANDLER, not the route — because direct
+ * dispatch skips the route. This set is exactly the documented self-contained,
+ * NON-parameterized streaming tools, and it mirrors the server-side IPC
+ * allowlist (`expose: { ipc: true }`) locked by ipc-allowlist.test.ts:
+ *   - operator:scan      — "Self-contained — safe to call from any transport"
+ *   - operator:converse  — prompt+budget+spend+mem0 in the handler
+ *   - operator:delegate  — resolves session + writes turns/title internally
+ * EXCLUDED: oracle:chat / agent_chats:chat (route-dependent — the closed
+ * footgun); architect:chat / brainstorm:chat (harness-scoped parameterized
+ * routes — they migrate to `callRoute(builtPath)`, not name-based direct dispatch).
+ *
+ * Effect today: LATENT. Nothing client-side calls `callTool` for these yet, so
+ * flipping this is a zero-behavior-change capability switch — it only takes
+ * effect when a call site migrates to `callTool(name)` on desktop. The route
+ * stays the browser fallback (callToolStream uses direct only when isTauri()).
+ * D-003's per-tool RequestContext parity test should accompany the FIRST live
+ * call-site migration of each tool (verifies handler-via-direct == handler-via-route).
+ */
+const DIRECT_ELIGIBLE = new Set<string>([
+  'operator:scan',
+  'operator:converse',
+  'operator:delegate',
+]);
 
 export function operatorToolResolver(name: string): ToolResolution {
   return {
     route: TOOL_ROUTES[name] ?? `/api/agent-tools/${name.replaceAll(':', '/')}`,
-    // Phase A: direct dispatch off for all (D-001/D-003). Phase E flips this per
-    // audited tool once its handler is self-contained + a parity test passes.
-    directEligible: false,
+    directEligible: DIRECT_ELIGIBLE.has(name),
   };
 }
 

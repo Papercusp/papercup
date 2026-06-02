@@ -39,8 +39,20 @@ describe('operatorToolResolver', () => {
     expect(operatorToolResolver('something:else').route).toBe('/api/agent-tools/something/else');
   });
 
-  it('marks nothing direct-eligible in Phase A', () => {
-    for (const n of ['oracle:chat', 'operator:scan', 'dev:ipc_echo']) {
+  it('maps operator:delegate to its delegate-chat shim route', () => {
+    expect(operatorToolResolver('operator:delegate').route).toBe('/api/agent-mcp/delegate-chat');
+  });
+
+  it('Phase E: marks the verified self-contained tools direct-eligible', () => {
+    for (const n of ['operator:scan', 'operator:converse', 'operator:delegate']) {
+      expect(operatorToolResolver(n).directEligible).toBe(true);
+    }
+  });
+
+  it('keeps route-dependent / parameterized / unmapped tools NOT direct-eligible', () => {
+    // oracle:chat = route-dependent footgun; architect/brainstorm = harness-scoped
+    // parameterized; dev:ipc_echo + unknowns = not in the audited set.
+    for (const n of ['oracle:chat', 'architect:chat', 'brainstorm:chat', 'dev:ipc_echo', 'foo:bar']) {
       expect(operatorToolResolver(n).directEligible).toBe(false);
     }
   });
