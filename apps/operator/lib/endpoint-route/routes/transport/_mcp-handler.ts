@@ -616,7 +616,18 @@ const handler = createMcpHandler(
         const result = applyToolManifest(listMcpProjections(role, profile), {
           bypass,
         });
-        return { tools: result.map((t) => ({ ...t })) };
+        // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
+        // consumers (Ollama) can parse the surface. This is THE tools/list
+        // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
+        // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
+        return {
+          tools: result.map((t) => {
+            const tt = t as { inputSchema?: unknown };
+            return tt.inputSchema
+              ? { ...t, inputSchema: sanitizeToolSchema(tt.inputSchema) }
+              : { ...t };
+          }),
+        };
       },
     );
 
