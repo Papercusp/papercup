@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runOptimizationLoop, type LoopConfig, type LoopDeps } from '../loop';
+import { runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
 import type { VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
 
@@ -73,5 +73,27 @@ describe('runOptimizationLoop', () => {
     expect(res.breakerTripped).toBe(true);
     expect(calls).toContain('revert');
     expect(res.cycles).toBeLessThan(3); // stopped early
+  });
+
+  it('records each candidate as a proposal (gym UI seam); autoPromote:false skips the harness write', async () => {
+    const recorded: LoopProposalRecord[] = [];
+    const { d, calls } = baseDeps({ recordProposal: async (r) => { recorded.push(r); } });
+    const res = await runOptimizationLoop({ ...config, autoPromote: false }, d);
+    expect(recorded).toHaveLength(res.cycles); // one record per cycle
+    expect(recorded[0].candidateId).toBe('cand-1');
+    expect(recorded[0].overlay.promptOverrides.worker).toBe('improved');
+    expect(recorded[0].parentOverlay).toBeDefined();
+    expect(recorded[0].verdict).toBe('accept'); // improving candidates accept
+    expect(typeof recorded[0].devAnchorDelta).toBe('number');
+    expect(calls).not.toContain('promote'); // human-gated: no external harness write
+    expect(res.championId).toBe('cand-3'); // internal champion still advances
+  });
+
+  it('still auto-promotes by default (autoPromote undefined) + records when the dep is present', async () => {
+    const recorded: LoopProposalRecord[] = [];
+    const { d, calls } = baseDeps({ recordProposal: async (r) => { recorded.push(r); } });
+    const res = await runOptimizationLoop(config, d);
+    expect(recorded).toHaveLength(res.cycles);
+    expect(calls.filter((c) => c === 'promote').length).toBeGreaterThanOrEqual(1);
   });
 });

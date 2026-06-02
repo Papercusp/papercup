@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { LoopProposalRecord } from './loop';
 
 /** The judge rubric is edited like a role prompt but isn't an AGENT_ROLES role. */
 export const JUDGE_PROMPT_KEY = 'judge';
@@ -319,4 +320,52 @@ export async function setAutoloop(sql: Sql, q: SetAutoloopInput): Promise<GymAut
        status = EXCLUDED.status, last_cycle = EXCLUDED.last_cycle, last_cycle_at = EXCLUDED.last_cycle_at,
        updated_at = EXCLUDED.updated_at`;
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Gym loop → control plane bridge
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `deps.recordProposal` for runOptimizationLoop that writes each candidate's
+ * CHANGED-role prompts into harness_shared.gym_proposals (pending) for human review.
+ * Only roles whose merged prompt differs from the parent's are recorded (the diff);
+ * inherited/unchanged roles are skipped. Bind this in the human-gated autoloop runner
+ * (with autoPromote:false) so the gym surfaces scored suggestions the user accepts via
+ * gym:accept. Also bumps the autoloop config's last_cycle each cycle.
+ */
+export function makeLoopProposalRecorder(
+  sql: Sql,
+  ctx: { workspaceId: string; harnessSlug: string; now?: () => number },
+): (rec: LoopProposalRecord) => Promise<void> {
+  const now = ctx.now ?? (() => Date.now());
+  return async (rec: LoopProposalRecord) => {
+    const parent = rec.parentOverlay.promptOverrides;
+    const ts = now();
+    for (const [role, proposedMd] of Object.entries(rec.overlay.promptOverrides)) {
+      const originalMd = parent[role] ?? null;
+      if (originalMd === proposedMd) continue; // unchanged inherited role — not a diff
+      await recordProposal(sql, {
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.harnessSlug,
+        cycle: rec.cycle,
+        variantId: rec.candidateId,
+        role,
+        originalMd,
+        proposedMd,
+        rationale: rec.rationale,
+        devAnchorDelta: rec.devAnchorDelta,
+        costDelta: rec.costDelta,
+        probeStatus: rec.probeStatus,
+        now: ts,
+      });
+    }
+    await setAutoloop(sql, {
+      workspaceId: ctx.workspaceId,
+      harnessSlug: ctx.harnessSlug,
+      lastCycle: rec.cycle,
+      lastCycleAt: ts,
+      now: ts,
+    });
+  };
 }

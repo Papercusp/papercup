@@ -45,19 +45,24 @@ async function readJson(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
-/** Resolve the (optional) ephemeral gym run DB for analytics reads. */
-function gymDbUrl(req: Request): string | null {
-  return new URL(req.url).searchParams.get('gymDbUrl') || process.env.PAPERCUSP_GYM_DATABASE_URL || null;
+/**
+ * Resolve the ephemeral gym run DB for analytics reads — SERVER-CONTROLLED only.
+ * Deliberately NOT a request parameter: accepting a client-supplied connection
+ * string would let a caller make the operator open a postgres() connection to an
+ * arbitrary host (SSRF / arbitrary-DB), even on a loopback service. Per-harness
+ * gym-DB selection, if ever needed, must be looked up server-side from a registry.
+ */
+function gymDbUrl(): string | null {
+  return process.env.PAPERCUSP_GYM_DATABASE_URL || null;
 }
 async function withGymSql<T>(
-  req: Request,
   fn: (sql: postgres.Sql) => Promise<T>,
 ): Promise<{ available: true; data: T } | { available: false; reason: string }> {
-  const url = gymDbUrl(req);
+  const url = gymDbUrl();
   if (!url) {
     return {
       available: false,
-      reason: 'no gym run database configured (set PAPERCUSP_GYM_DATABASE_URL or pass ?gymDbUrl=). Run analytics populate once a gym run is registered.',
+      reason: 'no gym run database configured (set PAPERCUSP_GYM_DATABASE_URL server-side). Run analytics populate once a gym run is registered.',
     };
   }
   const sql = postgres(url, { max: 2, prepare: false, onnotice: () => {} });
@@ -245,8 +250,8 @@ const cycles = defineTool({
   method: 'GET',
   path: '/gym/:slug/cycles',
   auth: 'public',
-  async handler(req) {
-    const res = await withGymSql(req, (sql) => readCycleHistory(sql));
+  async handler() {
+    const res = await withGymSql((sql) => readCycleHistory(sql));
     return res.available ? Response.json({ cycles: res.data }) : Response.json({ cycles: [], ...res });
   },
 });
@@ -255,8 +260,8 @@ const variants = defineTool({
   method: 'GET',
   path: '/gym/:slug/variants',
   auth: 'public',
-  async handler(req) {
-    const res = await withGymSql(req, async (sql) => {
+  async handler() {
+    const res = await withGymSql(async (sql) => {
       const rows = (await sql`
         SELECT variant_id, parent_id, label, status, diff_from_parent, proposer_rationale
           FROM harness_gym.gym_variants ORDER BY variant_id`) as Record<string, unknown>[];
@@ -283,7 +288,7 @@ const compare = defineTool({
     const b = url.searchParams.get('b') ?? '';
     const rubricHash = url.searchParams.get('rubricHash') ?? '';
     if (!a || !b || !rubricHash) return Response.json({ error: 'a_b_rubricHash_required', rows: [] }, { status: 400 });
-    const res = await withGymSql(req, (sql) => compareVariantsRead(sql, a, b, rubricHash));
+    const res = await withGymSql((sql) => compareVariantsRead(sql, a, b, rubricHash));
     return res.available ? Response.json({ rows: res.data }) : Response.json({ rows: [], ...res });
   },
 });
@@ -295,7 +300,7 @@ const frontier = defineTool({
   async handler(req) {
     const rubricHash = new URL(req.url).searchParams.get('rubricHash') ?? '';
     if (!rubricHash) return Response.json({ error: 'rubricHash_required', frontier: [] }, { status: 400 });
-    const res = await withGymSql(req, (sql) => frontierView(sql, rubricHash));
+    const res = await withGymSql((sql) => frontierView(sql, rubricHash));
     return res.available ? Response.json({ frontier: res.data }) : Response.json({ frontier: [], ...res });
   },
 });

@@ -18,6 +18,7 @@ import {
   decideProposal,
   getAutoloop,
   setAutoloop,
+  makeLoopProposalRecorder,
 } from '../control-plane';
 
 let sql: postgres.Sql;
@@ -127,6 +128,34 @@ describe('gym control plane — autoloop', () => {
     expect(cfg!.status).toBe('running');
     expect(cfg!.enabled).toBe(true);
     expect(cfg!.budgetUsd).toBe(25);
+  });
+});
+
+describe('gym control plane — loop recorder bridge', () => {
+  it('records only the candidate\'s CHANGED roles as pending + bumps autoloop lastCycle', async () => {
+    const recorder = makeLoopProposalRecorder(sql, { workspaceId: WS, harnessSlug: 'rec' });
+    await recorder({
+      cycle: 4,
+      candidateId: 'cand-rec-1',
+      parentId: 'p',
+      parentOverlay: { promptOverrides: { worker: 'old worker', validator: 'same val' } },
+      overlay: { promptOverrides: { worker: 'new worker', validator: 'same val', reviewer: 'added' } },
+      rationale: 'why',
+      devAnchorDelta: 0.2,
+      costDelta: 0.0,
+      probeStatus: 'pass',
+      verdict: 'accept',
+    });
+    const pending = await listProposals(sql, { workspaceId: WS, harnessSlug: 'rec', status: 'pending' });
+    expect(pending.map((p) => p.role).sort()).toEqual(['reviewer', 'worker']); // validator unchanged → skipped
+    const worker = pending.find((p) => p.role === 'worker')!;
+    expect(worker.originalMd).toBe('old worker');
+    expect(worker.proposedMd).toBe('new worker');
+    expect(worker.cycle).toBe(4);
+    const reviewer = pending.find((p) => p.role === 'reviewer')!;
+    expect(reviewer.originalMd).toBeNull(); // newly added role → no parent prompt
+    const cfg = await getAutoloop(sql, { workspaceId: WS, harnessSlug: 'rec' });
+    expect(cfg!.lastCycle).toBe(4);
   });
 });
 

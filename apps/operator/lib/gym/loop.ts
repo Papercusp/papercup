@@ -28,6 +28,31 @@ export interface LoopConfig {
   /** Hard unattended-spend cap (D-019); null ⇒ rely on maxCycles only. */
   budgetUsd: number | null;
   proposerModel: string;
+  /**
+   * Write a new champion's overrides into the gym harness automatically (default).
+   * Set false for the HUMAN-GATED product (gym UI): the loop still proposes +
+   * evaluates + scores + records proposals for review, but the human promotes via
+   * gym:accept. Internal champion/frontier tracking still advances (for exploration).
+   */
+  autoPromote?: boolean;
+}
+
+/** One candidate's reviewable record, handed to deps.recordProposal (gym UI). */
+export interface LoopProposalRecord {
+  cycle: number;
+  candidateId: string;
+  parentId: string;
+  /** The candidate's merged overlay (parent ⊕ proposed changes). */
+  overlay: VariantOverlay;
+  /** The parent's overlay (to diff against → which roles actually changed). */
+  parentOverlay: VariantOverlay;
+  rationale: string;
+  /** Candidate dev-anchor minus the parent's (did this change help?). */
+  devAnchorDelta: number;
+  costDelta: number;
+  probeStatus: string;
+  /** The loop's own gate verdict — advisory for the human reviewer. */
+  verdict: 'accept' | 'reject';
 }
 
 export interface EvaluateResult {
@@ -51,6 +76,12 @@ export interface LoopDeps {
     decision: 'accept' | 'reject';
     gateResults: unknown;
   }): Promise<void>;
+  /**
+   * Record a candidate as a reviewable proposal (gym UI). Optional: when absent the
+   * loop runs purely autonomously (unchanged). The live wiring maps the candidate's
+   * changed-role prompts into harness_shared.gym_proposals for human review.
+   */
+  recordProposal?(rec: LoopProposalRecord): Promise<void>;
   newVariantId(cycle: number): string;
 }
 
@@ -115,6 +146,23 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
     );
 
     const championDevBefore = champion.evalResult.devAnchorAgg;
+
+    // Surface the candidate for human review (gym UI), advisory verdict included.
+    if (deps.recordProposal) {
+      await deps.recordProposal({
+        cycle,
+        candidateId,
+        parentId,
+        overlay: proposal.overlay,
+        parentOverlay: parent.overlay,
+        rationale: proposal.rationale,
+        devAnchorDelta: evalRes.evalResult.devAnchorAgg - parent.evalResult.devAnchorAgg,
+        costDelta: evalRes.evalResult.meanCost - config.baselineMeanCost,
+        probeStatus: evalRes.evalResult.allProbesCaught ? 'pass' : 'fail',
+        verdict: verdict.accept ? 'accept' : 'reject',
+      });
+    }
+
     if (verdict.accept) {
       accepts++;
       // Update frontier (Pareto prune) over the candidate set.
@@ -123,10 +171,12 @@ export async function runOptimizationLoop(config: LoopConfig, deps: LoopDeps): P
         vector: variants.get(id)!.evalResult.trainVector,
       }));
       frontierIds = paretoFrontier(candidatesForFrontier).map((c) => c.id);
-      // Champion = best dev-anchor; promote on a new champion.
+      // Champion = best dev-anchor; promote on a new champion. Internal champion
+      // tracking always advances (drives parent selection); the EXTERNAL harness
+      // write is skipped in human-gated mode (the human promotes via gym:accept).
       if (evalRes.evalResult.devAnchorAgg > champion.evalResult.devAnchorAgg) {
         championId = candidateId;
-        await deps.promote(proposal.overlay);
+        if (config.autoPromote !== false) await deps.promote(proposal.overlay);
       }
       changelog = appendChangelog(changelog, {
         cycle,
