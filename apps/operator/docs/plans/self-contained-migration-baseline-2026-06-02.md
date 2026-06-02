@@ -32,15 +32,20 @@ tables fall into 3 groups (see D-007). Phase 2's "delete ensure-schema + 54 call
 ⚠️ `sql/` churn is **ongoing** (104/105/106 landed since the spec; peers reconciling 097-106 across native+embedded).
 Lock `libs/papercusp/libs/db/sql/` for the squash (P-005); new migrations stay 107+ so they don't conflict with archiving 001-106.
 
-**DONE so far (all committed):** P-001/002/003 (generator+sanitizer), P-004 (boot roles+ext), P-005 (squash: 000-baseline.sql + 117 archived, submodule 15f9122→pointer-bumped), P-006 (diff gate GREEN + durable `verify-baseline.ts`), P-007 (deployed-safety proven for coherent DBs; live `:5432` drift flagged), P-009 (42P01 tolerance removed), **P-011 (STRICT GATE — `fresh-migrate.integration.test.ts` 6/6 green against pgvector) + test-config→pgvector image**.
+**DONE (all committed):** P-001/002/003 (generator+sanitizer), P-004 (boot roles+ext), P-005 (squash), P-006 (diff gate + `verify-baseline.ts`), P-007 (deployed-safety; live drift flagged), **P-008 (ensure-schema.ts deleted, 63 call sites)**, **P-008b-dogfood (ensure-schema-dogfood.ts deleted, 6 consumers)**, P-009 (42P01 removed), P-011 (STRICT GATE 9/9 + pgvector image), **P-013 (seed-restore retired, D-004)**, P-014-core (governance docs), **P-015 (integration globalSetup + proof test)**.
 
-**REMAINING (next loop iterations):**
-- **P-008 (Phase 2, BIG/destructive):** delete `ensure-schema.ts` + `ensure-schema-dogfood.ts` + 65 fns + **135 `await ensureX()` call sites across 45 files**. Also (expanded scope): the 2nd migration system (`lib/commands/migrations/` + audit-writer), orchestrator `*-pg.ts` creators, endpoint-route + feature-module inline creators. KEEP generic-lib ensure APIs. Verify: tsc + test:affected + verify-baseline still green. SAFE per green P-006 (all tables in the baseline) — risk is purely code-correctness; gate every commit on tsc.
-- **P-010:** Tauri desktop boot smoke (own Xvfb) after the deletion.
-- **P-012:** drizzle regen via pull-schema.mjs against a baseline-built DB.
-- **P-013:** retire seed-restore branch in embedded-pg boot (D-004); measure fresh-boot.
-- **P-014:** governance docs (storage-policy.mdx + CLAUDE.md + testing: "add a migration, not an ensure fn").
-- **P-015/016/017:** integration globalSetup (pgvector image proven viable by P-011) + author tool-suite tests + run full suite.
+**3 COMPLETENESS GAPS the original reference-build/diff-gate MISSED (scoped to 2 schemas + `--no-privileges`, no trigger diff) — all closed by forward migrations + the gates hardened to guard them:**
+- **107** — dogfood reactivity triggers (`emit_change_notify_trg` ×18) were runtime-only.
+- **108** — P-070 `contributor_usage_events.origin` + capture triggers (incl. an `INSERT OR DELETE`→`+UPDATE` def reconcile on the 2 consolidated tables).
+- **109** — core global schemas `papercusp_auth` + `audit` (the 2-schema dump omitted them) + **all role GRANTs** (the `--no-privileges` dump dropped them; a fresh boot would've locked `harness_app` out).
+`verify-baseline.ts` + the strict gate now assert tables + triggers + schemas + harness_app grants.
+
+**REMAINING:**
+- **P-008b-remainder:** the OTHER inline runtime creators — orchestrator `*-pg.ts`, endpoint-route (`hidden_plugins`/`operator_budget_tiers`/`operator_settings`), feature-module (`voice-lease`/`operator-claims`/`harness-prompt-overrides`/`plugin-grants`/`plugin-audit-writer`/`ensure-git-outbox`), and the 2nd migration system (`lib/commands/migrations/` + `audit-writer.ts`). Their tables are in the baseline; per-creator verify (build migrations-only vs migrations+invoke-creator, diff) before removing.
+- **P-010:** Tauri desktop boot smoke (own Xvfb).
+- **P-012:** drizzle regen via pull-schema.mjs against a baseline-built DB (pick up 108's `origin` col + auth/audit).
+- **P-014-html:** rebuild operator-docs html mirror.
+- **P-016/017:** the handler-level tool-suite tests already exist; optionally upgrade to globalSetup full-schema + run the full integration suite once.
 
 ## Background
 
