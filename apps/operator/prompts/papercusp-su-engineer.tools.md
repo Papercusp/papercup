@@ -261,8 +261,13 @@ relying on one (`locks:acquire_resource { resource: 'dev-server', mode:
 }`) — new shared acquisitions are refused while existing holders finish,
 then you're granted, and your `locks:release_resource` broadcasts "back up".
 Names must be **registered** — `locks:list` shows the set + each one's rule +
-enforcement level. The blessed paths for the two seeded resources are the
-wrapper tools **`dev:restart`** and **`db:migrate`** (they run the whole
+enforcement level. Registered today: `dev-server` (:3070), `db-schema`, `shop`
+(build + :4321 preview — acquire shared before testing it, exclusive before a
+rebuild/restart), `desktop-sidecar` (bundle build — exclusive before building,
+guards the 0-byte clobber), and `libs-papercusp-submodule` (exclusive across
+commit-on-submodule + superproject pointer-bump + push — replaces the manual
+"owner-sync" broadcasts). The blessed paths for the two seeded server/DB
+resources are the wrapper tools **`dev:restart`** and **`db:migrate`** (they run the whole
 drain protocol for you; **dry-run by default**, confirm:true to act). These
 locks are **loose** by design (like file locks, they fail open), so the
 "just restart, it's fine" stance above still holds when you genuinely need

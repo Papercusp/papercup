@@ -188,6 +188,11 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(names).toContain('db-schema');
     expect((await getResource(getTxPool(), 'dev-server'))?.enforcement).toBe('enforced'); // P-016 (migration 006)
     expect((await getResource(getTxPool(), 'db-schema'))?.enforcement).toBe('checked');
+    // migration 007 — resources registered from observed parallelism pain.
+    expect(names).toContain('shop');
+    expect(names).toContain('desktop-sidecar');
+    expect(names).toContain('libs-papercusp-submodule');
+    expect((await getResource(getTxPool(), 'shop'))?.enforcement).toBe('enforced');
     await _resetForTests();
   });
 });

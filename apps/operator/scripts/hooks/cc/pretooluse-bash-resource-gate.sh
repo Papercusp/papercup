@@ -63,7 +63,7 @@ if not isinstance(command, str) or not command.strip():
 
 # Cheap local pre-filter — skip the HTTP round-trip for the 99% of commands
 # that can't touch a registered resource. Tokens mirror the seeded patterns.
-if not re.search(r'systemctl|overmind|psql|npm\s+run\s+dev', command):
+if not re.search(r'systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(dev|build)', command):
     allow()
 
 # Per-session owner (so the caller's OWN exclusive doesn't gate their own
