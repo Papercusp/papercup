@@ -129,6 +129,18 @@ the reconnect cadence — `constructions` (new channels) vs `connects`/`drops`
 (internal reconnects) is exactly the churn signal. Plan:
 `calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
 
+**LIVE-CONFIRMED (2026-06-02).** Drove a release build via the dev bridge:
+navigated the window to `papercusp://localhost` → `window.location.origin ===
+'papercusp://localhost'`, `isSecureContext`, `window.EventSource`/`window.fetch`
+are the minified `IpcEventSource`/`ipcFetch` polyfills, and `GET /api/desktop/
+version → 200` round-tripped over IPC with **no `ipc://` access-control block**.
+A 4-min run showed every healthy SSE stream rock-stable (`es_drop=0`, 0
+reconstructions, no flashing). The off-HTTP-on-IPC goal is met. (The unique
+transient-drop → one-channel-reconnect is test-proven, 72 tests; it can't be
+*staged* live because the sync SSE is LISTEN-fanout drop-resistant and killing
+the sidecar is a *fatal* event — the fix classified that correctly: `drops=0`,
+recreate + native fallback.)
+
 ## The audit conclusion (2026-05-31)
 
 Because `sys:http` blankets all same-origin `/api/*` fetch + EventSource, **per-call-site
@@ -158,5 +170,24 @@ run id). The remaining work for the typed dispatch path is wiring that cursor th
 - **A debug binary launched directly is still "dev mode"** — the sidecar-spawn gate is the
   compile profile (`debug_assertions`), not how you launch it. Don't expect IPC from
   `target/debug/papercusp-desktop`.
+- **Raw `cargo build --release` keeps the DEV frontend.** A bare `cargo build --release`
+  produces a release-*profile* binary (so it takes the IPC/sidecar path) but bakes in the
+  `tauri.conf.json` **`devUrl` (`:3055`)**, not the production bootstrap — so the window
+  loads `http://localhost:3055`, never navigates to `papercusp://localhost`, and the
+  polyfill stays *native* (no IPC). Use `tauri build` (or `npm run build`) to bake the
+  production frontend; only that path navigates to `papercusp://localhost` (verified 2026-06-02).
+- **`build.rs` re-assembles the sidecar on every cargo build — don't run it while a sidecar
+  is live.** Each `cargo build` copies sidecar binaries (`code-server/lib/node`,
+  `embedded-postgres/bin/postgres`, …); if a prior desktop's sidecar/code-server is still
+  running it triggers `Text file busy (ETXTBSY)`, and `kill -9` mid-copy can leave the
+  binaries corrupt → `embedded-postgres did not accept TCP` / code-server `Exec format error`.
+  Kill ALL release/sidecar processes first, then build; re-run `bin/build-desktop-sidecar.sh`
+  to restore if a copy got interrupted (verified 2026-06-02).
+- **Embedded-PG boot can crash on a migration `42P01`→`42703` chain.** A migration whose
+  one-`BEGIN…COMMIT` file `ALTER`s a table created by *ensure-schema* (not by a migration —
+  e.g. `feature_queue`) throws `42P01` at embedded-boot (migrations run BEFORE ensure-schema),
+  rolling back the WHOLE file → a later migration that uses the un-added column hard-crashes
+  the entire PG boot with `42703` (no database at all). Fix: `ALTER TABLE IF EXISTS` on
+  ensure-schema tables (graceful no-op at boot). Found + fixed in 097/098 on 2026-06-02.
 
 See the plan `desktop-ipc-transport-completion-2026-05-20` for the broader effort.

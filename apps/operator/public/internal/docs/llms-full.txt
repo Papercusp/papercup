@@ -1050,6 +1050,8 @@ window.__ipcInspector.churn()
 
 The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is on automatically in dev. **But IPC only runs in a *release* build** (debug skips the sidecar spawn — see the dormancy gates), and a release build is `NODE_ENV=production`, where the inspector is off by default — so to observe the actual fix you must opt in: **`localStorage['papercusp.ipcInspector'] = '1'` then reload** the release window (real users never set it). IPC traffic is invisible to the devtools Network panel (it rides the unix socket, not HTTP), so the inspector is the *only* way to see the reconnect cadence — `constructions` (new channels) vs `connects`/`drops` (internal reconnects) is exactly the churn signal. Plan: `calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
 
+**LIVE-CONFIRMED (2026-06-02).** Drove a release build via the dev bridge: navigated the window to `papercusp://localhost` → `window.location.origin === 'papercusp://localhost'`, `isSecureContext`, `window.EventSource`/`window.fetch` are the minified `IpcEventSource`/`ipcFetch` polyfills, and `GET /api/desktop/ version → 200` round-tripped over IPC with **no `ipc://` access-control block**. A 4-min run showed every healthy SSE stream rock-stable (`es_drop=0`, 0 reconstructions, no flashing). The off-HTTP-on-IPC goal is met. (The unique transient-drop → one-channel-reconnect is test-proven, 72 tests; it can’t be *staged* live because the sync SSE is LISTEN-fanout drop-resistant and killing the sidecar is a *fatal* event — the fix classified that correctly: `drops=0`, recreate + native fallback.)
+
 ## The audit conclusion (2026-05-31)
 
 [Section titled “The audit conclusion (2026-05-31)”](#the-audit-conclusion-2026-05-31)
@@ -1069,6 +1071,9 @@ Because `sys:http` blankets all same-origin `/api/*` fetch + EventSource, **per-
 * **`cargo build … | tail` masks the exit code** — the pipeline reports `tail`’s status, not cargo’s. A failed compile looks like “exit 0”. Read the actual log tail for `error[E...]`.
 * **`open_devtools()` doesn’t exist in release** — it’s compiled out unless the tauri `devtools` feature is on; gate it `#[cfg(debug_assertions)]` (fixed 2026-05-31). This had kept the release binary \~3 weeks stale.
 * **A debug binary launched directly is still “dev mode”** — the sidecar-spawn gate is the compile profile (`debug_assertions`), not how you launch it. Don’t expect IPC from `target/debug/papercusp-desktop`.
+* **Raw `cargo build --release` keeps the DEV frontend.** A bare `cargo build --release` produces a release-*profile* binary (so it takes the IPC/sidecar path) but bakes in the `tauri.conf.json` **`devUrl` (`:3055`)**, not the production bootstrap — so the window loads `http://localhost:3055`, never navigates to `papercusp://localhost`, and the polyfill stays *native* (no IPC). Use `tauri build` (or `npm run build`) to bake the production frontend; only that path navigates to `papercusp://localhost` (verified 2026-06-02).
+* **`build.rs` re-assembles the sidecar on every cargo build — don’t run it while a sidecar is live.** Each `cargo build` copies sidecar binaries (`code-server/lib/node`, `embedded-postgres/bin/postgres`, …); if a prior desktop’s sidecar/code-server is still running it triggers `Text file busy (ETXTBSY)`, and `kill -9` mid-copy can leave the binaries corrupt → `embedded-postgres did not accept TCP` / code-server `Exec format error`. Kill ALL release/sidecar processes first, then build; re-run `bin/build-desktop-sidecar.sh` to restore if a copy got interrupted (verified 2026-06-02).
+* **Embedded-PG boot can crash on a migration `42P01`→`42703` chain.** A migration whose one-`BEGIN…COMMIT` file `ALTER`s a table created by *ensure-schema* (not by a migration — e.g. `feature_queue`) throws `42P01` at embedded-boot (migrations run BEFORE ensure-schema), rolling back the WHOLE file → a later migration that uses the un-added column hard-crashes the entire PG boot with `42703` (no database at all). Fix: `ALTER TABLE IF EXISTS` on ensure-schema tables (graceful no-op at boot). Found + fixed in 097/098 on 2026-06-02.
 
 See the plan `desktop-ipc-transport-completion-2026-05-20` for the broader effort.
 
@@ -5525,6 +5530,40 @@ When a plan says “emit a row to X table” but X’s schema doesn’t fit, tha
 * [`idempotent-pg-ensure`](/internal/docs/agent-insights/idempotent-pg-ensure/) — pattern for adding new columns via `ensure-schema*.ts` if the column isn’t worth a full SQL migration.
 * `apps/operator/lib/harness/completion-ref-verifier.ts` — P-016’s artifact, the canonical example.
 * `libs/papercusp/libs/db/sql/082-completion-ref-verifier-columns.sql` — the schema additions.
+
+# Viewer identity + per-contributor tier stats in the live shell
+
+> How to get "who is the current viewer" in the /adv shell (GET /api/viewer → useViewer → resolveLocalGithubIdentity), the server-side privacy-filter pattern, and the per-contributor tier-stat source rule (use auto_review_audit + harness_features_consolidated.taken_by + contributor_usage_events — NOT the inert harness_feature_prs/shipped_by_github_id — and zero non-verified bindings).
+
+## Who is the current viewer?
+
+[Section titled “Who is the current viewer?”](#who-is-the-current-viewer)
+
+The live `/adv` Vite shell historically had **no way to know who is operating the desktop**, which blocked every viewer-specific surface (working-set Start/Stop, profile privacy filter, Contributors trust menu, claim CTA). The infra that closes that gap (Phase-8, 2026-06-01):
+
+* **Source of truth:** `resolveLocalGithubIdentity()` (`lib/identity/resolve-local-github-identity.ts`) → `{ kind:'ok', token, githubUserId, githubLogin }` or `{ kind:'gh_auth_required' }`. On a single-user, loopback-bound desktop **the local GitHub identity IS the viewer.**
+* **Endpoint:** `GET /api/viewer` (`routes/users/viewer.ts`) → `{ github_user_id, github_login }` (anonymous → `{null,null}` at 200; **never** returns the token).
+* **Client hook:** `useViewer()` (`app/adv/harnesses/useViewer.ts`) — module-cached fetch + `isMe(id)` / `normalizeViewer`. Lives in `app/adv` (consumed *by* operator-vite via the `@/app` alias) — **not** operator-vite (wrong dep direction; app/adv can’t import from it).
+
+**Server-side privacy filtering must NOT trust the client.** When a handler needs the viewer (e.g. the §18 profile filter in `routes/users/by-github-id.ts`), resolve it server-side: try `getSessionUserOrDefault()` (web/multi-user), then fall back to `resolveLocalGithubIdentity()` (the desktop case). Never take the viewer id from a query param the client could spoof.
+
+## Per-contributor tier stats — use the POPULATED sources
+
+[Section titled “Per-contributor tier stats — use the POPULATED sources”](#per-contributor-tier-stats--use-the-populated-sources)
+
+Trust tiers (A = merged PRs, B = features shipped, C = activity) appear in the user profile (P-072b), the Contributors tab (P-048), and the Insights People card. **They must agree.** The trap: there are two candidate source sets, and one is inert.
+
+| Tier                 | USE (populated)                                                                               | DO NOT use (inert outside the gated substrate)                                |
+| -------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| A — merged PRs       | `auto_review_audit` WHERE `author_github_id` AND `action IN ('auto_merge','manual_merge')`    | `harness_feature_prs` (no producer → always 0)                                |
+| B — features shipped | `harness_features_consolidated` WHERE `status='shipped'` AND `taken_by = <id>::text`          | `harness_features.shipped_by_github_id` / `completion_ref` (unpopulated)      |
+| C — activity         | `contributor_usage_events` WHERE `harness_slug` + `github_user_id` (the §7.1 source of truth) | filtering it by `workspace_id` — **that column does not exist on this table** |
+
+The authoritative per-user definitions live in `lib/user-profile/load.ts` (P-072b); the per-contributor (one-harness, GROUP BY contributor) inversion is `lib/harness-insights/load-contributors-tab.ts`. A Contributors-tab endpoint built earlier used the *inert* sources and silently disagreed with the profile until reconciled (commit `426c0868d`) — if you add a tier surface, mirror the populated sources or you’ll ship all-zero / inconsistent stats.
+
+**Schema trap — `contributor_usage_events` has NO `workspace_id`.** Unlike `auto_review_audit` and `harness_features_consolidated` (both workspace-scoped), the tier-C ledger is a federated substrate table keyed by `harness_slug` only (index `(harness_slug, github_user_id, ts)` — see `ensure-schema-dogfood.ts`). Filtering it by `workspace_id` throws `column … does not exist` at *runtime only* — unit tests that mock the SQL runner pass clean (this exact bug shipped in both the endpoint and the lib and was caught only by a live curl against `:3070`, 2026-06-02). When you add or move a tier-C query, scope it on `harness_slug` (+ `github_user_id`) and **verify it live**, not just through mocked-runner unit tests.
+
+**Zero non-verified bindings.** Only `verified` bindings aggregate stats — `statsAggregateForStatus(status)` (`lib/identity/binding-verifier-types.ts`) is the predicate (`status === 'verified'`). Apply it (server-side and/or in the panel) so unverified/pending contributors render zeroed + greyed (§0.2.7 / P-048d). Per-contributor binding status is derived from the row’s `device_attestations` (see `bindingStatusFromAttestations` / `load-people.ts pickBindingStatus`), or read the maintained `contributors.binding_status` column.
 
 # Vitest `threads` pool core-dumps under Node ≥25 (use `forks`)
 
