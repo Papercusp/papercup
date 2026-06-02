@@ -266,6 +266,49 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [harness-state P-003a] Registry coverage + peer-log drift guard (fail-loud,
+  // non-fatal). Asserts every live harness_shared table is intentionally
+  // classified by the two-axis registry (lib/harness-state/table-registry.ts)
+  // and that the sync:'peer-log' set stays in lock-step with the hand-wired
+  // Hyperbee projections. A new table that nobody classified, or a peer-log
+  // table that lost its projection, logs loudly here.
+  void (async () => {
+    try {
+      const { checkPeerLogConsistency, checkInventoryCoverage } = await import(
+        '../lib/harness-state/projection-engine'
+      );
+      const { REGISTERED_PROJECTION_TAGS } = await import(
+        '../lib/sync/hyperbee/projections/register-all'
+      );
+      const cons = checkPeerLogConsistency(REGISTERED_PROJECTION_TAGS);
+      if (!cons.ok) {
+        console.error(
+          `[harness-state] PEER-LOG DRIFT — missingProjection=[${cons.missingProjection.join(',')}] orphanTag=[${cons.orphanTag.join(',')}]`,
+        );
+      }
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { sql } = getOrgPg();
+      const rows = (await sql`
+        SELECT table_name FROM information_schema.tables WHERE table_schema = 'harness_shared'
+      `) as Array<{ table_name: string }>;
+      const cov = checkInventoryCoverage(rows.map((r) => r.table_name));
+      if (cov.unreviewed.length > 0) {
+        console.error(
+          `[harness-state] ${cov.unreviewed.length} UNCLASSIFIED table(s) — add to table-registry.ts: ${cov.unreviewed.join(', ')}`,
+        );
+      } else {
+        console.log(
+          `[harness-state] table coverage OK — ${cov.total} tables, ${cov.defaulted.length} default; peer-log drift=${cons.ok ? 'none' : 'DETECTED'}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        '[harness-state] coverage check failed (non-fatal):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
+
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
   // Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF. Dynamic import so the host
   // doesn't require @dbos-inc/dbos-sdk when the flag is off. This is the LIVE

@@ -131,6 +131,10 @@ const WS_EXPLICIT_SET = new Set(WORKSPACE_OWNED_EXPLICIT);
 const SECURITY_SET = new Set(SECURITY);
 const LEGACY_SET = new Set(LEGACY_DEAD);
 
+/** The registry's sync-authority sets, exported for the projection engine (P-003). */
+export const PEER_LOG_TABLES: readonly string[] = PEER_LOG_LIVE;
+export const GIT_TABLES: readonly string[] = GIT_DOCS;
+
 /**
  * Remaining genuine judgment calls — EMPTY as of P-002 close. New entries here
  * mark a table whose classification an owner must confirm before it ships.
