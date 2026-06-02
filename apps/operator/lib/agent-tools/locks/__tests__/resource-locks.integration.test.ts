@@ -141,6 +141,16 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(h.expires_ts).not.toBeNull();
   });
 
+  it.skipIf(!live)('release reports the resources whose exclusive was released (for back-up broadcast)', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    expect(x.ok).toBe(true);
+    if (!x.ok) return;
+    const r = await rel(ws, 'X', x.lock_id);
+    expect(r.exclusiveResources).toContain('dev-server');
+  });
+
   it.skipIf(!live)('seeds the dev-server and db-schema resources with their enforcement levels', async () => {
     await ensureBootstrap();
     const all = await listResources(getTxPool());

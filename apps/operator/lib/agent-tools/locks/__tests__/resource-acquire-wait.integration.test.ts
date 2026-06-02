@@ -97,6 +97,34 @@ describe('acquireResourceExclusiveWithWait (drain wait loop)', async () => {
     if (r.ok) expect(r.status).toBe('held');
   });
 
+  it.skipIf(!live)('fires onDrainStart with the shared holders when it begins draining', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const a = await acqShared(ws, 'A');
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+
+    let drainHolders: { owner: string; mode: string }[] | null = null;
+    const pending = acquireResourceExclusiveWithWait({
+      coordinationDomain: ws,
+      owner: 'X',
+      ownerLabel: 'res:X',
+      resource: 'dev-server',
+      reason: 'restart',
+      ttlSec: 60,
+      maxWaitSec: 5,
+      onDrainStart: (holders) => {
+        drainHolders = holders;
+      },
+    });
+    await sleep(300);
+    await rel(ws, 'A', a.lock_id);
+    await pending;
+
+    expect(drainHolders).not.toBeNull();
+    expect(drainHolders!.some((h) => h.owner === 'A' && h.mode === 'shared')).toBe(true);
+  });
+
   it.skipIf(!live)('times out with drain_timeout while a shared holder remains', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();

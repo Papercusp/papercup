@@ -51,6 +51,9 @@ export interface ExclusiveWaitParams {
   maxWaitSec: number;
   /** Optional progress callback fired each iteration while still draining. */
   onTick?: (info: { waited_sec: number; holders: ResourceHolder[] }) => void;
+  /** Fired once when the exclusive enters 'draining' (shared holders present),
+   *  with those holders — the hook the tool uses to broadcast drain-start. */
+  onDrainStart?: (holders: ResourceHolder[]) => void | Promise<void>;
 }
 
 export type ExclusiveWaitResult =
@@ -64,7 +67,7 @@ const elapsedSec = (since: number) => Math.floor((Date.now() - since) / 1000);
 export async function acquireResourceExclusiveWithWait(
   params: ExclusiveWaitParams,
 ): Promise<ExclusiveWaitResult> {
-  const { coordinationDomain: cd, owner, ownerLabel, resource, reason, ttlSec, maxWaitSec, onTick } = params;
+  const { coordinationDomain: cd, owner, ownerLabel, resource, reason, ttlSec, maxWaitSec, onTick, onDrainStart } = params;
   const startedAt = Date.now();
 
   const doAcquire = () =>
@@ -138,6 +141,15 @@ export async function acquireResourceExclusiveWithWait(
     lockId = acquired.lock_id;
     const sharedAtStart = acquired.shared_holders;
     const deadline = startedAt + maxWaitSec * 1000;
+
+    // Drain-start hook (P-009) — let the caller broadcast "release please".
+    if (onDrainStart) {
+      try {
+        await onDrainStart(sharedAtStart);
+      } catch {
+        // best-effort — a broadcast failure must never break the drain wait.
+      }
+    }
 
     // Re-check once: drain may have completed between our acquire commit
     // and arming the wake (a shared release racing our INSERT).

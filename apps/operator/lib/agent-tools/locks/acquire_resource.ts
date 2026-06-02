@@ -12,9 +12,11 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { broadcastResourceDrainStart } from './resource-broadcast';
 
 const DEFAULT_TTL_SEC = 1200;
 const MAX_TTL_SEC = 3600;
@@ -93,6 +95,7 @@ export default defineTool({
 
     // exclusive
     const maxWaitSec = args.wait?.max_drain_sec ?? 0;
+    const coordId = resolveAgentIdentity(ctx);
     const r = await acquireResourceExclusiveWithWait({
       coordinationDomain,
       owner: ownerId,
@@ -101,6 +104,9 @@ export default defineTool({
       reason,
       ttlSec,
       maxWaitSec,
+      // P-009: tell the shared holders to release when the drain begins.
+      onDrainStart: (holders) =>
+        broadcastResourceDrainStart({ source: coordId, resource: args.resource, holders, reason }),
     });
 
     if (r.ok && r.status === 'held') {

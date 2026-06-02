@@ -14,8 +14,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryReleaseResource } from './su-lock-store';
+import { broadcastResourceBackUp } from './resource-broadcast';
 
 const SU_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
@@ -55,11 +57,25 @@ export default defineTool({
         resource: args.resource,
       }),
     );
+
+    // P-010: releasing an exclusive frees the resource — tell everyone it's back up.
+    if (r.exclusiveResources.length > 0) {
+      const coordId = resolveAgentIdentity(ctx);
+      for (const res of r.exclusiveResources) {
+        await broadcastResourceBackUp({ source: coordId, resource: res });
+      }
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, released: r.released, released_modes: r.releasedModes }),
+          text: JSON.stringify({
+            ok: true,
+            released: r.released,
+            released_modes: r.releasedModes,
+            exclusive_resources: r.exclusiveResources,
+          }),
         },
       ],
     };
