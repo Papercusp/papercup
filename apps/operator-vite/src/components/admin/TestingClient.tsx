@@ -36,8 +36,10 @@ type TabId =
   // existing (bespoke)
   | 'test-runs'
   | 'chaos'
+  | 'chaos-web'
   | 'ai'
   | 'live'
+  | 'live-web'
   | 'routes'
   | 'packaged'
   | 'llm'
@@ -67,9 +69,14 @@ interface AdminTab extends TestingShellTab {
 const TABS: AdminTab[] = [
   // ── Tier 1: Quick runs ──
   { id: 'test-runs', label: 'Test Runs', hint: 'suite orchestrator', tier: 'quick' },
-  { id: 'live', label: 'Live metrics', hint: 'passive observer', tier: 'quick' },
+  // chaos/live have a desktop variant (drives the Tauri shell / in-shell vitals)
+  // and a browser variant (platform-variants P-009). With platform='both' the
+  // shell shows the pair; a web-only host (e.g. Restart) shows only the 'web' one.
+  { id: 'live', label: 'Live metrics', hint: 'passive observer (desktop)', tier: 'quick', platform: 'desktop' },
+  { id: 'live-web', label: 'Live (web)', hint: 'in-page console / error / CLS', tier: 'quick', platform: 'web' },
   { id: 'memory', label: 'Memory', hint: 'mem0 health + suite', tier: 'quick' },
-  { id: 'chaos', label: 'Chaos', hint: 'autonomous clicker', tier: 'quick' },
+  { id: 'chaos', label: 'Chaos', hint: 'autonomous clicker (desktop)', tier: 'quick', platform: 'desktop' },
+  { id: 'chaos-web', label: 'Chaos (web)', hint: 'headless clicker over :3070', tier: 'quick', platform: 'web' },
   { id: 'ai', label: 'AI Explore', hint: 'LLM-driven walk', tier: 'quick' },
   { id: 'packaged', label: 'Packaged build', hint: 'wdio + tauri-driver', tier: 'quick' },
 
@@ -108,6 +115,7 @@ export default function TestingClient(): ReactElement {
       dataSource={adminTestingDataSource}
       customTabs={TESTING_CUSTOM_TABS}
       defaultTabId="test-runs"
+      platform="both"
     />
   );
 }

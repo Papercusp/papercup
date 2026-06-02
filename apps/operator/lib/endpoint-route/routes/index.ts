@@ -312,6 +312,7 @@ import adminSpawnSigningRotate from './admin/spawn-signing-rotate';
 import adminTables from './admin/tables';
 import adminTablesByName from './admin/tables-by-name';
 import adminTestingAiExplore from './admin/testing-ai-explore';
+import adminTestingChaosWeb from './admin/testing-chaos-web';
 import adminTestingTestRuns from './admin/testing-test-runs';
 import adminTestingTestRunsById from './admin/testing-test-runs-by-id';
 import adminTestingTestRunsCancel from './admin/testing-test-runs-cancel';
@@ -691,6 +692,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminTables as AnyRoute),
   ...flatten(adminTablesByName as AnyRoute[]),
   ...flatten(adminTestingAiExplore as AnyRoute),
+  ...flatten(adminTestingChaosWeb as AnyRoute),
   ...flatten(adminTestingTestRuns as AnyRoute),
   ...flatten(adminTestingTestRunsById as AnyRoute),
   ...flatten(adminTestingTestRunsCancel as AnyRoute),

@@ -77,6 +77,7 @@ export default function HarnessTestsView({ slug }: { slug: string }) {
       defaultTabId="test-runs"
       sectionLabel="Tests"
       queryKey="testsTab"
+      platform="both"
     />
   );
 }
