@@ -20,6 +20,7 @@ import AdvAgentsPanel from './AdvAgentsPanel';
 import AdvLogsPanel from './AdvLogsPanel';
 import AdvOverviewPanel from './AdvOverviewPanel';
 import AdvInsightsPanel from './AdvInsightsPanel';
+import AdvContributorsPanel from './AdvContributorsPanel';
 
 const CHAT_PANEL_TYPE = 'adv:chat';
 
@@ -73,6 +74,8 @@ function ensureRegistered() {
   // mount; register it so it's openable from the panel menu (additive — not
   // forced into the default layout).
   panelRegistry.register('adv:insights', AdvInsightsPanel, { title: 'Insights' });
+  // Phase-8 Contributors tab (P-048) — openable from the panel menu (additive).
+  panelRegistry.register('adv:contributors', AdvContributorsPanel, { title: 'Contributors' });
   // keepAlive: the chat keeps its SSE stream + transcript when its tab is
   // inactive. Multi-instance: several chat slots can coexist (the open-chat
   // drain fills the first free one).
