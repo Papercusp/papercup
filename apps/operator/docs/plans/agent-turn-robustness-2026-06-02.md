@@ -254,6 +254,57 @@ A single choke point + a single wrapper that every backend goes through.
   exercises the spawn-pacing logic without real rate limits) — so it can be built + proven
   safely; flip the live flag only after that + the real A/B.
 
+## Review incorporated (2026-06-02 — peer review, accepted nearly wholesale)
+
+A strong peer review confirmed the diagnosis and found real defects. Accepted + status:
+
+**Fixed already (committed):**
+- **Hot-loop on missing retry-after** (reviewer #1) — `rate_limited`/`overloaded` with no
+  server hint (our exact subscription 429s + most 529s) now falls back to exponential
+  backoff (shared-governor penalty), bounded by maxWaitMs; was burning all attempts
+  instantly — a regression vs the legacy loop. DONE + 2 tests.
+- **Miscalibrated estTokens=max_tokens** (reviewer #4) — dropped (max_tokens ≠ OTPM). DONE.
+
+**To fix before flipping the live flag / building more on top:**
+- **Abortable governor waits + per-turn maxWait** (strategic #3) — `acquire()` does a single
+  non-abortable sleep; a far-off (5-hour-limit) penalty would freeze EVERY meridian-opus
+  caller incl. interactive chat. `acquire(est, {signal, maxWaitMs})` must be able to bail so
+  interactive turns surface/escalate (D-002) instead of inheriting the gym's pause. (Doesn't
+  bite the gym — unattended wants the pause — but blocks the live flag.)
+- **Token-bucket is inert on the subscription** (reviewer #2/#3/#5). DECISION (D-006 below):
+  descope ITPM/OTPM to **API-key-only** and make `limitModel` a **runtime credential fact**
+  (not a compile-time const), so subscription-mode is honestly "concurrency + rpm +
+  honor-retry-after + never-crash" (the genuine 80%, ~done), and the token-bucket activates
+  only with an API key (which also feeds success-headers for auto-tune).
+- **Subprocess classification** (reviewer #6) — prefer exit codes + `--output-format json`
+  over stderr regex (keep regex as fallback). Add a **subprocess turn timeout**.
+- **Window semantics** (reviewer #7/#8) — it's a tumbling 60s window (allows a post-reset
+  burst), not the "continuously replenished bucket" the comment claims; either align the
+  words or switch to sliding/real-bucket, and implement "slow as remaining drops" (currently
+  all-or-nothing at remaining=0).
+
+**Strategic reframes (accepted):**
+- **D-006 decided FIRST** (was "normal" → now the crux; see below). Determines whether the
+  token-bucket is real (API key) or descoped.
+- **Cross-process store seam NOW, not P-007-as-rewrite.** The governor holds plain in-memory
+  state with no store seam → cross-process would be a rewrite. Add an injected store seam now
+  (mirror `@papercusp/rate-limit`'s `BucketStore`) so P-007 is a swap and callers don't churn.
+  NUANCE: the gym A/B is single-process + sequential → in-process suffices for the GYM/P-014;
+  cross-process is the FLEET fix.
+- **Elevate prompt-caching (RB-008) ahead of RB-007** — caching the 32k-thinking judge's
+  stable prefix dodges ITPM; likely the cheapest pressure relief.
+- **SLO for "pacing works"** — RB-010 must assert 429-rate < X% AND throughput within Y% of
+  uncapped (so we can tell well-paced from needlessly throttled), not just "survived a 429".
+
+**Plan hygiene:**
+- **Renumber this plan's items `P-NNN` → `RB-NNN`** — `P-NNN` collides with the gym plan's
+  P-001..P-030 AND existing `P-006` comments elsewhere (autoloop/periodic-workflows). (Built
+  items map: RB-001 taxonomy, RB-002 governor, RB-003 wrapper, RB-004 meridian, RB-011
+  registry.) Future commits use RB-.
+- Components section is stale (everything landed in `libs/papercup-shared/src/agent/*`, not a
+  new `@papercusp/agent-governor`); note the relationship to `@papercusp/rate-limit` (different
+  algorithm, same store-seam pattern to reuse).
+
 ## Decisions (open)
 
 - **D-001** Governor scope first: in-process (P-002) is enough for a single runner; the
