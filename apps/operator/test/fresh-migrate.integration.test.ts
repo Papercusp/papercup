@@ -109,6 +109,16 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     expect(n).toBe(firstRun.totalKnown);
   });
 
+  it('wires the reactivity triggers (emit_change_notify_trg) from migrations, not runtime DDL', async () => {
+    // Migration 107 moved these out of the old runtime wireDogfoodTriggers() helper.
+    // A table/column/index/policy diff can't see triggers, so assert them explicitly.
+    const [{ n }] = await sql.unsafe(
+      `SELECT count(*)::int AS n FROM pg_trigger
+       WHERE NOT tgisinternal AND tgname = 'emit_change_notify_trg'`,
+    );
+    expect(n).toBeGreaterThanOrEqual(18);
+  });
+
   it('is idempotent — a second run applies nothing', async () => {
     const second = await applyPendingMigrations({ client: sql, sqlDir: SQL_DIR });
     expect(second.appliedCount).toBe(0);
