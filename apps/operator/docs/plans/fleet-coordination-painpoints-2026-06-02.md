@@ -47,7 +47,7 @@ Root cause confirmed: native `:5432` (this dev box's substrate) has **no migrati
 Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept deletions without importer edits, a crash-looping host).
 
 - **P-008** `todo` A periodic `test:affected` + `tsc` check that, on RED, broadcasts a `main RED since <commit> (<area>)` coord message so the breaker is told fast.
-- **P-009** `needs-human` Decide where it runs (`/loop` / cron / the operator background loop / a git hook) + cadence. importance: normal
+- **P-009** `done` Decide where it runs (`/loop` / cron / the operator background loop / a git hook) + cadence. importance: normal (RESOLVED D-006: operator process — code-health via fs-watch on .git ref event, not poll, service-health via a voice-engine-health-style probe sweep; output via a health-bus @papercusp/sse + coord message)
 - **P-010** `todo` (optional) An OPT-IN pre-commit affected-typecheck a breaker can enable — explicitly NOT mandatory (the repo deliberately allows `--no-verify` + the commit-packages-whole-tree model). blocked-by: P-008
 
 ## Phase 4 — Host freshness (complements the locks)
@@ -120,6 +120,18 @@ Built-in metrics question — neither ships a real health/metrics endpoint:
 
 Build on the existing dev:pg_health / dev:processes / dev:build_status / notifications:recent / toastLog.recent surfaces rather than re-rolling probes.
 Related: P-008
+
+
+### D-006 — Use the existing eventing system — don't reinvent polling (resolves P-009)
+Date: 2026-06-02
+User: don't we already have eventing? Yes. Confirmed primitives: `ctx.emit` (54 uses — the endpoint typed-event primitive projected over IPC/SSE/MCP), `pg_notify` (15), and the `@papercusp/sse` "bus" pattern (`flag-bus`/`harness-log-bus`/`run-chunk-bus` via `getChannel`). Plus existing sweeps to mirror: `harness-fs-watcher.ts` (chokidar + debounce) and `voice-engine-health.ts` (probe-loop + transition detection). So the monitors become event-driven, not poll-loops:
+
+- CODE-HEALTH TRIGGER is an EVENT, not a poll: chokidar-watch `.git/HEAD` + `.git/refs/heads/main` (mirror harness-fs-watcher's watch+debounce) → fires on a ref change = a real commit. No `git HEAD` polling. The heavy `tsc`/`test:affected` runs as a bounded, debounced child process.
+- SERVICE-HEALTH input is the ONE irreducible pull: external liveness has no event source (you can't subscribe to "a separate port died"). But mirror `voice-engine-health` (probe interval + last-known-up + fire on transition), hooked as a sibling health sweep — not a bespoke timer.
+- OUTPUT for both: emit transitions through a `health-bus` (`@papercusp/sse getChannel`, mirroring flag-bus) → SSE (web) / IPC (desktop) live, PLUS a coord `message` on a down/RED for agents. Transitions only; never write-to-PG-and-poll (storage policy: DB is not a transport).
+
+Resolves P-009: both run IN the operator process — code-health as an fs-watcher, service-health as a voice-engine-health-style probe sweep — both emitting via the health-bus. (P-008's "periodic" is superseded by the fs-watch trigger.)
+Related: P-008, P-009, P-016, P-017, P-018
 
 ## Open questions
 - **Notify** — confirm source-removal of `lock_acquired` (D-002) vs keeping it but never injecting. Lean: remove at source.
