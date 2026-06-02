@@ -53,6 +53,7 @@ async function validAnnounce(logCoreKey: string): Promise<SignedAnnounce> {
     device_pubkey: rawPub,
     github_user_id: 4242,
     github_login: 'alice',
+    attestation_gist_id: 'gist-test',
     log_core_key: logCoreKey,
   };
   return buildAnnounce(body, async (bytes) => nodeSign(null, bytes, privateKey));
@@ -208,7 +209,7 @@ describe('boot pending-retry loop (D-006)', () => {
       const arrivalMs = Date.now();
       const staleTs = arrivalMs - DEFAULT_ANNOUNCE_WINDOW_MS - 60_000; // 6 min before now
       const frame = await buildAnnounce(
-        { device_pubkey: rawPub, github_user_id: 1, github_login: 'alice', log_core_key: 'dd'.repeat(32) },
+        { device_pubkey: rawPub, github_user_id: 1, github_login: 'alice', attestation_gist_id: 'gist-test', log_core_key: 'dd'.repeat(32) },
         async (bytes) => nodeSign(null, bytes, privateKey),
         { nowMs: staleTs },
       );
@@ -335,7 +336,7 @@ describe('boot pending-retry loop (D-006)', () => {
         .toString('base64');
       const logCoreKey = 'cc'.repeat(32);
       const frame = await buildAnnounce(
-        { device_pubkey: rawPub, github_user_id: 99, github_login: 'carol', log_core_key: logCoreKey },
+        { device_pubkey: rawPub, github_user_id: 99, github_login: 'carol', attestation_gist_id: 'gist-test', log_core_key: logCoreKey },
         async (bytes) => nodeSign(null, bytes, privateKey),
       );
 

@@ -180,9 +180,10 @@ export interface BootHarnessOpts {
   mergePollMs?: number;
   /**
    * Test seam — override the read-admission binding check. Production leaves
-   * this undefined and the real `buildVerifyBindingAdapter` (verifyChannel2 over
-   * the local harness's shared.json + gh-token) is used. Tests inject a pure
-   * predicate so `onAnnounce` admit/reject/pending can be exercised without network.
+   * this undefined and the real `buildVerifyBindingAdapter` (verifyAttestation
+   * on the announce's attestation_gist_id — write-free join) is used. Tests
+   * inject a pure predicate so `onAnnounce` admit/reject/pending can be exercised
+   * without network.
    *
    * Returns `'verified' | 'pending' | 'fail'` (D-002 / D-006 3-state).
    */
@@ -190,6 +191,7 @@ export interface BootHarnessOpts {
     devicePubkeyBase64: string,
     githubLogin: string,
     githubUserId: number,
+    attestationGistId: string,
   ) => Promise<'verified' | 'pending' | 'fail'>;
   /**
    * Pending-retry interval override (ms). Tests set this to a small value
@@ -475,13 +477,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   // ── Per-admitted-peer identity store (rev-v2 Component A) ── populated at
   // admit time from the SignedAnnounce frame so `reverifyAdmitted()` can
-  // re-call `verifyBinding(devicePubkey, githubLogin, githubUserId)` without
-  // the original frame. Keyed by `log_core_key` (same key as `admitted`).
+  // re-call `verifyBinding(devicePubkey, githubLogin, githubUserId, gistId)`
+  // without the original frame. Keyed by `log_core_key` (same key as `admitted`).
   // Cleaned up in every drop path: `revoke()`, `applyRevocationRefresh()`, and
-  // the channel-2 re-verify drop inside `reverifyAdmitted()`.
+  // the attestation re-verify drop inside `reverifyAdmitted()`.
   const admittedIdentities = new Map<
     string,
-    { devicePubkey: string; githubLogin: string; githubUserId: number }
+    { devicePubkey: string; githubLogin: string; githubUserId: number; attestationGistId: string }
   >();
 
   // ── Startup revocation seed (D-002) ── load PUBLISHED revocations BEFORE the
@@ -588,13 +590,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // The `verifyBinding` function used for re-verification: the same one wired
   // into the admission decider (verifyBindingOverride in tests; real adapter in
   // production). Captured here as a stable reference.
-  const verifyBinding =
-    opts.verifyBindingOverride ??
-    buildVerifyBindingAdapter({
-      workspaceId: opts.workspaceId,
-      harnessSlug: opts.harnessSlug,
-      workspaceRoot: opts.workspaceRoot,
-    });
+  const verifyBinding = opts.verifyBindingOverride ?? buildVerifyBindingAdapter();
 
   /**
    * Re-verify every admitted peer's channel-2 binding. Drops peers whose
@@ -619,7 +615,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
       let result: 'verified' | 'pending' | 'fail';
       try {
-        result = await verifyBinding(identity.devicePubkey, identity.githubLogin, identity.githubUserId);
+        result = await verifyBinding(
+          identity.devicePubkey,
+          identity.githubLogin,
+          identity.githubUserId,
+          identity.attestationGistId,
+        );
       } catch (e) {
         // Transient / network error — keep the peer (fail-open per D-004).
         recordBootEvent(
@@ -822,6 +823,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         device_pubkey: frame.device_pubkey,
         github_login: frame.github_login,
         github_user_id: frame.github_user_id,
+        attestation_gist_id: frame.attestation_gist_id,
         sigValid,
       };
       decision = await admit(input);
@@ -875,6 +877,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         devicePubkey: frame.device_pubkey,
         githubLogin: frame.github_login,
         githubUserId: frame.github_user_id,
+        attestationGistId: frame.attestation_gist_id,
       });
       if (!admitted.has(frame.log_core_key)) {
         const remote = await openRemoteLog(store, frame.log_core_key);
@@ -973,6 +976,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
                 device_pubkey: entry.frame.device_pubkey,
                 github_login: entry.frame.github_login,
                 github_user_id: entry.frame.github_user_id,
+                attestation_gist_id: entry.frame.attestation_gist_id,
                 sigValid,
               };
               const decision = await admit(input);

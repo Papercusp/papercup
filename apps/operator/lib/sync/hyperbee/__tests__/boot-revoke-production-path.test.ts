@@ -74,7 +74,7 @@ async function makeAnnounce(
   logCoreKey: string,
 ): Promise<SignedAnnounce> {
   return buildAnnounce(
-    { device_pubkey: device.devicePubkey, github_user_id: 4242, github_login: 'alice', log_core_key: logCoreKey },
+    { device_pubkey: device.devicePubkey, github_user_id: 4242, github_login: 'alice', attestation_gist_id: 'gist-test', log_core_key: logCoreKey },
     device.sign,
   );
 }

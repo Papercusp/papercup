@@ -39,12 +39,16 @@ export interface AdmissionInput {
   /** Raw 32-byte Ed25519 device pubkey, base64 (the announce's device_pubkey). */
   device_pubkey: string;
   github_login: string;
-  /**
-   * The announce's numeric GitHub user id. Channel-2 of the binding verify
-   * needs BOTH the login (→ contributor-file path) and the id (→ `user/<id>`
-   * branch ref), so the decider threads it to `verifyBinding`.
-   */
+  /** The announce's numeric GitHub user id — the identity the attestation gist
+   *  must be owned by. Threaded to `verifyBinding`. */
   github_user_id: number;
+  /**
+   * The announce's `attestation_gist_id` (write-free join). The binding gate
+   * verifies this gist is owned by `github_user_id` and attests `device_pubkey`
+   * — so it must be threaded to `verifyBinding`. Carried on the SIGNED announce,
+   * so it cannot be substituted in transit.
+   */
+  attestation_gist_id: string;
   /** Whether the announce signature already verified (verifyAnnounce result). */
   sigValid: boolean;
 }
@@ -55,20 +59,24 @@ export type AdmissionResult =
 
 export interface AdmissionDeciderOptions {
   /**
-   * Verify that `device_pubkey` ↔ `github_login`/`github_user_id` is a valid
-   * channel-2 binding (any real GitHub identity). Stage 4c wires this to a
-   * verifyChannel2 adapter over the LOCAL harness's {repoOwner, repoName, token}.
+   * Verify that `device_pubkey` ↔ `github_user_id` is a valid binding, proven
+   * from the `attestation_gist_id` carried on the announce (write-free join).
+   * Stage 4c wires this to `buildVerifyBindingAdapter` over `verifyAttestation`
+   * (the gist is public — no repo context). `githubLogin` is passed for parity
+   * with the announce shape but the gist check does not need it.
    *
    * Returns:
-   *   - `'verified'` : channel-2 passed → admit the peer.
-   *   - `'pending'`  : channel-2 file not yet visible (GitHub propagation lag)
-   *                   → retryable; the boot retry loop re-checks within grace.
-   *   - `'fail'`     : channel-2 conclusively failed → reject the peer.
+   *   - `'verified'` : attestation valid → admit the peer.
+   *   - `'pending'`  : OUR transient failure (GitHub unreachable) → retryable;
+   *                   the boot retry loop re-checks within grace.
+   *   - `'fail'`     : conclusive attestation failure (gist gone / owner or
+   *                   pubkey mismatch / bad sig) → reject the peer.
    */
   verifyBinding: (
     devicePubkey: string,
     githubLogin: string,
     githubUserId: number,
+    attestationGistId: string,
   ) => Promise<'verified' | 'pending' | 'fail'>;
   /** Revoked device pubkeys (base64). A match is denied with reason 'revoked'. */
   revoked?: Set<string>;
@@ -94,6 +102,7 @@ export function makeAdmissionDecider(
       input.device_pubkey,
       input.github_login,
       input.github_user_id,
+      input.attestation_gist_id,
     );
     if (bindingResult === 'verified') return { admit: true };
     if (bindingResult === 'pending') return { admit: false, reason: 'pending' };

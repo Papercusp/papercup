@@ -89,6 +89,7 @@ function announceFixture(over: Partial<SignedAnnounce> = {}): SignedAnnounce {
     device_pubkey: 'ZGV2cHVia2V5', // base64 placeholder
     github_user_id: 42,
     github_login: 'alice',
+    attestation_gist_id: 'gist-test',
     log_core_key: 'bb'.repeat(32),
     ts: Date.now(),
     sig: 'c2ln',

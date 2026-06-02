@@ -422,21 +422,12 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
     const applyA = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
     const applyB = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
 
-    // The REAL admission gate: each peer's adapter runs verifyChannel2 against the
-    // shared repo using THIS peer's token. resolveContext is injected (no on-disk
-    // shared.json needed) but verifyChannel2 itself is the real, un-stubbed path.
-    const gateA = buildVerifyBindingAdapter({
-      workspaceId,
-      harnessSlug,
-      workspaceRoot: rootA,
-      resolveContext: async () => ({ repoOwner, repoName, token: peerA.token }),
-    });
-    const gateB = buildVerifyBindingAdapter({
-      workspaceId,
-      harnessSlug,
-      workspaceRoot: rootB,
-      resolveContext: async () => ({ repoOwner, repoName, token: peerB.token }),
-    });
+    // The REAL admission gate (write-free join): the stateless adapter runs the
+    // real verifyAttestation against each peer's REAL attestation gist (carried
+    // on the announce via announceOverrideFor → resolveAttestationGistId). No
+    // shared-repo read, no override — gists are public so no token/context needed.
+    const gateA = buildVerifyBindingAdapter();
+    const gateB = buildVerifyBindingAdapter();
 
     const handleA = await bootHarnessSubstrate({
       workspaceRoot: rootA,

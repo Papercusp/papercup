@@ -2,12 +2,10 @@
  * read-admission.test.ts — the read-admission decision (Model B substrate, Stage 3).
  *
  * D-004: a peer aggregates another's log IFF (1) the announce sig verifies AND
- * (2) device_pubkey ↔ github_login is a valid channel-2 binding (ANY real
- * GitHub identity). There is deliberately NO repo-collaborator gate — GitHub's
+ * (2) device_pubkey ↔ github_user_id is a valid binding (ANY real GitHub
+ * identity), proven from the attestation gist carried on the announce
+ * (write-free join). There is deliberately NO repo-collaborator gate — GitHub's
  * PR-merge gate is the real authority. Revocation = a `revoked_pubkeys` set.
- *
- * D-002: channel-2 only for admission (channel-1 is a self-attestation a remote
- * peer cannot run).
  *
  * D-006: verifyBinding returns a 3-state 'verified' | 'pending' | 'fail'.
  *   - 'verified'  → {admit: true}
@@ -19,7 +17,19 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { makeAdmissionDecider } from './read-admission';
+import { makeAdmissionDecider, type AdmissionInput } from './read-admission';
+
+/** Build an AdmissionInput with defaults; override per test. */
+function mkInput(over: Partial<AdmissionInput> = {}): AdmissionInput {
+  return {
+    device_pubkey: 'pk',
+    github_login: 'alice',
+    github_user_id: 7,
+    attestation_gist_id: 'gist-1',
+    sigValid: true,
+    ...over,
+  };
+}
 
 describe('read-admission', () => {
   it("admits a valid sig + 'verified' binding", async () => {
@@ -27,35 +37,43 @@ describe('read-admission', () => {
       verifyBinding: async (pk, login) =>
         pk === 'good' && login === 'alice' ? 'verified' : 'fail',
     });
-    expect(
-      await admit({ device_pubkey: 'good', github_login: 'alice', github_user_id: 7, sigValid: true }),
-    ).toEqual({ admit: true });
+    expect(await admit(mkInput({ device_pubkey: 'good' }))).toEqual({ admit: true });
   });
 
   it("'pending' binding → {admit:false, reason:'pending'} (D-006 retryable)", async () => {
-    const admit = makeAdmissionDecider({
-      verifyBinding: async () => 'pending',
-    });
-    expect(
-      await admit({ device_pubkey: 'pk', github_login: 'alice', github_user_id: 7, sigValid: true }),
-    ).toEqual({ admit: false, reason: 'pending' });
+    const admit = makeAdmissionDecider({ verifyBinding: async () => 'pending' });
+    expect(await admit(mkInput())).toEqual({ admit: false, reason: 'pending' });
   });
 
   it("'fail' binding → {admit:false, reason:'binding_invalid'}", async () => {
-    const admit = makeAdmissionDecider({
-      verifyBinding: async () => 'fail',
+    const admit = makeAdmissionDecider({ verifyBinding: async () => 'fail' });
+    expect(await admit(mkInput({ device_pubkey: 'bad' }))).toMatchObject({
+      admit: false,
+      reason: 'binding_invalid',
     });
-    expect(
-      await admit({ device_pubkey: 'bad', github_login: 'alice', github_user_id: 7, sigValid: true }),
-    ).toMatchObject({ admit: false, reason: 'binding_invalid' });
+  });
+
+  it('threads the attestation_gist_id (+ pubkey, login, id) to verifyBinding', async () => {
+    const verifyBinding = vi.fn(async () => 'verified' as const);
+    const admit = makeAdmissionDecider({ verifyBinding });
+    await admit(
+      mkInput({
+        device_pubkey: 'pk-x',
+        github_login: 'bob',
+        github_user_id: 99,
+        attestation_gist_id: 'gist-xyz',
+      }),
+    );
+    expect(verifyBinding).toHaveBeenCalledWith('pk-x', 'bob', 99, 'gist-xyz');
   });
 
   it('rejects a bad signature with reason bad_sig (before checking binding)', async () => {
     const verifyBinding = vi.fn(async () => 'verified' as const);
     const admit = makeAdmissionDecider({ verifyBinding });
-    expect(
-      await admit({ device_pubkey: 'good', github_login: 'alice', github_user_id: 7, sigValid: false }),
-    ).toMatchObject({ admit: false, reason: 'bad_sig' });
+    expect(await admit(mkInput({ device_pubkey: 'good', sigValid: false }))).toMatchObject({
+      admit: false,
+      reason: 'bad_sig',
+    });
     // short-circuits: no network binding check when the sig is already bad
     expect(verifyBinding).not.toHaveBeenCalled();
   });
@@ -65,27 +83,26 @@ describe('read-admission', () => {
       verifyBinding: async () => 'verified',
       revoked: new Set(['x']),
     });
-    expect(
-      await admit({ device_pubkey: 'x', github_login: 'a', github_user_id: 7, sigValid: true }),
-    ).toMatchObject({ admit: false, reason: 'revoked' });
+    expect(await admit(mkInput({ device_pubkey: 'x' }))).toMatchObject({
+      admit: false,
+      reason: 'revoked',
+    });
   });
 
   it('revocation beats even a bad sig (revoked checked first, verifyBinding not called)', async () => {
     const verifyBinding = vi.fn(async () => 'verified' as const);
-    const admit = makeAdmissionDecider({
-      verifyBinding,
-      revoked: new Set(['x']),
+    const admit = makeAdmissionDecider({ verifyBinding, revoked: new Set(['x']) });
+    expect(await admit(mkInput({ device_pubkey: 'x', sigValid: false }))).toMatchObject({
+      admit: false,
+      reason: 'revoked',
     });
-    expect(
-      await admit({ device_pubkey: 'x', github_login: 'a', github_user_id: 7, sigValid: false }),
-    ).toMatchObject({ admit: false, reason: 'revoked' });
     expect(verifyBinding).not.toHaveBeenCalled();
   });
 
   it('bad_sig short-circuits before verifyBinding runs', async () => {
     const verifyBinding = vi.fn(async () => 'pending' as const);
     const admit = makeAdmissionDecider({ verifyBinding });
-    await admit({ device_pubkey: 'any', github_login: 'a', github_user_id: 7, sigValid: false });
+    await admit(mkInput({ device_pubkey: 'any', sigValid: false }));
     expect(verifyBinding).not.toHaveBeenCalled();
   });
 
@@ -94,7 +111,7 @@ describe('read-admission', () => {
     // without any further permission/collaborator check.
     const admit = makeAdmissionDecider({ verifyBinding: async () => 'verified' });
     expect(
-      await admit({ device_pubkey: 'anyone', github_login: 'random-outsider', github_user_id: 7, sigValid: true }),
+      await admit(mkInput({ device_pubkey: 'anyone', github_login: 'random-outsider' })),
     ).toEqual({ admit: true });
   });
 });

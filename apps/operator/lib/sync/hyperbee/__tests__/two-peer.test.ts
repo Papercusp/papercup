@@ -180,6 +180,7 @@ describe('Model B substrate — two peers on one box', () => {
       device_pubkey: C.devicePubkey,
       github_user_id: C.githubUserId,
       github_login: C.githubLogin,
+      attestation_gist_id: 'gist-test',
       log_core_key: ownA.keyHex, // any 64-hex; the announce sig is what's tested
       ts: testNowMs,
     };
@@ -196,6 +197,7 @@ describe('Model B substrate — two peers on one box', () => {
       device_pubkey: C.devicePubkey,
       github_login: C.githubLogin,
       github_user_id: C.githubUserId,
+      attestation_gist_id: 'gist-test',
       sigValid: verifyAnnounce(cAnnounce, { nowMs: testNowMs }),
     });
     expect(cDecision).toEqual({ admit: false, reason: 'binding_invalid' });
@@ -208,13 +210,14 @@ describe('Model B substrate — two peers on one box', () => {
       device_pubkey: A.devicePubkey, // even claim A's (valid-binding) identity…
       github_login: A.githubLogin,
       github_user_id: A.githubUserId,
+      attestation_gist_id: 'gist-test',
       sigValid: verifyAnnounce(tampered, { nowMs: testNowMs }), // …the bad sig still denies it
     });
     expect(tamperedDecision).toEqual({ admit: false, reason: 'bad_sig' });
 
     // Sanity: A (real sig + valid binding) WOULD be admitted.
     const aAnnounce = await buildAnnounce(
-      { device_pubkey: A.devicePubkey, github_user_id: A.githubUserId, github_login: A.githubLogin, log_core_key: ownA.keyHex },
+      { device_pubkey: A.devicePubkey, github_user_id: A.githubUserId, github_login: A.githubLogin, attestation_gist_id: 'gist-test', log_core_key: ownA.keyHex },
       A.sign,
       { nowMs: testNowMs },
     );
@@ -223,6 +226,7 @@ describe('Model B substrate — two peers on one box', () => {
         device_pubkey: A.devicePubkey,
         github_login: A.githubLogin,
         github_user_id: A.githubUserId,
+        attestation_gist_id: 'gist-test',
         sigValid: verifyAnnounce(aAnnounce, { nowMs: testNowMs }),
       }),
     ).toEqual({ admit: true });
