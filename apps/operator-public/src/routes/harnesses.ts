@@ -17,6 +17,7 @@ import {
   getHarnessById,
   getHarnessByGithubRepoId,
   insertHarness,
+  listBannedPubkeySet,
   listHarnesses,
   markHarnessUnlisted,
   setHarnessClaim,
@@ -37,6 +38,8 @@ interface PublishBody {
   title?: string;
   description?: string;
   topic_hex: string;                 // 32-byte hex Hypercore topic
+  attestation_gist_id?: string;      // channel-2 (item 1): gist binding device pubkey ↔ login
+  publisher_device_pubkey?: string;  // channel-2 (item 1): device Ed25519 pubkey (base64)
 }
 
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
@@ -93,9 +96,16 @@ export function harnessesRoute(): Hono<{ Bindings: Env }> {
       search,
       claim_status,
     });
+    // Filter out listings whose publisher device pubkey is operator-banned
+    // (channel-2 ban-list, item 1). next_cursor stays keyed on the fetched
+    // page so pagination is stable even when a page is partially banned.
+    const banned = await listBannedPubkeySet(c.env.DB);
+    const results = rows.filter(
+      (r) => !r.publisher_device_pubkey || !banned.has(r.publisher_device_pubkey),
+    );
     const next_cursor =
       rows.length === limit ? rows[rows.length - 1].last_activity_at : null;
-    return c.json({ results: rows, next_cursor });
+    return c.json({ results, next_cursor });
   });
 
   // GET /harnesses/:id — single listing.
@@ -103,6 +113,10 @@ export function harnessesRoute(): Hono<{ Bindings: Env }> {
     const id = c.req.param('id');
     const row = await getHarnessById(c.env.DB, id);
     if (!row || row.unlisted_at) return c.json({ error: 'not_found' }, 404);
+    if (row.publisher_device_pubkey) {
+      const banned = await listBannedPubkeySet(c.env.DB);
+      if (banned.has(row.publisher_device_pubkey)) return c.json({ error: 'not_found' }, 404);
+    }
     return c.json(row);
   });
 
@@ -155,6 +169,34 @@ export function harnessesRoute(): Hono<{ Bindings: Env }> {
     }
     if (body.title != null && (typeof body.title !== 'string' || body.title.length > 200)) {
       return c.json({ error: 'invalid_field', field: 'title' }, 400);
+    }
+    // Channel-2 attestation (item 1) — optional, but both-or-neither: a
+    // device pubkey is meaningless without the gist that binds it to the
+    // publisher's login, and vice versa. The indexer verifies the binding
+    // out-of-band; here we only shape-check + store.
+    const hasGist = body.attestation_gist_id != null;
+    const hasPubkey = body.publisher_device_pubkey != null;
+    if (hasGist !== hasPubkey) {
+      return c.json(
+        { error: 'invalid_field', field: 'attestation_gist_id|publisher_device_pubkey', reason: 'both_or_neither' },
+        400,
+      );
+    }
+    if (
+      hasGist &&
+      (typeof body.attestation_gist_id !== 'string' ||
+        body.attestation_gist_id.length > 100 ||
+        !/^[A-Za-z0-9]+$/.test(body.attestation_gist_id))
+    ) {
+      return c.json({ error: 'invalid_field', field: 'attestation_gist_id' }, 400);
+    }
+    if (
+      hasPubkey &&
+      (typeof body.publisher_device_pubkey !== 'string' ||
+        body.publisher_device_pubkey.length < 1 ||
+        body.publisher_device_pubkey.length > 200)
+    ) {
+      return c.json({ error: 'invalid_field', field: 'publisher_device_pubkey' }, 400);
     }
 
     // Reject if the GitHub repo is private. Check via authed GitHub API
@@ -214,6 +256,8 @@ export function harnessesRoute(): Hono<{ Bindings: Env }> {
       publisher_github_user_id: user.id,
       publisher_github_login: user.login,
       publisher_permission,
+      publisher_device_pubkey: body.publisher_device_pubkey ?? null,
+      publisher_attestation_gist_id: body.attestation_gist_id ?? null,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

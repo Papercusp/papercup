@@ -19,6 +19,8 @@ export interface HarnessRow {
   publisher_github_user_id: number;
   publisher_github_login: string;
   publisher_permission: string | null;   // GitHub perm at publish: admin|maintain|write|triage|read|none; null = legacy/unknown
+  publisher_device_pubkey: string | null;        // channel-2 device Ed25519 pubkey (base64); null = none provided
+  publisher_attestation_gist_id: string | null;  // gist binding device_pubkey ↔ login; verified/revoked by the indexer
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
   claimant_github_user_id: number | null;
   claimant_github_login: string | null;
@@ -59,6 +61,8 @@ export interface NewHarnessInput {
   publisher_github_user_id: number;
   publisher_github_login: string;
   publisher_permission?: string | null;
+  publisher_device_pubkey?: string | null;
+  publisher_attestation_gist_id?: string | null;
   created_at: number;
 }
 
@@ -69,9 +73,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
          (id, github_repository_id, github_owner, github_name, github_url,
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
+          publisher_device_pubkey, publisher_attestation_gist_id,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -85,6 +90,8 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.publisher_github_user_id,
       h.publisher_github_login,
       h.publisher_permission ?? null,
+      h.publisher_device_pubkey ?? null,
+      h.publisher_attestation_gist_id ?? null,
       h.created_at,
       h.created_at,
     )
@@ -297,6 +304,52 @@ export async function audit(
     .prepare('INSERT INTO audit (ts, kind, detail) VALUES (?, ?, ?)')
     .bind(ts, kind, JSON.stringify(detail))
     .run();
+}
+
+// ── Channel-2 publisher ban-list (item 1) ───────────────────────
+
+export interface BannedPubkeyRow {
+  pubkey: string;
+  reason: string;
+  added_at: number;
+  added_by_operator_user_id: number | null;
+  updated_at: number;
+}
+
+/** Set of banned publisher device pubkeys, for filtering public listings. */
+export async function listBannedPubkeySet(db: D1Database): Promise<Set<string>> {
+  const res = await db
+    .prepare('SELECT pubkey FROM banned_publisher_pubkeys')
+    .all<{ pubkey: string }>();
+  return new Set((res.results ?? []).map((r) => r.pubkey));
+}
+
+export async function listBannedPubkeys(db: D1Database): Promise<BannedPubkeyRow[]> {
+  const res = await db
+    .prepare('SELECT * FROM banned_publisher_pubkeys ORDER BY added_at DESC')
+    .all<BannedPubkeyRow>();
+  return res.results ?? [];
+}
+
+export async function banPublisherPubkey(
+  db: D1Database,
+  pubkey: string,
+  reason: string,
+  operatorUserId: number | null,
+  now_ms: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO banned_publisher_pubkeys (pubkey, reason, added_at, added_by_operator_user_id, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(pubkey) DO UPDATE SET reason = ?, updated_at = ?`,
+    )
+    .bind(pubkey, reason, now_ms, operatorUserId, now_ms, reason, now_ms)
+    .run();
+}
+
+export async function unbanPublisherPubkey(db: D1Database, pubkey: string): Promise<void> {
+  await db.prepare('DELETE FROM banned_publisher_pubkeys WHERE pubkey = ?').bind(pubkey).run();
 }
 
 export function clientIp(req: Request): string {

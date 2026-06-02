@@ -25,11 +25,14 @@ import type { Env } from '../env.ts';
 import { AuthError, isCupboardOperator, resolveGithubBearer } from '../auth.ts';
 import {
   audit,
+  banPublisherPubkey,
   getHarnessById,
   getReportById,
+  listBannedPubkeys,
   listReports,
   markHarnessUnlisted,
   resolveReport,
+  unbanPublisherPubkey,
 } from '../db.ts';
 
 interface ResolveBody {
@@ -159,6 +162,66 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
       harness_id: id,
       operator_github_user_id: op.id,
       reason: body.reason?.trim() || null,
+    });
+    return c.json({ ok: true });
+  });
+
+  // GET /admin/banned-pubkeys — list operator-banned publisher device pubkeys
+  // (channel-2 ban-list, item 1).
+  app.get('/admin/banned-pubkeys', async (c) => {
+    const op = await requireOperator(c);
+    if (op instanceof Response) return op;
+    const banned = await listBannedPubkeys(c.env.DB);
+    return c.json({ banned });
+  });
+
+  // POST /admin/banned-pubkeys { pubkey, reason } — ban a publisher device
+  // pubkey. Idempotent upsert. Listings with this pubkey are then filtered
+  // from public reads. (pubkey is in the body, not the path, because base64
+  // contains '/' and '+'.)
+  app.post('/admin/banned-pubkeys', async (c) => {
+    const op = await requireOperator(c);
+    if (op instanceof Response) return op;
+    let body: { pubkey?: string; reason?: string };
+    try {
+      body = (await c.req.json()) as { pubkey?: string; reason?: string };
+    } catch {
+      return c.json({ error: 'invalid_json' }, 400);
+    }
+    if (typeof body.pubkey !== 'string' || !body.pubkey || body.pubkey.length > 200) {
+      return c.json({ error: 'invalid_field', field: 'pubkey' }, 400);
+    }
+    if (body.reason != null && (typeof body.reason !== 'string' || body.reason.length > 1000)) {
+      return c.json({ error: 'invalid_field', field: 'reason' }, 400);
+    }
+    const now = Date.now();
+    await banPublisherPubkey(c.env.DB, body.pubkey, body.reason?.trim() || 'unspecified', op.id, now);
+    await audit(c.env.DB, now, 'publisher_pubkey_banned', {
+      pubkey: body.pubkey,
+      operator_github_user_id: op.id,
+      reason: body.reason?.trim() || null,
+    });
+    return c.json({ ok: true });
+  });
+
+  // POST /admin/banned-pubkeys/remove { pubkey } — lift a ban.
+  app.post('/admin/banned-pubkeys/remove', async (c) => {
+    const op = await requireOperator(c);
+    if (op instanceof Response) return op;
+    let body: { pubkey?: string };
+    try {
+      body = (await c.req.json()) as { pubkey?: string };
+    } catch {
+      return c.json({ error: 'invalid_json' }, 400);
+    }
+    if (typeof body.pubkey !== 'string' || !body.pubkey) {
+      return c.json({ error: 'invalid_field', field: 'pubkey' }, 400);
+    }
+    const now = Date.now();
+    await unbanPublisherPubkey(c.env.DB, body.pubkey);
+    await audit(c.env.DB, now, 'publisher_pubkey_unbanned', {
+      pubkey: body.pubkey,
+      operator_github_user_id: op.id,
     });
     return c.json({ ok: true });
   });

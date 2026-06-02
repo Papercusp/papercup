@@ -52,6 +52,7 @@ class FakeStore {
     publish_rate_limit: [],
     indexer_runs: [],
     audit: [],
+    banned_publisher_pubkeys: [],
   };
 
   execute(sql: string, binds: unknown[]): number {
@@ -60,14 +61,17 @@ class FakeStore {
       // Bind order matches insertHarness() in db.ts.
       const [
         id, gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
-        pub_user_id, pub_login, pub_permission, created_at, updated_at,
+        pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id, created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push({
         id, github_repository_id: gh_repo_id, github_owner: gh_owner,
         github_name: gh_name, github_url: gh_url, title, description,
         topic_hex, publisher_github_user_id: pub_user_id,
         publisher_github_login: pub_login,
-        publisher_permission: pub_permission ?? null, claim_status: 'unclaimed',
+        publisher_permission: pub_permission ?? null,
+        publisher_device_pubkey: device_pubkey ?? null,
+        publisher_attestation_gist_id: attestation_gist_id ?? null,
+        claim_status: 'unclaimed',
         claimant_github_user_id: null, claimant_github_login: null,
         superseded_by: null, stars: 0, contributor_count: 0,
         last_activity_at: null, languages: null, stats_refreshed_at: null,
@@ -129,6 +133,27 @@ class FakeStore {
       this.tables.audit.push({ ts, kind, detail });
       return 1;
     }
+    if (upper.startsWith('INSERT INTO BANNED_PUBLISHER_PUBKEYS')) {
+      const [pubkey, reason, added_at, op_id, updated_at] = binds;
+      const existing = this.tables.banned_publisher_pubkeys.find((r) => r.pubkey === pubkey);
+      if (existing) {
+        existing.reason = reason;
+        existing.updated_at = updated_at;
+      } else {
+        this.tables.banned_publisher_pubkeys.push({
+          pubkey, reason, added_at, added_by_operator_user_id: op_id ?? null, updated_at,
+        });
+      }
+      return 1;
+    }
+    if (upper.startsWith('DELETE FROM BANNED_PUBLISHER_PUBKEYS')) {
+      const [pubkey] = binds;
+      const before = this.tables.banned_publisher_pubkeys.length;
+      this.tables.banned_publisher_pubkeys = this.tables.banned_publisher_pubkeys.filter(
+        (r) => r.pubkey !== pubkey,
+      );
+      return before - this.tables.banned_publisher_pubkeys.length;
+    }
     return 0;
   }
 
@@ -158,6 +183,12 @@ class FakeStore {
         (r) => r.github_user_id === user_id && r.window_start === window_start,
       );
       return row ? [{ count: row.count }] : [];
+    }
+    if (upper.startsWith('SELECT PUBKEY FROM BANNED_PUBLISHER_PUBKEYS')) {
+      return this.tables.banned_publisher_pubkeys.map((r) => ({ pubkey: r.pubkey }));
+    }
+    if (upper.startsWith('SELECT * FROM BANNED_PUBLISHER_PUBKEYS')) {
+      return [...this.tables.banned_publisher_pubkeys];
     }
     return [];
   }
@@ -568,6 +599,119 @@ describe('Cupboard server', () => {
       body: JSON.stringify({ harness_id: 'h7', reason: 'x'.repeat(1001) }),
     }, env);
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Cupboard channel-2 attestation + ban-list (item 1)', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  const PUBKEY = 'ZmFrZS1kZXZpY2UtcHVia2V5LWJhc2U2NA==';
+
+  function seedHarness(store: FakeStore, over: Partial<Row> = {}): void {
+    store.tables.harnesses.push({
+      id: 'seed', github_repository_id: 1, github_owner: 'a', github_name: 'b',
+      github_url: 'https://github.com/a/b', title: 'T', description: null,
+      topic_hex: 'a'.repeat(64), publisher_github_user_id: 1, publisher_github_login: 'alice',
+      publisher_permission: 'write',
+      publisher_device_pubkey: null, publisher_attestation_gist_id: null,
+      claim_status: 'unclaimed', claimant_github_user_id: null, claimant_github_login: null,
+      superseded_by: null, stars: 0, contributor_count: 0, last_activity_at: null,
+      languages: null, stats_refreshed_at: null,
+      created_at: 1, updated_at: 1, unlisted_at: null, unlisted_reason: null,
+      ...over,
+    });
+  }
+
+  it('publish stores attestation gist id + device pubkey', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 100, private: false } });
+    const res = await api.request('/harnesses', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        github_repository_id: 100, github_owner: 'alice', github_name: 'r',
+        github_url: 'https://github.com/alice/r', topic_hex: 'a'.repeat(64),
+        attestation_gist_id: 'abc123', publisher_device_pubkey: PUBKEY,
+      }),
+    }, env);
+    expect(res.status).toBe(200);
+    const row = store.tables.harnesses[0];
+    expect(row.publisher_device_pubkey).toBe(PUBKEY);
+    expect(row.publisher_attestation_gist_id).toBe('abc123');
+  });
+
+  it('publish rejects an attestation pubkey without its gist (both-or-neither)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 100, private: false } });
+    const res = await api.request('/harnesses', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        github_repository_id: 100, github_owner: 'alice', github_name: 'r',
+        github_url: 'https://github.com/alice/r', topic_hex: 'a'.repeat(64),
+        publisher_device_pubkey: PUBKEY,
+      }),
+    }, env);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { reason?: string };
+    expect(body.reason).toBe('both_or_neither');
+  });
+
+  it('banned publisher pubkey is filtered from GET /harnesses and 404s on GET /:id', async () => {
+    const { env, store } = makeEnv({ CUPBOARD_OPERATOR_GITHUB_IDS: '1' });
+    seedHarness(store, { id: 'banned-one', publisher_device_pubkey: PUBKEY });
+    seedHarness(store, { id: 'clean-one', github_repository_id: 2, publisher_device_pubkey: null });
+
+    // Operator (id 1) bans the pubkey.
+    stubGithub({ user: { id: 1, login: 'op' } });
+    const ban = await api.request('/admin/banned-pubkeys', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pubkey: PUBKEY, reason: 'abuse' }),
+    }, env);
+    expect(ban.status).toBe(200);
+    expect(store.tables.banned_publisher_pubkeys).toHaveLength(1);
+
+    const list = await api.request('/harnesses', {}, env);
+    const body = (await list.json()) as { results: Array<{ id: string }> };
+    const ids = body.results.map((r) => r.id);
+    expect(ids).toContain('clean-one');
+    expect(ids).not.toContain('banned-one');
+
+    const get = await api.request('/harnesses/banned-one', {}, env);
+    expect(get.status).toBe(404);
+  });
+
+  it('ban endpoint requires an operator (403 for non-operator)', async () => {
+    const { env } = makeEnv({ CUPBOARD_OPERATOR_GITHUB_IDS: '999' });
+    stubGithub({ user: { id: 1, login: 'notop' } });
+    const res = await api.request('/admin/banned-pubkeys', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pubkey: PUBKEY, reason: 'x' }),
+    }, env);
+    expect(res.status).toBe(403);
+  });
+
+  it('unban lifts the filter', async () => {
+    const { env, store } = makeEnv({ CUPBOARD_OPERATOR_GITHUB_IDS: '1' });
+    seedHarness(store, { id: 'banned-one', publisher_device_pubkey: PUBKEY });
+    stubGithub({ user: { id: 1, login: 'op' } });
+    await api.request('/admin/banned-pubkeys', {
+      method: 'POST', headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pubkey: PUBKEY, reason: 'abuse' }),
+    }, env);
+    await api.request('/admin/banned-pubkeys/remove', {
+      method: 'POST', headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pubkey: PUBKEY }),
+    }, env);
+    expect(store.tables.banned_publisher_pubkeys).toHaveLength(0);
+    const list = await api.request('/harnesses', {}, env);
+    const body = (await list.json()) as { results: Array<{ id: string }> };
+    expect(body.results.map((r) => r.id)).toContain('banned-one');
   });
 });
 
