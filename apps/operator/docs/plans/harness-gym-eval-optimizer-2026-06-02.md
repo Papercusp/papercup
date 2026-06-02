@@ -204,11 +204,11 @@ One cycle:
 - **P-020** `todo` Immediate promotion: write champion overrides into the **dedicated gym harness's config** (D-012); never the shared default prompt files. blocked-by: P-019
 - **P-021** `todo` Circuit-breaker + monitor alarm: dev-anchor drift vs baseline-of-record → auto-revert the harness override; monitor-set stall while dev-anchor climbs → overfitting flag. blocked-by: P-020
 - **P-022** `todo` Continuous loop driver: `gym optimize --repo R --budget $X` — propose→evaluate→gate→accept/rollback→frontier, budget-capped, unattended. blocked-by: P-018, P-019
-- **P-023** `needs-human` Opt-in sign-off: human approval before pointing a **real production harness** at the gym champion (the gym's own harness is promoted unattended). importance: urgent blocked-by: P-022
+- **P-023** `signed-off` Opt-in sign-off: human approval before pointing a **real production harness** at the gym champion (the gym's own harness is promoted unattended). importance: urgent blocked-by: P-022 (DONE 2026-06-02: gate built+tested — `optin.ts` `assertProductionOptIn`; human (avi) GRANTED sign-off authority. The concrete `ChampionOptIn{approvedBy:'avi', championVariantId, targetHarnessSlug, approvedAt}` is instantiated at actual champion-promotion time once P-014 yields a champion + a prod target is chosen. No production harness exists today (CLAUDE.md), so nothing is repointed now; the gate stays closed until that concrete opt-in is recorded.)
 
 ## Phase 6 — Later
 
-- **P-024** `todo` nuqs operator dashboard for variants/scores/frontier/cycles. importance: low blocked-by: P-013
+- **P-024** `mockup-done` nuqs operator dashboard for variants/scores/frontier/cycles. importance: low blocked-by: P-013 (mockup + designer brief + nuqs/data-binding spec at `apps/operator/lib/gym/DASHBOARD-MOCKUP.md` 2026-06-02; data layer ready in `read-api.ts`. Implementation deferred until scheduled — visual craft → designer; conceptually post-P-014 go/no-go.)
 - **P-025** `todo` Repeats-per-task / variance handling — promote into v1 if P-014 shows 1-run is too noisy. importance: normal
 - **P-026** `todo` Expand real-feature replay as a *training* source (beyond the P-028 anchor). importance: low
 - **P-030** `todo` Grader-optimization phase: optimize validator/crosscheck/tester in a **separate run with an inverted objective** (recall on held-out planted defects — catch *more*, never fewer), external judge as arbiter. importance: low
