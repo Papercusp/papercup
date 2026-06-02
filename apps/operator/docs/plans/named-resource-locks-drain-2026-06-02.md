@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Design fully captured (D-001–D-013; Phases 1–8). The model: shared/exclusive named locks with a writer-priority drain, in a separate `agent_resource_locks` table in the `papercusp_su` db (D-009), registered-names-only (D-010). Two enforcement points settled: the shared dispatcher via `requiresLock` for tool-expressed actions (D-011, owns the slow drain + progress), and a FAST `PreToolUse` Bash hook for raw destructive commands (D-012/D-013, deny-if-draining or acquire-shared), with blessed `dev:restart`/`db:migrate` wrapper tools as the canonical path (P-027). Matchable-asymmetry: gate the small destructive command set; keep shared usage explicit. Nothing coded yet beyond the plan doc.
+**State:** Phase 1 SHIPPED + the Phase-2 drain logic that lives in the store. Submodule libs/papercusp@80a6e2e adds migration 005 (papercusp_su) + `resource-lock-store.ts`; superproject@8765db9a6 adds the integration test + pointer bump. 6 new tests green, the existing 41 lock integration tests still green, package typecheck clean. Done: registered-names-only acquire (P-024), shared coexistence + writer-priority drain refusing new shared (P-004), drain-to-zero grant via `resource_grant_cascade` (P-005), no-upgrade (P-008), TTL/heartbeat expiry sweep (P-007), registry seed (P-003). Still todo in the drain area: `max_drain_sec` timeout (P-006) — it belongs to the tool-layer wait loop (Phase 4), not the store.
 
-**Next:** An agent implements Phase 1: write `packages/locks/src/sql/005-named-resource-locks.sql` (registry incl. `match_patterns`, `agent_resource_locks`, `resource_grant_cascade`, dev-server/db-schema seed) + `resource-lock-store.ts` (registry-required acquire + drain state machine) + an integration test mirroring `su-locks.integration.test.ts`.
+**Next:** An agent builds Phase 3 + 4: the `locks:*` tool surface for resources (acquire/release/queue/list with the exclusive wait loop consuming the `resource_grant_cascade` NOTIFY, + `max_drain_sec` P-006) and the coord drain-start / back-up broadcasts via `fireNotifications` (P-009/P-010).
 
 ## Background
 
@@ -95,19 +95,19 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 ## Phase 1 — Lock model & schema
 
-- **P-001** `todo` Extend the `@papercusp/locks` lock model: add a `resource` (named logical lock) key kind alongside file `paths`, and `mode: shared | exclusive`. Today's path locks become `{ kind: 'path', mode: 'exclusive' }` under one model.
-- **P-002** `todo` Migration `107-named-resource-locks.sql` — idempotent, NO runtime DDL (per `self-contained-migration-baseline-2026-06-02`): named-lock holder rows (resource, mode, owner_id, lease/heartbeat, drain state) + a resource registry table (name, description, rule text, enforcement level). PG store-of-record; sync authority `none`. blocked-by: P-001
-- **P-003** `todo` Seed the registry with the first named locks — `dev-server` and `db-schema` — each with rule text + an enforcement level. blocked-by: P-002
-- **P-024** `todo` Registry-required acquire: `tryAcquireResource` validates `resource` against `agent_resource_registry` and rejects an unknown name with `unknown_resource` (D-010). `locks:list` is the authoritative discovery surface. blocked-by: P-002
+- **P-001** `done` Extend the `@papercusp/locks` lock model: add a `resource` (named logical lock) key kind alongside file `paths`, and `mode: shared | exclusive`. Today's path locks become `{ kind: 'path', mode: 'exclusive' }` under one model.
+- **P-002** `done` Migration `107-named-resource-locks.sql` — idempotent, NO runtime DDL (per `self-contained-migration-baseline-2026-06-02`): named-lock holder rows (resource, mode, owner_id, lease/heartbeat, drain state) + a resource registry table (name, description, rule text, enforcement level). PG store-of-record; sync authority `none`. blocked-by: P-001 (shipped as packages/locks/src/sql/005-named-resource-locks.sql in papercusp_su D-009, not harness_shared/107)
+- **P-003** `done` Seed the registry with the first named locks — `dev-server` and `db-schema` — each with rule text + an enforcement level. blocked-by: P-002
+- **P-024** `done` Registry-required acquire: `tryAcquireResource` validates `resource` against `agent_resource_registry` and rejects an unknown name with `unknown_resource` (D-010). `locks:list` is the authoritative discovery surface. blocked-by: P-002
 
 
 ## Phase 2 — Drain state machine
 
-- **P-004** `todo` Writer-priority drain: a pending `exclusive` flips the resource to `draining` — refuse NEW `shared` acquisitions (return `draining`), keep existing `shared` leases live. blocked-by: P-001
-- **P-005** `todo` Drain-to-zero grant: grant `exclusive` when the shared-holder count reaches 0, parking the request on the existing server-side wait queue. blocked-by: P-004
+- **P-004** `done` Writer-priority drain: a pending `exclusive` flips the resource to `draining` — refuse NEW `shared` acquisitions (return `draining`), keep existing `shared` leases live. blocked-by: P-001
+- **P-005** `done` Drain-to-zero grant: grant `exclusive` when the shared-holder count reaches 0, parking the request on the existing server-side wait queue. blocked-by: P-004
 - **P-006** `todo` `max_drain_sec` timeout: if drain doesn't complete in time, return a "still held by X, Y" envelope so the requester can force-proceed (with a warning broadcast) or escalate. blocked-by: P-005
-- **P-007** `todo` Zombie safety: reuse heartbeat/TTL so a crashed `shared` holder's lease auto-expires and never blocks drain forever. blocked-by: P-004
-- **P-008** `todo` No lock upgrade: a requester already holding `shared` must `release` then request `exclusive` (re-queue), avoiding the two-holders-both-upgrading deadlock. Document + guard in the acquire path. blocked-by: P-004
+- **P-007** `done` Zombie safety: reuse heartbeat/TTL so a crashed `shared` holder's lease auto-expires and never blocks drain forever. blocked-by: P-004
+- **P-008** `done` No lock upgrade: a requester already holding `shared` must `release` then request `exclusive` (re-queue), avoiding the two-holders-both-upgrading deadlock. Document + guard in the acquire path. blocked-by: P-004
 
 ## Phase 3 — Broadcast & resume (event delivery)
 
