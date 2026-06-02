@@ -7,6 +7,7 @@ import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
+import SavedPromptsSection from './SavedPromptsSection';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
@@ -1169,6 +1170,8 @@ export default function HarnessSettingsPanel({
           )}
         </section>
       )}
+
+      <SavedPromptsSection scope={{ kind: 'harness', slug }} />
     </div>
   );
 }

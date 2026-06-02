@@ -24,6 +24,7 @@ import {
   type CustomTheme,
 } from '@/lib/theme';
 import ThemeEditor from './ThemeEditor';
+import SavedPromptsSection from '../../harness/SavedPromptsSection';
 
 const VISUAL_EFFECTS_OPTIONS: Array<{ value: VisualEffectsMode; label: string; description: string }> = [
   {
@@ -323,6 +324,10 @@ export default function PersonalizationSettingsPage() {
             {selectedVisualEffects.description}
           </div>
         </div>
+      </section>
+
+      <section className="pc-settings-section">
+        <SavedPromptsSection scope={{ kind: 'workspace' }} />
       </section>
     </div>
   );
