@@ -1,7 +1,7 @@
 ---
 title: Harness-state storage unification — one runtime store-of-record, explicit sync authority
 slug: harness-state-storage-unification-2026-06-01
-status: draft
+status: ready
 created: 2026-06-02
 updated: 2026-06-02
 owner: avi@storewolf.com
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design proposal to end the harness-state storage hybrid by adopting ONE explicit model across the three in-flight efforts (`un-hardcode-plan`, `harnesses-across-workspaces-2026-05-31`, `papercusp-dogfood-v5` §7). Its first job is a **vocabulary fix**: the word "canonical" is overloaded — dogfood meant **git-vs-Hyperbee** (a *sync* choice), un-hardcode meant **PG-vs-files** (a *store* choice) — and that overload is the root of the storage confusion. This plan retires the bare word and names two orthogonal axes: **runtime store-of-record** vs **sync authority**. One real fork remains for the owner: the **store axis** — A (files are the runtime store for document tables; PG is a rebuilt cache — status quo) vs **B (PG is the uniform runtime store for every table; sync is a projection layer on top — recommended)**. B does **not** reverse dogfood D-001/D-020 (git stays the *sync authority* for documents); it only fixes the *store* framing.
+**State:** DECIDED → B (PG uniform runtime store-of-record + projection layer), owner 2026-06-01 (D-002). The two-axis model — **runtime store-of-record** (always PG) vs **sync authority** (none|git|peer-log) — is locked, and bare "canonical" is banned (see the Vocabulary section). Items P-001–P-007 allocated across 3 phases; migration is wholesale (pre-alpha breakage accepted). This is a STORE-axis change only — **git remains the SYNC authority for document tables** (dogfood D-001/D-020 intact).
 
-**Next:** Owner — make the store-axis call (A vs B; recommend B). On B, the migration (consolidate-all-to-PG + per-table sync-authority declaration + one uniform projection layer) is the mechanical tail and supersedes the open "consolidate-vs-hybrid" question in `un-hardcode-plan`. Items are gated on this call, so they're intentionally not pre-allocated.
+**Next:** P-001 — land the two-axis spec in `system/storage-policy.mdx` + a `CLAUDE.md` pointer, ban bare "canonical", and annotate dogfood §7 / un-hardcode / harnesses-across-workspaces with the reframe. Then P-002 (per-table key × sync-authority registry).
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -74,6 +74,29 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 6. Cut each table's sync over to its declared authority; delete the bespoke bucket code.
 7. Verify: clone-and-go (git tables hydrate into PG), two-peer live sync (peer-log tables), two-workspace shared-by-slug results + per-workspace config.
 
+
+## Phase 1 — Spec & model
+
+- **P-001** `todo` Land the two-axis spec (runtime store-of-record vs sync authority) as the standard: add it to system/storage-policy.mdx + a CLAUDE.md pointer; ban bare "canonical"; annotate dogfood §7 / un-hardcode / harnesses-across-workspaces with the reframe. importance: high
+- **P-002** `todo` Declare key (slug-shared | workspace-owned) + sync authority (none|git|peer-log) for EVERY harness table in one table-of-tables registry — the single source of truth for the model. importance: high
+
+
+
+## Phase 2 — Projection & migration
+
+- **P-003** `todo` Generalize ONE projection engine: PG↔git-export (document tables) + PG↔peer-log (Model-B), driven by the per-table declaration — replaces the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths.
+- **P-004** `todo` Consolidate all remaining per-harness tables → slug-keyed PG (the 032 auto-updatable-view pattern); retire 002-per-harness-template.sql + scaffold-harness-schema.
+- **P-005** `todo` Route config tables (config_token, prompt/3-tier overrides, …) to the workspace-owned store keyed by (workspace, harness, role) — the harnesses-across-workspaces Phase-1b path; never slug-shared.
+
+
+
+
+## Phase 3 — Cutover & verify
+
+- **P-006** `todo` Cut each table's sync over to its declared authority; delete the bespoke HYPERBEE/GIT/LOCAL bucket code.
+- **P-007** `todo` Verify: clone-and-go (git tables hydrate into PG), two-peer live sync (peer-log tables), two-workspace shared-by-slug results + per-workspace config.
+
+
 ## Decisions
 
 (Use plans:add-decision to append.)
@@ -91,3 +114,9 @@ Explicitly NOT a reversal of dogfood D-001/D-020: those decided git-vs-Hyperbee 
 Caveat carried in the body: for cross-machine-shared tables the sync authority (git or peer-log) remains the single merge authority; PG converges to it. "Runtime store = PG" means uniform local access, not that PG arbitrates merges.
 
 On approval: allocate the Phase items (currently gated/unallocated), and this supersedes `un-hardcode-plan`'s open consolidate-vs-hybrid question + the HYPERBEE/GIT/LOCAL bucket taxonomy.
+
+### D-002 — DECIDED → B (owner, 2026-06-01)
+Date: 2026-06-02
+Owner chose **B**: PG is the uniform **runtime store-of-record** for every harness table; cross-machine sharing is a projection layer (git-export for document tables, peer-log/Model-B for live machine-row tables). Items P-001–P-007 allocated; plan started.
+
+Reaffirming D-001 to prevent mis-reads: this is a **store-axis** change only. **git remains the *sync authority* for document-shaped shared state** (dogfood D-001/D-020 intact); only "what the operator reads/writes locally" changed (files → PG). Supersedes un-hardcode's consolidate-vs-hybrid question + the HYPERBEE/GIT/LOCAL bucket taxonomy.
