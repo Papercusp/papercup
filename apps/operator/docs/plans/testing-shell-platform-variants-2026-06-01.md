@@ -3,7 +3,7 @@ title: Platform-variant test domains: browser-equivalent chaos + live
 slug: testing-shell-platform-variants-2026-06-01
 status: draft
 created: 2026-06-01
-updated: 2026-06-01
+updated: 2026-06-02
 owner: aviynw3@gmail.com
 parent: testing-shell-cross-project-2026-06-01
 ---
@@ -12,9 +12,9 @@ parent: testing-shell-cross-project-2026-06-01
 
 ## Now
 
-**State:** Design brainstormed + approved (2026-06-01); this plan is the implementation spec. Follow-on to `testing-shell-cross-project-2026-06-01`. `chaos` and `live` are Tauri-desktop-bound (chaos drives the Tauri shell via tauri-agent-tools; live is the `vitals-recorder` hooking the webview). We are NOT collapsing them into one cross-platform interface (D-002 a explicitly rejected that). Instead each gets a **browser-equivalent** variant, and the testing dashboard loads the variant matching an **explicit `platform` prop** (`desktop` / `web` / `both`).
+**State:** Lib core COMPLETE + committed (submodule 511c384, all TDD'd): platform prop + visibleTabs (P-001), in-page web observer + LiveWebPanel (P-002/P-003), chaos-runner.mjs Playwright clicker + ChaosWebPanel (P-004/P-005). 26 lib tests green; lib self-typechecks. Remaining is host integration: P-006 papercup chaos-web SSE route (papercup HAS Playwright+chromium ✓), P-007 Restart chaos-web route, P-008 add Playwright+chromium to Restart, Phase 4 wiring (papercup platform='both', Restart 'web'), Phase 5 verify. TWO complications surfaced: (1) another agent is concurrently editing apps/operator/lib/testing-domains-registry.ts (added a domain → 22; line-16-vs-97 looks inconsistent) — papercup Phase-4 wiring must coordinate/re-read; (2) Restart has NO Playwright + no browser binary, so P-008 is a heavy install (npm install is broken there + chromium binary download), unlike live-web which needs nothing.
 
-**Next:** Human reviews this plan; then an agent picks up P-001. No code yet (brainstorming gate).
+**Next:** Human: OK to (a) install Playwright + chromium in Restart for chaos-web (heavy), or keep Restart to live-web only for now? Then an agent does P-006 + the papercup/Restart wiring (live-web needs no dep). live-web can ship to both projects immediately; chaos-web to papercup immediately, to Restart after P-008.
 
 ## Background — approved design
 
@@ -30,17 +30,17 @@ parent: testing-shell-cross-project-2026-06-01
 
 ## Phase 1 — Selection mechanism (lib)
 
-- **P-001** `todo` Add `Platform` type + `TestingShellTab.platform?` + `TestingShell` `platform` prop (default `'both'`) + pure `visibleTabs(tabs, platform)` filter in `@papercusp/testing-shell`. TDD `visibleTabs`. Existing consumers unaffected (default `'both'`).
+- **P-001** `done` Add `Platform` type + `TestingShellTab.platform?` + `TestingShell` `platform` prop (default `'both'`) + pure `visibleTabs(tabs, platform)` filter in `@papercusp/testing-shell`. TDD `visibleTabs`. Existing consumers unaffected (default `'both'`). (platform prop + TestingShellTab.platform + pure visibleTabs default 'both', back-compat. TDD 4/4; package 18/18; lib self-typechecks added node types + fixed glob.ts Dirent<string>. submodule 2330802 / gitlink f20287f72.)
 
 ## Phase 2 — `live` browser variant (lib, client-only)
 
-- **P-002** `todo` `src/web/observer.ts`: `startWebObserver()` hooking console/error/unhandledrejection + `PerformanceObserver` (CLS, long-tasks) → buffered recorder + teardown. Unit-test the event-shaping (pure mapping fn). blocked-by: P-001
-- **P-003** `todo` `LiveWebPanel` customTab component (renders the observer buffer + clear). Ships in the lib (generic). blocked-by: P-002
+- **P-002** `done` `src/web/observer.ts`: `startWebObserver()` hooking console/error/unhandledrejection + `PerformanceObserver` (CLS, long-tasks) → buffered recorder + teardown. Unit-test the event-shaping (pure mapping fn). blocked-by: P-001 (startWebObserver console/window-error/unhandledrejection/CLS/longtask, stop+restore, import-safe. TDD 5/5 jsdom. submodule b80c538.)
+- **P-003** `done` `LiveWebPanel` customTab component (renders the observer buffer + clear). Ships in the lib (generic). blocked-by: P-002 (LiveWebPanel customTab renders the observer buffer, snapshots on interval, clear. Exported from the client barrel. submodule b80c538.)
 
 ## Phase 3 — `chaos` browser variant (lib runner + per-host spawn)
 
-- **P-004** `todo` `src/web/chaos-runner.mjs`: Playwright headless random-clicker over `baseUrl`, N steps, capture console/crash/dialog, emit NDJSON. Smoke-test against a static fixture page (asserts clicks + events + clean exit). blocked-by: P-001
-- **P-005** `todo` `ChaosWebPanel` customTab: start/stream/stop run UI (mirror Restart's `LoadTestPanel`); POSTs to the host's chaos-web SSE endpoint. blocked-by: P-004
+- **P-004** `done` `src/web/chaos-runner.mjs`: Playwright headless random-clicker over `baseUrl`, N steps, capture console/crash/dialog, emit NDJSON. Smoke-test against a static fixture page (asserts clicks + events + clean exit). blocked-by: P-001 (chaos-runner.mjs: Playwright headless random-clicker over baseUrl, NDJSON events console/pageerror/crash/dialog/step/done. Pure helpers TDD'd 3/3; Playwright dynamically imported. ./web/chaos-runner export. submodule 511c384.)
+- **P-005** `done` `ChaosWebPanel` customTab: start/stream/stop run UI (mirror Restart's `LoadTestPanel`); POSTs to the host's chaos-web SSE endpoint. blocked-by: P-004 (ChaosWebPanel customTab: start/stream/stop, POSTs {baseUrl,maxSteps} to a host runEndpoint, parses the NDJSON stream. Exported from the client barrel. submodule 511c384.)
 - **P-006** `todo` papercup: operator SSE route that spawns `chaos-runner.mjs` (pattern of `ai-explore` / `load-tests`). blocked-by: P-004
 - **P-007** `todo` Restart: `_hono` SSE route that spawns `chaos-runner.mjs`. blocked-by: P-004, P-008
 - **P-008** `todo` Add Playwright as a Restart dependency (D-005) — `npm install` is broken there, so use the `npm pack`+extract workaround; `chaos-runner` needs it (`live-web` needs nothing).
