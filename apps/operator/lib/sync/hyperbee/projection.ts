@@ -188,22 +188,27 @@ export async function applyHyperbeeOpToPg(op: OpEnvelope): Promise<boolean> {
 }
 
 /**
- * LWW conflict resolution helper (D-003). Given two ops on the same key,
- * return the one to keep:
+ * LWW conflict resolution helper (D-003; tiebreak hardened in D-004/P-001).
+ * Given two ops on the same key, return the one to keep:
  *
  *   1. later `ts` wins;
  *   2. on an exact `ts` tie, `del` beats `put` (safety — a delete that
  *      raced a write at the same instant takes precedence);
  *   3. on a `ts` tie with the SAME type (del/put doesn't decide), the op
- *      with the lexicographically-GREATER `writerPubkey` wins.
+ *      with the lexicographically-GREATER `sourceLogKeyHex` wins.
  *
  * Step 3 is what makes the fold fully order-independent: the previous
  * "return the first arg" rule was arrival-order-dependent, so two peers
- * folding the same two ops in opposite orders could pick different
- * winners and diverge. Tiebreaking on the (peer-stable) author pubkey
- * yields an identical winner on every peer regardless of fold order.
- * A missing `writerPubkey` is treated as `''` so the comparison is
- * total and stable.
+ * folding the same two ops in opposite orders could pick different winners
+ * and diverge. The tiebreak keys off `sourceLogKeyHex` — the receiver-stamped
+ * source-log key (`read-merge.toEnvelope`), which is BOTH peer-stable (every
+ * peer sees the same source log keys) AND unforgeable (a writer controls the
+ * self-declared `writerPubkey`, but NOT which admitted log a received op was
+ * replicated from). Tiebreaking on the self-declared `writerPubkey` (the old
+ * D-003 rule) let a peer steal a same-`ts` conflict by self-declaring a maximal
+ * pubkey — D-004 closes that. A missing `sourceLogKeyHex` (synthetic / local
+ * legacy ops built outside the merge path) is treated as `''` so the comparison
+ * stays total and stable.
  */
 export function lwwPick(a: OpEnvelope, b: OpEnvelope): OpEnvelope {
   const ta = a.ts ?? 0;
@@ -214,11 +219,11 @@ export function lwwPick(a: OpEnvelope, b: OpEnvelope): OpEnvelope {
   // del beats put.
   if (a.type === 'del' && b.type !== 'del') return a;
   if (b.type === 'del' && a.type !== 'del') return b;
-  // Same type on a ts tie → deterministic author tiebreak: the higher
-  // (lexicographically-greater) writerPubkey wins, identical on every peer
-  // regardless of fold order. Undefined pubkey ⇒ '' so the order is total.
-  const pa = a.writerPubkey ?? '';
-  const pb = b.writerPubkey ?? '';
-  if (pa >= pb) return a;
+  // Same type on a ts tie → deterministic, unforgeable tiebreak: the higher
+  // (lexicographically-greater) sourceLogKeyHex wins, identical on every peer
+  // regardless of fold order. Undefined source ⇒ '' so the order is total.
+  const sa = a.sourceLogKeyHex ?? '';
+  const sb = b.sourceLogKeyHex ?? '';
+  if (sa >= sb) return a;
   return b;
 }

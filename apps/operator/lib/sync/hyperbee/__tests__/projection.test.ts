@@ -13,9 +13,11 @@
  *   writer (not B's) and vice-versa — no cross-harness drop — and contrast it
  *   with the global registry's last-writer-wins collision.
  *
- *   Fix 3 (deterministic LWW author tiebreak, D-003) — on an exact `ts` tie
- *   with the same op type, `lwwPick` breaks the tie on `writerPubkey` so the
- *   winner is identical on every peer regardless of fold order.
+ *   P-001 (unforgeable LWW tiebreak, D-004) — on an exact `ts` tie with the
+ *   same op type, `lwwPick` breaks the tie on the receiver-stamped, unforgeable
+ *   `sourceLogKeyHex` (NOT the self-declared `writerPubkey` a peer controls) so
+ *   the winner is identical on every peer regardless of fold order, and a peer
+ *   cannot steal a tie by self-declaring a maximal pubkey.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -127,46 +129,57 @@ describe('per-harness scoped apply (Fix 2 — no cross-harness drop)', () => {
   });
 });
 
-describe('lwwPick author tiebreak (Fix 3 — D-003 deterministic on a ts tie)', () => {
-  it('later ts wins regardless of author', () => {
-    const a = { type: 'put' as const, ts: 100, writerPubkey: 'zzz' };
-    const b = { type: 'put' as const, ts: 200, writerPubkey: 'aaa' };
+describe('lwwPick tiebreak binds to the unforgeable sourceLogKeyHex (P-001 — D-004)', () => {
+  it('later ts wins regardless of source', () => {
+    const a = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'zzz' };
+    const b = { type: 'put' as const, ts: 200, sourceLogKeyHex: 'aaa' };
     expect(lwwPick(a, b)).toBe(b);
     expect(lwwPick(b, a)).toBe(b);
   });
 
-  it('on a ts tie, del still beats put (type decides before author)', () => {
-    const put = { type: 'put' as const, ts: 100, writerPubkey: 'zzz' };
-    const del = { type: 'del' as const, ts: 100, writerPubkey: 'aaa' };
+  it('on a ts tie, del still beats put (type decides before source)', () => {
+    const put = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'zzz' };
+    const del = { type: 'del' as const, ts: 100, sourceLogKeyHex: 'aaa' };
     expect(lwwPick(put, del)).toBe(del);
     expect(lwwPick(del, put)).toBe(del);
   });
 
-  it('on a ts tie + same type, the GREATER writerPubkey wins — order-independent', () => {
-    const lo = { type: 'put' as const, ts: 100, writerPubkey: 'aaa' };
-    const hi = { type: 'put' as const, ts: 100, writerPubkey: 'bbb' };
+  it('on a ts tie + same type, the GREATER sourceLogKeyHex wins — order-independent', () => {
+    const lo = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'aaa' };
+    const hi = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'bbb' };
     // hi wins regardless of which arg is first → identical on every peer.
     expect(lwwPick(lo, hi)).toBe(hi);
     expect(lwwPick(hi, lo)).toBe(hi);
   });
 
-  it('treats a missing writerPubkey as \'\' (stable, total order)', () => {
-    const none = { type: 'put' as const, ts: 100 };                 // pubkey undefined ⇒ ''
-    const some = { type: 'put' as const, ts: 100, writerPubkey: 'a' };
-    // 'a' > '' so the op WITH a pubkey wins, both orders.
+  it('a forged self-declared writerPubkey CANNOT flip the tiebreak winner', () => {
+    // Security property (D-004): the tiebreak keys off the receiver-stamped,
+    // unforgeable source-log key — NOT the self-declared `writerPubkey` a peer
+    // controls. The loser self-declares a maximal pubkey to try to steal the
+    // tie; the unforgeable `sourceLogKeyHex` must still decide.
+    const loForged = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'aaa', writerPubkey: 'zzzzzz' };
+    const hiHonest = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'bbb', writerPubkey: 'aaaaaa' };
+    expect(lwwPick(loForged, hiHonest)).toBe(hiHonest);
+    expect(lwwPick(hiHonest, loForged)).toBe(hiHonest);
+  });
+
+  it('treats a missing sourceLogKeyHex as \'\' (stable, total order)', () => {
+    const none = { type: 'put' as const, ts: 100 };                  // source undefined ⇒ ''
+    const some = { type: 'put' as const, ts: 100, sourceLogKeyHex: 'a' };
+    // 'a' > '' so the op WITH a source key wins, both orders.
     expect(lwwPick(none, some)).toBe(some);
     expect(lwwPick(some, none)).toBe(some);
-    // Two missing pubkeys: '' >= '' → first arg (deterministic, never throws).
+    // Two missing source keys: '' >= '' → first arg (deterministic, never throws).
     const n1 = { type: 'put' as const, ts: 100 };
     const n2 = { type: 'put' as const, ts: 100 };
     expect(lwwPick(n1, n2)).toBe(n1);
   });
 
   it('is fold-order independent for three same-ts same-type ops (the divergence the fix prevents)', () => {
-    const x = { type: 'put' as const, ts: 5, writerPubkey: 'x' };
-    const y = { type: 'put' as const, ts: 5, writerPubkey: 'y' };
-    const z = { type: 'put' as const, ts: 5, writerPubkey: 'z' };
-    // Fold in any order → the lexicographically-greatest pubkey ('z') wins.
+    const x = { type: 'put' as const, ts: 5, sourceLogKeyHex: 'x' };
+    const y = { type: 'put' as const, ts: 5, sourceLogKeyHex: 'y' };
+    const z = { type: 'put' as const, ts: 5, sourceLogKeyHex: 'z' };
+    // Fold in any order → the lexicographically-greatest source key ('z') wins.
     // `lwwPick` returns the wider `OpEnvelope`, so seed/annotate the reduce as
     // `OpEnvelope` (the narrow inferred element type can't hold the result).
     const fold = (ops: OpEnvelope[]) =>
