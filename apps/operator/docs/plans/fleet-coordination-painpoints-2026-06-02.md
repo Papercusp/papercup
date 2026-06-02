@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Design captured + refined in review. Q1 CONFIRMED — remove the `lock_acquired` notify firehose at the source (D-002). "main-health" split into TWO concerns (D-005): Phase 3a = CODE health (is `main` green — tsc/test:affected → broadcast "main RED since X"); Phase 3b = SERVICE health (poll all dev endpoints, record up/down transitions, broadcast on a down). Neither Vite nor Tauri ships a health/metrics endpoint — probe Vite via HTTP-200 + HMR-ws, Tauri via the tauri-agent-tools bridge + IPC socket + toastLog. No code written.
+**State:** Design captured + refined twice in review. Q1 confirmed (remove lock_acquired notifies at source, D-002). main-health split into code-health + service-health (D-005). Orchestration settled (D-007): the monitors are DBOS scheduled workflows (the `periodic-workflows.ts` pattern — skip-missed, flag-gated PAPERCUSP_DBOS_TIMERS, step retries), NOT setInterval; service-health + code-health + migration-drift-check all follow that shape; live output via the SSE/IPC bus + coord message. BullMQ confirmed NOT installed (DBOS-on-PG is the durable-job system). No code written.
 
-**Next:** Resolve the remaining open questions — where the code-health monitor + service poller RUN and at what cadence (P-009), and native-migration auto-apply opt-in vs detection-only (P-007) — then implement Phase 1 (notify de-noise) first.
+**Next:** One open question remains — P-007 (native :5432 migration drift: opt-in auto-apply vs detection-only; lean detection-only). Then implement Phase 1 (notify de-noise) first, then the DBOS scheduled-workflow monitors (Phases 3a/3b) + drift-check (Phase 2) as DBOS workflows.
 
 ## Background — the audit
 
@@ -132,6 +132,18 @@ User: don't we already have eventing? Yes. Confirmed primitives: `ctx.emit` (54 
 
 Resolves P-009: both run IN the operator process — code-health as an fs-watcher, service-health as a voice-engine-health-style probe sweep — both emitting via the health-bus. (P-008's "periodic" is superseded by the fs-watch trigger.)
 Related: P-008, P-009, P-016, P-017, P-018
+
+
+### D-007 — Monitors are DBOS scheduled workflows, not setInterval (supersedes D-006's mechanism; BullMQ is not installed)
+Date: 2026-06-02
+Confirmed the durable-job system: DBOS (`@dbos-inc/dbos-sdk`) — `DBOS.registerScheduled` ×8, `DBOS.runStep` ×17, and `apps/operator/lib/dbos/periodic-workflows.ts` is an in-flight arc (`dbos-durable-jobs-2026-05-31`) deliberately REPLACING `setInterval` workers (telemetry-flush, scratch-gc) with DBOS scheduled workflows: skip-missed mode (no backfill storm after a closed desktop), flag-gated `PAPERCUSP_DBOS_TIMERS=1`, step retries + recovery cap. Pattern: single-run tick fn → `DBOS.runStep(..., {retriesAllowed})` → `DBOS.registerWorkflow` → `DBOS.registerScheduled({crontab})`.
+
+So this plan's monitors follow THAT shape, not a raw setInterval (my earlier rec — the anti-pattern they're migrating off): service-health, code-health, and the migration drift-check (P-005) all become DBOS scheduled workflows in/alongside `periodic-workflows.ts`. Durability matters precisely because the `:3070` operator restarts constantly (no hot-reload) — a setInterval monitor dies on restart; a DBOS scheduled workflow resumes (skip-missed). The external-liveness probe (service-health) is still a probe, but as a `DBOS.runStep` with retries. Code-health: a short-crontab scheduled workflow doing a cheap `git rev-parse HEAD` compare → `runStep(tsc/test:affected)` only when HEAD moved (chokidar fs-watch is an optional refinement; sub-second commit detection isn't needed for a health monitor — this simplifies vs D-006's fs-watch).
+
+Output is UNCHANGED: DBOS owns durable execution + transactional state writes; the live fan-out to UI/agents stays the SSE/IPC bus (`ctx.emit` / a health-bus) + a coord message on a down/RED (DBOS's own setEvent/send is workflow-to-workflow, not live UI push).
+
+BullMQ is NOT installed (no `bullmq` import, absent from every package.json; the only `new Worker` is a Web Worker for embeddings) — DBOS-on-Postgres is the system, matching the repo's no-Redis / PG-by-default stance.
+Related: P-005, P-008, P-009, P-016, P-017
 
 ## Open questions
 - **Notify** — confirm source-removal of `lock_acquired` (D-002) vs keeping it but never injecting. Lean: remove at source.
