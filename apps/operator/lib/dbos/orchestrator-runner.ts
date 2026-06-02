@@ -54,8 +54,12 @@ import {
 } from '../harness/usage-emitters';
 import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
+import { governorForBackend, classifySubprocessResult } from '@papercusp/papercup-shared/agent';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
+// How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
+// (the director re-tries later). Unattended → wait generously, but bounded.
+const GOVERNOR_MAX_WAIT_MS = Number(process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS ?? 1_800_000);
 
 /**
  * Strip the orchestrator's `[2026-…]` timestamp log lines from invoke-once
@@ -120,6 +124,39 @@ export async function spawnInvokeOnce(
     extras,
     extraEnv,
   });
+
+  // RB-012: pace pipeline spawns through the SHARED governor when enabled (default OFF →
+  // unchanged). PACING ONLY — concurrency/rate gate + penalize the governor on a detected
+  // 429, so the whole operator's agent spawns stay under the account's rate limit. We do
+  // NOT retry here: the orchestrator/director already owns turn retries (avoid double-retry).
+  if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
+    const gov = governorForBackend('claude-code', '');
+    const release = await gov.acquire({}, { maxWaitMs: GOVERNOR_MAX_WAIT_MS });
+    if (!release) {
+      return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
+    }
+    try {
+      const inner = await runChild(command, args, projectDir, env, role);
+      // Classify the outcome; on a detected 429/overload, pause the SHARED governor so the
+      // operator's other agent spawns back off too. No retry here — the director owns that.
+      const te = classifySubprocessResult({ exitCode: inner.exitCode, stderr: inner.stderr, stdout: inner.output }, 'anthropic');
+      if (te.class === 'rate_limited' || te.class === 'overloaded') gov.penalize({ retryAfterMs: te.retryAfterMs });
+      return inner;
+    } finally {
+      release();
+    }
+  }
+  return runChild(command, args, projectDir, env, role);
+}
+
+/** The raw subprocess spawn + timeout-kill + stdout/stderr capture (never rejects). */
+function runChild(
+  command: string,
+  args: string[],
+  projectDir: string,
+  env: NodeJS.ProcessEnv,
+  role: string,
+): Promise<{ output: string; exitCode: number; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: projectDir, env });
     let stdout = '';
