@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design revised after review round 1 (2026-06-02). Two load-bearing review objections resolved by decision: (1) **promotion targets a single dedicated harness's `promptOverrides`, never the shared default prompt files the live fleet reads** (D-012, supersedes D-006) — this dissolves the shared-`main`-tree concurrency hazard while keeping promotion immediate + autonomous; (2) **pass-count is demoted from optimization reward to an observability stat** (D-011) so the validator can stay mutable (D-003 holds) with no incentive to weaken it — the frozen Opus judge's holistic scores are the reward. Plus accepted review fixes: three task pools train/anchor/monitor (D-013), a real-feature correlation anchor in v1 (D-014), prompts-only proposer + generator/judge model decorrelation (D-015), reproducibility pins (D-016), trace distillation + a cost model (D-017). Spine-first build order unchanged; no code yet.
+**State:** Implementation STARTED 2026-06-02 (avi approved the plan + Option A). Runner isolation locked to Option A (D-018): ONE dedicated gym-operator instance booted from a PINNED papercup checkout (own PG database + port + gym-scoped DBOS autoloop), reused across runs; each (task×variant) run = throwaway substrate clone@commit + throwaway harness schema + variant promptOverrides + filed feature + pipeline-to-terminal. Building the measurement spine (Phases 0–3) under apps/operator/lib/gym/ + a harness_gym PG migration; HARD STOP at the P-014 human gate before any proposer/loop. Deep infra recon done — heavy reuse confirmed: DBOS pipeline (ensureFeaturePipeline / POST /api/admin/dbos/pipeline/start), setPromptOverride (the variant-overlay AND D-012 promotion mechanism, harness_shared.harness_prompt_overrides), harness_run_output (full transcripts), agent_runs_consolidated (cost/tokens), and the SHIPPED apps/operator/lib/llm-testing judge/replay (judgeRun + reEvaluateRun) for P-008/P-010. No gym code existed before this session.
 
-**Next:** Human (avi) re-reviews this revision; on approval an agent picks up **P-001** (Phase 0 hermetic runner).
+**Next:** Agent (su) is building P-001: gym package scaffold + throwaway-clone/throwaway-harness lifecycle + GymRunner + pinned gym-operator boot, TDD on the pure logic. Then branches into P-002/003/004/027 + P-012 schema.
 
 ## Background
 
@@ -164,7 +164,7 @@ One cycle:
 
 ## Phase 0 — Hermetic runner
 
-- **P-001** `todo` Hermetic runner: given `(repo@commit, spec, variant overlay)`, spin an isolated **headless backend-only** harness instance (operator-sidecar + orchestrator/DBOS + PG per instance; no Tauri/Xvfb) on a throwaway clone and run the real scoper→…→curator pipeline. **Pin both the substrate commit AND the harness-under-test commit.** State the minimal bootable unit. importance: high
+- **P-001** `wip` Hermetic runner: given `(repo@commit, spec, variant overlay)`, spin an isolated **headless backend-only** harness instance (operator-sidecar + orchestrator/DBOS + PG per instance; no Tauri/Xvfb) on a throwaway clone and run the real scoper→…→curator pipeline. **Pin both the substrate commit AND the harness-under-test commit.** State the minimal bootable unit. importance: high
 - **P-002** `todo` Trace collector: capture terminal_state, attempts/retries/escalations, the diff, full per-role transcript, cost/tokens/wall-clock; store trace bundles as **files** (+ retention), PG holds refs. blocked-by: P-001
 - **P-003** `todo` Deterministic signals: regressions (repo's own tests pre/post), `planted_bug_caught`, cost; pass-count recorded as observability only. blocked-by: P-002
 - **P-004** `todo` Parallel isolation: run N `(task×variant)` evaluations concurrently without port/DB/worktree collision. blocked-by: P-001
@@ -282,3 +282,16 @@ A variant = (harness-under-test code + prompt overlay); if harness code on the s
 ### D-017 — Trace distillation + file storage + a cost model
 Date: 2026-06-02
 A full multi-hour multi-agent transcript doesn't fit the judge's context even at 1M tokens, so a **distillation step** (③b) selects/summarizes each run into a judge-sized input — itself a noise source, validated in P-029. Trace bundles are stored as **files** with a retention policy (the storage policy's high-volume-log exception), with PG holding refs. The economics are non-trivial (~tens of full pipeline runs/cycle + Opus judge/proposer/generator), so a **$/cycle + $/converged-run estimate** is a required P-014 deliverable before the loop is built. (Resolves review #8 + trace-storage.)
+
+### D-018 — Runner isolation = one dedicated pinned gym-operator instance (Option A)
+Date: 2026-06-02
+Date: 2026-06-02. Decided by avi after a three-way comparison.
+
+P-001's "minimal bootable unit" is **one dedicated gym-operator instance** — a single extra operator+DBOS process booted from a PINNED papercup checkout (a git worktree/clone parked at a fixed, recorded SHA, NOT the live `main`, which concurrent agents commit to constantly), with its **own PG database** and **own port**, and DBOS autoloop **scoped to gym harnesses only** (`PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES`). This instance is **reused across runs**; each `(task×variant)` run = throwaway substrate clone@pinned-commit (D-009) + a throwaway harness (its own `harness_<slug>` schema in the gym PG) + `setPromptOverride` of the variant + a filed synthetic feature + pipeline-to-terminal + capture + teardown.
+
+Why not the alternatives:
+- **Reuse the live :3070 operator** — rejected: cannot pin the harness-under-test commit (it's whatever `main` HEAD is, which drifts mid-A/B), pollutes the live PG with gym schemas/runs, and lets the live autoloop/fleet interfere with gym runs. Conflicts with D-016 and the "never touch the live fleet/PG" non-goal; a migration dead-end.
+- **Fresh operator+PG per run** ("literal PG per instance") — deferred: maximal hermeticity but pays N× cold-starts plus a per-run port allocator and per-run embedded-PG lifecycle (neither exists today). Run-level isolation is already provided by separate `harness_<slug>` schemas + separate substrate clones, so there is no measured need yet. Option A is a strict subset — we can layer per-run instances on top later if P-014's variance numbers demand it.
+
+This satisfies D-016 (the pinned checkout's SHA is recorded as `gym_runs_params.harness_commit`; no drift for the duration of an optimization run) and D-009 (substrate = throwaway clones at pinned commits), at the lowest viable build/runtime cost. "PG per instance" in the data-model prose is read as a dedicated gym PG *database*, not one PG per run (all `gym_*` tables live in a single `harness_gym` schema). Gym code lives under `apps/operator/lib/gym/` (paralleling the reused `apps/operator/lib/llm-testing/`).
+Related: P-001, P-004, P-012

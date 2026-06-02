@@ -1,0 +1,90 @@
+/**
+ * P-001 "minimal bootable unit" — the spawn spec for the dedicated gym-operator.
+ *
+ * Per D-018 (Option A), the gym runs the real pipeline on ONE long-lived headless
+ * operator+DBOS process, NOT the live :3070 fleet operator. This builder encodes
+ * the exact environment that makes that instance hermetic:
+ *
+ *   - booted from a PINNED papercup checkout (a worktree/clone parked at a fixed
+ *     SHA) so the harness-under-test code can't drift mid-run (D-016);
+ *   - pointed at a DEDICATED gym PG database (both admin-DSN resolution keys), so
+ *     no gym schema/run ever touches the live PG and no live DSN leaks in;
+ *   - on a DEDICATED port; DBOS autoloop scoped (default: manual) so the runner
+ *     starts each pipeline explicitly for deterministic 1-feature-per-harness runs;
+ *   - DBOS app-version pinned to the harness commit, isolating the gym DBOS app
+ *     from the live one and keeping workflow recovery stable for the run.
+ *
+ * Pure: returns the spawn spec; the caller spawns with `{ ...process.env, ...env }`
+ * so these explicit gym overrides win (dotenv.config() does not override set vars).
+ */
+import { isPinnedCommit } from './clone';
+
+export interface GymOperatorBootConfig {
+  /** Absolute path to the pinned papercup checkout (worktree/clone @ harnessCommit). */
+  pinnedCheckoutPath: string;
+  /** The pinned harness-under-test commit SHA (D-016) — recorded as gym_runs_params.harness_commit. */
+  harnessCommit: string;
+  /** DSN of the dedicated gym Postgres database. */
+  gymDatabaseUrl: string;
+  /** Dedicated Hono port for this instance. */
+  honoPort: number;
+  /** Workspace id to pin for the instance's lifetime. */
+  workspaceId: string;
+  /** PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES; default 'none' (manual dispatch only). */
+  autoloopScope?: string;
+  /** PAPERCUSP_DBOS_MAX_PIPELINES; default 4 (matches the DBOS pipeline queue). */
+  maxPipelines?: number;
+  /** Bind interface; default loopback. */
+  bindHost?: string;
+  /** Optional pin of the agent CLI command (AGENT_CMD). */
+  agentCmd?: string;
+  /** Optional pin of per-role models (AGENT_MODELS json). */
+  agentModels?: Record<string, string>;
+}
+
+export interface GymOperatorBootSpec {
+  command: string;
+  args: string[];
+  cwd: string;
+  /** The explicit gym overrides; merge onto process.env (these win). */
+  env: Record<string, string>;
+}
+
+export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperatorBootSpec {
+  if (!isPinnedCommit(cfg.harnessCommit)) {
+    throw new Error(
+      `gym harness-under-test commit must be a pinned hex SHA (D-016), got: ${JSON.stringify(cfg.harnessCommit)}`,
+    );
+  }
+
+  const env: Record<string, string> = {
+    // Hermetic PG: pin BOTH keys getHarnessAdminUrl() consults so neither the live
+    // DATABASE_URL nor a live ~/.papercusp/embedded-pg.json can leak in.
+    DATABASE_URL: cfg.gymDatabaseUrl,
+    HARNESS_ADMIN_DATABASE_URL: cfg.gymDatabaseUrl,
+    PAPERCUSP_HONO_PORT: String(cfg.honoPort),
+    PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
+    PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,
+    // Boot the durable orchestrator; keep auto-dispatch off by default so the
+    // runner owns when each feature pipeline starts (deterministic).
+    PAPERCUSP_DBOS_ENABLE: '1',
+    PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: cfg.autoloopScope ?? 'none',
+    PAPERCUSP_DBOS_MAX_PIPELINES: String(cfg.maxPipelines ?? 4),
+    // Isolate the gym DBOS application + keep recovery stable for the run.
+    DBOS__APPVERSION: `gym-${cfg.harnessCommit.slice(0, 12)}`,
+    // Not the Tauri desktop/IPC context.
+    PAPERCUSP_IPC_ENABLE: '0',
+  };
+
+  if (cfg.agentCmd) env.AGENT_CMD = cfg.agentCmd;
+  if (cfg.agentModels && Object.keys(cfg.agentModels).length > 0) {
+    env.AGENT_MODELS = JSON.stringify(cfg.agentModels);
+  }
+
+  return {
+    command: 'npx',
+    args: ['tsx', 'bin/hono-host.ts'],
+    cwd: `${cfg.pinnedCheckoutPath}/apps/operator`,
+    env,
+  };
+}
