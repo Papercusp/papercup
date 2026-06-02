@@ -106,13 +106,30 @@ promotion/circuit-breaker/optin/variance/grader-opt). Plus `runner-ports.ts`
 (createGymRunnerPorts) + `../harness-seed.ts` (shared w/ harness-test-coverage) +
 `gym-db-init.ts` (provisionGymDatabase).
 
-**SPINE validated end-to-end WITH REAL WORK** by `smoke.ts` (zero LLM spend): provision
-dedicated gym PG → boot headless gym-operator (DBOS launches on the gym DB) → register +
+**CAPTURE CHAIN validated end-to-end, zero LLM** by `smoke.ts` (run:
+`cd apps/operator && npx tsx lib/gym/smoke.ts`, ~50s, deterministic PASS). Provision a
+dedicated gym PG → boot a headless gym-operator (DBOS on the gym DB) → register +
 scaffold harness → file feature (direct PG) → deterministic start (admin route +
-`~/.papercusp/superuser-token` bearer) → **full pipeline runs to workflow SUCCESS (25
-runs: director/worker/validator/curator/documenter/debugger), worker COMMITS real work,
-terminal feature status** → process-group teardown. `SMOKE: PASS`, 0 × 42P01. Run it:
-`cd apps/operator && npx tsx lib/gym/smoke.ts`.
+`~/.papercusp/superuser-token` bearer) → a **real multi-role pipeline runs**
+(director/worker/validator/curator/documenter/debugger; worker COMMITS real work) →
+**P-002 collector** assembles a real `RawTrace` (real `harness_run_output` transcripts +
+real `git diff <base> HEAD`) and writes a bundle → **P-029 distillation** compresses it
+into a bounded, deterministic, judge-sized input (diff section preserved) →
+process-group teardown. `SMOKE: PASS`, 0 × 42P01.
+
+> **Fake-agent fidelity (why the smoke gates on the capture chain, not workflow SUCCESS):**
+> the fake validator prints `[PASS]` but the orchestrator reads feature status from PG,
+> not stdout, so the synthetic feature stays `failing` and the pipeline cycles a
+> nondeterministic 25–123+ debugger/rework turns to its iteration cap. That's a fixture
+> artifact (real agents converge), so the smoke breaks the poll once a substantial real
+> run exists (≥12 rows) and PASSES on collector + distill; only a real DBOS
+> `ERROR`/`RETRIES_EXCEEDED` fails. A future fixture refinement could have the fake
+> validator/worker set the PG feature status so the fake pipeline converges cleanly.
+
+What is NOT yet validated against a real run (both are the **P-014** boundary):
+**P-003 signals** (`regressionsFromTests` needs a real substrate *with a test suite*; the
+synthetic substrate has none) and the **P-008 Opus judge** (real LLM). Everything up to
+those — boot, run, collect, distill — is validated zero-LLM.
 
 ### RESOLVED — worker invoke `harness_features` 42P01 (the last mile to REAL work)
 
