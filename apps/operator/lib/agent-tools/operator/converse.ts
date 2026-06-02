@@ -290,6 +290,12 @@ export default defineTool({
           // agentic and emit no clean turn (turns=0). No-op for non-claude
           // backends. See plan operator-brain-test-isolation-2026-06-02.
           isolateConfig: true,
+          // The operator reaches its world ONLY through agentmcp tools and
+          // emits <say>/<spawn> as control-tag text — it needs no Claude
+          // Code built-ins, and when present it misuses them (no-op Bash
+          // "comments", ToolSearch-ing already-loaded tools, occasional
+          // 600s loops). Deny them all. See voice-persona-production-readiness.
+          disallowBuiltins: true,
           signal: ctx.signal,
         })) {
           if (ctx.signal.aborted) break;
