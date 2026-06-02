@@ -14,7 +14,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
-import type { BindingStatus } from '@/lib/identity/binding-verifier-types';
+import { type BindingStatus, statsAggregateForStatus } from '@/lib/identity/binding-verifier-types';
 
 export interface ContributorListRow {
   github_user_id: number;
@@ -82,19 +82,24 @@ const list = defineTool({
         c.binding_status,
         c.binding_last_checked_at,
         c.device_attestations,
+        -- Tier sources MIRROR lib/user-profile/load.ts (P-072b) +
+        -- lib/harness-insights/load-contributors-tab.ts so the Contributors tab
+        -- and the user profile show IDENTICAL tier numbers. (Previously this used
+        -- harness_feature_prs / harness_features.shipped_by_github_id, which have
+        -- no producer outside the gated substrate — inert + inconsistent.)
         (
-          SELECT COUNT(*) FROM harness_shared.harness_feature_prs p
-          WHERE p.workspace_id = c.workspace_id
-            AND p.harness_slug = c.harness_slug
-            AND p.author_github_id = c.github_user_id
-            AND p.merged_at IS NOT NULL
+          SELECT COUNT(*) FROM harness_shared.auto_review_audit a
+          WHERE a.workspace_id = c.workspace_id
+            AND a.harness_slug = c.harness_slug
+            AND a.author_github_id = c.github_user_id
+            AND a.action IN ('auto_merge', 'manual_merge')
         ) AS prs_merged,
         (
-          SELECT COUNT(*) FROM harness_shared.harness_features f
+          SELECT COUNT(*) FROM harness_shared.harness_features_consolidated f
           WHERE f.workspace_id = c.workspace_id
             AND f.harness_slug = c.harness_slug
-            AND f.completion_ref IS NOT NULL
-            AND f.shipped_by_github_id = c.github_user_id
+            AND f.status = 'shipped'
+            AND f.taken_by = c.github_user_id::text
         ) AS features_shipped,
         (
           SELECT COUNT(*) FROM harness_shared.contributor_usage_events e
@@ -108,20 +113,26 @@ const list = defineTool({
       ORDER BY c.joined_at DESC
     `) as unknown as RawRow[];
 
-    const contributors: ContributorListRow[] = rows.map((r) => ({
-      github_user_id: r.github_user_id,
-      github_username: r.github_username,
-      display_name: r.display_name,
-      avatar_url: r.avatar_url,
-      joined_at: toMs(r.joined_at) ?? 0,
-      last_seen_at: toMs(r.last_seen_at),
-      binding_status: r.binding_status,
-      binding_last_checked_at: toMs(r.binding_last_checked_at),
-      device_count: deviceCount(r.device_attestations),
-      prs_merged: toCount(r.prs_merged),
-      features_shipped: toCount(r.features_shipped),
-      activity_events: toCount(r.activity_events),
-    }));
+    const contributors: ContributorListRow[] = rows.map((r) => {
+      // P-048d / §0.2.7: only verified bindings aggregate stats. Zero the tiers
+      // for unverified/pending contributors server-side (the panel also greys
+      // them). Mirrors load-contributors-tab.ts + statsAggregateForStatus.
+      const aggregate = statsAggregateForStatus(r.binding_status);
+      return {
+        github_user_id: r.github_user_id,
+        github_username: r.github_username,
+        display_name: r.display_name,
+        avatar_url: r.avatar_url,
+        joined_at: toMs(r.joined_at) ?? 0,
+        last_seen_at: toMs(r.last_seen_at),
+        binding_status: r.binding_status,
+        binding_last_checked_at: toMs(r.binding_last_checked_at),
+        device_count: deviceCount(r.device_attestations),
+        prs_merged: aggregate ? toCount(r.prs_merged) : 0,
+        features_shipped: aggregate ? toCount(r.features_shipped) : 0,
+        activity_events: aggregate ? toCount(r.activity_events) : 0,
+      };
+    });
 
     return Response.json({ contributors });
   },
