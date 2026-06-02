@@ -41,14 +41,44 @@ const DEFAULT_WAKE_WORD = process.env.MOBILE_WAKE_WORD ?? 'hey operator';
 // handler (`api/[[...route]]/route.ts`), which Next re-imports on edits
 // to any file in the route's chunk graph.
 type MobileVoiceGlobals = typeof globalThis & {
-  __papercuspMobileVoiceWs?: { started: boolean; chosenPort: number | null };
+  __papercuspMobileVoiceWs?: {
+    started: boolean;
+    chosenPort: number | null;
+    wss: WebSocketServer | null;
+  };
 };
 const _mvGlobals = globalThis as MobileVoiceGlobals;
-const mvState = _mvGlobals.__papercuspMobileVoiceWs ?? { started: false, chosenPort: null };
+const mvState = _mvGlobals.__papercuspMobileVoiceWs ?? {
+  started: false,
+  chosenPort: null,
+  wss: null,
+};
 _mvGlobals.__papercuspMobileVoiceWs = mvState;
 
 export function getMobileVoicePort(): number | null {
   return mvState.chosenPort;
+}
+
+/**
+ * Test-only seam: close the listening server (if one is up) and reset module
+ * state so a subsequent `startMobileVoiceWs()` binds fresh. Mirrors the
+ * `_reset*ForTests` seams used elsewhere (e.g. agent-mcp's
+ * `_resetStateChannelForTests`). Never called in production. Returns a promise
+ * that resolves once the socket is fully closed, so a port can be rebound.
+ */
+export function _stopMobileVoiceWsForTests(): Promise<void> {
+  const cur = mvState.wss;
+  mvState.started = false;
+  mvState.chosenPort = null;
+  mvState.wss = null;
+  return new Promise<void>((resolve) => {
+    if (!cur) return resolve();
+    try {
+      cur.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
 }
 
 export function startMobileVoiceWs(): void {
@@ -78,6 +108,7 @@ async function tryListen(port: number, attempt: number): Promise<void> {
 
   wss.on('listening', () => {
     mvState.chosenPort = port;
+    mvState.wss = wss;
     console.log(`[mobile-voice] listening on :${port}/api/device/voice`);
   });
 
@@ -101,7 +132,7 @@ async function tryListen(port: number, attempt: number): Promise<void> {
   });
 }
 
-function handleConnection(ws: WebSocket, req: IncomingMessage): void {
+export function handleConnection(ws: WebSocket, req: IncomingMessage): void {
   // Auth: prefer Sec-WebSocket-Protocol (header-based, doesn't leak into
   // proxy access logs), fall back to ?token=<jwt> for browser dev / older
   // clients. The phone uses subprotocol form `papercusp.bearer.<jwt>`.
