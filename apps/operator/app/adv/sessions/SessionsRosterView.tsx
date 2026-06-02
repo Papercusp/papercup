@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatRelativeUpdated } from '@/lib/format/relative-time';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
+import { Select } from '@/app/harness/Select';
 import AgentDossier from './AgentDossier';
 import './SessionsRosterView.css';
 
@@ -363,6 +364,11 @@ function GroupSection({
  * "who's editing <file>" substring box. Each change emits the full next
  * RosterFilters so the parent shell persists it to the URL (nuqs).
  */
+// Sentinels for the "no constraint" option — the harness <Select> drops
+// empty-value options, so null filters map to these instead of ''.
+const ALL = '_all';
+const ANY = '_any';
+
 function FilterBar({
   filters,
   roleOptions,
@@ -375,44 +381,40 @@ function FilterBar({
   const active = hasActiveFilters(filters);
   return (
     <div className="pc-roster__filters">
-      <select
-        className="pc-roster__filter-sel"
-        aria-label="Filter by client"
-        value={filters.client ?? ''}
-        onChange={(e) => onChange({ ...filters, client: e.target.value || null })}
-      >
-        <option value="">all clients</option>
-        <option value="claude">claude</option>
-        <option value="codex">codex</option>
-        <option value="omp">omp</option>
-      </select>
-      <select
-        className="pc-roster__filter-sel"
-        aria-label="Filter by liveness"
-        value={filters.liveness ?? ''}
-        onChange={(e) =>
-          onChange({ ...filters, liveness: (e.target.value || null) as Liveness | null })
+      <Select
+        ariaLabel="Filter by client"
+        value={filters.client ?? ALL}
+        onChange={(v) => onChange({ ...filters, client: v === ALL ? null : v })}
+        options={[
+          { value: ALL, label: 'all clients' },
+          { value: 'claude', label: 'claude' },
+          { value: 'codex', label: 'codex' },
+          { value: 'omp', label: 'omp' },
+        ]}
+      />
+      <Select
+        ariaLabel="Filter by liveness"
+        value={filters.liveness ?? ANY}
+        onChange={(v) =>
+          onChange({ ...filters, liveness: v === ANY ? null : (v as Liveness) })
         }
-      >
-        <option value="">any liveness</option>
-        <option value="live">live</option>
-        <option value="idle">idle</option>
-        <option value="stale">stale</option>
-      </select>
-      <select
-        className="pc-roster__filter-sel"
-        aria-label="Filter by role"
-        value={filters.role ?? ''}
-        onChange={(e) => onChange({ ...filters, role: e.target.value || null })}
+        options={[
+          { value: ANY, label: 'any liveness' },
+          { value: 'live', label: 'live' },
+          { value: 'idle', label: 'idle' },
+          { value: 'stale', label: 'stale' },
+        ]}
+      />
+      <Select
+        ariaLabel="Filter by role"
+        value={filters.role ?? ANY}
+        onChange={(v) => onChange({ ...filters, role: v === ANY ? null : v })}
         disabled={roleOptions.length === 0}
-      >
-        <option value="">any role</option>
-        {roleOptions.map((r) => (
-          <option key={r} value={r}>
-            {r}
-          </option>
-        ))}
-      </select>
+        options={[
+          { value: ANY, label: 'any role' },
+          ...roleOptions.map((r) => ({ value: r, label: r })),
+        ]}
+      />
       <input
         className="pc-roster__filter-file"
         type="search"
@@ -554,23 +556,25 @@ export default function SessionsRosterView({
   return (
     <div className="pc-sessions">
       <div className="pc-roster">
-        <header className="pc-roster__head">
-          <span className="pc-roster__head-title">Active agents</span>
-          <span
-            className="pc-roster__head-summary"
-            title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
-          >
-            {active.length}
-            {filtered ? ` / ${rawActive.length}` : ''} total · {live} live · {idle} idle
-            {stale ? ` · ${stale} stale` : ''}
-          </span>
-        </header>
+        <div className="pc-roster__sticky">
+          <header className="pc-roster__head">
+            <span className="pc-roster__head-title">Active agents</span>
+            <span
+              className="pc-roster__head-summary"
+              title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
+            >
+              {active.length}
+              {filtered ? ` / ${rawActive.length}` : ''} total · {live} live · {idle} idle
+              {stale ? ` · ${stale} stale` : ''}
+            </span>
+          </header>
 
-        <FilterBar
-          filters={filters}
-          roleOptions={roleOptions}
-          onChange={(next) => onFilterChange?.(next)}
-        />
+          <FilterBar
+            filters={filters}
+            roleOptions={roleOptions}
+            onChange={(next) => onFilterChange?.(next)}
+          />
+        </div>
 
         {error ? <div className="pc-roster__error">Couldn’t load roster: {error}</div> : null}
         {loading && rawActive.length === 0 ? <div className="pc-roster__loading">Loading roster…</div> : null}
@@ -645,7 +649,18 @@ export default function SessionsRosterView({
           entry={selectedEntry}
           onClose={() => onSelectAgent?.(null)}
         />
-      ) : null}
+      ) : (
+        <aside className="pc-dossier pc-dossier--empty" aria-label="Agent detail">
+          <div className="pc-dossier__placeholder">
+            <span className="pc-dossier__placeholder-title">No agent selected</span>
+            <span className="pc-dossier__placeholder-hint">
+              Pick an agent from the roster — or a file’s agent chip below — to see its
+              live detail: declared intent, files in play, locks held &amp; waiting, and
+              recent coordination (messages, handoffs, escalations).
+            </span>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

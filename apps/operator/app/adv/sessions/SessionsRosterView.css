@@ -1,191 +1,251 @@
-/* SessionsRosterView — the live roster's rich grouped rows (P-006) + the
- * two-pane roster|dossier layout (P-007). Design tokens with hex fallbacks;
- * a token-alignment pass is P-010. */
+/* SessionsRosterView — the live agent roster (P-006), dossier pane (P-007),
+ * files-in-play map (P-008), and facet filters (P-010).
+ *
+ * Design: grounded in the bluefrost semantic scale (--fg/--fg-dim/--fg-mute,
+ * --good/--warn/--bad, --accent, --bg/--bg-2, --border) and matched to the
+ * sibling Plans/Inbox panes (gradient surfaces, sticky detail, 16px radius,
+ * flat interactive elements — no shadows/transforms per design HR#9). The
+ * enclosing .pc-plans__main scrolls; the roster column flows and the dossier
+ * sticks, exactly like .pc-items + .pc-items__detail.
+ */
 
-/* Two-pane shell: scrollable roster on the left, sticky dossier on the right. */
+/* ───────────────────────────── layout shell ────────────────────────────── */
 .pc-sessions {
   display: flex;
-  min-height: 0;
-  height: 100%;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 16px 32px;
+  min-width: 0;
 }
 
 .pc-roster {
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 12px 14px 28px;
-  overflow-y: auto;
-  height: 100%;
-  flex: 1 1 0;
-  min-width: 0;
-  color: var(--fg, #e5e7eb);
+  color: var(--fg);
+}
+
+/* Header + filters stick to the top of the scrolling main, like the plan
+   detail head — they stay reachable while the long roster scrolls. */
+.pc-roster__sticky {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px 10px;
+  margin: 0 -2px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg), transparent 8%) 72%,
+    transparent
+  );
+  backdrop-filter: blur(8px);
 }
 
 .pc-roster__head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
 }
 .pc-roster__head-title {
   font-size: 13px;
-  font-weight: 600;
-  color: var(--fg, #e5e7eb);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--fg);
 }
 .pc-roster__head-summary {
   font-size: 11px;
-  color: var(--fg-mute, #6b7280);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-mute);
 }
 
-/* ───────────────────────── Facet filters (P-010) ───────────────────────── */
+/* ───────────────────────── facet filters (P-010) ───────────────────────── */
 .pc-roster__filters {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
-.pc-roster__filter-sel,
+/* The client/liveness/role dropdowns are the harness <Select> wrapper (Radix,
+   token-styled trigger). Only the native file search + clear button need CSS. */
 .pc-roster__filter-file {
-  font-size: 11px;
-  color: var(--fg-dim, #cbd5e1);
-  background: var(--surface-1, #161b27);
-  border: 1px solid var(--border, #2a2f3a);
-  border-radius: 6px;
-  padding: 3px 6px;
-}
-.pc-roster__filter-sel:disabled {
-  opacity: 0.5;
-}
-.pc-roster__filter-file {
-  flex: 1 1 140px;
-  min-width: 120px;
+  flex: 1 1 150px;
+  min-width: 130px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 9px;
 }
-.pc-roster__filter-file:focus-visible,
-.pc-roster__filter-sel:focus-visible {
+.pc-roster__filter-file::placeholder {
+  color: var(--fg-mute);
+}
+.pc-roster__filter-file:focus-visible {
   outline: none;
-  border-color: var(--accent, #60a5fa);
+  border-color: color-mix(in oklab, var(--accent), transparent 40%);
 }
 .pc-roster__filter-clear {
-  font-size: 10.5px;
-  color: var(--fg-mute, #6b7280);
+  font-size: 11px;
+  color: var(--fg-mute);
   background: transparent;
-  border: 1px solid var(--border, #2a2f3a);
-  border-radius: 6px;
-  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 10px;
   cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
 }
 .pc-roster__filter-clear:hover {
-  color: var(--fg, #e5e7eb);
-  border-color: var(--border-strong, #3a4150);
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+.pc-roster__filter-clear:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
+/* ───────────────────────── status banners ──────────────────────────────── */
 .pc-roster__error,
 .pc-roster__loading,
 .pc-roster__empty {
   font-size: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border, #2a2f3a);
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
 }
 .pc-roster__error {
-  color: #fca5a5;
-  border-color: #7f1d1d;
-  background: rgba(127, 29, 29, 0.18);
+  color: color-mix(in oklab, var(--bad), white 18%);
+  border-color: color-mix(in oklab, var(--bad), transparent 55%);
+  background: color-mix(in oklab, var(--bad), transparent 88%);
 }
 .pc-roster__loading,
 .pc-roster__empty {
-  color: var(--fg-mute, #6b7280);
-  background: var(--surface-1, #161b27);
+  color: var(--fg-mute);
+  background: color-mix(in oklab, var(--bg-2), transparent 30%);
 }
 
+/* ───────────────────────── groups ──────────────────────────────────────── */
 .pc-roster__group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .pc-roster__group-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 2px 2px 4px;
-  border-bottom: 1px solid var(--border, #2a2f3a);
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 25%);
 }
 .pc-roster__group-title {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim, #cbd5e1);
+  font-weight: 700;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
 }
 .pc-roster__group-sub {
   font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-mute, #6b7280);
-  background: var(--surface-2, #1f2530);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-mute);
+  background: color-mix(in oklab, var(--bg-2), transparent 20%);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 1px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
 }
 .pc-roster__group-count {
   font-size: 11px;
-  color: var(--fg-mute, #6b7280);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-mute);
 }
 .pc-roster__group-live {
   margin-left: auto;
   font-size: 10px;
-  color: #34d399;
+  font-weight: 600;
+  color: var(--good);
 }
 
+/* ───────────────────────── rows ────────────────────────────────────────── */
 .pc-roster__list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .pc-roster__row {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 7px 10px;
-  border: 1px solid var(--border, #2a2f3a);
-  border-radius: 8px;
-  background: var(--surface-1, #161b27);
+  gap: 4px;
+  padding: 8px 11px 8px 13px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--bg-2), transparent 18%);
   cursor: pointer;
-  transition: border-color 0.1s ease, background 0.1s ease;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
-.pc-roster__row:hover {
-  border-color: var(--border-strong, #3a4150);
-  background: var(--surface-2, #1a2030);
+/* A liveness accent bar runs down the left edge (rounded with the card). */
+.pc-roster__row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--fg-mute);
 }
-.pc-roster__row:focus-visible {
-  outline: 2px solid var(--accent, #60a5fa);
-  outline-offset: 1px;
+.pc-roster__row[data-liveness='live']::before {
+  background: var(--good);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--good), transparent 55%);
 }
-.pc-roster__row[data-selected] {
-  border-color: var(--accent, #60a5fa);
-  background: var(--surface-selected, rgba(96, 165, 250, 0.1));
-}
-.pc-roster__row--ended {
-  cursor: default;
-}
-.pc-roster__row--ended:hover {
-  border-color: var(--border, #2a2f3a);
-  background: var(--surface-1, #161b27);
-}
-.pc-roster__row[data-liveness='live'] {
-  border-left: 2px solid #34d399;
-}
-.pc-roster__row[data-liveness='idle'] {
-  border-left: 2px solid #fbbf24;
+.pc-roster__row[data-liveness='idle']::before {
+  background: var(--warn);
 }
 .pc-roster__row[data-liveness='stale'] {
-  opacity: 0.6;
-}
-.pc-roster__row--ended {
   opacity: 0.55;
+}
+.pc-roster__row:hover {
+  border-color: var(--border-strong);
+  background: color-mix(in oklab, var(--bg-2), transparent 4%);
+}
+.pc-roster__row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.pc-roster__row[data-selected] {
+  border-color: color-mix(in oklab, var(--accent), transparent 35%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
+}
+
+.pc-roster__row--ended {
+  cursor: default;
+  opacity: 0.5;
+  border-style: dashed;
+  background: transparent;
+}
+.pc-roster__row--ended::before {
+  display: none;
+}
+.pc-roster__row--ended:hover {
+  border-color: var(--border);
+  background: transparent;
 }
 
 .pc-roster__row-main {
@@ -196,39 +256,42 @@
 }
 .pc-roster__badge {
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   text-transform: lowercase;
-  color: var(--fg, #e5e7eb);
-  background: var(--surface-2, #1f2530);
-  border-radius: 4px;
+  color: var(--fg-dim);
+  background: color-mix(in oklab, var(--bg), transparent 20%);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 30%);
+  border-radius: 5px;
   padding: 1px 6px;
 }
 .pc-roster__badge[data-client='claude'] {
-  color: #d8b4fe;
+  color: color-mix(in oklab, #d8b4fe, var(--fg) 18%);
 }
 .pc-roster__badge[data-client='codex'] {
-  color: #7dd3fc;
+  color: color-mix(in oklab, var(--sky-300), var(--fg) 10%);
 }
 .pc-roster__badge[data-client='omp'] {
-  color: #fcd34d;
+  color: color-mix(in oklab, var(--amber-400), var(--fg) 10%);
 }
 .pc-roster__chip {
   font-size: 10px;
-  color: var(--fg-dim, #cbd5e1);
-  background: var(--surface-2, #1f2530);
-  border-radius: 4px;
+  color: var(--fg-dim);
+  background: color-mix(in oklab, var(--bg-2), transparent 15%);
+  border-radius: 5px;
   padding: 1px 6px;
 }
 .pc-roster__chip--feature {
-  color: #93c5fd;
+  color: color-mix(in oklab, var(--accent), var(--fg) 22%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
 }
 .pc-roster__chip--warn {
-  color: #fca5a5;
-  background: rgba(127, 29, 29, 0.3);
+  color: color-mix(in oklab, var(--bad), white 22%);
+  background: color-mix(in oklab, var(--bad), transparent 82%);
 }
 .pc-roster__label {
   font-size: 12px;
-  color: var(--fg, #e5e7eb);
+  color: var(--fg);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -238,14 +301,15 @@
 .pc-roster__age {
   margin-left: auto;
   font-size: 10px;
-  color: var(--fg-mute, #6b7280);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-mute);
   white-space: nowrap;
 }
 
 .pc-roster__intent {
   font-size: 11.5px;
-  color: var(--fg-dim, #9ca3af);
-  font-style: italic;
+  line-height: 1.4;
+  color: var(--fg-dim);
 }
 
 .pc-roster__files {
@@ -257,31 +321,28 @@
 .pc-roster__file-chip {
   font-size: 10px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--fg-mute, #94a3b8);
-  background: var(--surface-2, #1f2530);
+  color: var(--fg-mute);
+  background: color-mix(in oklab, var(--bg), transparent 25%);
   border-radius: 4px;
   padding: 1px 5px;
-  max-width: 200px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .pc-roster__meta {
   font-size: 10px;
-  color: var(--fg-mute, #6b7280);
-  margin-left: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--fg-mute);
+  margin-left: 2px;
 }
 
-.pc-roster__ended {
-  margin-top: 6px;
-  opacity: 0.85;
-}
-
-/* ─────────────────────── Files in play (P-008) ─────────────────────────── */
+/* ───────────────────────── files in play (P-008) ───────────────────────── */
 .pc-files__contend {
   margin-left: auto;
   font-size: 10px;
-  color: #fca5a5;
+  font-weight: 600;
+  color: color-mix(in oklab, var(--bad), white 12%);
 }
 .pc-files__list {
   list-style: none;
@@ -295,18 +356,21 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 8px;
-  border-radius: 6px;
+  padding: 4px 9px;
+  border-radius: 8px;
   border: 1px solid transparent;
 }
+.pc-files__row:hover {
+  background: color-mix(in oklab, var(--bg-2), transparent 35%);
+}
 .pc-files__row[data-contended] {
-  border-color: rgba(248, 113, 113, 0.4);
-  background: rgba(248, 113, 113, 0.07);
+  border-color: color-mix(in oklab, var(--bad), transparent 62%);
+  background: color-mix(in oklab, var(--bad), transparent 90%);
 }
 .pc-files__path {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 10.5px;
-  color: var(--fg-dim, #cbd5e1);
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -324,39 +388,82 @@
   align-items: center;
   gap: 3px;
   font-size: 10px;
-  color: var(--fg-dim, #cbd5e1);
-  background: var(--surface-2, #1f2530);
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 1px 5px;
+  color: var(--fg-dim);
+  background: color-mix(in oklab, var(--bg), transparent 15%);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 25%);
+  border-radius: 5px;
+  padding: 1px 6px;
   cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
 }
 .pc-files__agent:hover {
-  border-color: var(--border-strong, #3a4150);
+  border-color: var(--border-strong);
+  color: var(--fg);
 }
 .pc-files__agent[data-selected] {
-  border-color: var(--accent, #60a5fa);
-  color: var(--fg, #e5e7eb);
+  border-color: color-mix(in oklab, var(--accent), transparent 40%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
+  color: var(--fg);
 }
 .pc-files__zombie {
-  color: #fca5a5;
+  color: color-mix(in oklab, var(--bad), white 18%);
   font-weight: 700;
 }
 
-/* ───────────────────────── Agent dossier (P-007) ───────────────────────── */
+/* ───────────────────────── recently ended ──────────────────────────────── */
+.pc-roster__ended {
+  margin-top: 4px;
+}
+
+/* ───────────────────────── agent dossier (P-007) ───────────────────────── */
 .pc-dossier {
-  flex: 0 0 340px;
-  width: 340px;
-  height: 100%;
+  flex: 0 0 360px;
+  width: 360px;
+  position: sticky;
+  top: 14px;
+  align-self: flex-start;
+  max-height: calc(100vh - 130px);
   overflow-y: auto;
-  padding: 12px 14px 28px;
-  border-left: 1px solid var(--border, #2a2f3a);
-  background: var(--surface, #11151f);
-  color: var(--fg, #e5e7eb);
+  padding: 14px 16px 22px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--bg-2), white 2%),
+    color-mix(in oklab, var(--bg), transparent 4%)
+  );
+  color: var(--fg);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
+
+/* Empty state — keeps the 2-pane structure when no agent is selected. */
+.pc-dossier--empty {
+  align-items: stretch;
+  justify-content: flex-start;
+}
+.pc-dossier__placeholder {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border: 1px dashed color-mix(in oklab, var(--border), transparent 10%);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--bg), transparent 30%);
+}
+.pc-dossier__placeholder-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg-dim);
+}
+.pc-dossier__placeholder-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-mute);
+}
+
 .pc-dossier__head {
   display: flex;
   align-items: center;
@@ -372,47 +479,56 @@
 .pc-dossier__close {
   margin-left: auto;
   background: transparent;
-  border: none;
-  color: var(--fg-mute, #6b7280);
+  border: 1px solid transparent;
+  color: var(--fg-mute);
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  transition: color 120ms ease, background-color 120ms ease;
 }
 .pc-dossier__close:hover {
-  color: var(--fg, #e5e7eb);
-  background: var(--surface-2, #1f2530);
+  color: var(--fg);
+  background: color-mix(in oklab, var(--bg-2), transparent 10%);
+}
+.pc-dossier__close:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 .pc-dossier__id {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg, #e5e7eb);
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--fg);
   word-break: break-all;
 }
 .pc-dossier__intent {
   font-size: 11.5px;
-  font-style: italic;
-  color: var(--fg-dim, #9ca3af);
+  line-height: 1.45;
+  color: var(--fg-dim);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg), transparent 25%);
+  border-left: 2px solid color-mix(in oklab, var(--accent), transparent 55%);
 }
 .pc-dossier__note {
   font-size: 11.5px;
-  color: var(--fg-mute, #6b7280);
+  color: var(--fg-mute);
 }
 .pc-dossier__section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-top: 6px;
-  border-top: 1px solid var(--border, #2a2f3a);
+  gap: 5px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in oklab, var(--border), transparent 30%);
 }
 .pc-dossier__h {
   margin: 0;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-mute, #6b7280);
+  letter-spacing: 0.07em;
+  color: var(--fg-mute);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -421,30 +537,32 @@
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
-  color: var(--fg-mute, #6b7280);
+  color: var(--fg-mute);
 }
 .pc-dossier__h-note--err {
-  color: #fca5a5;
+  color: color-mix(in oklab, var(--bad), white 20%);
 }
 .pc-dossier__badge-count {
   margin-left: auto;
   font-size: 10px;
-  color: #93c5fd;
-  background: rgba(59, 130, 246, 0.15);
-  border-radius: 4px;
-  padding: 0 5px;
+  font-weight: 600;
+  color: color-mix(in oklab, var(--accent), var(--fg) 20%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
+  border-radius: 5px;
+  padding: 0 6px;
 }
 .pc-dossier__meta-row {
   display: flex;
   gap: 8px;
   font-size: 11px;
+  line-height: 1.5;
 }
 .pc-dossier__meta-key {
-  flex: 0 0 76px;
-  color: var(--fg-mute, #6b7280);
+  flex: 0 0 78px;
+  color: var(--fg-mute);
 }
 .pc-dossier__meta-val {
-  color: var(--fg-dim, #cbd5e1);
+  color: var(--fg-dim);
   min-width: 0;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -456,18 +574,19 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .pc-dossier__file,
 .pc-dossier__lock {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   font-size: 10.5px;
 }
 .pc-dossier__file-path {
   font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--fg-dim, #cbd5e1);
+  color: var(--fg-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -477,32 +596,33 @@
   flex: 0 0 auto;
   font-size: 9px;
   font-weight: 700;
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 .pc-dossier__lockmark--held {
-  color: #34d399;
-  background: rgba(52, 211, 153, 0.16);
+  color: var(--good);
+  background: color-mix(in oklab, var(--good), transparent 82%);
 }
 .pc-dossier__lockmark--wait {
-  color: #fbbf24;
-  background: rgba(251, 191, 36, 0.16);
+  color: var(--warn);
+  background: color-mix(in oklab, var(--warn), transparent 82%);
 }
 .pc-dossier__lock-exp {
   margin-left: auto;
   flex: 0 0 auto;
-  color: var(--fg-mute, #6b7280);
+  color: var(--fg-mute);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .pc-dossier__lock-intent {
   flex: 1 1 100%;
-  padding-left: 20px;
-  color: var(--fg-mute, #6b7280);
+  padding-left: 21px;
+  color: var(--fg-mute);
   font-style: italic;
   font-size: 10px;
 }
@@ -515,40 +635,52 @@
 }
 .pc-dossier__dir {
   flex: 0 0 auto;
-  color: var(--fg-mute, #6b7280);
+  color: var(--fg-mute);
   font-size: 10px;
 }
 .pc-dossier__dir[data-dir='outbound'] {
-  color: #93c5fd;
+  color: color-mix(in oklab, var(--accent), var(--fg) 15%);
 }
 .pc-dossier__dir[data-dir='inbound'] {
-  color: #86efac;
+  color: var(--good);
 }
 .pc-dossier__dir--esc[data-sev='blocker'] {
-  color: #fca5a5;
+  color: color-mix(in oklab, var(--bad), white 18%);
 }
 .pc-dossier__dir--esc[data-sev='question'] {
-  color: #fcd34d;
+  color: var(--warn);
 }
 .pc-dossier__coord-text {
-  color: var(--fg-dim, #cbd5e1);
+  color: var(--fg-dim);
   min-width: 0;
   flex: 1 1 60%;
 }
 .pc-dossier__coord-ts {
   margin-left: auto;
-  color: var(--fg-mute, #6b7280);
+  color: var(--fg-mute);
   font-size: 10px;
   white-space: nowrap;
 }
 .pc-dossier__empty-line {
   font-size: 10.5px;
-  color: var(--fg-mute, #6b7280);
+  color: var(--fg-mute);
 }
 
-@media (max-width: 880px) {
+/* ───────────────────────── responsive ──────────────────────────────────── */
+@media (max-width: 920px) {
   .pc-dossier {
-    flex-basis: 280px;
-    width: 280px;
+    flex-basis: 300px;
+    width: 300px;
+  }
+}
+@media (max-width: 760px) {
+  .pc-sessions {
+    flex-direction: column;
+  }
+  .pc-dossier {
+    position: static;
+    width: 100%;
+    flex-basis: auto;
+    max-height: none;
   }
 }

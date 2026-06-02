@@ -254,16 +254,27 @@ describe('SessionsRosterView', () => {
     );
   });
 
-  it('changing a filter dropdown emits the next filters (P-010)', async () => {
+  it('typing in the file filter emits the next filters (P-010)', async () => {
     const onFilterChange = vi.fn();
     const { findByLabelText } = render(
       <SessionsRosterView planFilters={[]} onFilterChange={onFilterChange} />,
     );
-    const sel = await findByLabelText('Filter by liveness');
-    fireEvent.change(sel, { target: { value: 'idle' } });
+    const input = await findByLabelText("Who's editing file");
+    fireEvent.change(input, { target: { value: 'attempt-claim' } });
     expect(onFilterChange).toHaveBeenCalledWith(
-      expect.objectContaining({ liveness: 'idle' }),
+      expect.objectContaining({ file: 'attempt-claim' }),
     );
+  });
+
+  it('renders the client/liveness/role filter dropdowns + the empty dossier placeholder', async () => {
+    const { findByLabelText, getByText } = render(<SessionsRosterView planFilters={[]} />);
+    // The three harness <Select> triggers carry the aria-label.
+    expect(await findByLabelText('Filter by client')).toBeTruthy();
+    expect(await findByLabelText('Filter by liveness')).toBeTruthy();
+    expect(await findByLabelText('Filter by role')).toBeTruthy();
+    // The right pane persists: with nothing selected it shows the placeholder
+    // (this is the "disappeared panel" fix — the pane is always rendered).
+    expect(getByText('No agent selected')).toBeTruthy();
   });
 
   it('applies passed filters to the rendered roster (P-010)', async () => {
