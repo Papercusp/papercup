@@ -17,6 +17,12 @@
   display: flex;
   min-height: 0;
   height: 100%;
+  /* Brighter text scale scoped to this view. The default --fg-dim/--fg-mute
+     read too dark at 10–12px on the near-black bg; lift each tier toward --fg
+     so everything is legible while the fg → dim → mute hierarchy is preserved.
+     This brightens every descendant uniformly (roster + dossier) in one place. */
+  --fg-dim: #d2e6f4;
+  --fg-mute: #a7c1d8;
 }
 
 .pc-roster {
@@ -95,10 +101,10 @@
   color: var(--warn);
 }
 .pc-roster__stale-toggle {
-  font-size: 10.5px;
-  color: var(--fg-mute);
+  font-size: 11px;
+  color: var(--fg-dim);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 7px;
   padding: 2px 8px;
   cursor: pointer;
@@ -147,9 +153,9 @@
 }
 .pc-roster__filter-clear {
   font-size: 11px;
-  color: var(--fg-mute);
+  color: var(--fg-dim);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 7px;
   padding: 4px 10px;
   cursor: pointer;
@@ -180,7 +186,7 @@
 }
 .pc-roster__loading,
 .pc-roster__empty {
-  color: var(--fg-mute);
+  color: var(--fg-dim);
   background: color-mix(in oklab, var(--bg-2), transparent 30%);
 }
 
@@ -201,17 +207,17 @@
   font-size: 12.5px;
   font-weight: 700;
   letter-spacing: -0.005em;
-  color: var(--fg-dim);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 70%;
 }
 .pc-roster__group-count {
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: var(--fg-mute);
-  background: var(--bg-2);
+  color: var(--fg-dim);
+  background: var(--bg-3);
   border-radius: 999px;
   padding: 1px 8px;
 }
@@ -220,7 +226,7 @@
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--good);
 }
@@ -250,9 +256,9 @@
   flex-direction: column;
   gap: 5px;
   padding: 9px 12px 9px 15px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border), var(--border-strong) 45%);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--bg-2), transparent 18%);
+  background: var(--bg-2);
   cursor: pointer;
   transition: border-color 120ms ease, background-color 120ms ease;
 }
@@ -331,13 +337,13 @@
   flex-wrap: wrap;
 }
 .pc-roster__badge {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: lowercase;
-  color: var(--fg-dim);
-  background: color-mix(in oklab, var(--bg), transparent 20%);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 30%);
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 1px 6px;
 }
@@ -351,19 +357,19 @@
   color: color-mix(in oklab, var(--amber-400), var(--fg) 10%);
 }
 .pc-roster__chip {
-  font-size: 10px;
-  color: var(--fg-dim);
-  background: color-mix(in oklab, var(--bg-2), transparent 15%);
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--bg-3);
   border-radius: 5px;
   padding: 1px 6px;
 }
 .pc-roster__chip--feature {
-  color: color-mix(in oklab, var(--accent), var(--fg) 22%);
-  background: color-mix(in oklab, var(--accent), transparent 86%);
+  color: color-mix(in oklab, var(--accent-soft, var(--accent)), var(--fg) 45%);
+  background: color-mix(in oklab, var(--accent), transparent 78%);
 }
 .pc-roster__chip--warn {
-  color: color-mix(in oklab, var(--bad), white 22%);
-  background: color-mix(in oklab, var(--bad), transparent 82%);
+  color: color-mix(in oklab, var(--bad), white 30%);
+  background: color-mix(in oklab, var(--bad), transparent 74%);
 }
 .pc-roster__label {
   flex: 1 1 90px;
@@ -377,7 +383,7 @@
 }
 .pc-roster__age {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-mute);
   white-space: nowrap;
@@ -396,10 +402,10 @@
   gap: 4px;
 }
 .pc-roster__file-chip {
-  font-size: 10px;
+  font-size: 10.5px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--fg-mute);
-  background: color-mix(in oklab, var(--bg), transparent 25%);
+  color: var(--fg-dim);
+  background: var(--bg-3);
   border-radius: 4px;
   padding: 1px 5px;
   max-width: 220px;
@@ -408,7 +414,7 @@
   white-space: nowrap;
 }
 .pc-roster__meta {
-  font-size: 10px;
+  font-size: 10.5px;
   font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--fg-mute);
   margin-left: 2px;
@@ -417,9 +423,9 @@
 /* ───────────────────────── files in play (P-008) ───────────────────────── */
 .pc-files__contend {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
-  color: color-mix(in oklab, var(--bad), white 12%);
+  color: color-mix(in oklab, var(--bad), white 28%);
 }
 .pc-files__list {
   list-style: none;
@@ -446,8 +452,8 @@
 }
 .pc-files__path {
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10.5px;
-  color: var(--fg-dim);
+  font-size: 11px;
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -464,10 +470,10 @@
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 10px;
-  color: var(--fg-dim);
-  background: color-mix(in oklab, var(--bg), transparent 15%);
-  border: 1px solid color-mix(in oklab, var(--border), transparent 25%);
+  font-size: 10.5px;
+  color: var(--fg);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 1px 6px;
   cursor: pointer;
@@ -526,9 +532,9 @@
   color: var(--fg-dim);
 }
 .pc-dossier__placeholder-hint {
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
-  color: var(--fg-mute);
+  color: var(--fg-dim);
 }
 
 .pc-dossier__head {
@@ -589,11 +595,11 @@
 }
 .pc-dossier__h {
   margin: 0;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 10.5px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--fg-mute);
+  color: var(--fg-dim);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -609,10 +615,10 @@
 }
 .pc-dossier__badge-count {
   margin-left: auto;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
-  color: color-mix(in oklab, var(--accent), var(--fg) 20%);
-  background: color-mix(in oklab, var(--accent), transparent 86%);
+  color: color-mix(in oklab, var(--accent), var(--fg) 40%);
+  background: color-mix(in oklab, var(--accent), transparent 80%);
   border-radius: 5px;
   padding: 0 6px;
 }
@@ -627,15 +633,15 @@
   color: var(--fg-mute);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  font-size: 9.5px;
-  line-height: 1.7;
+  font-size: 10px;
+  line-height: 1.65;
 }
 .pc-dossier__meta-val {
-  color: var(--fg-dim);
+  color: var(--fg);
   min-width: 0;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 .pc-dossier__files {
   list-style: none;
@@ -651,11 +657,11 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .pc-dossier__file-path {
   font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--fg-dim);
+  color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -683,8 +689,8 @@
 .pc-dossier__lock-exp {
   margin-left: auto;
   flex: 0 0 auto;
-  color: var(--fg-mute);
-  font-size: 10px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -693,19 +699,19 @@
   padding-left: 21px;
   color: var(--fg-mute);
   font-style: italic;
-  font-size: 10px;
+  font-size: 10.5px;
 }
 .pc-dossier__coord-line {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   flex-wrap: wrap;
 }
 .pc-dossier__dir {
   flex: 0 0 auto;
-  color: var(--fg-mute);
-  font-size: 10px;
+  color: var(--fg-dim);
+  font-size: 10.5px;
 }
 .pc-dossier__dir[data-dir='outbound'] {
   color: color-mix(in oklab, var(--accent), var(--fg) 15%);
@@ -720,18 +726,18 @@
   color: var(--warn);
 }
 .pc-dossier__coord-text {
-  color: var(--fg-dim);
+  color: var(--fg);
   min-width: 0;
   flex: 1 1 60%;
 }
 .pc-dossier__coord-ts {
   margin-left: auto;
   color: var(--fg-mute);
-  font-size: 10px;
+  font-size: 10.5px;
   white-space: nowrap;
 }
 .pc-dossier__empty-line {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--fg-mute);
 }
 
