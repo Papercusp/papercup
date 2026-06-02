@@ -3,16 +3,16 @@ title: callTool — single client endpoint seam with registry-picked transport
 slug: calltool-endpoint-seam-2026-06-01
 status: draft
 created: 2026-06-01
-updated: 2026-06-01
+updated: 2026-06-02
 ---
 
 # callTool — single client endpoint seam with registry-picked transport
 
 ## Now
 
-**State:** Phase A COMPLETE. Phase C COMPLETE (inspector seam + recorder + /dev→IPC churn panel). Phase B DOWNGRADED (D-007). Phase D code+integration COMPLETE: 3 layers aligned to D-006, and now a CROSS-LAYER integration test (77b701d08) proves the real createResilientEventSource × real IpcEventSource cooperate — a transient drop keeps ONE source alive (the fix), a fatal rebuilds. 68 tests total. The diagnosis + verify procedure are documented in the canonical desktop-ipc-transport-map insight (065c3478b). REFINED understanding of the live flip: it is NOT isolable — the dev desktops share one systemd :3070 host, so enabling IPC requires restarting that shared host AND relaunching desktop(s) with the IPC wiring (the reverted dev-IPC change), affecting the user's active session + any other agents' desktops. So it's a coordinated, outward-facing step, not a unilateral one.
+**State:** Phase A COMPLETE. Phase C COMPLETE (seam + recorder + /dev→IPC churn panel + cross-layer cooperation test). Phase B DOWNGRADED (D-007). Phase D code+integration COMPLETE (3 layers + cross-layer cooperation, 68 tests; runbook in the desktop-ipc-transport-map insight). DEFINITIVE finding this turn (traced endpoint_ipc.rs + main.rs): a DEBUG desktop build skips the IPC sidecar spawn (cfg!(debug_assertions)), so the running dev desktop CANNOT do IPC — live SSE-over-IPC verification requires a RELEASE build (it spawns its own isolated sidecar). That exposed + I fixed a real gap: the inspector was NODE_ENV=production-gated OFF, but a release build IS production, so inspector+IPC could never coexist — now opt-in via localStorage['papercusp.ipcInspector']='1' (36b2163a2), so a release build CAN be observed. Verify recipe in the insight updated (cc850c8dd).
 
-**Next:** Phase D LIVE verify (the ONE open step, needs the user / coordinated): re-apply the reverted dev-IPC wiring, restart papercup-dev-api.service with PAPERCUSP_IPC_ENABLE=1, relaunch the desktop, watch /dev→IPC→churn for constr=1/drops>0/no flashing; revert on churn. Everything is built so this is a quick OBSERVED test once someone drives the shared-env relaunch. Then Phase E: 2-3 self-contained tools get expose:{ipc:true} + call site → callTool (the descoped Phase B). Phase E is writable+unit-testable now but best done after D-live (can't exercise direct dispatch until IPC is on, and mis-selecting a route-dependent tool is the closed footgun).
+**Next:** Phase D live verify — now fully unblocked but needs a RELEASE desktop build on a machine with a display (the user's): cd papercusp-desktop && cargo build --release (or npm run build then run the release binary) → it spawns its own sidecar (isolated, free port, no systemd conflict) → set localStorage['papercusp.ipcInspector']='1' + reload → /dev→IPC→churn. PASS = /api/zero-harness/sse constr=1, drops>0, no flashing. This is the user's to run (needs their display + a ~minutes release build); I can't launch a GUI desktop autonomously without popping a window on their screen. Then Phase E (descoped Phase B): 2-3 self-contained tools get expose:{ipc:true} + call site → callTool.
 
 ## Background
 
