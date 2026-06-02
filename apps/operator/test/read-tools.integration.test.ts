@@ -1,0 +1,353 @@
+/**
+ * read-tools.integration.test.ts — plan harness-test-coverage-for-launch P-025.
+ *
+ * Handler-level coverage for the agent-mcp READ tools — features:*, harness:*,
+ * tasks:*, issues:* — which had ZERO tests (only artifacts:* was covered). These
+ * are the read surface every agent + the operator chat depend on.
+ *
+ * They are the LEGACY projected-tool shape (`defineTool` w/ capability): the
+ * dispatcher requires `ctx.principal` + `ctx.tx`, runs the handler against that
+ * transaction, and serialises `response.data ?? response` into `content[0].text`
+ * (define-tool.ts). So a not-found (`data:null`) surfaces the full envelope
+ * (incl. degradedReasons); a `data:[]`/object/string surfaces the value.
+ *
+ * Most read handlers run real SQL via `drizzle(ctx.tx)` or `ctx.tx` template
+ * tags, so this is a true integration test against a throwaway Postgres. The
+ * three queried `harness_shared` tables (harness_features_consolidated, projects,
+ * audit_log) are created HEAD-FAITHFULLY by introspecting the generated drizzle
+ * schema (`getTableConfig`) — so `.select()` (all columns) never references a
+ * missing column, sidestepping the D-004 prefix-only-migration limitation. The
+ * three feature-history side tables are created with the minimal columns their
+ * queries read.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
+import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+
+// Register Papercusp's capability→tier policy BEFORE the tools self-register, so
+// their agentRoles resolve (mirrors agent-mcp's vitest test-setup).
+// eslint-disable-next-line import/no-relative-packages
+import '../../../packages/agent-mcp/src/capability-tiers-papercusp';
+// eslint-disable-next-line import/no-relative-packages
+import { generated } from '@papercusp/db-org';
+import { lookupByMcpName, dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+
+// Side-effect imports — each module self-registers into the projection registry.
+/* eslint-disable import/no-relative-packages */
+import '../../../packages/agent-mcp/src/tools/features/get';
+import '../../../packages/agent-mcp/src/tools/features/search';
+import '../../../packages/agent-mcp/src/tools/features/history';
+import '../../../packages/agent-mcp/src/tools/features/list_related';
+import '../../../packages/agent-mcp/src/tools/features/tag_vocabulary';
+import '../../../packages/agent-mcp/src/tools/issues/list';
+import '../../../packages/agent-mcp/src/tools/harness/list';
+import '../../../packages/agent-mcp/src/tools/harness/get';
+import '../../../packages/agent-mcp/src/tools/harness/status';
+import '../../../packages/agent-mcp/src/tools/tasks/list';
+import '../../../packages/agent-mcp/src/tools/tasks/get';
+/* eslint-enable import/no-relative-packages */
+
+const WS = 'ws-read';
+let pg: postgres.Sql;
+let adminUri: string;
+let dbName: string;
+
+/** Builtin-ish SQL types we keep verbatim; everything else (enums, domains) →
+ *  text, since the read paths only compare/serialise those columns as text. */
+function coerceType(sqlType: string): string {
+  const t = sqlType.toLowerCase();
+  const keep = ['json', 'tsvector', 'timestamp', 'date', 'bool', 'int', 'numeric', 'double', 'real', 'text', 'varchar', 'char', 'uuid', 'bytea', '[]'];
+  return keep.some((k) => t.includes(k)) ? sqlType : 'text';
+}
+
+/** CREATE a head-faithful copy of a generated drizzle table (all columns, all
+ *  nullable, no constraints) so `.select()` matches the real column set. */
+async function createGenTable(table: PgTable): Promise<void> {
+  const cfg = getTableConfig(table);
+  const schema = cfg.schema ?? 'public';
+  const cols = cfg.columns.map((c) => `"${c.name}" ${coerceType(c.getSQLType())}`).join(', ');
+  await pg.unsafe(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+  await pg.unsafe(`CREATE TABLE IF NOT EXISTS "${schema}"."${cfg.name}" (${cols})`);
+}
+
+const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
+  ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    progress: vi.fn(),
+    emit: vi.fn(),
+    workspaceId: WS,
+    harnessSlug: 'h1',
+    role: 'architect',
+    runId: 'run_T',
+    spawnId: 'spw_T',
+    principal: {
+      workspaceId: WS,
+      capabilities: new Set(['features:read', 'harness:read', 'tasks:read', 'issues:read']),
+    },
+    tx: pg,
+    ...over,
+  }) as unknown as UnifiedToolContext;
+
+/** Dispatch a read tool with a role it ALLOWS, returning the parsed payload. */
+async function call(mcpName: string, args: Record<string, unknown>, ctxOver: Partial<UnifiedToolContext> = {}) {
+  const tool = lookupByMcpName(mcpName)!;
+  expect(tool, `tool ${mcpName} registered`).toBeDefined();
+  const role = (tool.agentRoles?.[0] as string) ?? 'architect';
+  const r = await dispatchProjectedTool(tool, mcpName, args, MAKE_CTX({ role, ...ctxOver }), {});
+  return { r, tool };
+}
+
+function payload(r: Awaited<ReturnType<typeof call>>['r']): unknown {
+  expect(r.ok, `dispatch ok (err=${JSON.stringify(r.error)})`).toBe(true);
+  return JSON.parse((r.result!.content[0] as { text: string }).text);
+}
+
+beforeAll(async () => {
+  adminUri = await getTestPg();
+  dbName = `read_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  pg = postgres(u.toString(), { max: 4, onnotice: () => {} });
+
+  // Head-faithful copies of the three queried generated tables.
+  await createGenTable(generated.harnessFeaturesConsolidatedInHarnessShared as unknown as PgTable);
+  await createGenTable(generated.projectsInHarnessShared as unknown as PgTable);
+  await createGenTable(generated.auditLogInHarnessShared as unknown as PgTable);
+  // `_search` is a generated tsvector in prod but createGenTable mirrors it as
+  // plain `text` (codegen drops the GENERATED clause) — retype it so the FTS
+  // `@@` operator works and we can populate it. tags/see_also lag the codegen.
+  await pg.unsafe(`
+    ALTER TABLE harness_shared.harness_features_consolidated ADD COLUMN IF NOT EXISTS _search text;
+    ALTER TABLE harness_shared.harness_features_consolidated ALTER COLUMN _search TYPE tsvector USING NULL::tsvector;
+    ALTER TABLE harness_shared.harness_features_consolidated
+      ADD COLUMN IF NOT EXISTS tags     jsonb,
+      ADD COLUMN IF NOT EXISTS see_also text[];
+  `);
+  // feature-history side tables (minimal columns their queries read; ts = epoch ms).
+  await pg.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_feature_notes
+      (workspace_id text, harness_slug text, feature_id text, content text);
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_feature_debug_notes
+      (workspace_id text, harness_slug text, feature_id text, content text);
+    CREATE TABLE IF NOT EXISTS harness_shared.feature_audit_consolidated
+      (workspace_id text, harness_slug text, feature_id text, ts bigint, field text, old_value text, new_value text, actor text);
+  `);
+
+  // ── Seed features: h1 has F-1 (todo) + F-2 (passed); h2 has F-9 (scope guard).
+  const feat = async (slug: string, id: string, title: string, summary: string, status: string, tags: string[], order: number, seeAlso: string[]) => {
+    await pg`
+      INSERT INTO harness_shared.harness_features_consolidated
+        (workspace_id, harness_slug, feature_id, title, summary, status, tags, see_also, updated_ts)
+      VALUES (${WS}, ${slug}, ${id}, ${title}, ${summary}, ${status}, ${pg.json(tags)}, ${seeAlso}, ${order})`;
+  };
+  await feat('h1', 'F-1', 'Auth login', 'auth and api login work', 'todo', ['auth', 'api'], 2, ['F-2']);
+  await feat('h1', 'F-2', 'Auth tokens', 'more auth token handling', 'passed', ['auth'], 1, []);
+  await feat('h2', 'F-9', 'Other harness', 'unrelated', 'todo', ['misc'], 1, []);
+  await pg.unsafe(`UPDATE harness_shared.harness_features_consolidated
+                     SET _search = to_tsvector('english', coalesce(title,'')||' '||coalesce(summary,''))`);
+
+  // projects (the harness registry rows harness:* read).
+  await pg`INSERT INTO harness_shared.projects (slug, name, status, updated_ts, spent_cents, budget_cents)
+           VALUES ('h1', 'Harness One', 'active', 200, 50, 1000), ('h2', 'Harness Two', 'paused', 100, 0, 0)`;
+
+  // audit_log for harness:status recentActivity (subject = harness slug).
+  await pg.unsafe(`INSERT INTO harness_shared.audit_log (ts, action, actor, subject)
+           VALUES ((extract(epoch from now())*1000)::bigint, 'feature.passed', 'validator', 'h1')`);
+
+  // feature-history side tables for F-1.
+  await pg`INSERT INTO harness_shared.harness_feature_notes (workspace_id, harness_slug, feature_id, content)
+           VALUES (${WS}, 'h1', 'F-1', 'The implementation note body.')`;
+  await pg`INSERT INTO harness_shared.harness_feature_debug_notes (workspace_id, harness_slug, feature_id, content)
+           VALUES (${WS}, 'h1', 'F-1', 'Root-cause: null deref.')`;
+  await pg.unsafe(`INSERT INTO harness_shared.feature_audit_consolidated
+             (workspace_id, harness_slug, feature_id, ts, field, old_value, new_value, actor)
+           VALUES ('${WS}', 'h1', 'F-1', (extract(epoch from now())*1000)::bigint, 'status', 'todo', 'passed', 'reviewer')`);
+}, 120_000);
+
+afterAll(async () => {
+  await pg?.end({ timeout: 5 }).catch(() => {});
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+  } catch {
+    /* best-effort */
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+});
+
+describe('features:get', () => {
+  it('returns the full row for an existing (slug, feature_id)', async () => {
+    // drizzle `.select()` returns rows keyed by schema PROPERTY names (camelCase).
+    const { r } = await call('features:get', { slug: 'h1', feature_id: 'F-1' });
+    const row = payload(r) as { featureId: string; title: string; status: string };
+    expect(row.featureId).toBe('F-1');
+    expect(row.title).toBe('Auth login');
+    expect(row.status).toBe('todo');
+  });
+  it('not-found → data:null + degradedReasons', async () => {
+    const { r } = await call('features:get', { slug: 'h1', feature_id: 'F-NOPE' });
+    const p = payload(r) as { data: null; degraded: boolean; degradedReasons: string[] };
+    expect(p.data).toBeNull();
+    expect(p.degraded).toBe(true);
+    expect(p.degradedReasons.join(' ')).toMatch(/not found/i);
+  });
+  it('invalid slug → degraded before any query', async () => {
+    const { r } = await call('features:get', { slug: 'has space', feature_id: 'F-1' });
+    const p = payload(r) as { data: null; degradedReasons: string[] };
+    expect(p.data).toBeNull();
+    expect(p.degradedReasons.join(' ')).toMatch(/invalid slug/i);
+  });
+  it('rejects a principal lacking the features:read capability', async () => {
+    // The legacy projected read tools gate on capability (principal.capabilities),
+    // not on a role allowlist — strip the cap and the dispatcher refuses.
+    const tool = lookupByMcpName('features:get')!;
+    const ctx = MAKE_CTX();
+    (ctx.principal as { capabilities: Set<string> }).capabilities = new Set();
+    const r = await dispatchProjectedTool(tool, 'features:get', { slug: 'h1', feature_id: 'F-1' }, ctx, {});
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('missing_capability');
+  });
+});
+
+describe('features:search', () => {
+  it('FTS query ranks matching features, scoped to the harness', async () => {
+    const { r } = await call('features:search', { slug: 'h1', query: 'auth' });
+    const rows = payload(r) as Array<{ feature_id: string }>;
+    const ids = rows.map((x) => x.feature_id).sort();
+    expect(ids).toEqual(['F-1', 'F-2']);
+  });
+  it('status filter narrows the result', async () => {
+    const { r } = await call('features:search', { slug: 'h1', query: 'auth', status: 'passed' });
+    const rows = payload(r) as Array<{ feature_id: string }>;
+    expect(rows.map((x) => x.feature_id)).toEqual(['F-2']);
+  });
+  it('no query → recency-ordered list (updated_ts DESC)', async () => {
+    const { r } = await call('features:search', { slug: 'h1' });
+    const rows = payload(r) as Array<{ feature_id: string }>;
+    expect(rows.map((x) => x.feature_id)).toEqual(['F-1', 'F-2']); // order 2 then 1
+  });
+  it('does not leak another harness', async () => {
+    const { r } = await call('features:search', { slug: 'h2', query: 'auth' });
+    expect(payload(r)).toEqual([]);
+  });
+});
+
+describe('features:list_related', () => {
+  it('finds tag/see_also-related features of a source', async () => {
+    const { r } = await call('features:list_related', { slug: 'h1', feature_id: 'F-1' });
+    const rows = payload(r) as Array<{ feature_id: string; relation_kind: string }>;
+    const f2 = rows.find((x) => x.feature_id === 'F-2');
+    expect(f2).toBeDefined();
+    expect(f2!.relation_kind).toBe('both'); // F-2 is in see_also AND shares tag 'auth'
+  });
+  it('unknown source → empty (degraded info is dropped for []-data by the projection)', async () => {
+    const { r } = await call('features:list_related', { slug: 'h1', feature_id: 'F-NOPE' });
+    expect(payload(r)).toEqual([]);
+  });
+});
+
+describe('features:tag_vocabulary', () => {
+  it('counts distinct tags across the harness, most-frequent first', async () => {
+    const { r } = await call('features:tag_vocabulary', { slug: 'h1' });
+    const rows = payload(r) as Array<{ tag: string; count: number }>;
+    expect(rows[0]).toEqual({ tag: 'auth', count: 2 });
+    expect(rows.find((x) => x.tag === 'api')).toEqual({ tag: 'api', count: 1 });
+  });
+});
+
+describe('features:history', () => {
+  it('renders notes + debugger findings + recent activity', async () => {
+    const { r } = await call('features:history', { slug: 'h1', feature_id: 'F-1' });
+    const md = payload(r) as string;
+    expect(md).toContain('Notes');
+    expect(md).toContain('implementation note body');
+    expect(md).toContain('Debugger findings');
+    expect(md).toContain('Recent activity');
+  });
+  it('no history → degraded empty string', async () => {
+    const { r } = await call('features:history', { slug: 'h1', feature_id: 'F-2' });
+    expect(payload(r)).toBe('');
+  });
+});
+
+describe('harness:list', () => {
+  it('lists harnesses (full)', async () => {
+    const { r } = await call('harness:list', {});
+    const rows = payload(r) as Array<{ slug: string; status: string }>;
+    expect(rows.map((x) => x.slug).sort()).toEqual(['h1', 'h2']);
+  });
+  it('summary detail → slug+status only', async () => {
+    const { r } = await call('harness:list', { detail: 'summary' });
+    const rows = payload(r) as Array<Record<string, unknown>>;
+    expect(Object.keys(rows[0]).sort()).toEqual(['slug', 'status']);
+  });
+});
+
+describe('harness:get', () => {
+  it('returns the harness + per-status featureCounts (detail:full)', async () => {
+    const { r } = await call('harness:get', { slug: 'h1', detail: 'full' });
+    const row = payload(r) as { slug: string; featureCounts: Record<string, number> };
+    expect(row.slug).toBe('h1');
+    expect(row.featureCounts).toEqual({ todo: 1, passed: 1 });
+  });
+  it('not-found → null + degraded', async () => {
+    const { r } = await call('harness:get', { slug: 'nope' });
+    const p = payload(r) as { data: null; degraded: boolean };
+    expect(p.data).toBeNull();
+    expect(p.degraded).toBe(true);
+  });
+});
+
+describe('harness:status', () => {
+  it('returns project status + recent audit activity', async () => {
+    const { r } = await call('harness:status', { slug: 'h1' });
+    const row = payload(r) as { slug: string; recentActivity: Array<{ subject: string }> };
+    expect(row.slug).toBe('h1');
+    expect(row.recentActivity.length).toBeGreaterThan(0);
+    expect(row.recentActivity[0].subject).toBe('h1');
+  });
+  it('not-found → null + degraded', async () => {
+    const { r } = await call('harness:status', { slug: 'nope' });
+    expect((payload(r) as { data: null }).data).toBeNull();
+  });
+});
+
+describe('tasks:list / tasks:get (features-backed)', () => {
+  it('tasks:list scopes by harness (detail:full → snake_case alias keys)', async () => {
+    const { r } = await call('tasks:list', { harnessSlug: 'h1', detail: 'full' });
+    const rows = payload(r) as Array<{ feature_id: string }>;
+    expect(rows.map((x) => x.feature_id).sort()).toEqual(['F-1', 'F-2']);
+  });
+  it('tasks:list status filter', async () => {
+    const { r } = await call('tasks:list', { harnessSlug: 'h1', status: 'todo', detail: 'full' });
+    const rows = payload(r) as Array<{ feature_id: string }>;
+    expect(rows.map((x) => x.feature_id)).toEqual(['F-1']);
+  });
+  it('tasks:get returns one feature (detail:full → .select() camelCase)', async () => {
+    const { r } = await call('tasks:get', { harnessSlug: 'h1', id: 'F-1', detail: 'full' });
+    const row = payload(r) as { featureId: string; status: string };
+    expect(row.featureId).toBe('F-1');
+  });
+  it('tasks:get not-found → null + degraded', async () => {
+    const { r } = await call('tasks:get', { harnessSlug: 'h1', id: 'F-NOPE' });
+    expect((payload(r) as { data: null }).data).toBeNull();
+  });
+});
+
+describe('issues:list', () => {
+  it('v1 stub → empty list (degraded, points at per-harness reads)', async () => {
+    const { r } = await call('issues:list', { slug: 'h1' });
+    expect(payload(r)).toEqual([]);
+  });
+});

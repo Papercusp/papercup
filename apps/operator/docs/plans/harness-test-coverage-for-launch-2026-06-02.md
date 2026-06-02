@@ -76,14 +76,14 @@ Full per-subsystem audit with file:line cites lives in the session transcript th
 
 ## Phase 4 — Meta / role-wiring
 
-- **P-029** `todo` `done` Dispatch-role↔prompt wiring guard + test-writer-is-wired (dispatch-role-prompts.test.ts 15/15): every orchestrator dispatch verb routes to a role whose prompt resolves in some phase (no orphan verb → no spawn-throw); GENERATE_TESTS→test-writer→testing/test-writer.md which instructs test generation (+TEST_WRITER count). Behavioral "output contains real tests" = LLM scenario (P-020).
+- **P-029** `done` `done` Dispatch-role↔prompt wiring guard + test-writer-is-wired (dispatch-role-prompts.test.ts 15/15): every orchestrator dispatch verb routes to a role whose prompt resolves in some phase (no orphan verb → no spawn-throw); GENERATE_TESTS→test-writer→testing/test-writer.md which instructs test generation (+TEST_WRITER count). Behavioral "output contains real tests" = LLM scenario (P-020).
 - **P-030** `todo` `blocked` Behavioral role scenarios (test-writer actually CREATES tests; validator checks acceptance; reviewer GATES on tests existing) — judge-scored LLM scenarios. BLOCKED on a framework extension: apps/operator/lib/llm-testing only has ChatTarget impls (operator/oracle/architect, conversational); test-writer/reviewer are headless invoke-once pipeline roles with no target. Needs a new PipelineTarget/InvokeTarget (spawn invoke-once for the role, capture stdout + files written, expose to asserts) before any such scenario can run. The deterministic wiring half is done (P-029).
 
 
 
 ## Phase 3 — P2 (breadth / lower risk)
 
-- **P-031** `todo` `done` P-027 Rust/Cargo — first tests for untested src-tauri modules (papercusp-desktop commit b77a07c): custom_protocol::error_response (status + plaintext body) + dev_bridge::pid_alive (self alive / unused-pid dead). cargo test ~11s, 4/4. wsl_setup's logic (from_exit, version parse) is #[cfg(target_os=windows)] → needs Windows CI, left out.
+- **P-031** `done` `done` P-027 Rust/Cargo — first tests for untested src-tauri modules (papercusp-desktop commit b77a07c): custom_protocol::error_response (status + plaintext body) + dev_bridge::pid_alive (self alive / unused-pid dead). cargo test ~11s, 4/4. wsl_setup's logic (from_exit, version parse) is #[cfg(target_os=windows)] → needs Windows CI, left out.
 
 ## Decisions
 
