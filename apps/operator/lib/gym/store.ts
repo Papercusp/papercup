@@ -49,11 +49,11 @@ export async function insertTask(sql: Sql, t: TaskRow): Promise<void> {
 
 export async function insertRun(
   sql: Sql,
-  r: { runId: string; variantId: string; taskId: string; cycle: number; harnessSlug?: string; workflowId?: string },
+  r: { runId: string; variantId: string; taskId: string; cycle: number; repeat?: number; harnessSlug?: string; workflowId?: string },
 ): Promise<void> {
   await sql`
-    INSERT INTO harness_gym.gym_runs (run_id, variant_id, task_id, cycle, harness_slug, workflow_id)
-    VALUES (${r.runId}, ${r.variantId}, ${r.taskId}, ${r.cycle}, ${r.harnessSlug ?? null}, ${r.workflowId ?? null})
+    INSERT INTO harness_gym.gym_runs (run_id, variant_id, task_id, cycle, repeat, harness_slug, workflow_id)
+    VALUES (${r.runId}, ${r.variantId}, ${r.taskId}, ${r.cycle}, ${r.repeat ?? 0}, ${r.harnessSlug ?? null}, ${r.workflowId ?? null})
     ON CONFLICT (run_id) DO NOTHING`;
 }
 

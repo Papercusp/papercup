@@ -80,6 +80,7 @@ export interface AbStore {
     variantId: string;
     taskId: string;
     cycle: number;
+    repeat: number;
     harnessSlug: string;
     workflowId: string;
   }): Promise<void>;
@@ -161,6 +162,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
           variantId: variant.variantId,
           taskId: task.taskId,
           cycle: 0,
+          repeat,
           harnessSlug: handle.harnessSlug,
           workflowId: handle.workflowID,
         });

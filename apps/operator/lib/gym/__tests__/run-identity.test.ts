@@ -50,6 +50,20 @@ describe('gymRunIdentity', () => {
     expect(slugs.size).toBe(4);
   });
 
+  it('treats repeat as part of the identity (P-014 variance): distinct slugs per repeat; repeat 0 == no repeat', () => {
+    const base = gymRunIdentity({ taskId: 'task-alpha', variantId: 'variant-baseline', cycle: 0 });
+    const r0 = gymRunIdentity({ taskId: 'task-alpha', variantId: 'variant-baseline', cycle: 0, repeat: 0 });
+    const r1 = gymRunIdentity({ taskId: 'task-alpha', variantId: 'variant-baseline', cycle: 0, repeat: 1 });
+    const r2 = gymRunIdentity({ taskId: 'task-alpha', variantId: 'variant-baseline', cycle: 0, repeat: 2 });
+    // repeat 0 / undefined resolve identically — back-compat: existing slugs unchanged.
+    expect(r0.harnessSlug).toBe(base.harnessSlug);
+    // distinct repeats → distinct slugs (so each variance run gets its own schema + clone).
+    expect(new Set([base.harnessSlug, r1.harnessSlug, r2.harnessSlug]).size).toBe(3);
+    // feature id stays task-derived (stable across repeats; each repeat is its own harness).
+    expect(r1.featureId).toBe(base.featureId);
+    expect(r1.harnessSlug).toMatch(/^gym[a-z0-9]+$/);
+  });
+
   it('sanitizes unsafe characters in the key into a safe slug', () => {
     const { harnessSlug } = gymRunIdentity({
       taskId: 'Repo/Path With Spaces!!',

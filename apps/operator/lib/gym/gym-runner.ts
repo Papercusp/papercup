@@ -38,6 +38,8 @@ export interface GymRunSpec {
   variant: GymVariantSpec;
   /** Optimization cycle (0 for the spine's manual A/B). */
   cycle: number;
+  /** Repeat index within a (task × variant × cycle) — the P-014 variance sample; each repeat gets its own harness. */
+  repeat?: number;
   /** The pinned harness-under-test commit (D-016) — recorded with the run. */
   harnessCommit: string;
   workspaceId: string;
@@ -78,7 +80,7 @@ export interface GymRunResult {
 }
 
 export async function runGymPipeline(spec: GymRunSpec, ports: GymRunnerPorts): Promise<GymRunResult> {
-  const runKey: GymRunKey = { taskId: spec.task.id, variantId: spec.variant.id, cycle: spec.cycle };
+  const runKey: GymRunKey = { taskId: spec.task.id, variantId: spec.variant.id, cycle: spec.cycle, repeat: spec.repeat };
   const identity = gymRunIdentity(runKey);
   const clonePath = join(spec.scratchRoot, identity.cloneDirName);
   const overlayPlan = planVariantOverlay(spec.variant.overlay);

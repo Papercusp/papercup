@@ -36,12 +36,16 @@ CREATE TABLE IF NOT EXISTS harness_gym.gym_variants (
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- One (variant x task x cycle) hermetic run. terminal_state is observability (D-011).
+-- One (variant x task x cycle x repeat) hermetic run. terminal_state is observability (D-011).
+-- `repeat` is the P-014 variance sample index (the gym is doubly-stochastic, so we run a
+-- (variant,task,cycle) several times and measure judge-composite variance, D-013); each
+-- repeat is its own throwaway harness, so the uniqueness key includes it.
 CREATE TABLE IF NOT EXISTS harness_gym.gym_runs (
   run_id                TEXT PRIMARY KEY,
   variant_id            TEXT NOT NULL REFERENCES harness_gym.gym_variants(variant_id) ON DELETE CASCADE,
   task_id               TEXT NOT NULL REFERENCES harness_gym.gym_tasks(task_id) ON DELETE CASCADE,
   cycle                 INT NOT NULL DEFAULT 0,
+  repeat                INT NOT NULL DEFAULT 0,
   harness_slug          TEXT,
   workflow_id           TEXT,
   terminal_state        TEXT,
@@ -51,7 +55,7 @@ CREATE TABLE IF NOT EXISTS harness_gym.gym_runs (
   started_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at           TIMESTAMPTZ,
   elapsed_ms            BIGINT,
-  UNIQUE (variant_id, task_id, cycle)
+  UNIQUE (variant_id, task_id, cycle, repeat)
 );
 
 -- Frozen Opus judge output; re-judge-from-cache keyed on rubric_hash (P-010/D-016).

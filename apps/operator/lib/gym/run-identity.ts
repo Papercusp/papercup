@@ -22,6 +22,13 @@ export interface GymRunKey {
   variantId: string;
   /** Optimization cycle index (0 for the spine's manual A/B). */
   cycle: number;
+  /**
+   * Repeat index within a (task × variant × cycle) — the P-014 variance sample.
+   * Each repeat needs its OWN throwaway harness (schema + clone), so it is part of
+   * the slug. Omitted/0 resolves identically to a no-repeat key (back-compat: a
+   * single-run key keeps its original slug; only repeat ≥ 1 diverges).
+   */
+  repeat?: number;
 }
 
 export interface GymRunIdentity {
@@ -54,7 +61,10 @@ function sanitizeSlugPart(s: string): string {
 }
 
 export function gymRunIdentity(key: GymRunKey): GymRunIdentity {
-  const canonical = `${key.taskId}::${key.variantId}::${key.cycle}`;
+  // Append the repeat segment ONLY when ≥1 so a no-repeat / repeat-0 key keeps its
+  // original slug (back-compat); repeat ≥ 1 gets a distinct schema + clone.
+  const rep = key.repeat ?? 0;
+  const canonical = rep > 0 ? `${key.taskId}::${key.variantId}::${key.cycle}::r${rep}` : `${key.taskId}::${key.variantId}::${key.cycle}`;
   const hash = sha256hex(canonical).slice(0, HASH_LEN);
   const hint = sanitizeSlugPart(`${key.variantId}${key.cycle}`).slice(0, MAX_HINT_LEN);
 
