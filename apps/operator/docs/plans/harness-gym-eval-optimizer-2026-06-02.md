@@ -307,3 +307,18 @@ Date: 2026-06-02. avi put the implementing agent on an overnight loop to complet
 5. **Human gates (P-014, P-023):** the agent PRODUCES all deliverables + makes the threshold judgment calls itself and documents them for morning review. But it does NOT point any real production harness at the champion (P-023's outward action) — that stays for explicit human opt-in; and there is no production anyway (CLAUDE.md). The gym's own dedicated harness is promoted unattended per D-012.
 6. **Don't disrupt the sleeping user's environment:** the gym-operator is isolated (separate PG database + port + scoped autoloop, D-018); the live :3070 fleet is never restarted or touched; scratch clones + the gym DB + spawned processes are torn down; a free high port is chosen.
 Related: P-014, P-022, P-023
+
+### D-020 — Gym CONTROL PLANE persists in the live operator DB (refines D-018)
+Date: 2026-06-02. Decided by the implementing agent under the overnight loop mandate, as the foundation for generalizing the gym to any harness + the gym UI (gym-ui-handoff-2026-06-02).
+
+D-018 isolates the gym **execution** environment (a pinned operator + dedicated ephemeral gym PG) so a real pipeline run can't pollute or be disturbed by the live fleet. But the generalization the user asked for — "users edit custom prompts (judge + any role), run the gym on autoloop, and review the judge's suggested changes in a merge/diff interface, accept/reject per role" — requires per-harness state that is **persistent and readable by the live operator** (the desktop UI talks to :3070). An ephemeral per-run gym DB cannot hold it.
+
+D-020 splits the two axes:
+- **Execution data** (the real pipeline run, transcripts, DBOS, per-task score vectors) — stays in the dedicated ephemeral gym PG. D-018 fully intact.
+- **Control plane** (the small, structured, user-facing state) — persists in the **live operator DB** under `harness_shared`, scoped by `(workspace_id, harness_slug)`, like features/issues:
+  - prompt overrides → existing `harness_shared.harness_prompt_overrides` (judge rubric stored under `role='judge'`);
+  - proposer suggestions awaiting review → new `harness_shared.gym_proposals` (migration 110);
+  - per-harness autoloop config → new `harness_shared.gym_autoloop_config` (migration 110).
+
+Surface: `lib/gym/control-plane.ts` (typed helpers, injected `Sql`) + `/api/gym/*` routes (gym-ui-handoff backend) + the `makeLoopProposalRecorder` bridge so the loop (with `autoPromote:false`, human-gated) records scored suggestions the user accepts via `gym:accept` (→ promote into `harness_prompt_overrides`). Migration 110 is additive + idempotent + passes the fresh-migrate empty→head gate (D-018's stated guard). Tested: control-plane.test.ts (pure), control-plane.integration.test.ts (live PG), gym-control-route.test.ts (routes), + live smoke. NOTE: the analytics endpoints (cycles/variants/compare/frontier) read the ephemeral gym run DB only from a server-controlled `PAPERCUSP_GYM_DATABASE_URL` (no client-supplied connection string — SSRF). The autoloop **runner service** that drives `runOptimizationLoop` with the live recorder is the remaining piece, gated on real-run capacity (same as P-014).
+Related: P-013, P-022, P-024, gym-ui-handoff-2026-06-02

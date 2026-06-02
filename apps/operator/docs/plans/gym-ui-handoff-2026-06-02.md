@@ -57,20 +57,29 @@ rationale: string, diffFromParent: string }`. So "the judge's suggested changes"
 candidate's `promptOverrides[role]` (the *new* full prompt) vs the parent's prompt for that
 role → feed both into the DiffEditor.
 
-**Endpoints/MCP tools I will provide** (none are wrapped as routes yet — tell me which you
-want first; I'll build them as typed endpoints per the endpoint-system + tool-adding
-discipline). Proposed contract:
-- `gym:list_harnesses` / `gym:get { harness }` — gym status per harness.
-- `gym:prompts_get { harness }` → `{ judgeRubric, roles: Record<role, md> }`;
-  `gym:prompt_set { harness, role|‘judge’, md }` (writes `harness_prompt_overrides`).
-- `gym:cycles { harness }`, `gym:variants { harness }`, `gym:compare { harness, a, b }`,
-  `gym:frontier { harness }` (thin wrappers over `read-api.ts`).
-- `gym:proposals { harness }` → pending candidate diffs (per-role original+proposed+rationale+numbers).
-- `gym:accept { harness, variantId }` / `gym:reject { ... }` (promote / discard).
-- `gym:autoloop_get/set { harness, enabled, budgetUsd }`.
+**Endpoints — ✅ LIVE on `:3070` (D-020).** All workspace-scoped (active workspace via
+`routeWithWorkspace`), `auth:'public'` like every sibling `/adv`,`/harness`,`/coord` route
+(loopback-only model). Source: `apps/operator/lib/endpoint-route/routes/gym/control.ts` over
+`apps/operator/lib/gym/control-plane.ts`.
+- `GET /api/gym/harnesses` → `[{ harnessSlug, pendingCount, lastCycle, autoloop }]`.
+- `GET /api/gym/:slug` → `{ harnessSlug, status, prompts:{judgeRubric,roles}, editableKeys }`.
+- `GET /api/gym/:slug/prompts` → `{ judgeRubric, roles, editableKeys }`;
+  `POST /api/gym/:slug/prompts { role, md }` (role=`'judge'` = rubric) → `{ ok, judgeRubric, roles }`.
+- `GET /api/gym/:slug/proposals?status=pending` (`status=all` for history; `&variantId=` filter)
+  → `{ proposals: [{ id, cycle, variantId, role, originalMd, proposedMd, rationale, devAnchorDelta, costDelta, probeStatus, status }] }`.
+- `POST /api/gym/:slug/accept { id | variantId }` → promote `proposedMd` → `harness_prompt_overrides`;
+  `POST /api/gym/:slug/reject { id | variantId }` → discard.
+- `GET /api/gym/:slug/autoloop` → `{ autoloop, configured }`;
+  `POST /api/gym/:slug/autoloop { enabled?, budgetUsd?, status? }`.
+- `GET /api/gym/:slug/{cycles|variants|compare?a&b&rubricHash|frontier?rubricHash}` — run analytics;
+  return `{ available:false }` until a gym run DB is wired server-side (`PAPERCUSP_GYM_DATABASE_URL`) —
+  build the views against the shapes now.
 
-Until those land you can build against **the TypeScript types** in `read-api.ts` /
-`proposer.ts` / `store.ts` with mocked data.
+Diff-review surface: render Monaco `DiffEditor(originalMd → proposedMd)` per proposal row,
+rationale + (devAnchorDelta, costDelta, probeStatus) beside it; accept POSTs `{ id }`. Proposals
+are produced by the gym loop (`makeLoopProposalRecorder`, `autoPromote:false`) — until the
+autoloop runner service lands you can POST a test row via `psql` or build against `/proposals → []`.
+TS types remain in `read-api.ts` / `proposer.ts` / `control-plane.ts`.
 
 ## Conventions you MUST follow (operator repo)
 

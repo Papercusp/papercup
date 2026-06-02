@@ -1,6 +1,6 @@
 /**
  * /api/gym/* — the gym CONTROL-PLANE routes the generalized harness-gym UI consumes
- * (gym-ui-handoff-2026-06-02, D-019). Thin HTTP wrappers over lib/gym/control-plane.ts
+ * (gym-ui-handoff-2026-06-02, D-020). Thin HTTP wrappers over lib/gym/control-plane.ts
  * (persistent state in the live operator DB) + lib/gym/read-api.ts (the ephemeral gym
  * run DB, when one is configured).
  *

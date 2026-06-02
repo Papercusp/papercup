@@ -1,8 +1,8 @@
 /**
- * Gym CONTROL PLANE (gym-ui-handoff backend, D-019) — the persistent, user-facing
+ * Gym CONTROL PLANE (gym-ui-handoff backend, D-020) — the persistent, user-facing
  * state behind the generalized harness-gym UI, in the LIVE operator DB.
  *
- * D-019 refines D-018: the gym's heavy EXECUTION data (the real pipeline run,
+ * D-020 refines D-018: the gym's heavy EXECUTION data (the real pipeline run,
  * transcripts, DBOS, per-task score vectors) stays in the dedicated ephemeral gym PG.
  * But the small control plane the UI reads + the user acts on persists here in
  * harness_shared, scoped by (workspace_id, harness_slug):
