@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** CORE GOAL DELIVERED. M1/Phase 0 (extract to github.com/Papercusp/testing-shell submodule, cbe0addf7) + M2/Phase 3 (Restart adopts it) both done. Restart's /tests now renders the shared <TestingShell> with a CI tab (consuming the lib's aggregateJUnitCases) + a k6 Load tab (extracted LoadTestPanel); Restart commits c24151b6 + 76a2f654 on feat/scout-unify, scoped around another agent's in-flight work; `next build` green (/tests + /load-tests in the manifest). This sits on the lib foundation (k6 runner, parseRunnerStatus, applyRoleGlobs, aggregateJUnitCases) + Phase 1 (portable universal tier). Remaining campaign (all user-authorized): M3 Phase 2 operator UI (LOW value — operator has no k6; speculative), M4 generalize chaos/ai/live to drive a base URL (D-002 a), M5 /tester shared customTab + promote glob-walker, M6 unify @papercusp/test-config (another submodule extraction).
+**State:** M1 (extract testing-shell), M2 (Restart adopts it: /tests renders TestingShell + CI + k6 tabs, next build green), and M6 (unify @papercusp/test-config into a shared submodule — both repos, verified) all DONE. Two new private repos created (Papercusp/testing-shell, Papercusp/test-config); both consumed as submodules in papercup + Restart. On top of the lib foundation + Phase 1 (portable universal tier). Remaining: M4 (generalize chaos/ai/live to drive a project base URL — D-002 a; the deepest item, since these are Tauri-shell/admin-bound harnesses) + M5 (/tester shared customTab + promote testing-domain-glob). M3 (operator Phase 2 UI) deprioritized as speculative.
 
-**Next:** Recommend: verify Restart /tests live (needs a standalone redeploy + :3001 restart — deferred to avoid disrupting the other Restart agent), then proceed M6 (test-config unify) and M4/M5; deprioritize M3 (speculative for the operator). An agent picks up the next milestone.
+**Next:** M4: investigate the chaos/ai/live harness implementations to scope the base-URL generalization (ai/Stagehand likely cleanest; chaos's Tauri-bridge coupling deepest), then M5.
 
 ## Background
 
@@ -72,7 +72,7 @@ So "one UI, two adapters" already works. Restart would be the third adapter.
 
 ## Phase 4 — Unify the drifted test-config (related cleanup, separable)
 
-- **P-020** `todo` Unify the two diverged `@papercusp/test-config` copies (same package name, an in-repo copy in **each** repo, neither a submodule) into one borrowable submodule like `ui-primitives`, consumed by both. Eliminates config drift and aligns the JUnit-reporter behavior the CI source depends on. → D-005
+- **P-020** `done` Unify the two diverged `@papercusp/test-config` copies (same package name, an in-repo copy in **each** repo, neither a submodule) into one borrowable submodule like `ui-primitives`, consumed by both. Eliminates config drift and aligns the JUnit-reporter behavior the CI source depends on. → D-005 (Unified into github.com/Papercusp/test-config private + in-place submodule in BOTH repos. papercup's superset was canonical forks/Node≥25 core-dump fix + coverage; Restart gains it. Domain-decoupled make-fixture generic + self-contained test, dropped db-org. papercup 2581389c3 / Restart 1b68eb26. Verified both 5/5 + 11/11.)
 
 ## Verification
 
