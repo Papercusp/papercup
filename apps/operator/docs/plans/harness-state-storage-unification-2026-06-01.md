@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** DECIDED → B (D-002). **P-001 DONE**: the two-axis spec (runtime store-of-record vs sync authority) is the standard — landed in `system/storage-policy.mdx` (source + served mirror rebuilt), a `CLAUDE.md` pointer, bare "canonical" banned, and dogfood §7 disambiguated (D-033). The model is locked. Remaining: P-002–P-007 (the build/migration).
+**State:** DECIDED → B (D-002); P-001 DONE (spec landed). **P-002 WIP**: the per-table registry exists — `apps/operator/lib/harness-state/table-registry.ts`, a rule-based `resolveTableSpec()` over the 186 `harness_shared` + `papercup_shared` tables (DEFAULT = slug-shared/none; explicit git-document / peer-log-live / workspace-owned-config / SECURITY exceptions), 9/9 unit tests green. It is the source of truth P-003 (projection engine) + P-004 (consolidation) read. Not yet trustworthy end-to-end: ~30 tables are flagged `NEEDS_REVIEW` (org-legacy, coord, plugin/telemetry key axis, mem0, backup, substrate) and the DEFAULT fall-through for the ~140 remaining tables hasn't been schema-validated.
 
-**Next:** P-002 — build the per-table registry: declare `key` (slug-shared | workspace-owned) + `sync authority` (none|git|peer-log) for EVERY harness table, as the single source of truth the projection engine (P-003) reads.
+**Next:** Finish P-002: (a) owner resolves the ~30 NEEDS_REVIEW judgment calls (esp. the telemetry/mem0/plugin key axis + coord peer-vs-local sync); (b) add a completeness check (every live harness_shared table resolves intentionally, not silently via DEFAULT). Then P-003 (the projection engine reads this registry).
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -78,7 +78,7 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 ## Phase 1 — Spec & model
 
 - **P-001** `done` Land the two-axis spec (runtime store-of-record vs sync authority) as the standard: add it to system/storage-policy.mdx + a CLAUDE.md pointer; ban bare "canonical"; annotate dogfood §7 / un-hardcode / harnesses-across-workspaces with the reframe. importance: high (spec in storage-policy.mdx + served mirror rebuilt + CLAUDE.md pointer + bare-canonical ban + dogfood §7 D-033; un-hardcode/across-workspaces covered by propagated D-001/D-002 cross-refs)
-- **P-002** `todo` Declare key (slug-shared | workspace-owned) + sync authority (none|git|peer-log) for EVERY harness table in one table-of-tables registry — the single source of truth for the model. importance: high
+- **P-002** `wip` Declare key (slug-shared | workspace-owned) + sync authority (none|git|peer-log) for EVERY harness table in one table-of-tables registry — the single source of truth for the model. importance: high (registry module + rule-based resolveTableSpec + exception lists git/peer-log/workspace-owned/security + 9/9 tests landed apps/operator/lib/harness-state/table-registry.ts. Remaining: resolve ~30 NEEDS_REVIEW judgment calls + validate completeness vs live schema)
 
 
 
