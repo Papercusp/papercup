@@ -16,6 +16,22 @@ describe('testing-domains-registry', () => {
     expect(domains.length).toBe(22);
   });
 
+  it('registers the `dogfood` domain with its 12 collaborative-substrate sections', () => {
+    const dogfood = papercuspRegistry.find((d) => d.id === 'dogfood');
+    expect(dogfood, 'dogfood domain must be registered (surfaces the shared-harness suite in the Tests tab)').toBeTruthy();
+    const sectionIds = (dogfood!.sections ?? []).map((s) => s.id).sort();
+    expect(sectionIds).toEqual(
+      [
+        'substrate', 'identity-binding', 'federation', 'claim', 'pr-lifecycle',
+        'completion-ref', 'reactivity', 'revocation', 'cupboard', 'ui', 'routes', 'e2e',
+      ].sort(),
+    );
+    // every section carries a glob or runner so the shell can resolve it
+    for (const s of dogfood!.sections ?? []) {
+      expect(Boolean(s.globs?.length) || Boolean(s.runners?.length), `section ${s.id} needs globs/runners`).toBe(true);
+    }
+  });
+
   it('every tier appears at least once', () => {
     const tiers = new Set(domains.map((d) => d.tier));
     expect(tiers.has('quick')).toBe(true);
