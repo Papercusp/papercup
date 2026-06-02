@@ -1511,6 +1511,26 @@
   min-width: 0;
 }
 
+/* Inbox unified left column: the Other + item lists render as stacked
+   sections (each just its groups) feeding the one shared sticky preview. */
+.pc-items__section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.pc-items__section + .pc-items__section {
+  margin-top: 18px;
+}
+.pc-items__section-label {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--pc-items-accent);
+}
+
 /* Detail pane: sticky within the scrolling .pc-plans__main, scrolls its
    own body. Same surface treatment as the Sessions detail pane. */
 .pc-items__detail {

@@ -14,7 +14,7 @@
  * right-hand PlanItemPreview rather than navigating away.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
@@ -38,6 +38,12 @@ interface Props {
   /** Heading title + one-line summary of the active filter (from PlansClient). */
   title: string;
   subtitle: string;
+  /** Inbox unified layout: render ONLY the groups list (no .pc-items wrapper
+   *  and no detail pane). PlansClient hosts a single shared sticky preview
+   *  alongside the stacked Other + item lists, so each list contributes just
+   *  its rows. Default (false) keeps the standalone two-pane render used by
+   *  the Plans tab. */
+  embedded?: boolean;
 }
 
 // The items view groups by EFFECTIVE status, so the row pill surfaces that
@@ -56,6 +62,8 @@ export default function PlanItemsList({
   harnessByPlan,
   planMeta,
   planFilters,
+  title,
+  embedded = false,
 }: Props) {
   // A single selected plan renders "bare" (no repeated title); multiple
   // selected (or none) render grouped with plan headers.
@@ -66,6 +74,13 @@ export default function PlanItemsList({
   // "<planSlug>::<itemId>". Distinct from PlansClient's `?plan=` (which
   // opens the FULL PlanDetail) — this only drives the right-hand preview.
   const [selectedItem, setSelectedItem] = useQueryState('item', parseAsString);
+  // Inbox shares one preview pane across the Other + item lists; selecting an
+  // item here clears any Other selection so the shared pane shows this item.
+  const [, setOtherSel] = useQueryState('other', parseAsString);
+  const selectItem = (key: string) => {
+    void setSelectedItem(key);
+    void setOtherSel(null);
+  };
   // Expanded plan groups (Radix Collapsible), URL-pinned like Sessions.
   const [expandedGroups, setExpandedGroups] = useQueryState(
     'expand',
@@ -93,24 +108,30 @@ export default function PlanItemsList({
     void setExpandedGroups([...expandedGroups, selectedPlan]);
   }, [selectedPlan, selectedItemId, planFiltersKey, expandedGroups, setExpandedGroups]);
 
-  if (loading) {
-    return (
-      <div className="pc-items pc-items--mixed">
-        <p className="pc-plans__placeholder">Loading…</p>
-      </div>
+  // In embedded (inbox) mode this list is just one section of a shared left
+  // column, so it renders bare — no .pc-items / two-pane wrapper.
+  const wrap = (inner: ReactNode) =>
+    embedded ? (
+      <section className="pc-items__section">
+        <h3 className="pc-items__section-label">{title}</h3>
+        {inner}
+      </section>
+    ) : (
+      <div className="pc-items pc-items--mixed">{inner}</div>
     );
+
+  if (loading) {
+    return wrap(<p className="pc-plans__placeholder">Loading…</p>);
   }
   if (error) {
-    return (
-      <div className="pc-items pc-items--mixed">
-        <div className="pc-plans__placeholder pc-plans__placeholder--error">
-          <p>Failed to load items:</p>
-          <code>{error}</code>
-          <button type="button" className="pc-plans__retry" onClick={refresh}>
-            Retry
-          </button>
-        </div>
-      </div>
+    return wrap(
+      <div className="pc-plans__placeholder pc-plans__placeholder--error">
+        <p>Failed to load items:</p>
+        <code>{error}</code>
+        <button type="button" className="pc-plans__retry" onClick={refresh}>
+          Retry
+        </button>
+      </div>,
     );
   }
 
@@ -121,11 +142,7 @@ export default function PlanItemsList({
       : planList.length
         ? 'No items in the selected plans.'
         : 'No items match the current filters.';
-    return (
-      <div className="pc-items pc-items--mixed">
-        <div className="pc-items__empty">{empty}</div>
-      </div>
-    );
+    return wrap(<div className="pc-items__empty">{empty}</div>);
   }
 
   // Group by parent plan; Map preserves insertion order, which is the
@@ -155,7 +172,7 @@ export default function PlanItemsList({
               className="pc-items__row"
               aria-current={isSel ? 'true' : undefined}
               title={r.item.text}
-              onClick={() => void setSelectedItem(itemKey(planSlug, r.item.id))}
+              onClick={() => selectItem(itemKey(planSlug, r.item.id))}
             >
               {/* Free-form text first (leftmost); id + status + importance
                   pills follow on the right. */}
@@ -181,12 +198,9 @@ export default function PlanItemsList({
     </ul>
   );
 
-  return (
-    <div className="pc-items pc-items--mixed">
-      <div className="pc-items__layout">
-        <div className="pc-items__listpane">
-          <ul className="pc-items__groups" role="list">
-            {[...groups.entries()].map(([planSlug, planRows]) => {
+  const groupsEl = (
+    <ul className="pc-items__groups" role="list">
+      {[...groups.entries()].map(([planSlug, planRows]) => {
               const harnessSlug = harnessByPlan?.get(planSlug);
               // When the left rail has filtered to one plan, don't repeat
               // its title here — render the items bare (the plan name is
@@ -239,9 +253,18 @@ export default function PlanItemsList({
                   </Collapsible.Root>
                 </li>
               );
-            })}
-          </ul>
-        </div>
+      })}
+    </ul>
+  );
+
+  if (embedded) {
+    return wrap(groupsEl);
+  }
+
+  return (
+    <div className="pc-items pc-items--mixed">
+      <div className="pc-items__layout">
+        <div className="pc-items__listpane">{groupsEl}</div>
 
         <PlanItemPreview
           planSlug={selectedPlan}

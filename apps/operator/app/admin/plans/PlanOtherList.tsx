@@ -19,7 +19,7 @@
  * View-log / Open point at the source harness view.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
@@ -51,6 +51,10 @@ interface Props {
    *  attention items belonging to these plans, so the left sidebar acts as a
    *  filter here too (harness-level alerts with no plan are dropped). */
   planFilters?: string[];
+  /** Inbox unified layout: render ONLY the groups list (no .pc-items wrapper
+   *  and no detail pane) — PlansClient hosts one shared sticky preview that
+   *  renders the selected item via the exported OtherDetail. */
+  embedded?: boolean;
 }
 
 /** Keep only the non-plan-item kinds (optionally narrowed to `allow`), and —
@@ -76,8 +80,15 @@ function otherOnly(
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, kinds, planFilters }: Props) {
+export default function PlanOtherList({ groups, loading, error, refresh, title, kinds, planFilters, embedded = false }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
+  // Inbox shares one preview pane across the Other + item lists; selecting an
+  // Other item clears any plan-item selection so the shared pane shows it.
+  const [, setItemSel] = useQueryState('item', parseAsString);
+  const selectOther = (id: string) => {
+    void setSelected(id);
+    void setItemSel(null);
+  };
   // Collapsible plan groups — same `?expand=` model as the Plans tab's
   // PlanItemsList, so a plan's expand state stays consistent across both views.
   const [expandedGroups, setExpandedGroups] = useQueryState(
@@ -111,44 +122,45 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
     void setExpandedGroups([...expandedGroups, selectedGroupKey]);
   }, [selectedGroupKey, expandedGroups, setExpandedGroups]);
 
-  if (loading) {
-    return (
-      <div className="pc-items pc-items--mixed">
-        <p className="pc-plans__placeholder">Loading…</p>
-      </div>
+  // In embedded (inbox) mode this list is one section of a shared left column,
+  // so it renders bare — no .pc-items / two-pane wrapper.
+  const wrap = (inner: ReactNode) =>
+    embedded ? (
+      <section className="pc-items__section">
+        <h3 className="pc-items__section-label">{title}</h3>
+        {inner}
+      </section>
+    ) : (
+      <div className="pc-items pc-items--mixed">{inner}</div>
     );
+
+  if (loading) {
+    return wrap(<p className="pc-plans__placeholder">Loading…</p>);
   }
   if (error) {
-    return (
-      <div className="pc-items pc-items--mixed">
-        <div className="pc-plans__placeholder pc-plans__placeholder--error">
-          <p>Failed to load attention items:</p>
-          <code>{error}</code>
-          <button type="button" className="pc-plans__retry" onClick={refresh}>
-            Retry
-          </button>
-        </div>
-      </div>
+    return wrap(
+      <div className="pc-plans__placeholder pc-plans__placeholder--error">
+        <p>Failed to load attention items:</p>
+        <code>{error}</code>
+        <button type="button" className="pc-plans__retry" onClick={refresh}>
+          Retry
+        </button>
+      </div>,
     );
   }
   if (!allItems.length) {
-    return (
-      <div className="pc-items pc-items--mixed">
-        <div className="pc-items__empty">
-          {planList.length
-            ? 'No alerts for the selected plan(s).'
-            : 'Nothing else needs attention right now.'}
-        </div>
-      </div>
+    return wrap(
+      <div className="pc-items__empty">
+        {planList.length
+          ? 'No alerts for the selected plan(s).'
+          : 'Nothing else needs attention right now.'}
+      </div>,
     );
   }
 
-  return (
-    <div className="pc-items pc-items--mixed">
-      <div className="pc-items__layout">
-        <div className="pc-items__listpane">
-          <ul className="pc-items__groups" role="list">
-            {otherGroups.map((g) => {
+  const groupsEl = (
+    <ul className="pc-items__groups" role="list">
+      {otherGroups.map((g) => {
               const isExpanded = expandedGroups.includes(g.key);
               return (
                 <li key={g.key} className="pc-items__group">
@@ -187,7 +199,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
                                 className="pc-items__row"
                                 aria-current={isSel ? 'true' : undefined}
                                 title={it.title}
-                                onClick={() => void setSelected(it.id)}
+                                onClick={() => selectOther(it.id)}
                               >
                                 {/* Free-form text first (leftmost); kind + importance
                                     pills follow on the right. */}
@@ -206,10 +218,19 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
                     </Collapsible.Content>
                   </Collapsible.Root>
                 </li>
-              );
-            })}
-          </ul>
-        </div>
+        );
+      })}
+    </ul>
+  );
+
+  if (embedded) {
+    return wrap(groupsEl);
+  }
+
+  return (
+    <div className="pc-items pc-items--mixed">
+      <div className="pc-items__layout">
+        <div className="pc-items__listpane">{groupsEl}</div>
 
         <OtherDetail
           key={selItem?.id ?? 'none'}
@@ -224,7 +245,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, kinds, 
   );
 }
 
-function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
+export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
   const [chatOpen, setChatOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [answered, setAnswered] = useState<AskChoiceAnswered | undefined>(undefined);

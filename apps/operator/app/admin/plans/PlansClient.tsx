@@ -27,7 +27,8 @@ import { toast } from 'sonner';
 import PlanRail, { type PlanRailHandle } from './PlanRail';
 import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
-import PlanOtherList from './PlanOtherList';
+import PlanOtherList, { OtherDetail } from './PlanOtherList';
+import PlanItemPreview from './PlanItemPreview';
 import { Plus, ClipboardList, Inbox } from 'lucide-react';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
@@ -144,6 +145,12 @@ export default function PlansClient() {
     'view',
     parseAsStringEnum<'plans' | 'inbox'>(['plans', 'inbox']).withDefault('plans'),
   );
+  // Inbox shared-preview selection: a plan-item (`?item=`, "<plan>::<id>") or
+  // an Other attention item (`?other=`). The two list sections each set their
+  // own param and clear the sibling, so at most one is live; the single shared
+  // preview pane (right column) renders whichever it is.
+  const [inboxItemSel] = useQueryState('item', parseAsString);
+  const [inboxOtherSel, setInboxOtherSel] = useQueryState('other', parseAsString);
 
   const railRef = useRef<PlanRailHandle | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -494,6 +501,45 @@ export default function PlansClient() {
     }
   }, [launchingNewPlan, resolvedHarnessSlug]);
 
+  // The inbox's single shared sticky preview — renders the selected plan-item
+  // (`?item=`) or Other attention item (`?other=`), or an empty prompt. Both
+  // list sections feed this one pane instead of each owning a detail column.
+  const renderInboxPreview = () => {
+    if (inboxItemSel) {
+      const idx = inboxItemSel.indexOf('::');
+      const pSlug = idx === -1 ? null : inboxItemSel.slice(0, idx);
+      const iId = idx === -1 ? null : inboxItemSel.slice(idx + 2);
+      return (
+        <PlanItemPreview
+          key={inboxItemSel}
+          planSlug={pSlug}
+          itemId={iId}
+          harnessSlug={pSlug ? harnessByPlan.get(pSlug) ?? null : null}
+          onResolved={refreshItems}
+          onViewFullPlan={navPlanTarget}
+        />
+      );
+    }
+    if (inboxOtherSel) {
+      const sel = otherItems.find((i) => i.id === inboxOtherSel) ?? null;
+      return (
+        <OtherDetail
+          key={inboxOtherSel}
+          item={sel}
+          onResolved={() => {
+            void setInboxOtherSel(null);
+            refreshItems();
+          }}
+        />
+      );
+    }
+    return (
+      <aside className="pc-items__detail">
+        <div className="pc-items__detail-empty">Select an item to see its detail and actions.</div>
+      </aside>
+    );
+  };
+
   return (
     <div className="pc-plans">
       <aside className="pc-plans__rail">
@@ -653,32 +699,45 @@ export default function PlansClient() {
                 );
               })}
             </nav>
-            {showOther ? (
-              <PlanOtherList
-                groups={attention.data?.groups ?? []}
-                loading={attention.loading}
-                error={attention.error}
-                refresh={attention.refresh}
-                title="Other"
-                subtitle={itemSubtitle}
-                kinds={otherFacets}
-                planFilters={itemPlans}
-              />
-            ) : null}
-            {showPlanItems ? (
-              <PlanItemsList
-                items={filteredItems}
-                loading={itemsLoading}
-                error={itemsError}
-                refresh={refreshItems}
-                onPick={navPlanTarget}
-                harnessByPlan={harnessByPlan}
-                planMeta={planMetaBySlug}
-                planFilters={itemPlans}
-                title={itemTitle}
-                subtitle={itemSubtitle}
-              />
-            ) : null}
+            {/* One two-pane layout: both lists stack in the left column, a
+                single sticky preview on the right renders whichever item is
+                selected. (Previously each list owned its own detail pane, which
+                stranded a selected plan-item's preview far down the page.) */}
+            <div className="pc-items pc-items--mixed pc-inbox__panes">
+              <div className="pc-items__layout">
+                <div className="pc-items__listpane">
+                  {showOther ? (
+                    <PlanOtherList
+                      embedded
+                      groups={attention.data?.groups ?? []}
+                      loading={attention.loading}
+                      error={attention.error}
+                      refresh={attention.refresh}
+                      title="Other"
+                      subtitle={itemSubtitle}
+                      kinds={otherFacets}
+                      planFilters={itemPlans}
+                    />
+                  ) : null}
+                  {showPlanItems ? (
+                    <PlanItemsList
+                      embedded
+                      items={filteredItems}
+                      loading={itemsLoading}
+                      error={itemsError}
+                      refresh={refreshItems}
+                      onPick={navPlanTarget}
+                      harnessByPlan={harnessByPlan}
+                      planMeta={planMetaBySlug}
+                      planFilters={itemPlans}
+                      title={itemTitle}
+                      subtitle={itemSubtitle}
+                    />
+                  ) : null}
+                </div>
+                {renderInboxPreview()}
+              </div>
+            </div>
           </div>
         )}
       </main>
