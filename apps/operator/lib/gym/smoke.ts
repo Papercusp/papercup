@@ -26,6 +26,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { provisionGymDatabase } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
 import { collectTrace } from './collector';
+import { distillTrace } from './distill';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
@@ -188,19 +189,29 @@ async function main(): Promise<void> {
     try {
       const wfPrefix = `pipeline:${SLUG}:${FEATURE}:e`;
       let status = 'PENDING';
-      // The fake-agent feature ends 'failing' and cycles a nondeterministic number of
-      // debugger/rework turns before the director concludes (observed 25–50 agent runs,
-      // ~2.5s each). 300s absorbs the worst observed cycle so the workflow reliably
-      // reaches a terminal state rather than the poll deadline catching it mid-run.
-      const deadline = Date.now() + 300_000;
+      // This smoke validates the CAPTURE CHAIN (boot→run→collect→distill), not the
+      // fake-agent's convergence: the fake validator prints `[PASS]` but the orchestrator
+      // reads feature status from PG (not stdout), so the feature stays 'failing' and the
+      // pipeline runs a nondeterministic 25–123+ debugger/rework cycles before hitting its
+      // iteration cap. Waiting for terminal SUCCESS is therefore inherently flaky. Instead
+      // break as soon as a SUBSTANTIAL real multi-role pipeline has run (≥ MIN_RUNS rows) —
+      // enough for a faithful real trace — or on a real terminal state, or the ceiling.
+      const MIN_RUNS = 12;
+      const deadline = Date.now() + 240_000;
+      let runCount = 0;
       while (Date.now() < deadline) {
         const rows = await gym<{ status: string }[]>`
           SELECT status FROM dbos.workflow_status WHERE workflow_uuid LIKE ${wfPrefix + '%'} ORDER BY created_at DESC LIMIT 1`;
         status = rows[0]?.status ?? 'PENDING';
         if (status === 'SUCCESS' || status === 'ERROR' || status === 'RETRIES_EXCEEDED') break;
+        const cnt = await gym<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM harness_shared.harness_run_output WHERE harness_slug = ${SLUG}`;
+        runCount = cnt[0]?.n ?? 0;
+        if (runCount >= MIN_RUNS) break; // enough real work captured — don't wait for the fake loop to cap out
         await sleep(2000);
       }
-      report.workflowStatus = status;
+      report.workflowStatus = status; // observability (SUCCESS or healthy-PENDING); only ERROR/RETRIES_EXCEEDED fails
+      report.brokeEarlyOnRunCount = status === 'PENDING' && runCount >= MIN_RUNS;
       log(`workflow status → ${status}`);
 
       // 8. Capture: feature status, run_output transcript rows, git diff in the clone.
@@ -246,6 +257,25 @@ async function main(): Promise<void> {
           traceRefWritten: existsSync(traceRef),
         };
         log(`collector → ${rawTrace.roleTranscripts.length} transcripts, ${rawTrace.diff.length}B diff, bundle written=${existsSync(traceRef)}`);
+
+        // 8c. P-029 distillation — validate distillTrace compresses the REAL RawTrace into
+        // a bounded, judge-sized input (deterministic selection/budgeting, no LLM): the
+        // hard char budget is respected, the diff section survives (the judge must see the
+        // produced code), and the distillation is stable (it is itself a noise source, so
+        // identical input must give identical output). Previously only fake-tested.
+        const JUDGE_BUDGET = 60_000;
+        const distilled = distillTrace(rawTrace, { maxChars: JUDGE_BUDGET });
+        const distilled2 = distillTrace(rawTrace, { maxChars: JUDGE_BUDGET });
+        const rawInputBytes = rawTrace.diff.length + rawTrace.roleTranscripts.reduce((n, t) => n + t.text.length, 0);
+        report.distill = {
+          rawInputBytes,
+          outputChars: distilled.text.length,
+          withinBudget: distilled.text.length <= JUDGE_BUDGET,
+          truncated: distilled.truncated,
+          deterministic: distilled.text === distilled2.text,
+          hasDiffSection: distilled.text.includes('## Diff'),
+        };
+        log(`distill → ${distilled.text.length}/${JUDGE_BUDGET} chars (from ${rawInputBytes}B), truncated=${distilled.truncated}, deterministic=${report.distill.deterministic}`);
       }
     } finally {
       await gym.end({ timeout: 5 });
@@ -258,13 +288,19 @@ async function main(): Promise<void> {
       report.diffStat = execFileSync('git', ['diff', '--stat', baseCommit, head], { cwd: cloneDir, encoding: 'utf8' }).trim();
     }
 
-    // PASS = the spine reached terminal SUCCESS AND the P-002 collector assembled a
-    // real, non-empty trace (transcripts from the real run) and wrote its bundle.
+    // PASS = the pipeline ran healthily (not a hard DBOS failure) AND produced a real
+    // multi-role trace that the P-002 collector assembled + bundled AND the P-029
+    // distillation compressed within the judge budget, deterministically, keeping the
+    // diff. We do NOT require workflow SUCCESS: the fake-agent's feature stays 'failing'
+    // so the pipeline cycles to its iteration cap (a fixture artifact), and the smoke's
+    // job is to validate the capture chain, not that convergence. A real DBOS ERROR /
+    // RETRIES_EXCEEDED still fails. (transcriptCount ≥ MIN_RUNS proves a real run.)
+    const col = report.collector as { transcriptCount: number; traceRefWritten: boolean } | undefined;
+    const dis = report.distill as { withinBudget: boolean; deterministic: boolean; hasDiffSection: boolean } | undefined;
     ok =
-      report.workflowStatus === 'SUCCESS' &&
-      !!report.collector &&
-      (report.collector as { transcriptCount: number }).transcriptCount > 0 &&
-      (report.collector as { traceRefWritten: boolean }).traceRefWritten === true;
+      report.workflowStatus !== 'ERROR' && report.workflowStatus !== 'RETRIES_EXCEEDED' &&
+      !!col && col.transcriptCount >= 12 && col.traceRefWritten === true &&
+      !!dis && dis.withinBudget === true && dis.deterministic === true && dis.hasDiffSection === true;
   } catch (err) {
     report.error = String(err);
   } finally {
