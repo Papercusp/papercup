@@ -29,7 +29,8 @@ import PlanDetail from './PlanDetail';
 import PlanItemsList from './PlanItemsList';
 import PlanOtherList, { OtherDetail } from './PlanOtherList';
 import PlanItemPreview from './PlanItemPreview';
-import { Plus, ClipboardList, Inbox } from 'lucide-react';
+import { Plus, ClipboardList, Inbox, Terminal } from 'lucide-react';
+import SessionsRosterView from '@/app/adv/sessions/SessionsRosterView';
 import PlanFilters from './PlanFilters';
 import PlanBucketTabs from './PlanBucketTabs';
 import PlanSearchResults from './PlanSearchResults';
@@ -143,7 +144,7 @@ export default function PlansClient() {
   // item inbox. The Plans / Inbox header buttons flip it.
   const [view, setView] = useQueryState(
     'view',
-    parseAsStringEnum<'plans' | 'inbox'>(['plans', 'inbox']).withDefault('plans'),
+    parseAsStringEnum<'plans' | 'inbox' | 'sessions'>(['plans', 'inbox', 'sessions']).withDefault('plans'),
   );
   // Inbox shared-preview selection: a plan-item (`?item=`, "<plan>::<id>") or
   // an Other attention item (`?other=`). The two list sections each set their
@@ -463,6 +464,17 @@ export default function PlansClient() {
     void setView('plans');
   }, [leaveGuard, setPane, setSlug, setQ, setView]);
 
+  // "Sessions" — the live agent roster. Closes any open plan + search; the rail
+  // plan selection (itemPlans) STAYS, since it filters the roster's plan groups
+  // exactly as it filters inbox items (D-003/D-005).
+  const goSessions = useCallback(() => {
+    if (!leaveGuard()) return;
+    setPane('read');
+    setSlug(null);
+    void setQ(null);
+    void setView('sessions');
+  }, [leaveGuard, setPane, setSlug, setQ, setView]);
+
   usePlanShortcuts({ navSlug, setQ, rail: railRef, search: searchRef });
 
   // P-007: dual-homed (/admin/plans + /adv?tab=plans). Fall back to the
@@ -577,6 +589,15 @@ export default function PlansClient() {
             <span className="pc-plans__inbox-btn-label">Inbox</span>
             {inboxTotal > 0 ? <span className="pc-plans__inbox-btn-count">{inboxTotal}</span> : null}
           </button>
+          <button
+            type="button"
+            className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
+            onClick={goSessions}
+            title="Live agent roster — who's active across plans, what they're doing, which files. The plan selection filters the plan-grouped section."
+          >
+            <Terminal size={14} aria-hidden />
+            <span className="pc-plans__inbox-btn-label">Sessions</span>
+          </button>
         </div>
 
         {/* ── PLANS group — search + plan-status filters (scope which plans' items show). ── */}
@@ -630,7 +651,13 @@ export default function PlansClient() {
       </aside>
 
       <main className="pc-plans__main">
-        {slug ? (
+        {view === 'sessions' ? (
+          /* Sessions — the live agent roster (3rd view). The rail's plan
+             selection filters the plan-grouped section; No-plan + presence-only
+             groups always show. Workspace scope is left open (every workspace)
+             for now; the rail plan-filter is the primary scoping. */
+          <SessionsRosterView planFilters={itemPlans} />
+        ) : slug ? (
           <PlanDetail
             key={slug}
             slug={slug}

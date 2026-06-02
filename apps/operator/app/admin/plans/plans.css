@@ -35,6 +35,7 @@
 
 .pc-plans__rail-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: stretch;
   gap: 6px;
@@ -118,6 +119,31 @@
 .pc-plans__inbox-btn:hover {
   background: color-mix(in oklab, #f87171, transparent 74%);
   border-color: color-mix(in oklab, #f87171, transparent 44%);
+}
+
+/* Sessions — the live agent roster (3rd view, right of Inbox). Pink accent,
+   kept from the retired standalone Sessions tab. */
+.pc-plans__sessions-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in oklab, #f472b6, transparent 64%);
+  border-radius: 8px;
+  background: color-mix(in oklab, #f472b6, transparent 90%);
+  color: var(--fg, #e7f7ff);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  position: relative;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.pc-plans__sessions-btn:hover {
+  background: color-mix(in oklab, #f472b6, transparent 74%);
+  border-color: color-mix(in oklab, #f472b6, transparent 44%);
 }
 .pc-plans__inbox-btn-count {
   min-width: 18px;
@@ -203,6 +229,11 @@
   border-color: #f87171;
   box-shadow: 0 0 0 2px color-mix(in oklab, #f87171, transparent 58%);
 }
+.pc-plans__sessions-btn.is-active {
+  background: color-mix(in oklab, #f472b6, transparent 52%);
+  border-color: #f472b6;
+  box-shadow: 0 0 0 2px color-mix(in oklab, #f472b6, transparent 58%);
+}
 
 /* ── Shared "selected ✓" badge ───────────────────────────────────────────
    A single, high-visibility checkmark on the RIGHT of every active filter
@@ -214,7 +245,8 @@
 .pc-filter-chip.is-on::after,
 .pc-filter-toggle.is-on::after,
 .pc-plans__plans-btn.is-active::after,
-.pc-plans__inbox-btn.is-active::after {
+.pc-plans__inbox-btn.is-active::after,
+.pc-plans__sessions-btn.is-active::after {
   content: "✓";
   margin-left: auto;
   flex: 0 0 auto;

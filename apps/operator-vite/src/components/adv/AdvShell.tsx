@@ -14,7 +14,6 @@ import {
   Settings,
   Share2,
   SlidersHorizontal,
-  Terminal,
   TrendingUp,
 } from 'lucide-react';
 import { Select } from '@/app/harness/Select';
@@ -23,7 +22,7 @@ import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 
-const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans', 'sessions'] as const;
+const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -41,15 +40,15 @@ export const ADV_TABS: ReadonlyArray<{
   accentRgb: string;
   /**
    * Tab renders something meaningful under scope=all (workspace-wide):
-   * Plans + Sessions aggregate across every harness, and the Harness
-   * grid is itself a workspace overview. Every other tab is per-harness
-   * and is hidden from the strip when "All harnesses" is selected.
+   * Plans aggregates across every harness (and now carries the live
+   * Sessions roster as its 3rd view), and the Harness grid is itself a
+   * workspace overview. Every other tab is per-harness and is hidden
+   * from the strip when "All harnesses" is selected.
    */
   supportsAll?: boolean;
 }> = [
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
-  { id: 'sessions', label: 'Sessions', icon: Terminal, accent: '#f472b6', accentRgb: '244, 114, 182', supportsAll: true },
   { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250', supportsAll: true },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
