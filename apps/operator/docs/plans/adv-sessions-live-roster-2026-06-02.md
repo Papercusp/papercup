@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1–3 shipped. Data (P-001/P-002), endpoint (P-003 GET /api/adv/roster), and the UI integration are done: P-004 (shared LivenessDot + dep-free @/lib/liveness leaf), P-006 (SessionsRosterView — grouped rich rows: plan / always-shown No-plan + presence-only, LivenessDot + intent + file chips, polls the roster endpoint), and P-005 (Sessions is now the 3rd ?view= in the combined Plans/Inbox shell, rail-filtered; the standalone ?tab=sessions peer is removed). ~40 tests green across the suites; apps/operator typecheck clean on touched files. NOT yet live-verified in the Tauri shell: the SPA renders, but the roster's fetch of /api/adv/roster (and new-launch coord_owner_id population) needs the deferred :3070 host restart.
+**State:** Phases 1–3 shipped AND now live-confirmed end-to-end (the earlier "deferred :3070 restart" blocker is moot — the host was restarted at 02:49:20 EDT, after all Phase 1–3 server files landed, so it already serves the new code). Verified 2026-06-02 03:38: GET /api/adv/roster returns 200 with 147 sessions, live heartbeats, and a working coord_owner_id↔adv_sessions join (advSessionId/agent/liveness populated for currently-running agents) — so newly-restarted agents will populate coord_owner_id and appear in the roster. SPA confirmed too: vite build --watch is live; the served bundle (index-BCUIxYBf.js, built 03:10) contains SessionsRosterView and PlansClient's 3rd ?view=sessions, and no longer wires the removed standalone ?tab=sessions AdvSessionsClient. ~40 tests green; apps/operator typecheck clean on touched files. The only thing not yet done is a human/Tauri-shell *visual* confirmation of the rendered roster (no operator restart required to do it).
 
-**Next:** Live-verify in the Tauri shell after the (deferred, user-held) :3070 restart. Then Phase 4: P-007 detail dossier (reusing AdvSessionsClient's SessionDetail) + P-009 (locks/coord enrichment), P-008 files-in-play map, P-010 filters + design-token polish.
+**Next:** Owner: open the Tauri shell's Plans→Sessions view to eyeball the live roster (server + SPA are already verified live). Then Phase 4 — P-007 detail dossier + P-008 files-in-play map + P-010 filters/polish — and P-009 (Tier-3 locks/coord enrichment, low).
 
 ## Background
 
