@@ -84,18 +84,32 @@ v5: vditor for BOTH editing AND reading of single-markdown surfaces per D-020. M
 - **P-050a** — All identified single-markdown surfaces use the shared `MarkdownEditor` component.
 - **P-050b** — PlanEditor migration: existing plan-edit flows preserved (vditor mode toggle for ir/wysiwyg/sv per the existing wrapper).
 
-### P-069 — Claimed/unclaimed UI (addendum 1) [M]
+### P-069 — Claimed/unclaimed UI (addendum 1) [M] — **MOUNTED + WIRED in live /adv shell 2026-06-02**
 
 v5 addendum 1: harness header badge, settings banner, create/join existing alert, provisional-owner explainer modal, Contributors claimants/provisional-owner indicators, claim CTA gated by GitHub repo permission.
 
-**Files:** various — `apps/operator/app/harness/ChromeShell.tsx` (header badge), `apps/operator/app/harness/SettingsBanner.tsx` (new), `apps/operator/app/harness/ClaimCTA.tsx` (new), `apps/operator/app/harness/ProvisionalOwnerExplainer.tsx` (new — copy from §5.1).
+**Status (2026-06-02):** The components existed (built + tested) but were NOT mounted in the live `/adv` shell, and were fed fallback (always-`'unclaimed'`) data — that was the gap. Now mounted + wired against the REAL claim-status data source.
+
+**Claim-status data source:** `harness_shared.shared_repo_binding_cache` (LOCAL per-engineer 24h cache, keyed by `(workspace_id, harness_slug)`). New read endpoint `GET /api/harness/:slug/claim-status` (`routes/harness/claim-status.ts`) joins `harness_shared.contributors` for claimant logins, resolves the local viewer (`resolveLocalGithubIdentity`), and runs the PURE resolver `lib/harness/claim-status-resolver.ts` (`resolveClaimStatus(row, viewerId)` → status + claimants + provisional-owner + viewer predicates + banner copy; 17 unit tests). Mount point = `AdvInsightsPanel` (harness overview/insights home).
+
+**Files added/edited:**
+- `apps/operator/lib/harness/claim-status-resolver.ts` (+ test) — pure view-model.
+- `apps/operator/lib/endpoint-route/routes/harness/claim-status.ts` — GET read endpoint (registered in `routes/index.ts`).
+- `apps/operator/lib/endpoint-route/routes/harness/binding-claim.ts` (+ test) — `POST /api/harness/binding/claim` wrapping P-068 `claimBinding`, structured-error→HTTP mapping (registered in `routes/index.ts`).
+- `apps/operator/app/adv/harnesses/useHarnessClaimStatus.ts` — client hook (read + `claim()` mutation, structured-error toast).
+- `apps/operator/app/adv/harnesses/AdvInsightsPanel.tsx` — mounts `HarnessClaimHeader` (banner + CTA) + overrides the InsightsTab ProjectCard badge with real status.
+- `apps/operator/app/harness/ShareWizard.tsx` + `CreateHarnessPicker.tsx` — P-069c/d wiring (`ownerLogin` from `useViewer()`).
 
 **Sub-acceptances:**
-- **P-069a** — Badge: `Unclaimed`, `Claimed`, `Stale claim`, `Superseded`.
-- **P-069b** — Settings banner: "This harness is unclaimed. You're the provisional owner." OR "Claimed by @alice + 2 others."
-- **P-069c** — Create/join: existing-binding alert with claimed/unclaimed status before Join.
-- **P-069d** — Provisional-owner explainer fires on first share-create.
-- **P-069e** — Claim CTA calls Phase 1b P-068's `claimBinding`; rejection surfaces structured perm error.
+- **P-069a** — Badge: `Unclaimed`, `Claimed`, `Stale claim`, `Superseded`. ✅ **DONE** — `ClaimStatusBadge` mounted in `AdvInsightsPanel` (via `HarnessClaimHeader` + the ProjectCard), now fed REAL `claim_status`/`claimantLogin` from the new endpoint (was hardcoded `'unclaimed'` fallback).
+- **P-069b** — Settings banner: "This harness is unclaimed. You're the provisional owner." OR "Claimed by @alice + 2 others." ✅ **DONE** — `HarnessClaimHeader` mounted in `AdvInsightsPanel`; `claimantSummary` copy from the resolver ("you're the provisional owner" via `useViewer()` / `isProvisionalOwner`).
+- **P-069c** — Create/join: existing-binding alert with claimed/unclaimed status before Join. ✅ **DONE** — `ShareWizard` step-2 alert now renders the existing binding's `ClaimStatusBadge` + claimed/unclaimed/stale/superseded status line + publisher login (was a generic "existing harness found" message).
+- **P-069d** — Provisional-owner explainer fires on first share-create. ✅ **DONE** — `ProvisionalOwnerExplainer` wired into `ShareWizard` finalize (NEW binding only, gated by `shouldShowProvisionalOwnerExplainer()`); `ownerLogin` from `useViewer()`.
+- **P-069e** — Claim CTA calls Phase 1b P-068's `claimBinding`; rejection surfaces structured perm error. ✅ **DONE** — CTA in `HarnessClaimHeader` (shown when `viewer_can_claim`) → `useHarnessClaimStatus.claim()` → `POST /api/harness/binding/claim` → `claimBinding`; `CLAIM_PERMISSION_DENIED` etc. mapped to HTTP + structured body, surfaced as a toast + inline error.
+
+**Tests:** resolver 17/17, binding-claim 11/11, ShareWizard 13/13 (incl. new P-069c/d), ClaimStatusBadge 8/8, HarnessClaimHeader 8/8, ProvisionalOwnerExplainer 8/8, full harness-routes dir 119/119. No new tsc errors in touched files.
+
+**Deferred:** Live-shell VISUAL verification needs a Tauri dev run (the `/adv` shell renders only inside the desktop shell); left to a Tauri pass. The 24h claimant-permission re-check daemon (`recheckClaimantPermissions`) remains a v1 stub (pre-existing; not part of this UI item).
 
 ### P-071 — Contributor activity badges (addendum 3) [S]
 

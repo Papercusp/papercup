@@ -31,6 +31,11 @@ import { useCallback, useMemo, useState, useEffect, type ReactNode, type CSSProp
 import { Modal } from './Modal';
 import { toast } from 'sonner';
 import {
+  ProvisionalOwnerExplainer,
+  shouldShowProvisionalOwnerExplainer,
+} from '../_components/ProvisionalOwnerExplainer';
+import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
+import {
   SHARE_WIZARD_STEPS,
   SHARE_WIZARD_FIRST_STEP,
   SHARE_WIZARD_STEP_INDEX,
@@ -57,6 +62,12 @@ export interface ShareWizardProps {
   onClose: () => void;
   /** The harness slug being shared. */
   harnessSlug: string;
+  /**
+   * The current viewer's GitHub login — names the provisional owner in the
+   * P-069d first-share explainer. Defaults to 'you' when unknown (anonymous /
+   * gh not yet resolved); the explainer copy still reads cleanly.
+   */
+  ownerLogin?: string;
   /**
    * Initial GitHub remote — typically pre-populated from
    * `git remote get-url origin` in the harness directory. When
@@ -214,7 +225,7 @@ function StepHeader({ step, label }: { step: ShareWizardStep; label: string }) {
 
 export function ShareWizard(props: ShareWizardProps): ReactNode {
   const {
-    open, onClose, harnessSlug,
+    open, onClose, harnessSlug, ownerLogin,
     initialGithubRemote,
     resolveBinding = defaultResolveBinding,
     runBackfill = defaultRunBackfill,
@@ -222,6 +233,15 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
     publishToCupboard = defaultPublishToCupboard,
   } = props;
   const [publishWarning, setPublishWarning] = useState<string | null>(null);
+  // P-069c — the existing-binding detail (claim status + publisher) the
+  // step-2 lookup found, so the alert can surface claimed/unclaimed status
+  // before the user closes to join. Transient lookup metadata (not wizard
+  // input that must survive back-step), so plain useState.
+  const [existingBinding, setExistingBinding] =
+    useState<BindingResolveResult['existing_binding']>(null);
+  // P-069d — provisional-owner explainer, shown once per machine on the
+  // first successful share-create.
+  const [showProvisionalExplainer, setShowProvisionalExplainer] = useState(false);
 
   const [step, setStep] = useState<ShareWizardStep>(SHARE_WIZARD_FIRST_STEP);
   const [state, setState] = useState<ShareWizardState>(() => {
@@ -289,6 +309,7 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
     setBusy(true); setErr(null);
     try {
       const r = await resolveBinding(state.github_remote);
+      setExistingBinding(r.existing_binding);
       setState((s) => ({
         ...s,
         github_repository_id: r.github_repository_id,
@@ -317,7 +338,27 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
           )}
           {looked && state.existing_binding_found && (
             <div data-testid="existing-binding-alert" style={{ ...cardStyle, background: 'var(--bg-warning, #4a2a1a)', borderColor: 'var(--border-warning, #b45a32)' }}>
-              Existing harness found. A shared harness already exists for this repo. You should join it rather than create a duplicate. Close this wizard and use the harness link from the existing publisher.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <strong>Existing harness found</strong>
+                {existingBinding && (
+                  <ClaimStatusBadge
+                    status={existingBinding.claim_status}
+                    claimantLogin={existingBinding.publisher_github_login}
+                  />
+                )}
+              </div>
+              {existingBinding && (
+                <div data-testid="existing-binding-status" style={{ fontSize: 13, marginBottom: 6 }}>
+                  {existingBinding.claim_status === 'claimed'
+                    ? <>This repo's harness is <strong>claimed</strong> by <strong>@{existingBinding.publisher_github_login}</strong>.</>
+                    : existingBinding.claim_status === 'stale'
+                    ? <>This repo's harness has a <strong>stale claim</strong> — the last claimant lost their GitHub permission.</>
+                    : existingBinding.claim_status === 'superseded'
+                    ? <>This repo's harness has been <strong>superseded</strong> by a newer binding.</>
+                    : <>This repo's harness is <strong>unclaimed</strong>; <strong>@{existingBinding.publisher_github_login}</strong> is the provisional owner.</>}
+                </div>
+              )}
+              A shared harness already exists for this repo. You should join it rather than create a duplicate. Close this wizard and use the harness link from the existing publisher.
             </div>
           )}
           {looked && !state.existing_binding_found && (
@@ -517,6 +558,14 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
       setState((s) => ({ ...s, harness_link: finalLink }));
       setFinalized(true);
 
+      // P-069d — first share-create makes the engineer the provisional owner.
+      // Fire the one-time-per-machine explainer (it self-suppresses after the
+      // first dismissal). Only on a NEW binding — joining an existing one
+      // doesn't make you the provisional owner.
+      if (!state.existing_binding_found && shouldShowProvisionalOwnerExplainer()) {
+        setShowProvisionalExplainer(true);
+      }
+
       // P-053 — shared-public also publishes to Cupboard. Best-effort:
       // a Cupboard failure does NOT roll back the local finalize. The
       // user sees an inline warning + a "publish later" affordance.
@@ -608,21 +657,30 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
   const isLast = step === 'write-shared-json';
 
   return (
-    <Modal open={open} onOpenChange={(v) => { if (!v) onClose(); }} title="Share this harness">
-      {renderStep()}
-      {err && step !== 'backfill' && step !== 'write-shared-json' && (
-        <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>
-      )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
-        <button style={buttonSecondary} disabled={!canBack} onClick={back}>← Back</button>
-        {!isLast && (
-          <button style={buttonPrimary} disabled={busy} onClick={advance}>Next →</button>
+    <>
+      <Modal open={open} onOpenChange={(v) => { if (!v) onClose(); }} title="Share this harness">
+        {renderStep()}
+        {err && step !== 'backfill' && step !== 'write-shared-json' && (
+          <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>
         )}
-        {isLast && finalized && (
-          <button style={buttonPrimary} onClick={onClose}>Done</button>
-        )}
-      </div>
-    </Modal>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
+          <button style={buttonSecondary} disabled={!canBack} onClick={back}>← Back</button>
+          {!isLast && (
+            <button style={buttonPrimary} disabled={busy} onClick={advance}>Next →</button>
+          )}
+          {isLast && finalized && (
+            <button style={buttonPrimary} onClick={onClose}>Done</button>
+          )}
+        </div>
+      </Modal>
+      {/* P-069d — first-share provisional-owner explainer (one-time per machine). */}
+      <ProvisionalOwnerExplainer
+        open={showProvisionalExplainer}
+        ownerLogin={ownerLogin ?? 'you'}
+        harnessSlug={harnessSlug}
+        onClose={() => setShowProvisionalExplainer(false)}
+      />
+    </>
   );
 }
 

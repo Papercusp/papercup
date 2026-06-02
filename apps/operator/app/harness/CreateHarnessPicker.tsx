@@ -20,6 +20,7 @@ import { Modal } from './Modal';
 import { toast } from 'sonner';
 import { EntryHarnessLinkForm } from './EntryHarnessLinkForm';
 import { ShareWizard } from './ShareWizard';
+import { useViewer } from '../adv/harnesses/useViewer';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -438,6 +439,9 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
   const [step, setStep] = useState<Step>('picker');
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  // Names the provisional owner in the ShareWizard's P-069d first-share
+  // explainer. Anonymous / unresolved → undefined → the explainer's 'you'.
+  const { viewer } = useViewer();
 
   const handleClose = () => {
     setStep('picker');
@@ -506,6 +510,7 @@ export function CreateHarnessPicker({ open, onOpenChange, onCreated }: CreateHar
             handleClose();
           }}
           harnessSlug={createdSlug}
+          ownerLogin={viewer?.githubLogin ?? undefined}
         />
       )}
     </>

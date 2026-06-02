@@ -151,6 +151,88 @@ describe('P-029b — existing-binding alert', () => {
   });
 });
 
+// ── P-069c — existing-binding alert surfaces claim status ──────────────────
+
+describe('P-069c — existing-binding alert shows claimed/unclaimed status', () => {
+  it('unclaimed existing binding → surfaces provisional owner + status badge', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      existingBinding: true, // fixture default: unclaimed, publisher alice
+    });
+    await user.click(screen.getByText('Next →'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('existing-binding-alert'));
+    const status = screen.getByTestId('existing-binding-status');
+    expect(status.textContent).toMatch(/unclaimed/i);
+    expect(status.textContent).toMatch(/@alice/);
+    // The ClaimStatusBadge renders inside the alert.
+    expect(screen.getByTestId('claim-status-badge-unclaimed')).toBeTruthy();
+  });
+
+  it('claimed existing binding → surfaces "claimed by @bob" + claimed badge', async () => {
+    const user = userEvent.setup();
+    renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      resolveBinding: async () => ({
+        github_repository_id: 12345,
+        github_owner: 'owner',
+        github_repo: 'repo',
+        existing_binding: {
+          harness_topic: 'a'.repeat(64),
+          harness_slug: 'existing',
+          claim_status: 'claimed' as const,
+          publisher_github_login: 'bob',
+        },
+      }),
+    });
+    await user.click(screen.getByText('Next →'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('existing-binding-alert'));
+    const status = screen.getByTestId('existing-binding-status');
+    expect(status.textContent).toMatch(/claimed/i);
+    expect(status.textContent).toMatch(/@bob/);
+    expect(screen.getByTestId('claim-status-badge-claimed')).toBeTruthy();
+  });
+});
+
+// ── P-069d — provisional-owner explainer fires on first share-create ───────
+
+describe('P-069d — provisional-owner explainer on first share-create', () => {
+  beforeEach(() => {
+    // Fresh machine — explainer not yet seen.
+    try {
+      globalThis.localStorage?.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('fires the explainer after finalizing a NEW binding (no existing binding)', async () => {
+    const user = userEvent.setup();
+    renderWizard({ initialRemote: 'https://github.com/owner/repo', existingBinding: false });
+    // Walk the full nine steps to finalize.
+    await user.click(screen.getByText('Next →')); // 1→2
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('no-binding-message'));
+    await user.click(screen.getByText('Next →')); // 2→3
+    await user.click(screen.getByText('Next →')); // 3→4
+    await user.click(screen.getByText('Generate topic'));
+    await user.click(screen.getByText('Next →')); // 4→5
+    await user.click(screen.getByText('Next →')); // 5→6 (discord optional)
+    await user.click(screen.getByLabelText(/shared-private/, { exact: false }));
+    await user.click(screen.getByText('Next →')); // 6→7
+    await waitFor(() => screen.getByText(/Confirm:/));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByText('Next →')); // 7→8
+    await user.click(screen.getByText('Run backfill'));
+    await waitFor(() => screen.getByText(/Backfill complete/));
+    await user.click(screen.getByText('Next →')); // 8→9
+    await user.click(screen.getByText('Finalize + share'));
+    await waitFor(() => screen.getByTestId('provisional-owner-explainer'));
+  });
+});
+
 // ── P-029c — privacy confirm-modal copy ────────────────────────────────────
 
 describe('P-029c — privacy confirm copy', () => {

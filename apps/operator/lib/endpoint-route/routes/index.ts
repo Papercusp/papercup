@@ -57,6 +57,8 @@ import harnessMembership from './harness/membership';
 import harnessJoinLink from './harness/join-link';
 import harnessShareFinalize from './harness/share-finalize';
 import harnessBindingResolve from './harness/binding-resolve';
+import harnessBindingClaim from './harness/binding-claim';
+import harnessClaimStatus from './harness/claim-status';
 import harnessCupboardPublish from './harness/cupboard-publish';
 import harnessContributors from './harness/contributors';
 import harnessActivity from './harness/activity';
@@ -486,6 +488,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessJoinLink as AnyRoute),
   ...flatten(harnessShareFinalize as AnyRoute),
   ...flatten(harnessBindingResolve as AnyRoute),
+  ...flatten(harnessBindingClaim as AnyRoute[]),
+  ...flatten(harnessClaimStatus as AnyRoute[]),
   ...flatten(harnessCupboardPublish as AnyRoute),
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessActivity as AnyRoute[]),
