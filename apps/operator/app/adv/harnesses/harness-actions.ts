@@ -18,6 +18,24 @@ export async function featureReset(slug: string, id: string): Promise<void> {
   await post(`/api/harness/${encodeURIComponent(slug)}/features/${encodeURIComponent(id)}/reset?phase=staging`);
 }
 
+// Working-set (P-038): mark/unmark the viewer as actively working a feature.
+// The viewer's github id comes from useViewer() (the viewer-identity infra) —
+// the substrate projects it into working_users[] which the row's "working"
+// pill reads. Server endpoints: working-set.ts.
+export async function setWorkingActive(slug: string, featureId: string, githubUserId: number): Promise<void> {
+  await post(
+    `/api/harness/${encodeURIComponent(slug)}/working-set/${encodeURIComponent(featureId)}/set-active`,
+    { github_user_id: githubUserId },
+  );
+}
+
+export async function clearWorkingActive(slug: string, featureId: string, githubUserId: number): Promise<void> {
+  await post(
+    `/api/harness/${encodeURIComponent(slug)}/working-set/${encodeURIComponent(featureId)}/clear-active`,
+    { github_user_id: githubUserId },
+  );
+}
+
 export type IssueActionKind = 'promote' | 'acknowledge' | 'close' | 'wontfix';
 
 // The IssueStatus an action transitions the issue to, or null for promote

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
-import { MessageSquare, Pencil, RotateCcw } from 'lucide-react';
+import { MessageSquare, Pencil, RotateCcw, Play, Square } from 'lucide-react';
 import { openFeatureChat } from '@papercusp/papercup-shared';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
@@ -14,7 +14,8 @@ import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import { STATUS, type HarnessStatus } from '../../harness/theme';
 import PinMenu, { type PinMenuState } from './PinMenu';
 import { useHarnessFeatures, type FeatureStatus, type HarnessFeature } from './useHarnessData';
-import { featureReset } from './harness-actions';
+import { featureReset, setWorkingActive, clearWorkingActive } from './harness-actions';
+import { useViewer } from './useViewer';
 
 // Saved views mirror the legacy FeatureList BUILT_IN_VIEWS. Each view is a
 // predicate over a feature; counts are computed client-side. "Running" and
@@ -78,10 +79,36 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const { confirm, element: confirmEl } = useConfirmDialog();
+  // Viewer-identity infra: who is operating this desktop. Drives the
+  // working-set Start/Stop button (P-038 write path). Anonymous → no button.
+  const { viewer } = useViewer();
+  const viewerId = viewer?.githubUserId ?? null;
 
   useEffect(() => {
     if (features) api.setTitle(`Features · ${slug} (${features.length})`);
   }, [features, slug, api]);
+
+  // P-038: toggle the viewer as actively working a feature. Optimistic patch
+  // of working_users[] + the substrate write; the "working" pill (which reads
+  // working_users[]) reflects it, and federation propagates it to peers.
+  const handleToggleWorking = async (f: HarnessFeature) => {
+    if (viewerId == null) return;
+    const prev = f.workingUsers ?? [];
+    const isWorking = prev.includes(viewerId);
+    const next = isWorking ? prev.filter((id) => id !== viewerId) : [...prev, viewerId];
+    patchFeature(f.id, { workingUsers: next }); // optimistic
+    setBusyId(f.id);
+    try {
+      if (isWorking) await clearWorkingActive(slug, f.id, viewerId);
+      else await setWorkingActive(slug, f.id, viewerId);
+      toast.success(isWorking ? `Stopped working ${f.id}` : `Working ${f.id}`);
+    } catch (e) {
+      patchFeature(f.id, { workingUsers: prev }); // rollback
+      toast.error('Working toggle failed', { description: String(e) });
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleReset = async (f: HarnessFeature) => {
     if (
@@ -307,16 +334,30 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
     {
       key: 'actions',
       header: '',
-      width: '92px',
+      width: viewerId != null ? '116px' : '92px',
       align: 'right',
       render: ({ row }) => {
         const show = hoveredId === row.id || busyId === row.id;
+        const working = viewerId != null && (row.workingUsers ?? []).includes(viewerId);
         return (
           <span
             className="pc-adv-features__rowactions"
             style={{ opacity: show ? 1 : 0 }}
             onClick={(e) => e.stopPropagation()}
           >
+            {viewerId != null && (
+              <Tooltip label={working ? 'Stop working' : 'Start working'}>
+                <button
+                  type="button"
+                  disabled={busyId === row.id}
+                  onClick={() => void handleToggleWorking(row)}
+                  aria-label={working ? 'Stop working this feature' : 'Start working this feature'}
+                  aria-pressed={working}
+                >
+                  {working ? <Square size={13} aria-hidden /> : <Play size={13} aria-hidden />}
+                </button>
+              </Tooltip>
+            )}
             <Tooltip label="Reset to todo">
               <button type="button" disabled={busyId === row.id} onClick={() => void handleReset(row)} aria-label="Reset to todo">
                 <RotateCcw size={13} aria-hidden />
@@ -344,7 +385,7 @@ export default function FeaturesPanel({ params, api }: PanelComponentProps) {
       },
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [slug, hoveredId, busyId]);
+  ], [slug, hoveredId, busyId, viewerId]);
 
   const richRowProps = useMemo(
     () => (ctx: { row: HarnessFeature; rowIndex: number }) => {
