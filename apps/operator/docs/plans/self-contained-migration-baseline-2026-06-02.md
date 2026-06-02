@@ -82,7 +82,7 @@ source of truth**, then stands up the integration tier. See the spec for full in
 
 ## Phase 4 — Integration tier (the payoff)
 
-- **P-015** `todo` (production-readiness **P-002**) Vitest `globalSetup` that boots a testcontainers PG, creates roles + extensions, and applies `000-baseline.sql` once per run → full schema for the integration tier. Acceptance: an integration test can query any `harness_shared` table. blocked-by P-005, P-011.
+- **P-015** `done` (production-readiness **P-002**) `test/setup/baseline-schema.globalSetup.ts` (commit `e245960a3`) — boots a dedicated pgvector container, creates roles+ext, applies the full migration set (000-baseline+107+108), exposes the DSN via `inject('baselineSchemaDsn')`. Proof test (5) + verified coexisting with fresh-migrate + read-tools (36 green, no teardown race). Owns its own container to avoid the per-file `teardownTestPg` stop/recreate race. **Also: migration 108** (`9ee0b57`) closed the last dogfood-vs-migrations gap (contributor_usage_events.origin + 3 capture triggers; found by `dogfood-gap-check.ts`, now 0) → **dogfood is provably redundant + safe to delete (P-008b).**
 - **P-016** `todo` (production-readiness **P-015/016/017**) Author the integration tool-suite tests on top of the working globalSetup. Acceptance: the tool suites run against a real full schema and are green. blocked-by P-015.
 - **P-017** `todo` (production-readiness **P-006**) Run the full integration suite once; convert never-executed surfaces into an honest red/green + coverage baseline; file real failures as issues. Acceptance: suite runs end-to-end. blocked-by P-016.
 
