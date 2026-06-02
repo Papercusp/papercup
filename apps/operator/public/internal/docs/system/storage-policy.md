@@ -24,6 +24,36 @@ recurring:
 The migrations are mechanical and the cleanup is consistent. Better to land
 new state in PG from day one.
 
+## Two axes: runtime store-of-record vs sync authority
+
+Harness state has **two orthogonal questions**, and the word "canonical" has been
+used for both — which is the root of a long-running confusion. This policy retires
+the bare word; always name the axis:
+
+| Axis                   | Term                        | Question                                                             | Values                                                                                                              |
+| ---------------------- | --------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Local store**        | **runtime store-of-record** | What does the operator *on this machine* read/write at runtime?      | **PG** (decided — below)                                                                                            |
+| **Cross-machine sync** | **sync authority**          | What resolves merges & propagates a *shared* table between machines? | `none` (local-only) · `git` (committed `.harness/state/` files, GitHub-merged) · `peer-log` (Hyperbee/Model-B, LWW) |
+
+**Decision (`harness-state-storage-unification-2026-06-01`, D-002): the runtime
+store-of-record is PG for every harness table.** Cross-machine sharing is a
+projection layer on top of PG — git-export for human-document tables, peer-log for
+live machine-row tables. Per-harness PG schemas are retired in favor of slug-keyed
+consolidated tables; config/settings are workspace-owned (keyed by
+`(workspace, harness, role)`).
+
+**Do not write "X is canonical."** Write "X is the **runtime store-of-record**"
+(store axis) or "X is the **sync authority**" (sync axis). When an older doc says
+"canonical," resolve which axis it meant first:
+
+* **dogfood §7 / `papercusp-dogfood-*` D-001/D-020** said "git-canonical" to mean
+  **git vs Hyperbee** — a *sync authority* choice for document-shaped shared state.
+  That decision stands (git is the sync authority for documents); it was never a
+  claim about git vs Postgres.
+* **un-hardcode / harnesses-across-workspaces** said "canonical" to mean
+  **PG vs `.harness/state/` files** — a *runtime store-of-record* choice. Under the
+  decision above, that's PG, uniformly.
+
 ## Default: Postgres
 
 For per-workspace single-row-per-key state, the helper is
@@ -100,8 +130,9 @@ human-in-the-loop steering.
 
 The correct pattern is **PG-primary, file-mirror**:
 
-* Writes go to PG first (canonical, cross-machine sync, encrypted-at-rest
-  if sensitive).
+* Writes go to PG first (the **runtime store-of-record**; cross-machine sync via
+  the **sync authority** + encryption-at-rest are layers on top — see the two-axis
+  section above).
 * Then `writeFile` the same content to the disk path (best-effort —
   the PG row above wins if the disk write fails).
 * Reads merge PG + file content, deduping by a stable key (e.g.
