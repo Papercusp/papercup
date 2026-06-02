@@ -24,6 +24,7 @@ import {
   releaseClaim,
   startHeartbeatLoop,
 } from './operator-claims';
+import { dbosProvisionActive } from '@/lib/dbos/dbos-flags';
 import { appendAudit, AuditStream } from './audit-log';
 import {
   appendStateOutput,
@@ -204,37 +205,49 @@ export async function runPhase(
     };
   }
 
-  // Acquire the operator claim (PG-backed cross-machine lock).
+  // Concurrency control. Legacy path: the PG operator-claims advisory lock + a
+  // 30s heartbeat. DBOS path (PAPERCUSP_DBOS_PROVISION — dbos-flows P-001): the
+  // provision workflow's `deduplicationID` is the cross-request mutex and DBOS
+  // recovery is the liveness, so the hand-rolled claim/heartbeat STAND DOWN here
+  // (no claim, no heartbeat, no `ensureClaimsTable` runtime DDL). The
+  // verify-then-DELETE of the legacy machinery is P-002.
   let runId: string;
   let stopHeartbeat: (() => void) | null = null;
-  try {
-    const claim = await acquireClaim(inputs.harness, inputs.plugin, scriptHash);
-    if (!claim.ok) {
-      return {
-        ok: false,
-        phase,
-        decision,
-        durationMs: Date.now() - t0,
-        error: `claim conflict: another operator on machine ${claim.conflict?.machineId} (last heartbeat ${claim.conflict?.secondsSinceHeartbeat}s ago)`,
-      };
-    }
-    runId = claim.runId!;
-    if (claim.conflict?.expired) {
+  if (dbosProvisionActive()) {
+    // The DBOS workflow already serialized concurrent same-target runs; this run
+    // owns the phase. A `dbos-` runId tags audit rows + skips the legacy release.
+    runId = `dbos-${Date.now().toString(36)}`;
+  } else {
+    // Acquire the operator claim (PG-backed cross-machine lock).
+    try {
+      const claim = await acquireClaim(inputs.harness, inputs.plugin, scriptHash);
+      if (!claim.ok) {
+        return {
+          ok: false,
+          phase,
+          decision,
+          durationMs: Date.now() - t0,
+          error: `claim conflict: another operator on machine ${claim.conflict?.machineId} (last heartbeat ${claim.conflict?.secondsSinceHeartbeat}s ago)`,
+        };
+      }
+      runId = claim.runId!;
+      if (claim.conflict?.expired) {
+        await appendAudit(inputs.harness, inputs.plugin, {
+          kind: 'consent-granted',
+          runId,
+          data: { phase, scriptHash, expiredPriorClaim: claim.conflict },
+        }, inputs.provision.auditLogCapMb);
+      }
+      stopHeartbeat = startHeartbeatLoop(inputs.harness, inputs.plugin, runId);
+    } catch (e: unknown) {
+      // PG unavailable — fall back to a process-only run. Audit it.
+      runId = `local-${Date.now().toString(36)}`;
       await appendAudit(inputs.harness, inputs.plugin, {
         kind: 'consent-granted',
         runId,
-        data: { phase, scriptHash, expiredPriorClaim: claim.conflict },
+        data: { phase, scriptHash, claimError: e instanceof Error ? e.message : String(e), claimMode: 'process-only' },
       }, inputs.provision.auditLogCapMb);
     }
-    stopHeartbeat = startHeartbeatLoop(inputs.harness, inputs.plugin, runId);
-  } catch (e: unknown) {
-    // PG unavailable — fall back to a process-only run. Audit it.
-    runId = `local-${Date.now().toString(36)}`;
-    await appendAudit(inputs.harness, inputs.plugin, {
-      kind: 'consent-granted',
-      runId,
-      data: { phase, scriptHash, claimError: e instanceof Error ? e.message : String(e), claimMode: 'process-only' },
-    }, inputs.provision.auditLogCapMb);
   }
 
   await appendAudit(inputs.harness, inputs.plugin, {
@@ -351,8 +364,10 @@ export async function runPhase(
   });
 
   await audit.close();
-  if (stopHeartbeat) stopHeartbeat();
-  if (runId && !runId.startsWith('local-')) {
+  if (stopHeartbeat) stopHeartbeat(); // null under DBOS (no heartbeat) → no-op
+  // `local-` (PG-unavailable fallback) + `dbos-` (workflow-managed) runs hold no
+  // releasable claim row.
+  if (runId && !runId.startsWith('local-') && !runId.startsWith('dbos-')) {
     try { await releaseClaim(inputs.harness, inputs.plugin, runId); } catch { /* ignore */ }
   }
 

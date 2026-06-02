@@ -27,11 +27,24 @@
  *    which handle decorators inconsistently.
  */
 import { getHarnessAdminUrlWithSource } from '@/lib/embedded-pg-discovery';
-import { dbosOrchestratorActive, dbosAutoloopActive, dbosTimersActive } from './dbos-flags';
+import {
+  dbosOrchestratorActive,
+  dbosAutoloopActive,
+  dbosTimersActive,
+  dbosProvisionActive,
+} from './dbos-flags';
 
 const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
 
 const G = globalThis as unknown as { __papercuspDbosStarted?: boolean };
+
+/** Whether DBOS has actually launched in this process. The route-side A/B fall-back
+ *  uses this: a flow flag can be ON while DBOS itself is OFF (PAPERCUSP_DBOS_ENABLE
+ *  unset, or PG unreachable so launch was skipped) — in that case callers must use
+ *  the legacy path instead of enqueuing into a non-running DBOS. */
+export function dbosStarted(): boolean {
+  return !!G.__papercuspDbosStarted;
+}
 
 /** Idempotent single launch. Safe across Next HMR re-registers. */
 export async function startDbos(): Promise<void> {
@@ -97,6 +110,13 @@ export async function startDbos(): Promise<void> {
     // The orchestrator (scheduled): scans PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES for
     // features needing work and starts pipelines (no-op until harnesses opt in).
     await import('./orchestrator-loop');
+  }
+  if (dbosProvisionActive()) {
+    // dbos-flows P-001 (opt-in, PAPERCUSP_DBOS_PROVISION=1): the plugin
+    // setup/teardown/verify provision as a durable workflow — register it before
+    // launch so DBOS recovery can resume an interrupted provision. The legacy
+    // claim path in provision/runner stands down when this is active.
+    await import('./provision-workflow');
   }
 
   await DBOS.launch();

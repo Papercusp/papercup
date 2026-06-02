@@ -28,3 +28,16 @@ export function dbosAutoloopActive(env: DbosEnv = process.env): boolean {
 export function dbosTimersActive(env: DbosEnv = process.env): boolean {
   return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_TIMERS !== '0';
 }
+
+/**
+ * The DBOS provision/runner workflow (plan dbos-durable-flows-adoption, P-001).
+ * Unlike the orchestrator/timers above, this is a NEW, not-yet-verified migration,
+ * so it is **opt-in** (default OFF) — set PAPERCUSP_DBOS_PROVISION=1 to A/B it.
+ * Still gated by the master orchestrator switch so the full-legacy revert
+ * (PAPERCUSP_DBOS_ORCHESTRATOR=0) also turns it off. When active, the hand-rolled
+ * operator-claims lock + 30s heartbeat in `provision/runner` stand down (DBOS's
+ * deduplicationID is the cross-request mutex; DBOS recovery is the liveness).
+ */
+export function dbosProvisionActive(env: DbosEnv = process.env): boolean {
+  return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_PROVISION === '1';
+}

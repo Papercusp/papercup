@@ -10,9 +10,13 @@
  * operation; this preserves the Next route's `maxDuration = 900`.
  */
 import { promises as fs } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
-import { runPhase, type ProvisionPhase } from '@/lib/provision/runner';
+import { runPhase, type ProvisionPhase, type ProvisionRunInputs } from '@/lib/provision/runner';
+import { dbosProvisionActive } from '@/lib/dbos/dbos-flags';
+import { dbosStarted } from '@/lib/dbos/bootstrap';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
@@ -104,7 +108,7 @@ export default defineTool({
       if (stat.isDirectory()) projectDir = projectDirCandidate;
     } catch { /* project dir absent: leave undefined */ }
 
-    const result = await runPhase(phase, {
+    const provisionInputs: ProvisionRunInputs = {
       harness,
       plugin,
       publisher: manifest.publisher ?? 'unknown',
@@ -114,7 +118,19 @@ export default defineTool({
       config,
       provision: manifest.provision,
       consentConfirmed: !!body.consentConfirmed,
-    });
+    };
+
+    // A/B: when the provision workflow is opted-in AND DBOS actually launched,
+    // run the durable workflow (dedup mutex + crash-resume); otherwise the legacy
+    // claim path. `getResult` is awaited so the route keeps its sync contract.
+    let result;
+    if (dbosProvisionActive() && dbosStarted()) {
+      const { startProvisionWorkflow } = await import('@/lib/dbos/provision-workflow');
+      const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
+      result = await startProvisionWorkflow(activeWorkspaceId(), phase, provisionInputs, nonce);
+    } else {
+      result = await runPhase(phase, provisionInputs);
+    }
 
     return Response.json(result);
   },

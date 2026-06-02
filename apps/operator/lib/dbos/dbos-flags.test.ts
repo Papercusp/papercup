@@ -1,5 +1,10 @@
 import { describe, test, expect } from 'vitest';
-import { dbosOrchestratorActive, dbosAutoloopActive, dbosTimersActive } from './dbos-flags';
+import {
+  dbosOrchestratorActive,
+  dbosAutoloopActive,
+  dbosTimersActive,
+  dbosProvisionActive,
+} from './dbos-flags';
 
 type Env = Record<string, string | undefined>;
 
@@ -26,4 +31,17 @@ describe('dbosTimersActive — Phase-2 timers default-on with the orchestrator',
     expect(dbosTimersActive({ PAPERCUSP_DBOS_TIMERS: '0' })).toBe(false));
   test('ORCHESTRATOR=0 → off (full legacy revert)', () =>
     expect(dbosTimersActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
+});
+
+describe('dbosProvisionActive — NEW migration, opt-in (default OFF)', () => {
+  test('unset → INACTIVE (opt-in, unlike orchestrator/timers)', () =>
+    expect(dbosProvisionActive({})).toBe(false));
+  test('PROVISION=1 → active', () =>
+    expect(dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '1' })).toBe(true));
+  test('PROVISION=0 explicit → inactive', () =>
+    expect(dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '0' })).toBe(false));
+  test('ORCHESTRATOR=0 forces it off even with PROVISION=1 (full legacy revert)', () =>
+    expect(
+      dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' }),
+    ).toBe(false));
 });
