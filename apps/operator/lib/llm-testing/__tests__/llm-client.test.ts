@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { isTemperatureDeprecatedError, tryParseJson } from '../llm-client';
+import { estimateCost, isTemperatureDeprecatedError, tryParseJson } from '../llm-client';
 
 describe('isTemperatureDeprecatedError', () => {
   it('matches the literal Anthropic 400 message', () => {
@@ -53,6 +53,18 @@ describe('isTemperatureDeprecatedError', () => {
     expect(isTemperatureDeprecatedError('temperature deprecated')).toBe(true);
     expect(isTemperatureDeprecatedError(null)).toBe(false);
     expect(isTemperatureDeprecatedError(undefined)).toBe(false);
+  });
+});
+
+describe('estimateCost', () => {
+  it('prices claude-opus-4-8 (the frozen gym judge model) — must not silently fall to $0', () => {
+    // 1M in + 1M out at $15/$75 per 1M = $90. A missing price entry would
+    // return 0 and quietly break the gym's deterministic cost guardrail.
+    expect(estimateCost('claude-opus-4-8', 1_000_000, 1_000_000)).toBeCloseTo(90, 5);
+  });
+
+  it('still prices the existing models', () => {
+    expect(estimateCost('claude-sonnet-4-6', 1_000_000, 0)).toBeCloseTo(3, 5);
   });
 });
 

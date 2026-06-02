@@ -40,6 +40,7 @@ const MODEL_PRICES: Record<string, ModelPrice> = {
   'claude-haiku-4-5':  { in: 0.80, out: 4.00 },
   'claude-sonnet-4-6': { in: 3.00, out: 15.00 },
   'claude-opus-4-7':   { in: 15.00, out: 75.00 },
+  'claude-opus-4-8':   { in: 15.00, out: 75.00 },
   'openai-codex/gpt-5':         { in: 1.25, out: 10.00 },
   'openai-codex/gpt-5.5':       { in: 2.50, out: 20.00 },
   'openai-codex/gpt-5.5:xhigh': { in: 2.50, out: 20.00 },
@@ -67,6 +68,14 @@ export interface LlmCallOpts {
   maxTokens?: number;
   temperature?: number;
   responseFormat?: 'text' | 'json';
+  /**
+   * Extended-thinking budget (tokens). Threads to Anthropic's
+   * `thinking: { type: 'enabled', budget_tokens }` via the shared meridian
+   * backend. Needed by the gym's frozen Opus judge ("extra-high thinking",
+   * P-008). Note: thinking and `temperature` are mutually exclusive on the
+   * Anthropic API, and the backend already skips `temperature` for opus models.
+   */
+  thinkingBudgetTokens?: number;
 }
 
 export interface LlmCallResult {
@@ -106,6 +115,17 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     promptText,
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
+    thinkingBudgetTokens: opts.thinkingBudgetTokens,
+    // Isolate subprocess-backend spawns (LLM_TEST_BACKEND=claude-code) from
+    // the host ~/.claude. No-op for the default `meridian` backend (HTTP, no
+    // subprocess). Without this, each sim-user/judge `claude` spawn does a
+    // 13-server MCP init (context7/github/cloudflare plugins via npx +
+    // papercusp-su + connectors) and runs the host SessionStart/PreToolUse
+    // hooks — under a real run, sim + judge + brain spawn `claude`
+    // concurrently and those heavy inits flake/exit-1, so the sim-user emits
+    // unparseable output and gives up at turn 0 (turns=0). The clean config
+    // dir cuts the init to 4 servers and drops the hooks → reliable JSON.
+    isolateConfig: true,
   })) {
     if (ev.type === 'delta') {
       // The meridian backend yields a single delta with the full final
