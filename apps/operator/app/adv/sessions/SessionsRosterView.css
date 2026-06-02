@@ -10,20 +10,24 @@
  */
 
 /* ───────────────────────────── layout shell ────────────────────────────── */
+/* Two independently-scrolling columns: the roster scrolls on the left, the
+   dossier is a flush full-height panel on the right (the "before" pane the
+   user preferred over a floating card). */
 .pc-sessions {
   display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 14px 16px 32px;
-  min-width: 0;
+  min-height: 0;
+  height: 100%;
 }
 
 .pc-roster {
-  flex: 1 1 0;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  padding: 12px 14px 28px;
+  overflow-y: auto;
+  height: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   color: var(--fg);
 }
 
@@ -62,6 +66,29 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-mute);
+}
+.pc-roster__stale-toggle {
+  font-size: 10.5px;
+  color: var(--fg-mute);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.pc-roster__stale-toggle:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+.pc-roster__stale-toggle[aria-pressed='true'] {
+  color: var(--fg-dim);
+  border-color: color-mix(in oklab, var(--accent), transparent 55%);
+}
+.pc-roster__stale-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 
 /* ───────────────────────── facet filters (P-010) ───────────────────────── */
@@ -151,20 +178,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 60%;
-}
-.pc-roster__group-sub {
-  font-size: 9px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--fg-mute);
-  background: color-mix(in oklab, var(--bg-2), transparent 20%);
-  border-radius: 4px;
-  padding: 1px 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 220px;
 }
 .pc-roster__group-count {
   font-size: 11px;
@@ -417,45 +430,29 @@
 
 /* ───────────────────────── agent dossier (P-007) ───────────────────────── */
 .pc-dossier {
-  flex: 0 0 360px;
-  width: 360px;
-  position: sticky;
-  top: 14px;
-  align-self: flex-start;
-  max-height: calc(100vh - 130px);
+  flex: 0 0 340px;
+  width: 340px;
+  height: 100%;
   overflow-y: auto;
-  padding: 14px 16px 22px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklab, var(--bg-2), white 2%),
-    color-mix(in oklab, var(--bg), transparent 4%)
-  );
+  padding: 12px 14px 28px;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
   color: var(--fg);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* Empty state — keeps the 2-pane structure when no agent is selected. */
-.pc-dossier--empty {
-  align-items: stretch;
-  justify-content: flex-start;
-}
 .pc-dossier__placeholder {
-  margin-top: 8px;
+  margin-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 16px;
-  border: 1px dashed color-mix(in oklab, var(--border), transparent 10%);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--bg), transparent 30%);
 }
 .pc-dossier__placeholder-title {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--fg-dim);
 }
 .pc-dossier__placeholder-hint {
@@ -504,12 +501,8 @@
 }
 .pc-dossier__intent {
   font-size: 11.5px;
-  line-height: 1.45;
+  font-style: italic;
   color: var(--fg-dim);
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: color-mix(in oklab, var(--bg), transparent 25%);
-  border-left: 2px solid color-mix(in oklab, var(--accent), transparent 55%);
 }
 .pc-dossier__note {
   font-size: 11.5px;
@@ -518,16 +511,16 @@
 .pc-dossier__section {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding-top: 10px;
-  border-top: 1px solid color-mix(in oklab, var(--border), transparent 30%);
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
 .pc-dossier__h {
   margin: 0;
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.05em;
   color: var(--fg-mute);
   display: flex;
   align-items: center;
@@ -676,11 +669,16 @@
 @media (max-width: 760px) {
   .pc-sessions {
     flex-direction: column;
+    height: auto;
+  }
+  .pc-roster {
+    height: auto;
   }
   .pc-dossier {
-    position: static;
     width: 100%;
     flex-basis: auto;
-    max-height: none;
+    height: auto;
+    border-left: none;
+    border-top: 1px solid var(--border);
   }
 }

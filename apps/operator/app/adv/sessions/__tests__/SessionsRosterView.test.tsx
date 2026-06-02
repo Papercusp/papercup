@@ -189,7 +189,7 @@ describe('SessionsRosterView', () => {
     expect(getByText('Recently ended')).toBeTruthy();
   });
 
-  it('heads each plan group with the plan title when known, keeping the slug as subtitle (P-006)', async () => {
+  it('heads each plan group with the plan title only — slug dropped (the title is enough)', async () => {
     const { findByText, container } = render(
       <SessionsRosterView
         planFilters={[]}
@@ -197,14 +197,11 @@ describe('SessionsRosterView', () => {
         planTitleBySlug={new Map([['dbos-retire', 'Retire DBOS']])}
       />,
     );
-    // The group header now shows the human title, not the raw slug.
+    // The group header shows the human title, not the raw slug.
     const head = await findByText('Retire DBOS');
     expect(head.className).toContain('pc-roster__group-title');
-    // …and the slug is preserved as the subtitle so it stays discoverable.
-    const sub = [...container.querySelectorAll('.pc-roster__group-sub')].find(
-      (e) => e.textContent === 'dbos-retire',
-    );
-    expect(sub).toBeTruthy();
+    // The slug subtitle was removed.
+    expect(container.querySelector('.pc-roster__group-sub')).toBeNull();
   });
 
   it('scopes the fetch URL to the workspace', async () => {
@@ -275,6 +272,43 @@ describe('SessionsRosterView', () => {
     // The right pane persists: with nothing selected it shows the placeholder
     // (this is the "disappeared panel" fix — the pane is always rendered).
     expect(getByText('No agent selected')).toBeTruthy();
+  });
+
+  it('hides stale agents by default and surfaces a toggle (perf fix)', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        active: [
+          entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
+          entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
+        ],
+        ended: [],
+      }),
+    });
+    const onToggleStale = vi.fn();
+    const { findByText, queryByText } = render(
+      <SessionsRosterView planFilters={[]} onToggleStale={onToggleStale} />,
+    );
+    await findByText('live-one');
+    expect(queryByText('stale-one')).toBeNull(); // stale hidden by default
+    const toggle = await findByText(/1 stale/); // the show-stale toggle carries the count
+    fireEvent.click(toggle);
+    expect(onToggleStale).toHaveBeenCalled();
+  });
+
+  it('shows stale agents when showStale is on', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        active: [
+          entry({ ownerId: 'L', label: 'live-one', liveness: 'live' }),
+          entry({ ownerId: 'S', label: 'stale-one', liveness: 'stale' }),
+        ],
+        ended: [],
+      }),
+    });
+    const { findByText } = render(<SessionsRosterView planFilters={[]} showStale />);
+    expect(await findByText('stale-one')).toBeTruthy();
   });
 
   it('applies passed filters to the rendered roster (P-010)', async () => {

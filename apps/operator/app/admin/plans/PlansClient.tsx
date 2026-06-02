@@ -20,7 +20,7 @@
  * `leaveGuard()` first.
  */
 
-import { useQueryState, parseAsArrayOf, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import { wsLocalKey } from '@/lib/browser-workspace';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -138,6 +138,8 @@ export default function PlansClient() {
   const [sLive, setSLive] = useQueryState('sLive', parseAsString);
   const [sRole, setSRole] = useQueryState('sRole', parseAsString);
   const [sFile, setSFile] = useQueryState('sFile', parseAsString.withDefault(''));
+  // Stale agents (>10m idle) are hidden by default — show on demand (P perf fix).
+  const [sStale, setSStale] = useQueryState('sStale', parseAsBoolean.withDefault(false));
 
   // Additive filter facets.
   const [istatus, setIstatus] = useQueryState(
@@ -693,6 +695,8 @@ export default function PlansClient() {
               void setSRole(next.role);
               void setSFile(next.file);
             }}
+            showStale={sStale}
+            onToggleStale={() => void setSStale(!sStale)}
           />
         ) : slug ? (
           <PlanDetail

@@ -324,13 +324,11 @@ function RosterRow({
 
 function GroupSection({
   title,
-  subtitle,
   entries,
   selectedAgent,
   onSelect,
 }: {
   title: string;
-  subtitle?: string;
   entries: RosterEntry[];
   selectedAgent: string | null;
   onSelect: (ownerId: string) => void;
@@ -341,7 +339,6 @@ function GroupSection({
     <section className="pc-roster__group">
       <header className="pc-roster__group-head">
         <span className="pc-roster__group-title">{title}</span>
-        {subtitle ? <span className="pc-roster__group-sub">{subtitle}</span> : null}
         <span className="pc-roster__group-count">{entries.length}</span>
         {live > 0 ? <span className="pc-roster__group-live">{live} live</span> : null}
       </header>
@@ -504,6 +501,8 @@ export default function SessionsRosterView({
   filters = EMPTY_FILTERS,
   onFilterChange,
   planTitleBySlug = EMPTY_PLAN_TITLES,
+  showStale = false,
+  onToggleStale,
 }: {
   planFilters?: string[];
   workspaceId?: string | null;
@@ -518,6 +517,11 @@ export default function SessionsRosterView({
    *  plan group with the plan's title instead of its raw slug; falls back to
    *  the (date-stripped) slug for plans absent from the map. */
   planTitleBySlug?: ReadonlyMap<string, string>;
+  /** Include stale agents (heartbeat >10m) in the rendered roster. Default off:
+   *  stale ≈ ended, and on a busy box they're the bulk of the rows — rendering
+   *  them all is what made the roster slow to load. Owned by ?sStale=. */
+  showStale?: boolean;
+  onToggleStale?: () => void;
 }): React.JSX.Element {
   const { data, error, loading } = useRoster(workspaceId);
   const rawActive = data?.active ?? [];
@@ -531,16 +535,26 @@ export default function SessionsRosterView({
   );
   const active = useMemo(() => applyRosterFilters(rawActive, filters), [rawActive, filters]);
 
-  const { planGroups, noPlan, presenceOnly } = useMemo(
-    () => groupRoster(active, planFilters),
-    [active, planFilters],
-  );
-  const filesInPlay = useMemo(() => buildFilesInPlay(active), [active]);
-
   const live = active.filter((e) => e.liveness === 'live').length;
   const idle = active.filter((e) => e.liveness === 'idle').length;
-  const stale = active.filter((e) => e.liveness === 'stale').length;
+  const staleCount = active.filter((e) => e.liveness === 'stale').length;
   const filtered = hasActiveFilters(filters);
+
+  // PERF: stale agents are ~almost-always-ended sessions and on a busy box make
+  // up the overwhelming majority of rows — rendering all of them (and their
+  // files-in-play) is what made the roster take seconds to paint. Hide them by
+  // default; show when the toggle is on OR the user explicitly filters to stale.
+  const showStaleRows = showStale || filters.liveness === 'stale';
+  const visibleActive = useMemo(
+    () => (showStaleRows ? active : active.filter((e) => e.liveness !== 'stale')),
+    [active, showStaleRows],
+  );
+
+  const { planGroups, noPlan, presenceOnly } = useMemo(
+    () => groupRoster(visibleActive, planFilters),
+    [visibleActive, planFilters],
+  );
+  const filesInPlay = useMemo(() => buildFilesInPlay(visibleActive), [visibleActive]);
 
   const select = useCallback(
     (ownerId: string) => {
@@ -563,10 +577,24 @@ export default function SessionsRosterView({
               className="pc-roster__head-summary"
               title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
             >
-              {active.length}
-              {filtered ? ` / ${rawActive.length}` : ''} total · {live} live · {idle} idle
-              {stale ? ` · ${stale} stale` : ''}
+              {visibleActive.length}
+              {filtered ? ` / ${rawActive.length}` : ''} shown · {live} live · {idle} idle
             </span>
+            {staleCount > 0 && filters.liveness !== 'stale' ? (
+              <button
+                type="button"
+                className="pc-roster__stale-toggle"
+                aria-pressed={showStale}
+                onClick={() => onToggleStale?.()}
+                title={
+                  showStale
+                    ? 'Hide stale (>10m idle) sessions'
+                    : 'Show stale (>10m idle) sessions — hidden by default to keep the roster fast'
+                }
+              >
+                {showStale ? 'hide' : 'show'} {staleCount} stale
+              </button>
+            ) : null}
           </header>
 
           <FilterBar
@@ -585,22 +613,17 @@ export default function SessionsRosterView({
           <div className="pc-roster__empty">No agents match the current filters.</div>
         ) : null}
 
-        {planGroups.map((g) => {
-          // Head each plan group with the plan's human title; keep the slug as
-          // the subtitle so it stays discoverable. Falls back to the
-          // date-stripped slug when the title isn't known.
-          const planTitle = planTitleBySlug.get(g.slug);
-          return (
-            <GroupSection
-              key={g.slug}
-              title={planTitle ?? planSlugFallback(g.slug)}
-              subtitle={planTitle ? g.slug : 'plan'}
-              entries={g.entries}
-              selectedAgent={selectedAgent}
-              onSelect={select}
-            />
-          );
-        })}
+        {planGroups.map((g) => (
+          // Head each plan group with the plan's human title only — the slug
+          // subtitle was redundant (the title is enough).
+          <GroupSection
+            key={g.slug}
+            title={planTitleBySlug.get(g.slug) ?? planSlugFallback(g.slug)}
+            entries={g.entries}
+            selectedAgent={selectedAgent}
+            onSelect={select}
+          />
+        ))}
         <GroupSection
           title="No plan · ad-hoc SU sessions"
           entries={noPlan}
