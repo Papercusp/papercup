@@ -12,8 +12,8 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync, readdirSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -64,8 +64,14 @@ async function main(): Promise<void> {
   let operator: ChildProcess | undefined;
   let logFd: number | undefined;
   const scratch = mkdtempSync(join(tmpdir(), 'gym-smoke-'));
-  const cloneDir = join(scratch, 'substrate');
-  const opLogPath = join(scratch, 'operator.log');
+  // basename(cloneDir) MUST equal the slug: invoke-once derives the harness slug from
+  // basename(PROJECT_DIR) when HARNESS_SLUG doesn't take, and the slug picks the PG
+  // search_path schema (harness_<slug>). The real gym runner already does this
+  // (cloneDirName === harnessSlug); the smoke must too.
+  const cloneDir = join(scratch, SLUG);
+  // Persist OUTSIDE scratch (which teardown rm's) so the operator log can be grepped
+  // afterward to diagnose the worker's PG connection / search_path.
+  const opLogPath = join(tmpdir(), `gym-smoke-op-${HEX}.log`);
   let gymUri = '';
   let ok = false;
   const report: Record<string, unknown> = {};
@@ -107,10 +113,9 @@ async function main(): Promise<void> {
         PAPERCUSP_FLEET_SANDBOX: '0',
         PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0',
         NODE_ENV: 'production',
-        // Scope the autoloop to THIS gym harness so the pipeline auto-dispatches —
-        // avoids the admin-route trust gate for the smoke. (Real gym wiring uses the
-        // admin route + superuser token for deterministic control.)
-        PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: SLUG,
+        // Autoloop OFF — the smoke starts the pipeline EXPLICITLY (deterministic) via
+        // the admin route + superuser token (the real gym wiring), not the 30s tick.
+        PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none',
       },
       stdio: ['ignore', logFd, logFd],
       detached: true, // own process group → teardown kills the whole npx→node tree
@@ -130,6 +135,21 @@ async function main(): Promise<void> {
     report.register = { status: reg.status, body: await reg.text() };
     log(`register → ${reg.status}`);
 
+    // DIAGNOSTIC: did scaffold create the harness schema + the harness_features view?
+    {
+      const diag = postgres(gymUri, { max: 1, onnotice: () => {}, prepare: false });
+      try {
+        const sch = await diag<{ n: number }[]>`SELECT count(*)::int AS n FROM information_schema.schemata WHERE schema_name = ${'harness_' + SLUG}`;
+        report.harnessSchemaExists = sch[0].n > 0;
+        const vw = await diag<{ x: boolean }[]>`SELECT to_regclass(${'harness_' + SLUG + '.harness_features'}) IS NOT NULL AS x`;
+        report.harnessFeaturesViewExists = vw[0].x;
+        const tbls = await diag<{ table_name: string }[]>`SELECT table_name FROM information_schema.tables WHERE table_schema = ${'harness_' + SLUG} ORDER BY table_name`;
+        report.harnessSchemaObjects = tbls.map((t) => t.table_name);
+      } finally {
+        await diag.end({ timeout: 5 });
+      }
+    }
+
     // 5. File the feature — DIRECT PG insert into the consolidated table (the HTTP
     //    /features/import path goes through legacy SQLite which isn't scaffolded here).
     {
@@ -146,8 +166,19 @@ async function main(): Promise<void> {
       }
     }
 
-    // 6. Pipeline start is driven by the autoloop (scoped to SLUG) — no admin call.
-    log('waiting for the autoloop to dispatch the pipeline …');
+    // 6. Start the pipeline EXPLICITLY (deterministic) via the admin route + the
+    //    superuser bearer (elevates trust past the loopback allowlist). Token read
+    //    from disk, never logged.
+    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
+    const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    report.superuserTokenPresent = suToken.length > 0;
+    const start = await fetch(`http://127.0.0.1:${PORT}/api/admin/dbos/pipeline/start?superuser=1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${suToken}` },
+      body: JSON.stringify({ harnessSlug: SLUG, featureId: FEATURE }),
+    });
+    report.startPipeline = { status: start.status, body: (await start.text()).slice(0, 200) };
+    log(`start pipeline → ${start.status}`);
 
     // 7. Poll the workflow status from the gym DB.
     const gym = postgres(gymUri, { max: 1, onnotice: () => {}, prepare: false });
@@ -182,6 +213,23 @@ async function main(): Promise<void> {
     report.workerCommitted = head !== baseCommit;
     if (head !== baseCommit) {
       report.diffStat = execFileSync('git', ['diff', '--stat', baseCommit, head], { cwd: cloneDir, encoding: 'utf8' }).trim();
+    }
+
+    // DIAGNOSTIC: capture the worker invoke's run log (pg-bootstrap search_path / DB)
+    // before teardown removes the clone — to pin why harness_features isn't resolved.
+    try {
+      const logsDir = join(cloneDir, '.harness', 'logs');
+      const files = existsSync(logsDir) ? readdirSync(logsDir) : [];
+      report.harnessLogFiles = files;
+      let blob = '';
+      for (const f of files) {
+        try { blob += readFileSync(join(logsDir, f), 'utf8') + '\n'; } catch { /* ignore */ }
+      }
+      report.workerPgDiag = mask(
+        blob.split('\n').filter((l) => /PG bootstrap|DATABASE_URL|embedded-pg|search_path|harness_features|getHarnessAdminUrl|USE_PG_STATE/i.test(l)).slice(-25).join('\n'),
+      );
+    } catch (e) {
+      report.workerPgDiag = `err: ${String(e)}`;
     }
 
     ok = report.workflowStatus === 'SUCCESS';
