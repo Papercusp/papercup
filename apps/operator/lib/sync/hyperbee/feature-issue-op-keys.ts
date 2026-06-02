@@ -29,6 +29,7 @@ import type { LocalWriteOp } from './boot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { HarnessFeatureRow } from './projections/harness-features';
 import type { HarnessIssueRow } from './projections/issues';
+import type { ContributorUsageEventRow } from './projections/usage';
 
 /**
  * The two consolidated table names the Stage-1 trigger writes into the outbox
@@ -39,6 +40,9 @@ import type { HarnessIssueRow } from './projections/issues';
 const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   harness_features_consolidated: 'features-by-id',
   harness_issues_consolidated: 'issues',
+  // P-070: the append-only contributor activity ledger. Its projection is
+  // registered under tableTag 'usage' (projections/usage.ts buildUsageProjection).
+  contributor_usage_events: 'usage',
 };
 
 /**
@@ -159,11 +163,29 @@ function toIssueValue(row: Record<string, unknown>): HarnessIssueRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `ContributorUsageEventRow` value the usage
+ *  projection INSERT consumes. `ts` is TIMESTAMPTZ → ISO string under `to_jsonb`;
+ *  the projection validator requires epoch-ms NUMBER, so convert it. github_user_id
+ *  / schema_version (BIGINT) are coerced to numbers. Append-only → no del reshape. */
+function toUsageValue(row: Record<string, unknown>): ContributorUsageEventRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    event_id: String(row.event_id ?? ''),
+    github_user_id: numOrZero(row.github_user_id),
+    device_pubkey: String(row.device_pubkey ?? ''),
+    kind: String(row.kind ?? ''),
+    ref_id: strOrNull(row.ref_id),
+    payload: row.payload ?? null,
+    ts: isoOrMsToEpochMs(row.ts) ?? 0,
+    schema_version: numOrZero(row.schema_version),
+  };
+}
+
 /**
  * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
  * own log. Throws on an unknown `table_name` (a programming error — the trigger
- * only ever writes the two federated tables). For a `del`, `value` is undefined
- * (the projection's delete path needs only `hbKey`).
+ * only ever writes the federated tables in `TABLE_NAME_TO_TABLE_TAG`). For a
+ * `del`, `value` is undefined (the projection's delete path needs only `hbKey`).
  */
 export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
   const table = TABLE_NAME_TO_TABLE_TAG[outboxRow.table_name];
@@ -186,10 +208,17 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
   }
 
   const row = outboxRow.row ?? {};
-  const value =
-    outboxRow.table_name === 'harness_features_consolidated'
-      ? toFeatureValue(row)
-      : toIssueValue(row);
+  let value: HarnessFeatureRow | HarnessIssueRow | ContributorUsageEventRow;
+  switch (outboxRow.table_name) {
+    case 'harness_features_consolidated':
+      value = toFeatureValue(row);
+      break;
+    case 'contributor_usage_events':
+      value = toUsageValue(row);
+      break;
+    default:
+      value = toIssueValue(row);
+  }
 
   return {
     type: 'put',

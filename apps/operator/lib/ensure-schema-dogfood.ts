@@ -348,8 +348,16 @@ export async function ensureContributorUsageEventsTable(): Promise<void> {
       payload         JSONB,
       ts              TIMESTAMPTZ NOT NULL DEFAULT now(),
       schema_version  BIGINT NOT NULL DEFAULT 1,
+      -- P-070 federation echo-guard (mirrors the consolidated tables): local
+      -- emits default 'local' and are captured into substrate_outbox; the
+      -- read-side projection stamps 'remote' so received events aren't re-sent.
+      origin          TEXT NOT NULL DEFAULT 'local',
       PRIMARY KEY (harness_slug, event_id)
     );
+    -- Backfill the column on already-created tables (CREATE IF NOT EXISTS above
+    -- is a no-op once the table exists, so a pre-origin table needs this ALTER).
+    ALTER TABLE harness_shared.contributor_usage_events
+      ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'local';
     CREATE INDEX IF NOT EXISTS idx_usage_events_user
       ON harness_shared.contributor_usage_events (harness_slug, github_user_id, ts DESC);
     CREATE INDEX IF NOT EXISTS idx_usage_events_kind
@@ -786,6 +794,9 @@ export async function wireDogfoodTriggers(): Promise<void> {
   const OUTBOX_CAPTURE_TARGETS: ReadonlyArray<readonly [string, string]> = [
     ['harness_features_consolidated', 'feature_id'],
     ['harness_issues_consolidated', 'issue_id'],
+    // P-070: the append-only contributor activity ledger. Keyed by event_id (a
+    // unique ULID) — INSERT-only, so the AFTER UPDATE/DELETE arms never fire.
+    ['contributor_usage_events', 'event_id'],
   ];
   for (const [tableName, keyCol] of OUTBOX_CAPTURE_TARGETS) {
     try {

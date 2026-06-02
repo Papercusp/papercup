@@ -35,6 +35,7 @@ import {
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import { isHarnessFeatureRow, type HarnessFeatureRow } from './projections/harness-features';
 import { isHarnessIssueRow, type HarnessIssueRow } from './projections/issues';
+import { isContributorUsageEventRow, type ContributorUsageEventRow } from './projections/usage';
 
 describe('composeFeatureKey / composeIssueKey', () => {
   it('composeFeatureKey is the feature_id itself (matches projection composeKey)', () => {
@@ -233,6 +234,74 @@ describe('outboxRowToLocalWriteOp — issues', () => {
     expect(op.type).toBe('del');
     expect(op.table).toBe('issues');
     expect(op.hbKey).toBe('I-001');
+    expect(op.value).toBeUndefined();
+  });
+});
+
+describe('outboxRowToLocalWriteOp — contributor usage events (P-070 federation)', () => {
+  // `to_jsonb` of a contributor_usage_events row: the append-only ledger. `ts`
+  // is TIMESTAMPTZ → ISO string; github_user_id/schema_version are BIGINT.
+  const usageOutboxRow: OutboxRow = {
+    table_name: 'contributor_usage_events',
+    op: 'put',
+    key: '01HXEVENTID0000000000000AB',
+    ts: 1717000000000,
+    row: {
+      harness_slug: 'demo',
+      event_id: '01HXEVENTID0000000000000AB',
+      github_user_id: 42,
+      device_pubkey: 'PK==',
+      kind: 'feature_authored',
+      ref_id: 'F-1',
+      payload: { title: 'x' },
+      ts: '2024-05-29T12:00:00.000Z',
+      schema_version: 1,
+      origin: 'local',
+    },
+  };
+
+  it('maps a put to LocalWriteOp with table="usage", hbKey=event_id', () => {
+    const op = outboxRowToLocalWriteOp(usageOutboxRow)!;
+    expect(op.type).toBe('put');
+    expect(op.table).toBe('usage');
+    expect(op.hbKey).toBe('01HXEVENTID0000000000000AB');
+    expect(op.ts).toBe(1717000000000);
+    expect(op.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it('produces a value that is a valid ContributorUsageEventRow (ts ISO → epoch ms)', () => {
+    const op = outboxRowToLocalWriteOp(usageOutboxRow)!;
+    const value = op.value as ContributorUsageEventRow;
+    expect(isContributorUsageEventRow(value)).toBe(true);
+    expect(value).toEqual({
+      harness_slug: 'demo',
+      event_id: '01HXEVENTID0000000000000AB',
+      github_user_id: 42,
+      device_pubkey: 'PK==',
+      kind: 'feature_authored',
+      ref_id: 'F-1',
+      payload: { title: 'x' },
+      ts: Date.parse('2024-05-29T12:00:00.000Z'),
+      schema_version: 1,
+    });
+  });
+
+  it('accepts ts already as an epoch-ms number (idempotent) + null ref_id', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...usageOutboxRow,
+      row: { ...usageOutboxRow.row, ts: 1717000000000, ref_id: null },
+    })!;
+    const value = op.value as ContributorUsageEventRow;
+    expect(value.ts).toBe(1717000000000);
+    expect(value.ref_id).toBeNull();
+    expect(isContributorUsageEventRow(value)).toBe(true);
+  });
+
+  it('maps a del to a LocalWriteOp with no value (append-only → still keyed)', () => {
+    const op = outboxRowToLocalWriteOp({ ...usageOutboxRow, op: 'del', row: null })!;
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('usage');
+    expect(op.hbKey).toBe('01HXEVENTID0000000000000AB');
     expect(op.value).toBeUndefined();
   });
 });

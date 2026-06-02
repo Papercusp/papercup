@@ -15,7 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { TableProjection } from '../projection';
+import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface ContributorUsageEventRow {
   harness_slug: string;
@@ -58,18 +58,27 @@ function decodeValue(raw: unknown): ContributorUsageEventRow | null {
   return isContributorUsageEventRow(raw) ? raw : null;
 }
 
-async function writeToPg(opts: UsageProjectionOpts, row: ContributorUsageEventRow): Promise<void> {
+async function writeToPg(
+  opts: UsageProjectionOpts,
+  row: ContributorUsageEventRow,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const { sql } = getOrgPg();
+  // Echo-guard (mirrors feature-queue / issues): a remote-applied row is stamped
+  // origin='remote' so the capture_substrate_outbox trigger skips it — otherwise
+  // peer B would re-federate every event it received from peer A. Local emits
+  // (emitUsageEvent) rely on the column DEFAULT 'local' and ARE captured.
+  const origin = provenance?.origin ?? 'local';
   await sql`
     INSERT INTO harness_shared.contributor_usage_events
-      (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version)
+      (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version, origin)
     VALUES
       (${row.harness_slug}, ${row.event_id}, ${row.github_user_id}, ${row.device_pubkey},
        ${row.kind}, ${row.ref_id},
        ${row.payload == null ? null : sql.json(row.payload as unknown as Parameters<typeof sql.json>[0])},
        to_timestamp(${row.ts} / 1000.0),
-       ${row.schema_version})
+       ${row.schema_version}, ${origin})
     ON CONFLICT (harness_slug, event_id) DO NOTHING
   `;
   // workspaceId captured for future partitioning of the ledger.
@@ -87,7 +96,7 @@ export function buildUsageProjection(opts: UsageProjectionOpts): TableProjection
     tableTag: 'usage',
     composeKey,
     decodeValue,
-    writeToPg: (row) => writeToPg(opts, row),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
     deleteFromPg: (key) => deleteFromPg(opts, key),
   };
 }
