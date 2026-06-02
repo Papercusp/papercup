@@ -81,7 +81,43 @@ only voice changes, leaving the opus brain for text orchestration if desired.
   instruction is ambiguous (≥2 candidates), surface ONE `chat:ask_choice`
   `voiceAnswerable:true` card — do NOT guess." Re-validate S16 3×.
 
-### Phase 3 — grounding + tool discipline (remaining S16 blockers, confirmed post-Phase-1)
+### ⚠ ROOT CAUSE FOUND (2026-06-02) — deferred-MCP-tool flailing is the dominant blocker
+
+A 3× sonnet-judge validation of Phase 3 traced **almost every remaining S13/S16
+finding to ONE root**: the operator brain on `claude-code` is handed the FULL
+agentmcp surface (**226 tools**, because the mcpConfig URL uses `superuser=1`, which
+bypasses all role/capability filtering — `gate-bypass.ts`). Claude Code **defers**
+a tool set that large (client-side), so each tool must be **activated via
+`ToolSearch` before it can be called**. The brain then flails:
+- fires 4+ `ToolSearch`es per turn, tries `harness_list`, `harness:list`,
+  `harness:list({})` — "four tool-name variants, none schema-loaded" — because the
+  persona advertises **colon** names (`harness:status`) but the real tools are
+  **underscore** (`harness_status`);
+- **can't reliably surface the disambiguation card** (S16 `cardUsage` fails every
+  run): it `ToolSearch`es `chat:ask_choice` then `chat_ask_choice` but neither
+  emits a card → falls back to prose;
+- **11 tool calls / 121 s for one turn**, narrates "checking…" before data returns
+  (groundedness), and occasionally loops to the **600 s `operator:converse` cap
+  (= P-006 / directive-3 bug — SAME root)**.
+
+**This is an infrastructure issue, not a persona one** — `disallowBuiltins` +
+terseness/grounding/jargon rules (all committed, all directionally good) cannot fix
+it. **The fix: shrink the brain's exposed MCP surface to the ~15–40 tools the
+operator actually uses, so Claude Code loads them DIRECTLY (no deferral → no
+ToolSearch).** Options, in preference order:
+- **P-009** `todo` (RECOMMENDED) Add a tool-allowlist to the agent-mcp HTTP endpoint
+  (e.g. `?tools=harness_status,harness_list,…` filters `tools/list`), and have
+  `converse.ts` pass the operator's core set. This is a change to the SHARED MCP
+  endpoint (used by every spawned agent) — do it deliberately + test that worker/
+  scoper/etc. spawns are unaffected. Verify the brain's init shows the tools
+  NON-deferred + a 3× run stops flailing.
+- **P-010** `todo` (parallel) Reconcile persona tool names to **underscore** (37
+  colon refs in `converse-prompt.ts` :150/:191/:207, `operator.persona.md`,
+  `operator.tools.md`) + add explicit guidance: "tools are deferred — `ToolSearch`
+  the exact underscore name to load it, THEN call it; never a colon form; load
+  each once." Helps even if the surface stays deferred.
+
+### Phase 3b — grounding + tool discipline (remaining S16 blockers, confirmed post-Phase-1)
 After Phase 1 fixed over-length + cards, the 3× post-fix run surfaced the NEXT layer
 of S16/S13 findings (sonnet judge):
 - **P-004** `todo` Grounding: never narrate state/an action before the tool result
