@@ -5,6 +5,7 @@ import {
   classifyInventory,
   NEEDS_REVIEW,
   DEFAULT_SPEC,
+  GIT_TABLES,
 } from './table-registry';
 
 describe('harness-state table-registry (P-002 two-axis model)', () => {
@@ -75,6 +76,18 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
   it('strips a schema qualifier before resolving', () => {
     expect(resolveTableSpec('harness_shared.harness_decisions')).toMatchObject({ sync: 'git' });
     expect(resolveTableSpec('papercup_shared.messages')).toMatchObject({ sync: 'git' });
+  });
+
+  it('excludes fs-watcher-derived mirrors from git-export: harness_branch_actions (volatile last_check_ms → churn)', () => {
+    // harness_branch_actions is a local fs-watcher projection (Mirror 7k:
+    // `git log` enrichment) whose `last_check_ms` heartbeat is re-upserted on
+    // every poll regardless of content. Classifying it sync:'git' produced a
+    // perpetual export loop (P-003b live-boot). It must NOT be git-synced — the
+    // source is already in git and PG is a local recompute; it falls to DEFAULT.
+    const s = resolveTableSpec('harness_branch_actions');
+    expect(s.sync).not.toBe('git');
+    expect(s).toEqual(DEFAULT_SPEC);
+    expect(GIT_TABLES).not.toContain('harness_branch_actions');
   });
 
   it('NEEDS_REVIEW is empty at P-002 close', () => {

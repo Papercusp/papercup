@@ -37,7 +37,6 @@ export const GIT_KEY_COLS: Record<string, string[]> = {
   harness_promotions: ['promotion_id'],
   harness_lanes: ['phase', 'role'],
   harness_checkpoints: ['name'],
-  harness_branch_actions: ['branch'],
   harness_snapshots: ['snapshot_id'],
   harness_experts: ['expert_id'],
   harness_skills: ['name'],
@@ -75,6 +74,13 @@ export async function ensureGitExportOutbox(sql: postgres.Sql): Promise<void> {
       v_op TEXT; v_rec RECORD; v_row JSONB; v_key TEXT; v_ws TEXT; v_slug TEXT;
       i INT;
     BEGIN
+      -- no-op guard (re-upsert amplification): an UPDATE that changes nothing
+      -- must not enqueue an export. Without this a heartbeat re-upsert of an
+      -- unchanged row would churn a file forever (see harness-state federation
+      -- lesson / the harness_branch_actions P-003b incident).
+      IF (TG_OP = 'UPDATE' AND to_jsonb(OLD) IS NOT DISTINCT FROM to_jsonb(NEW)) THEN
+        RETURN NEW;
+      END IF;
       IF (TG_OP = 'DELETE') THEN v_op := 'del'; v_rec := OLD;
       ELSE v_op := 'put'; v_rec := NEW; END IF;
       v_row := to_jsonb(v_rec);
@@ -132,4 +138,34 @@ export async function attachAllGitCaptureTriggers(
     }
   }
   return { attached, skipped };
+}
+
+/**
+ * Reconcile: DROP the capture trigger from any `harness_shared` table that
+ * carries it but is NO LONGER in `GIT_TABLES`. Makes the registry the single
+ * authority for which tables git-export — when a table is removed from
+ * GIT_DOCS (e.g. an fs-mirror reclassified to sync:none), its live trigger is
+ * cleaned up on the next boot instead of churning indefinitely. Idempotent.
+ */
+export async function detachStaleGitCaptureTriggers(
+  sql: postgres.Sql,
+): Promise<{ detached: string[] }> {
+  const want = new Set(GIT_TABLES.map((t) => (t.includes('.') ? t.slice(t.indexOf('.') + 1) : t)));
+  const rows = await sql<{ tbl: string }[]>`
+    SELECT c.relname AS tbl
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'harness_shared'
+       AND t.tgname = 'capture_git_export_outbox_trg'
+       AND NOT t.tgisinternal`;
+  const detached: string[] = [];
+  for (const { tbl } of rows) {
+    if (want.has(tbl)) continue;
+    await sql.unsafe(
+      `DROP TRIGGER IF EXISTS capture_git_export_outbox_trg ON harness_shared.${tbl}`,
+    );
+    detached.push(tbl);
+  }
+  return { detached };
 }

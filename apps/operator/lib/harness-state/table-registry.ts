@@ -60,12 +60,24 @@ const GIT_DOCS = [
   'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
   'harness_tests', 'llm_test_fixtures', 'llm_test_claims', 'llm_test_findings',
   'harness_phases', 'harness_promotions', 'harness_lanes', 'harness_checkpoints',
-  'harness_branch_actions', 'harness_snapshots', 'harness_experts',
+  'harness_snapshots', 'harness_experts',
   'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
   'project_spec_revisions',
   // papercup_shared.* document tables (schema-qualified at the engine layer):
   'messages', 'directives', 'briefings', 'directive_summaries',
 ];
+
+/**
+ * NOT git-synced even though once classified as such (P-003b live-boot lesson):
+ *   • `harness_branch_actions` — a LOCAL fs-watcher projection (Mirror 7k: the
+ *     repo's `git log` enrichment) whose `last_check_ms` heartbeat is re-upserted
+ *     on EVERY poll regardless of content. Git-exporting it produced a perpetual
+ *     drain loop (a file rewritten every ~20s with only a timestamp diff). It's
+ *     recomputed locally from git-tracked files, so PG is a derived cache, not a
+ *     document — it falls to DEFAULT (slug-shared / sync:none).
+ * Rule: fs-watcher *mirrors* (projections of already-git-tracked files) must
+ * never be sync:'git'. Producer-authored document tables are the git set.
+ */
 
 /**
  * PEER-LOG sync authority — live cross-machine shared state (§7.1 HYPERBEE +

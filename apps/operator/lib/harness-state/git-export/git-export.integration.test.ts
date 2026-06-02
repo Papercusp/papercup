@@ -9,7 +9,11 @@ import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { ensureGitExportOutbox, attachGitCaptureTrigger } from './ensure-git-outbox';
+import {
+  ensureGitExportOutbox,
+  attachGitCaptureTrigger,
+  detachStaleGitCaptureTriggers,
+} from './ensure-git-outbox';
 import { drainGitExportOnce } from './drainer';
 import { hydrateGitTable } from './hydrate';
 import { parseFile, gitFilePath } from './serialize';
@@ -127,6 +131,51 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
       id: 'D-rt', title: 'RT', content: 'body text\n\nx',
       workspace_id: WS, harness_slug: SLUG, origin: 'remote',
     });
+  });
+
+  it('no-op guard: an UPDATE that changes nothing produces no new outbox row (re-upsert amplification)', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.harness_decisions (id, workspace_id, harness_slug, origin, title, content, ts)
+      VALUES ('D-noop', ${WS}, ${SLUG}, 'local', 'T', 'body', 1)`;
+    await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root });
+    const countRows = () =>
+      db.sql<{ c: number }[]>`
+        SELECT count(*)::int AS c FROM harness_shared.git_export_outbox
+         WHERE table_name = 'harness_decisions' AND key = 'D-noop'`.then((r) => r[0].c);
+    const before = await countRows();
+    // a genuine no-op UPDATE (every column set to its current value)
+    await db.sql`UPDATE harness_shared.harness_decisions SET content = content WHERE id = 'D-noop'`;
+    expect(await countRows()).toBe(before); // no capture for a no-op
+    // a REAL change still captures
+    await db.sql`UPDATE harness_shared.harness_decisions SET content = 'changed' WHERE id = 'D-noop'`;
+    expect(await countRows()).toBe(before + 1);
+  });
+
+  it('detach-stale: drops the capture trigger from tables no longer in GIT_TABLES, keeps current ones', async () => {
+    // simulate a table that was once (mis)classified sync:'git' and wrongly attached.
+    await db.sql.unsafe(`
+      CREATE TABLE harness_shared.harness_branch_actions (
+        workspace_id TEXT, harness_slug TEXT, origin TEXT,
+        branch TEXT, payload JSONB, last_check_ms BIGINT,
+        PRIMARY KEY (harness_slug, branch)
+      )`);
+    await attachGitCaptureTrigger(db.sql, 'harness_branch_actions', ['branch']);
+    const hasTrigger = (tbl: string) =>
+      db.sql<{ c: number }[]>`
+        SELECT count(*)::int AS c FROM pg_trigger t
+          JOIN pg_class c ON c.oid = t.tgrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'harness_shared'
+           AND c.relname = ${tbl}
+           AND t.tgname = 'capture_git_export_outbox_trg'
+           AND NOT t.tgisinternal`.then((r) => r[0].c > 0);
+    expect(await hasTrigger('harness_branch_actions')).toBe(true);
+
+    const { detached } = await detachStaleGitCaptureTriggers(db.sql);
+    expect(detached).toContain('harness_branch_actions');
+    expect(await hasTrigger('harness_branch_actions')).toBe(false);
+    // a genuine GIT_TABLES member keeps its trigger.
+    expect(await hasTrigger('harness_decisions')).toBe(true);
   });
 
   it('hydrate does NOT re-enqueue an export (capture trigger disabled during load)', async () => {

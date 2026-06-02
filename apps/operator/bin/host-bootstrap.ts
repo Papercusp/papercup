@@ -48,16 +48,34 @@ export function runBootstrap(): void {
   // ready line → 30s timeout → IPC disabled → SSE buffered. Ported here, the
   // live boot path (mirrors the DBOS block below). Started first + fire-and-
   // forget so the handshake never waits on PG/migrations. Idempotent via the
-  // runBootstrap guard above. In dev / webapp the env is unset → no-op.
-  if (process.env.PAPERCUSP_IPC_ENABLE === '1') {
+  // runBootstrap guard above.
+  //
+  // Enablement: the packaged desktop sets PAPERCUSP_IPC_ENABLE=1 when it
+  // spawns the sidecar. The DEV desktop (`npm run dev`) does NOT spawn the
+  // packaged sidecar (it points the webview at an externally-run operator),
+  // so it can't set that env — yet the webview still needs IPC to escape
+  // libsoup's 6-socket-per-origin pool, or its on-demand /api fetches starve
+  // behind the long-lived SSE streams and hang ("loading… forever"). So
+  // default IPC ON in dev (NODE_ENV !== 'production'); opt out with
+  // PAPERCUSP_IPC_ENABLE=0. The retired standalone webapp is the only other
+  // dev consumer and an unused unix socket there is harmless.
+  const ipcEnabled =
+    process.env.PAPERCUSP_IPC_ENABLE === '1' ||
+    (process.env.PAPERCUSP_IPC_ENABLE !== '0' && process.env.NODE_ENV !== 'production');
+  if (ipcEnabled) {
     void (async () => {
       try {
-        const [{ startEndpointIpcServer }, { PROJECTED_DEPS }, { listAllProjectedTools }] =
-          await Promise.all([
-            import('../lib/endpoint-ipc/server'),
-            import('../lib/projected-tool-deps'),
-            import('@papercusp/tooldef'),
-          ]);
+        const [
+          { startEndpointIpcServer },
+          { PROJECTED_DEPS },
+          { listAllProjectedTools },
+          { writeEndpointIpcDiscovery },
+        ] = await Promise.all([
+          import('../lib/endpoint-ipc/server'),
+          import('../lib/projected-tool-deps'),
+          import('@papercusp/tooldef'),
+          import('../lib/endpoint-ipc-discovery'),
+        ]);
         // Populate the projection registry (defineTool side-effects) before
         // reading expose.ipc off it.
         await import('../lib/agent-tools');
@@ -72,11 +90,16 @@ export function runBootstrap(): void {
           .map((t) => t.expose.mcp?.name)
           .filter((n): n is string => typeof n === 'string');
         const allowedTools = [...new Set([...ipcEligible, 'sys:http'])];
-        await startEndpointIpcServer({
+        const server = await startEndpointIpcServer({
           socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
           deps: PROJECTED_DEPS,
           allowedTools,
         });
+        // Publish the resolved socket so the DEV desktop — which didn't spawn
+        // us and so can't read our stdout PAPERCUSP_IPC_READY handshake — can
+        // discover + connect. Harmless in the packaged build (that path uses
+        // the stdout line); one code path beats gating the write.
+        await writeEndpointIpcDiscovery(server.socketPath);
       } catch (err) {
         console.error('[endpoint-ipc] failed to start:', err);
       }
@@ -309,13 +332,15 @@ export function runBootstrap(): void {
     }
   })();
 
-  // [harness-state P-003b] Git-export boot — ⚠️ UNVERIFIED DRAFT (not yet run on
-  // a live boot). Per workspace's harnesses: ensure the git_export_outbox +
-  // attach capture triggers to the sync:'git' tables, hydrate each from
-  // `.harness/state/` (clone-and-go), then start its autonomous PG→file drain
-  // loop. Non-fatal: a failure leaves harnesses on their existing PG-only
-  // behaviour (git-export simply doesn't run). The auto-commit of the written
-  // files is a LOG-ONLY stub in this draft (see makeDebouncedGitCommitter).
+  // [harness-state P-003b] Git-export boot — LIVE-VERIFIED (2026-06-02: 15
+  // harnesses / 16 git tables / 15 drain loops). Per workspace's harnesses:
+  // ensure the git_export_outbox + reconcile capture triggers on the sync:'git'
+  // tables (attach current set, DROP stale ones for tables removed from
+  // GIT_TABLES), hydrate each from `.harness/state/` (clone-and-go), then start
+  // its autonomous PG→file drain loop. Non-fatal: a failure leaves harnesses on
+  // their existing PG-only behaviour (git-export simply doesn't run). The
+  // auto-commit of the written files is intentionally still a LOG-ONLY stub
+  // (see makeDebouncedGitCommitter) pending the commit/push policy decision.
   void (async () => {
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
@@ -332,7 +357,9 @@ export function runBootstrap(): void {
       }
       const res = await bootGitExportForHarnesses(sql, harnesses);
       console.log(
-        `[git-export] (draft) boot: ${res.harnesses} harness(es), ${res.globals.attached.length} git table(s), ${res.handles.length} drain loop(s)`,
+        `[git-export] boot: ${res.harnesses} harness(es), ${res.globals.attached.length} git table(s), ` +
+          `${res.handles.length} drain loop(s)` +
+          (res.globals.detached.length ? `, detached ${res.globals.detached.length} stale: ${res.globals.detached.join(',')}` : ''),
       );
     } catch (err) {
       console.warn(

@@ -1,29 +1,37 @@
 /**
  * Git-export boot orchestration (plan harness-state-storage-unification-2026-06-01, P-003b).
  *
- * ⚠️ UNVERIFIED DRAFT — NOT yet exercised on a live host boot. Every LEAF it
- * calls (ensureGitExportOutbox / attachAllGitCaptureTriggers / hydrateGitTable /
- * startGitExportDrain) is unit/integration-tested against a testcontainer PG,
- * but this orchestration glue + the host-bootstrap call site have not been run
- * end-to-end on a real desktop boot. Verify (live boot + watch the logs / files)
- * before trusting. See the plan's Now + D-004.
+ * LIVE-VERIFIED on the host boot (2026-06-02). Every LEAF (ensureGitExportOutbox
+ * / detachStaleGitCaptureTriggers / attachAllGitCaptureTriggers / hydrateGitTable
+ * / startGitExportDrain) is unit/integration-tested against a testcontainer PG,
+ * and this orchestration ran end-to-end on the dev host (15 harnesses). The live
+ * boot caught a real bug — an fs-mirror (`harness_branch_actions`) misclassified
+ * sync:'git' drained in a hot loop; fixed by removing it from GIT_TABLES + the
+ * detach-stale reconciliation here. See the plan's Now + D-004.
  *
  * Boots git-export across the workspaces' harnesses:
- *   1. once per DB: ensure the git_export_outbox + attach capture triggers to
- *      the sync:'git' tables + introspect their full PKs (hydrate ON CONFLICT);
+ *   1. once per DB: ensure the git_export_outbox + reconcile capture triggers on
+ *      the sync:'git' tables (attach current set, drop stale) + introspect their
+ *      full PKs (hydrate ON CONFLICT);
  *   2. per harness: hydrate each git table from `.harness/state/` (clone-and-go),
  *      then start its autonomous drain loop (PG→file on local writes).
  */
 import type postgres from 'postgres';
 import { GIT_TABLES } from '../table-registry';
 import { bareTable } from './serialize';
-import { ensureGitExportOutbox, attachAllGitCaptureTriggers } from './ensure-git-outbox';
+import {
+  ensureGitExportOutbox,
+  attachAllGitCaptureTriggers,
+  detachStaleGitCaptureTriggers,
+} from './ensure-git-outbox';
 import { hydrateGitTable } from './hydrate';
 import { startGitExportDrain, type GitExportDrainHandle } from './drainer';
 
 export interface GitExportGlobals {
   /** git tables whose capture trigger attached successfully on this install. */
   attached: string[];
+  /** tables whose stale capture trigger was dropped (no longer in GIT_TABLES). */
+  detached: string[];
   /** full PK columns per table — the hydrate ON CONFLICT target. */
   pkByTable: Map<string, string[]>;
 }
@@ -52,12 +60,15 @@ export async function loadGitTablePks(sql: postgres.Sql): Promise<Map<string, st
   return m;
 }
 
-/** Once per DB: ensure the outbox + attach capture triggers + load PKs. */
+/** Once per DB: ensure the outbox + reconcile capture triggers + load PKs. */
 export async function attachGitExportGlobals(sql: postgres.Sql): Promise<GitExportGlobals> {
   await ensureGitExportOutbox(sql);
+  // Drop triggers for tables removed from GIT_TABLES BEFORE attaching the
+  // current set, so a reclassified table (e.g. an fs-mirror) stops churning.
+  const { detached } = await detachStaleGitCaptureTriggers(sql);
   const { attached } = await attachAllGitCaptureTriggers(sql);
   const pkByTable = await loadGitTablePks(sql);
-  return { attached, pkByTable };
+  return { attached, detached, pkByTable };
 }
 
 export interface BootGitExportHarnessOpts extends HarnessRef {
