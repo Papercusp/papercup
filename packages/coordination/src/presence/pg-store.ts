@@ -125,6 +125,27 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
+  async heartbeat(identity: PresenceIdentity): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // Create-if-absent (intent/files/plan default empty) + bump heartbeat.
+    // On conflict, refresh only identity columns + heartbeat — declared
+    // intent/current_files/current_plan_slug/host/pid are PRESERVED.
+    await sql`
+      INSERT INTO harness_shared.coord_presence
+        (owner_id, owner_label, workspace_id, source, heartbeat_at)
+      VALUES (
+        ${identity.ownerId}, ${identity.ownerLabel},
+        ${identity.workspaceId ?? 'default'}, ${identity.source}, now()
+      )
+      ON CONFLICT (owner_id) DO UPDATE SET
+        owner_label  = EXCLUDED.owner_label,
+        workspace_id = EXCLUDED.workspace_id,
+        source       = EXCLUDED.source,
+        heartbeat_at = now()
+    `;
+  }
+
   async clear(ownerId: string): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();

@@ -47,6 +47,13 @@ export async function touchHeartbeat(ownerId: string): Promise<void> {
   await store.touchHeartbeat(ownerId);
 }
 
+/** Ensure a presence row + bump heartbeat WITHOUT clobbering a declared
+ *  intent — the read-driven liveness signal (piggybacked on coord:inbox).
+ *  Makes coord:presence a complete live roster of active agents. */
+export async function heartbeatPresence(identity: AgentIdentity): Promise<void> {
+  await store.heartbeat(identity);
+}
+
 /** Remove the caller's presence row — the session_shutdown path. */
 export async function clearPresence(ownerId: string): Promise<void> {
   await store.clear(ownerId);

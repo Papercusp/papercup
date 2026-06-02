@@ -61,6 +61,12 @@ export interface PresenceStore {
   write(identity: PresenceIdentity, input?: PresenceInput): Promise<void>;
   /** Bump heartbeat only (no-op if the row does not exist). */
   touchHeartbeat(ownerId: string): Promise<void>;
+  /** Ensure a row exists + bump heartbeat WITHOUT clobbering a declared
+   *  intent/files/plan (unlike write). The read-driven liveness signal —
+   *  every coord:inbox read is evidence the agent is alive, so it keeps a
+   *  fresh presence row for every active agent even before it declares an
+   *  intent. */
+  heartbeat(identity: PresenceIdentity): Promise<void>;
   /** Remove the caller's presence row. */
   clear(ownerId: string): Promise<void>;
   /** List presence, newest heartbeat first, optionally scoped to a workspace. */

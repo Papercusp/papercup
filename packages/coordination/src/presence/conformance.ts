@@ -132,6 +132,29 @@ export function describePresenceConformance(
       expect(ms(after!.heartbeatAt)).toBeGreaterThanOrEqual(ms(before!.heartbeatAt));
     });
 
+    it('heartbeat creates a row if absent (empty intent) and never clobbers a declared intent', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const id = ident(store, 'hb');
+      // create-if-absent — no prior write
+      await store.heartbeat(id);
+      let rec = await store.get(id.ownerId);
+      expect(rec).not.toBeNull();
+      expect(rec!.intent).toBe('');
+      expect(rec!.ownerLabel).toBe('lbl-hb');
+      expect(rec!.stale).toBe(false);
+      // declare a real intent, then heartbeat must PRESERVE it (unlike write)
+      await store.write(id, { intent: 'doing X', currentFiles: ['a.ts'], currentPlanSlug: 'p9' });
+      const before = await store.get(id.ownerId);
+      await delay(8);
+      await store.heartbeat(id);
+      rec = await store.get(id.ownerId);
+      expect(rec!.intent).toBe('doing X'); // preserved
+      expect(rec!.currentFiles).toEqual(['a.ts']); // preserved
+      expect(rec!.currentPlanSlug).toBe('p9'); // preserved
+      expect(ms(rec!.heartbeatAt)).toBeGreaterThanOrEqual(ms(before!.heartbeatAt)); // bumped
+    });
+
     it('clear removes the row', async () => {
       if (skip) return;
       const store = makeStore();

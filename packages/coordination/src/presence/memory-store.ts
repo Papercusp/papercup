@@ -50,6 +50,17 @@ export class InMemoryPresenceStore implements PresenceStore {
     if (row) row.heartbeatAt = this.now();
   }
 
+  async heartbeat(identity: PresenceIdentity): Promise<void> {
+    const t = this.now();
+    const existing = this.rows.get(identity.ownerId);
+    if (existing) {
+      existing.heartbeatAt = t;
+      existing.identity = identity; // refresh label/source/ws; KEEP input (intent/files)
+    } else {
+      this.rows.set(identity.ownerId, { identity, input: {}, startedAt: t, heartbeatAt: t });
+    }
+  }
+
   async clear(ownerId: string): Promise<void> {
     this.rows.delete(ownerId);
   }

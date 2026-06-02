@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { readInbox } from '../messages';
+import { heartbeatPresence } from '../presence';
 import { COORD_ROLES } from '../roles';
 
 const COORD_KINDS = [
@@ -43,10 +44,14 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const entries = await readInbox(identity.ownerId, {
-      since_ts: args.since_ts,
-      kinds: args.kinds,
-    });
+    // Piggyback liveness: reading your inbox IS a heartbeat. Keeps a fresh
+    // coord:presence row for every active agent (the read hook runs every
+    // tool call) without clobbering a declared intent. Best-effort, and run
+    // concurrently with the read so it adds no latency.
+    const [, entries] = await Promise.all([
+      heartbeatPresence(identity).catch(() => {}),
+      readInbox(identity.ownerId, { since_ts: args.since_ts, kinds: args.kinds }),
+    ]);
     return {
       content: [
         {
