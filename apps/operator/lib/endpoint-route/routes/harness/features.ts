@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { getLegacyClient, getOrgPg } from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '@/lib/harness-core';
 import { phasePhaseLabel } from '@/lib/harness-phases';
+import { emitFeatureAuthored, emitFeatureQueued } from '@/lib/harness/usage-emitters';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { auditFeatureChange } from '@/lib/feature-audit';
 import { firePluginLifecycle, firePluginEvent } from '@/lib/plugin-host-runtime';
@@ -190,6 +191,8 @@ const resetFeature = defineTool({
     const feat = rowToFeature(
       await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id),
     );
+    // P-070: feature re-queued for workers (reset → todo).
+    void emitFeatureQueued(project.slug, id, { fromStatus: existing.status });
 
     // If worktree isolation is active and this feature has a stale worktree,
     // remove it so the next worker starts from a clean baseBranch.
@@ -698,6 +701,10 @@ const createFeature = defineTool({
     const created = rowToFeature(
       await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id),
     );
+    // P-070 usage ledger (best-effort, never throws): the human authored a
+    // feature, and if it lands in `todo` it's immediately queued for workers.
+    void emitFeatureAuthored(project.slug, id, { title });
+    if (status === 'todo') void emitFeatureQueued(project.slug, id, {});
     return Response.json({ ok: true, feature: created });
   },
 });

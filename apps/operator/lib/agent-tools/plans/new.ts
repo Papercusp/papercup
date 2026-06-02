@@ -22,6 +22,7 @@ import { PLAN_STATUSES } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { emitPlanAuthored } from '../../harness/usage-emitters';
 
 const SU_ROLES = [
   'scoper',
@@ -208,6 +209,10 @@ export default defineTool({
       after: args.title,
       detail: args.title,
     });
+    // P-070 usage ledger (best-effort): authoring a plan is contributor activity
+    // on a managed harness. Operator-level plans (harness:'all') have no harness
+    // slug and the ledger is per-harness, so skip those.
+    if (harnessSlug) void emitPlanAuthored(harnessSlug, value.slug);
     await fireNotificationsForCaller(
       ctx,
       [`apps/operator/docs/plans/${value.slug}.md`],

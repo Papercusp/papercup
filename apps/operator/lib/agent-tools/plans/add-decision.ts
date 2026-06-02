@@ -19,6 +19,7 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { readPlanBySlug } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { emitDecisionAdded } from '../../harness/usage-emitters';
 
 const SU_ROLES = [
   'scoper',
@@ -236,6 +237,10 @@ export default defineTool({
 
     // `result.value` is narrowed to the ok-variant by the guard above.
     const decisionId = result.value.decisionId;
+    // P-070 usage ledger (best-effort): a decision is contributor activity on a
+    // managed harness. Operator-level plans (harness:'all') have no harness slug
+    // and the ledger is per-harness, so skip those.
+    if (harnessSlug) void emitDecisionAdded(harnessSlug, decisionId);
     await emitPlanEventForCaller(ctx, {
       planSlug: args.slug,
       event: 'decision_added',

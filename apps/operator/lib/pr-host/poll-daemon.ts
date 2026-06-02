@@ -14,6 +14,7 @@ import { ensurePrCheckStatusCacheTable, ensureAutoReviewAuditTable } from '../en
 import { getOrgPg } from '@papercusp/db-org';
 import type { PrHost, PrHostError, Pr } from './types';
 import { isRetryableError } from './types';
+import { emitPrOpened } from '../harness/usage-emitters';
 
 const POLL_INTERVAL_MS = 60_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
@@ -37,6 +38,9 @@ interface HarnessState {
   consecutiveErrors: number;
   nextAllowedAt: number;
   lastKnownPrNumbers: Set<number>;
+  /** P-070: false until the first successful poll seeds the baseline, so a
+   *  daemon restart doesn't re-emit `pr_opened` for already-open PRs. */
+  seeded: boolean;
 }
 
 const daemonState = new Map<string, HarnessState>();
@@ -47,6 +51,7 @@ function getState(harnessSlug: string): HarnessState {
       consecutiveErrors: 0,
       nextAllowedAt: 0,
       lastKnownPrNumbers: new Set(),
+      seeded: false,
     });
   }
   return daemonState.get(harnessSlug)!;
@@ -113,6 +118,21 @@ async function pollHarness(
     if (!freshNumbers.has(known)) {
       opts.onPrGone?.(harnessSlug, known);
     }
+  }
+  // P-070: emit pr_opened for PRs newly observed after the baseline exists. The
+  // first successful poll only SEEDS the baseline (those PRs were already open —
+  // not opened now), so a daemon restart doesn't re-emit pr_opened for each one.
+  if (state.seeded) {
+    for (const pr of freshPrs) {
+      if (!state.lastKnownPrNumbers.has(pr.ref.number)) {
+        void emitPrOpened(harnessSlug, pr.ref.number, {
+          headRef: pr.head_ref,
+          baseRef: pr.base_ref,
+        });
+      }
+    }
+  } else {
+    state.seeded = true;
   }
   state.lastKnownPrNumbers = freshNumbers;
 

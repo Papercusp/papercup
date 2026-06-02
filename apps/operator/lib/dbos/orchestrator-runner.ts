@@ -47,6 +47,11 @@ import {
 } from './orchestrator-workflow';
 import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
+import {
+  emitFeatureWorkedStart,
+  emitFeatureWorkedEnd,
+  emitAgentRunCompleted,
+} from '../harness/usage-emitters';
 import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
 
@@ -149,15 +154,36 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
     // Unknown harness → empty output (the workflow parses '' → terminal → stops).
     return { output: '', exitCode: 1 };
   }
+  // P-070 usage ledger (best-effort, never throws): a worker run starting is
+  // `feature_worked_start`; ANY role run ending is `agent_run_completed` and a
+  // worker run ending is `feature_worked_end`. run_id = the run's idempotency
+  // key. Actor = the local machine identity (the orchestrator host). The
+  // finalizer's curator/documenter runs are a separate path with no run id —
+  // their agent_run_completed is a tracked follow-up, not wired here.
+  const runId = idempotencyKey || '';
+  if (runId && role === 'worker') {
+    void emitFeatureWorkedStart(harnessSlug, runId, { role });
+  }
+  const startedAt = Date.now();
   // HARNESS_SLUG = the registry slug (not basename(project.path)) so invoke-once's
   // pg-bootstrap resolves harness_<slug> correctly; PAPERCUSP_WORKSPACE_ID pins the
   // agent's feature reads to the pipeline's captured workspace.
-  return spawnInvokeOnce(
+  const result = await spawnInvokeOnce(
     project.path,
     role,
     extras,
     buildPipelineExtraEnv({ harnessSlug, idempotencyKey, workspaceId }),
   );
+  if (runId) {
+    const durationMs = Date.now() - startedAt;
+    void emitAgentRunCompleted(harnessSlug, runId, { role, durationMs });
+    if (role === 'worker') {
+      void emitFeatureWorkedEnd(harnessSlug, runId, {
+        outcome: result.exitCode === 0 ? 'completed' : 'failed',
+      });
+    }
+  }
+  return result;
 };
 
 /**
