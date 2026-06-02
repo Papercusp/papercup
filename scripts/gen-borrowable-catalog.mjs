@@ -51,6 +51,7 @@ const BORROWABLE = [
   ['libs/generic/papergrid/grid-core',            'UI components'],
   ['libs/generic/papergrid/bloom-grid',           'UI components'],
   ['libs/testing-shell',                          'Testing & QA'],
+  ['libs/test-config',                            'Testing & QA'],
 ];
 
 /**

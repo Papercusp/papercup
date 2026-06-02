@@ -62,6 +62,7 @@ their own repo when needed.
 
 | Package | What it is | Source |
 |---|---|---|
+| `@papercusp/test-config` | Shared Vitest config + testcontainers-PG + MSW + schema-driven fixtures. Framework-agnostic; zero domain coupling. | [Papercusp/test-config](https://github.com/Papercusp/test-config.git) |
 | `@papercusp/testing-shell` | Shared testing-domains registry + UI shell. Consumed by /admin/testing (operator-vite) and the harness Tests tab (operator). Registry is pure data; the panel/shell take an injected dataSource so the same component drives both the admin and harness API surfaces. | [Papercusp/testing-shell](https://github.com/Papercusp/testing-shell.git) |
 
 ## Reusable with host wiring (Papercusp tie-in kept by design)
