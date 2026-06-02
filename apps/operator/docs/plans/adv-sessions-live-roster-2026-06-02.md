@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1–3 shipped AND now live-confirmed end-to-end (the earlier "deferred :3070 restart" blocker is moot — the host was restarted at 02:49:20 EDT, after all Phase 1–3 server files landed, so it already serves the new code). Verified 2026-06-02 03:38: GET /api/adv/roster returns 200 with 147 sessions, live heartbeats, and a working coord_owner_id↔adv_sessions join (advSessionId/agent/liveness populated for currently-running agents) — so newly-restarted agents will populate coord_owner_id and appear in the roster. SPA confirmed too: vite build --watch is live; the served bundle (index-BCUIxYBf.js, built 03:10) contains SessionsRosterView and PlansClient's 3rd ?view=sessions, and no longer wires the removed standalone ?tab=sessions AdvSessionsClient. ~40 tests green; apps/operator typecheck clean on touched files. The only thing not yet done is a human/Tauri-shell *visual* confirmation of the rendered roster (no operator restart required to do it).
+**State:** ALL items shipped (P-001–P-010). Phase 4 landed 2026-06-02 by session b12ae8e7's successor: P-009 lazy Tier-3 dossier endpoint GET /api/adv/roster/agent (locks held+waiting+blockers via readQueue; coord last-message/unread/handoffs/escalations) — 956744a96; P-007 AgentDossier pane + ?agent= nuqs selection in PlansClient, Tier-1/2 from the entry + lazy Tier-3, files cross-marked L/W, works for presence-only + departed agents — 04e1c438a; P-008 buildFilesInPlay inverse map + contention sort + server pidAlive probe → isZombie row/file markers — 1e6ff172e; P-010 client/liveness/role/who's-editing-file filters (4 nuqs params) + design-token alignment (real --fg/--surface/--border) + idle≠gone tooltip + empty states — df007b31a. Verification: 57 adv-sessions unit/component tests green; operator + operator-vite typecheck clean on every touched file; live data-source shapes confirmed non-disruptively (locks:queue → QueueResult, coord:handoffs → HandoffWithAcceptance[]). Also fixed two same-plan regressions surfaced by the affected walker: route import-timeout flake (lazy-imported getAgentDetail) and the stale operator-vite adv-shell-logic test still asserting a Sessions AdvShell tab P-005 removed (c5b010e7c). The SPA (:3055 Vite) hot-reloads the UI already; the P-009 route + pidAlive enrichment are :3070-host code with no hot-reload, so they go live on the NEXT :3070 restart (NOT done unilaterally — 159 agents are active on :3070).
 
-**Next:** Owner: open the Tauri shell's Plans→Sessions view to eyeball the live roster (server + SPA are already verified live). Then Phase 4 — P-007 detail dossier + P-008 files-in-play map + P-010 filters/polish — and P-009 (Tier-3 locks/coord enrichment, low).
+**Next:** Owner decision: (a) restart :3070 (brief blip for ~159 active agents) to activate the P-009 dossier route + pidAlive now, or let the next natural restart pick it up; and (b) eyeball the rendered Sessions roster/dossier/files-in-play/filters in the Tauri shell, or have the agent spin up an isolated Xvfb Tauri instance (own sidecar+bridge port) to render-verify without touching the live window.
 
 ## Background
 
@@ -109,7 +109,7 @@ RAIL (shared) │ Plans │ Inbox │ *Sessions               │ AGENT DETAIL
 ## Phase 2 — Endpoint (merged roster + enrichment)
 
 - **P-003** `done` Merged roster endpoint (extend GET /api/adv/sessions or add GET /api/adv/roster): active agents (presence-primary) + adv_sessions enrichment + recent ended sessions for the durable list. Consumes mergeRoster(). (GET /api/adv/roster: {active: mergeRoster, ended: listEndedAdvSessions} + dedupeEndedAgainstActive + ?workspace/?endedLimit. 19 tests, typecheck clean, SQL validated live. Registered via routes/adv/sessions array. Live on next :3070 restart. Commit c2fc44539.)
-- **P-009** `todo` Tier-3 enrichment for the detail dossier: per-agent locks-held + expiry (locks:queue / papercusp_su) and coord state (last message, open handoffs/escalations, unread count from coord_event_log). Lazy / per-agent so the roster query stays cheap. importance: low
+- **P-009** `done` Tier-3 enrichment for the detail dossier: per-agent locks-held + expiry (locks:queue / papercusp_su) and coord state (last message, open handoffs/escalations, unread count from coord_event_log). Lazy / per-agent so the roster query stays cheap. importance: low (GET /api/adv/roster/agent?owner= — deriveAgentLocks held+waiting+blockers + deriveCoordState last msg/unread/handoffs/escalations; lazy-imported. 16 tests. Commit 956744a96.)
 
 ## Phase 3 — Shell integration (Sessions = 3rd view)
 
@@ -119,9 +119,9 @@ RAIL (shared) │ Plans │ Inbox │ *Sessions               │ AGENT DETAIL
 
 ## Phase 4 — Detail dossier + polish
 
-- **P-007** `todo` Full agent dossier detail pane (extend SessionDetail): intent, files w/ lock markers, locks-held + expiry, coord (handoffs / last-said), usage breakdown, expandable transcript/todos — for ANY agent incl. presence-only (no adv_sessions row).
-- **P-008** `todo` "Files in play" inverse map (current_files → which agents) with contention (2+ agents/file) + zombie/orphan (heartbeat-vs-pid) markers.
-- **P-010** `todo` Filters (client / liveness / role + "who's editing <file>" search) + polish: idle != gone tooltip, empty states, design-token pass per /internal/docs/design. importance: low
+- **P-007** `done` Full agent dossier detail pane (extend SessionDetail): intent, files w/ lock markers, locks-held + expiry, coord (handoffs / last-said), usage breakdown, expandable transcript/todos — for ANY agent incl. presence-only (no adv_sessions row). (AgentDossier pane + ?agent= nuqs selection PlansClient; Tier-1/2 from entry + lazy Tier-3; files cross-marked L/W; works for presence-only + departed agents. 12 jsdom tests. Commit 04e1c438a.)
+- **P-008** `done` "Files in play" inverse map (current_files → which agents) with contention (2+ agents/file) + zombie/orphan (heartbeat-vs-pid) markers. (buildFilesInPlay inverse map + contention sort; server pidAlive probe shouldProbePid → isZombie marker on rows + file map. 16 tests. Commit 1e6ff172e.)
+- **P-010** `done` Filters (client / liveness / role + "who's editing <file>" search) + polish: idle != gone tooltip, empty states, design-token pass per /internal/docs/design. importance: low (Filters client/liveness/role + who's-editing-file via 4 nuqs params; applyRosterFilters; idle!=gone tooltip + filtered-empty state; design-token pass real --fg/--surface/--border. 8 tests. Commit df007b31a.)
 
 ## Decisions
 
