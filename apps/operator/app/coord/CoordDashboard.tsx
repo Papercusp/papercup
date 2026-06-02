@@ -17,6 +17,7 @@
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useCallback, useEffect, useState } from 'react';
 import CoordHistory from './CoordHistory';
+import { LivenessDot, livenessFromHeartbeat } from './presence-ui';
 
 const PANELS = ['sessions', 'inbox', 'plans', 'history'] as const;
 type Panel = (typeof PANELS)[number];
@@ -237,10 +238,16 @@ function SessionsPanel() {
 }
 
 function SessionRow({ s }: { s: PresenceRecord }) {
+  // 3-state liveness from the heartbeat (finer than the active/stale split the
+  // section grouping gives — distinguishes "live <1m" from "idle").
+  const liveness = livenessFromHeartbeat(s.heartbeatAt);
   return (
     <li className="rounded border border-slate-800 bg-slate-900/40 px-3 py-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-medium text-slate-200">{s.ownerLabel}</span>
+        <span className="flex items-center gap-1.5 text-sm font-medium text-slate-200">
+          <LivenessDot liveness={liveness} />
+          {s.ownerLabel}
+        </span>
         <span className="text-xs text-slate-500">
           {s.source} · {new Date(s.heartbeatAt).toLocaleTimeString()}
         </span>

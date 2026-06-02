@@ -15,8 +15,14 @@
  * and without a real clock (now is injected).
  */
 
-import { listPresence, PRESENCE_STALE_MS, type PresenceRecord } from './agent-tools/coordination/presence';
+import { listPresence, type PresenceRecord } from './agent-tools/coordination/presence';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
+import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
+
+// Re-export the liveness primitives (now sourced from the dep-free leaf so the
+// client presence UI can share them) for existing importers.
+export { deriveLiveness, LIVE_MS };
+export type { Liveness };
 
 /**
  * Drop ended adv_sessions whose coord owner is still live in the active
@@ -35,23 +41,6 @@ export function dedupeEndedAgainstActive(
 /** A presence row whose workspace is '*' is workspace-agnostic (an unscoped
  *  SU/engineer shell) — it belongs to every workspace's roster. */
 export const GLOBAL_WORKSPACE = '*';
-
-/** Heartbeat younger than this = "live" (a tool call within the last minute). */
-export const LIVE_MS = 60_000;
-
-export type Liveness = 'live' | 'idle' | 'stale';
-
-/**
- * Derive liveness from the heartbeat age. "idle" means no recent tool call
- * (the agent may be mid-reasoning), NOT gone — the heartbeat only fires on tool
- * boundaries. Thresholds: live < LIVE_MS · idle < PRESENCE_STALE_MS · else stale.
- */
-export function deriveLiveness(heartbeatAtIso: string, nowMs: number): Liveness {
-  const age = nowMs - new Date(heartbeatAtIso).getTime();
-  if (age < LIVE_MS) return 'live';
-  if (age < PRESENCE_STALE_MS) return 'idle';
-  return 'stale';
-}
 
 /** One agent in the live roster: presence (primary) + adv_sessions enrichment. */
 export interface RosterEntry {

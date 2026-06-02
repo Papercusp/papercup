@@ -8,7 +8,12 @@ import {
   GLOBAL_WORKSPACE,
 } from './adv-roster';
 import { PRESENCE_STALE_MS, type PresenceRecord } from './agent-tools/coordination/presence';
+import { STALE_MS } from './liveness';
 import type { AdvSessionRow } from './adv-sessions';
+
+it('liveness STALE_MS leaf mirrors coordination PRESENCE_STALE_MS (no drift)', () => {
+  expect(STALE_MS).toBe(PRESENCE_STALE_MS);
+});
 
 const NOW = 1_700_000_000_000;
 const iso = (ms: number): string => new Date(ms).toISOString();
