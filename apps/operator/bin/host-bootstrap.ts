@@ -309,6 +309,39 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [harness-state P-003b] Git-export boot — ⚠️ UNVERIFIED DRAFT (not yet run on
+  // a live boot). Per workspace's harnesses: ensure the git_export_outbox +
+  // attach capture triggers to the sync:'git' tables, hydrate each from
+  // `.harness/state/` (clone-and-go), then start its autonomous PG→file drain
+  // loop. Non-fatal: a failure leaves harnesses on their existing PG-only
+  // behaviour (git-export simply doesn't run). The auto-commit of the written
+  // files is a LOG-ONLY stub in this draft (see makeDebouncedGitCommitter).
+  void (async () => {
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { readRegistry } = await import('../lib/workspace-registry');
+      const { loadHarnessRegistry } = await import('../lib/harness-registry');
+      const { bootGitExportForHarnesses } = await import('../lib/harness-state/git-export/boot');
+      const { sql } = getOrgPg();
+      const harnesses: { workspaceId: string; harnessSlug: string; harnessRoot: string }[] = [];
+      for (const ws of readRegistry().workspaces) {
+        const reg = await loadHarnessRegistry(ws.id);
+        for (const p of reg.projects) {
+          harnesses.push({ workspaceId: ws.id, harnessSlug: p.slug, harnessRoot: p.path });
+        }
+      }
+      const res = await bootGitExportForHarnesses(sql, harnesses);
+      console.log(
+        `[git-export] (draft) boot: ${res.harnesses} harness(es), ${res.globals.attached.length} git table(s), ${res.handles.length} drain loop(s)`,
+      );
+    } catch (err) {
+      console.warn(
+        '[git-export] boot failed (non-fatal, draft):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
+
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
   // Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF. Dynamic import so the host
   // doesn't require @dbos-inc/dbos-sdk when the flag is off. This is the LIVE
