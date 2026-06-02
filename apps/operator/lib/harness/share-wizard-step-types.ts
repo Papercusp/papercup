@@ -87,6 +87,12 @@ export interface ShareWizardState {
   /** Step 2 — resolved id + existing-binding lookup result. */
   github_repository_id?: number;
   existing_binding_found?: boolean;
+  /** Step 2 — the resolved repo's GitHub visibility, captured at binding-resolve
+   *  so the privacy step can reject shared-public on a private repo UP FRONT
+   *  (Cupboard, the public registry, refuses a private repo — catching it here
+   *  avoids walking all 9 steps only to fail the publish at finalize).
+   *  `undefined` = unknown (don't gate; the finalize/backend still guards). */
+  repo_private?: boolean;
   /** Step 4 — generated topic. */
   topic?: string;
   /** Step 5 — optional. */
@@ -120,6 +126,7 @@ export type BlockReason =
   | 'binding_exists_should_join'
   | 'topic_not_generated'
   | 'privacy_not_chosen'
+  | 'shared_public_requires_public_repo'
   | 'privacy_not_confirmed'
   | 'backfill_not_completed';
 
@@ -164,6 +171,11 @@ export function nextStep(
 
     case 'choose-privacy':
       if (!state.privacy) return { kind: 'block', reason: 'privacy_not_chosen' };
+      // shared-public lists on the PUBLIC Cupboard registry, which refuses a
+      // private repo. Caught here (step 6) rather than at the finalize publish.
+      if (state.privacy === 'shared-public' && state.repo_private === true) {
+        return { kind: 'block', reason: 'shared_public_requires_public_repo' };
+      }
       return { kind: 'next', step: 'privacy-confirm' };
 
     case 'privacy-confirm':
@@ -208,6 +220,8 @@ export function isStateCompleteForFinalize(state: ShareWizardState): boolean {
     state.topic.length > 0 &&
     state.privacy !== undefined &&
     (HARNESS_SHARED_PRIVACY_LEVELS as readonly string[]).includes(state.privacy) &&
+    // never finalize shared-public on a private repo (Cupboard would reject it)
+    !(state.privacy === 'shared-public' && state.repo_private === true) &&
     state.privacy_confirmed === true &&
     typeof state.backfill_completed_ts === 'number' &&
     state.backfill_completed_ts > 0

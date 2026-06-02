@@ -37,6 +37,9 @@ export interface BindingResolveResult {
   github_repository_id: number;
   github_owner: string;
   github_repo: string;
+  /** GitHub repo visibility — the wizard uses this to reject shared-public on a
+   *  private repo at the privacy step (Cupboard refuses private repos). */
+  private: boolean;
   existing_binding: null | {
     harness_topic: string;
     harness_slug: string;
@@ -83,6 +86,7 @@ export async function resolveBinding(
     github_repository_id: id.github_repository_id,
     github_owner: id.github_owner,
     github_repo: id.github_repo,
+    private: id.private,
     existing_binding: b
       ? {
           harness_topic: b.harness_topic,

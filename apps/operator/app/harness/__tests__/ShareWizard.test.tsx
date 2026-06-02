@@ -56,6 +56,7 @@ const TOPIC_LIKE = /^[0-9a-f]{64}$/;
 function renderWizard(opts: {
   initialRemote?: string;
   existingBinding?: boolean;
+  repoPrivate?: boolean;
   resolveBinding?: (remote: string) => Promise<BindingResolveResult>;
   writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
   publishToCupboard?: (input: unknown) => Promise<void>;
@@ -67,6 +68,7 @@ function renderWizard(opts: {
       github_repository_id: 12345,
       github_owner: parseSlug(remote)?.owner ?? 'owner',
       github_repo: parseSlug(remote)?.repo ?? 'repo',
+      private: opts.repoPrivate ?? false,
       existing_binding: opts.existingBinding
         ? {
             harness_topic: 'a'.repeat(64),
@@ -131,6 +133,34 @@ describe('P-029a — nine-step flow', () => {
   });
 });
 
+// ── private-repo × shared-public gate (early detection, not at finalize) ───
+
+describe('private repo disables shared-public at the privacy step', () => {
+  it('on a PRIVATE repo, shared-public is disabled + a warning shows at step 6', async () => {
+    const user = userEvent.setup();
+    renderWizard({ initialRemote: 'https://github.com/owner/repo', repoPrivate: true });
+    await user.click(screen.getByText('Next →')); // 1 → 2
+    await waitFor(() => screen.getByText('Step 2 of 9'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('no-binding-message'));
+    await user.click(screen.getByText('Next →')); // 2 → 3
+    await waitFor(() => screen.getByText('Step 3 of 9'));
+    await user.click(screen.getByText('Next →')); // 3 → 4
+    await waitFor(() => screen.getByText('Step 4 of 9'));
+    await user.click(screen.getByText('Generate topic')); // set topic so Next unblocks
+    await user.click(screen.getByText('Next →')); // 4 → 5
+    await waitFor(() => screen.getByText('Step 5 of 9'));
+    await user.click(screen.getByText('Next →')); // 5 → 6 (choose-privacy)
+    await waitFor(() => screen.getByText('Step 6 of 9'));
+
+    const radios = screen.getAllByRole('radio') as HTMLInputElement[];
+    expect(radios).toHaveLength(2); // [shared-private, shared-public]
+    expect(radios[0].disabled).toBe(false); // shared-private is fine on a private repo
+    expect(radios[1].disabled).toBe(true); // shared-public blocked — caught here, not at finalize
+    expect(screen.getByText(/PRIVATE on GitHub/i)).toBeTruthy();
+  });
+});
+
 // ── P-029b — existing binding stops the flow ──────────────────────────────
 
 describe('P-029b — existing-binding alert', () => {
@@ -178,6 +208,7 @@ describe('P-069c — existing-binding alert shows claimed/unclaimed status', () 
         github_repository_id: 12345,
         github_owner: 'owner',
         github_repo: 'repo',
+        private: false,
         existing_binding: {
           harness_topic: 'a'.repeat(64),
           harness_slug: 'existing',

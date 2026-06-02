@@ -129,14 +129,14 @@ export function parseGithubRepoUrl(
 async function resolveGithubRepoNumericId(
   owner: string,
   repo: string,
-): Promise<{ id: number; full_name: string }> {
+): Promise<{ id: number; full_name: string; private: boolean }> {
   const oc = await getOctokit();
   if (!oc) {
     fail({ code: 'GITHUB_API_DOWN', message: 'gh-token not authenticated' });
   }
   try {
     const { data } = await oc!.repos.get({ owner, repo });
-    return { id: data.id, full_name: data.full_name };
+    return { id: data.id, full_name: data.full_name, private: data.private };
   } catch (e: unknown) {
     const status = (e as { status?: number })?.status;
     if (status === 404) fail({ code: 'GITHUB_REPO_NOT_FOUND' });
@@ -278,6 +278,9 @@ export interface RepoIdentity {
   github_owner: string;
   github_repo: string;
   github_full_name: string;
+  /** GitHub repo visibility. The share wizard rejects shared-public on a private
+   *  repo up front (Cupboard, the public registry, refuses private repos). */
+  private: boolean;
   existing_binding: BindingRecord | null;
 }
 
@@ -294,7 +297,7 @@ export async function resolveRepoIdentity(githubUrl: string): Promise<RepoIdenti
     fail({ code: 'GITHUB_API_DOWN', message: 'unparseable GitHub URL: ' + githubUrl });
   }
   const workspaceId = activeWorkspaceId();
-  const { id, full_name } = await resolveGithubRepoNumericId(parsed!.owner, parsed!.repo);
+  const { id, full_name, private: isPrivate } = await resolveGithubRepoNumericId(parsed!.owner, parsed!.repo);
   const cached = await readCachedByRepoId(workspaceId, id);
   if (cached && cached.github_full_name !== full_name) {
     // Refresh full_name if changed (rename); other fields untouched.
@@ -307,6 +310,7 @@ export async function resolveRepoIdentity(githubUrl: string): Promise<RepoIdenti
     github_owner: canonOwner ?? parsed!.owner,
     github_repo: canonRepo ?? parsed!.repo,
     github_full_name: full_name,
+    private: isPrivate,
     existing_binding: cached,
   };
 }

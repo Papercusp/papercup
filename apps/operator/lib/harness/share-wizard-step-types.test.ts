@@ -101,6 +101,45 @@ describe('nextStep — happy path forward', () => {
   });
 });
 
+describe('private-repo × shared-public gate (early detection, not at finalize)', () => {
+  it('blocks shared-public on a PRIVATE repo at the privacy step', () => {
+    expect(nextStep('choose-privacy', { privacy: 'shared-public', repo_private: true })).toEqual({
+      kind: 'block',
+      reason: 'shared_public_requires_public_repo',
+    });
+  });
+  it('allows shared-private on a private repo', () => {
+    expect(nextStep('choose-privacy', { privacy: 'shared-private', repo_private: true })).toEqual({
+      kind: 'next',
+      step: 'privacy-confirm',
+    });
+  });
+  it('allows shared-public on a PUBLIC repo', () => {
+    expect(nextStep('choose-privacy', { privacy: 'shared-public', repo_private: false })).toEqual({
+      kind: 'next',
+      step: 'privacy-confirm',
+    });
+  });
+  it('allows shared-public when visibility is unknown (undefined) — backend still guards', () => {
+    expect(nextStep('choose-privacy', { privacy: 'shared-public' })).toEqual({
+      kind: 'next',
+      step: 'privacy-confirm',
+    });
+  });
+  it('isStateCompleteForFinalize is false for shared-public on a private repo', () => {
+    const base = {
+      github_remote: 'g',
+      github_repository_id: 1,
+      topic: 't',
+      privacy_confirmed: true,
+      backfill_completed_ts: 1,
+    };
+    expect(isStateCompleteForFinalize({ ...base, privacy: 'shared-public', repo_private: true })).toBe(false);
+    expect(isStateCompleteForFinalize({ ...base, privacy: 'shared-public', repo_private: false })).toBe(true);
+    expect(isStateCompleteForFinalize({ ...base, privacy: 'shared-private', repo_private: true })).toBe(true);
+  });
+});
+
 describe('nextStep — blocks', () => {
   it('blocks confirm-remote when no remote', () => {
     expect(nextStep('confirm-remote', {})).toEqual({

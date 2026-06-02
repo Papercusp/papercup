@@ -114,6 +114,7 @@ export interface BindingResolveResult {
   github_repository_id: number;
   github_owner: string;
   github_repo: string;
+  private: boolean;
   existing_binding: null | {
     harness_topic: string;
     harness_slug: string;
@@ -314,6 +315,7 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
         ...s,
         github_repository_id: r.github_repository_id,
         existing_binding_found: r.existing_binding !== null,
+        repo_private: r.private, // captured at step 2 → gates shared-public at step 6
       }));
     } catch (e) {
       setErr((e as Error).message);
@@ -437,25 +439,40 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
       <>
         <StepHeader step="choose-privacy" label="Choose privacy" />
         <div style={cardStyle}>
-          {HARNESS_SHARED_PRIVACY_LEVELS.map((opt) => (
-            <label key={opt} style={{ display: 'flex', alignItems: 'flex-start', padding: 10, borderRadius: 4, border: '1px solid var(--border)', marginBottom: 8, cursor: 'pointer' }}>
-              <input
-                type="radio"
-                name="privacy"
-                checked={state.privacy === opt}
-                onChange={() => setState((s) => ({ ...s, privacy: opt as HarnessSharedPrivacy, privacy_confirmed: false }))}
-                style={{ marginTop: 3, marginRight: 10 }}
-              />
-              <div>
-                <strong>{opt}</strong>
-                <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 2 }}>
-                  {opt === 'shared-private'
-                    ? 'Joinable only via the harness link. Not listed publicly.'
-                    : 'Listed in the public Cupboard for anyone to browse and join.'}
+          {HARNESS_SHARED_PRIVACY_LEVELS.map((opt) => {
+            // shared-public lists on the PUBLIC Cupboard, which can't list a
+            // private repo. Disable it up front (we learned visibility at step 2)
+            // rather than failing the publish at finalize.
+            const publicBlocked = opt === 'shared-public' && state.repo_private === true;
+            return (
+              <label
+                key={opt}
+                style={{ display: 'flex', alignItems: 'flex-start', padding: 10, borderRadius: 4, border: '1px solid var(--border)', marginBottom: 8, cursor: publicBlocked ? 'not-allowed' : 'pointer', opacity: publicBlocked ? 0.55 : 1 }}
+              >
+                <input
+                  type="radio"
+                  name="privacy"
+                  checked={state.privacy === opt}
+                  disabled={publicBlocked}
+                  onChange={() => {
+                    if (publicBlocked) return;
+                    setState((s) => ({ ...s, privacy: opt as HarnessSharedPrivacy, privacy_confirmed: false }));
+                  }}
+                  style={{ marginTop: 3, marginRight: 10 }}
+                />
+                <div>
+                  <strong>{opt}</strong>
+                  <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 2 }}>
+                    {publicBlocked
+                      ? '⚠ This repo is PRIVATE on GitHub — the public Cupboard registry can’t list it. Make the repo public on GitHub to use shared-public, or choose shared-private.'
+                      : opt === 'shared-private'
+                        ? 'Joinable only via the harness link. Not listed publicly.'
+                        : 'Listed in the public Cupboard for anyone to browse and join.'}
+                  </div>
                 </div>
-              </div>
-            </label>
-          ))}
+              </label>
+            );
+          })}
         </div>
       </>
     );

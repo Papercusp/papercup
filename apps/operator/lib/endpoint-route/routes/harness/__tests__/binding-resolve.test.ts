@@ -23,6 +23,7 @@ function identity(over: Partial<RepoIdentity> = {}): RepoIdentity {
     github_owner: 'Papercusp',
     github_repo: 'papercup',
     github_full_name: 'Papercusp/papercup',
+    private: false,
     existing_binding: null,
     ...over,
   };
@@ -61,6 +62,7 @@ describe('resolveBinding', () => {
       github_repository_id: 12345,
       github_owner: 'Papercusp',
       github_repo: 'papercup',
+      private: false,
       existing_binding: null,
     });
   });
