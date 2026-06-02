@@ -282,6 +282,16 @@ under load. Skip the cycle.
 for compound-key tables. Add a column to an existing table or write a
 migration in `libs/papercusp/libs/db/sql/<NNN>-...sql`.
 
+**Schema = migrations only; NO runtime DDL.** The `harness_shared`/`papercup_shared`
+schema is defined entirely by migrations — one squashed `000-baseline.sql` + incrementals
+from `107+`. The old `ensure-schema.ts` lazy-`CREATE TABLE` pattern is **removed** (plan
+`self-contained-migration-baseline-2026-06-02`). To change the schema, **add a migration**
+(idempotent; ≥ `107`) — never an `ensureXxx()` / inline `CREATE TABLE` in runtime code —
+then `node libs/papercusp/libs/db/scripts/pull-schema.mjs`. `000-baseline.sql` is a frozen
+generated dump (don't hand-edit). `empty → head` is gated by the strict
+`fresh-migrate.integration.test.ts` + `lib/db-tools/verify-baseline.ts` (zero skip-tolerance).
+Full guide: `/internal/docs/system/storage-policy`.
+
 **Two axes — runtime store-of-record vs sync authority.** Harness state separates
 *where the operator reads/writes locally* (the **runtime store-of-record** = PG,
 uniformly) from *how a shared table merges/propagates across machines* (the **sync

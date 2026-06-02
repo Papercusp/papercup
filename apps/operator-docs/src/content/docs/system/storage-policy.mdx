@@ -85,6 +85,42 @@ write a focused module that runs SQL directly via `getOrgPg()`. See
 `apps/operator/lib/operator-notes.ts` (compound key) or
 `apps/operator/lib/provision/audit-log.ts` (append-only) for examples.
 
+## Schema is migrations-only — NO runtime DDL
+
+The `harness_shared` (+ `papercup_shared`) schema is defined **entirely by SQL
+migrations** — a single squashed `libs/papercusp/libs/db/sql/000-baseline.sql`
+plus incrementals from `107` onward. There is **one source of truth**, and it is
+the migration set.
+
+**Do NOT create or alter tables at runtime.** The old `ensure-schema.ts` pattern —
+a module lazily running `CREATE TABLE IF NOT EXISTS` on first use — is **removed**
+(plan `self-contained-migration-baseline-2026-06-02`). It existed because the schema
+used to be split between migrations and scattered runtime DDL, which meant
+`empty Postgres → apply migrations → head` did **not** produce a working schema and
+the integration-test tier couldn't stand the schema up without booting the whole app.
+That is fixed: migrations alone now build the complete schema.
+
+So, to change the schema:
+
+1. Write a **new migration** `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (next free
+   `NNN` ≥ 107). Make it idempotent (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT
+   EXISTS`, `CREATE INDEX IF NOT EXISTS`, `DROP POLICY IF EXISTS` + `CREATE POLICY`).
+2. **Never** add an `ensureXxx()` / inline `CREATE TABLE` in operator runtime code.
+   "Add a migration", not "add an ensure fn".
+3. After migrating, refresh the Drizzle types: `node libs/papercusp/libs/db/scripts/pull-schema.mjs`.
+4. The `000-baseline.sql` is **frozen** — don't hand-edit it; it's a generated dump.
+   New schema is always a forward migration on top of it.
+
+The boot path creates framework roles + the 3 extensions (`pgcrypto`, `pg_trgm`,
+`vector`) **before** migrations (`embedded-postgres-server/src/index.js`), so a
+migration may assume those exist.
+
+**Verification:** the migration set is gated by
+`apps/operator/test/fresh-migrate.integration.test.ts` (the strict success gate:
+empty → head applies with zero skips, builds the full schema, is idempotent) and the
+`apps/operator/lib/db-tools/verify-baseline.ts` tool. Both must stay green. A new
+migration that breaks `empty → head` fails CI loudly — there is no skip-tolerance.
+
 ## Acceptable file uses
 
 Files are correct for these specific cases:
