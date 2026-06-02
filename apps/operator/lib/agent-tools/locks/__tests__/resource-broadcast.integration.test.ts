@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { getTxPool } from '../su-lock-store';
 import { readInbox } from '../../coordination/messages';
-import { addWatch } from '../../coordination/subscriptions';
+import { addWatch, gcOldNotifies } from '../../coordination/subscriptions';
 import type { AgentIdentity } from '../../coordination/identity';
 import type { ResourceHolder } from '../su-lock-store';
 import {
@@ -89,7 +89,8 @@ describe('resource broadcasts (Phase 3)', async () => {
     const src = mkIdentity(`up-R-${u}`);
     await broadcastResourceBackUp({ source: src, resource: 'dev-server' });
 
-    const inbox = await readInbox(watcher.ownerId);
+    // notify is opt-in now (D-002 de-noise): a resource watcher must request it.
+    const inbox = await readInbox(watcher.ownerId, { kinds: ['notify'] });
     expect(
       inbox.some(
         (m) =>
@@ -98,5 +99,20 @@ describe('resource broadcasts (Phase 3)', async () => {
           m.matched_path === 'resource:dev-server',
       ),
     ).toBe(true);
+  });
+
+  it.skipIf(!live)('gcOldNotifies removes notify rows past the retention window (P-003)', async () => {
+    const u = uniq();
+    const watcher = mkIdentity(`gcwatch-${u}`);
+    await addWatch(watcher, { pattern: 'resource:**', trigger: 'any', ttl_sec: 120 });
+    const src = mkIdentity(`gc-src-${u}`);
+    await broadcastResourceBackUp({ source: src, resource: 'dev-server' });
+
+    const before = await readInbox(watcher.ownerId, { kinds: ['notify'] });
+    expect(before.some((m) => m.from === src.ownerId)).toBe(true);
+
+    await gcOldNotifies(0); // retentionDays=0 → drop everything older than now
+    const after = await readInbox(watcher.ownerId, { kinds: ['notify'] });
+    expect(after.some((m) => m.from === src.ownerId)).toBe(false);
   });
 });

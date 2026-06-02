@@ -22,6 +22,7 @@ import { runMemoryCleanupOnce } from '@/lib/memory/cleanup-worker';
 import { runCompletionRefVerifierOnce } from '@/lib/harness/completion-ref-verifier';
 import { runEmbedBackfillOnce } from '@/lib/search/embed-backfill';
 import { runBackupSchedulerTick } from '@papercusp/backup';
+import { gcOldNotifies } from '@/lib/agent-tools/coordination/subscriptions';
 import { readRegistry } from '@/lib/workspace-registry';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
@@ -88,3 +89,14 @@ const backupWorkflow = DBOS.registerWorkflow(backupTick, {
   name: 'backupCadence', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(backupWorkflow, { name: 'backupCadence', crontab: '0 * * * * *' });
+
+// Daily 04:00: GC the coord `notify` firehose (D-002 de-noise). Notify is
+// opt-in + low-value, so drop rows past the retention window — bounded growth
+// even though the dominant source (lock_acquired) is already removed.
+async function coordNotifyGcTick(): Promise<void> {
+  await DBOS.runStep(() => gcOldNotifies(3), { name: 'coord-notify-gc' });
+}
+const coordNotifyGcWorkflow = DBOS.registerWorkflow(coordNotifyGcTick, {
+  name: 'coordNotifyGc', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(coordNotifyGcWorkflow, { name: 'coordNotifyGc', crontab: '0 0 4 * * *' });

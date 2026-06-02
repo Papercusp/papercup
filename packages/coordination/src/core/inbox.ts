@@ -14,7 +14,9 @@ import { type CoordEnvelope, type CoordKind, compareByTsThenId } from './envelop
 export interface InboxOptions {
   /** Only return envelopes whose ts is strictly after this ISO timestamp. */
   since_ts?: string;
-  /** Filter to one or more kinds. Omit for all kinds. */
+  /** Filter to one or more kinds. Omit → all kinds EXCEPT `notify` (the
+   *  auto-generated watch firehose has no push value — opt in explicitly
+   *  with `kinds: ['notify']`). Plan fleet-coordination-painpoints D-002. */
   kinds?: CoordKind[];
   /** Filter out the caller's own outbox lines (default true). */
   excludeOwn?: boolean;
@@ -38,7 +40,13 @@ export function filterInbox(
     if (!Array.isArray(l.to)) continue;
     if (!l.to.includes(ownerId) && !l.to.includes('*')) continue;
     if (sinceMs && new Date(l.ts).getTime() <= sinceMs) continue;
-    if (kindFilter && !kindFilter.has(l.kind)) continue;
+    if (kindFilter) {
+      if (!kindFilter.has(l.kind)) continue;
+    } else if (l.kind === 'notify') {
+      // Default: exclude the auto-generated notify firehose (D-002). Callers
+      // that want it pass kinds: ['notify'] explicitly.
+      continue;
+    }
     out.push(l);
   }
   return out.sort(compareByTsThenId);

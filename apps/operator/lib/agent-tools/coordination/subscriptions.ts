@@ -224,6 +224,28 @@ export async function fireNotificationsForCaller(
 }
 
 /**
+ * GC the `notify` firehose from the coord event log — delete notify rows
+ * older than `retentionDays`. Notify is opt-in + low-value (D-002,
+ * fleet-coordination-painpoints), so it must not accumulate unbounded; a
+ * daily DBOS scheduled tick (periodic-workflows) drives this. Returns the
+ * number deleted. Best-effort caller (the tick) tolerates errors.
+ */
+export async function gcOldNotifies(retentionDays = 3): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ n: number }>>`
+    WITH d AS (
+      DELETE FROM harness_shared.coord_event_log
+       WHERE surface = 'messages'
+         AND body->>'kind' = 'notify'
+         AND ts < now() - make_interval(days => ${retentionDays})
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM d
+  `;
+  return rows[0]?.n ?? 0;
+}
+
+/**
  * Coord kinds reachable from this module — for callers that want to
  * narrow `CoordKind` further.
  */

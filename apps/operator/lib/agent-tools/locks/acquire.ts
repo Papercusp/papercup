@@ -27,7 +27,6 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { getPresence } from '../coordination/presence';
 import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
 import {
@@ -200,9 +199,8 @@ export default defineTool({
     }
 
     if (first.ok) {
-      void fireNotificationsForCaller(ctx, first.held, 'lock_acquired').catch(
-        () => {},
-      );
+      // Notify firehose removed at the source (D-002, fleet-coordination-painpoints):
+      // lock_acquired had no push-consumer — an agent learns contention on its own acquire.
       return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held);
     }
 
@@ -281,12 +279,8 @@ export default defineTool({
       // tryInsertWaiter's pre-insert acquire attempt. No waiter was
       // queued; we already hold the lock.
       if ('self_granted' in inserted) {
-        void fireNotificationsForCaller(
-          ctx,
-          inserted.held,
-          'lock_acquired',
-        ).catch(() => {});
-        return ok(ownerId, ownerLabel, 
+        // notify firehose removed at the source (D-002)
+        return ok(ownerId, ownerLabel,
           inserted.lock_id,
           inserted.expires_ts,
           inserted.held,
@@ -429,12 +423,8 @@ export default defineTool({
       });
 
       if (finalBusy.won) {
-        void fireNotificationsForCaller(
-          ctx,
-          finalBusy.held,
-          'lock_acquired',
-        ).catch(() => {});
-        return ok(ownerId, ownerLabel, 
+        // notify firehose removed at the source (D-002)
+        return ok(ownerId, ownerLabel,
           finalBusy.lockId,
           finalBusy.expires,
           finalBusy.held,
