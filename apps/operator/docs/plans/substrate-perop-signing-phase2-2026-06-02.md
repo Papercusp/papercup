@@ -1,7 +1,7 @@
 ---
 title: Phase 2 — per-op Ed25519 signing + verify-on-receipt (swarm substrate)
 slug: substrate-perop-signing-phase2-2026-06-02
-status: draft
+status: shipped
 created: 2026-06-02
 updated: 2026-06-02
 owner: aviynw@gmail.com
@@ -11,17 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** DRAFT FOR REVIEW — **re-grounded 2026-06-02 against source.** The original premise (ops
-arrive unsigned/unauthenticated, so add per-op Ed25519 signing + verify-on-receipt + replay-state)
-is **largely already satisfied** by the per-peer-Hypercore + channel-2-admitted-merge architecture:
-every replicated op is already cryptographically attributable to a GitHub identity, and in-log
-replay is structurally prevented by Hypercore's append-only Merkle index. **D-004 records this
-re-grounding and supersedes D-001..D-003** (all of which were predicated on adding per-op
-signatures). The residual work is small and is NOT the L–XL crypto change the draft assumed.
+**State:** SHIPPED — the narrowed Phase 2 (per D-004) is implemented + tested. Per-op Ed25519 signing was found redundant (the per-peer-Hypercore + channel-2-admitted-merge trust chain is already complete), so the work narrowed to: P-001 — lwwPick LWW tiebreak now keys off the unforgeable, peer-stable `sourceLogKeyHex` instead of the self-declared `writerPubkey` (forge-resistance + fold-order property tests); P-002 — remote attribution stamps the immutable `sourceLogKeyHex` (chosen over a stale-able write-time-resolved device pubkey; local keeps the trustworthy own device pubkey); P-003 — an end-to-end admission-boundary test (a rejected peer's physically-replicated ops never reach PG; only the admitted peer's project) plus a boot-history observability assertion. PostHog admission telemetry was judged redundant with the existing boot-history `announce_rejected` channel (and has no server-side capture path), so skipped per the item's 'optionally'. All hyperbee unit tests green (54 files / 512 tests); tsc clean on changed files.
 
-**Next:** review D-004; if accepted, convert its two residual fixes — (1) bind the `lwwPick`
-tiebreak + the projected `author_pubkey` column to the unforgeable `sourceLogKeyHex`, (2) assert the
-admission invariant with tests — into tracked items, and close the per-op-signing scope as not-needed.
+**Next:** None — plan complete. (Future: only re-open per-op signing if a path ever moves ops outside the Hypercore framing — an HTTP/gist op-sync or untrusted serialized import — the Radicle-2026 shape.)
 
 ## Background — the gap (re-grounded)
 
@@ -129,6 +121,15 @@ risks are ordinary:
 - Architecture references verified 2026-06-02: `peer-log.ts`, `read-merge.ts`, `announce.ts`,
   `read-admission.ts`, `verify-binding-adapter.ts`, `projection.ts`, `boot.ts`.
 - Independent of the Cupboard work (GitHub-bearer-authenticated listing copy — a different surface).
+
+
+## Phase 2 (narrowed) — attribution-binding + admission tests
+
+- **P-001** `done` lwwPick: replace the self-declared `writerPubkey` tiebreak (projection.ts) with the unforgeable, peer-stable `sourceLogKeyHex`. Preserve order-independent-fold determinism. Property test: fold-order independence + exact-ts same-type tie resolves to the same winner on every peer, and a forged self-declared pubkey cannot flip the winner. importance: high (lwwPick tiebreak → sourceLogKeyHex; forge-resistance + fold-order property tests green commit 8ef145a92)
+- **P-002** `done` Projected attribution: stamp `author_pubkey`/provenance from the unforgeable `sourceLogKeyHex` (or its admission-bound device identity), never the self-declared op field. Test: an op carrying a forged self-declared author on an admitted log leaves the stored attribution following `sourceLogKeyHex`. importance: high (remote attribution → immutable sourceLogKeyHex chosen over stale-able resolved pubkey; provenance-g1 reconciled commit befdeb17d)
+- **P-003** `done` Admission invariant tests: assert only sig-valid + binding-valid + not-revoked logs become AdmittedLogs and project; a forged / non-admitted / revoked log's ops never reach PG. Optionally surface admission-rejection counts via the existing PostHog TELEMETRY_KINDS taxonomy. (admit-one/reject-one end-to-end boundary test rejected peer's replicated ops never reach PG + boot-history observability assertion. PostHog telemetry skipped: redundant with boot-history announce_rejected events + no server-side capture path commit 4950f2acd)
+
+
 
 ## Decisions
 
