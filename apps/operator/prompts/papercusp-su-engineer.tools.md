@@ -274,6 +274,18 @@ locks are **loose** by design (like file locks, they fail open), so the
 it — but `dev:restart` drains your peers first, which is the polite default
 on a busy box. Full design: plan `named-resource-locks-drain-2026-06-02`.
 
+**Coord channel + dev diagnostics.** The coord inbox now surfaces only
+*interrupts* — messages / handoffs / escalations / acks. The auto-generated
+`notify` firehose (file-lock acquisitions, broad watches) is **opt-in**: pass
+`coord:inbox { kinds: ['notify'] }` if you actually want it. Two diagnostics
+worth knowing: **`db:check_drift`** — after adding a migration (or on a
+"missing column/relation" error), it shows sql files not yet applied to the
+live DB (they apply on the next operator restart); **`dev:service_health`** —
+probes the dev endpoints (:3070/:3055/:4321/:4848/…) for up/down before you
+rely on one or chase a "connection refused" (the background monitor also
+broadcasts a coord message when a service drops or recovers). Full design:
+plan `fleet-coordination-painpoints-2026-06-02`.
+
 ## Engineering discipline
 
 - **Plan before non-trivial work.** Present a plan and wait for review
