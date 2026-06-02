@@ -12,8 +12,8 @@ import { papercuspRegistry, adminRegistry } from '../testing-domains-registry';
 describe('testing-domains-registry', () => {
   const domains = listTestDomains();
 
-  it('registers exactly 21 domains', () => {
-    expect(domains.length).toBe(21);
+  it('registers exactly 22 domains', () => {
+    expect(domains.length).toBe(22);
   });
 
   it('every tier appears at least once', () => {
@@ -80,8 +80,8 @@ describe('Phase 1 — universal vs Papercusp split (testing-shell-cross-project 
     expect(universalDomains.every((d) => d.tier === 'universal')).toBe(true);
   });
 
-  it('papercuspRegistry is the 20 Papercusp-only domains, none universal', () => {
-    expect(papercuspRegistry.length).toBe(20);
+  it('papercuspRegistry is the 21 Papercusp-only domains, none universal', () => {
+    expect(papercuspRegistry.length).toBe(21);
     expect(papercuspRegistry.some((d) => d.tier === 'universal')).toBe(false);
     // the universal domains are NOT in the Papercusp set
     const papercuspIds = new Set(papercuspRegistry.map((d) => d.id));
@@ -93,8 +93,8 @@ describe('Phase 1 — universal vs Papercusp split (testing-shell-cross-project 
     for (const id of ['test-runs', 'live', 'chaos', 'ai']) expect(papercuspIds.has(id)).toBe(true);
   });
 
-  it('adminRegistry composes both into the full 21', () => {
-    expect(adminRegistry.length).toBe(21);
+  it('adminRegistry composes both into the full 22', () => {
+    expect(adminRegistry.length).toBe(22);
     expect(adminRegistry.length).toBe(universalDomains.length + papercuspRegistry.length);
   });
 

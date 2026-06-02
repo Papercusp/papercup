@@ -469,6 +469,130 @@ defineTestDomain({
 });
 
 /* ---------------------------------------------------------------- *
+ * Dogfood — the shared-harness collaborative substrate (plan
+ * dogfood-test-suite-2026-06-01). One sectioned domain covering the
+ * Model-B sync layer, identity/binding, federation, orchestrator
+ * claim, PR lifecycle, reactivity, revocation, the Cupboard public
+ * API, the collaboration UI, and the endpoint routes — surfaces the
+ * ~80 existing substrate/identity/orchestrator/pr-host tests (which
+ * no prior domain globbed) plus the new coverage this plan adds.
+ * Cross-section overlap (e.g. revocation ⊂ substrate) is intentional:
+ * the matcher doesn't negate, and a sub-view is worth its own glob.
+ * ---------------------------------------------------------------- */
+defineTestDomain({
+  id: 'dogfood',
+  label: 'Dogfood',
+  description: 'Shared-harness collaborative substrate: Model-B sync, identity/binding, federation, claims, PR lifecycle, Cupboard.',
+  tier: 'domain',
+  sections: [
+    {
+      id: 'substrate',
+      label: 'Substrate',
+      description: 'Model-B per-peer signed logs + LWW read-merge + projections + boot/swarm.',
+      globs: ['apps/operator/lib/sync/hyperbee/**/*.test.ts'],
+    },
+    {
+      id: 'identity-binding',
+      label: 'Identity & binding',
+      description: 'Device keychain, Ed25519 signing, two-channel binding, attestation.',
+      globs: ['apps/operator/lib/identity/**/*.test.ts'],
+    },
+    {
+      id: 'federation',
+      label: 'Federation',
+      description: 'Join/share, user-branch, binding publish, tree classifier, clone, register.',
+      globs: [
+        'apps/operator/lib/harness/__tests__/**/*.test.ts',
+        'apps/operator/lib/harness/classify-tree.test.ts',
+        'apps/operator/lib/harness/clone-github.test.ts',
+        'apps/operator/lib/harness/register-papercup.test.ts',
+        'apps/operator/lib/harness/papercusp-workspace.test.ts',
+        'apps/operator/lib/harness/contributor-row-types.test.ts',
+        'apps/operator/lib/harness/contributor-usage-event-types.test.ts',
+        'apps/operator/lib/harness/feature-queue-row-types.test.ts',
+      ],
+    },
+    {
+      id: 'claim',
+      label: 'Claim',
+      description: 'Orchestrator distributed/advisory feature claim + audit.',
+      globs: ['apps/operator/lib/orchestrator/**/*.test.ts'],
+    },
+    {
+      id: 'pr-lifecycle',
+      label: 'PR lifecycle',
+      description: 'PrHost, poll daemon + retry, auto-approve/merge, reviewer settings.',
+      globs: ['apps/operator/lib/pr-host/**/*.test.ts'],
+    },
+    {
+      id: 'completion-ref',
+      label: 'Completion ref',
+      description: 'completion_ref writer + background ls-remote verifier.',
+      globs: ['apps/operator/lib/harness/completion-ref-*.test.ts'],
+    },
+    {
+      id: 'reactivity',
+      label: 'Reactivity',
+      description: 'sync-resolver query registry + sync-sse bridge.',
+      globs: [
+        'apps/operator/lib/sync-resolver/**/*.test.ts',
+        'apps/operator/lib/sync-sse.test.ts',
+      ],
+    },
+    {
+      id: 'revocation',
+      label: 'Revocation',
+      description: 'Self-device + contributor revocation, enforcement, re-verify, MCP tools.',
+      globs: [
+        'apps/operator/lib/sync/hyperbee/__tests__/revoke-*.test.ts',
+        'apps/operator/lib/sync/hyperbee/__tests__/revocation-enforcement.test.ts',
+        'apps/operator/lib/sync/hyperbee/__tests__/reverify-admitted.test.ts',
+        'apps/operator/lib/sync/hyperbee/__tests__/boot-revoke-production-path.test.ts',
+        'apps/operator/lib/agent-tools/substrate/**/*.test.ts',
+      ],
+    },
+    {
+      id: 'cupboard',
+      label: 'Cupboard',
+      description: 'Public harness-discovery API (operator-public).',
+      globs: ['apps/operator-public/src/**/*.test.ts'],
+    },
+    {
+      id: 'ui',
+      label: 'UI',
+      description: 'Create/Share/Join, PRs, Insights cards, claim/contributor/binding badges.',
+      globs: [
+        'apps/operator/app/harness/__tests__/**/*.test.tsx',
+        'apps/operator/app/harness/insights/__tests__/**/*.test.tsx',
+        'apps/operator/app/harness/PrsTab.component.test.tsx',
+        'apps/operator/app/_components/__tests__/ContributorBadge.test.tsx',
+        'apps/operator/app/_components/__tests__/ClaimStatusBadge.test.tsx',
+        'apps/operator/app/_components/__tests__/HarnessClaimHeader.test.tsx',
+        'apps/operator/app/_components/__tests__/BindingStatusBadge.test.tsx',
+        'apps/operator/app/users/github/[id]/__tests__/**/*.test.tsx',
+      ],
+    },
+    {
+      id: 'routes',
+      label: 'Routes',
+      description: 'Substrate revoke, join/share/feature-queue/discord, user-profile endpoints.',
+      globs: [
+        'apps/operator/lib/endpoint-route/routes/admin/__tests__/substrate-*.test.ts',
+        'apps/operator/lib/endpoint-route/routes/admin/__tests__/dogfood-substrate-*.test.ts',
+        'apps/operator/lib/endpoint-route/routes/harness/__tests__/**/*.test.ts',
+        'apps/operator/lib/endpoint-route/routes/users/__tests__/**/*.test.ts',
+      ],
+    },
+    {
+      id: 'e2e',
+      label: 'E2E',
+      description: 'Browser collaboration flows (Playwright).',
+      globs: ['apps/operator/e2e/collab-*.spec.ts'],
+    },
+  ],
+});
+
+/* ---------------------------------------------------------------- *
  * Composed views (P-011). `papercuspRegistry` = the 20 declared above
  * (read back from the Map by id); `adminRegistry` = universal + papercusp
  * = the full /admin/testing set. The SPA nav order is TestingClient's own
@@ -479,7 +603,7 @@ const PAPERCUSP_IDS = [
   'test-runs', 'live', 'chaos', 'ai',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
   'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
-  'provisioning', 'docs',
+  'provisioning', 'docs', 'dogfood',
 ] as const;
 
 export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {

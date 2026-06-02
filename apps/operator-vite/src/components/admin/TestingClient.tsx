@@ -46,6 +46,7 @@ type TabId =
   | 'harness'
   | 'voice'
   | 'papercusp-su'
+  | 'dogfood'
   | 'backup'
   | 'plans'
   | 'operator'
@@ -76,6 +77,7 @@ const TABS: AdminTab[] = [
   { id: 'harness', label: 'Harness', hint: 'dock, layout, fs', tier: 'domain' },
   { id: 'voice', label: 'Voice', hint: 'cards, engines, persona', tier: 'domain' },
   { id: 'papercusp-su', label: 'Papercusp-SU', hint: 'coord, locks, identity, tools', tier: 'domain' },
+  { id: 'dogfood', label: 'Dogfood', hint: 'substrate, federation, claims, PRs', tier: 'domain' },
   { id: 'backup', label: 'Backup', hint: 'kopia integration', tier: 'domain' },
   { id: 'plans', label: 'Plans', hint: 'authoring, runs, revisions', tier: 'domain' },
   { id: 'operator', label: 'Operator', hint: 'brain, cards, scan', tier: 'domain' },

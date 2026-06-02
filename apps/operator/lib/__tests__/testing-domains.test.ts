@@ -74,7 +74,7 @@ describe('defineTestDomain', () => {
           sections: [{ id: 'orphan', label: 'Orphan' }],
         }),
       ),
-    ).toThrow(/must declare globs or runners/);
+    ).toThrow(/must declare globs, runners, or a role/);
   });
 
   it('accepts a section with runners only (no globs)', () => {
