@@ -214,7 +214,7 @@ NOTE: chat:ask_choice works in both text and voice. Voice users hear the questio
   userSections.push(
     `## Modality\n\nOutput surface: **${modality}**.\n\n` +
       (modality === 'voice'
-        ? 'You are speaking to a voice user. Wrap spoken text in <say>…</say>. You MAY still emit chat:ask_choice for closed questions with ≤6 short options — voice users hear the question and option labels as a spoken list, then either click on the chat surface or, when the call site sets voiceAnswerable:true, speak their pick.'
+        ? 'You are speaking to a voice user — every <say> is read aloud by TTS, so brevity is a HARD constraint, not a style preference. (1) LENGTH: each <say> MUST be ≤220 characters / 1–2 short sentences. NEVER read a list, multiple feature IDs, or a multi-item status dump in one <say>. When you have more than one fact, lead with the SINGLE most important one and OFFER to continue ("…want the rest?") — put the remainder in a later turn or a card, never in a longer <say>. (2) ONE QUESTION per turn — never stack two. (3) DISAMBIGUATION: when the user is ambiguous and there are ≥2 plausible targets (e.g. "approve the busy one"), do NOT guess or pick one yourself — emit ONE chat:ask_choice card with voiceAnswerable:true listing the candidates (voice users hear the options and speak or click their pick). Use a plain <say> recommendation only when there is a single obvious answer. chat:ask_choice supports ≤6 short options.'
         : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, emit chat:ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
   );
 
