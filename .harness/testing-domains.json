@@ -268,6 +268,14 @@
                 "apps/operator/scripts/voice-stack-check.mjs"
               ],
               "label": "voice-stack-check"
+            },
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/el-connect-test.mjs"
+              ],
+              "label": "el-connect (live EL creds)"
             }
           ]
         }
@@ -561,6 +569,20 @@
             "apps/operator/lib/design/**/*.test.ts",
             "design-tokens/**/*.test.ts"
           ]
+        },
+        {
+          "id": "smoke",
+          "label": "Smoke",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/design-loop-smoke.mjs"
+              ],
+              "label": "design-loop (live operator)"
+            }
+          ]
         }
       ]
     },
@@ -839,9 +861,19 @@
         {
           "id": "claim",
           "label": "Claim",
-          "description": "Orchestrator distributed/advisory feature claim + audit.",
+          "description": "Orchestrator distributed/advisory feature claim + audit + multi-harness spawning smoke.",
           "globs": [
             "apps/operator/lib/orchestrator/**/*.test.ts"
+          ],
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "bin/smoke-multi-harness-spawning.sh"
+              ],
+              "label": "multi-harness spawning (live)"
+            }
           ]
         },
         {
@@ -863,10 +895,20 @@
         {
           "id": "reactivity",
           "label": "Reactivity",
-          "description": "sync-resolver query registry + sync-sse bridge.",
+          "description": "sync-resolver query registry + sync-sse bridge + emit-change-notify trigger sentinel.",
           "globs": [
             "apps/operator/lib/sync-resolver/**/*.test.ts",
             "apps/operator/lib/sync-sse.test.ts"
+          ],
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/verify-trigger-consolidation.mjs"
+              ],
+              "label": "emit-change-notify sentinel"
+            }
           ]
         },
         {

@@ -555,8 +555,20 @@ goes in **exactly one** of:
 **Never** create new `.mjs` integration scripts under
 `apps/operator/__tests__/integration/` or tsx smoke scripts under
 `apps/operator/scripts/`. CI lint (P-038) fails the build on additions.
-Drop files into the conventional path and `/admin/testing` picks them
-up automatically via the registry glob walk — no registration step.
+Drop files into the conventional path and `/admin/testing` (+ the `/adv`
+Tests tab) picks them up automatically via the registry glob walk — the
+domain globs are directory/prefix-level, so a new test in an existing
+area needs no registry edit.
+
+**`npm run lint:tests` is a coverage guard**: it fails if any canonical
+test matches no registry glob (i.e. would be invisible in the tab). If it
+fires for a brand-new subsystem, widen a domain (or add one) in
+`apps/operator/lib/testing-domains-registry.ts`, then **`npm run
+gen:contract`** to regenerate `.harness/testing-domains.json` (the `/adv`
+tab's contract — generated from the registry, never hand-edited;
+`gen:contract:check` gates it in CI). Live smokes that need a running
+operator are surfaced as `node`/`shell` runners on a domain section, not
+forced into Vitest.
 
 See `apps/operator-docs/src/content/docs/testing/index.mdx` §1.0a for
 the full convention and `apps/operator/lib/testing-domains-registry.ts`

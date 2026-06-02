@@ -15,7 +15,6 @@
     "postinstall": "bash scripts/setup-wake-runtime.sh && bash scripts/setup-vad-runtime.sh",
     "test:el-suite": "node scripts/el-suite-test.mjs",
     "test:el-suite:required": "EL_SUITE_REQUIRED=1 node scripts/el-suite-test.mjs",
-    "test:migration-smoke": "node scripts/migration-smoke.mjs",
     "verify:dogfood-bootstrap": "tsx scripts/run-dogfood-bootstrap.ts",
     "verify:trigger-consolidation": "node scripts/verify-trigger-consolidation.mjs",
     "verify:reactivity-e2e": "tsx scripts/verify-reactivity-e2e.ts",

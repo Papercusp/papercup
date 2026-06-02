@@ -202,6 +202,7 @@ defineTestDomain({
     { id: 'smoke', label: 'Smoke', runners: [
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-suite-test.mjs'], label: 'el-suite' },
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/voice-stack-check.mjs'], label: 'voice-stack-check' },
+        { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-connect-test.mjs'], label: 'el-connect (live EL creds)' },
       ] },
   ],
 });
@@ -409,6 +410,10 @@ defineTestDomain({
         'apps/operator/lib/design/**/*.test.ts',
         'design-tokens/**/*.test.ts',
       ] },
+    // Live E2E smoke (needs a running operator) — surfaced as a runner.
+    { id: 'smoke', label: 'Smoke', runners: [
+        { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/design-loop-smoke.mjs'], label: 'design-loop (live operator)' },
+      ] },
   ],
 });
 
@@ -554,8 +559,12 @@ defineTestDomain({
     {
       id: 'claim',
       label: 'Claim',
-      description: 'Orchestrator distributed/advisory feature claim + audit.',
+      description: 'Orchestrator distributed/advisory feature claim + audit + multi-harness spawning smoke.',
       globs: ['apps/operator/lib/orchestrator/**/*.test.ts'],
+      // Live multi-harness-spawning E2E (drives a running operator) — runner.
+      runners: [
+        { kind: 'shell', cmd: 'bash', args: ['bin/smoke-multi-harness-spawning.sh'], label: 'multi-harness spawning (live)' },
+      ],
     },
     {
       id: 'pr-lifecycle',
@@ -572,10 +581,15 @@ defineTestDomain({
     {
       id: 'reactivity',
       label: 'Reactivity',
-      description: 'sync-resolver query registry + sync-sse bridge.',
+      description: 'sync-resolver query registry + sync-sse bridge + emit-change-notify trigger sentinel.',
       globs: [
         'apps/operator/lib/sync-resolver/**/*.test.ts',
         'apps/operator/lib/sync-sse.test.ts',
+      ],
+      // Live-PG regression sentinel (brings its own embedded PG) — see
+      // agent-insights/live-pg-regression-sentinel.
+      runners: [
+        { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/verify-trigger-consolidation.mjs'], label: 'emit-change-notify sentinel' },
       ],
     },
     {

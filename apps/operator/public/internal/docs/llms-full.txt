@@ -36513,7 +36513,15 @@ Per `admin-testing-tab-restructure-2026-05-24` D-006: **only four** test framewo
 | **Cargo**         | `#[cfg(test)] mod tests { … }` | `<crate>/src/`                             | `cargo test --message-format=json` reporter (P-012) |
 | **LLM scenarios** | `.ts` / `.yaml`                | `apps/operator/lib/llm-testing/scenarios/` | LLM testing tab                                     |
 
-**Where tests appear in the UI:** drop a test file under one of the glob-matched paths in `apps/operator/lib/testing-domains-registry.ts` and it shows up automatically in the matching `/admin/testing` subtab — no registration step. The shared `<DomainTestPanel>` walks the server-side glob at every request, so renames + deletions propagate without a rebuild.
+**Where tests appear in the UI:** drop a test file under one of the glob-matched paths in `apps/operator/lib/testing-domains-registry.ts` and it shows up automatically in the matching `/admin/testing` subtab (and the `/adv` Tests tab) — no registration step. The shared `<DomainTestPanel>` walks the server-side glob at every request, so renames + deletions propagate without a rebuild.
+
+The domain globs are deliberately **directory/prefix-level** so a new test in an existing area appears with no registry edit. A genuinely new subsystem (a new top-level dir nothing globs yet) is the one case that needs a one-line glob add — and the coverage guard below forces it.
+
+**Two sources, one of them generated.** `/admin/testing` reads the registry (`testing-domains-registry.ts`) directly; the `/adv` Tests tab reads the harness contract `.harness/testing-domains.json`. That contract is **generated** from the registry — run `npm run gen:contract` after changing domains (CI’s `gen:contract:check` fails if it drifted). Do not hand-edit the JSON.
+
+**Coverage guard (no test is invisible).** `npm run lint:tests` (CI-gated) fails if any canonical `*.test.ts(x)` / `*.spec.ts` matches **no** registry glob — i.e. would be invisible in the tab. This caught the 2026-06-02 audit finding that 614 of 1168 tests were orphaned. When it fires, widen a domain’s globs (or add a domain) in the registry, then `npm run gen:contract`.
+
+**Live smokes that can’t be Vitest** (need a running operator / external service) are surfaced via `node` / `shell` **runners** on a domain section (e.g. the `voice` Smoke section, `design` Smoke, `dogfood` reactivity/claim) — not by forcing them into a Vitest file. Prefer a real Vitest/Playwright test; reach for a runner only when the test genuinely needs a live process.
 
 **Where tests do NOT go (will be linted out — P-038):**
 
