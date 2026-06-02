@@ -14,15 +14,27 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design approved + spec committed (`3fe6fe738`). Plan authored; **no code written yet.** This resolves
-`production-readiness-test-coverage-2026-05-30` **D-005** (owed migration-baseline rebuild) and unblocks +
-populates **P-002 / P-015 / P-016 / P-017** (integration tier) there. Locked decisions D-001..D-006 below.
-⚠️ The `sql/` dir + `libs/papercusp` submodule has live churn from peers (097/098 boot-crash fixes landing
-now) — `coord:declare-intent` + `locks:acquire` on `libs/papercusp/libs/db/sql/` before the squash, and
-freeze 001–103 only once that churn settles.
+**State (2026-06-02, autonomous loop):** **Phase 0 COMPLETE + the Phase-1 diff-gate (P-006) is GREEN.**
+- **P-001/P-002 done** — reference-build generator `apps/operator/lib/db-tools/build-reference-schema.ts`
+  (commit `30324d250`, augmented `c00c0f3a7`). It now produces the **COMPLETE 184-table** `harness_shared`
+  schema (was 170) by also applying the 2nd migration system + a captured fragment (see D-007/D-008).
+- **P-003 done** — `apps/operator/lib/db-tools/sanitize-baseline.ts` (+ 18 unit tests, commit `510e82ca5`):
+  raw `pg_dump` → idempotent `000-baseline.sql`. Zero unknown statement shapes on the real dump.
+- **P-006 PROVEN GREEN (the linchpin):** a fresh DB built from `000-baseline.sql` **alone** is schema-IDENTICAL
+  (0-line normalized diff) to the full reference build, AND double-apply is a clean no-op (0 errors). Proof
+  artifacts in `/tmp/baseline-proof/`. **This is the hard precondition that authorizes Phase 2 deletion.**
 
-**Next:** Start Phase 0 **P-001** — resolve the all-ensures invocation mechanism for the reference-build
-generator (tsx codegen entrypoint importing the 65 exported `ensureXxx()` vs. boot-and-trigger).
+⚠️ **Scope expanded vs the spec's "2 sources":** the schema is built by ~6 fractured sources, and the 14 ghost
+tables fall into 3 groups (see D-007). Phase 2's "delete ensure-schema + 54 call sites" is bigger — a whole
+2nd migration system (`apps/operator/lib/commands/migrations/`, 15 files), orchestrator-package inline creators
+(`*-pg.ts`), endpoint-route inline creators, and feature-module inline creators all create tables at runtime too.
+
+⚠️ `sql/` churn is **ongoing** (104/105/106 landed since the spec; peers reconciling 097-106 across native+embedded).
+Lock `libs/papercusp/libs/db/sql/` for the squash (P-005); new migrations stay 107+ so they don't conflict with archiving 001-106.
+
+**Next:** P-004 (embedded-pg boot creates roles+extensions) → P-005 (land `000-baseline.sql`, archive 001-106; submodule
+commit + superproject pointer bump, no push) → P-007 (deployed-DB safety) → Phase 2 (delete ALL runtime DDL, now safe
+per green P-006) → Phase 3 (strict gate / drizzle regen / retire seed-restore / governance) → Phase 4 (integration tier).
 
 ## Background
 
@@ -37,15 +49,15 @@ source of truth**, then stands up the integration tier. See the spec for full in
 
 ## Phase 0 — Reference-build generator (the oracle)
 
-- **P-001** `todo` Resolve the all-ensures invocation mechanism: a `tsx` codegen entrypoint inside `apps/operator` importing all 65 exported `ensureXxx()` + the dogfood/autoloop ensures, vs. booting an operator sidecar against a scratch DB and triggering an ensure-all path. Acceptance: a documented, runnable approach that creates every `harness_shared` table/index/policy against a given DSN.
-- **P-002** `todo` Write `libs/papercusp/libs/db/scripts/build-reference-schema.mjs` (sibling to `pull-schema.mjs`): scratch PG → framework roles + extensions (`pgcrypto`,`pg_trgm`,`vector`) → apply all 115 migrations (tolerating current 42P01 skips) → invoke all ensures (per P-001) → `pg_dump --schema-only --schema=harness_shared --schema=papercup_shared`. Acceptance: emits a complete raw schema dump of a fully-built DB. blocked-by P-001.
-- **P-003** `todo` Sanitizer that transforms the raw dump → idempotent `000-baseline.sql`: `CREATE TABLE/INDEX IF NOT EXISTS`, `DROP POLICY IF EXISTS`+`CREATE POLICY`, DO-block guards; strip ownership/GRANT/role/SET noise. Unit-test the transform (`*.test.ts`). Acceptance: applying the output twice against an empty DB is a clean no-op on the second run. blocked-by P-002.
+- **P-001** `done` Mechanism resolved: a `tsx` entrypoint **inside `apps/operator`** (`lib/db-tools/build-reference-schema.ts`) that imports `@/lib/ensure-schema` (65 exported `ensureXxx()`, multi-pass) + dogfood + autoloop. Runs against a testcontainers pgvector DSN. (Placed in `apps/operator`, not `libs/papercusp/.../scripts`, for `@/` + `@papercusp/*` module resolution.)
+- **P-002** `done` `build-reference-schema.ts` (commit `30324d250`; augmented `c00c0f3a7`): scratch pgvector → roles + extensions → apply all migrations (42P01-tolerant) → all ensures → **also apply the 2nd migration system (`lib/commands/migrations/*.sql`) + `baseline-extra-tables.sql`** → `pg_dump`. Emits the **complete 184-table** schema (verified exact match to live ∪ {memory_feedback,tool_authz_log}, 0 missing/0 extra).
+- **P-003** `done` `sanitize-baseline.ts` (commit `510e82ca5`, 18 unit tests): dollar-quote-aware splitter + per-keyword idempotency rules (`IF NOT EXISTS`, `OR REPLACE` fn/trigger/view, `DROP POLICY IF EXISTS`+`CREATE`, DO-block constraint guards tolerating duplicate_object/_table/**invalid_table_definition** (PK re-add = 42P16), keep idempotent ALTERs, drop SET/set_config + PG18 `\restrict`/`\unrestrict`). **Verified: double-apply on a fresh DB = 0 errors (idempotent).** Unknown shapes are flagged, not silently dropped.
 
 ## Phase 1 — Land the baseline (app still works)
 
 - **P-004** `todo` Move framework-role + `BYPASSRLS` + extension creation into the embedded-pg **boot** pre-migration step (`embedded-postgres-server/src/index.js`, mirroring the existing role bootstrap). Acceptance: a fresh boot creates roles + the 3 extensions before running migrations.
 - **P-005** `todo` Add `000-baseline.sql`; move the 115 incrementals (001–103 incl. lettered sub-files) → `libs/papercusp/libs/db/sql/archive/`; **keep** `002-per-harness-template.sql`; new migrations continue at `104+`. Acceptance: runner glob applies only `000-baseline.sql` (+ template skipped as before). blocked-by P-003, P-004.
-- **P-006** `todo` **Verification gate (LINCHPIN):** schema-diff a fresh-from-`000-baseline.sql` DB against the reference-built DB (migra or normalized `pg_dump` diff). Must be **identical**. This is the hard precondition for Phase 2. Acceptance: zero schema diff (tables, columns, indexes, policies, triggers). blocked-by P-005.
+- **P-006** `done` **Verification gate (LINCHPIN) — PROVEN GREEN 2026-06-02.** Built a fresh DB from `000-baseline.sql` alone (roles+ext, then the file), dumped it with generator-matching flags, normalized both (strip `\restrict` keys/comments/SET), and `diff`ed against the reference build → **0-line diff (identical)**. Double-apply = 0 errors. Proof in `/tmp/baseline-proof/`. (Logic to be formalized as a repeatable tool + folded into P-011's strict gate.) This authorizes Phase 2.
 - **P-007** `todo` Commit Phase 1; confirm deployed-DB safety — applying `000-baseline.sql` to the already-populated live native `:5432 papercusp` DB is a no-op and gets marked applied. Acceptance: live DB unchanged, baseline row recorded. blocked-by P-006.
 
 ## Phase 2 — Delete ensure-schema (proven redundant)
@@ -86,3 +98,16 @@ source of truth**, then stands up the integration tier. See the spec for full in
 
 ### D-006 — Full scope through the tool-suite tests
 2026-06-02. This effort runs through authoring the integration tool-suite tests (production-readiness P-015/016/017), not just unblocking them.
+
+### D-007 — Live-DB dump REJECTED as baseline source; reference build is the base (revises D-003/D-004 premise)
+2026-06-02. Phase 0 revealed the clean reference build (D-003/D-004) was *incomplete* (170 tables; live has 184) — but the proposed fix of "dump the live DB" is **wrong here**: this dev box's native `:5432 papercusp` is in a *partial* migration state (tracker shows 098-101 + 104-106 UNAPPLIED; only 102/103 on top of ~097), and the reference build even has 2 tables the live box lacks (`memory_feedback`, `tool_authz_log`). So a live dump would bake in a Frankenstein schema missing 4+ recent migrations + transient cruft (exactly what D-003 wanted to avoid). **Decision: the reference build (fresh scratch, ALL migrations applied) stays the base + oracle.** Its only gap (14 ghost tables) is closed per D-008. Verified by P-006's 0-diff gate.
+
+### D-008 — The 14 ghost tables: 3 groups, closed two ways
+2026-06-02. The 14 tables a pure migrations+ensures build misses break down as:
+- **Group A (5): the 2nd migration system** `apps/operator/lib/commands/migrations/*.sql` (15 files, applied manually in prod, no runner): `agent_actions`, `agent_queries`, `el_conv_calls`, `voice_utterances`, and `delegates` (= `claude_sessions` renamed by `003`). → reference build now **applies these `*.sql`** (carries the rename; ensure-schema still makes the stale `claude_sessions` name, a real drift the squash fixes).
+- **Group B (4): inline TS runtime DDL** — `voice_lease`, `operator_claims`, `harness_prompt_overrides`, `git_export_outbox` (scattered `CREATE TABLE` in feature modules; Phase-2 delete targets).
+- **Group C (5): true orphans** — `harness_experts`, `harness_skills`, `orchestrator_settings`, `agent_chats_consolidated`, `feature_audit_consolidated`: no active creator in ANY build path; DDL exists only in Drizzle's `0000_many_james_howlett.sql`/`generated.reference.sql`. All still referenced in live code → KEEP.
+- Groups B+C captured to `apps/operator/lib/db-tools/baseline-extra-tables.sql` (DDL pg_dump'd from live; not migration-managed so the box's missing 098-106 don't affect them). Both the fragment + generator are transient (deleted in Phase 2); the durable artifact is `000-baseline.sql`.
+
+### D-009 — Defer the squash's irreversible step? NO — user authorized full completion
+2026-06-02. Initial recommendation was to do churn-safe prep now + hold Phases 1-2 until the 097-106 churn settled. User then put the session on a loop with explicit authority to complete + test the WHOLE plan. Proceeding through all phases, gated on the green P-006 diff, with per-step verification (tsc/tests/boot) and per-turn commits. Squash locks `sql/`; new migrations stay 107+.

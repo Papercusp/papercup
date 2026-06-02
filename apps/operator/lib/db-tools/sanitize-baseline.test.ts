@@ -81,7 +81,9 @@ describe('transformStatement — idempotency rewrites', () => {
     );
     expect(out).toMatch(/^DO \$baseline_guard\$ BEGIN/);
     expect(out).toContain('ADD CONSTRAINT t_pkey PRIMARY KEY (id);');
-    expect(out).toContain('EXCEPTION WHEN duplicate_object THEN NULL');
+    expect(out).toContain('WHEN duplicate_object THEN NULL');
+    // PK re-add raises 42P16, not duplicate_object — must be tolerated too
+    expect(out).toContain('WHEN invalid_table_definition THEN NULL');
     expect(out).toMatch(/END \$baseline_guard\$$/);
   });
 

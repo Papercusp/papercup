@@ -187,11 +187,21 @@ export function transformStatement(stmt: string, onUnknown?: (token: string) => 
   }
 
   // --- ALTER TABLE … ADD CONSTRAINT → DO-block guard ---
+  // Tolerate every "already exists" code an idempotent re-apply can raise:
+  //   duplicate_object (42710)         — duplicate constraint name (FK/UNIQUE/CHECK)
+  //   duplicate_table (42P07)          — duplicate relation
+  //   invalid_table_definition (42P16) — "multiple primary keys not allowed" (PK re-add;
+  //                                       PG checks for an existing PK before the name clash)
+  // Safe in this context: statements come from a pg_dump of a VALID schema, so the only
+  // re-run failure mode is "already present", never a genuinely invalid definition.
   if (/^\s*ALTER\s+TABLE\s/i.test(code) && /\bADD\s+CONSTRAINT\b/i.test(code)) {
     return (
       `DO ${GUARD_TAG} BEGIN\n` +
       `  ${code.trim()};\n` +
-      `EXCEPTION WHEN duplicate_object THEN NULL; WHEN duplicate_table THEN NULL;\n` +
+      `EXCEPTION\n` +
+      `  WHEN duplicate_object THEN NULL;\n` +
+      `  WHEN duplicate_table THEN NULL;\n` +
+      `  WHEN invalid_table_definition THEN NULL;\n` +
       `END ${GUARD_TAG}`
     );
   }
