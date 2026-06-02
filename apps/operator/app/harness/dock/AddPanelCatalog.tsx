@@ -37,6 +37,7 @@ import {
   SlidersHorizontal,
   SquareDashed,
   TrendingUp,
+  Users,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -80,6 +81,8 @@ const HUMAN_LABELS: Record<string, string> = {
   'adv:agents': 'Agents',
   'adv:logs': 'Run log',
   'adv:overview': 'Overview',
+  'adv:contributors': 'Contributors',
+  'adv:insights': 'Insights',
 };
 
 // Per-type icon for at-a-glance scanning. Every lookup falls back to a
@@ -100,6 +103,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'data:logs': ScrollText,
   'adv:logs': ScrollText,
   'adv:overview': LayoutDashboard,
+  'adv:contributors': Users,
+  'adv:insights': TrendingUp,
   'view:harness-overview': LayoutDashboard,
   'view:dashboard-overview': LayoutDashboard,
   'data:chat': MessageSquare,
