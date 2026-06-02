@@ -39,6 +39,8 @@ export interface RosterEntry {
   workspaceId: string;
   userId: string | null;
   revoked: boolean;
+  /** OS process alive? null = unknown. Non-stale + false = zombie (P-008). */
+  pidAlive: boolean | null;
   hasLaunchRecord: boolean;
   advSessionId: number | null;
   currentPlanSlug: string | null;
@@ -149,6 +151,49 @@ export function groupRoster(active: RosterEntry[], planFilters: string[]): Group
   return { planGroups, noPlan, presenceOnly };
 }
 
+/**
+ * A "zombie" agent: its heartbeat says it's still around (not stale) but the OS
+ * process is confirmed dead (P-008). pidAlive===null is "unknown", NOT a zombie.
+ */
+export function isZombie(e: { liveness: Liveness; pidAlive: boolean | null }): boolean {
+  return e.liveness !== 'stale' && e.pidAlive === false;
+}
+
+export interface FileInPlay {
+  path: string;
+  agents: RosterEntry[];
+  /** 2+ agents declaring the same file — a contention hotspot. */
+  contended: boolean;
+}
+
+/**
+ * Invert the roster: file → the agents declaring it as a current file (P-008).
+ * Contended files (2+ agents) sort first, then by agent count desc, then path.
+ * An agent's own duplicate file entries are de-duped per agent.
+ */
+export function buildFilesInPlay(active: RosterEntry[]): FileInPlay[] {
+  const byFile = new Map<string, Map<string, RosterEntry>>();
+  for (const e of active) {
+    for (const f of new Set(e.currentFiles)) {
+      const agents = byFile.get(f) ?? new Map<string, RosterEntry>();
+      agents.set(e.ownerId, e);
+      byFile.set(f, agents);
+    }
+  }
+  return [...byFile.entries()]
+    .map(([path, agents]) => ({
+      path,
+      agents: [...agents.values()],
+      contended: agents.size >= 2,
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.contended) - Number(a.contended) ||
+        b.agents.length - a.agents.length ||
+        a.path.localeCompare(b.path),
+    );
+}
+
 function RosterRow({
   e,
   selected,
@@ -191,6 +236,14 @@ function RosterRow({
         {e.revoked ? (
           <span className="pc-roster__chip pc-roster__chip--warn" title="session token revoked">
             revoked
+          </span>
+        ) : null}
+        {isZombie(e) ? (
+          <span
+            className="pc-roster__chip pc-roster__chip--warn"
+            title="zombie: fresh heartbeat but the OS process is gone"
+          >
+            zombie
           </span>
         ) : null}
         <span className="pc-roster__age" title={new Date(e.heartbeatAt).toLocaleString()}>
@@ -255,6 +308,65 @@ function GroupSection({
   );
 }
 
+/**
+ * Files-in-play inverse map (P-008): each declared file → the agents on it,
+ * contended files (2+) headlined. Agent chips select the agent's dossier.
+ */
+function FilesInPlaySection({
+  files,
+  selectedAgent,
+  onSelect,
+}: {
+  files: FileInPlay[];
+  selectedAgent: string | null;
+  onSelect: (ownerId: string) => void;
+}): React.JSX.Element | null {
+  if (files.length === 0) return null;
+  const contended = files.filter((f) => f.contended).length;
+  return (
+    <section className="pc-roster__group pc-files">
+      <header className="pc-roster__group-head">
+        <span className="pc-roster__group-title">Files in play</span>
+        <span className="pc-roster__group-count">{files.length}</span>
+        {contended > 0 ? (
+          <span className="pc-files__contend" title="files with 2+ agents declaring them">
+            {contended} contended
+          </span>
+        ) : null}
+      </header>
+      <ul className="pc-files__list">
+        {files.map((f) => (
+          <li key={f.path} className="pc-files__row" data-contended={f.contended || undefined}>
+            <span className="pc-files__path" title={f.path}>
+              {basename(f.path)}
+            </span>
+            <span className="pc-files__agents">
+              {f.agents.map((a) => {
+                const client = a.agent ?? shortSource(a.source);
+                return (
+                  <button
+                    key={a.ownerId}
+                    type="button"
+                    className="pc-files__agent"
+                    data-selected={a.ownerId === selectedAgent || undefined}
+                    data-liveness={a.liveness}
+                    title={`${client} · ${a.label || a.ownerId}${isZombie(a) ? ' · zombie' : ''}`}
+                    onClick={() => onSelect(a.ownerId)}
+                  >
+                    <LivenessDot liveness={a.liveness} size={6} />
+                    {client}
+                    {isZombie(a) ? <span className="pc-files__zombie">!</span> : null}
+                  </button>
+                );
+              })}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function SessionsRosterView({
   planFilters = [],
   workspaceId = null,
@@ -275,6 +387,7 @@ export default function SessionsRosterView({
     () => groupRoster(active, planFilters),
     [active, planFilters],
   );
+  const filesInPlay = useMemo(() => buildFilesInPlay(active), [active]);
 
   const live = active.filter((e) => e.liveness === 'live').length;
   const idle = active.filter((e) => e.liveness === 'idle').length;
@@ -330,6 +443,8 @@ export default function SessionsRosterView({
           selectedAgent={selectedAgent}
           onSelect={select}
         />
+
+        <FilesInPlaySection files={filesInPlay} selectedAgent={selectedAgent} onSelect={select} />
 
         {ended.length > 0 ? (
           <section className="pc-roster__ended">

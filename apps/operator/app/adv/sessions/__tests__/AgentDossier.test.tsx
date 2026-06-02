@@ -27,6 +27,7 @@ function entry(over: Partial<RosterEntry> = {}): RosterEntry {
     workspaceId: 'ws1',
     userId: null,
     revoked: false,
+    pidAlive: null,
     hasLaunchRecord: true,
     advSessionId: 1,
     currentPlanSlug: 'dbos-retire',

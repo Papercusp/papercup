@@ -4,6 +4,7 @@ import {
   scopePresenceToWorkspace,
   mergeRosterEntries,
   dedupeEndedAgainstActive,
+  shouldProbePid,
   LIVE_MS,
   GLOBAL_WORKSPACE,
 } from './adv-roster';
@@ -154,5 +155,28 @@ describe('dedupeEndedAgainstActive', () => {
   it('keeps everything when nothing is active', () => {
     const ended = [adv({ id: 1, coordOwnerId: 'a' }), adv({ id: 2, coordOwnerId: 'b' })];
     expect(dedupeEndedAgainstActive(ended, []).map((r) => r.id)).toEqual([1, 2]);
+  });
+});
+
+describe('shouldProbePid (zombie detection eligibility, P-008)', () => {
+  const make = (over: Partial<PresenceRecord>) =>
+    mergeRosterEntries([presence({ host: 'box1', pid: 42, ...over })], new Map(), NOW)[0];
+
+  it('probes a same-host non-stale entry with a pid', () => {
+    expect(shouldProbePid(make({}), 'box1')).toBe(true);
+  });
+  it('probes a host-less (empty host) entry — assumed local', () => {
+    expect(shouldProbePid(make({ host: '' }), 'box1')).toBe(true);
+  });
+  it('skips a different host (can’t check, pid could collide)', () => {
+    expect(shouldProbePid(make({}), 'other-box')).toBe(false);
+  });
+  it('skips an entry with no pid', () => {
+    expect(shouldProbePid(make({ pid: null }), 'box1')).toBe(false);
+  });
+  it('skips a stale entry (already known-gone)', () => {
+    const e = make({ heartbeatAt: iso(NOW - STALE_MS - 1) });
+    expect(e.liveness).toBe('stale');
+    expect(shouldProbePid(e, 'box1')).toBe(false);
   });
 });

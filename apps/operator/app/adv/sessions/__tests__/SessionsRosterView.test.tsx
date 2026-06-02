@@ -8,7 +8,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
-import SessionsRosterView, { groupRoster, type RosterEntry } from '../SessionsRosterView';
+import SessionsRosterView, {
+  groupRoster,
+  buildFilesInPlay,
+  isZombie,
+  type RosterEntry,
+} from '../SessionsRosterView';
 
 function entry(over: Partial<RosterEntry> = {}): RosterEntry {
   return {
@@ -26,6 +31,7 @@ function entry(over: Partial<RosterEntry> = {}): RosterEntry {
     workspaceId: 'ws1',
     userId: null,
     revoked: false,
+    pidAlive: null,
     hasLaunchRecord: false,
     advSessionId: null,
     currentPlanSlug: null,
@@ -64,6 +70,40 @@ describe('groupRoster', () => {
   });
 });
 
+describe('isZombie', () => {
+  it('is a zombie only when non-stale AND pid confirmed dead', () => {
+    expect(isZombie({ liveness: 'live', pidAlive: false })).toBe(true);
+    expect(isZombie({ liveness: 'idle', pidAlive: false })).toBe(true);
+    expect(isZombie({ liveness: 'live', pidAlive: true })).toBe(false);
+    expect(isZombie({ liveness: 'live', pidAlive: null })).toBe(false); // unknown ≠ zombie
+    expect(isZombie({ liveness: 'stale', pidAlive: false })).toBe(false); // already gone
+  });
+});
+
+describe('buildFilesInPlay', () => {
+  it('inverts to file → agents, flags contention, sorts contended first', () => {
+    const active = [
+      entry({ ownerId: 'a', currentFiles: ['x.ts', 'y.ts'] }),
+      entry({ ownerId: 'b', currentFiles: ['x.ts'] }),
+      entry({ ownerId: 'c', currentFiles: ['z.ts'] }),
+    ];
+    const files = buildFilesInPlay(active);
+    expect(files[0].path).toBe('x.ts'); // contended → first
+    expect(files[0].contended).toBe(true);
+    expect(files[0].agents.map((a) => a.ownerId).sort()).toEqual(['a', 'b']);
+    const yz = files.filter((f) => !f.contended).map((f) => f.path);
+    expect(yz).toEqual(['y.ts', 'z.ts']); // single-agent files, path-sorted
+  });
+
+  it('de-dupes a file an agent declares twice (one agent, not contended)', () => {
+    const active = [entry({ ownerId: 'a', currentFiles: ['x.ts', 'x.ts'] })];
+    const files = buildFilesInPlay(active);
+    expect(files).toHaveLength(1);
+    expect(files[0].agents).toHaveLength(1);
+    expect(files[0].contended).toBe(false);
+  });
+});
+
 describe('SessionsRosterView', () => {
   const fetchMock = vi.fn();
   beforeEach(() => {
@@ -98,12 +138,18 @@ describe('SessionsRosterView', () => {
   });
 
   it('renders the plan group, presence-only group, intent + file chips, and the ended section', async () => {
-    const { findByText, getByText } = render(<SessionsRosterView planFilters={[]} workspaceId="ws1" />);
+    const { findByText, getByText, container } = render(
+      <SessionsRosterView planFilters={[]} workspaceId="ws1" />,
+    );
     await findByText('dbos-retire'); // plan group header
     expect(getByText('worker')).toBeTruthy(); // role chip
     expect(getByText('F-012')).toBeTruthy(); // feature chip
     expect(getByText('refactoring attempt-claim')).toBeTruthy(); // intent line
-    expect(getByText('attempt-claim.ts')).toBeTruthy(); // file basename chip
+    // file basename appears in the row chip (also in the files-in-play map) →
+    // assert via the row file-chip class specifically.
+    expect(
+      container.querySelector('.pc-roster__file-chip')?.textContent,
+    ).toContain('attempt-claim.ts');
     expect(getByText('Other active agents (presence-only)')).toBeTruthy();
     expect(getByText('(no declared intent)')).toBeTruthy(); // the idle agent with no intent
     expect(getByText('Recently ended')).toBeTruthy();

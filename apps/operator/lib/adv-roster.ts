@@ -15,6 +15,7 @@
  * and without a real clock (now is injected).
  */
 
+import os from 'node:os';
 import { listPresence, type PresenceRecord } from './agent-tools/coordination/presence';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
@@ -61,6 +62,13 @@ export interface RosterEntry {
   workspaceId: string;
   userId: string | null;
   revoked: boolean;
+  /**
+   * Is the OS process still alive? true/false only for same-host non-stale
+   * entries we could check; null = unknown (different host, no pid, or stale).
+   * A non-stale entry with pidAlive===false is a "zombie": fresh heartbeat but
+   * the process is gone (P-008).
+   */
+  pidAlive: boolean | null;
   // ── adv_sessions enrichment (null when no joinable launch row) ──
   hasLaunchRecord: boolean;
   advSessionId: number | null;
@@ -117,6 +125,7 @@ export function mergeRosterEntries(
       workspaceId: p.workspaceId,
       userId: p.userId,
       revoked: p.revoked,
+      pidAlive: null, // enriched by mergeRoster for same-host non-stale entries
       hasLaunchRecord: adv != null,
       advSessionId: adv?.id ?? null,
       currentPlanSlug: p.currentPlanSlug ?? adv?.planSlug ?? null,
@@ -133,9 +142,49 @@ export function mergeRosterEntries(
 }
 
 /**
+ * Whether a roster entry's OS process is worth a `process.kill(pid, 0)` probe:
+ * it must have a pid, be non-stale (a stale entry is already known-gone, and
+ * the probe would only add noise), and live on THIS host (a pid on another
+ * machine can't be checked — and could collide with an unrelated local pid).
+ * Pure → unit-tested; the probe itself stays in mergeRoster.
+ */
+export function shouldProbePid(entry: RosterEntry, localHost: string): boolean {
+  return (
+    entry.pid != null &&
+    entry.liveness !== 'stale' &&
+    (entry.host === '' || entry.host === localHost)
+  );
+}
+
+/** Is `pid` a live OS process? Signal 0 = existence check; EPERM = alive-not-ours. */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * Enrich same-host non-stale entries with `pidAlive` so the UI can flag
+ * zombies (fresh heartbeat, dead process). Mutates + returns `entries`.
+ * Cheap: a syscall per eligible entry, no actual signal sent.
+ */
+export function enrichPidLiveness(entries: RosterEntry[], localHost: string): RosterEntry[] {
+  for (const e of entries) {
+    if (shouldProbePid(e, localHost) && e.pid != null) {
+      e.pidAlive = isPidAlive(e.pid);
+    }
+  }
+  return entries;
+}
+
+/**
  * The live roster for a workspace (or all workspaces when workspaceId is
  * null/omitted). coord_presence primary + adv_sessions enrichment, liveness
- * derived from the heartbeat. The two reads run concurrently.
+ * derived from the heartbeat, pidAlive probed for same-host non-stale entries.
+ * The two reads run concurrently.
  */
 export async function mergeRoster(
   opts: { workspaceId?: string | null } = {},
@@ -145,5 +194,6 @@ export async function mergeRoster(
     advSessionsByCoordOwner(),
   ]);
   const presence = scopePresenceToWorkspace(presenceAll, opts.workspaceId ?? null);
-  return mergeRosterEntries(presence, advByOwner, Date.now());
+  const entries = mergeRosterEntries(presence, advByOwner, Date.now());
+  return enrichPidLiveness(entries, os.hostname());
 }
