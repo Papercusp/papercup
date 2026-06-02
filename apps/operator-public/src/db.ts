@@ -18,6 +18,7 @@ export interface HarnessRow {
   topic_hex: string;
   publisher_github_user_id: number;
   publisher_github_login: string;
+  publisher_permission: string | null;   // GitHub perm at publish: admin|maintain|write|triage|read|none; null = legacy/unknown
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
   claimant_github_user_id: number | null;
   claimant_github_login: string | null;
@@ -57,6 +58,7 @@ export interface NewHarnessInput {
   topic_hex: string;
   publisher_github_user_id: number;
   publisher_github_login: string;
+  publisher_permission?: string | null;
   created_at: number;
 }
 
@@ -66,10 +68,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       `INSERT INTO harnesses
          (id, github_repository_id, github_owner, github_name, github_url,
           title, description, topic_hex,
-          publisher_github_user_id, publisher_github_login,
+          publisher_github_user_id, publisher_github_login, publisher_permission,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -82,6 +84,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.topic_hex,
       h.publisher_github_user_id,
       h.publisher_github_login,
+      h.publisher_permission ?? null,
       h.created_at,
       h.created_at,
     )

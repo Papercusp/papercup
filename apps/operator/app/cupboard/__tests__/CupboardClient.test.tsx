@@ -71,3 +71,39 @@ describe('Cupboard HarnessCard — claim-status badge', () => {
     expect(screen.queryByTestId('claim-status-badge-unclaimed')).toBeNull();
   });
 });
+
+describe('Cupboard HarnessCard — publisher signal', () => {
+  it('flags a non-collaborator publisher (read-only perm)', () => {
+    render(
+      <HarnessCard
+        listing={listing({ publisher_permission: 'read' })}
+        onInstall={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    const sig = screen.getByTestId('cupboard-publisher-signal');
+    expect(sig.getAttribute('data-collaborator')).toBe('false');
+  });
+
+  it('marks a collaborator publisher (write perm)', () => {
+    render(
+      <HarnessCard
+        listing={listing({ publisher_permission: 'write' })}
+        onInstall={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-publisher-signal').getAttribute('data-collaborator')).toBe('true');
+  });
+
+  it('shows no signal when permission is unknown (legacy row)', () => {
+    render(
+      <HarnessCard
+        listing={listing({ publisher_permission: null })}
+        onInstall={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId('cupboard-publisher-signal')).toBeNull();
+  });
+});

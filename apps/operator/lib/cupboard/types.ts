@@ -96,6 +96,10 @@ export interface HarnessListing {
    * visible. v5 default: TRUE. */
   github_repo_must_be_public: boolean;
   published_by_github_user_id: number;
+  /** Publisher's GitHub permission on the bound repo at publish time —
+   *  'admin'|'maintain'|'write'|'triage'|'read'|'none'. Optional: Cupboard
+   *  servers predating migration 002 omit it (rendered as unknown). */
+  publisher_permission?: string | null;
   provisional_owner_github_user_id: number;
   claim_status: CupboardClaimStatus;
   claimed_at: number | null;
@@ -355,6 +359,11 @@ export function isHarnessListing(input: unknown): input is HarnessListing {
     typeof r.published_by_github_user_id !== 'number' ||
     typeof r.provisional_owner_github_user_id !== 'number'
   ) {
+    return false;
+  }
+  // publisher_permission is optional (servers predating migration 002 omit
+  // it). Accept missing/null/string; reject other types.
+  if (r.publisher_permission != null && typeof r.publisher_permission !== 'string') {
     return false;
   }
   if (

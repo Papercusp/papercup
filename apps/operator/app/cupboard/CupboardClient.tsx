@@ -17,7 +17,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle } from 'lucide-react';
 import type { HarnessListing } from '@/lib/cupboard/types';
 import { isPubliclyVisible } from '@/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../harness/theme';
@@ -283,6 +283,8 @@ export function HarnessCard({
         )}
       </div>
 
+      <PublisherSignal permission={listing.publisher_permission} />
+
       {/* Footer */}
       <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 4 }}>
         <button
@@ -329,6 +331,52 @@ function Stat({ icon, label }: { icon: React.ReactNode; label: string }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.ui }}>
       {icon}
       {label}
+    </div>
+  );
+}
+
+/** GitHub repo permission levels that mean the publisher is an actual
+ *  collaborator on the bound repo (not just a public-repo reader). */
+const PUBLISHER_COLLAB_ROLES = new Set(['admin', 'maintain', 'write', 'triage']);
+
+/**
+ * Trust signal: was this listing published by an actual repo collaborator,
+ * or by some GitHub user who merely can read a public repo? Provisional
+ * (unclaimed) listings are NOT ownership claims (see the
+ * cupboard-provisional-listing-trust memo), so the unverified case is
+ * flagged rather than hidden. `null`/undefined permission (legacy rows
+ * predating Cupboard migration 002) renders nothing.
+ */
+function PublisherSignal({ permission }: { permission?: string | null }) {
+  if (permission == null) return null;
+  const isCollaborator = PUBLISHER_COLLAB_ROLES.has(permission);
+  return (
+    <div
+      data-testid="cupboard-publisher-signal"
+      data-collaborator={isCollaborator ? 'true' : 'false'}
+      title={
+        isCollaborator
+          ? `Published by a repo collaborator (${permission} access).`
+          : 'Published by someone who is not a collaborator on this repo. A provisional listing is not an ownership claim.'
+      }
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        fontSize: 11,
+        fontFamily: FONTS.ui,
+        color: isCollaborator ? COLORS.textMuted : '#fbbf24',
+      }}
+    >
+      {isCollaborator ? (
+        <>
+          <ShieldCheck size={11} /> publisher: collaborator
+        </>
+      ) : (
+        <>
+          <AlertTriangle size={11} /> publisher: not a collaborator
+        </>
+      )}
     </div>
   );
 }

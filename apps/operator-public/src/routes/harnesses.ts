@@ -46,6 +46,26 @@ function uuidv4(): string {
   return (crypto as { randomUUID: () => string }).randomUUID();
 }
 
+/**
+ * Derive a single permission level from GitHub's repo `permissions`
+ * object (booleans), returned by GET /repos/:owner/:repo when fetched
+ * with a user token. Highest applicable wins. For a PUBLIC repo a
+ * non-collaborator still gets `pull: true` ⇒ 'read'; an actual
+ * collaborator gets push/maintain/admin. So 'read'/'none' ⇒ not a
+ * collaborator. Item 2 of the cupboard-provisional-listing-trust memo.
+ */
+export function derivePublisherPermission(
+  perms: Record<string, boolean> | undefined | null,
+): 'admin' | 'maintain' | 'write' | 'triage' | 'read' | 'none' {
+  if (!perms) return 'none';
+  if (perms.admin) return 'admin';
+  if (perms.maintain) return 'maintain';
+  if (perms.push) return 'write';
+  if (perms.triage) return 'triage';
+  if (perms.pull) return 'read';
+  return 'none';
+}
+
 export function harnessesRoute(): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
 
@@ -153,13 +173,22 @@ export function harnessesRoute(): Hono<{ Bindings: Env }> {
     if (!ghCheck.ok) {
       return c.json({ error: 'github_repo_unreachable', status: ghCheck.status }, 400);
     }
-    const repoMeta = (await ghCheck.json()) as { id?: number; private?: boolean };
+    const repoMeta = (await ghCheck.json()) as {
+      id?: number;
+      private?: boolean;
+      permissions?: Record<string, boolean>;
+    };
     if (repoMeta.private) {
       return c.json({ error: 'private_repo_rejected' }, 400);
     }
     if (repoMeta.id !== body.github_repository_id) {
       return c.json({ error: 'repository_id_mismatch', expected: repoMeta.id }, 400);
     }
+    // Publisher-permission signal (item 2): the repoMeta we just fetched
+    // with the publisher's token carries their permission booleans on the
+    // repo. Record the derived level so the browse card can show
+    // "collaborator" vs "not a collaborator" without re-hitting GitHub.
+    const publisher_permission = derivePublisherPermission(repoMeta.permissions);
 
     // Dedup: if a harness already exists for this repo_id, return it.
     const existing = await getHarnessByGithubRepoId(c.env.DB, body.github_repository_id);
@@ -184,6 +213,7 @@ export function harnessesRoute(): Hono<{ Bindings: Env }> {
       topic_hex: body.topic_hex,
       publisher_github_user_id: user.id,
       publisher_github_login: user.login,
+      publisher_permission,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

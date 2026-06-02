@@ -60,13 +60,14 @@ class FakeStore {
       // Bind order matches insertHarness() in db.ts.
       const [
         id, gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
-        pub_user_id, pub_login, created_at, updated_at,
+        pub_user_id, pub_login, pub_permission, created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push({
         id, github_repository_id: gh_repo_id, github_owner: gh_owner,
         github_name: gh_name, github_url: gh_url, title, description,
         topic_hex, publisher_github_user_id: pub_user_id,
-        publisher_github_login: pub_login, claim_status: 'unclaimed',
+        publisher_github_login: pub_login,
+        publisher_permission: pub_permission ?? null, claim_status: 'unclaimed',
         claimant_github_user_id: null, claimant_github_login: null,
         superseded_by: null, stars: 0, contributor_count: 0,
         last_activity_at: null, languages: null, stats_refreshed_at: null,
