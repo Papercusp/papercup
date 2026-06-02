@@ -167,6 +167,11 @@ import './locks/release';
 import './locks/heartbeat';
 import './locks/cancel_wait';
 import './locks/queue';
+// Named-resource locks with drain semantics — plan named-resource-locks-drain
+import './locks/acquire_resource';
+import './locks/release_resource';
+import './locks/heartbeat_resource';
+import './locks/list';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md
