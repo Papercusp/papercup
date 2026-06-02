@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Design captured from a coord-channel audit (2026-06-02), a follow-up to the shipped `named-resource-locks-drain-2026-06-02` plan. That plan solved the *lock-shaped* parallelism pain (stale-server tests, build clobbers, submodule owner-sync). This plan captures the recurring pain locks do NOT solve. No code written.
+**State:** Design captured + refined in review. Q1 CONFIRMED — remove the `lock_acquired` notify firehose at the source (D-002). "main-health" split into TWO concerns (D-005): Phase 3a = CODE health (is `main` green — tsc/test:affected → broadcast "main RED since X"); Phase 3b = SERVICE health (poll all dev endpoints, record up/down transitions, broadcast on a down). Neither Vite nor Tauri ships a health/metrics endpoint — probe Vite via HTTP-200 + HMR-ws, Tauri via the tauri-agent-tools bridge + IPC socket + toastLog. No code written.
 
-**Next:** human reviews scope + the open questions (notify source-removal vs opt-in, where main-health runs, native auto-apply yes/no, priority order) before implementation starts.
+**Next:** Resolve the remaining open questions — where the code-health monitor + service poller RUN and at what cadence (P-009), and native-migration auto-apply opt-in vs detection-only (P-007) — then implement Phase 1 (notify de-noise) first.
 
 ## Background — the audit
 
@@ -67,6 +67,26 @@ Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept del
 
 - **P-015** `needs-human` Human sign-off before considering this shipped. importance: urgent
 
+
+## Phase 3b — Service health (endpoints up)
+
+- **P-016** `todo` Endpoint registry: {name, url, probe-type} for the dev services — :3070 operator (HTTP 200 + build-info SHA), :3055 vite SPA (200 + HMR-ws), :4321 shop, :4848 zero-cache, :3350 scout, :3001 web, :8082 code-server, PG (dev:pg_health). Desktop has no HTTP health — see P-019. importance: high
+
+
+## Phase 3b — Service health (endpoints up)
+
+- **P-017** `todo` Poller: probe each registered endpoint on an interval; record up/down transitions (+ latency) in a `service_health` PG table (transitions, not every tick — avoid a new firehose). blocked-by: P-016
+
+
+## Phase 3b — Service health (endpoints up)
+
+- **P-018** `todo` Broadcast a coord message on a DOWN transition (and recovery) + surface current status in /coord. Use the message channel, NOT notify (Phase 1 just killed the notify firehose — don't recreate it). blocked-by: P-017
+
+
+## Phase 3b — Service health (endpoints up)
+
+- **P-019** `todo` Desktop/Tauri health (no built-in HTTP health): probe via the existing tauri-agent-tools dev bridge (webview up + JS eval) + the Tauri↔sidecar IPC unix socket (alive = healthy) + toastLog.recent (recent error toasts = unhealthy). blocked-by: P-016
+
 ## Decisions
 
 ### D-001 — Separate plan from the locks work
@@ -84,6 +104,22 @@ Native `:5432` is a dev-box convenience; embedded-pg is the ship-target source o
 ### D-004 — main-health informs, doesn't gate
 Date: 2026-06-02
 The repo deliberately runs a loose shared-commit model (`--no-verify`, commit-packages-whole-tree). A hard pre-commit gate fights that. So main-health is a MONITOR that broadcasts breakage to coord; any pre-commit gate stays opt-in for the breaker (P-010).
+
+
+### D-005 — "main-health" is two distinct concerns — keep both (code-green vs services-up)
+Date: 2026-06-02
+My original "main-health" conflated two things; user's reframe splits them cleanly:
+
+(A) CODE health — is committed `main` green (tsc / test:affected)? This is the audit's 19 "broken-main" messages. Phase 3a (P-008/P-010): a monitor that broadcasts `main RED since <commit>`.
+
+(B) SERVICE health — are the running endpoints up? Per user: poll all relevant endpoints on an interval, record up/down transitions, broadcast on a down. Phase 3b (P-016–P-019). Endpoints to register: :3070 operator (+ the Phase-4 build-info SHA), :3055 vite SPA, :4321 shop, :4848 zero-cache, :3350 scout, :3001 web, :8082 code-server, and PG (via the existing dev:pg_health).
+
+Built-in metrics question — neither ships a real health/metrics endpoint:
+- Vite: no `/health` or metrics route. Liveness = HTTP 200 on `/` + HMR-WebSocket connectivity. Note Vite DOES hot-reload, so "stale code" isn't its failure mode (that's the no-hot-reload :3070 Hono host — covered by the build-info SHA, Phase 4).
+- Tauri: no HTTP health endpoint (it's a desktop shell). Use the EXISTING `tauri-agent-tools` dev bridge (webview-up + JS-eval health), the Tauri↔sidecar IPC unix socket (alive = link healthy), and `toastLog.recent` / `notifications:recent` (recent error toasts = unhealthy UI).
+
+Build on the existing dev:pg_health / dev:processes / dev:build_status / notifications:recent / toastLog.recent surfaces rather than re-rolling probes.
+Related: P-008
 
 ## Open questions
 - **Notify** — confirm source-removal of `lock_acquired` (D-002) vs keeping it but never injecting. Lean: remove at source.
