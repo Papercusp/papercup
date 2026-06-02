@@ -306,6 +306,15 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);
     }
 
+    // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
+    // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
+    // and the lock hooks read the same var, so a session's interactive calls
+    // and its hooks share ONE owner — and two concurrent psu sessions get
+    // distinct owners (the collapse the per-session id fixes). Minted BEFORE the
+    // adv_sessions row so it's recorded as coord_owner_id — the live-roster join
+    // key to coord_presence.owner_id (adv-sessions-live-roster P-001).
+    const sid = `su-${randomUUID()}`;
+
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,
@@ -314,14 +323,9 @@ const post = defineTool({
       mode: agent === 'omp' ? 'omp' : 'console',
       cwd,
       label: body.label?.trim() || null,
+      coordOwnerId: sid,
     });
 
-    // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
-    // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
-    // and the lock hooks read the same var, so a session's interactive calls
-    // and its hooks share ONE owner — and two concurrent psu sessions get
-    // distinct owners (the collapse the per-session id fixes).
-    const sid = `su-${randomUUID()}`;
     const sessionKey = sessionId ?? `t-${randomUUID()}`;
 
     // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)

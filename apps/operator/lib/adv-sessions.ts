@@ -34,6 +34,10 @@ export interface AdvSessionRow {
   ompThreadId: string | null;
   label: string | null;
   cwd: string | null;
+  /** The coord identity (PAPERCUSP_SID) baked into the session env — the
+   *  join key to coord_presence.owner_id for the live roster. null for
+   *  console launches and pre-existing rows (no SID minted at record time). */
+  coordOwnerId: string | null;
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
@@ -54,6 +58,9 @@ export interface RecordOpts {
   label?: string | null;
   ompThreadId?: string | null;
   cwd?: string | null;
+  /** The coord owner_id (PAPERCUSP_SID) for this session — the live-roster
+   *  join key to coord_presence. Set by the psu launcher; omit for console. */
+  coordOwnerId?: string | null;
 }
 
 export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
@@ -78,6 +85,7 @@ function mapAdvSessionRow(r: {
   omp_thread_id: string | null;
   label: string | null;
   cwd: string | null;
+  coord_owner_id: string | null;
   started_at: string | Date;
   ended_at: string | Date | null;
   exit_code: number | null;
@@ -95,6 +103,7 @@ function mapAdvSessionRow(r: {
     windowId: r.window_id,
     ompThreadId: r.omp_thread_id,
     cwd: r.cwd,
+    coordOwnerId: r.coord_owner_id ?? null,
     label: r.label,
     startedAt: toIsoTimestamp(r.started_at)!,
     endedAt: toIsoTimestamp(r.ended_at),
@@ -108,12 +117,12 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd)
+        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id)
       VALUES
         (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
          ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
-         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null})
+         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null})
       RETURNING id
     `;
     return rows[0]?.id ?? null;
@@ -232,12 +241,13 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       omp_thread_id: string | null;
       label: string | null;
       cwd: string | null;
+      coord_owner_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND NOT (
@@ -280,12 +290,13 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
       omp_thread_id: string | null;
       label: string | null;
       cwd: string | null;
+      coord_owner_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
@@ -317,12 +328,13 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       omp_thread_id: string | null;
       label: string | null;
       cwd: string | null;
+      coord_owner_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}
@@ -335,6 +347,60 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
     console.warn('[adv-sessions] getAdvSession failed:', (e as Error).message);
     return null;
   }
+}
+
+/**
+ * adv_sessions keyed by coord_owner_id — the enrichment side of the live-roster
+ * join (coord_presence.owner_id = adv_sessions.coord_owner_id; D-002). Returns
+ * a Map so mergeRoster() can look up each presence row's launch metadata in O(1).
+ *
+ * Deliberately NOT workspace-scoped: coord_owner_id (the session SID) is
+ * globally unique, and a presence row's workspace ('*' for an unscoped SU
+ * shell) need not equal its adv row's concrete workspace — scoping here would
+ * silently drop valid joins. Most-recent row wins per owner (a SID is minted
+ * per launch, so collisions are not expected; the guard is belt-and-suspenders).
+ * adv-sessions-live-roster P-002.
+ */
+export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, AdvSessionRow>> {
+  const out = new Map<string, AdvSessionRow>();
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{
+      id: number;
+      workspace_id: string;
+      plan_slug: string | null;
+      agent: string | null;
+      role: string | null;
+      feature: string | null;
+      mode: 'omp' | 'console';
+      terminal_bin: string | null;
+      pid: number | null;
+      window_id: string | null;
+      omp_thread_id: string | null;
+      label: string | null;
+      cwd: string | null;
+      coord_owner_id: string | null;
+      started_at: string | Date;
+      ended_at: string | Date | null;
+      exit_code: number | null;
+    }>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT ${limit}
+    `;
+    for (const r of rows) {
+      const mapped = mapAdvSessionRow(r);
+      // ORDER BY started_at DESC → first seen per owner is the most recent.
+      if (mapped.coordOwnerId && !out.has(mapped.coordOwnerId)) out.set(mapped.coordOwnerId, mapped);
+    }
+  } catch (e) {
+    console.warn('[adv-sessions] advSessionsByCoordOwner failed:', (e as Error).message);
+  }
+  return out;
 }
 
 /**

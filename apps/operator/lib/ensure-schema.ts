@@ -97,6 +97,8 @@ type _G = {
     advSessionsCwd: boolean;
     advSessionsAgent: boolean;
     advSessionsRole: boolean;
+    advSessionsCoordOwner: boolean;
+    harnessPlanAssertions: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -170,6 +172,7 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   advSessionsCwd: false,
   advSessionsAgent: false,
   advSessionsRole: false,
+  advSessionsCoordOwner: false,
   harnessPlanAssertions: false,
 });
 
@@ -1963,7 +1966,7 @@ export async function ensureBackupTables(): Promise<void> {
  * Canonical SQL: libs/papercusp/libs/db/sql/079-adv-sessions.sql.
  */
 export async function ensureAdvSessionsTable(): Promise<void> {
-  if (flags.advSessions && flags.advSessionsCwd && flags.advSessionsAgent && flags.advSessionsRole) return;
+  if (flags.advSessions && flags.advSessionsCwd && flags.advSessionsAgent && flags.advSessionsRole && flags.advSessionsCoordOwner) return;
   const { sql } = getOrgPg();
   await sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
@@ -2002,11 +2005,21 @@ export async function ensureAdvSessionsTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS adv_sessions_plan_idx
       ON harness_shared.adv_sessions(plan_slug, started_at DESC)
       WHERE plan_slug IS NOT NULL;
+    -- coord_owner_id: the PAPERCUSP_SID the psu launcher bakes into the session
+    -- (su-<uuid> / role-<uuid>) = the deterministic join key to
+    -- coord_presence.owner_id for the live roster. NULL for console/legacy rows.
+    -- Mirrors sql/106-adv-sessions-coord-owner.sql. (adv-sessions-live-roster D-001)
+    ALTER TABLE harness_shared.adv_sessions
+      ADD COLUMN IF NOT EXISTS coord_owner_id TEXT NULL;
+    CREATE INDEX IF NOT EXISTS adv_sessions_coord_owner_idx
+      ON harness_shared.adv_sessions(coord_owner_id)
+      WHERE coord_owner_id IS NOT NULL;
   `);
   flags.advSessions = true;
   flags.advSessionsCwd = true;
   flags.advSessionsAgent = true;
   flags.advSessionsRole = true;
+  flags.advSessionsCoordOwner = true;
 }
 
 /**

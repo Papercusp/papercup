@@ -182,6 +182,12 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: e?.message ?? 'role launch spec build failed' }, 400);
     }
 
+    // Per-session coord/lock owner (P-022) — minted BEFORE the adv_sessions row
+    // so it's stored as coord_owner_id, the live-roster join key to
+    // coord_presence.owner_id (adv-sessions-live-roster P-001). The lock hooks +
+    // the session's MCP calls share this one owner via PAPERCUSP_SID (below).
+    const sid = `role-${randomUUID()}`;
+
     // Record the tracked session first so the prompt/mcp files key off its id.
     const sessionId = await recordAdvSession({
       workspaceId: workspace,
@@ -192,6 +198,7 @@ const post = defineTool({
       mode: agent === 'omp' ? 'omp' : 'console',
       cwd: spec.cwd,
       label: feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role),
+      coordOwnerId: sid,
     });
 
     // Materialize the launch artifacts. claude/omp consume a `.mcp.json` +
@@ -281,8 +288,8 @@ const post = defineTool({
         // P-022: per-session coord/lock owner. The lock hooks (claude
         // user-level; codex in the role home's settings.json) read this, so a
         // session's calls + hooks share one owner and concurrent sessions
-        // don't collide.
-        PAPERCUSP_SID: `role-${randomUUID()}`,
+        // don't collide. Same value recorded as adv_sessions.coord_owner_id.
+        PAPERCUSP_SID: sid,
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...(feature ? { PAPERCUSP_FEATURE_ID: feature } : {}),
         ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),

@@ -1,0 +1,146 @@
+/**
+ * adv-roster.ts — the live "who's active, on what" roster for the /adv
+ * Sessions view (plan adv-sessions-live-roster-2026-06-02, P-002).
+ *
+ * coord_presence is the PRIMARY roster: every active psu agent heartbeats on
+ * each tool call (commit d33d07837), so it carries liveness + intent +
+ * current_files for the whole fleet — plan-tied and ad-hoc alike. adv_sessions
+ * is the ENRICHMENT (plan/role/feature + terminal handles for Focus/Resume),
+ * LEFT-joined on coord_owner_id = coord_presence.owner_id (D-001/D-002). An
+ * agent with no adv_sessions row (a plain SU shell) still appears; a plan-tied
+ * one gets the richer metadata.
+ *
+ * The DB I/O is a thin wrapper (`mergeRoster`); the merge + liveness logic is
+ * pure (`mergeRosterEntries` / `deriveLiveness`) so it unit-tests without PG
+ * and without a real clock (now is injected).
+ */
+
+import { listPresence, PRESENCE_STALE_MS, type PresenceRecord } from './agent-tools/coordination/presence';
+import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
+
+/** A presence row whose workspace is '*' is workspace-agnostic (an unscoped
+ *  SU/engineer shell) — it belongs to every workspace's roster. */
+export const GLOBAL_WORKSPACE = '*';
+
+/** Heartbeat younger than this = "live" (a tool call within the last minute). */
+export const LIVE_MS = 60_000;
+
+export type Liveness = 'live' | 'idle' | 'stale';
+
+/**
+ * Derive liveness from the heartbeat age. "idle" means no recent tool call
+ * (the agent may be mid-reasoning), NOT gone — the heartbeat only fires on tool
+ * boundaries. Thresholds: live < LIVE_MS · idle < PRESENCE_STALE_MS · else stale.
+ */
+export function deriveLiveness(heartbeatAtIso: string, nowMs: number): Liveness {
+  const age = nowMs - new Date(heartbeatAtIso).getTime();
+  if (age < LIVE_MS) return 'live';
+  if (age < PRESENCE_STALE_MS) return 'idle';
+  return 'stale';
+}
+
+/** One agent in the live roster: presence (primary) + adv_sessions enrichment. */
+export interface RosterEntry {
+  // ── presence (always present — the primary roster) ──
+  ownerId: string;
+  label: string;
+  /** client/source: claude · codex · omp · … */
+  source: string;
+  intent: string;
+  currentFiles: string[];
+  host: string;
+  pid: number | null;
+  startedAt: string;
+  heartbeatAt: string;
+  liveness: Liveness;
+  /** The coord-store's own stale flag (heartbeat older than PRESENCE_STALE_MS). */
+  stale: boolean;
+  workspaceId: string;
+  userId: string | null;
+  revoked: boolean;
+  // ── adv_sessions enrichment (null when no joinable launch row) ──
+  hasLaunchRecord: boolean;
+  advSessionId: number | null;
+  /** Live plan (presence) preferred; falls back to the launch-time plan. */
+  currentPlanSlug: string | null;
+  role: string | null;
+  feature: string | null;
+  agent: string | null;
+  mode: 'omp' | 'console' | null;
+  windowId: string | null;
+  ompThreadId: string | null;
+  cwd: string | null;
+  launchStartedAt: string | null;
+}
+
+/**
+ * Filter a presence list to a workspace's roster: rows in that workspace PLUS
+ * the workspace-agnostic '*' rows (unscoped SU shells). A null workspaceId =
+ * the "All" scope → every row.
+ */
+export function scopePresenceToWorkspace(
+  presence: PresenceRecord[],
+  workspaceId: string | null | undefined,
+): PresenceRecord[] {
+  if (workspaceId == null) return presence;
+  return presence.filter(
+    (p) => p.workspaceId === workspaceId || p.workspaceId === GLOBAL_WORKSPACE,
+  );
+}
+
+/**
+ * Pure merge: presence rows (primary) LEFT-joined to adv_sessions by owner id.
+ * Order is preserved (listPresence already returns newest-heartbeat-first).
+ */
+export function mergeRosterEntries(
+  presence: PresenceRecord[],
+  advByOwner: Map<string, AdvSessionRow>,
+  nowMs: number,
+): RosterEntry[] {
+  return presence.map((p) => {
+    const adv = advByOwner.get(p.ownerId) ?? null;
+    return {
+      ownerId: p.ownerId,
+      label: p.ownerLabel,
+      source: p.source,
+      intent: p.intent,
+      currentFiles: p.currentFiles,
+      host: p.host,
+      pid: p.pid,
+      startedAt: p.startedAt,
+      heartbeatAt: p.heartbeatAt,
+      liveness: deriveLiveness(p.heartbeatAt, nowMs),
+      stale: p.stale,
+      workspaceId: p.workspaceId,
+      userId: p.userId,
+      revoked: p.revoked,
+      hasLaunchRecord: adv != null,
+      advSessionId: adv?.id ?? null,
+      currentPlanSlug: p.currentPlanSlug ?? adv?.planSlug ?? null,
+      role: adv?.role ?? null,
+      feature: adv?.feature ?? null,
+      agent: adv?.agent ?? null,
+      mode: adv?.mode ?? null,
+      windowId: adv?.windowId ?? null,
+      ompThreadId: adv?.ompThreadId ?? null,
+      cwd: adv?.cwd ?? null,
+      launchStartedAt: adv?.startedAt ?? null,
+    };
+  });
+}
+
+/**
+ * The live roster for a workspace (or all workspaces when workspaceId is
+ * null/omitted). coord_presence primary + adv_sessions enrichment, liveness
+ * derived from the heartbeat. The two reads run concurrently.
+ */
+export async function mergeRoster(
+  opts: { workspaceId?: string | null } = {},
+): Promise<RosterEntry[]> {
+  const [presenceAll, advByOwner] = await Promise.all([
+    listPresence(),
+    advSessionsByCoordOwner(),
+  ]);
+  const presence = scopePresenceToWorkspace(presenceAll, opts.workspaceId ?? null);
+  return mergeRosterEntries(presence, advByOwner, Date.now());
+}
