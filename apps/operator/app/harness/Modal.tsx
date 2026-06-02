@@ -2,6 +2,7 @@
 
 import * as Dialog from '@radix-ui/react-dialog';
 import type { CSSProperties, ReactNode } from 'react';
+import './Modal.css';
 
 const OVERLAY_STYLE: CSSProperties = {
   position: 'fixed',
@@ -134,7 +135,7 @@ export function Modal({
         <div style={wrap}>
           <Dialog.Content
             aria-modal={modal ? 'true' : undefined}
-            className={contentClassName}
+            className={contentClassName ? `pc-modal-content ${contentClassName}` : 'pc-modal-content'}
             data-anim="pop"
             style={content}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}
