@@ -4,8 +4,7 @@
 // Two modes:
 //   - desktop (Tauri shell injects __TAURI_INTERNALS__): use the native
 //     commands, which also kill the sidecar + per-workspace PG backend
-//     (embedded-postgres-server by default, or pglite-server in legacy
-//     mode) on switch.
+//     (embedded-postgres-server) on switch.
 //   - webapp (no Tauri runtime): fall back to the operator's
 //     /api/workspaces HTTP endpoints, which write the same registry.json
 //     and let papercuspRoot() pick up the change on its next call.

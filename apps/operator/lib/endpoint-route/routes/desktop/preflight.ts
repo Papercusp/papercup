@@ -121,21 +121,8 @@ async function checkPostgres(): Promise<Check> {
       socket.connect(port, '127.0.0.1');
     });
   }
-  // Legacy desktop path: pglite-server on a unix socket.
-  if (process.env.PAPERCUSP_USE_PGLITE === '1') {
-    const socketDir = process.env.PAPERCUSP_PGLITE_SOCKET_DIR;
-    if (socketDir && existsSync(`${socketDir}/.s.PGSQL.5432`)) {
-      return { name: 'postgres', status: 'ok', detail: `pglite (${socketDir})` };
-    }
-    return {
-      name: 'postgres',
-      status: 'missing',
-      detail: socketDir
-        ? `pglite socket not yet bound at ${socketDir}`
-        : 'PAPERCUSP_USE_PGLITE=1 but PAPERCUSP_PGLITE_SOCKET_DIR unset',
-      hint: 'pglite-server may still be starting; reload in a few seconds.',
-    };
-  }
+  // Dev-box / external-PG path: probe native Postgres on 127.0.0.1:5432
+  // (the embedded-PG path above is the shipping path).
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let settled = false;

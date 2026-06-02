@@ -4,7 +4,7 @@
  * Updates registry.json's `current` field and fans the workspace-switch
  * hook so the leaving workspace's in-memory state is dropped. The desktop
  * shell uses the `workspaces_switch` Tauri command instead (it also kills
- * the sidecar + pglite-server first).
+ * the sidecar + embedded-postgres-server first).
  *
  * Ported from app/api/workspaces/switch/route.ts. `auth: 'public'`.
  */

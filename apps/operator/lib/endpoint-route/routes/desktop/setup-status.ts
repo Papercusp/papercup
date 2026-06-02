@@ -5,7 +5,6 @@
  *
  * Ported from app/api/desktop/setup-status/route.ts. `auth: {}`.
  */
-import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
@@ -37,7 +36,6 @@ const exec = promisify(execFile);
 
 async function probePostgres(): Promise<boolean> {
   const useEmbedded = process.env.PAPERCUSP_USE_EMBEDDED_PG === '1';
-  const usePglite = process.env.PAPERCUSP_USE_PGLITE === '1';
   let result: boolean;
   let reason: string;
   if (useEmbedded) {
@@ -48,10 +46,6 @@ async function probePostgres(): Promise<boolean> {
     }
     result = await tcpReachable('127.0.0.1', port);
     reason = `embedded port=${port}`;
-  } else if (usePglite) {
-    const socketDir = process.env.PAPERCUSP_PGLITE_SOCKET_DIR;
-    result = Boolean(socketDir && existsSync(`${socketDir}/.s.PGSQL.5432`));
-    reason = `pglite dir=${socketDir ?? '<unset>'}`;
   } else {
     result = await tcpReachable('127.0.0.1', 5432);
     reason = 'native :5432';

@@ -10,7 +10,7 @@
 // also force-check by clicking the chip.
 //
 // One-click install: invokes `install_update`, which:
-//   1. kills the sidecar + pglite-server (no orphans)
+//   1. kills the sidecar + embedded-postgres-server (no orphans)
 //   2. downloads the platform tarball, verifies the minisign signature
 //      against the pubkey embedded in tauri.conf.json
 //   3. atomically swaps the binary

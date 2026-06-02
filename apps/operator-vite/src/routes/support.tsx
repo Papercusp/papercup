@@ -116,7 +116,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
             <strong>Per project</strong>: <code>rm -rf ~/.papercusp/projects/&lt;name&gt;</code>. The project's database schema (<code>harness_&lt;name&gt;</code>) stays — drop it manually with <code>papercusp scaffold-schema --drop &lt;name&gt;</code> if you want a clean slate.
           </li>
           <li>
-            <strong>Full reset</strong>: <code>rm -rf ~/.papercusp/</code> (loses all projects, credentials, marketplace cache). The Postgres data is separate; if you're using pglite-mode, also remove <code>~/.papercusp/pglite-data</code>.
+            <strong>Full reset</strong>: <code>rm -rf ~/.papercusp/</code> (loses all projects, credentials, marketplace cache). The embedded Postgres data is separate — also remove <code>~/.papercusp/embedded-pg-data</code>.
           </li>
         </ul>
       </>
