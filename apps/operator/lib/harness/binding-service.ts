@@ -51,7 +51,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h per memo §"resolve cached"
 
 // ── PG row → BindingRecord ──────────────────────────────────────
 
-type SrbcRow = {
+export type SrbcRow = {
   workspace_id: string;
   provider: 'github';
   github_repository_id: number;
@@ -64,14 +64,26 @@ type SrbcRow = {
   provisional_owner_github_user_id: number;
   provisional_owner_github_login: string;
   claimed_by_github_user_ids: number[];
-  created_at: Date;
-  claimed_at: Date | null;
-  last_permission_verified_at: Date | null;
+  // getOrgPg (postgres-js 3.4.9) returns timestamptz columns as Postgres-text
+  // STRINGS ("2026-06-02 08:12:44.631-04"), not Date — so these are `Date |
+  // string` in practice. rowToBinding normalizes via `toIso`.
+  created_at: Date | string;
+  claimed_at: Date | string | null;
+  last_permission_verified_at: Date | string | null;
   superseded_by_harness_topic: string | null;
-  cached_at: Date;
+  cached_at: Date | string;
 };
 
-function rowToBinding(r: SrbcRow): BindingRecord {
+/**
+ * Normalize a timestamp column to an ISO-8601 string. getOrgPg yields
+ * Postgres-text strings for timestamptz (not Date); `new Date(x)` parses that
+ * format, an ISO string, an existing Date, and an epoch number alike.
+ */
+function toIso(v: Date | string | number): string {
+  return new Date(v).toISOString();
+}
+
+export function rowToBinding(r: SrbcRow): BindingRecord {
   const out: BindingRecord = {
     provider: r.provider,
     github_repository_id: Number(r.github_repository_id),
@@ -84,11 +96,11 @@ function rowToBinding(r: SrbcRow): BindingRecord {
     provisional_owner_github_user_id: Number(r.provisional_owner_github_user_id),
     provisional_owner_github_login: r.provisional_owner_github_login ?? '',
     claimed_by_github_user_ids: (r.claimed_by_github_user_ids ?? []).map(Number),
-    created_at: r.created_at.toISOString(),
+    created_at: toIso(r.created_at),
   };
-  if (r.claimed_at) out.claimed_at = r.claimed_at.toISOString();
+  if (r.claimed_at) out.claimed_at = toIso(r.claimed_at);
   if (r.last_permission_verified_at) {
-    out.last_permission_verified_at = r.last_permission_verified_at.toISOString();
+    out.last_permission_verified_at = toIso(r.last_permission_verified_at);
   }
   if (r.superseded_by_harness_topic) {
     out.superseded_by_harness_topic = r.superseded_by_harness_topic;
