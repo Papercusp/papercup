@@ -50,6 +50,7 @@ async function main() {
   const container = await new PostgreSqlContainer('pgvector/pgvector:pg16')
     .withDatabase('papercusp').withUsername('superuser').withPassword('superuser').start();
   const dsn = `postgresql://superuser:superuser@${container.getHost()}:${container.getPort()}/papercusp`;
+  const appDsn = `postgresql://harness_app:harness_app_pwd@${container.getHost()}:${container.getPort()}/papercusp`;
 
   try {
     const sql = postgres(dsn, { max: 1, onnotice: () => {} });
@@ -106,10 +107,33 @@ async function main() {
         fail(`only ${reactive} emit_change_notify_trg triggers — reactivity triggers missing from the migration set (see migration 107)`);
       }
 
-      console.log('[verify-baseline] ✅ GATE GREEN — migration set alone builds the full schema (+ reactivity triggers), idempotently.');
+      // Schemas + grants were ALSO diff-gate blind spots (the reference dump was scoped to
+      // 2 schemas + --no-privileges). Migration 109 closed them; assert here so they can't reopen.
+      const schemas = await sql.unsafe(
+        `SELECT nspname FROM pg_namespace WHERE nspname = ANY($1)`,
+        [['harness_shared', 'papercup_shared', 'papercusp_auth', 'audit']],
+      );
+      const got = schemas.map((r: { nspname: string }) => r.nspname).sort();
+      console.log(`[verify-baseline] core global schemas: ${got.join(', ')}`);
+      if (got.length < 4) fail(`missing core schemas — have [${got.join(', ')}], need harness_shared/papercup_shared/papercusp_auth/audit (migration 109)`);
     } finally {
       await sql.end({ timeout: 5 });
     }
+
+    // Grants: connect AS harness_app (the runtime app role) and confirm it can actually
+    // read/write — a fresh boot must not leave the app role locked out (migration 109 Part B).
+    const app = postgres(appDsn, { max: 1, onnotice: () => {} });
+    try {
+      await app.unsafe(`SELECT count(*) FROM harness_shared.harness_features_consolidated`);
+      await app.unsafe(`SELECT count(*) FROM papercusp_auth.users`);
+      console.log('[verify-baseline] harness_app can SELECT harness_shared + papercusp_auth ✓ (grants present)');
+    } catch (e) {
+      fail(`harness_app cannot access tables (grant gap — migration 109 Part B): ${(e as Error).message.split('\n')[0]}`);
+    } finally {
+      await app.end({ timeout: 5 });
+    }
+
+    console.log('[verify-baseline] ✅ GATE GREEN — migration set alone builds the full schema (+ triggers, schemas, grants), idempotently.');
   } finally {
     await container.stop();
   }
