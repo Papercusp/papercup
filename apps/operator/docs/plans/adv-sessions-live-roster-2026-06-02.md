@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Draft — architecture + UI settled with the human (2026-06-02). Sessions becomes the **third view in the combined Plans/Inbox shell** (Plans · Inbox · Sessions), reusing the left plan rail as a filter; it stops being a standalone `?tab=sessions` peer. Roster is presence-primary (every active agent), rich multi-line rows, and the No-plan / presence-only groups are always shown. The one remaining open input is D-001 (the join column); everything else is decided.
+**State:** Phase 1 shipped (P-001 + P-002). `coord_owner_id` is on `adv_sessions` (migration 106 + runtime DDL, applied to the dev box), threaded through adv-sessions.ts, and recorded by both psu launchers (bootstrap-su `su-<uuid>`, bootstrap-role `role-<uuid>`). `mergeRoster()` (apps/operator/lib/adv-roster.ts) joins coord_presence (primary) ← adv_sessions on coord_owner_id and derives liveness; pure core has 9 unit tests; the LEFT JOIN is validated live. New launches populate the join after the next operator restart (the :3070 host has no hot-reload; the column already exists, so existing sessions just show null enrichment until relaunched — expected per D-001).
 
-**Next:** Human signs off on D-001 (`coord_owner_id` on `adv_sessions`); then Phase 1 (P-001) begins.
+**Next:** Phase 2 — P-003: the merged roster endpoint (extend GET /api/adv/sessions or add GET /api/adv/roster) consuming mergeRoster() + recent ended sessions; then P-009 enrichment.
 
 ## Background
 
@@ -103,8 +103,8 @@ RAIL (shared) │ Plans │ Inbox │ *Sessions               │ AGENT DETAIL
 
 ## Phase 1 — Data join + presence merge
 
-- **P-001** `todo` Add `coord_owner_id TEXT` to harness_shared.adv_sessions (SQL migration in libs/papercusp/libs/db/sql + ensure-schema). Set it in the psu launcher's recordAdvSession to the PAPERCUSP_SID it exports → deterministic adv_sessions ↔ coord_presence join. (D-001) importance: high
-- **P-002** `todo` Build mergeRoster(): coord_presence as the primary live roster (current-workspace-scoped) LEFT JOIN adv_sessions on coord_owner_id for plan/role/feature/history; derive liveness (live<60s / idle<PRESENCE_STALE_MS / stale) from heartbeat_at. Needs P-001. (D-002) importance: high
+- **P-001** `done` Add `coord_owner_id TEXT` to harness_shared.adv_sessions (SQL migration in libs/papercusp/libs/db/sql + ensure-schema). Set it in the psu launcher's recordAdvSession to the PAPERCUSP_SID it exports → deterministic adv_sessions ↔ coord_presence join. (D-001) importance: high (migration 106 + ensureAdvSessionsTable column; coordOwnerId threaded through adv-sessions.ts; bootstrap-su/role record the SID. Commits 29895bf80 / 7a3702c.)
+- **P-002** `done` Build mergeRoster(): coord_presence as the primary live roster (current-workspace-scoped) LEFT JOIN adv_sessions on coord_owner_id for plan/role/feature/history; derive liveness (live<60s / idle<PRESENCE_STALE_MS / stale) from heartbeat_at. Needs P-001. (D-002) importance: high (adv-roster.ts: mergeRoster + pure core deriveLiveness/scopePresenceToWorkspace/mergeRosterEntries + advSessionsByCoordOwner helper; 9 unit tests green. Commit 29895bf80.)
 
 ## Phase 2 — Endpoint (merged roster + enrichment)
 
