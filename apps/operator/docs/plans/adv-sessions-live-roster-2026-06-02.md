@@ -1,7 +1,7 @@
 ---
 title: Sessions view — live all-psu-agent roster (heartbeat-backed)
 slug: adv-sessions-live-roster-2026-06-02
-status: draft
+status: shipped
 created: 2026-06-02
 updated: 2026-06-02
 owner: avi@storewolf.com
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** ALL items shipped (P-001–P-010). Phase 4 landed 2026-06-02 by session b12ae8e7's successor: P-009 lazy Tier-3 dossier endpoint GET /api/adv/roster/agent (locks held+waiting+blockers via readQueue; coord last-message/unread/handoffs/escalations) — 956744a96; P-007 AgentDossier pane + ?agent= nuqs selection in PlansClient, Tier-1/2 from the entry + lazy Tier-3, files cross-marked L/W, works for presence-only + departed agents — 04e1c438a; P-008 buildFilesInPlay inverse map + contention sort + server pidAlive probe → isZombie row/file markers — 1e6ff172e; P-010 client/liveness/role/who's-editing-file filters (4 nuqs params) + design-token alignment (real --fg/--surface/--border) + idle≠gone tooltip + empty states — df007b31a. Verification: 57 adv-sessions unit/component tests green; operator + operator-vite typecheck clean on every touched file; live data-source shapes confirmed non-disruptively (locks:queue → QueueResult, coord:handoffs → HandoffWithAcceptance[]). Also fixed two same-plan regressions surfaced by the affected walker: route import-timeout flake (lazy-imported getAgentDetail) and the stale operator-vite adv-shell-logic test still asserting a Sessions AdvShell tab P-005 removed (c5b010e7c). The SPA (:3055 Vite) hot-reloads the UI already; the P-009 route + pidAlive enrichment are :3070-host code with no hot-reload, so they go live on the NEXT :3070 restart (NOT done unilaterally — 159 agents are active on :3070).
+**State:** COMPLETE — all items P-001–P-010 shipped, tested, and live-render-verified. Phase 4 (P-007 dossier pane, P-008 files-in-play + zombie markers, P-009 lazy Tier-3 locks+coord endpoint, P-010 filters + design-token pass) landed 2026-06-02 (commits 956744a96 / 04e1c438a / 1e6ff172e / df007b31a; verification fixes c5b010e7c). Verification done: (1) 57 adv-sessions unit/component tests green, re-confirmed after the concurrent migration-baseline (ensure-schema deletion) churn; (2) operator + operator-vite typecheck clean on every touched file; (3) live data-source shapes confirmed via MCP (locks:queue→QueueResult, coord:handoffs→HandoffWithAcceptance[]); (4) served SPA bundle (index-C9XYmONx.js) confirmed to contain all Phase-4 code; (5) LIVE DOM render verified by driving the running :0 desktop via the tauri-agent-tools bridge (no focus-steal, no restart, URL restored after): roster 175 rows plan-grouped, dossier opens on click for a real agent with Files/Locks/Coord sections, files-in-play 114 files/9 contended, liveness filter narrowed 163→7 live with the '7/163 total' count + URL persistence, and the Tier-3 route's 404 on the un-restarted host degrades gracefully to '—' with no crash. The only behavior not yet live: the P-009 dossier route returning REAL locks/coord data + the pidAlive zombie markers — both are :3070-host code (no hot-reload) that activate on the next natural :3070 restart (not forced; the fleet is very active). Route correctness is established by composition (verified data sources + unit-tested pure derivation + handler test) and its graceful-degradation path is live-verified.
 
-**Next:** Owner decision: (a) restart :3070 (brief blip for ~159 active agents) to activate the P-009 dossier route + pidAlive now, or let the next natural restart pick it up; and (b) eyeball the rendered Sessions roster/dossier/files-in-play/filters in the Tauri shell, or have the agent spin up an isolated Xvfb Tauri instance (own sidecar+bridge port) to render-verify without touching the live window.
+**Next:** None — plan complete. On the next natural :3070 restart the dossier route + pidAlive activate automatically; no action required. (If desired later, a quick bridge re-check of one dossier's real Locks/Coord data after that restart would close the last compose-verified gap.)
 
 ## Background
 
