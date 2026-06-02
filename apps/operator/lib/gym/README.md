@@ -2,9 +2,11 @@
 
 The eval-driven optimizer for the harness itself. Plan:
 `apps/operator/docs/plans/harness-gym-eval-optimizer-2026-06-02.md`.
-This directory is the **measurement spine** (Phases 0–3). The proposer + autonomous
-loop (Phases 4–5) are gated behind the **P-014 human milestone** and are not built
-here yet.
+This directory is the **measurement spine** (Phases 0–3) plus the proposer + autonomous
+loop (Phases 4–5). All phases are **code-built + unit-tested**; the spine (P-001) is
+additionally **validated end-to-end** (see Status). The proposer/loop (P-015+) are
+**validation-gated** behind the **P-014 human milestone** — built, but not trusted to
+run unattended until P-014's real-LLM A/B + human go/no-go clears them.
 
 ## The minimal bootable unit (P-001)
 
@@ -45,7 +47,7 @@ as `npx tsx bin/hono-host.ts` from `<pinnedCheckout>/apps/operator` with
 
 | Env | Why |
 | --- | --- |
-| `DATABASE_URL` + `HARNESS_ADMIN_DATABASE_URL` = gym PG DSN | Both keys `getHarnessAdminUrl()` consults — neither the live DSN nor a live `embedded-pg.json` can leak in. |
+| `DATABASE_URL` + `HARNESS_ADMIN_DATABASE_URL` + `PAPERCUSP_DATABASE_URL` = gym PG DSN | ALL THREE DSN keys: `getHarnessAdminUrl()` (operator) reads the first two; the orchestrator `pg-bootstrap` in the spawned **worker subprocess** reads `PAPERCUSP_DATABASE_URL` > `embedded-pg.json` > `:5432/papercusp`. Pin all three or the worker silently connects to the live dev DB (hermeticity breach) → `UPDATE harness_features` 42P01. |
 | `PAPERCUSP_DBOS_ENABLE=1` | Boots the durable orchestrator (registers `featurePipeline`). |
 | `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=none` (default) | Autoloop off — the runner starts each pipeline explicitly (deterministic, 1 feature/harness). |
 | `PAPERCUSP_HONO_PORT` / `PAPERCUSP_BIND_HOST=127.0.0.1` | Dedicated port, loopback only. |
@@ -104,47 +106,47 @@ promotion/circuit-breaker/optin/variance/grader-opt). Plus `runner-ports.ts`
 (createGymRunnerPorts) + `../harness-seed.ts` (shared w/ harness-test-coverage) +
 `gym-db-init.ts` (provisionGymDatabase).
 
-**SPINE validated end-to-end** by `smoke.ts` (zero LLM spend): provision dedicated gym
-PG → boot headless gym-operator (DBOS launches on the gym DB) → register harness →
-file feature (direct PG) → deterministic start (admin route + `~/.papercusp/superuser-token`
-bearer) → pipeline runs to terminal SUCCESS → process-group teardown. Run it:
+**SPINE validated end-to-end WITH REAL WORK** by `smoke.ts` (zero LLM spend): provision
+dedicated gym PG → boot headless gym-operator (DBOS launches on the gym DB) → register +
+scaffold harness → file feature (direct PG) → deterministic start (admin route +
+`~/.papercusp/superuser-token` bearer) → **full pipeline runs to workflow SUCCESS (25
+runs: director/worker/validator/curator/documenter/debugger), worker COMMITS real work,
+terminal feature status** → process-group teardown. `SMOKE: PASS`, 0 × 42P01. Run it:
 `cd apps/operator && npx tsx lib/gym/smoke.ts`.
 
-### Open item 1 — worker invoke `harness_features` (the last mile to REAL work)
+### RESOLVED — worker invoke `harness_features` 42P01 (the last mile to REAL work)
 
-The fake-agent pipeline reaches terminal, but the WORKER invoke throws Postgres
-`relation "harness_features" does not exist`, so no real diff/transcript is produced
-(`runOutputRows: 0`, `workerCommitted: false`). Ruled out: hyphen in slug (fixed →
-hyphen-free), missing view (the per-harness `harness_features` view IS created),
-clone-dir basename (now == slug), `HARNESS_SLUG` env, DBOS-on-gym-DB (confirmed via the
-boot log's "System Database URL").
+**Root cause (FIXED 2026-06-02, commit `7eb79a46d`): a hermeticity breach, not a
+search_path bug.** The orchestrator's `pg-bootstrap.defaultDsn()` resolves its DSN from
+`PAPERCUSP_DATABASE_URL` > `~/.papercusp/embedded-pg.json` > hardcoded `:5432/papercusp`
+— it does **not** read `DATABASE_URL`/`HARNESS_ADMIN_DATABASE_URL`. The boot-spec pinned
+only the latter two, so the spawned **worker subprocess connected to the LIVE dev DB**,
+where the gym's per-harness `harness_<slug>` schema doesn't exist → `UPDATE
+harness_features` 42P01'd at parse. The worker's `SHOW search_path` log was a false
+reassurance — Postgres accepts a search_path naming a *missing* schema. The live fleet
+was unaffected only because live harnesses live in `:5432/papercusp` = the fallback; the
+gym is the first caller whose DB ≠ the fallback, exposing the latent divergence. (A
+reproduction with the exact `pg-bootstrap` client config — `max:4 + connection:{search_path}`
+— against the gym PG resolved `harness_features` on all pooled connections, proving the
+config + view were fine and isolating it to the wrong *database*.)
 
-**PINNED (2026-06-02, via the reliable dedicated-container smoke):** the gym-side setup
-is CORRECT. `report.workerPgDiag` shows the worker's pg-bootstrap repeatedly logging
-`PG bootstrap: connected (search_path=harness_<slug>,harness_shared,public); ctx.pg
-active` — i.e. the right per-harness schema IS first on the search_path, ctx.pg is on,
-the `harness_features` view exists there, and DBOS is on the gym DB. So it is NOT
-slug / search_path / DB (the hyphen-free + clone-basename + dedicated-DB fixes resolved
-those). The remaining cause is **deeper in the orchestrator state layer**: some code path
-in `invoke.ts`/`state-pg.ts` resolves `harness_features` on a connection WITHOUT the
-harness search_path (e.g. a `getOrgPg()`-style default client, or a view-body dependency
-that fails in a fresh schema), throwing `relation "harness_features" does not exist`.
+**Fix (both TDD'd, both live-safe):**
+- `boot-spec.ts` also pins `PAPERCUSP_DATABASE_URL = gymDatabaseUrl` (gym self-hermetic).
+- `harness-invoke-once.ts` sets `PAPERCUSP_DATABASE_URL = PAPERCUSP_DATABASE_URL ||
+  DATABASE_URL || getHarnessAdminUrl()` so the worker's bootstrap tracks the operator's
+  DB — completing the file's existing "hit the SAME Postgres the operator uses" intent;
+  a no-op for the live fleet (equals `DATABASE_URL` there).
+- `runner-ports.ts` `registerThrowawayHarness` now **fails loud** on
+  `provisioning.ok===false` instead of swallowing a scaffold failure (defensive).
 
-**Handoff (NOT done unattended — shared orchestrator code the live fleet depends on):**
-trace which query/client in invoke()'s worker path throws (add a stack/log to the
-`relation … does not exist` catch, or to `state-pg.ts`), confirm it's a non-`ctx.pg`
-client, and point it at the harness-scoped client. The smoke is now RELIABLE
-(`npx tsx lib/gym/smoke.ts`, dedicated pgvector container) so this is a ~2-minute
-trace-and-rerun loop.
-
-### Open item 2 — P-014 (human gate): the real A/B
+### Open item 1 — P-014 (human gate): the real A/B
 
 Once the worker does real work: run a bounded A/B (≤2 variants × ≤3 tasks, 1 run each;
 D-019 bounded spend) → measure judge-composite variance (`variance.ts` → ε/δ/min-n),
 the cost estimate (`cost.ts`), and real-anchor correlation (`real-anchor.ts`). This is
 the milestone gate before building/running the autonomous loop unattended.
 
-### Open item 3 — P-024 dashboard (UI)
+### Open item 2 — P-024 dashboard (UI)
 
 Deferred: the `read-api.ts` data layer (compareVariants/frontierView/cycleHistory/
 variantLineage) is ready; the nuqs operator UI is a focused design-aware task (Tauri-only
