@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Phase 1 SHIPPED + the Phase-2 drain logic that lives in the store. Submodule libs/papercusp@80a6e2e adds migration 005 (papercusp_su) + `resource-lock-store.ts`; superproject@8765db9a6 adds the integration test + pointer bump. 6 new tests green, the existing 41 lock integration tests still green, package typecheck clean. Done: registered-names-only acquire (P-024), shared coexistence + writer-priority drain refusing new shared (P-004), drain-to-zero grant via `resource_grant_cascade` (P-005), no-upgrade (P-008), TTL/heartbeat expiry sweep (P-007), registry seed (P-003). Still todo in the drain area: `max_drain_sec` timeout (P-006) — it belongs to the tool-layer wait loop (Phase 4), not the store.
+**State:** Phases 1, 2 (store drain logic) and 4 (tool surface) SHIPPED. Agents can now end-to-end: locks:acquire_resource (shared/exclusive with wait:{max_drain_sec}), release_resource, heartbeat_resource, list (registry + holders + draining). The exclusive wait loop (resource-acquire-wait.ts) subscribes ch_coord before acquire, wakes on the resource_grant_cascade NOTIFY with a ceiling+poke fallback, returns held / drain_timeout (P-006). Submodule libs/papercusp@20990a6, superproject@c7675503b. Verified: 44/44 locks integration green (9 new tests), new files type-clean, tools-md-sync 46/46. Sibling-tools design recorded in D-014.
 
-**Next:** An agent builds Phase 3 + 4: the `locks:*` tool surface for resources (acquire/release/queue/list with the exclusive wait loop consuming the `resource_grant_cascade` NOTIFY, + `max_drain_sec` P-006) and the coord drain-start / back-up broadcasts via `fireNotifications` (P-009/P-010).
+**Next:** Phase 3 — wire the coord broadcasts (drain-start "release please" to shared holders P-009, "back up" on exclusive release P-010) via fireNotifications; the PG state + NOTIFY wake already work, these are the politeness layer telling peers to act. Then Phase 5 (rules/docs), Phase 6 (more tests), Phase 8 (defineTool requiresLock — the `enforced` rung of P-015 + the Bash matcher).
 
 ## Background
 
@@ -105,7 +105,7 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 - **P-004** `done` Writer-priority drain: a pending `exclusive` flips the resource to `draining` — refuse NEW `shared` acquisitions (return `draining`), keep existing `shared` leases live. blocked-by: P-001
 - **P-005** `done` Drain-to-zero grant: grant `exclusive` when the shared-holder count reaches 0, parking the request on the existing server-side wait queue. blocked-by: P-004
-- **P-006** `todo` `max_drain_sec` timeout: if drain doesn't complete in time, return a "still held by X, Y" envelope so the requester can force-proceed (with a warning broadcast) or escalate. blocked-by: P-005
+- **P-006** `done` `max_drain_sec` timeout: if drain doesn't complete in time, return a "still held by X, Y" envelope so the requester can force-proceed (with a warning broadcast) or escalate. blocked-by: P-005 (max_drain_sec implemented in the exclusive wait loop resource-acquire-wait.ts; returns drain_timeout with remaining holders)
 - **P-007** `done` Zombie safety: reuse heartbeat/TTL so a crashed `shared` holder's lease auto-expires and never blocks drain forever. blocked-by: P-004
 - **P-008** `done` No lock upgrade: a requester already holding `shared` must `release` then request `exclusive` (re-queue), avoiding the two-holders-both-upgrading deadlock. Document + guard in the acquire path. blocked-by: P-004
 
@@ -117,9 +117,9 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 ## Phase 4 — Tool surface & enforcement dial
 
-- **P-012** `todo` `locks:acquire` schema gains `{ resource, mode, max_drain_sec, reason }` alongside today's `{ paths }` — one verb, two key kinds. blocked-by: P-001
-- **P-013** `todo` `locks:queue` shows mode + drain state (holders, draining flag, waiters). blocked-by: P-012
-- **P-014** `todo` `locks:list` — read the resource registry (named locks + rule text + enforcement level) for agent discovery. blocked-by: P-003
+- **P-012** `done` `locks:acquire` schema gains `{ resource, mode, max_drain_sec, reason }` alongside today's `{ paths }` — one verb, two key kinds. blocked-by: P-001 (shipped as sibling locks:acquire_resource D-014, not an overload of locks:acquire)
+- **P-013** `done` `locks:queue` shows mode + drain state (holders, draining flag, waiters). blocked-by: P-012 (shipped as locks:list registry + live holders + draining flag)
+- **P-014** `done` `locks:list` — read the resource registry (named locks + rule text + enforcement level) for agent discovery. blocked-by: P-003
 - **P-015** `todo` Enforcement dial: per-resource level — `advisory` (prompt-only; visibility + broadcast), `checked` (tool refuses on busy/draining), `enforced` (a `PreToolUse` hook hard-blocks where the action is hookable). blocked-by: P-012
 - **P-016** `needs-human` Decide `dev-server`'s enforcement level — no hookable "I'm using the server" action exists, so it tops out at `checked`; confirm advisory vs checked. importance: high blocked-by: P-015
 
@@ -220,6 +220,12 @@ Matchable asymmetry: the DESTRUCTIVE side (restart/migrate) is a small, matchabl
 
 Per-client reality: hard enforcement on Claude + OMP (PreToolUse fires); soft on codex (it does not fire PreToolUse on `Bash`/`apply_patch` yet — upstream gap, identical to the file-lock asymmetry). Non-agent actors (human terminal, paperclip, Tauri shell) never invoke the hook — out of scope, advisory + drain broadcast only (D-012).
 Related: P-026
+
+
+### D-014 — Separate resource tools, not an overloaded locks:acquire (refines P-012)
+Date: 2026-06-02
+The agent surface is sibling tools — `locks:acquire_resource` / `release_resource` / `heartbeat_resource` / `list` — alongside the file-path `locks:acquire`/`release`/`heartbeat`/`queue`, rather than overloading `locks:acquire` with a `resource`/`mode` branch as P-012 literally proposed. Reason: the two are fundamentally different in arg shape (`paths[]` vs `resource`+`mode`), result shape (`held[]`/`busy[]` vs `mode`/`status`/`shared_holders`), and wait mechanics (FIFO path-waiter queue via `agent_lock_waiters` vs writer-priority drain via status polling). Overloading one verb would be a thin top-level if-branch with no real unification — two tools wearing one name — while separate tools give each a distinct `guidance.when` and far simpler, independently-testable handlers. Unification is preserved at the namespace level (`locks:*`). `locks:list` covers BOTH discovery (P-014) and queue/drain visibility (P-013) — registry rows + live holders + a `draining` flag.
+Related: P-012
 
 ## Open questions
 
