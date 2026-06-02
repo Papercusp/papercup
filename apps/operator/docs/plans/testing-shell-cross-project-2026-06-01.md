@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** CAMPAIGN COMPLETE (M1, M2, M4, M5, M6 done; M3 deprioritized as speculative per user). The /adv testing framework + UI is fully abstracted into two shared private submodules — Papercusp/testing-shell (registry, TestingShell/DomainTestPanel, dataSource, k6 runner, parseRunnerStatus, applyRoleGlobs, aggregateJUnitCases, +/glob subpath) and Papercusp/test-config (vitest config + testcontainers-PG + MSW + make-fixture) — both consumed as submodules in papercup AND Restart, cataloged in BORROWABLE. Restart's /tests now renders the shared TestingShell with CI + Load(k6) + API-tester tabs; next build green. The universal tier is portable (Phase 1); ai-explore base URL is configurable (M4). All committed across both repos with scoped commits (never touched the other agent's in-flight Restart work).
+**State:** CAMPAIGN COMPLETE + LIVE-VERIFIED. M1/M2/M4/M5/M6 done (M3 deprioritized). The /adv testing framework + UI is abstracted into two shared private submodules — Papercusp/testing-shell + Papercusp/test-config — consumed by papercup AND Restart, cataloged in BORROWABLE. Final verification this session: spun a throwaway next dev (:3047) of Restart's web and confirmed /tests?project=restart renders the shared TestingShell live — `.pc-test-shell` in the hydrated DOM, tabs "CI results | Load (k6) | API tester", tiers "Universal (1) | Restart (2)", and the CI panel rolling real junit data up via @papercusp/testing-shell's aggregateJUnitCases (22 cases). Screenshot captured. Throwaway server torn down; no disruption to the running :3001 or the other agent's in-flight Restart work.
 
-**Next:** One manual verification remains: eyeball Restart /tests live (needs a standalone redeploy + :3001 restart — deferred to avoid disrupting the other Restart agent). Optional future: generalize chaos/live to a generic browser driver (D-008, no consumer yet); M3 operator Phase-2 UI (speculative).
+**Next:** Nothing required. Optional future (no consumer yet): generalize chaos/live to a generic browser driver (D-008); M3 operator Phase-2 UI (speculative).
 
 ## Background
 
