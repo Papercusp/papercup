@@ -25,6 +25,7 @@ import { _resetCacheForTests } from '../corestore';
 import { openOwnLog } from '../peer-log';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import { _clearRegistryForTests } from '../projection';
+import { listBootHistory } from '../boot-history';
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns
@@ -444,6 +445,88 @@ describe('bootHarnessSubstrate — revocation drops the admitted log end-to-end 
     const decision = await handle.onAnnounce(announce);
     expect(decision).toMatchObject({ admit: false, reason: 'revoked' });
     expect(handle.admitted.has('fe'.repeat(32))).toBe(false);
+  });
+
+  it('admission is THE boundary (P-003/D-004): a rejected peer\'s replicated ops never reach PG; an admitted peer\'s do', async () => {
+    // The end-to-end statement of the trust boundary the D-004 re-grounding
+    // rests on: BOTH peers announce AND replicate real ops into the host store
+    // (so a rejected peer's ops are physically present locally) — yet ONLY the
+    // admitted peer's ops project. Admission — not per-op signing — is what
+    // keeps forged advisory rows out of local state. If this regresses (e.g. the
+    // merge ever reads a non-admitted log), the rejected peer's op appears in PG.
+    const writes: Array<{ id: string }> = [];
+    const A = makeDevice('peer-admitted', 100);
+    const B = makeDevice('peer-rejected', 200);
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-admit-host-'),
+      workspaceId: 'ws-1',
+      harnessSlug: 'admit-boundary-1',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      // A's channel-2 binding verifies; B's conclusively fails → B is never admitted.
+      verifyBindingOverride: async (devicePubkey: string) =>
+        devicePubkey === A.devicePubkey ? 'verified' : 'fail',
+      applyOverride: async (op) => {
+        if (op.table === 'mb_admit_table') writes.push(op.value as { id: string });
+        return true;
+      },
+    });
+    cleanups.push(() => handle.close());
+
+    // Two real peers, each with an own log carrying one op, BOTH replicated into
+    // the host store — so both peers' ops are physically present locally.
+    async function makePeer(prefix: string, dev: ReturnType<typeof makeDevice>, opId: string) {
+      const store = new Corestore(tmpDir(prefix));
+      cleanups.push(() => { void store.close(); });
+      await store.ready();
+      const own = await openOwnLog(store);
+      await own.append({
+        type: 'put', table: 'mb_admit_table', hbKey: opId,
+        value: { id: opId }, ts: 100, schema_version: CURRENT_SCHEMA_VERSION,
+        author_pubkey: dev.devicePubkey,
+      });
+      replicate(store, handle.store);
+      return own;
+    }
+    const aOwn = await makePeer('mb-admit-A-', A, 'A-1');
+    const bOwn = await makePeer('mb-admit-B-', B, 'B-1');
+
+    const mkAnnounce = (dev: ReturnType<typeof makeDevice>, logKey: string) =>
+      buildAnnounce(
+        {
+          device_pubkey: dev.devicePubkey,
+          github_user_id: dev.githubUserId,
+          github_login: dev.githubLogin,
+          attestation_gist_id: 'gist-test',
+          log_core_key: logKey,
+        },
+        dev.sign,
+      );
+
+    const aDecision = await handle.onAnnounce(await mkAnnounce(A, aOwn.keyHex));
+    const bDecision = await handle.onAnnounce(await mkAnnounce(B, bOwn.keyHex));
+    expect(aDecision).toMatchObject({ admit: true });
+    expect(bDecision).toMatchObject({ admit: false, reason: 'binding_invalid' });
+
+    // Only A's log is admitted; B's is not.
+    expect(handle.admitted.has(aOwn.keyHex)).toBe(true);
+    expect(handle.admitted.has(bOwn.keyHex)).toBe(false);
+
+    // Observability (P-003): the rejection is surfaced on the existing
+    // boot-history channel — the purpose-built, queryable, local observability
+    // surface — carrying the reason so a fleet operator can see admission
+    // rejections. (A server-side PostHog path would be redundant with this and
+    // doesn't exist; boot-history is the right home.)
+    const rejected = listBootHistory({ workspaceId: 'ws-1', harnessSlug: 'admit-boundary-1' })
+      .filter((e) => e.kind === 'announce_rejected');
+    expect(rejected.some((e) => e.message?.includes('binding_invalid'))).toBe(true);
+
+    // A merge pass reads ONLY the admitted set → A's op projected; B's op never
+    // did, despite being replicated + physically available in the store.
+    await handle.mergeNow();
+    expect(writes.some((w) => w.id === 'A-1')).toBe(true);
+    expect(writes.some((w) => w.id === 'B-1')).toBe(false);
   });
 });
 
