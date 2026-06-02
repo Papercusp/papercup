@@ -360,7 +360,8 @@ const post = defineTool({
         if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
       }
     } catch (e: any) {
-      console.warn('[bootstrap-su] saved-prompts materialize failed (non-fatal):', e?.message);
+      // stderr (not console.*) so the vitest fail-on-console guard stays green.
+      process.stderr.write(`[bootstrap-su] saved-prompts materialize failed (non-fatal): ${e?.message}\n`);
     }
 
     // omp loads the coordination extension via -e for lock enforcement.

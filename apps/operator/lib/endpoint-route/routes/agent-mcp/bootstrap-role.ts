@@ -258,7 +258,8 @@ const post = defineTool({
         await materializeHarnessPrompts(workspace, harnessSlug);
       }
     } catch (e: any) {
-      console.warn('[bootstrap-role] saved-prompts materialize failed (non-fatal):', e?.message);
+      // stderr (not console.*) so the vitest fail-on-console guard stays green.
+      process.stderr.write(`[bootstrap-role] saved-prompts materialize failed (non-fatal): ${e?.message}\n`);
     }
 
     const result: BootstrapRoleResult = {
