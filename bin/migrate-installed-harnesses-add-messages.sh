@@ -19,20 +19,11 @@ ROOT="$(cd "$HERE/.." && pwd)"
 TEMPLATE="$ROOT/libs/papercusp/libs/db/sql/002-per-harness-template.sql"
 OPERATOR_BASE="${PAPERCUSP_OPERATOR_BASE:-http://localhost:3055}"
 
-if [[ "${PAPERCUSP_USE_PGLITE:-}" = "1" ]]; then
-  : "${PGLITE_SOCKET_DIR:=$HOME/.papercusp/pglite-socket}"
-  : "${PGUSER:=postgres}"
-  : "${PGHOST:=$PGLITE_SOCKET_DIR}"
-  : "${PGDATABASE:=postgres}"
-  unset PGPASSWORD || true
-  export PGUSER PGHOST PGDATABASE
-else
-  : "${PGUSER:=postgres_app}"
-  : "${PGPASSWORD:=postgres}"
-  : "${PGHOST:=localhost}"
-  : "${PGDATABASE:=papercusp}"
-  export PGUSER PGPASSWORD PGHOST PGDATABASE
-fi
+: "${PGUSER:=postgres_app}"
+: "${PGPASSWORD:=postgres}"
+: "${PGHOST:=localhost}"
+: "${PGDATABASE:=papercusp}"
+export PGUSER PGPASSWORD PGHOST PGDATABASE
 
 slug_to_schema() {
   local s="${1//-/_}"

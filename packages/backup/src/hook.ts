@@ -82,12 +82,6 @@ export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
     log,
   });
 
-  // --- pglite (file-based; just touch its data dir into the snapshot) ---
-  const pgliteDir = join(ctx.workspaceRoot, '.papercusp', 'pglite-data');
-  if (await pathExists(pgliteDir)) {
-    await log(`pglite-data present at ${pgliteDir} — captured by file snapshot`);
-  }
-
   await log('hook done');
 }
 
@@ -189,6 +183,3 @@ async function renameAtomic(from: string, to: string): Promise<void> {
   await rename(from, to);
 }
 
-async function pathExists(p: string): Promise<boolean> {
-  try { await stat(p); return true; } catch { return false; }
-}

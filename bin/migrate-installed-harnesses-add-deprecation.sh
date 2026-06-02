@@ -14,20 +14,11 @@
 
 set -euo pipefail
 
-if [[ "${PAPERCUSP_USE_PGLITE:-}" = "1" ]]; then
-  : "${PGLITE_SOCKET_DIR:=$HOME/.papercusp/pglite-socket}"
-  : "${PGUSER:=postgres}"
-  : "${PGHOST:=$PGLITE_SOCKET_DIR}"
-  : "${PGDATABASE:=postgres}"
-  unset PGPASSWORD || true
-else
-  : "${PGUSER:=postgres_app}"
-  : "${PGPASSWORD:=postgres}"
-  : "${PGHOST:=localhost}"
-  : "${PGDATABASE:=papercusp}"
-  export PGPASSWORD
-fi
-export PGUSER PGHOST PGDATABASE
+: "${PGUSER:=postgres_app}"
+: "${PGPASSWORD:=postgres}"
+: "${PGHOST:=localhost}"
+: "${PGDATABASE:=papercusp}"
+export PGUSER PGPASSWORD PGHOST PGDATABASE
 
 if [ "${1:-}" != "" ]; then
   SCHEMAS=$(echo "$1" | sed 's/-/_/g; s/^/harness_/')

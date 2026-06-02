@@ -60,10 +60,7 @@ export async function probeAll(): Promise<BinaryCheck[]> {
 
 export async function ensureRequiredForCapture(): Promise<void> {
   const results = await probeAll();
-  // When PGLITE_ADMIN_URL is set the snapshot capture goes through
-  // pglite-server's WASM pg_dump endpoint; the system binary isn't needed.
-  const skipPgDump = !!process.env.PGLITE_ADMIN_URL;
-  const missing = results.filter((r) => !r.found && !(skipPgDump && r.name === 'pg_dump'));
+  const missing = results.filter((r) => !r.found);
   if (missing.length > 0) {
     const lines = missing.map(
       (m) => `  - ${m.name}: not found on PATH. ${m.hint ?? ''}`.trimEnd(),

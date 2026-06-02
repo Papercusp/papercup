@@ -21,7 +21,6 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { assertValidSlug, includedSharedTables } from './shared-table-filters';
-import { pgliteSocketOpts } from './pglite-admin-client';
 
 interface CsvFile {
   table: string;
@@ -70,7 +69,6 @@ export async function applyHarnessSharedRestore(args: {
     idle_timeout: 1,
     prepare: false,
     onnotice: () => {},
-    ...pgliteSocketOpts(),
   });
   try {
     const cols = await loadColumnLists(sql);

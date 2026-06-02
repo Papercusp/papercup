@@ -7,11 +7,9 @@
  *      (PG's canonical FORMAT csv, HEADER) → state/shared-<table>.csv
  *
  * Dispatch:
- *   - If `PGLITE_ADMIN_URL` is set, the dump (step 1+2) goes through
- *     pglite-server's WASM `pg_dump` (no system binary).
- *   - Otherwise the dump shells to system `pg_dump`.
- *   - Filtered shared-row CSVs (step 3) always use postgres-js `COPY ...
- *     TO STDOUT`, which works on both pglite and real PG with no binary.
+ *   - Steps 1+2 shell out to the system `pg_dump` binary.
+ *   - Filtered shared-row CSVs (step 3) use postgres-js `COPY ... TO STDOUT`,
+ *     which needs no binary.
  *
  * Connection URL defaults to `HARNESS_ADMIN_DATABASE_URL` (admin role; needed
  * to dump full DDL + cross-schema reads). Caller can override via
@@ -21,12 +19,9 @@
 import { spawn } from 'node:child_process';
 import { promises as fs, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
-import { createGzip } from 'node:zlib';
-import { Readable } from 'node:stream';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { assertValidSlug, includedSharedTables } from './shared-table-filters';
-import { pgliteAdminPgDump, pgliteAdminUrl, pgliteSocketOpts } from './pglite-admin-client';
 
 const ADMIN_URL_ENV = 'HARNESS_ADMIN_DATABASE_URL';
 const APP_URL_ENV = 'HARNESS_DATABASE_URL';
@@ -69,18 +64,6 @@ function runStream(
   });
 }
 
-async function gzipTextToFile(text: string, destPath: string): Promise<void> {
-  await pipeline(Readable.from([text]), createGzip(), createWriteStream(destPath));
-}
-
-async function writeTextToFile(text: string, destPath: string): Promise<void> {
-  await fs.writeFile(destPath, text, 'utf8');
-}
-
-async function pgDumpViaAdmin(adminUrl: string, args: string[]): Promise<string> {
-  return pgliteAdminPgDump(adminUrl, args);
-}
-
 async function pgDumpViaSystemBinary(args: string[], outPath: string): Promise<void> {
   const r = await runStream('pg_dump', args, outPath);
   if (r.code !== 0) {
@@ -96,9 +79,8 @@ export async function pgDumpPerHarness(args: {
   assertValidSlug(args.slug);
   const url = resolveDatabaseUrl(args.databaseUrl);
   const outPath = join(args.destDir, 'db.sql.gz');
-  const admin = pgliteAdminUrl();
-  if (admin) {
-    const text = await pgDumpViaAdmin(admin, [
+  await pgDumpViaSystemBinary(
+    [
       `--schema=harness_${args.slug}`,
       '--no-owner',
       '--no-privileges',
@@ -107,21 +89,11 @@ export async function pgDumpPerHarness(args: {
       // tokenizes the `\.` as a syntax error. Emit INSERTs instead so
       // every statement is valid SQL.
       '--inserts',
-    ]);
-    await gzipTextToFile(text, outPath);
-  } else {
-    await pgDumpViaSystemBinary(
-      [
-        `--schema=harness_${args.slug}`,
-        '--no-owner',
-        '--no-privileges',
-        '--inserts',
-        '--compress=4',
-        url,
-      ],
-      outPath,
-    );
-  }
+      '--compress=4',
+      url,
+    ],
+    outPath,
+  );
   return { outPath };
 }
 
@@ -131,27 +103,16 @@ export async function pgDumpSharedSchema(args: {
 }): Promise<{ outPath: string }> {
   const url = resolveDatabaseUrl(args.databaseUrl);
   const outPath = join(args.destDir, 'shared-schema.sql');
-  const admin = pgliteAdminUrl();
-  if (admin) {
-    const text = await pgDumpViaAdmin(admin, [
-      '--schema-only',
-      '--schema=harness_shared',
-      '--no-owner',
-      '--no-privileges',
-    ]);
-    await writeTextToFile(text, outPath);
-  } else {
-    await pgDumpViaSystemBinary(
-      ['--schema-only', '--schema=harness_shared', '--no-owner', '--no-privileges', url],
-      outPath,
-    );
-  }
+  await pgDumpViaSystemBinary(
+    ['--schema-only', '--schema=harness_shared', '--no-owner', '--no-privileges', url],
+    outPath,
+  );
   return { outPath };
 }
 
 /**
  * Filtered CSV dump for each shared table via postgres-js's COPY TO STDOUT
- * (works on pglite and real PG; no binary). Output format matches the prior
+ * (no binary needed). Output format matches the prior
  * `psql -c "\COPY (...) TO STDOUT WITH (FORMAT csv, HEADER)"` byte-for-byte.
  */
 export async function copyFilteredSharedTables(args: {
@@ -166,7 +127,6 @@ export async function copyFilteredSharedTables(args: {
     idle_timeout: 1,
     prepare: false,
     onnotice: () => {},
-    ...pgliteSocketOpts(),
   });
   const written: { table: string; outPath: string; rowCount: number }[] = [];
   try {

@@ -47,7 +47,6 @@ export {
   copyFilteredSharedTables,
   dbCapture,
 } from './pg-dump';
-export { pgliteAdminUrl, pgliteAdminPgDump } from './pglite-admin-client';
 export {
   stageProjectFiles,
   stageHarnessSubset,

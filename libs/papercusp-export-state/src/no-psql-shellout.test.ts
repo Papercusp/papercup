@@ -1,17 +1,13 @@
 /**
  * Regression guard: no runtime-shipped code may shell out to `psql` or
- * `pg_dump`.
+ * `pg_dump` — with the single allowed exception of the snapshot subsystem's
+ * `pg-dump.ts` (the per-harness / shared-schema dump) and `binaries.ts`
+ * (the presence probe). Everything else must use postgres-js.
  *
- * Why: these binaries are not in the desktop sidecar (per
- * `project_psql_bundling_deferred.md`). The snapshot subsystem in this
- * package now uses `@electric-sql/pglite-tools` via pglite-server's
- * `/admin/pg-dump` endpoint + postgres-js for everything else, so no
- * shell-out is needed on any platform.
- *
- * The one allowed exception is `pg-dump.ts:pgDumpViaSystemBinary`, which
- * is the dev/Hetzner fallback when `PGLITE_ADMIN_URL` is unset. It's
- * gated by the env var and only runs on machines that have system
- * `pg_dump` installed.
+ * Why: psql isn't shipped, so non-snapshot runtime code must not depend on
+ * it. The snapshot capture path legitimately invokes the system `pg_dump`
+ * binary (postgres-js can't produce a full schema dump); that's the only
+ * sanctioned shell-out and lives behind the ALLOW set below.
  */
 import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -27,9 +23,8 @@ const ROOTS = [
   '/home/marsh-office/papercupai-workspace/papercup/libs/papercup-shared/src',
 ];
 
-// Allowed shell-outs — these are the gated dev/Hetzner fallbacks for
-// pg_dump in pg-dump.ts and the presence-probe in binaries.ts. Everything
-// else must use postgres-js + the pglite admin endpoint.
+// Allowed shell-outs — the system `pg_dump` invocation in pg-dump.ts and
+// the presence-probe in binaries.ts. Everything else must use postgres-js.
 const ALLOW = new Set<string>([
   'libs/papercusp-export-state/src/pg-dump.ts',
   'libs/papercusp-export-state/src/binaries.ts',
@@ -82,6 +77,6 @@ describe('no-psql-shellout (regression guard)', () => {
         }
       }
     }
-    expect(offenders, `unexpected psql/pg_dump shell-outs (use postgres-js + pglite admin instead):\n  ${offenders.join('\n  ')}`).toEqual([]);
+    expect(offenders, `unexpected psql/pg_dump shell-outs (use postgres-js instead):\n  ${offenders.join('\n  ')}`).toEqual([]);
   });
 });

@@ -25,7 +25,6 @@ import { join } from 'node:path';
 import { createGunzip } from 'node:zlib';
 import postgres from 'postgres';
 import { assertValidSlug } from './shared-table-filters';
-import { pgliteSocketOpts } from './pglite-admin-client';
 
 export class TargetSchemaExists extends Error {
   constructor(slug: string) {
@@ -45,7 +44,6 @@ function openSql(url: string) {
     idle_timeout: 1,
     prepare: false,
     onnotice: () => {},
-    ...pgliteSocketOpts(),
   });
 }
 

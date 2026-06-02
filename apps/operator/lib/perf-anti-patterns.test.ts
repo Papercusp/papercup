@@ -56,7 +56,7 @@ const RULES: Rule[] = [
   },
   {
     id: 'A4',
-    description: "shell-out to psql/pg_dump — use postgres-js or pglite-tools instead",
+    description: "shell-out to psql/pg_dump — use postgres-js instead",
     // Mirror the no-psql-shellout sweep in @papercusp/export-state but
     // scoped to the operator. Indirect form (literal as call-arg) included.
     pattern: /(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*['"`](?:psql|pg_dump)['"`]/,
