@@ -40,6 +40,29 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
   }
   if (files.length === 0) return 0;
 
+  // ── Identifier safety (security) ─────────────────────────────────────
+  // `table` is from the trusted registry but is interpolated into raw SQL
+  // below; `cols` (Object.keys of a parsed `.harness/state` file) are
+  // UNTRUSTED file content — in the clone-and-go / shared-harness model a
+  // crafted key would inject SQL into the column list. Validate the table
+  // name shape, then check every column (and the conflict cols) against the
+  // table's REAL schema. Values are already parameterized ($N); only the
+  // identifiers needed guarding.
+  if (!/^[a-z_][a-z0-9_]*$/.test(table)) {
+    throw new Error(`hydrate: refusing unsafe table identifier ${JSON.stringify(table)}`);
+  }
+  const schemaCols = await sql<{ column_name: string }[]>`
+    SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'harness_shared' AND table_name = ${table}
+  `;
+  const allowed = new Set(schemaCols.map((r) => r.column_name));
+  if (allowed.size === 0) return 0; // unknown table → nothing to hydrate
+  for (const c of conflictCols) {
+    if (!allowed.has(c)) {
+      throw new Error(`hydrate: ${table} conflict column ${JSON.stringify(c)} is not a real column`);
+    }
+  }
+
   let n = 0;
   // Disable the capture trigger so the hydrate upserts don't re-enqueue exports.
   await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE TRIGGER ${CAPTURE_TRG}`);
@@ -48,6 +71,16 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
       const row = parseFile(table, await readFile(join(dir, f), 'utf8')) as Record<string, unknown>;
       const cols = Object.keys(row);
       if (cols.length === 0) continue;
+      // Reject any column the committed file claims that isn't in the real
+      // schema — a crafted key here is the SQL-injection vector.
+      for (const c of cols) {
+        if (!allowed.has(c)) {
+          throw new Error(
+            `hydrate: ${table} file ${f} declares unknown column ${JSON.stringify(c)} ` +
+              `(possible injection or schema drift) — aborting`,
+          );
+        }
+      }
       const placeholders = cols.map((c, i) =>
         row[c] !== null && typeof row[c] === 'object' ? `$${i + 1}::jsonb` : `$${i + 1}`,
       );
