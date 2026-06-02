@@ -122,9 +122,12 @@ export async function loadContributorsTab(
   }
   if (contributors.length === 0) return [];
 
-  const countMap = async (query: string): Promise<Map<number, number>> => {
+  const countMap = async (
+    query: string,
+    params: unknown[] = [workspace_id, harness_slug],
+  ): Promise<Map<number, number>> => {
     try {
-      const rows = await runQuery<CountRow>(query, [workspace_id, harness_slug]);
+      const rows = await runQuery<CountRow>(query, params);
       return new Map(rows.map((r) => [toInt(r.github_user_id), toInt(r.n)]));
     } catch {
       return new Map();
@@ -148,11 +151,16 @@ export async function loadContributorsTab(
       GROUP BY taken_by`,
   );
   // tier-C: activity events (contributor_usage_events — the §7.1 source).
+  // NB: contributor_usage_events is a federated substrate table keyed by
+  // harness_slug only — it has NO workspace_id column (unlike auto_review_audit
+  // / harness_features_consolidated). Filter on harness_slug alone, mirroring
+  // lib/user-profile/load.ts §3b.
   const activityByUser = await countMap(
     `SELECT github_user_id, COUNT(*) AS n
        FROM harness_shared.contributor_usage_events
-      WHERE workspace_id = $1 AND harness_slug = $2
+      WHERE harness_slug = $1
       GROUP BY github_user_id`,
+    [harness_slug],
   );
 
   return contributors.map((c) => {

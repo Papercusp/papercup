@@ -101,10 +101,12 @@ const list = defineTool({
             AND f.status = 'shipped'
             AND f.taken_by = c.github_user_id::text
         ) AS features_shipped,
+        -- contributor_usage_events is a federated substrate table keyed by
+        -- harness_slug only (NO workspace_id column, unlike the tier-A/B
+        -- tables above). Mirrors lib/user-profile/load.ts §3b.
         (
           SELECT COUNT(*) FROM harness_shared.contributor_usage_events e
-          WHERE e.workspace_id = c.workspace_id
-            AND e.harness_slug = c.harness_slug
+          WHERE e.harness_slug = c.harness_slug
             AND e.github_user_id = c.github_user_id
         ) AS activity_events
       FROM harness_shared.contributors c

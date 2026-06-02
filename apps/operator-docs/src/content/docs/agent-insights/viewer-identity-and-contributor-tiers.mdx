@@ -38,7 +38,7 @@ must agree.** The trap: there are two candidate source sets, and one is inert.
 |---|---|---|
 | A — merged PRs | `auto_review_audit` WHERE `author_github_id` AND `action IN ('auto_merge','manual_merge')` | `harness_feature_prs` (no producer → always 0) |
 | B — features shipped | `harness_features_consolidated` WHERE `status='shipped'` AND `taken_by = <id>::text` | `harness_features.shipped_by_github_id` / `completion_ref` (unpopulated) |
-| C — activity | `contributor_usage_events` WHERE `github_user_id` (the §7.1 source of truth) | — |
+| C — activity | `contributor_usage_events` WHERE `harness_slug` + `github_user_id` (the §7.1 source of truth) | filtering it by `workspace_id` — **that column does not exist on this table** |
 
 The authoritative per-user definitions live in `lib/user-profile/load.ts` (P-072b); the
 per-contributor (one-harness, GROUP BY contributor) inversion is
@@ -46,6 +46,16 @@ per-contributor (one-harness, GROUP BY contributor) inversion is
 earlier used the *inert* sources and silently disagreed with the profile until
 reconciled (commit `426c0868d`) — if you add a tier surface, mirror the populated
 sources or you'll ship all-zero / inconsistent stats.
+
+**Schema trap — `contributor_usage_events` has NO `workspace_id`.** Unlike
+`auto_review_audit` and `harness_features_consolidated` (both workspace-scoped), the
+tier-C ledger is a federated substrate table keyed by `harness_slug` only (index
+`(harness_slug, github_user_id, ts)` — see `ensure-schema-dogfood.ts`). Filtering it
+by `workspace_id` throws `column … does not exist` at *runtime only* — unit tests
+that mock the SQL runner pass clean (this exact bug shipped in both the endpoint and
+the lib and was caught only by a live curl against `:3070`, 2026-06-02). When you add
+or move a tier-C query, scope it on `harness_slug` (+ `github_user_id`) and **verify
+it live**, not just through mocked-runner unit tests.
 
 **Zero non-verified bindings.** Only `verified` bindings aggregate stats —
 `statsAggregateForStatus(status)` (`lib/identity/binding-verifier-types.ts`) is the
