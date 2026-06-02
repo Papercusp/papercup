@@ -182,4 +182,32 @@ describe('handoffs', () => {
     // sanity: h2 has no acceptance
     expect(await getHandoff(h2.msg_id)).not.toBeNull();
   });
+
+  it('double-accept is append-only but the fold still reports the handoff accepted exactly once (P-018)', async () => {
+    const A = id('A');
+    const B = id('B');
+    const h = await openHandoff(A, { to: ['B'], plan_slug: 'p', summary: 'dup-accept' });
+
+    const acc1 = await acceptHandoff(B, h.msg_id, 'first');
+    const acc2 = await acceptHandoff(B, h.msg_id, 'second');
+
+    // acceptHandoff is NOT idempotent at the event level: each call appends a
+    // distinct handoff_accepted sibling (append-only log, no in-place mutation).
+    expect(acc1?.msg_id).toBeTruthy();
+    expect(acc2?.msg_id).toBeTruthy();
+    expect(acc1?.msg_id).not.toBe(acc2?.msg_id);
+    const acceptedEvents = (await coordLog.readEvents('handoffs')).filter(
+      (r) => r.kind === 'handoff_accepted' && r.related_msg_id === h.msg_id,
+    );
+    expect(acceptedEvents).toHaveLength(2);
+
+    // ...but the read-time fold collapses the duplicate acceptances: the handoff
+    // appears EXACTLY ONCE in the accepted list (and never as still-open), so a
+    // double-accept can't duplicate or de-sync the handoff's reported state.
+    const accepted = await listHandoffs({ status: 'accepted' });
+    expect(accepted.filter((x) => x.record.msg_id === h.msg_id)).toHaveLength(1);
+    const all = await listHandoffs();
+    expect(all.filter((x) => x.record.msg_id === h.msg_id)).toHaveLength(1);
+    expect(await listHandoffs({ status: 'open' })).toEqual([]);
+  });
 });
