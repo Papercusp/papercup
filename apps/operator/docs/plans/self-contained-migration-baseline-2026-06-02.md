@@ -32,9 +32,15 @@ tables fall into 3 groups (see D-007). Phase 2's "delete ensure-schema + 54 call
 ⚠️ `sql/` churn is **ongoing** (104/105/106 landed since the spec; peers reconciling 097-106 across native+embedded).
 Lock `libs/papercusp/libs/db/sql/` for the squash (P-005); new migrations stay 107+ so they don't conflict with archiving 001-106.
 
-**Next:** P-004 (embedded-pg boot creates roles+extensions) → P-005 (land `000-baseline.sql`, archive 001-106; submodule
-commit + superproject pointer bump, no push) → P-007 (deployed-DB safety) → Phase 2 (delete ALL runtime DDL, now safe
-per green P-006) → Phase 3 (strict gate / drizzle regen / retire seed-restore / governance) → Phase 4 (integration tier).
+**DONE so far (all committed):** P-001/002/003 (generator+sanitizer), P-004 (boot roles+ext), P-005 (squash: 000-baseline.sql + 117 archived, submodule 15f9122→pointer-bumped), P-006 (diff gate GREEN + durable `verify-baseline.ts`), P-007 (deployed-safety proven for coherent DBs; live `:5432` drift flagged), P-009 (42P01 tolerance removed), **P-011 (STRICT GATE — `fresh-migrate.integration.test.ts` 6/6 green against pgvector) + test-config→pgvector image**.
+
+**REMAINING (next loop iterations):**
+- **P-008 (Phase 2, BIG/destructive):** delete `ensure-schema.ts` + `ensure-schema-dogfood.ts` + 65 fns + **135 `await ensureX()` call sites across 45 files**. Also (expanded scope): the 2nd migration system (`lib/commands/migrations/` + audit-writer), orchestrator `*-pg.ts` creators, endpoint-route + feature-module inline creators. KEEP generic-lib ensure APIs. Verify: tsc + test:affected + verify-baseline still green. SAFE per green P-006 (all tables in the baseline) — risk is purely code-correctness; gate every commit on tsc.
+- **P-010:** Tauri desktop boot smoke (own Xvfb) after the deletion.
+- **P-012:** drizzle regen via pull-schema.mjs against a baseline-built DB.
+- **P-013:** retire seed-restore branch in embedded-pg boot (D-004); measure fresh-boot.
+- **P-014:** governance docs (storage-policy.mdx + CLAUDE.md + testing: "add a migration, not an ensure fn").
+- **P-015/016/017:** integration globalSetup (pgvector image proven viable by P-011) + author tool-suite tests + run full suite.
 
 ## Background
 
@@ -63,12 +69,12 @@ source of truth**, then stands up the integration tier. See the spec for full in
 ## Phase 2 — Delete ensure-schema (proven redundant)
 
 - **P-008** `todo` Delete `apps/operator/lib/ensure-schema.ts` + `ensure-schema-dogfood.ts` + the `autoloop.ts` inline CREATE; remove all 54 operator call sites (the `await ensureXxx()` guard + import at each). **Keep** generic-lib ensure APIs (`@papercusp/coordination/*`) — the operator just stops calling them. Acceptance: 0 references to the deleted symbols; `tsc` clean. blocked-by P-006.
-- **P-009** `todo` Remove the migration runner's `42P01`-tolerance (`migration-runner.js`) so empty→head applies with **zero skips**. Acceptance: a real `42P01` now throws (regression guard for the original token_index bug stays loud). blocked-by P-006.
+- **P-009** `done` Removed the migration runner's `42P01`-tolerance (`migration-runner.js`, submodule `3568195`). Empty→head now applies with **zero skips**; any error throws loudly. Verified by verify-baseline (still green, no skips) + the P-011 strict gate.
 - **P-010** `todo` Re-verify: Tauri desktop boot + core-flow smoke per `/internal/docs/testing` + `agent-e2e` (the app works with no lazy ensures); `npm run test:affected`. Acceptance: desktop boots, core flows green. blocked-by P-008, P-009.
 
 ## Phase 3 — Strict gate + regen + governance
 
-- **P-011** `todo` Replace `apps/operator/test/fresh-migrate.integration.test.ts` tripwire with the STRICT SUCCESS GATE already sketched in that file: clean apply from empty + idempotent re-run (second run applies 0) + one tracker row per migration. Acceptance: gate green. blocked-by P-009.
+- **P-011** `done` Replaced the `fresh-migrate.integration.test.ts` tripwire with the STRICT SUCCESS GATE: empty→head applies with zero skips, ≥184 harness_shared tables, one tracker row per migration, idempotent 2nd run, raw baseline re-apply no-op, filename-keyed PK safety. **6/6 green** vs a real pgvector container. Also switched `@papercusp/test-config` `getTestPg` → `pgvector/pgvector:pg16` (test-config submodule `4ab9097`) so the tier can build the baseline's `vector(N)` columns (unblocks P-015).
 - **P-012** `todo` Refresh Drizzle via `pull-schema.mjs` against a baseline-built DB; expect ≈ no-op diff; commit refreshed `schema.ts`/`generated.reference.sql`. Acceptance: types compile, diff explained. blocked-by P-006.
 - **P-013** `todo` Retire seed-restore: remove the `PAPERCUSP_PG_SEED_DUMP_PATH` seed-restore branch from the embedded-pg boot; measure fresh-boot time. Acceptance: fresh embedded-pg boot builds the full schema via the baseline within acceptable time (record the number). blocked-by P-005.
 - **P-014** `todo` Governance docs: schema changes = a new migration (`104+`), **no runtime DDL**, run `pull-schema.mjs` after migrating. Update `system/storage-policy.mdx` + `CLAUDE.md` + testing docs (new-table workflow: "add an ensure fn" → "add a migration"). Acceptance: docs build; the old ensure-schema workflow is removed from guidance.
