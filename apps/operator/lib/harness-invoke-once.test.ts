@@ -77,6 +77,28 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
     expect(buildInvokeOnce(spec()).env.DATABASE_URL).toBe('postgres://admin/resolved');
   });
 
+  it('PAPERCUSP_DATABASE_URL tracks DATABASE_URL so the worker pg-bootstrap hits the SAME DB', () => {
+    // pg-bootstrap.defaultDsn reads PAPERCUSP_DATABASE_URL (NOT DATABASE_URL), then
+    // ~/.papercusp/embedded-pg.json, then :5432/papercusp. If unset, a worker whose
+    // operator DB ≠ that fallback (the gym) connects to the wrong DB. Mirror DATABASE_URL
+    // onto PAPERCUSP_DATABASE_URL so the worker's bootstrap tracks the operator's DB.
+    vi.stubEnv('PAPERCUSP_DATABASE_URL', undefined as unknown as string);
+    vi.stubEnv('DATABASE_URL', 'postgres://gym/db');
+    expect(buildInvokeOnce(spec()).env.PAPERCUSP_DATABASE_URL).toBe('postgres://gym/db');
+  });
+
+  it('PAPERCUSP_DATABASE_URL: an explicit value is kept (not overwritten by DATABASE_URL)', () => {
+    vi.stubEnv('PAPERCUSP_DATABASE_URL', 'postgres://explicit/pg');
+    vi.stubEnv('DATABASE_URL', 'postgres://other/db');
+    expect(buildInvokeOnce(spec()).env.PAPERCUSP_DATABASE_URL).toBe('postgres://explicit/pg');
+  });
+
+  it('PAPERCUSP_DATABASE_URL: empty DATABASE_URL falls through to the resolved admin URL', () => {
+    vi.stubEnv('PAPERCUSP_DATABASE_URL', undefined as unknown as string);
+    vi.stubEnv('DATABASE_URL', '');
+    expect(buildInvokeOnce(spec()).env.PAPERCUSP_DATABASE_URL).toBe('postgres://admin/resolved');
+  });
+
   it('DATABASE_URL: an explicit value is kept', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://explicit/db');
     expect(buildInvokeOnce(spec()).env.DATABASE_URL).toBe('postgres://explicit/db');

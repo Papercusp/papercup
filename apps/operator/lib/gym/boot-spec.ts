@@ -58,10 +58,16 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
   }
 
   const env: Record<string, string> = {
-    // Hermetic PG: pin BOTH keys getHarnessAdminUrl() consults so neither the live
-    // DATABASE_URL nor a live ~/.papercusp/embedded-pg.json can leak in.
+    // Hermetic PG: pin every DSN key the operator AND its spawned worker subprocess
+    // consult. getHarnessAdminUrl() (operator side) reads HARNESS_ADMIN_DATABASE_URL >
+    // DATABASE_URL; the orchestrator pg-bootstrap (WORKER subprocess, inheriting this
+    // env) reads PAPERCUSP_DATABASE_URL > ~/.papercusp/embedded-pg.json > :5432/papercusp.
+    // Pin ALL THREE so neither the live DATABASE_URL nor a live embedded-pg.json can leak
+    // in — without PAPERCUSP_DATABASE_URL the worker silently connects to the live dev DB
+    // (a hermeticity breach) where the gym harness schema is absent → UPDATE 42P01.
     DATABASE_URL: cfg.gymDatabaseUrl,
     HARNESS_ADMIN_DATABASE_URL: cfg.gymDatabaseUrl,
+    PAPERCUSP_DATABASE_URL: cfg.gymDatabaseUrl,
     PAPERCUSP_HONO_PORT: String(cfg.honoPort),
     PAPERCUSP_BIND_HOST: cfg.bindHost ?? '127.0.0.1',
     PAPERCUSP_WORKSPACE_ID: cfg.workspaceId,

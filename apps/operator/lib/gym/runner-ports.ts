@@ -61,6 +61,16 @@ export function createGymRunnerPorts(cfg: GymRunnerPortsConfig): GymRunnerPorts 
         body: JSON.stringify({ slug, path: clonePath }),
       });
       if (!res.ok) throw new Error(`registerThrowawayHarness ${slug} → ${res.status}: ${await res.text()}`);
+      // The route returns HTTP 200 even when scaffoldHarnessSchema() throws — it
+      // reports the failure as `provisioning:{ok:false,error}`. A swallowed scaffold
+      // failure means the per-harness `harness_features` VIEW is never created, and
+      // the worker's `UPDATE harness_features` 42P01s deep in the pipeline. Fail loud
+      // HERE so the gym surfaces the real cause at registration, not as a mystery
+      // mid-run error. (Missing/true `provisioning` → success: non-scaffold paths.)
+      const body = (await res.json().catch(() => ({}))) as { provisioning?: { ok?: boolean; error?: string } };
+      if (body.provisioning && body.provisioning.ok === false) {
+        throw new Error(`registerThrowawayHarness ${slug}: schema scaffold failed: ${body.provisioning.error ?? 'unknown error'}`);
+      }
     },
 
     async applyPromptOverride({ workspaceId, slug, role, promptMd }) {

@@ -32,6 +32,17 @@ describe('buildGymOperatorBootSpec', () => {
     expect(env.HARNESS_ADMIN_DATABASE_URL).toBe(base.gymDatabaseUrl);
   });
 
+  it('ALSO pins PAPERCUSP_DATABASE_URL — the key the WORKER subprocess pg-bootstrap reads', () => {
+    // The worker subprocess (invoke-once → orchestrator pg-bootstrap.defaultDsn) resolves
+    // its DSN from PAPERCUSP_DATABASE_URL > ~/.papercusp/embedded-pg.json > :5432/papercusp.
+    // It does NOT read DATABASE_URL/HARNESS_ADMIN_DATABASE_URL. If the gym leaves this unset
+    // the worker connects to the LIVE dev DB (a hermeticity breach) where the gym harness
+    // schema doesn't exist → `UPDATE harness_features` 42P01s. Pin it to the gym PG so the
+    // worker (inheriting the operator's env) connects to the dedicated gym database.
+    const { env } = buildGymOperatorBootSpec(base);
+    expect(env.PAPERCUSP_DATABASE_URL).toBe(base.gymDatabaseUrl);
+  });
+
   it('enables DBOS, pins the port, bind host, and workspace', () => {
     const { env } = buildGymOperatorBootSpec(base);
     expect(env.PAPERCUSP_DBOS_ENABLE).toBe('1');

@@ -58,6 +58,40 @@ describe('createGymRunnerPorts', () => {
     expect(JSON.parse(reqs[0].init.body as string)).toEqual({ slug: 'gymx', path: '/c/gymx' });
   });
 
+  it('registerThrowawayHarness throws (fail-loud) when scaffold failed even on HTTP 200', async () => {
+    // The /api/harness/projects route swallows a scaffoldHarnessSchema() failure:
+    // it returns HTTP 200 / ok:true with provisioning:{ok:false,error}. If the port
+    // ignores `provisioning`, the per-harness `harness_features` VIEW is never created
+    // and the worker's `UPDATE harness_features` later 42P01s deep in the pipeline.
+    // The port MUST surface the scaffold error at registration time.
+    const { config } = cfg({
+      fetchFn: (async (url: string, init: RequestInit) => ({
+        ok: true,
+        status: 200,
+        text: async () => 'unused',
+        json: async () => ({
+          ok: true,
+          project: { slug: 'gymx', path: '/c/gymx' },
+          provisioning: { ok: false, error: 'relation "harness_shared.harness_features_consolidated" does not exist' },
+        }),
+      })) as unknown as typeof fetch,
+    });
+    const p = createGymRunnerPorts(config);
+    await expect(
+      p.registerThrowawayHarness({ slug: 'gymx', clonePath: '/c/gymx', workspaceId: 'gym-ws' }),
+    ).rejects.toThrow(/scaffold|provisioning|harness_features_consolidated/);
+  });
+
+  it('registerThrowawayHarness succeeds when provisioning.ok is true (or absent)', async () => {
+    // ok:true + provisioning.ok:true → no throw (the default cfg fake omits provisioning,
+    // which must also be treated as success so non-scaffold registration paths still work).
+    const { config } = cfg();
+    const p = createGymRunnerPorts(config);
+    await expect(
+      p.registerThrowawayHarness({ slug: 'gymx', clonePath: '/c/gymx', workspaceId: 'gym-ws' }),
+    ).resolves.toBeUndefined();
+  });
+
   it('startPipeline hits the admin route with the superuser bearer + returns the workflow id', async () => {
     const { config, reqs } = cfg();
     const p = createGymRunnerPorts(config);

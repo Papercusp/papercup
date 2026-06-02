@@ -98,6 +98,18 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // `DATABASE_URL=''`, which spawn-mcp reads as "no PG DSN" and refuses to sign
     // the MCP URL (observed breaking a durable-pipeline director invoke).
     DATABASE_URL: process.env.DATABASE_URL || getHarnessAdminUrl(),
+    // The orchestrator's pg-bootstrap (which the spawned invoke-once subprocess runs)
+    // resolves its DSN from PAPERCUSP_DATABASE_URL > ~/.papercusp/embedded-pg.json >
+    // hardcoded :5432/papercusp — it does NOT read DATABASE_URL. So setting DATABASE_URL
+    // alone is NOT enough to make the worker "hit the SAME Postgres the operator uses":
+    // when the operator's DB ≠ the :5432/papercusp fallback (e.g. the harness gym's
+    // dedicated PG), the worker connects to the wrong DB and `UPDATE harness_features`
+    // 42P01s (the gym's per-harness schema is absent there). Mirror the resolved DSN
+    // onto PAPERCUSP_DATABASE_URL so the worker's bootstrap tracks the operator's DB.
+    // For the live fleet this equals DATABASE_URL (= the live DB the fallback already
+    // resolved to), so it's a no-op there; an explicit PAPERCUSP_DATABASE_URL is kept.
+    PAPERCUSP_DATABASE_URL:
+      process.env.PAPERCUSP_DATABASE_URL || process.env.DATABASE_URL || getHarnessAdminUrl(),
   };
   if (spec.resultPath) env.RESULT_PATH = spec.resultPath;
   for (const [k, v] of Object.entries(spec.extraEnv ?? {})) {
