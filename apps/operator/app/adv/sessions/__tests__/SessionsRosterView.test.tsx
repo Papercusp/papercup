@@ -189,6 +189,24 @@ describe('SessionsRosterView', () => {
     expect(getByText('Recently ended')).toBeTruthy();
   });
 
+  it('heads each plan group with the plan title when known, keeping the slug as subtitle (P-006)', async () => {
+    const { findByText, container } = render(
+      <SessionsRosterView
+        planFilters={[]}
+        workspaceId="ws1"
+        planTitleBySlug={new Map([['dbos-retire', 'Retire DBOS']])}
+      />,
+    );
+    // The group header now shows the human title, not the raw slug.
+    const head = await findByText('Retire DBOS');
+    expect(head.className).toContain('pc-roster__group-title');
+    // …and the slug is preserved as the subtitle so it stays discoverable.
+    const sub = [...container.querySelectorAll('.pc-roster__group-sub')].find(
+      (e) => e.textContent === 'dbos-retire',
+    );
+    expect(sub).toBeTruthy();
+  });
+
   it('scopes the fetch URL to the workspace', async () => {
     render(<SessionsRosterView planFilters={[]} workspaceId="ws9" />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
