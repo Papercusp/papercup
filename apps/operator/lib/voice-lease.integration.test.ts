@@ -35,10 +35,11 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('voicelease');
   // ensureLeaseTable's DDL GRANTs to harness_app; create the role so its
-  // CREATE-TABLE batch commits. Pre-create the table so ensureLeaseTable's
-  // CREATE-IF-NOT-EXISTS is a no-op and `ensured` can stay memoized.
+  // CREATE-TABLE batch commits. The role is CLUSTER-wide and persists on the
+  // reused testcontainer, so creating it must be idempotent. Pre-create the
+  // table so ensureLeaseTable's CREATE-IF-NOT-EXISTS is a no-op.
   await db.sql.unsafe(`
-    CREATE ROLE harness_app;
+    DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     CREATE TABLE harness_shared.voice_lease (
       workspace_id   TEXT PRIMARY KEY,
       owner_id       TEXT NOT NULL,
