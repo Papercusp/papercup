@@ -91,3 +91,54 @@ describe('STT health monitor', () => {
     expect(events).toContain('reconnect:voicemode');
   });
 });
+
+// P-018 (voice-production-test-coverage): the branches the real-timer tests
+// above don't exercise — a throwing probe, the no-transition (stable) case,
+// and stop() halting the loop. Fake timers keep these deterministic.
+describe('STT health monitor — branch coverage', () => {
+  afterEach(() => vi.useRealTimers());
+
+  function mk(probe: () => Promise<boolean>, intervalMs = 20) {
+    const events: string[] = [];
+    const m = startSttHealthMonitor(
+      'voicemode',
+      probe,
+      {
+        onDisconnect: (k) => events.push(`disconnect:${k}`),
+        onReconnect: (k) => events.push(`reconnect:${k}`),
+      },
+      intervalMs,
+    );
+    return { events, m };
+  }
+
+  it('treats a throwing probe as down → fires disconnect', async () => {
+    vi.useFakeTimers();
+    const { events, m } = mk(async () => {
+      throw new Error('engine gone');
+    });
+    await vi.advanceTimersByTimeAsync(25); // anchor tick resolves
+    m.stop();
+    expect(events).toContain('disconnect:voicemode');
+  });
+
+  it('fires nothing while the engine stays up (no spurious transitions)', async () => {
+    vi.useFakeTimers();
+    const { events, m } = mk(async () => true);
+    await vi.advanceTimersByTimeAsync(100); // several intervals
+    m.stop();
+    expect(events).toEqual([]);
+  });
+
+  it('stop() halts the probe loop and is idempotent', async () => {
+    vi.useFakeTimers();
+    const probe = vi.fn(async () => true);
+    const { m } = mk(probe);
+    await vi.advanceTimersByTimeAsync(25);
+    const callsAtStop = probe.mock.calls.length;
+    m.stop();
+    m.stop(); // idempotent — must not throw
+    await vi.advanceTimersByTimeAsync(200);
+    expect(probe.mock.calls.length).toBe(callsAtStop); // no probes after stop
+  });
+});
