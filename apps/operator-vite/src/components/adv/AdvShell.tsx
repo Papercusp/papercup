@@ -475,6 +475,17 @@ export default function AdvShell({
           border-color: rgba(34, 197, 94, 0.4);
           cursor: default;
         }
+        /* Amber "N plans waiting" nudge — started plans with no running
+           harness to pick them up. Matches the Plans tab's amber accent. */
+        .pc-advshell__action--waiting {
+          background: rgba(245, 158, 11, 0.14);
+          color: #fcd34d;
+          border-color: rgba(245, 158, 11, 0.4);
+        }
+        .pc-advshell__action--waiting:hover {
+          background: rgba(245, 158, 11, 0.24);
+          color: #fde68a;
+        }
         .pc-advshell__pills {
           display: flex;
           gap: 4px;

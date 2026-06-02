@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Square, Play } from 'lucide-react';
+import { Square, Play, AlertTriangle } from 'lucide-react';
+import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import AgentThinkingPopover from '@/app/harness/AgentThinkingPopover';
+import { fetchPlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
 
 interface AgentRun {
   runId: string;
@@ -30,6 +32,23 @@ interface Props {
 const PHASE = 'staging';
 
 /**
+ * Count plans that are started but not yet worked to completion. A started
+ * plan needs a *running* harness to pick it up, so when the harness is
+ * stopped these plans are "waiting" — nothing is eligible to advance them.
+ * Pure + exported for unit tests.
+ */
+export function countWaitingPlans(
+  plans: readonly Pick<PlanListRow, 'startStatus'>[],
+): number {
+  return plans.filter((p) => p.startStatus === 'started').length;
+}
+
+/** Human label for the nudge — pluralized. Exported for unit tests. */
+export function waitingLabel(n: number): string {
+  return `${n} plan${n === 1 ? '' : 's'} waiting`;
+}
+
+/**
  * Full-width harness status bar rendered above the tab strip in AdvShell.
  * Shows harness active/stopped state, start/stop controls, and one pill
  * per in-flight agent run. Ported from ActiveAgentsBar in HarnessDashboard.
@@ -45,6 +64,16 @@ export default function AdvNowRunning({ slug }: Props) {
   // seconds) before the agents endpoint reports the first running agent.
   // While true we show "waiting for agent…" and poll faster.
   const [awaitingAgent, setAwaitingAgent] = useState(false);
+  // Count of started-but-unpicked plans, shown only while the harness is
+  // stopped (see the effect below). Drives the "N plans waiting" nudge.
+  const [waitingCount, setWaitingCount] = useState(0);
+
+  // Navigation targets for the nudge — jump to the Plans tab filtered to the
+  // Running bucket (= started plans). We only WRITE these; PlansClient and
+  // AdvShell own the canonical enum parsers (serialized output is identical).
+  const [, setAdvTab] = useQueryState('tab', parseAsString);
+  const [, setPlansView] = useQueryState('view', parseAsString);
+  const [, setPlanBuckets] = useQueryState('pBuckets', parseAsArrayOf(parseAsString));
 
   const [hovered, setHovered] = useState<{ run: AgentRun; rect: DOMRect } | null>(null);
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -99,6 +128,23 @@ export default function AdvNowRunning({ slug }: Props) {
     return () => window.clearTimeout(id);
   }, [awaitingAgent]);
 
+  // While the harness is stopped, count started-but-unpicked plans so the
+  // bar can nudge "N plans waiting". A running harness is already working
+  // them, so we skip the fetch entirely in that state (no extra request).
+  useEffect(() => {
+    const stopped = !(alive === true || awaitingAgent || runs.length > 0);
+    if (!slug || !stopped) { setWaitingCount(0); return; }
+    let cancelled = false;
+    const load = () => {
+      fetchPlanList({ harness_slugs: [slug] })
+        .then((res) => { if (!cancelled) setWaitingCount(countWaitingPlans(res.plans)); })
+        .catch(() => { /* best-effort nudge — ignore failures */ });
+    };
+    load();
+    const id = window.setInterval(load, 8000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [slug, alive, awaitingAgent, runs.length]);
+
   const launchHarness = useCallback(async () => {
     if (!slug || starting) return;
     setStarting(true);
@@ -141,6 +187,12 @@ export default function AdvNowRunning({ slug }: Props) {
       toast.error('Stop failed', { description: String(e) });
     }
   }, [slug]);
+
+  const showWaitingPlans = useCallback(() => {
+    void setAdvTab('plans');
+    void setPlansView('plans');
+    void setPlanBuckets(['running']);
+  }, [setAdvTab, setPlansView, setPlanBuckets]);
 
   if (!slug) return null;
 
@@ -202,6 +254,20 @@ export default function AdvNowRunning({ slug }: Props) {
             );
           })}
         </div>
+      )}
+
+      {/* Nudge: started plans exist but the harness isn't running to pick
+          them up. Click → Plans tab, Running filter. */}
+      {!effectivelyAlive && waitingCount > 0 && (
+        <button
+          type="button"
+          className="pc-advshell__action pc-advshell__action--waiting"
+          onClick={showWaitingPlans}
+          title="These plans are started but the harness isn't running — click to view them"
+        >
+          <AlertTriangle size={11} aria-hidden />
+          {waitingLabel(waitingCount)}
+        </button>
       )}
 
       {/* Start (when stopped) / Stop (when active) */}
