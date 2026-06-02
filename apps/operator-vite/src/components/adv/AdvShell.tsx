@@ -6,6 +6,7 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import {
   BookOpen,
   Boxes,
+  Check,
   FlaskConical,
   GitBranch,
   Lightbulb,
@@ -48,7 +49,7 @@ export const ADV_TABS: ReadonlyArray<{
   supportsAll?: boolean;
 }> = [
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
-  { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
+  { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
   { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250', supportsAll: true },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
@@ -67,6 +68,9 @@ type HarnessProjectLite = {
   // selector can render a tree without paying for /projects.
   parent_slug?: string | null;
   harness_kind?: string | null;
+  // Whether the harness has been shared (a `.harness/shared.json` exists).
+  // Drives the header's Share button → Shared badge swap.
+  is_shared?: boolean;
 };
 
 /**
@@ -165,6 +169,10 @@ export default function AdvShell({
   // have no single target, so blank them out.
   const allMode = scopeMode === 'all';
   const singleSlug = allMode ? null : activeSlug;
+  // Is the active (single) harness already shared? `is_shared` rides the
+  // projects/lite payload AdvShell already fetched (no extra call); it flips
+  // the header's Share button to a "Shared" badge.
+  const activeIsShared = !!(singleSlug && projects.find((p) => p.slug === singleSlug)?.is_shared);
 
   // Under "all", only the workspace-wide tabs are shown. If a per-harness
   // tab was active when "all" was picked (or someone deep-links
@@ -234,14 +242,23 @@ export default function AdvShell({
               <Plus size={13} aria-hidden /> New
             </button>
             {!allMode && activeSlug && (
-              <button
-                type="button"
-                className="pc-advshell__action pc-advshell__action--share"
-                title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
-                onClick={() => void setShareOpen(true)}
-              >
-                <Share2 size={13} aria-hidden /> Share
-              </button>
+              activeIsShared ? (
+                <span
+                  className="pc-advshell__action pc-advshell__action--shared"
+                  title={`${activeSlug} is shared — published to GitHub`}
+                >
+                  <Check size={13} aria-hidden /> Shared
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="pc-advshell__action pc-advshell__action--share"
+                  title={`Share ${activeSlug} — publish to GitHub + invite collaborators`}
+                  onClick={() => void setShareOpen(true)}
+                >
+                  <Share2 size={13} aria-hidden /> Share
+                </button>
+              )
             )}
           </div>
           {/* Inline status: dot + label + pills + start/stop */}
@@ -287,7 +304,12 @@ export default function AdvShell({
       {shareOpen && !allMode && activeSlug && (
         <ShareWizard
           open={shareOpen}
-          onClose={() => void setShareOpen(false)}
+          onClose={() => {
+            void setShareOpen(false);
+            // Re-fetch projects/lite so a just-completed share flips the
+            // header button to the Shared badge (lite cache TTL is ~1s).
+            setRefreshNonce((n) => n + 1);
+          }}
           harnessSlug={activeSlug}
         />
       )}
@@ -444,6 +466,14 @@ export default function AdvShell({
         .pc-advshell__action--share:hover {
           background: rgba(56, 189, 248, 0.26);
           color: #e7f7ff;
+        }
+        /* Shared = a non-interactive status badge (green "done" tint) shown in
+           place of the Share button once the harness has been shared. */
+        .pc-advshell__action--shared {
+          background: rgba(34, 197, 94, 0.16);
+          color: #86efac;
+          border-color: rgba(34, 197, 94, 0.4);
+          cursor: default;
         }
         .pc-advshell__pills {
           display: flex;

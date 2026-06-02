@@ -28,7 +28,7 @@ function getAdvTitle(tab: AdvTabId): string {
   if (tab in ADV_HARNESS_PANEL_LABELS) {
     return ADV_HARNESS_PANEL_LABELS[tab as keyof typeof ADV_HARNESS_PANEL_LABELS];
   }
-  return 'Plans';
+  return 'Create';
 }
 
 function renderAdvTab(tab: AdvTabId) {
