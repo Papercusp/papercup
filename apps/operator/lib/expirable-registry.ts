@@ -133,10 +133,17 @@ async function sweepRegistration(reg: ExpirableRegistration): Promise<void> {
       );
     }
   } catch (e) {
-    console.warn(
-      `[expirable-registry] sweep failed for ${reg.table}:`,
-      (e as Error)?.message ?? e,
-    );
+    // 42P01 = undefined_table. Some registered tables (e.g. operator_claims)
+    // are created by provision / ensure-schema, which can run AFTER the sweep
+    // loop has already started — so the first ticks hit a not-yet-existing
+    // table. That's an expected transient at boot (the next tick succeeds once
+    // the table exists), so swallow it silently; warn loudly on everything else.
+    if ((e as { code?: string })?.code !== '42P01') {
+      console.warn(
+        `[expirable-registry] sweep failed for ${reg.table}:`,
+        (e as Error)?.message ?? e,
+      );
+    }
   }
 }
 
