@@ -205,9 +205,10 @@ A single choke point + a single wrapper that every backend goes through.
   `runAgentTurn()` wrapper (governor.acquire → backend → record → classify → policy;
   returns `TurnResult|TurnError`, never throws on handled classes). blocked-by: P-001, P-002
   importance: high
-- **P-004** `todo` Rewrite `meridianAgentChat` to honor `retry-after` + `*-reset` headers
-  and go through `runAgentTurn` (the immediate fix for judge/gym/brains). blocked-by:
-  P-003 importance: high
+- **P-004** `done` (flag-gated `PAPERCUSP_AGENT_GOVERNOR=1`; chat-stream.ts governedMeridian
+  + headersToRecord, +2 tests) Rewrite `meridianAgentChat` to honor `retry-after` + `*-reset`
+  headers and go through `runAgentTurn` (the immediate fix for judge/gym/brains). Default
+  OFF = byte-identical live path. blocked-by: P-003 importance: high
 - **P-005** `todo` Wrap the CLI spawn path (claude/omp/codex) in `runAgentChat` at the
   **subprocess-turn** granularity: enforce the concurrency + spawn-rate cap (the burst
   fix), classify the turn outcome from exit+stderr (P-011 extractors), apply policy
