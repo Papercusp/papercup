@@ -40,7 +40,15 @@ export default defineTool({
   rolesQuota: { operator: { perRun: 50 } },
   args: z.discriminatedUnion('op', [
     z.object({ op: z.literal('get') }),
-    z.object({ op: z.literal('set'), key: z.string().min(1), value: z.unknown() }),
+    // `value` is a typed union (not z.unknown()) so the tool's JSON Schema is
+    // valid for STRICT function-calling backends (OpenAI rejects an untyped
+    // empty/anyOf-without-type schema: "anyOf must contain schemas with a
+    // specified type"). omp config knobs are primitives (model id, path, flag).
+    z.object({
+      op: z.literal('set'),
+      key: z.string().min(1),
+      value: z.union([z.string(), z.number(), z.boolean()]),
+    }),
     z.object({ op: z.literal('unset'), key: z.string().min(1) }),
   ]),
   async handler(args, ctx) {
