@@ -297,4 +297,59 @@ describe('finalizeShare', () => {
     await expect(finalizeShare({ ...INPUT, topic: 'not-hex' }, d)).rejects.toMatchObject({ status: 400 });
     expect(ensureBinding).not.toHaveBeenCalled();
   });
+
+  // ── commitSharedJson (#2 follow-up: git-commit the file at finalize) ──────
+
+  it('calls commitSharedJson({projectDir,absPath}) after the write and surfaces it as commit', async () => {
+    const commitSharedJson = vi.fn(async (_a: { projectDir: string; absPath: string }) => ({
+      committed: true as const,
+      commit_sha: 'deadbeef',
+    }));
+    const { d, writeFileUtf8 } = deps({ commitSharedJson });
+    const r = await finalizeShare(INPUT, d);
+    expect(writeFileUtf8).toHaveBeenCalledTimes(1);
+    expect(commitSharedJson).toHaveBeenCalledWith({
+      projectDir: '/repo/papercup',
+      absPath: '/repo/papercup/.harness/shared.json',
+    });
+    expect(r.commit).toEqual({ committed: true, commit_sha: 'deadbeef' });
+  });
+
+  it('does NOT commit when the write is rejected (bad input)', async () => {
+    const commitSharedJson = vi.fn(async () => ({ committed: true as const }));
+    const { d } = deps({ commitSharedJson });
+    await expect(finalizeShare({ ...INPUT, topic: 'not-hex' }, d)).rejects.toMatchObject({ status: 400 });
+    expect(commitSharedJson).not.toHaveBeenCalled();
+  });
+
+  it('swallows a commitSharedJson throw — finalize still succeeds with commit.committed=false', async () => {
+    const commitSharedJson = vi.fn(async () => {
+      throw new Error('not a git repo');
+    });
+    const { d } = deps({ commitSharedJson });
+    const r = await finalizeShare(INPUT, d);
+    expect(r.ok).toBe(true);
+    expect(r.commit).toMatchObject({ committed: false, reason: 'not a git repo' });
+  });
+
+  it('omits commit when no commitSharedJson dep is provided', async () => {
+    const { d } = deps();
+    const r = await finalizeShare(INPUT, d);
+    expect(r.commit).toBeUndefined();
+  });
+
+  it('commitSharedJson is called AFTER the shared.json write (ordering)', async () => {
+    const callOrder: string[] = [];
+    const writeFileUtf8 = vi.fn(async () => {
+      callOrder.push('write');
+    });
+    const commitSharedJson = vi.fn(async () => {
+      callOrder.push('commit');
+      return { committed: true as const };
+    });
+    const { d: baseDeps } = deps({ commitSharedJson });
+    const d: FinalizeShareDeps = { ...baseDeps, writeFileUtf8 };
+    await finalizeShare(INPUT, d);
+    expect(callOrder.indexOf('write')).toBeLessThan(callOrder.indexOf('commit'));
+  });
 });

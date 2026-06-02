@@ -109,6 +109,21 @@ export interface FinalizeShareResult {
    * non-fatal warning. Absent when the publish succeeded or was not attempted.
    */
   bindingWarning?: string;
+  /**
+   * Outcome of the best-effort git-commit of shared.json (#2 follow-up).
+   * Absent when the `commitSharedJson` dep was not provided.
+   */
+  commit?: FinalizeShareCommit;
+}
+
+/** Outcome of committing shared.json into the harness repo (best-effort). */
+export interface FinalizeShareCommit {
+  /** True when a commit was actually created. */
+  committed: boolean;
+  /** The new commit SHA, when committed. */
+  commit_sha?: string;
+  /** Why no commit was made (nothing to commit, not a git repo, error, …). */
+  reason?: string;
 }
 
 export interface FinalizeShareDeps {
@@ -157,6 +172,19 @@ export interface FinalizeShareDeps {
     defaultBranch: string;
     github_remote: string;
   }) => Promise<EnsureBindingResult>;
+  /**
+   * Optional: git-commit the shared.json we just wrote, so a completed share
+   * leaves a clean COMMITTED state rather than a dangling untracked file (which
+   * otherwise only lands in git when an unrelated commit sweeps the tree).
+   * Commits ONLY shared.json (scoped pathspec) so it never sweeps unrelated
+   * work-in-progress into the share commit. Best-effort — a throw (not a git
+   * repo, mid-rebase, nothing to commit, …) is caught and recorded as
+   * `commit.committed=false`. Called right AFTER the write. Omit to skip.
+   */
+  commitSharedJson?: (args: {
+    projectDir: string;
+    absPath: string;
+  }) => Promise<FinalizeShareCommit>;
 }
 
 /** Raised on bad input / unknown harness; the handler maps it to a 4xx. */
@@ -217,6 +245,19 @@ export async function finalizeShare(
   await deps.mkdirp(stateDir);
   const absPath = join(projectDir, HARNESS_SHARED_CONFIG_REL_PATH);
   await deps.writeFileUtf8(absPath, JSON.stringify(config, null, 2));
+
+  // Persist the share into git (best-effort, #2): commit ONLY shared.json so a
+  // completed share leaves a clean committed state instead of a dangling
+  // untracked file that only lands in git when an unrelated commit sweeps the
+  // tree. Never fails the finalize — the on-disk file is already authoritative.
+  let commit: FinalizeShareCommit | undefined;
+  if (deps.commitSharedJson) {
+    try {
+      commit = await deps.commitSharedJson({ projectDir, absPath });
+    } catch (e) {
+      commit = { committed: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+  }
 
   // Publisher binding side effect (best-effort, D-003): publish the publisher's
   // own device-signed contributor file to the shared GitHub repo. This makes
@@ -281,6 +322,7 @@ export async function finalizeShare(
     ...(binding ? { binding } : {}),
     ...(bindingPublished !== undefined ? { bindingPublished } : {}),
     ...(bindingWarning !== undefined ? { bindingWarning } : {}),
+    ...(commit !== undefined ? { commit } : {}),
   };
 }
 
@@ -316,6 +358,40 @@ const realDeps: FinalizeShareDeps = {
   },
   writeFileUtf8: (absPath, contents) => writeFile(absPath, contents, 'utf8'),
   now: () => Date.now(),
+  // Commit ONLY shared.json (scoped pathspec) so the share lands deterministically
+  // in git instead of waiting for an unrelated commit to sweep the tree — and so it
+  // never packages unrelated work-in-progress. Best-effort: not-a-git-repo /
+  // nothing-to-commit / errors are returned, never thrown. `--no-verify` per the
+  // repo's commit convention (CLAUDE.md).
+  commitSharedJson: async ({ projectDir, absPath }) => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { relative } = await import('node:path');
+    const run = promisify(execFile);
+    const rel = relative(projectDir, absPath);
+    try {
+      await run('git', ['-C', projectDir, 'rev-parse', '--is-inside-work-tree']);
+    } catch {
+      return { committed: false, reason: 'not a git repository' };
+    }
+    try {
+      await run('git', ['-C', projectDir, 'add', '--', rel]);
+      const { stdout: status } = await run('git', [
+        '-C', projectDir, 'status', '--porcelain', '--', rel,
+      ]);
+      if (status.trim() === '') {
+        return { committed: false, reason: 'nothing to commit (shared.json unchanged)' };
+      }
+      await run('git', [
+        '-C', projectDir,
+        'commit', '--no-verify', '-m', `chore(share): record ${rel}`, '--', rel,
+      ]);
+      const { stdout: sha } = await run('git', ['-C', projectDir, 'rev-parse', 'HEAD']);
+      return { committed: true, commit_sha: sha.trim() };
+    } catch (e) {
+      return { committed: false, reason: e instanceof Error ? e.message : String(e) };
+    }
+  },
   // Reboot the harness in-process so it joins the swarm immediately. The Model
   // B substrate always boots (the PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE gate was
   // removed in Stage 4d), so the reboot always runs — picking up the freshly
