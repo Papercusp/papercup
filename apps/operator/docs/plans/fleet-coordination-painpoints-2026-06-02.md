@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Design captured + refined twice in review. Q1 confirmed (remove lock_acquired notifies at source, D-002). main-health split into code-health + service-health (D-005). Orchestration settled (D-007): the monitors are DBOS scheduled workflows (the `periodic-workflows.ts` pattern — skip-missed, flag-gated PAPERCUSP_DBOS_TIMERS, step retries), NOT setInterval; service-health + code-health + migration-drift-check all follow that shape; live output via the SSE/IPC bus + coord message. BullMQ confirmed NOT installed (DBOS-on-PG is the durable-job system). No code written.
+**State:** Buildable scope SHIPPED (autonomous loop, 2026-06-02). Phase 1 notify de-noise (filterInbox excludes notify by default + lock_acquired fire removed at source + 17,951 backlog rows GC'd + daily DBOS GC) — commit 8d83b3d15. Phase 2 migration drift-check (db:check_drift + post-boot warning) — 65380587d. Phase 3b service-health (DBOS 1-min probe + transition broadcast + dev:service_health) — e7ab0c1f8. Phase 4 build-info satisfied by existing /api/desktop/version. Phase 6 docs/tests — 96719b89a. All tests green, type-clean. DEFERRED: 3a code-health (D-009 — no clean green signal on this box: 553 pre-existing tsc errors + stale origin/main); SSE health-bus (UI nicety). NEEDS-HUMAN: P-012 spawn empty-stub bug (D-010 — needs a live repro) + P-015 ship gate.
 
-**Next:** One open question remains — P-007 (native :5432 migration drift: opt-in auto-apply vs detection-only; lean detection-only). Then implement Phase 1 (notify de-noise) first, then the DBOS scheduled-workflow monitors (Phases 3a/3b) + drift-check (Phase 2) as DBOS workflows.
+**Next:** Sibling plan dbos-durable-flows-adoption-2026-06-02 is the remaining work (provision/runner + outbox-drain first) — higher-risk live-flow migrations, build flag-gated + A/B per D-002/D-003.
 
 ## Background — the audit
 
@@ -29,30 +29,30 @@ The lock-solvable items are DONE under `named-resource-locks-drain` (shop / desk
 
 The auto-generated `notify` firehose has **no push-consumer value**: an agent learns about file contention when *it* tries to acquire (the lock hook tells it then). So the fix is to stop generating + pushing it — NOT to collapse it to a "+N suppressed" line (that count is noise too; D-002).
 
-- **P-001** `todo` Injection hook (`posttooluse-coord-inbox.sh`) surfaces ONLY interrupts — `message` / `handoff` / `escalation` / `ack` — and drops `notify` from the injection ENTIRELY (no line, no count). importance: high
-- **P-002** `todo` At the SOURCE: stop auto-firing `lock_acquired` notifies (9,714 rows, zero consumer). Keep the `coord:watch` / `notify` mechanism only for explicitly-requested watches an agent reads via `coord:inbox` on demand — never auto-pushed. importance: high
-- **P-003** `todo` GC the accumulated notify rows (17k+) and add a retention window so the table can't grow unbounded. blocked-by: P-002
-- **P-004** `todo` `coord:inbox` defaults to excluding `notify` (opt-in via an explicit `kinds` arg), so even a direct inbox read isn't firehosed. importance: high
+- **P-001** `done` Injection hook (`posttooluse-coord-inbox.sh`) surfaces ONLY interrupts — `message` / `handoff` / `escalation` / `ack` — and drops `notify` from the injection ENTIRELY (no line, no count). importance: high
+- **P-002** `done` At the SOURCE: stop auto-firing `lock_acquired` notifies (9,714 rows, zero consumer). Keep the `coord:watch` / `notify` mechanism only for explicitly-requested watches an agent reads via `coord:inbox` on demand — never auto-pushed. importance: high
+- **P-003** `done` GC the accumulated notify rows (17k+) and add a retention window so the table can't grow unbounded. blocked-by: P-002 (one-time delete cleared 17,951 rows; daily DBOS GC tick added)
+- **P-004** `done` `coord:inbox` defaults to excluding `notify` (opt-in via an explicit `kinds` arg), so even a direct inbox read isn't firehosed. importance: high
 
 ## Phase 2 — Native-PG migration drift detection
 
 Root cause confirmed: native `:5432` (this dev box's substrate) has **no migration auto-runner** — the operator's `applyPendingMigrations` (`instrumentation-node.ts:138`) is embedded-pg-only. Agents hand-apply to `:5432` and drift (missing columns, boot crashes from out-of-order DDL).
 
-- **P-005** `todo` `db:check-drift` tool — diff `libs/papercusp/libs/db/sql/*.sql` against what's recorded applied on the live `:5432`; report missing (and unexpected) migrations. Detection only.
-- **P-006** `todo` Surface drift as a boot/health warning (a notification / `/coord` signal) so it's caught before a runtime "missing column" failure.
-- **P-007** `needs-human` Decide: add an OPT-IN native `:5432` auto-apply, or stay detection-only — respecting "embedded-pg is the source of truth, native is a dev chore" (CLAUDE.md). importance: normal
+- **P-005** `done` `db:check-drift` tool — diff `libs/papercusp/libs/db/sql/*.sql` against what's recorded applied on the live `:5432`; report missing (and unexpected) migrations. Detection only.
+- **P-006** `done` Surface drift as a boot/health warning (a notification / `/coord` signal) so it's caught before a runtime "missing column" failure. (post-boot drift warning in instrumentation-node + db:check_drift tool)
+- **P-007** `done` Decide: add an OPT-IN native `:5432` auto-apply, or stay detection-only — respecting "embedded-pg is the source of truth, native is a dev chore" (CLAUDE.md). importance: normal (resolved: detection-only D-008)
 
 ## Phase 3 — main-health monitor
 
 Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept deletions without importer edits, a crash-looping host).
 
-- **P-008** `todo` A periodic `test:affected` + `tsc` check that, on RED, broadcasts a `main RED since <commit> (<area>)` coord message so the breaker is told fast.
+- **P-008** `blocked` A periodic `test:affected` + `tsc` check that, on RED, broadcasts a `main RED since <commit> (<area>)` coord message so the breaker is told fast. (no clean green-signal on this box D-009 — full tsc always-red 553 pre-existing, test:affected vs stale origin/main)
 - **P-009** `done` Decide where it runs (`/loop` / cron / the operator background loop / a git hook) + cadence. importance: normal (RESOLVED D-006: operator process — code-health via fs-watch on .git ref event, not poll, service-health via a voice-engine-health-style probe sweep; output via a health-bus @papercusp/sse + coord message)
 - **P-010** `todo` (optional) An OPT-IN pre-commit affected-typecheck a breaker can enable — explicitly NOT mandatory (the repo deliberately allows `--no-verify` + the commit-packages-whole-tree model). blocked-by: P-008
 
 ## Phase 4 — Host freshness (complements the locks)
 
-- **P-011** `todo` `/api/build-info` (or a tool) returns the running operator's commit SHA + process start time, so an agent can verify "is `:3070` running my commit?" before trusting a probe — the no-hot-reload stale-code trap (memory: verify-server-PID-before-measuring). Restart's BuildStatus pill is precedent.
+- **P-011** `done` `/api/build-info` (or a tool) returns the running operator's commit SHA + process start time, so an agent can verify "is `:3070` running my commit?" before trusting a probe — the no-hot-reload stale-code trap (memory: verify-server-PID-before-measuring). Restart's BuildStatus pill is precedent. (already provided by GET /api/desktop/version sidecarSha + sidecarStartedAtMs + nowMs — no new endpoint needed; service-health consumes it)
 
 ## Phase 5 — Harness-spawn empty-config-stub bug
 
@@ -60,8 +60,8 @@ Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept del
 
 ## Phase 6 — Tests & docs
 
-- **P-013** `todo` Tests for the notify removal (injection + inbox default), the drift-check, and the main-health broadcast.
-- **P-014** `todo` Document the coord-channel convention — `notify` is on-demand situational awareness, NOT a pushed interrupt — in the SU playbook + agent-spawning docs.
+- **P-013** `done` Tests for the notify removal (injection + inbox default), the drift-check, and the main-health broadcast. (per-unit tests: inbox 3, gcOldNotifies, migration-drift, service-health diffHealth 3)
+- **P-014** `done` Document the coord-channel convention — `notify` is on-demand situational awareness, NOT a pushed interrupt — in the SU playbook + agent-spawning docs.
 
 ## Phase 7 — Ship gate
 
@@ -70,17 +70,17 @@ Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept del
 
 ## Phase 3b — Service health (endpoints up)
 
-- **P-016** `todo` Endpoint registry: {name, url, probe-type} for the dev services — :3070 operator (HTTP 200 + build-info SHA), :3055 vite SPA (200 + HMR-ws), :4321 shop, :4848 zero-cache, :3350 scout, :3001 web, :8082 code-server, PG (dev:pg_health). Desktop has no HTTP health — see P-019. importance: high
+- **P-016** `done` Endpoint registry: {name, url, probe-type} for the dev services — :3070 operator (HTTP 200 + build-info SHA), :3055 vite SPA (200 + HMR-ws), :4321 shop, :4848 zero-cache, :3350 scout, :3001 web, :8082 code-server, PG (dev:pg_health). Desktop has no HTTP health — see P-019. importance: high
 
 
 ## Phase 3b — Service health (endpoints up)
 
-- **P-017** `todo` Poller: probe each registered endpoint on an interval; record up/down transitions (+ latency) in a `service_health` PG table (transitions, not every tick — avoid a new firehose). blocked-by: P-016
+- **P-017** `done` Poller: probe each registered endpoint on an interval; record up/down transitions (+ latency) in a `service_health` PG table (transitions, not every tick — avoid a new firehose). blocked-by: P-016 (probeAll + diffHealth + module-state restart-safe via unknown-as-up; no PG table needed)
 
 
 ## Phase 3b — Service health (endpoints up)
 
-- **P-018** `todo` Broadcast a coord message on a DOWN transition (and recovery) + surface current status in /coord. Use the message channel, NOT notify (Phase 1 just killed the notify firehose — don't recreate it). blocked-by: P-017
+- **P-018** `done` Broadcast a coord message on a DOWN transition (and recovery) + surface current status in /coord. Use the message channel, NOT notify (Phase 1 just killed the notify firehose — don't recreate it). blocked-by: P-017 (coord message on transition + dev:service_health snapshot; SSE health-bus UI pill deferred — see D-009)
 
 
 ## Phase 3b — Service health (endpoints up)
@@ -144,6 +144,24 @@ Output is UNCHANGED: DBOS owns durable execution + transactional state writes; t
 
 BullMQ is NOT installed (no `bullmq` import, absent from every package.json; the only `new Worker` is a Web Worker for embeddings) — DBOS-on-Postgres is the system, matching the repo's no-Redis / PG-by-default stance.
 Related: P-005, P-008, P-009, P-016, P-017
+
+
+### D-008 — P-007 resolved — native :5432 migration drift is detection-only
+Date: 2026-06-02
+User delegated. Native `:5432` migration drift = DETECTION-ONLY (`db:check-drift` + a boot warning, P-005/P-006), NOT a native auto-apply. Embedded-pg stays the ship-target source of truth; native `:5432` is a dev chore (CLAUDE.md) — auto-applying there would let code quietly depend on the chore having happened.
+Related: P-007
+
+
+### D-009 — Code-health monitor (3a) deferred — no reliable green signal on this box
+Date: 2026-06-02
+Service-health (3b) shipped. Code-health (P-008/P-010) is DEFERRED/blocked: there's no reliable always-green check here. Full `tsc --noEmit` is always-RED (553 pre-existing operator type errors), and `test:affected` diffs against a never-pushed, stale `origin/main` (→ broad + slow). A naive code-health monitor would fire on every commit — pure noise, the exact opposite of Phase 1's de-noise. Unblock options for later: (a) drive the 553 pre-existing tsc errors to zero so `tsc` becomes a valid gate; (b) a per-workspace affected-typecheck scoped to only the changed workspace(s); or (c) a committed green baseline to diff against. Also deferred: the SSE health-bus (live UI pill, D-005) — the coord transition-broadcast + `dev:service_health` snapshot already deliver the functional alerting; the SSE bus is a UI nicety, not load-bearing.
+Related: P-008, P-010
+
+
+### D-010 — Spawn empty-config-stub bug — investigation pointer (P-012)
+Date: 2026-06-02
+Bounded investigation: the per-spawn HOME / sandbox setup lives in `libs/papercusp/packages/orchestrator/src/invoke.ts` (`resolveSpawnHome`, `writeSignedSpawnCodexHome`, the sandbox cache-redirect that mkdir's CARGO_HOME/XDG_CACHE_HOME/etc., gitConfigNoPushEnv). The empty `package.json`/`bunfig.toml`/`.env.*` stubs reported by su-971b8d33 were NOT pinpointed to an explicit writeFile in a static read — they're likely seeded by the spawn-home or sandbox path under a condition. Root-causing needs a live repro (spawn a full agent, inspect the HOME) + ideally pairing with the reporter (su-971b8d33). Left as needs-human (P-012); the dbos-flows P-007 (DBOS-ify spawn provisioning) is gated on this root-cause — only worth a durable workflow if the bug is a partial-spawn failure mode.
+Related: P-012
 
 ## Open questions
 - **Notify** — confirm source-removal of `lock_acquired` (D-002) vs keeping it but never injecting. Lean: remove at source.
