@@ -209,7 +209,10 @@ A single choke point + a single wrapper that every backend goes through.
   + headersToRecord, +2 tests) Rewrite `meridianAgentChat` to honor `retry-after` + `*-reset`
   headers and go through `runAgentTurn` (the immediate fix for judge/gym/brains). Default
   OFF = byte-identical live path. blocked-by: P-003 importance: high
-- **P-005** `todo` Wrap the CLI spawn path (claude/omp/codex) in `runAgentChat` at the
+- **P-005** `deferred` (re-scoped — see Findings: runAgentChat's CLI branch serves only the
+  LOW-concurrency in-app brains; gating it is an invasive 800-line extraction for modest
+  value. Cheaper future option: just penalize the shared governor on a CLI 429. The pipeline
+  burst is P-006, not here.) Wrap the CLI spawn path (claude/omp/codex) in `runAgentChat` at the
   **subprocess-turn** granularity: enforce the concurrency + spawn-rate cap (the burst
   fix), classify the turn outcome from exit+stderr (P-011 extractors), apply policy
   (wait-until-reset/backoff/pause/escalate) — and **do NOT re-retry the CLI's own
@@ -229,6 +232,27 @@ A single choke point + a single wrapper that every backend goes through.
   empty/malformed) per backend → assert no parent crash + correct wait/resume. The gym
   A/B is the live proof: it paces under the limit + never fails on a transient 429.
   blocked-by: P-006 importance: high
+
+## Findings during implementation (2026-06-02)
+
+- **Core mechanism built + flag-gated (P-001/002/003/011/004), 41 tests, all committed.**
+  The judge / in-app brains / sim-user (in-process meridian) are now governed when
+  `PAPERCUSP_AGENT_GOVERNOR=1`; default OFF = byte-identical live path.
+- **Two distinct CLI spawn sites — only one matters for the burst.** `runAgentChat`'s CLI
+  branch (chat-stream.ts) serves the LOW-concurrency in-app **brains** (oracle/agent-chats)
+  and is a large inline streaming generator; gating it is an invasive extraction for modest
+  value. The harness/gym **pipeline** agents are spawned elsewhere — the DBOS
+  `orchestrator-runner.realRunner` → `invoke-once` path (apps/operator/lib/dbos) — which is
+  the real burst/rate source. → **Re-scope: P-005 deferred (low value); P-006 is the key
+  remaining lever.**
+- **The gym's trip is RATE, not concurrency.** `runAbEvaluation` already runs runs
+  sequentially, so the gym doesn't fan out pipelines — the 429s come from the *rate* of
+  sequential agent calls (RPM) interleaved with the Opus judge. So the fix is RPM pacing +
+  retry-after honoring (P-004 done for the judge; P-006 for the pipeline spawn rate), not a
+  big concurrency cap.
+- **P-006 is validatable ZERO-LLM** via the fake-agent gym smoke with the flag on (it
+  exercises the spawn-pacing logic without real rate limits) — so it can be built + proven
+  safely; flip the live flag only after that + the real A/B.
 
 ## Decisions (open)
 
