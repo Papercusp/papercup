@@ -184,10 +184,10 @@ A single choke point + a single wrapper that every backend goes through.
 
 ## Items
 
-- **P-001** `todo` `TurnError` taxonomy + `classifyTurnError(backend, raw)` — pure +
+- **P-001** `done` `TurnError` taxonomy + `classifyTurnError(backend, raw)` — pure +
   table-driven; unit tests incl. claude/omp/codex stderr + meridian-APIError fixtures.
-  importance: high
-- **P-002** `todo` `RateLimitGovernor` — supports BOTH limit models: (a) **header-driven**
+  importance: high (DONE 2026-06-02: `libs/papercup-shared/src/agent/turn-error.ts`, 16 tests)
+- **P-002** `done` (`libs/papercup-shared/src/agent/governor.ts`, 8 tests) `RateLimitGovernor` — supports BOTH limit models: (a) **header-driven**
   token-bucket RPM/ITPM/OTPM + `retry-after`/reset honoring + pre-emptive slow on low
   remaining (API-key providers / in-process meridian), and (b) **coarse** mode for
   subscriptions (no per-minute headroom: conservative concurrency + react to 429 +
@@ -201,9 +201,10 @@ A single choke point + a single wrapper that every backend goes through.
   codex 429/quota, omp terminal-fallback-exhausted). Marks omp self-pacing
   (concurrency-only) and declares any shared-account overlap (e.g. omp→Anthropic). 
   blocked-by: P-001 importance: high
-- **P-003** `todo` `runAgentTurn()` wrapper (governor.acquire → backend → record →
-  classify → policy; returns `TurnResult|TurnError`, never throws on handled classes).
-  blocked-by: P-001, P-002 importance: high
+- **P-003** `done` (`libs/papercup-shared/src/agent/turn-runner.ts`, 5 tests)
+  `runAgentTurn()` wrapper (governor.acquire → backend → record → classify → policy;
+  returns `TurnResult|TurnError`, never throws on handled classes). blocked-by: P-001, P-002
+  importance: high
 - **P-004** `todo` Rewrite `meridianAgentChat` to honor `retry-after` + `*-reset` headers
   and go through `runAgentTurn` (the immediate fix for judge/gym/brains). blocked-by:
   P-003 importance: high
