@@ -195,7 +195,7 @@ A single choke point + a single wrapper that every backend goes through.
   backends. Keyed by `(provider, account, modelClass)`; OpenAI (codex) and Anthropic
   (claude) are separate buckets. Property/unit tests with a fake clock. blocked-by: P-001
   importance: high
-- **P-011** `todo` `backendProviderProfile` config + per-backend turn-error extractors:
+- **P-011** `done` (`libs/papercup-shared/src/agent/governor-registry.ts`, 5 tests; per-backend extractors landed in P-001's turn-error.ts) `backendProviderProfile` config + per-backend turn-error extractors:
   declare provider/account/limit-model/self-pacing for claude(meridian+CLI)/codex/omp;
   CLI **stderr+exit classifiers** with real fixtures for each (claude "5-hour limit"/429,
   codex 429/quota, omp terminal-fallback-exhausted). Marks omp self-pacing
