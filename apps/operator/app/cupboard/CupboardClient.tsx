@@ -17,10 +17,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString } from 'nuqs';
-import { Search, Globe, Shield, RefreshCw, ExternalLink, GitBranch, Users, Clock } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock } from 'lucide-react';
 import type { HarnessListing } from '@/lib/cupboard/types';
 import { isPubliclyVisible } from '@/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../harness/theme';
+import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
 
@@ -197,7 +198,7 @@ export default function CupboardClient() {
 
 // ─── HarnessCard ─────────────────────────────────────────────────
 
-function HarnessCard({
+export function HarnessCard({
   listing,
   onInstall,
   onDetail,
@@ -237,25 +238,15 @@ function HarnessCard({
         >
           {listing.title || listing.slug}
         </button>
-        {listing.claim_status === 'claimed' && (
-          <span
-            title="Claimed — verified maintainer"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 3,
-              background: 'rgba(16,185,129,0.12)',
-              color: '#6ee7b7',
-              borderRadius: RADIUS.sm,
-              padding: '2px 7px',
-              fontSize: 11,
-              fontFamily: FONTS.ui,
-              flexShrink: 0,
-            }}
-          >
-            <Shield size={10} /> claimed
-          </span>
-        )}
+        {/* Claim badge — canonical ClaimStatusBadge for ALL states so an
+            `unclaimed` (provisional) listing surfaces a tag too, not just
+            claimed ones. Provisional listings are exactly the ones a viewer
+            most needs flagged; previously they rendered unlabeled. The
+            `HarnessListing` wire shape carries no claimant login, so a
+            claimed listing shows the bare "Claimed" label. */}
+        <span style={{ flexShrink: 0 }}>
+          <ClaimStatusBadge status={listing.claim_status} />
+        </span>
       </div>
 
       {/* Description */}
