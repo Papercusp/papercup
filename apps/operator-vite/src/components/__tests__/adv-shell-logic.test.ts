@@ -42,19 +42,13 @@ describe('ADV_TABS', () => {
     expect(ADV_TABS.every((t) => (t.id as string) !== 'prs')).toBe(true);
   });
 
-  it('create and harnesses support workspace-wide (all-mode); sessions moved into the Create shell', () => {
+  it('plans and harnesses support workspace-wide (all-mode); sessions moved into the Plans shell', () => {
     const supportAll = ADV_TABS.filter((t) => t.supportsAll).map((t) => t.id);
     expect(supportAll).toContain('plans');
     expect(supportAll).toContain('harnesses');
     // Sessions is no longer a standalone AdvShell tab — it became the 3rd
-    // ?view= in the combined Create/Inbox shell (adv-sessions-live-roster P-005).
+    // ?view= in the combined Plans/Inbox shell (adv-sessions-live-roster P-005).
     expect(supportAll).not.toContain('sessions');
-  });
-
-  it('labels the plans route as Create with a creation-oriented icon', () => {
-    const tab = ADV_TABS.find((t) => t.id === 'plans');
-    expect(tab?.label).toBe('Create');
-    expect(tab?.icon).toBeTruthy();
   });
 
   it('per-harness tabs do not support all-mode', () => {

@@ -148,7 +148,7 @@ export default function PlansClient() {
     'pBuckets',
     parseAsArrayOf(parseAsStringEnum<PlanBucket>([...BUCKET_IDS])).withDefault([]),
   );
-  // Main-pane view: the plan browser (default — this is the Create tab) vs the
+  // Main-pane view: the plan browser (default — this is the Plans tab) vs the
   // item inbox. The Plans / Inbox header buttons flip it.
   const [view, setView] = useQueryState(
     'view',
@@ -595,7 +595,7 @@ export default function PlansClient() {
             title="Browse plans — open one to view/edit it. (Plan-status & harness filters stay applied.)"
           >
             <ClipboardList size={14} aria-hidden />
-            Create
+            Plans
           </button>
           <button
             type="button"
