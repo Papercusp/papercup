@@ -17,7 +17,7 @@ vi.mock('@/lib/embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin/resolved',
 }));
 
-import { buildInvokeOnce, type InvokeOnceSpec } from './harness-invoke-once';
+import { applyRoleModel, buildInvokeOnce, type InvokeOnceSpec } from './harness-invoke-once';
 
 const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
   projectDir: '/proj',
@@ -87,5 +87,40 @@ describe('buildInvokeOnce — env-resolution nuances', () => {
     expect(buildInvokeOnce(spec()).env.PAPERCUSP_USE_PG_STATE).toBe('1');
     vi.stubEnv('PAPERCUSP_USE_PG_STATE', '0');
     expect(buildInvokeOnce(spec()).env.PAPERCUSP_USE_PG_STATE).toBe('0');
+  });
+});
+
+describe('applyRoleModel — per-role model override', () => {
+  it('overrides the global --model for a role with an AGENT_MODELS entry', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
+    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model sonnet');
+  });
+
+  it('leaves a role with NO entry on the base command (fast default)', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
+    expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
+  });
+
+  it('appends --model when the base command has none; handles --model=<x> form', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
+    expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet');
+    expect(applyRoleModel('claude -p --model=haiku', 'worker')).toBe('claude -p --model sonnet');
+  });
+
+  it('no / unparseable / empty-entry AGENT_MODELS → base unchanged (fail-safe)', () => {
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
+    vi.stubEnv('AGENT_MODELS', 'not json');
+    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: '', scoper: 123 }));
+    expect(applyRoleModel('claude -p --model haiku', 'worker')).toBe('claude -p --model haiku');
+    expect(applyRoleModel('claude -p --model haiku', 'scoper')).toBe('claude -p --model haiku');
+  });
+
+  it('buildInvokeOnce threads the per-role model into CLAUDE', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
+    expect(buildInvokeOnce(spec({ role: 'worker' })).env.CLAUDE).toBe('claude -p --model sonnet');
+    expect(buildInvokeOnce(spec({ role: 'director' })).env.CLAUDE).toBe('claude -p --model haiku');
   });
 });

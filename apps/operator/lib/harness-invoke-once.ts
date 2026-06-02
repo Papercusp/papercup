@@ -19,6 +19,32 @@
 import { invokeOnceBin, tsxBin } from '@/lib/harness-paths';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
+/**
+ * Apply a PER-ROLE model override to the base agent command. `AGENT_MODELS` is a
+ * JSON map `{ <role>: <modelId> }` (mirrored from `AgentConfig.models` by
+ * `applyToProcessEnv`). When the spawned role has an entry, we strip any global
+ * `--model` from the base command and append the role's model — so the worker
+ * (the role that writes code) can run a stronger model while the fast reasoning
+ * roles (director/debugger/validator/scoper) stay on the cheap `AGENT_CMD`
+ * default. A role with no entry, or an unparseable/empty `AGENT_MODELS`, keeps
+ * the base command unchanged. Exported for unit testing.
+ */
+export function applyRoleModel(baseCmd: string, role: string): string {
+  const raw = process.env.AGENT_MODELS;
+  if (!raw || !role) return baseCmd;
+  let models: Record<string, unknown>;
+  try {
+    models = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return baseCmd;
+  }
+  const model = models[role];
+  if (typeof model !== 'string' || !model.trim()) return baseCmd;
+  // Strip any existing `--model <x>` / `--model=<x>`, then append the role model.
+  const stripped = baseCmd.replace(/\s--model(?:=|\s+)\S+/g, '').trimEnd();
+  return `${stripped} --model ${model.trim()}`;
+}
+
 export interface InvokeOnceSpec {
   /** PROJECT_DIR — the user's project root. */
   projectDir: string;
@@ -54,7 +80,9 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     ROLE: spec.role,
     EXTRAS_JSON: JSON.stringify(spec.extras),
     // invoke-once → env.ts resolveAgentCmd() reads AGENT_CMD ?? CLAUDE.
-    CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+    // Per-role model override (AGENT_MODELS): lets the worker run a stronger
+    // model than the fast reasoning roles without per-role AGENT_CMDs.
+    CLAUDE: applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', spec.role),
     // Production launchers must enable the PG state path + provide the DSN — the
     // pg-bootstrap otherwise runs with empty in-memory state and the spawned
     // agent's tools (spawn-mcp) fail "no PG DSN in env". Mirrors harness-launch.ts
