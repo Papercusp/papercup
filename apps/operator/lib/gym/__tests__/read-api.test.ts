@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildVariantVectors, frontierFromVectors, type ScoredTrainRow } from '../read-api';
+import { buildVariantVectors, frontierFromVectors, variantLineage, type ScoredTrainRow } from '../read-api';
 
 /**
  * Comparison read API (P-013) pure cores: turn scored train runs into per-variant
@@ -55,5 +55,21 @@ describe('frontierFromVectors', () => {
         { variantId: 'new', vector: [3, 3], trainAgg: 3 },
       ]),
     ).toEqual(['new']);
+  });
+});
+
+describe('variantLineage (P-016)', () => {
+  const variants = [
+    { variantId: 'base', parentId: null },
+    { variantId: 'c1', parentId: 'base' },
+    { variantId: 'c2', parentId: 'c1' },
+  ];
+  it('walks the ancestor chain self→root', () => {
+    expect(variantLineage(variants, 'c2')).toEqual(['c2', 'c1', 'base']);
+    expect(variantLineage(variants, 'base')).toEqual(['base']);
+  });
+  it('is cycle-safe', () => {
+    const cyclic = [{ variantId: 'a', parentId: 'b' }, { variantId: 'b', parentId: 'a' }];
+    expect(variantLineage(cyclic, 'a')).toEqual(['a', 'b']);
   });
 });

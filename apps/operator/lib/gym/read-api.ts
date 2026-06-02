@@ -80,3 +80,23 @@ export async function readCycleHistory(sql: Sql): Promise<CycleHistoryRow[]> {
 export async function frontierView(sql: Sql, rubricHash: string): Promise<string[]> {
   return frontierFromVectors(buildVariantVectors(await readScoredTrainRows(sql, rubricHash)));
 }
+
+/**
+ * Variant lineage (P-016): the ancestor chain from a variant up to its root, using the
+ * gym_variants parent_id edges. `[self, parent, …, root]`. Cycle-safe (stops on revisit).
+ */
+export function variantLineage(
+  variants: ReadonlyArray<{ variantId: string; parentId: string | null }>,
+  id: string,
+): string[] {
+  const parentOf = new Map(variants.map((v) => [v.variantId, v.parentId]));
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  let cur: string | null | undefined = id;
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    chain.push(cur);
+    cur = parentOf.get(cur) ?? null;
+  }
+  return chain;
+}

@@ -28,7 +28,15 @@ export interface RealFeatureDescriptor {
   spec: string;
 }
 
-export function realFeatureToAnchorTask(desc: RealFeatureDescriptor): GeneratedTaskRecord {
+/**
+ * Map a real shipped feature to a gym task at its base commit. Defaults to the
+ * `real-anchor` pool (P-028, scored-never-optimized falsifiability check); pass
+ * `'train'` to replay real features as a TRAINING source (P-026, importance low).
+ */
+export function realFeatureToAnchorTask(
+  desc: RealFeatureDescriptor,
+  pool: 'real-anchor' | 'train' = 'real-anchor',
+): GeneratedTaskRecord {
   if (!isPinnedCommit(desc.baseCommit)) {
     throw new Error(`real-anchor base commit must be a pinned hex SHA, got: ${JSON.stringify(desc.baseCommit)}`);
   }
@@ -39,7 +47,7 @@ export function realFeatureToAnchorTask(desc: RealFeatureDescriptor): GeneratedT
 
   return {
     taskId: `real-${desc.harnessSlug}-${desc.featureId}`,
-    pool: 'real-anchor',
+    pool,
     repoUrl: desc.repoUrl,
     repoCommit: desc.baseCommit,
     intent,

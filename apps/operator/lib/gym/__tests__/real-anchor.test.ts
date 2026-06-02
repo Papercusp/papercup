@@ -42,4 +42,9 @@ describe('realFeatureToAnchorTask', () => {
     expect(() => realFeatureToAnchorTask({ ...desc, intent: '' })).toThrow();
     expect(() => realFeatureToAnchorTask({ ...desc, spec: '   ' })).toThrow();
   });
+
+  it('can replay a real feature as a training-pool task (P-026), default stays real-anchor', () => {
+    expect(realFeatureToAnchorTask(desc, 'train').pool).toBe('train');
+    expect(realFeatureToAnchorTask(desc).pool).toBe('real-anchor');
+  });
 });
