@@ -401,11 +401,20 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
     ...(extraEnv ?? {}),
   };
 
+  // Resolve the bus publisher BEFORE spawning. There must be NO `await`
+  // between spawn() and registering the child's 'close' listener (below):
+  // a fast child can run, exit, and have its stdio streams close *during*
+  // a cold dynamic import(), emitting 'close' before the listener attaches —
+  // so `done` would hang forever (and the log FileHandle would leak, surfacing
+  // later as an ERR_INVALID_STATE GC error). This bit only the FIRST runAction
+  // call per worker (the import is cold); warm calls resolve it synchronously,
+  // which is why it looked like a flake / a "stderr-only" bug.
+  const { publish: publishAction } = await import('./branch-action-bus');
+  // Bus channel key — same shape /action-stream subscribes against.
+  const channelKey = `${harness}:${runId}`;
+
   const child = spawn('bash', [desc.scriptPath], { cwd, env });
 
-  // Bus channel key — same shape /action-stream subscribes against.
-  const { publish: publishAction } = await import('./branch-action-bus');
-  const channelKey = `${harness}:${runId}`;
   publishAction(channelKey, 'started', '', {
     runId, harness, branch, name, scriptPath: desc.scriptPath, cwd, startedAt,
   });
