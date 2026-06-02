@@ -16,8 +16,8 @@
  * latter (so the tab + profile agree) is a flagged follow-up; this panel
  * applies the P-048d zeroing client-side regardless.
  */
-import { useEffect, useMemo, useState } from 'react';
-import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { parseAsInteger, parseAsStringEnum, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { BindingStatusBadge, type BindingStatus } from '../../_components/BindingStatusBadge';
 import { statsAggregateForStatus } from '../../../lib/identity/binding-verifier-types';
@@ -26,6 +26,11 @@ import {
   type ContributorSortKey,
   type ContributorTabRow,
 } from '../../../lib/harness-insights/load-contributors-tab';
+import {
+  USAGE_EVENT_KINDS,
+  type UsageEventKind,
+  type UsageRollupForContributor,
+} from '../../../lib/harness/contributor-usage-event-types';
 import { useViewer } from './useViewer';
 
 interface ApiRow {
@@ -74,6 +79,40 @@ function fmtJoined(ms: number): string {
   }
 }
 
+/** Short per-kind labels for the expanded P-070 activity breakdown. */
+const KIND_LABEL: Record<UsageEventKind, string> = {
+  feature_authored: 'authored',
+  feature_queued: 'queued',
+  feature_worked_start: 'started',
+  feature_worked_end: 'worked',
+  pr_opened: 'PRs',
+  decision_added: 'decisions',
+  plan_authored: 'plans',
+  agent_run_completed: 'runs',
+};
+
+type UsageEntry = UsageRollupForContributor | 'loading' | 'error' | undefined;
+
+/** Render the per-kind breakdown for one contributor's expanded activity row.
+ *  Zero-count kinds are omitted so the line stays scannable. */
+function renderUsageBreakdown(entry: UsageEntry): ReactNode {
+  if (entry === undefined || entry === 'loading') {
+    return <span className="pc-adv-contributors__usage-loading">Loading activity…</span>;
+  }
+  if (entry === 'error') {
+    return <span className="pc-adv-contributors__usage-empty">Activity unavailable</span>;
+  }
+  const nonZero = USAGE_EVENT_KINDS.filter((k) => (entry.counts[k] ?? 0) > 0);
+  if (nonZero.length === 0) {
+    return <span className="pc-adv-contributors__usage-empty">No recorded activity yet</span>;
+  }
+  return nonZero.map((k) => (
+    <span key={k} className="pc-adv-contributors__usage-kind">
+      {KIND_LABEL[k]} {entry.counts[k]}
+    </span>
+  ));
+}
+
 export default function AdvContributorsPanel({ params, api }: PanelComponentProps) {
   const slug = (params.harnessSlug as string) || (params.slug as string) || '';
   const [rows, setRows] = useState<ContributorTabRow[] | null>(null);
@@ -82,7 +121,33 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
     'csort',
     parseAsStringEnum<ContributorSortKey>(SORTS.map((s) => s.key)).withDefault('joined'),
   );
+  // P-070: which contributor's per-kind activity breakdown is expanded (URL-backed
+  // per the nuqs default), + a small id→rollup cache fetched from /contributor-usage.
+  const [expandedId, setExpandedId] = useQueryState('cusage', parseAsInteger);
+  const [usageById, setUsageById] = useState<Record<number, UsageEntry>>({});
   const { isMe } = useViewer();
+
+  useEffect(() => {
+    if (expandedId == null || !slug) return;
+    const id = expandedId;
+    let cancelled = false;
+    setUsageById((m) => (m[id] ? m : { ...m, [id]: 'loading' }));
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/harness/${encodeURIComponent(slug)}/contributor-usage?github_user_id=${id}`,
+          { cache: 'no-store' },
+        );
+        const body = (await res.json().catch(() => ({}))) as { rollup?: UsageRollupForContributor };
+        if (!cancelled) setUsageById((m) => ({ ...m, [id]: body.rollup ?? 'error' }));
+      } catch {
+        if (!cancelled) setUsageById((m) => ({ ...m, [id]: 'error' }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedId, slug]);
 
   useEffect(() => {
     if (!slug) return;
@@ -165,13 +230,32 @@ export default function AdvContributorsPanel({ params, api }: PanelComponentProp
               <span className="pc-adv-contributors__tiers" aria-label="activity by trust tier">
                 <span title="Tier-A merged PRs">✓{c.prs_merged} PR</span>
                 <span title="Tier-B features shipped">✓{c.features_shipped} shipped</span>
-                <span title="Tier-C activity events">{c.activity_events} act</span>
+                <button
+                  type="button"
+                  className="pc-adv-contributors__activity"
+                  title="Tier-C activity events — click for the per-kind breakdown"
+                  aria-expanded={expandedId === c.github_user_id}
+                  onClick={() =>
+                    void setExpandedId(expandedId === c.github_user_id ? null : c.github_user_id)
+                  }
+                >
+                  {c.activity_events} act
+                </button>
               </span>
               <span className="pc-adv-contributors__joined" title="Joined">{fmtJoined(c.joined_at)}</span>
               {c.device_count > 0 && (
                 <span className="pc-adv-contributors__devices" title="Bound devices">
                   {c.device_count} {c.device_count === 1 ? 'device' : 'devices'}
                 </span>
+              )}
+              {expandedId === c.github_user_id && (
+                <div
+                  className="pc-adv-contributors__usage"
+                  role="region"
+                  aria-label={`${c.login} activity breakdown`}
+                >
+                  {renderUsageBreakdown(usageById[c.github_user_id])}
+                </div>
               )}
             </li>
           );

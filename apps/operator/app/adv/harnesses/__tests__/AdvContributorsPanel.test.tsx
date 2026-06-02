@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 
 // nuqs: useQueryState → a plain useState seeded with the parser default.
 vi.mock('nuqs', () => ({
@@ -18,6 +18,8 @@ vi.mock('nuqs', () => ({
     return [v, async (x: unknown) => setV(x)];
   },
   parseAsStringEnum: () => ({ withDefault: (d: unknown) => ({ defaultValue: d }) }),
+  // cusage uses parseAsInteger directly (nullable, no default) → seeds null.
+  parseAsInteger: {},
 }));
 
 // viewer: alice (42) is "me".
@@ -39,6 +41,29 @@ const CONTRIBUTORS = [
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (String(url).includes('/contributor-usage')) {
+      return new Response(
+        JSON.stringify({
+          rollup: {
+            github_user_id: 42,
+            harness_slug: 'h',
+            counts: {
+              feature_authored: 3,
+              feature_queued: 0,
+              feature_worked_start: 0,
+              feature_worked_end: 0,
+              pr_opened: 0,
+              decision_added: 0,
+              plan_authored: 0,
+              agent_run_completed: 12,
+            },
+            total: 15,
+            last_event_ts: 1700000000000,
+          },
+        }),
+        { status: 200 },
+      );
+    }
     if (String(url).includes('/contributors')) {
       return new Response(JSON.stringify({ contributors: CONTRIBUTORS }), { status: 200 });
     }
@@ -85,5 +110,20 @@ describe('AdvContributorsPanel (P-048)', () => {
     const { container } = render(<AdvContributorsPanel {...props} />);
     await waitFor(() => expect(container.textContent).toContain('@alice'));
     expect(container.textContent).toContain('2 devices'); // alice device_count=2
+  });
+
+  it('expands a contributor on activity click and shows the per-kind breakdown', async () => {
+    const { container } = render(<AdvContributorsPanel {...props} />);
+    await waitFor(() => expect(container.textContent).toContain('@alice'));
+    const rows = [...container.querySelectorAll('.pc-adv-contributors__row')] as HTMLElement[];
+    const aliceRow = rows.find((r) => r.textContent?.includes('@alice'))!;
+    const actBtn = aliceRow.querySelector('.pc-adv-contributors__activity') as HTMLButtonElement;
+    expect(actBtn).toBeTruthy();
+    fireEvent.click(actBtn);
+    // the route fires + the non-zero kinds render in the breakdown
+    await waitFor(() => expect(container.textContent).toContain('authored'));
+    expect(container.textContent).toContain('runs'); // agent_run_completed label
+    // zero-count kinds are omitted
+    expect(container.textContent).not.toContain('queued');
   });
 });

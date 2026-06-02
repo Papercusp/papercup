@@ -61,6 +61,7 @@ import harnessBindingClaim from './harness/binding-claim';
 import harnessClaimStatus from './harness/claim-status';
 import harnessCupboardPublish from './harness/cupboard-publish';
 import harnessContributors from './harness/contributors';
+import harnessContributorUsage from './harness/contributor-usage';
 import harnessActivity from './harness/activity';
 import harnessInsights from './harness/insights';
 import harnessInsightsFirstVisit from './harness/insights-first-visit';
@@ -494,6 +495,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessClaimStatus as AnyRoute[]),
   ...flatten(harnessCupboardPublish as AnyRoute),
   ...flatten(harnessContributors as AnyRoute[]),
+  ...flatten(harnessContributorUsage as AnyRoute[]),
   ...flatten(harnessActivity as AnyRoute[]),
   ...flatten(harnessInsights as AnyRoute[]),
   ...flatten(harnessInsightsFirstVisit as AnyRoute[]),
