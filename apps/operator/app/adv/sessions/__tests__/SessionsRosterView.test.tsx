@@ -7,7 +7,7 @@
  * file chips, fed by a mocked /api/adv/roster.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
 import SessionsRosterView, { groupRoster, type RosterEntry } from '../SessionsRosterView';
 
 function entry(over: Partial<RosterEntry> = {}): RosterEntry {
@@ -113,5 +113,46 @@ describe('SessionsRosterView', () => {
     render(<SessionsRosterView planFilters={[]} workspaceId="ws9" />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/adv/roster?workspace=ws9');
+  });
+
+  it('clicking a row calls onSelectAgent with the owner id (P-007 selection)', async () => {
+    const onSelectAgent = vi.fn();
+    const { findByText } = render(
+      <SessionsRosterView planFilters={[]} onSelectAgent={onSelectAgent} />,
+    );
+    const row = (await findByText('worker-188')).closest('.pc-roster__row');
+    expect(row).toBeTruthy();
+    fireEvent.click(row as Element);
+    expect(onSelectAgent).toHaveBeenCalledWith('a');
+  });
+
+  it('renders the dossier pane when an agent is selected', async () => {
+    // The dossier lazy-fetches /api/adv/roster/agent — branch the mock by URL.
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/api/adv/roster/agent')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ownerId: 'a',
+            locks: { held: [], waiting: [], error: null },
+            coord: { lastMessage: null, unreadCount: 0, openHandoffs: [], openEscalations: [], error: null },
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          active: [entry({ ownerId: 'a', label: 'worker-188', intent: 'doing X' })],
+          ended: [],
+        }),
+      });
+    });
+    const { container, findByLabelText } = render(
+      <SessionsRosterView planFilters={[]} selectedAgent="a" onSelectAgent={vi.fn()} />,
+    );
+    expect(await findByLabelText('Agent detail')).toBeTruthy();
+    await waitFor(() =>
+      expect(container.querySelector('[data-selected]')).toBeTruthy(),
+    );
   });
 });

@@ -131,6 +131,9 @@ export default function PlansClient() {
     [itemPlans, setItemPlans],
   );
 
+  // Sessions view (P-007): the agent whose dossier is open in the right pane.
+  const [selectedAgent, setSelectedAgent] = useQueryState('agent', parseAsString);
+
   // Additive filter facets.
   const [istatus, setIstatus] = useQueryState(
     'istatus',
@@ -656,7 +659,11 @@ export default function PlansClient() {
              selection filters the plan-grouped section; No-plan + presence-only
              groups always show. Workspace scope is left open (every workspace)
              for now; the rail plan-filter is the primary scoping. */
-          <SessionsRosterView planFilters={itemPlans} />
+          <SessionsRosterView
+            planFilters={itemPlans}
+            selectedAgent={selectedAgent}
+            onSelectAgent={(id) => void setSelectedAgent(id)}
+          />
         ) : slug ? (
           <PlanDetail
             key={slug}

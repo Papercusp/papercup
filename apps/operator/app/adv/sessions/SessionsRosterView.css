@@ -1,5 +1,13 @@
-/* SessionsRosterView — the live roster's rich grouped rows (P-006).
- * Design tokens with hex fallbacks; a token-alignment pass is P-010. */
+/* SessionsRosterView — the live roster's rich grouped rows (P-006) + the
+ * two-pane roster|dossier layout (P-007). Design tokens with hex fallbacks;
+ * a token-alignment pass is P-010. */
+
+/* Two-pane shell: scrollable roster on the left, sticky dossier on the right. */
+.pc-sessions {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+}
 
 .pc-roster {
   display: flex;
@@ -8,6 +16,8 @@
   padding: 12px 14px 28px;
   overflow-y: auto;
   height: 100%;
+  flex: 1 1 0;
+  min-width: 0;
   color: var(--text-1, #e5e7eb);
 }
 
@@ -98,6 +108,27 @@
   padding: 7px 10px;
   border: 1px solid var(--border-subtle, #2a2f3a);
   border-radius: 8px;
+  background: var(--surface-raised, #161b27);
+  cursor: pointer;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.pc-roster__row:hover {
+  border-color: var(--border-strong, #3a4150);
+  background: var(--surface-2, #1a2030);
+}
+.pc-roster__row:focus-visible {
+  outline: 2px solid var(--accent, #60a5fa);
+  outline-offset: 1px;
+}
+.pc-roster__row[data-selected] {
+  border-color: var(--accent, #60a5fa);
+  background: var(--surface-selected, rgba(96, 165, 250, 0.1));
+}
+.pc-roster__row--ended {
+  cursor: default;
+}
+.pc-roster__row--ended:hover {
+  border-color: var(--border-subtle, #2a2f3a);
   background: var(--surface-raised, #161b27);
 }
 .pc-roster__row[data-liveness='live'] {
@@ -200,4 +231,214 @@
 .pc-roster__ended {
   margin-top: 6px;
   opacity: 0.85;
+}
+
+/* ───────────────────────── Agent dossier (P-007) ───────────────────────── */
+.pc-dossier {
+  flex: 0 0 340px;
+  width: 340px;
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px 14px 28px;
+  border-left: 1px solid var(--border-subtle, #2a2f3a);
+  background: var(--surface-1, #11151f);
+  color: var(--text-1, #e5e7eb);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pc-dossier__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pc-dossier__head-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.pc-dossier__close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-3, #6b7280);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.pc-dossier__close:hover {
+  color: var(--text-1, #e5e7eb);
+  background: var(--surface-2, #1f2530);
+}
+.pc-dossier__id {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1, #e5e7eb);
+  word-break: break-all;
+}
+.pc-dossier__intent {
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--text-2, #9ca3af);
+}
+.pc-dossier__note {
+  font-size: 11.5px;
+  color: var(--text-3, #6b7280);
+}
+.pc-dossier__section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle, #2a2f3a);
+}
+.pc-dossier__h {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3, #6b7280);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pc-dossier__h-note {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-3, #6b7280);
+}
+.pc-dossier__h-note--err {
+  color: #fca5a5;
+}
+.pc-dossier__badge-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.15);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+.pc-dossier__meta-row {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+}
+.pc-dossier__meta-key {
+  flex: 0 0 76px;
+  color: var(--text-3, #6b7280);
+}
+.pc-dossier__meta-val {
+  color: var(--text-2, #cbd5e1);
+  min-width: 0;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+.pc-dossier__files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pc-dossier__file,
+.pc-dossier__lock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+}
+.pc-dossier__file-path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-2, #cbd5e1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.pc-dossier__lockmark {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+}
+.pc-dossier__lockmark--held {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.16);
+}
+.pc-dossier__lockmark--wait {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.16);
+}
+.pc-dossier__lock-exp {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--text-3, #6b7280);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pc-dossier__lock-intent {
+  flex: 1 1 100%;
+  padding-left: 20px;
+  color: var(--text-3, #6b7280);
+  font-style: italic;
+  font-size: 10px;
+}
+.pc-dossier__coord-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10.5px;
+  flex-wrap: wrap;
+}
+.pc-dossier__dir {
+  flex: 0 0 auto;
+  color: var(--text-3, #6b7280);
+  font-size: 10px;
+}
+.pc-dossier__dir[data-dir='outbound'] {
+  color: #93c5fd;
+}
+.pc-dossier__dir[data-dir='inbound'] {
+  color: #86efac;
+}
+.pc-dossier__dir--esc[data-sev='blocker'] {
+  color: #fca5a5;
+}
+.pc-dossier__dir--esc[data-sev='question'] {
+  color: #fcd34d;
+}
+.pc-dossier__coord-text {
+  color: var(--text-2, #cbd5e1);
+  min-width: 0;
+  flex: 1 1 60%;
+}
+.pc-dossier__coord-ts {
+  margin-left: auto;
+  color: var(--text-3, #6b7280);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pc-dossier__empty-line {
+  font-size: 10.5px;
+  color: var(--text-3, #6b7280);
+}
+
+@media (max-width: 880px) {
+  .pc-dossier {
+    flex-basis: 280px;
+    width: 280px;
+  }
 }

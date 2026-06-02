@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { formatRelativeUpdated } from '@/lib/format/relative-time';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
+import AgentDossier from './AgentDossier';
 import './SessionsRosterView.css';
 
 /**
@@ -148,11 +149,33 @@ export function groupRoster(active: RosterEntry[], planFilters: string[]): Group
   return { planGroups, noPlan, presenceOnly };
 }
 
-function RosterRow({ e }: { e: RosterEntry }): React.JSX.Element {
+function RosterRow({
+  e,
+  selected,
+  onSelect,
+}: {
+  e: RosterEntry;
+  selected: boolean;
+  onSelect: (ownerId: string) => void;
+}): React.JSX.Element {
   const client = e.agent ?? shortSource(e.source);
   const extraFiles = e.currentFiles.length - 6;
   return (
-    <li className="pc-roster__row" data-liveness={e.liveness}>
+    <li
+      className="pc-roster__row"
+      data-liveness={e.liveness}
+      data-selected={selected || undefined}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      onClick={() => onSelect(e.ownerId)}
+      onKeyDown={(ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          onSelect(e.ownerId);
+        }
+      }}
+    >
       <div className="pc-roster__row-main">
         <LivenessDot liveness={e.liveness} />
         <span className="pc-roster__badge" data-client={client}>
@@ -199,10 +222,14 @@ function GroupSection({
   title,
   subtitle,
   entries,
+  selectedAgent,
+  onSelect,
 }: {
   title: string;
   subtitle?: string;
   entries: RosterEntry[];
+  selectedAgent: string | null;
+  onSelect: (ownerId: string) => void;
 }): React.JSX.Element | null {
   if (entries.length === 0) return null;
   const live = entries.filter((e) => e.liveness === 'live').length;
@@ -216,7 +243,12 @@ function GroupSection({
       </header>
       <ul className="pc-roster__list">
         {entries.map((e) => (
-          <RosterRow key={e.ownerId} e={e} />
+          <RosterRow
+            key={e.ownerId}
+            e={e}
+            selected={e.ownerId === selectedAgent}
+            onSelect={onSelect}
+          />
         ))}
       </ul>
     </section>
@@ -226,9 +258,15 @@ function GroupSection({
 export default function SessionsRosterView({
   planFilters = [],
   workspaceId = null,
+  selectedAgent = null,
+  onSelectAgent,
 }: {
   planFilters?: string[];
   workspaceId?: string | null;
+  /** Owner id of the agent whose dossier is open (P-007); null = none. */
+  selectedAgent?: string | null;
+  /** Open/close the dossier. Owned by the parent shell's nuqs ?agent= param. */
+  onSelectAgent?: (ownerId: string | null) => void;
 }): React.JSX.Element {
   const { data, error, loading } = useRoster(workspaceId);
   const active = data?.active ?? [];
@@ -242,52 +280,90 @@ export default function SessionsRosterView({
   const idle = active.filter((e) => e.liveness === 'idle').length;
   const stale = active.filter((e) => e.liveness === 'stale').length;
 
+  const select = useCallback(
+    (ownerId: string) => {
+      // Toggle: clicking the open agent closes the pane.
+      onSelectAgent?.(ownerId === selectedAgent ? null : ownerId);
+    },
+    [onSelectAgent, selectedAgent],
+  );
+  const selectedEntry = selectedAgent
+    ? active.find((e) => e.ownerId === selectedAgent) ?? null
+    : null;
+
   return (
-    <div className="pc-roster">
-      <header className="pc-roster__head">
-        <span className="pc-roster__head-title">Active agents</span>
-        <span className="pc-roster__head-summary">
-          {active.length} total · {live} live · {idle} idle
-          {stale ? ` · ${stale} stale` : ''}
-        </span>
-      </header>
+    <div className="pc-sessions">
+      <div className="pc-roster">
+        <header className="pc-roster__head">
+          <span className="pc-roster__head-title">Active agents</span>
+          <span className="pc-roster__head-summary">
+            {active.length} total · {live} live · {idle} idle
+            {stale ? ` · ${stale} stale` : ''}
+          </span>
+        </header>
 
-      {error ? <div className="pc-roster__error">Couldn’t load roster: {error}</div> : null}
-      {loading && active.length === 0 ? <div className="pc-roster__loading">Loading roster…</div> : null}
-      {!loading && active.length === 0 && !error ? (
-        <div className="pc-roster__empty">No active agents right now.</div>
-      ) : null}
+        {error ? <div className="pc-roster__error">Couldn’t load roster: {error}</div> : null}
+        {loading && active.length === 0 ? <div className="pc-roster__loading">Loading roster…</div> : null}
+        {!loading && active.length === 0 && !error ? (
+          <div className="pc-roster__empty">No active agents right now.</div>
+        ) : null}
 
-      {planGroups.map((g) => (
-        <GroupSection key={g.slug} title={g.slug} subtitle="plan" entries={g.entries} />
-      ))}
-      <GroupSection title="No plan · ad-hoc SU sessions" entries={noPlan} />
-      <GroupSection title="Other active agents (presence-only)" entries={presenceOnly} />
+        {planGroups.map((g) => (
+          <GroupSection
+            key={g.slug}
+            title={g.slug}
+            subtitle="plan"
+            entries={g.entries}
+            selectedAgent={selectedAgent}
+            onSelect={select}
+          />
+        ))}
+        <GroupSection
+          title="No plan · ad-hoc SU sessions"
+          entries={noPlan}
+          selectedAgent={selectedAgent}
+          onSelect={select}
+        />
+        <GroupSection
+          title="Other active agents (presence-only)"
+          entries={presenceOnly}
+          selectedAgent={selectedAgent}
+          onSelect={select}
+        />
 
-      {ended.length > 0 ? (
-        <section className="pc-roster__ended">
-          <header className="pc-roster__group-head">
-            <span className="pc-roster__group-title">Recently ended</span>
-            <span className="pc-roster__group-count">{ended.length}</span>
-          </header>
-          <ul className="pc-roster__list">
-            {ended.slice(0, 12).map((r) => (
-              <li key={r.id} className="pc-roster__row pc-roster__row--ended">
-                <div className="pc-roster__row-main">
-                  <span className="pc-roster__badge" data-client={r.agent ?? ''}>
-                    {shortSource(r.agent ?? '')}
-                  </span>
-                  {r.role ? <span className="pc-roster__chip">{r.role}</span> : null}
-                  {r.feature ? (
-                    <span className="pc-roster__chip pc-roster__chip--feature">{r.feature}</span>
-                  ) : null}
-                  <span className="pc-roster__label">{r.label || `#${r.id}`}</span>
-                  <span className="pc-roster__age">ended {formatRelativeUpdated(r.endedAt)}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
+        {ended.length > 0 ? (
+          <section className="pc-roster__ended">
+            <header className="pc-roster__group-head">
+              <span className="pc-roster__group-title">Recently ended</span>
+              <span className="pc-roster__group-count">{ended.length}</span>
+            </header>
+            <ul className="pc-roster__list">
+              {ended.slice(0, 12).map((r) => (
+                <li key={r.id} className="pc-roster__row pc-roster__row--ended">
+                  <div className="pc-roster__row-main">
+                    <span className="pc-roster__badge" data-client={r.agent ?? ''}>
+                      {shortSource(r.agent ?? '')}
+                    </span>
+                    {r.role ? <span className="pc-roster__chip">{r.role}</span> : null}
+                    {r.feature ? (
+                      <span className="pc-roster__chip pc-roster__chip--feature">{r.feature}</span>
+                    ) : null}
+                    <span className="pc-roster__label">{r.label || `#${r.id}`}</span>
+                    <span className="pc-roster__age">ended {formatRelativeUpdated(r.endedAt)}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </div>
+
+      {selectedAgent ? (
+        <AgentDossier
+          ownerId={selectedAgent}
+          entry={selectedEntry}
+          onClose={() => onSelectAgent?.(null)}
+        />
       ) : null}
     </div>
   );
