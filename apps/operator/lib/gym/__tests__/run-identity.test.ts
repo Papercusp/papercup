@@ -18,7 +18,7 @@ describe('gymRunIdentity', () => {
 
   it('produces a gym-prefixed, PG-schema-safe harness slug', () => {
     const { harnessSlug } = gymRunIdentity(key);
-    expect(harnessSlug).toMatch(/^gym-[a-z0-9-]+$/);
+    expect(harnessSlug).toMatch(/^gym[a-z0-9]+$/); // hyphen-free (valid unquoted PG schema)
     // `harness_<slug>` is spliced into a PG schema name; PG identifiers cap at 63.
     expect(`harness_${harnessSlug}`.length).toBeLessThanOrEqual(63);
   });
@@ -56,7 +56,7 @@ describe('gymRunIdentity', () => {
       variantId: 'UPPER_Case变体',
       cycle: 2,
     });
-    expect(harnessSlug).toMatch(/^gym-[a-z0-9-]+$/);
+    expect(harnessSlug).toMatch(/^gym[a-z0-9]+$/); // hyphen-free (valid unquoted PG schema)
     expect(`harness_${harnessSlug}`.length).toBeLessThanOrEqual(63);
   });
 });

@@ -42,24 +42,25 @@ function sha256hex(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
-/** Lowercase, collapse any run of non-`[a-z0-9]` to a single `-`, trim dashes. */
+/**
+ * Lowercase, strip everything that isn't `[a-z0-9]`. NO hyphens/underscores: the slug
+ * becomes the PG schema `harness_<slug>`, and the orchestrator's search_path code does
+ * not quote schema names — a hyphen there silently fails to resolve the per-harness
+ * `harness_features` view (verified in the boot smoke). Live harness slugs are
+ * hyphen-free for the same reason.
+ */
 function sanitizeSlugPart(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
 export function gymRunIdentity(key: GymRunKey): GymRunIdentity {
   const canonical = `${key.taskId}::${key.variantId}::${key.cycle}`;
   const hash = sha256hex(canonical).slice(0, HASH_LEN);
-  const hint = sanitizeSlugPart(`${key.variantId}-${key.cycle}`).slice(0, MAX_HINT_LEN);
+  const hint = sanitizeSlugPart(`${key.variantId}${key.cycle}`).slice(0, MAX_HINT_LEN);
 
-  let harnessSlug = hint ? `gym-${hint}-${hash}` : `gym-${hash}`;
+  // Hyphen-free, so `harness_<slug>` is a valid unquoted PG identifier.
+  let harnessSlug = `gym${hint}${hash}`;
   if (harnessSlug.length > MAX_SLUG_LEN) harnessSlug = harnessSlug.slice(0, MAX_SLUG_LEN);
-  // Truncation could leave a trailing dash; the hash suffix already disambiguates,
-  // so just tidy the tail to keep the slug well-formed.
-  harnessSlug = harnessSlug.replace(/-+$/g, '');
 
   const taskHash = sha256hex(key.taskId).slice(0, 8).toUpperCase();
   const featureId = `F-GYM-${taskHash}`;
