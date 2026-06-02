@@ -316,12 +316,22 @@ A strong peer review confirmed the diagnosis and found real defects. Accepted + 
   backoff + rate-limit-governance is a universal concern, so it belongs in an
   agent-independent shared lib; the agent-specific taxonomy/classification depends on it.
 
-- **RB-012** `todo` Migrate every agent-calling surface onto `runAgentTurn` + the shared
-  governor (so the WHOLE fleet gets pacing + never-crash, not just the gym). Surfaces:
-  meridian `llmCall` callers (gym judge, sim-user, operator brain, oracle brain,
-  delegate-chat, operator-scan); the orchestrator `invoke`/`invoke-once` agent spawn
-  (the pipeline burst path); the `runAgentChat` CLI spawn (claude/omp/codex brains); the
-  DBOS orchestrator-runner spawn. Each flag-gated → validated → flipped. importance: high
+- **RB-012** `done` Migrate every agent-calling surface onto the shared governor (so the
+  WHOLE fleet gets pacing + never-crash, not just the gym). All flag-gated on
+  `PAPERCUSP_AGENT_GOVERNOR` (default OFF = byte-identical legacy path). Surfaces wired:
+  - **meridian in-process `llmCall`** (gym judge, sim-user, haiku, operator/oracle brains)
+    → `governedMeridian` in `chat-stream.ts` (RB-004).
+  - **`runAgentChat` CLI spawn** (claude/omp/codex brains) → acquire-before-spawn +
+    penalize-on-429 + release-in-`finally` in `chat-stream.ts` (RB-005/RB-012).
+  - **orchestrator pipeline spawn** (`spawnInvokeOnce`, the burst path) → governed in
+    `orchestrator-runner.ts` (pacing only; the director owns retry — no double-retry).
+  - **scoper background spawn** (`invokeScoperBackground`) + **expert dispatcher spawn**
+    (`dispatchExpert`) → the new shared `governed-background-spawn.ts` helper
+    (`spawnInvokeOnceBackground`) for the scoper; expert-dispatcher acquires before its
+    spawn and releases in `finalise()` (rides the file-lock lifecycle, leak-safe).
+  Each was validated flag-OFF (existing tests unchanged) + flag-ON (governor unit/route/
+  helper tests + the live meridian/CLI paths). The one non-spawn note: omp self-paces
+  (fallback chaining) so it gets concurrency-cap only, by design. importance: high
 - **RB-013** `done` (governor → `src/resilience/governor.ts`; `runWithRetry` →
   `src/resilience/retry.ts`; agent `turn-runner` now a thin wrapper; 49 tests) Extract the
   generic core — token-bucket + concurrency + exponential
