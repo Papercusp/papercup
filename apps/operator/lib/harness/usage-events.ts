@@ -8,10 +8,9 @@
  * rollups derive on read from this ledger.
  *
  * Contract: `contributor-usage-event-types.ts` (the live, DDL-matching module —
- * ULID `event_id`, the 8-kind enum, `UsageRollupForContributor`). NOTE: a second,
- * divergent `lib/sync/usage-events-types.ts` exists with ZERO importers — it is a
- * stale duplicate (different id format + kind enum) and should be deleted in a
- * cleanup pass; this runtime intentionally does NOT use it.
+ * ULID `event_id`, the 8-kind enum, `UsageRollupForContributor`). (A divergent
+ * `lib/sync/usage-events-types.ts` duplicate with a different id format + kind
+ * enum was deleted 2026-06-02 — this is the single contract.)
  *
  * Scope of THIS module (the unblocked, model-independent core):
  *   - `makeUsageEventId` — ULID-shaped, time-sortable, matches `isUsageEventId`.
