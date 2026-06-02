@@ -10,8 +10,10 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
-import { tryRelease } from './su-lock-store';
+import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
+import { broadcastResourceBackUp } from './resource-broadcast';
 
 const SU_ROLES = [
   'scoper',
@@ -69,6 +71,23 @@ export default defineTool({
       }),
     );
 
+    // Session-end (all_mine) also clears this owner's NAMED-resource locks
+    // (P-019) — file locks and resource locks live in separate tables, so one
+    // call must sweep both. Broadcast "back up" for any exclusive we freed.
+    let resourcesReleased = 0;
+    if (args.all_mine) {
+      const rr = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+        releaseAllResourcesForOwner(tx, coordinationDomain, ownerId),
+      );
+      resourcesReleased = rr.released;
+      if (rr.exclusiveResources.length > 0) {
+        const coordId = resolveAgentIdentity(ctx);
+        for (const res of rr.exclusiveResources) {
+          await broadcastResourceBackUp({ source: coordId, resource: res }).catch(() => {});
+        }
+      }
+    }
+
     return {
       content: [
         {
@@ -76,6 +95,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             released: result.released,
+            resources_released: resourcesReleased,
             owner: ownerId,
             owner_label: ownerLabel,
           }),

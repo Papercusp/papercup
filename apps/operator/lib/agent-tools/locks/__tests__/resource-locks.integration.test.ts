@@ -21,6 +21,7 @@ import {
   tryHeartbeatResource,
   readResourceLockStatus,
   readResourceQueue,
+  releaseAllResourcesForOwner,
   listResources,
   getResource,
   type ResourceMode,
@@ -149,6 +150,23 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     if (!x.ok) return;
     const r = await rel(ws, 'X', x.lock_id);
     expect(r.exclusiveResources).toContain('dev-server');
+  });
+
+  it.skipIf(!live)('releaseAllResourcesForOwner clears every lock the owner holds (session-end, P-019)', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    const b = await acq(ws, 'A', 'db-schema', 'exclusive');
+    expect(a.ok && b.ok).toBe(true);
+
+    const r = await inWorkspaceTxn(ws, 'A', (tx) =>
+      releaseAllResourcesForOwner(tx, ws, 'A'),
+    );
+    expect(r.released).toBe(2);
+    expect(r.exclusiveResources).toContain('db-schema');
+
+    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws });
+    expect(q.holders.some((h) => h.owner === 'A')).toBe(false);
   });
 
   it.skipIf(!live)('seeds the dev-server and db-schema resources with their enforcement levels', async () => {

@@ -252,6 +252,23 @@ papercup-dev-api.service`, then re-probe where your write lands before
 trusting any result. Don't stall waiting on the server when a restart is
 the unblock.
 
+**Named resource locks — coordinate destructive shared actions.** Beyond
+file locks (which guard *files*), `locks:*` has **named resource locks** for
+shared *resources* — the dev server, the DB schema. Acquire `shared` before
+relying on one (`locks:acquire_resource { resource: 'dev-server', mode:
+'shared' }`); to do something destructive to it (restart, migrate) acquire
+`exclusive` with a drain (`{ mode: 'exclusive', wait: { max_drain_sec: 120 }
+}`) — new shared acquisitions are refused while existing holders finish,
+then you're granted, and your `locks:release_resource` broadcasts "back up".
+Names must be **registered** — `locks:list` shows the set + each one's rule +
+enforcement level. The blessed paths for the two seeded resources are the
+wrapper tools **`dev:restart`** and **`db:migrate`** (they run the whole
+drain protocol for you; **dry-run by default**, confirm:true to act). These
+locks are **loose** by design (like file locks, they fail open), so the
+"just restart, it's fine" stance above still holds when you genuinely need
+it — but `dev:restart` drains your peers first, which is the polite default
+on a busy box. Full design: plan `named-resource-locks-drain-2026-06-02`.
+
 ## Engineering discipline
 
 - **Plan before non-trivial work.** Present a plan and wait for review
