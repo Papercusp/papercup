@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** DECIDED → B (PG uniform runtime store-of-record + projection layer), owner 2026-06-01 (D-002). The two-axis model — **runtime store-of-record** (always PG) vs **sync authority** (none|git|peer-log) — is locked, and bare "canonical" is banned (see the Vocabulary section). Items P-001–P-007 allocated across 3 phases; migration is wholesale (pre-alpha breakage accepted). This is a STORE-axis change only — **git remains the SYNC authority for document tables** (dogfood D-001/D-020 intact).
+**State:** DECIDED → B (D-002). **P-001 DONE**: the two-axis spec (runtime store-of-record vs sync authority) is the standard — landed in `system/storage-policy.mdx` (source + served mirror rebuilt), a `CLAUDE.md` pointer, bare "canonical" banned, and dogfood §7 disambiguated (D-033). The model is locked. Remaining: P-002–P-007 (the build/migration).
 
-**Next:** P-001 — land the two-axis spec in `system/storage-policy.mdx` + a `CLAUDE.md` pointer, ban bare "canonical", and annotate dogfood §7 / un-hardcode / harnesses-across-workspaces with the reframe. Then P-002 (per-table key × sync-authority registry).
+**Next:** P-002 — build the per-table registry: declare `key` (slug-shared | workspace-owned) + `sync authority` (none|git|peer-log) for EVERY harness table, as the single source of truth the projection engine (P-003) reads.
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -77,7 +77,7 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 
 ## Phase 1 — Spec & model
 
-- **P-001** `todo` Land the two-axis spec (runtime store-of-record vs sync authority) as the standard: add it to system/storage-policy.mdx + a CLAUDE.md pointer; ban bare "canonical"; annotate dogfood §7 / un-hardcode / harnesses-across-workspaces with the reframe. importance: high
+- **P-001** `done` Land the two-axis spec (runtime store-of-record vs sync authority) as the standard: add it to system/storage-policy.mdx + a CLAUDE.md pointer; ban bare "canonical"; annotate dogfood §7 / un-hardcode / harnesses-across-workspaces with the reframe. importance: high (spec in storage-policy.mdx + served mirror rebuilt + CLAUDE.md pointer + bare-canonical ban + dogfood §7 D-033; un-hardcode/across-workspaces covered by propagated D-001/D-002 cross-refs)
 - **P-002** `todo` Declare key (slug-shared | workspace-owned) + sync authority (none|git|peer-log) for EVERY harness table in one table-of-tables registry — the single source of truth for the model. importance: high
 
 
