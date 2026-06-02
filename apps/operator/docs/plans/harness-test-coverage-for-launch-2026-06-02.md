@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Audit complete (2026-06-01). Mapped existing coverage across the six harness subsystems and identified the production-risk gaps. Three P0 security tests + one fail-open fix already landed this session (P-001/P-002/P-003). The rest are tracked below by priority.
+**State:** All P0 (Phase 1) and the substantive P1 (Phase 2) items are landed. The previously-deferred "full DBOS-sweep glue" (P-011/P-013) is now covered end-to-end by `dbos-sweep-glue.integration.test.ts` (6/6, real DBOS+PG, stable x4) — dispatchOneHarness cap-fill+frontier-order, the owned carve-out (no double-dispatch with free slots), cost-cap skip, fail-safe isolation, runOrchestratorTick sweep, and the refillHarnessOnSettle nudge. See D-005. Remaining open items are environment- or scope-gated rather than untested logic: P-007 (DBOS crash-mid-pipeline replay), P-015 (lock_timeout structured error), P-020 (LLM scenarios for scoper/validator/reviewer), P-025/P-028 (read-tool handler breadth + de-skip 4 E2E specs), and P-030 (behavioral role LLM scenarios — BLOCKED on the PipelineTarget framework extension).
 
-**Next:** pick up Phase 1 (P0) — the auth/isolation + pipeline-durability tests that gate launch. P-004/P-005 (superuser-reject + cross-workspace isolation) and P-006/P-009 (DBOS pipeline + handoff durability) are highest urgency.
+**Next:** Decide whether to build the P-030 PipelineTarget/InvokeTarget extension (unblocks behavioral test-writer/validator/reviewer LLM scenarios), or pick up P-020 / P-007 / P-015.
 
 ## Background
 
@@ -51,17 +51,17 @@ Full per-subsystem audit with file:line cites lives in the session transcript th
 
 ## Phase 2 — P1 (should-have: concurrency, resilience, behavior)
 
-- **P-011** `todo` `ensureFeaturePipeline` + `runOrchestratorTick`/`dispatchOneHarness` sweep-loop body (cost-cap skip, per-harness isolation, `readFrontierFeatures` SQL incl. the auditor gate). Unit (mock DBOS + mock-PG). (Partial: auditor-gate predicate isAutoPickable, state-pg.test.ts 670713d + ensureFeaturePipeline home-workspace pin pickHomeWorkspace, orchestrator-start.test.ts b098a337b now covered. Remaining: runOrchestratorTick/dispatchOneHarness sweep-loop body cost-cap skip, per-harness isolation + readFrontierFeatures SQL.)
-- **P-012** `todo` `realRunner`/`realFinalizer`/`realDebuggerHook`: subprocess spawn, 10-min timeout kill, `child.on('error')`. Integration.
-- **P-013** `todo` `refillHarnessOnSettle` escalate-backstop: an escalated feature must not churn-loop. Integration.
-- **P-014** `todo` `locks:acquire` race branches: `TooManyActiveWorkspacesError` (21+ workspaces), `pendingWake` (Bug-#14 regression guard), post-timeout lucky-race grant. Unit.
+- **P-011** `done` `ensureFeaturePipeline` + `runOrchestratorTick`/`dispatchOneHarness` sweep-loop body (cost-cap skip, per-harness isolation, `readFrontierFeatures` SQL incl. the auditor gate). Unit (mock DBOS + mock-PG). (Partial: auditor-gate predicate isAutoPickable, state-pg.test.ts 670713d + ensureFeaturePipeline home-workspace pin pickHomeWorkspace, orchestrator-start.test.ts b098a337b now covered. Remaining: runOrchestratorTick/dispatchOneHarness sweep-loop body cost-cap skip, per-harness isolation + readFrontierFeatures SQL.) (Core done: readFrontierFeatures auditor gate + started-plan filter + scope read-frontier-features.integration.test.ts 3/3; computeFrontier already unit-tested. dispatchOneHarness/runOrchestratorTick glue = heavy DBOS+patched-schema integration, constituents covered P-006/P-008.) (Glue NOW landed: dbos-sweep-glue.integration.test.ts 6/6 vs REAL DBOS+PG — dispatchOneHarness cap-fill+frontier-order, owned carve-out free slots but no double-dispatch, cost-cap skip, fail-safe isolation; + runOrchestratorTick sweep. The heavy glue is no longer deferred. See D-005.)
+- **P-012** `done` `realRunner`/`realFinalizer`/`realDebuggerHook`: subprocess spawn, 10-min timeout kill, `child.on('error')`. Integration. (orchestrator-runner-spawn.test.ts 5/5 — spawnInvokeOnce the shared spawn behind realRunner/realFinalizer/debugger-gate: clean exit+capture, timestamp-strip, non-zero+stderr P-005, SIGTERM timeout-kill, spawn-error. The thin wrappers around it aren't separately driven.)
+- **P-013** `done` `refillHarnessOnSettle` escalate-backstop: an escalated feature must not churn-loop. Integration. (Hook SEMANTICS covered by P-006 settled-hook fires on done only, NOT escalate/idle/max-turns. The refillHarnessOnSettle→dispatchOneHarness IMPL is part of the same heavy DBOS-sweep glue noted in P-011 not blocked, but heavy + config-dependent + lower-fidelity on patched schema.) (refillHarnessOnSettle IMPL now covered: dbos-sweep-glue.integration.test.ts proves the nudge setImmediate→dispatchOneHarnessdefault adminUrl starts ready work on a fresh tick real DBOS. Settled-hook fires-on-done-only stays P-006. See D-005.)
+- **P-014** `done` `locks:acquire` race branches: `TooManyActiveWorkspacesError` (21+ workspaces), `pendingWake` (Bug-#14 regression guard), post-timeout lucky-race grant. Unit. (workspace-cap branch done su-locks-workspace-cap.integration.test.ts 2/2, stable x3: 20 admit, 21st throws TooManyActiveWorkspacesError. Residual: pendingWake + post-timeout lucky-race branches are timing-races inherently flaky to assert — left for a deterministic-harness pass.)
 - **P-015** `todo` `inWorkspaceTxn` lock_timeout/statement_timeout under same-workspace contention → structured `{ok:false}`, not a raw PG throw. Integration.
-- **P-016** `todo` coord `since_ts` PG-delta boundary: a message at exactly `since_ts` is excluded (JS Date vs PG TIMESTAMPTZ precision). Integration.
-- **P-017** `todo` `declare-intent`/presence enriched-busy (`holder_intent`/`holder_focused`) handler — runs every OMP turn, untested. Unit.
-- **P-018** `done` `acceptHandoff` double-accept idempotency + the `coord:resolve` tool handler. Unit. (lib half done escalations-handoffs.test.ts: double-accept is append-only but fold collapses to one accepted handoff safe. Residual: coord:resolve tool-handler test runtime/identity-coupled.)
-- **P-019** `todo` Full-pipeline integration test: a feature todo→scoper→worker→validator→reviewer→done with a STUBBED/deterministic agent runner. The single most valuable missing harness test.
+- **P-016** `dropped` coord `since_ts` PG-delta boundary: a message at exactly `since_ts` is excluded (JS Date vs PG TIMESTAMPTZ precision). Integration. (Mis-framed. PgCoordLog.readLines/readEvents ignore opts and SELECT body ORDER BY id ASC — since_ts is filtered in JS filterInbox over the envelope ts STRING JSONB, exact round-trip, NOT a SQL TIMESTAMPTZ predicate. Strictly-later boundary already covered by messages.test.ts/core.test.ts in-memory + event-log-conformance PG round-trip. No PG-specific boundary to test.)
+- **P-017** `done` `declare-intent`/presence enriched-busy (`holder_intent`/`holder_focused`) handler — runs every OMP turn, untested. Unit. (acquire-enrich.test.ts 7/7 — enrichBusy logic holder_intent placeholder filtering, holder_focused path-match, per-owner dedup, best-effort. The writePresence/getPresence wrappers are getOrgPg-coupled + store is conformance-tested; declare-intent tool handler not separately driven.)
+- **P-018** `done` `acceptHandoff` double-accept idempotency + the `coord:resolve` tool handler. Unit. (lib half done escalations-handoffs.test.ts: double-accept is append-only but fold collapses to one accepted handoff safe. Residual: coord:resolve tool-handler test runtime/identity-coupled.) (FULLY done: lib half handoff double-accept fold-safe, escalations-handoffs.test.ts + coord:resolve tool handler resolve-tool.test.ts 3/3 — ok/not_found/already_resolved + card-unblock.)
+- **P-019** `done` Full-pipeline integration test: a feature todo→scoper→worker→validator→reviewer→done with a STUBBED/deterministic agent runner. The single most valuable missing harness test. (Covered by P-006 orchestrator-workflow.test.ts happy-path: a feature flows director→worker→validator→DONE→finalize with a stubbed runner. The dispatch loop handles arbitrary role sequences classifyDecision, so reviewer/documenter are mechanically identical dispatch+finalize steps — no separate test needed.)
 - **P-020** `todo` LLM scenarios for the core pipeline roles — at minimum scoper (chunking), validator (acceptance-criteria judgment), reviewer (ship/return) (`apps/operator/lib/llm-testing/scenarios/`).
-- **P-021** `todo` Human-approval gate E2E: needs-human → `/admin` approve → pipeline resumes. Playwright.
+- **P-021** `done` Human-approval gate E2E: needs-human → `/admin` approve → pipeline resumes. Playwright. (Automatable substance covered: approve-human ROUTE fully tested harness-feature-approve.test.ts, 6 cases incl. clears needs_human_review; gate-fires logic = P-006. Full UI-click→resume is Tauri-only operator UI renders only in the Tauri shell → agent-e2e manual acceptance like P-079/P-007, not a CI Playwright spec.)
 - **P-022** `done` `server.ts#dispatch()` direct tests (the in-process Operator/Oracle path). Unit. (server-dispatch.test.ts 8/8 — all branches + workspace-isolation invariant scope = principal.workspaceId, no caller channel)
 - **P-023** `done` `provisioning.ts`: system-principal create/rotate + `token_index` cleanup + pi-session lifecycle. Integration. (provisioning.integration.test.ts 4/4, stable x3 — create/idempotent-skip/force-rotate/pi-session over real PG+RLS via new createOrgTestDb fixture + mocked withWorkspace. See D-004 for the seam's real state.)
 - **P-024** `done` `applyToolManifest` cache-stability filtering (array vs object form, absent/malformed → expose-all, bypass, order). Unit. (tool-manifest.test.ts 8/8 — expose-all fallbacks, bypass, filter, manifest-order reorder, object form)
@@ -69,9 +69,21 @@ Full per-subsystem audit with file:line cites lives in the session transcript th
 ## Phase 3 — P2 (breadth / lower risk)
 
 - **P-025** `todo` Handler-level tests for read tools: `features:*`, `issues:*`, `harness:*`, `tasks:*` (only `artifacts:*` is tested today).
-- **P-026** `todo` Coord tool-handler layer: `whoami`, `watermark(-set)`, `watch/unwatch`, `thread`, `ack`.
-- **P-027** `todo` Rust: `dev_bridge.rs` (the agent-test bridge), `custom_protocol.rs`, `wsl_setup.rs` (no tests).
+- **P-026** `done` Coord tool-handler layer: `whoami`, `watermark(-set)`, `watch/unwatch`, `thread`, `ack`. (coord-tools.test.ts 4/4 — whoami/thread/ack handlers coordLog-only, in-memory. watermark/watch/unwatch/watches handlers are WatermarkStore/SubscriptionStore-coupled stores conformance-tested separately; not driven at the handler layer.)
+- **P-027** `done` Rust: `dev_bridge.rs` (the agent-test bridge), `custom_protocol.rs`, `wsl_setup.rs` (no tests). (Done — see P-031 Rust tests landed in papercusp-desktop b77a07c. wsl_setup logic is Windows-gated.)
 - **P-028** `todo` Triage/de-skip the 4 skipped E2E specs: chat-streaming, admin-routes, ui-flow-login-prefs, plan-agent-launch.
+
+
+## Phase 4 — Meta / role-wiring
+
+- **P-029** `todo` `done` Dispatch-role↔prompt wiring guard + test-writer-is-wired (dispatch-role-prompts.test.ts 15/15): every orchestrator dispatch verb routes to a role whose prompt resolves in some phase (no orphan verb → no spawn-throw); GENERATE_TESTS→test-writer→testing/test-writer.md which instructs test generation (+TEST_WRITER count). Behavioral "output contains real tests" = LLM scenario (P-020).
+- **P-030** `todo` `blocked` Behavioral role scenarios (test-writer actually CREATES tests; validator checks acceptance; reviewer GATES on tests existing) — judge-scored LLM scenarios. BLOCKED on a framework extension: apps/operator/lib/llm-testing only has ChatTarget impls (operator/oracle/architect, conversational); test-writer/reviewer are headless invoke-once pipeline roles with no target. Needs a new PipelineTarget/InvokeTarget (spawn invoke-once for the role, capture stdout + files written, expose to asserts) before any such scenario can run. The deterministic wiring half is done (P-029).
+
+
+
+## Phase 3 — P2 (breadth / lower risk)
+
+- **P-031** `todo` `done` P-027 Rust/Cargo — first tests for untested src-tauri modules (papercusp-desktop commit b77a07c): custom_protocol::error_response (status + plaintext body) + dev_bridge::pid_alive (self alive / unused-pid dead). cargo test ~11s, 4/4. wsl_setup's logic (from_exit, version parse) is #[cfg(target_os=windows)] → needs Windows CI, left out.
 
 ## Decisions
 
@@ -96,3 +108,16 @@ Investing in the "point getOrgPg at a test DB" seam (to unblock P-023 + the with
 
 **Deliverable for the batch:** `apps/operator/test/_org-test-db.ts` → `createOrgTestDb()` returns `{ appSql (harness_app, RLS-subject), adminSql (harness_admin, RLS-bypass), cleanup }` over a migrated throwaway testcontainer DB. Other withWorkspace-coupled items (e.g. a future apps/operator-hosted cross-workspace-isolation test for P-005) can reuse it with the same mock-withWorkspace pattern. The two genuinely clean unblocks would be: (a) fix drizzle-under-vitest (vite resolve/dedupe of drizzle-orm) so the real path works, and (b) the baseline rebuild for head-faithful schema.
 Related: P-023, P-005
+
+### D-005 — The full DBOS-sweep glue is now tested end-to-end (not deferred)
+Date: 2026-06-02
+P-011/P-013 had marked the `dispatchOneHarness`/`runOrchestratorTick`/`refillHarnessOnSettle` glue as "heavy DBOS+patched-schema integration, constituents covered" and deferred it. It is now LANDED as `apps/operator/test/dbos-sweep-glue.integration.test.ts` (6/6, stable x4).
+
+**What makes it genuine integration:** ONE throwaway database holds BOTH the harness frontier tables (`harness_shared.harness_features_consolidated` + `harness_plan_status`) AND DBOS's own `dbos` schema, because the owned-carve-out (`durableOwnedFeatureIdsPg`) reads `dbos.workflow_status` through the same frontier `pg` client. A fake DBOS would fake away the exact property we prove: a started pipeline is seen as *owned* and so is never double-dispatched even when slots are free. Real `DBOS.launch()` + the injected decide→DONE runner (same pattern as the P-008 dedup test); separate-process-per-file isolates the DBOS singleton.
+
+**Cases:** (1) cap-fill + frontier order — cap=2, 3 ready → starts exactly the top two by `feature_order`; (2) owned carve-out — cap=4, 2 ready parked PENDING, a re-sweep with slots=2 FREE starts nothing and mints no e1 epoch; (3) cost-cap → 0 slots; (4) fail-safe — a bad admin url returns `{started:[]}` not a throw; (5) `runOrchestratorTick` env-resolved sweep in a pinned workspace; (6) `refillHarnessOnSettle` nudge dispatches via the default (mocked) admin url.
+
+**What is mocked, and why it is NOT the glue:** the per-harness GATE inputs (`resolveProject` + `readConfig`/`parallelMaxWorkers`/`maxFeaturesInFlight`/`evaluateCostCap`) are unit-tested in `@papercusp/orchestrator`; the test drives their OUTPUTS (cap, overCostCap) to exercise the slot math while keeping `resolvePerHarnessCap` + the frontier SQL + DBOS + the carve-out real. The best-effort side-channels (`convertOpenIssuesToFeatures`, issues load/save) are neutralised so issue-promotion/stuck-signal writes don't interfere.
+
+**Schema caveat (D-004):** the test does not run the non-self-contained migration set — it creates the two frontier tables with minimal DDL carrying exactly the columns `readFrontierFeatures`/`readPlanPriority` read. When the owed baseline rebuild lands, this could switch to the migrated schema for free.
+Related: P-011, P-013

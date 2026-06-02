@@ -1,0 +1,354 @@
+/**
+ * dbos-sweep-glue.integration.test.ts — plan harness-test-coverage-for-launch
+ * P-011 / P-013 (the remaining "full DBOS-sweep glue"): the orchestrator loop
+ * body that wires the already-covered constituents together, proven against a
+ * REAL DBOS runtime + REAL Postgres frontier read + the REAL owned-carve-out.
+ *
+ * The constituents each have their own coverage:
+ *   - `readFrontierFeatures` SQL ........ read-frontier-features.integration.test.ts (P-011)
+ *   - `computeFrontier` ................. orchestrator-loop.test.ts (unit)
+ *   - `ensureFeaturePipeline` / dedup ... orchestrator-start.test.ts + orchestrator-dedup.integration (P-008)
+ *   - `featurePipelineWorkflow` ......... orchestrator-workflow.test.ts (P-006)
+ * What had NO coverage is the GLUE in `dispatchOneHarness`: read the frontier →
+ * carve out the features a live pipeline already owns (`durableOwnedFeatureIdsPg`,
+ * reading `dbos.workflow_status`) → compute free slots from the per-harness cap,
+ * live-count and cost-cap → `ensureFeaturePipeline` each. Plus the two callers:
+ * `runOrchestratorTick` (the periodic sweep) and `refillHarnessOnSettle` (the
+ * on-completion refill nudge).
+ *
+ * This is genuine integration: ONE throwaway database holds BOTH the harness
+ * frontier tables (harness_shared.*) AND DBOS's own `dbos` schema, because the
+ * carve-out reads `dbos.workflow_status` through the same frontier `pg` client —
+ * a fake DBOS would fake away the exact thing we want to prove (that a started
+ * pipeline is seen as owned and so never double-dispatched).
+ *
+ * What is mocked, and why it is NOT the glue under test:
+ *   - the per-harness GATE inputs (`resolveProject`, `readConfig`,
+ *     `parallelMaxWorkers`, `maxFeaturesInFlight`, `evaluateCostCap`) — these are
+ *     unit-tested in @papercusp/orchestrator; we drive their OUTPUTS (cap,
+ *     overCostCap) to exercise the slot math, keeping `resolvePerHarnessCap` +
+ *     the frontier + DBOS real.
+ *   - the best-effort side-channels (`convertOpenIssuesToFeatures`,
+ *     `loadIssuesOrSeed`/`saveIssues`) — neutralised so the issue-promotion /
+ *     stuck-signal writes don't interfere; they have their own paths.
+ * The agent runner is the same injected stub the other DBOS tests use (decide →
+ * DONE), so no real agent ever spawns.
+ *
+ * PREFIX-SCHEMA CAVEAT (D-004): we don't run the (non-self-contained) migration
+ * set here — the two frontier tables are created with minimal DDL carrying exactly
+ * the columns readFrontierFeatures/readPlanPriority touch.
+ */
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { getTestPg, teardownTestPg } from '@papercusp/test-config';
+import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
+
+// Shared, mutable test-control state the mocks + injected runner read. Declared
+// via vi.hoisted so the (hoisted) vi.mock factories may close over it.
+const ctl = vi.hoisted(() => ({
+  /** per-harness concurrency cap resolveHarnessDispatchGate should yield */
+  cap: 1,
+  /** whether the harness is over its cost cap */
+  overCostCap: false,
+  /** the test DB url getHarnessAdminUrl() should return (refill uses the default) */
+  dbUrl: '',
+  /** 'done' → director returns DONE immediately; 'block' → awaits the gate so the
+   *  pipeline stays PENDING (owned) while we assert */
+  runnerMode: 'done' as 'done' | 'block',
+  gate: Promise.resolve() as Promise<void>,
+  releaseGate: (() => {}) as () => void,
+  /** whether the settled hook should actually refill (off by default) */
+  settledEnabled: false,
+}));
+
+// Drive the per-harness gate (cap + cost) without touching the filesystem.
+vi.mock('@/lib/harness-core', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/harness-core')>('@/lib/harness-core');
+  return {
+    ...actual,
+    // Any slug resolves to a dummy project so resolveHarnessDispatchGate proceeds
+    // to the (mocked) config helpers; the path is never read (readConfig is mocked).
+    resolveProject: async (slug: string) => ({ slug, path: `/tmp/glue-${slug}` }),
+  };
+});
+vi.mock('@papercusp/orchestrator', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/orchestrator')>('@papercusp/orchestrator');
+  return {
+    ...actual, // keep durableOwnedFeatureIdsPg, parseDecision, dispatchAuditorLane REAL
+    readConfig: () => ({}),
+    parallelMaxWorkers: () => ctl.cap,
+    maxFeaturesInFlight: () => null,
+    evaluateCostCap: () => ({ total: 0, cap: null, overCap: ctl.overCostCap, warned: false, shouldPause: false }),
+  };
+});
+// Neutralise the best-effort side-channels (own coverage; not the sweep glue).
+vi.mock('@/lib/promote-issue', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/promote-issue')>('@/lib/promote-issue');
+  return { ...actual, convertOpenIssuesToFeatures: async () => ({ promoted: [] }) };
+});
+vi.mock('@/lib/harness-issues', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/harness-issues')>('@/lib/harness-issues');
+  return { ...actual, loadIssuesOrSeed: () => ({ issues: [] }), saveIssues: async () => {} };
+});
+// refillHarnessOnSettle dispatches via the DEFAULT adminUrl → point it at the test DB.
+vi.mock('@/lib/embedded-pg-discovery', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/embedded-pg-discovery')>('@/lib/embedded-pg-discovery');
+  return { ...actual, getHarnessAdminUrl: () => ctl.dbUrl };
+});
+
+let DBOS: typeof DBOSType;
+let loop: typeof import('../lib/dbos/orchestrator-loop');
+let pg: postgres.Sql;
+let adminUri: string;
+let dbName: string;
+
+const WS = 'ws-glue';
+
+/** Seed one feature row into the frontier table. */
+async function seed(
+  slug: string,
+  featureId: string,
+  opts: { order?: number; status?: string; origin?: string; blockedBy?: string[] | null; sourcePlan?: string | null } = {},
+): Promise<void> {
+  const { order = 1, status = 'todo', origin = 'local', blockedBy = null, sourcePlan = null } = opts;
+  const metadata = sourcePlan ? pg.json({ source_plan: sourcePlan }) : null;
+  await pg`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, status, metadata, workspace_id, origin, audit_verdict, feature_order, blocked_by)
+    VALUES (${slug}, ${featureId}, ${status}, ${metadata}, ${WS}, ${origin}, null, ${order}, ${blockedBy})`;
+}
+
+/** Live (PENDING/ENQUEUED) pipeline workflow ids for a harness. */
+async function liveIds(slug: string): Promise<string[]> {
+  const live = await DBOS.listWorkflows({ workflow_id_prefix: `pipeline:${slug}:`, status: ['PENDING', 'ENQUEUED'] });
+  return live.map((w) => w.workflowID);
+}
+
+/** Poll until `pred()` is true (or time out). For the async DBOS state writes. */
+async function waitFor(pred: () => Promise<boolean>, timeoutMs = 10_000, stepMs = 100): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await pred()) return true;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  return false;
+}
+
+/** Arm block-mode: started pipelines stay PENDING until the gate is released. */
+function armBlock(): void {
+  ctl.runnerMode = 'block';
+  ctl.gate = new Promise<void>((resolve) => {
+    ctl.releaseGate = resolve;
+  });
+}
+
+beforeAll(async () => {
+  // Carve-out on (DBOS is default unless =0); no scheduled cron (gated at import).
+  process.env.PAPERCUSP_DBOS_ORCHESTRATOR = '1';
+  process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES = 'none';
+  delete process.env.PAPERCUSP_WORKSPACE_ID;
+
+  adminUri = await getTestPg();
+  dbName = `dbos_glue_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  ctl.dbUrl = u.toString();
+
+  // The two frontier tables, with exactly the columns the queries read.
+  pg = postgres(ctl.dbUrl, { max: 4, onnotice: () => {} });
+  await pg.unsafe(`
+    CREATE SCHEMA IF NOT EXISTS harness_shared;
+    CREATE TABLE harness_shared.harness_features_consolidated (
+      harness_slug  TEXT NOT NULL,
+      feature_id    TEXT NOT NULL,
+      status        TEXT NOT NULL,
+      metadata      JSONB,
+      workspace_id  TEXT,
+      blocked_by    TEXT[],
+      feature_order INT,
+      origin        TEXT,
+      audit_verdict TEXT,
+      PRIMARY KEY (workspace_id, harness_slug, feature_id)
+    );
+    CREATE TABLE harness_shared.harness_plan_status (
+      workspace_id TEXT NOT NULL, harness_slug TEXT NOT NULL, plan_slug TEXT NOT NULL,
+      status TEXT NOT NULL, priority INT, started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+  `);
+
+  ({ DBOS } = await import('@dbos-inc/dbos-sdk'));
+  DBOS.setConfig({
+    name: 'papercusp-test',
+    systemDatabaseUrl: ctl.dbUrl,
+    systemDatabaseSchemaName: 'dbos',
+    applicationVersion: 'test-v1',
+    runAdminServer: false, // avoid the admin-server EADDRINUSE on this shared box
+  });
+
+  // Register the workflow + queue, then the loop module (which registers the tick
+  // workflow — the cron is gated off by HARNESSES='none'). After setConfig, before launch.
+  const wf = await import('../lib/dbos/orchestrator-workflow');
+  loop = await import('../lib/dbos/orchestrator-loop');
+
+  // Injected agent runner: the director decides DONE; in block-mode it parks on the
+  // gate first so the pipeline stays PENDING (owned) for the assertion.
+  wf.setPipelineInvokeRunner(async (_slug, role, _feature) => {
+    if (role === 'director') {
+      if (ctl.runnerMode === 'block') await ctl.gate;
+      return { output: 'DONE', exitCode: 0 };
+    }
+    return { output: `ran ${role}`, exitCode: 0 };
+  });
+  // The real refill seam, gated so only the refill test arms it.
+  wf.setPipelineSettledHook((slug, ws) => {
+    if (ctl.settledEnabled && ws) loop.refillHarnessOnSettle(slug, ws);
+  });
+
+  await DBOS.launch();
+}, 120_000);
+
+afterEach(async () => {
+  // Release any parked pipeline so DBOS can drain; reset to defaults.
+  ctl.releaseGate();
+  ctl.runnerMode = 'done';
+  ctl.settledEnabled = false;
+  ctl.cap = 1;
+  ctl.overCostCap = false;
+  // Let released directors finish their step so nothing lingers into the next test.
+  await new Promise((r) => setTimeout(r, 50));
+});
+
+afterAll(async () => {
+  try {
+    await DBOS.shutdown();
+  } catch {
+    /* best-effort */
+  }
+  await pg?.end({ timeout: 5 }).catch(() => {});
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+  } catch {
+    /* best-effort */
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+});
+
+describe('dispatchOneHarness — the DBOS sweep glue (P-011/P-013)', () => {
+  it('fills free slots up to the per-harness cap in frontier order, and no further', async () => {
+    const slug = 'glue-cap';
+    ctl.cap = 2;
+    await seed(slug, 'F-A1', { order: 1 });
+    await seed(slug, 'F-A2', { order: 2 });
+    await seed(slug, 'F-A3', { order: 3 });
+
+    const r = await loop.dispatchOneHarness(slug, WS, ctl.dbUrl);
+
+    // cap=2, 3 ready → start exactly the top two by feature_order; F-A3 left behind.
+    expect(r.harness).toBe(slug);
+    expect(r.started.sort()).toEqual(['F-A1', 'F-A2']);
+    expect(r.started).not.toContain('F-A3');
+
+    // …and real DBOS pipelines exist for those two only.
+    const ids = await DBOS.listWorkflows({ workflow_id_prefix: `pipeline:${slug}:` });
+    const wf = ids.map((w) => w.workflowID).sort();
+    expect(wf).toEqual([`pipeline:${slug}:F-A1:e0`, `pipeline:${slug}:F-A2:e0`]);
+  }, 60_000);
+
+  it('carves out features a live pipeline already owns — a re-sweep with free slots starts nothing', async () => {
+    const slug = 'glue-owned';
+    ctl.cap = 4; // generous: slots stay free after the first sweep
+    armBlock(); // started pipelines park PENDING (owned)
+    await seed(slug, 'F-B1', { order: 1 });
+    await seed(slug, 'F-B2', { order: 2 });
+
+    const first = await loop.dispatchOneHarness(slug, WS, ctl.dbUrl);
+    expect(first.started.sort()).toEqual(['F-B1', 'F-B2']);
+
+    // Both pipelines are now live/owned (PENDING) — confirm before the re-sweep.
+    expect(await waitFor(async () => (await liveIds(slug)).length === 2)).toBe(true);
+
+    // Re-sweep: cap-4 leaves slots=4-2=2 FREE, but both features are owned, so the
+    // carve-out removes them from the candidate set → nothing new is started.
+    const second = await loop.dispatchOneHarness(slug, WS, ctl.dbUrl);
+    expect(second.started).toEqual([]);
+
+    // And no duplicate (e1) pipeline was minted for either feature.
+    const all = (await DBOS.listWorkflows({ workflow_id_prefix: `pipeline:${slug}:` })).map((w) => w.workflowID).sort();
+    expect(all).toEqual([`pipeline:${slug}:F-B1:e0`, `pipeline:${slug}:F-B2:e0`]);
+  }, 60_000);
+
+  it('starts nothing when the harness is over its cost cap, even with ready work', async () => {
+    const slug = 'glue-cost';
+    ctl.cap = 4;
+    ctl.overCostCap = true;
+    await seed(slug, 'F-C1', { order: 1 });
+    await seed(slug, 'F-C2', { order: 2 });
+
+    const r = await loop.dispatchOneHarness(slug, WS, ctl.dbUrl);
+    expect(r.started).toEqual([]);
+    expect(await DBOS.listWorkflows({ workflow_id_prefix: `pipeline:${slug}:` })).toHaveLength(0);
+  }, 60_000);
+
+  it('is fail-safe: an unreachable schema returns {started:[]} instead of throwing', async () => {
+    const slug = 'glue-fail';
+    ctl.cap = 4;
+    await seed(slug, 'F-D1', { order: 1 });
+
+    // A bad admin url makes the frontier read throw inside dispatchOneHarness; the
+    // per-harness try/catch must isolate it (a bad slug can't sink the whole sweep).
+    const r = await loop.dispatchOneHarness(slug, WS, 'postgresql://nobody:nobody@127.0.0.1:1/none');
+    expect(r).toEqual({ harness: slug, started: [] });
+  }, 60_000);
+});
+
+describe('runOrchestratorTick — the periodic sweep wrapper (P-011)', () => {
+  it('sweeps the env-resolved harness in the pinned workspace and starts its ready features', async () => {
+    const slug = 'glue-tick';
+    ctl.cap = 2;
+    armBlock();
+    await seed(slug, 'F-T1', { order: 1 });
+    await seed(slug, 'F-T2', { order: 2 });
+
+    // Pin the workspace + scope the sweep to just this harness (read at call time;
+    // no cron was scheduled because import-time HARNESSES was 'none').
+    process.env.PAPERCUSP_WORKSPACE_ID = WS;
+    process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES = slug;
+    try {
+      const results = await loop.runOrchestratorTick();
+      const mine = results.find((x) => x.harness === slug);
+      expect(mine).toBeDefined();
+      expect(mine!.started.sort()).toEqual(['F-T1', 'F-T2']);
+    } finally {
+      delete process.env.PAPERCUSP_WORKSPACE_ID;
+      process.env.PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES = 'none';
+    }
+  }, 60_000);
+});
+
+describe('refillHarnessOnSettle — the on-completion refill nudge (P-013)', () => {
+  it('immediately dispatches the harness (via the default admin url) on a fresh tick', async () => {
+    const slug = 'glue-refill';
+    ctl.cap = 1;
+    await seed(slug, 'F-R1', { order: 1 });
+
+    // Fire the nudge — fire-and-forget; it setImmediate→dispatchOneHarness(slug, ws)
+    // resolving the admin url through getHarnessAdminUrl() (mocked to the test DB).
+    loop.refillHarnessOnSettle(slug, WS);
+
+    const appeared = await waitFor(async () =>
+      (await DBOS.listWorkflows({ workflow_id_prefix: `pipeline:${slug}:F-R1:` })).length > 0,
+    );
+    expect(appeared).toBe(true);
+  }, 60_000);
+});
