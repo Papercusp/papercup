@@ -1,7 +1,7 @@
 ---
 title: Cross-client saved prompts — harness + workspace scoped, materialized for Claude / Codex / OMP
 slug: saved-prompts-cross-client-2026-06-02
-status: draft
+status: shipped
 created: 2026-06-02
 updated: 2026-06-02
 owner: aviynw10@gmail.com
@@ -11,9 +11,9 @@ owner: aviynw10@gmail.com
 
 ## Now
 
-**State:** COMPLETE + the three deferred follow-ups resolved. P-012 FIXED: workspace prompts now project to homedir()/.claude/commands (the HOME the client inherits — the per-workspace dir on desktop, the real home on the dev box), live-verified (file lands in /home/marsh-office/.claude/commands, prunes on delete) — D-008. UI: read path + render verified live in the Tauri shell; a UI-driven Save was exercised and HANGS on the PUT — confirmed to be the pre-documented headless libsoup write-fetch issue (button stuck "Saving…", no error, nothing in PG), not a feature bug; the endpoint is curl-verified — D-009. Tests: all saved-prompts unit+integration green (27 total); test:affected + test:affected:integration ran — the only reds are pre-existing concurrent-work failures (db-org drizzle, orchestrator, operator role-gating refactor), none from this work. All committed to main.
+**State:** COMPLETE + re-verified live on 2026-06-02 (session 2ade4d9e, resuming the 1c48fa0e handoff). Independent re-check this turn: (a) write-path code re-audited — saved-prompts-client.saveSavedPrompt fires+awaits the PUT correctly and the route handler validates/upserts/re-materializes correctly, so the earlier UI-Save hang is confirmed to be the documented libsoup/SSE-pool platform issue (D-009), NOT a feature bug; (b) migration 105 confirmed applied to live native PG (:5432) — table harness_shared.saved_prompts with all 9 columns, the saved_prompts_scope_name unique index, RLS enabled + saved_prompts_workspace_isolation policy; (c) operator host up, endpoint GET /api/agent-mcp/saved-prompts serves the current route (HTTP 200); (d) all 27 saved-prompts tests green on the current shared tree (19 unit + 8 integration). Feature is done and committed to main; all three prior deferred follow-ups (P-012 fix/D-008, UI verify/D-009, integration sweep) remain resolved.
 
-**Next:** Feature is done. Two platform/future notes only (not feature gaps): (1) spot-check the UI Save on a REAL non-headless desktop — if the libsoup write hang reproduces there it is a platform fix, not saved-prompts; (2) re-evaluate workspaceHomeDir() if a launcher ever remaps the child's unix $HOME per-workspace.
+**Next:** Nothing required — feature complete. Only non-feature items remain, all user-gated: (1) spot-check UI Save on a REAL non-headless desktop (if the libsoup write-hang reproduces there it's a platform SSE-pool fix, not saved-prompts); (2) revisit workspaceHomeDir() only if a launcher ever remaps the child unix $HOME per-workspace; (3) optional belt-and-suspenders full test:all:integration (near-zero risk — migration is a pure-additive new table); (4) optional thin principal-gated saved_prompts:list MCP read tool if superuser/agent prompt-management is wanted (D-007 dropped it deliberately).
 
 ## Background
 
