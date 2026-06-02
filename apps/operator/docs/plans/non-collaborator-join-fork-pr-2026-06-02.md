@@ -25,15 +25,20 @@ owner: aviynw@gmail.com
   `buildAnnounce`. Admission UNCHANGED this increment. Green: announce(16),
   local-announce-identity(7), two-peer-swarm + bidi(2), new ensureAttestationGist
   unit test.
-- ⏳ **A2 — verify side (NEXT):** switch the admission gate from `verifyChannel2`
-  (reads shared-repo file) to `verifyAttestation(frame.attestation_gist_id,
-  device_pubkey, github_user_id)`. Files: `read-admission.ts` (AdmissionInput +
-  verifyBinding gain the gist id), `verify-binding-adapter.ts` (direct
-  verifyAttestation, drop repo-context), `boot.ts` (onAnnounce → AdmissionInput,
-  pending-retry rebuild, admittedIdentities, reverifyAdmitted). Update
-  read-admission + verify-binding-adapter tests.
-- ⏳ **A3:** drop the contributor-file WRITE (`ensure-binding-published` + the 2
-  call sites: share-finalize, join step 3) → join becomes truly write-free.
+- ✅ **A2 — verify side** (`e663b7f92`): admission gate switched from
+  `verifyChannel2` (shared-repo read) to `verifyAttestation(attestation_gist_id,
+  device_pubkey, github_user_id)`. `verify-binding-adapter` rewritten stateless
+  (no repo context; skipCache so gist-deletion revocation is caught), threaded
+  through `read-admission` + `boot` (onAnnounce, pending-retry, admittedIdentities,
+  reverifyAdmitted). Also fixed A1 fallout — 7 hyperbee test announce-builders were
+  missing the required field (A1 had been committed after running only a subset;
+  LESSON: run the full affected suite, not a subset). Green: 110/110 across the
+  announce/admission/swarm/revocation unit set.
+- ⏳ **A3 (NEXT):** drop the contributor-file WRITE (`ensure-binding-published` +
+  its 2 call sites: `share-finalize` ensureBinding hook, `join-shared-harness`
+  step 3 `stepPublishBinding`) → join becomes truly write-free. Keep
+  `createAttestationGist` (the gist is the anchor). Delete `ensure-binding-published`
+  + its test if it goes zero-importer. Update join + share tests.
 - ⏳ **A4:** re-home owner-revocation `revoke-contributor.ts` branch-delete →
   gist-delete; demote/remove `verifyChannel2`.
 - ⏳ **A-live:** extend `p079-live-federation.live.test.ts` — boot both real
