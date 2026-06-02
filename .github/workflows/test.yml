@@ -58,10 +58,17 @@ jobs:
         run: npm run lint:plans
 
       # Four-framework guard (admin-testing-tab-restructure P-038): fails on a new
-      # .mjs under __tests__/integration/ or a *-smoke.ts under scripts/.
-      - name: Lint tests (four-framework guard)
+      # .mjs under __tests__/integration/, a *-smoke.ts under scripts/, OR a
+      # canonical test that matches no registry glob (invisible in the /adv tab).
+      - name: Lint tests (four-framework + tab-coverage guard)
         working-directory: apps/operator
         run: npm run lint:tests
+
+      # The /adv Tests-tab contract (.harness/testing-domains.json) is GENERATED
+      # from testing-domains-registry.ts. Fail if it drifted (edit the registry,
+      # then `npm run gen:contract`).
+      - name: Check testing-domains contract is in sync
+        run: npm run gen:contract:check
 
       # @restart retirement guard: the shared libs were renamed @restart/* ->
       # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails

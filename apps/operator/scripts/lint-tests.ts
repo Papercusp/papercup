@@ -1,24 +1,29 @@
 /**
- * lint-tests.ts — CI guard for the four-framework rule.
+ * lint-tests.ts — CI guard for the four-framework rule + tab visibility.
  *
- * Plan: admin-testing-tab-restructure-2026-05-24, P-038.
+ * Plan: admin-testing-tab-restructure-2026-05-24, P-038; extended by the
+ * test-framework coverage audit (2026-06-02).
  *
  * D-006 says new tests go in Vitest / Playwright / Cargo / LLM
  * scenarios — never `.mjs` integration scripts or tsx `-smoke.ts`
- * files. This lint enforces it via a debt counter
- * (`lint-tests-debt.json`):
+ * files. This lint enforces THREE things:
  *
- *   - Files listed in the JSON are pre-migration legacy. Their
- *     presence is accepted.
- *   - A NEW `.mjs` under `apps/operator/__tests__/integration/`
- *     fails CI.
- *   - A NEW `-smoke.ts` under `apps/operator/scripts/` fails CI.
- *   - REMOVING an entry from the JSON (because the file was migrated)
- *     succeeds — the JSON only shrinks.
+ *   1. No NEW `.mjs` under `apps/operator/__tests__/integration/`
+ *      (debt counter `lint-tests-debt.json` accepts pre-existing).
+ *   2. No NEW `-smoke.ts` under `apps/operator/scripts/`.
+ *   3. COVERAGE: every canonical `*.test.ts(x)` / `*.spec.ts` matches at
+ *      least one registry glob (`.harness/testing-domains.json`), so it
+ *      shows up in the /adv Tests tab. An orphaned test is invisible —
+ *      this is the failure the audit fixed (614 of 1168 were orphaned).
+ *      Fix by widening a domain in testing-domains-registry.ts, then
+ *      `npx tsx scripts/gen-testing-domains-contract.ts`.
+ *
+ * The debt JSON only shrinks (removing a migrated entry succeeds; adding
+ * one is rejected at review).
  *
  * Exit code:
- *   0 — clean (no new offenders)
- *   1 — at least one new file found
+ *   0 — clean
+ *   1 — at least one offender (new ad-hoc file OR an orphaned test)
  *
  * Usage:
  *   tsx apps/operator/scripts/lint-tests.ts
@@ -74,6 +79,96 @@ async function listFiles(dir: string, predicate: (name: string) => boolean): Pro
   return hits;
 }
 
+/* ----------------------------------------------------------------- *
+ * Coverage check — every canonical test must match a registry glob, so
+ * it shows up in the /adv Tests tab. Mirrors the glob walker in
+ * @papercusp/testing-shell/glob (kept dependency-free here on purpose).
+ * Without this, agents add correctly-named Vitest/Playwright tests in
+ * new files that no domain globs and they become invisible in the tab
+ * (the failure this audit fixed: 614 of 1168 tests were orphaned).
+ * ----------------------------------------------------------------- */
+
+const COVERAGE_IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.next', '.turbo', 'dist', 'build', 'out',
+  '.svelte-kit', '.cache', 'target', 'coverage', '_retired',
+]);
+
+const CANONICAL_TEST_RE = /\.(test|spec)\.(ts|tsx|mts|cts|mjs|js|jsx)$/;
+
+/** Split a glob into [literalPrefix, remainder] — see testing-shell/glob.ts. */
+function splitPrefix(pattern: string): [string, string] {
+  const meta = pattern.search(/[*?[]/);
+  if (meta < 0) return [pattern, ''];
+  const cut = pattern.lastIndexOf('/', meta);
+  if (cut < 0) return ['', pattern];
+  return [pattern.slice(0, cut), pattern.slice(cut + 1)];
+}
+
+/** Compile a glob remainder to an anchored RegExp (bracket-safe). */
+function remainderToRegex(rem: string): RegExp {
+  let out = '^';
+  for (let i = 0; i < rem.length; i++) {
+    const c = rem[i];
+    if (c === '*') {
+      if (rem[i + 1] === '*') { out += '.*'; i++; if (rem[i + 1] === '/') i++; }
+      else { out += '[^/]*'; }
+    } else if (c === '?') { out += '[^/]'; }
+    else if (/[.+^$()|\\[\]]/.test(c)) { out += `\\${c}`; }
+    else { out += c; }
+  }
+  return new RegExp(out + '$');
+}
+
+interface CompiledGlob { prefix: string; re: RegExp | null; literal: string | null; }
+function compileGlob(pattern: string): CompiledGlob {
+  const [prefix, remainder] = splitPrefix(pattern);
+  if (!remainder) return { prefix, re: null, literal: prefix };
+  return { prefix, re: remainderToRegex(remainder), literal: null };
+}
+function globMatches(g: CompiledGlob, relPath: string): boolean {
+  if (g.re === null) return relPath === g.literal;
+  if (g.prefix !== '' && !relPath.startsWith(g.prefix + '/')) return false;
+  const rel = g.prefix === '' ? relPath : relPath.slice(g.prefix.length + 1);
+  return g.re.test(rel);
+}
+
+/** Recursively list every file under `dir`, POSIX-relative, skipping ignore dirs. */
+async function walkAll(dir: string, base = ''): Promise<string[]> {
+  let entries: Awaited<ReturnType<typeof readdir>>;
+  try { entries = await readdir(dir, { withFileTypes: true }); } catch { return []; }
+  const out: string[] = [];
+  for (const e of entries) {
+    const rel = base ? posix.join(base, e.name) : e.name;
+    if (e.isDirectory()) {
+      if (COVERAGE_IGNORE_DIRS.has(e.name)) continue;
+      out.push(...await walkAll(join(dir, e.name), rel));
+    } else if (e.isFile() && CANONICAL_TEST_RE.test(e.name)) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
+/** Load every glob declared in the harness testing contract. */
+async function loadContractGlobs(): Promise<string[]> {
+  const raw = await readFile(join(REPO_ROOT, '.harness/testing-domains.json'), 'utf8');
+  const parsed = JSON.parse(raw) as { domains?: { sections?: { globs?: string[] }[] }[] };
+  const globs: string[] = [];
+  for (const d of parsed.domains ?? []) {
+    for (const s of d.sections ?? []) {
+      for (const g of s.globs ?? []) globs.push(g);
+    }
+  }
+  return globs;
+}
+
+/** Return canonical test files matching NO registry glob (invisible in the tab). */
+async function findOrphanTests(): Promise<string[]> {
+  const compiled = (await loadContractGlobs()).map(compileGlob);
+  const tests = await walkAll(REPO_ROOT);
+  return tests.filter((t) => !compiled.some((g) => globMatches(g, t))).sort();
+}
+
 async function main(): Promise<void> {
   const debt = await loadDebt();
   const debtMjs = new Set(debt.integrationMjs);
@@ -101,6 +196,17 @@ async function main(): Promise<void> {
       offenders.push(`[NEW] ${rel}\n        → tsx -smoke.ts scripts are forbidden (D-006). ` +
         `Use a Vitest *.integration.test.ts instead.`);
     }
+  }
+
+  // Forbidden #3: a canonical test that matches no registry glob — it would
+  // be invisible in the /adv Tests tab. Fix by widening a domain's globs in
+  // testing-domains-registry.ts (then regenerate the contract:
+  // `npx tsx scripts/gen-testing-domains-contract.ts`).
+  const orphans = await findOrphanTests();
+  for (const o of orphans) {
+    offenders.push(`[ORPHAN] ${o}\n        → matches no registry glob → invisible in the /adv Tests tab. ` +
+      `Widen a domain in apps/operator/lib/testing-domains-registry.ts, then ` +
+      `regenerate: npx tsx scripts/gen-testing-domains-contract.ts`);
   }
 
   // Stale debt entries — files in the JSON that no longer exist.
@@ -132,6 +238,7 @@ async function main(): Promise<void> {
 
   process.stdout.write('✓ lint-tests: no new offenders\n');
   process.stdout.write(`  ${debtMjs.size} .mjs + ${debtSmoke.size} -smoke.ts debt entries\n`);
+  process.stdout.write('  every canonical test matches a registry glob (visible in the /adv Tests tab)\n');
 }
 
 void main();

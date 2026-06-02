@@ -152,6 +152,16 @@ defineTestDomain({
       ] },
     { id: 'fs-watcher', label: 'FS watcher', globs: ['apps/operator/lib/harness-fs-watcher.test.ts'] },
     { id: 'status-sweep', label: 'Status sweep', globs: ['apps/operator/lib/harness-status-sweep.test.ts'] },
+    // Catch-the-rest for the harness lib surface (federation/dogfood-specific
+    // harness/__tests__ files also appear under the Dogfood domain — overlap
+    // is intentional).
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/harness-*.test.ts',
+        'apps/operator/lib/harness/**/*.test.ts',
+        'apps/operator/lib/harness-insights/**/*.test.ts',
+        'apps/operator/lib/harness-state/**/*.test.ts',
+      ] },
+    { id: 'app', label: 'App UI', globs: ['apps/operator/app/harness/**/*.test.*'] },
     { id: 'e2e', label: 'E2E', globs: [
         'apps/operator/e2e/harness-*.spec.ts',
         'apps/operator/e2e/dock.spec.ts',
@@ -182,6 +192,12 @@ defineTestDomain({
         'apps/operator/lib/stt-spend.test.ts',
         'apps/operator/lib/tts-spend.test.ts',
         'apps/operator/lib/elevenlabs-webhook-auth.test.ts',
+      ] },
+    // Catch-the-rest for the voice-* lib surface so new voice tests appear
+    // without a per-file registry edit.
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/voice-*.test.ts',
+        'apps/operator/lib/voice/**/*.test.ts',
       ] },
     { id: 'smoke', label: 'Smoke', runners: [
         { kind: 'node', cmd: 'node', args: ['apps/operator/scripts/el-suite-test.mjs'], label: 'el-suite' },
@@ -327,6 +343,9 @@ defineTestDomain({
         'apps/operator/lib/agent-tools/plans/__tests__/e2e.test.ts',
       ],
     },
+    // Catch-the-rest for the plans tool __tests__ dir + the plans admin UI.
+    { id: 'tools', label: 'Tools', globs: ['apps/operator/lib/agent-tools/plans/__tests__/**/*.test.ts'] },
+    { id: 'app', label: 'App UI', globs: ['apps/operator/app/admin/plans/**/*.test.*'] },
     {
       id: 'ui',
       label: 'UI',
@@ -363,11 +382,14 @@ defineTestDomain({
   tier: 'domain',
   sections: [
     { id: 'brain', label: 'Brain', globs: ['apps/operator/lib/operator-converse*.test.ts'] },
-    { id: 'cards', label: 'Cards', globs: ['apps/operator/lib/operator-card*.test.ts', 'apps/operator/lib/operator-cards/**/*.test.ts'] },
+    { id: 'cards', label: 'Cards', globs: ['apps/operator/lib/operator-card*.test.ts'] },
     { id: 'suggestions', label: 'Suggestions', globs: ['apps/operator/lib/operator-suggest*.test.ts', 'apps/operator/lib/operator-scan*.test.ts'] },
     { id: 'audit', label: 'Audit', globs: ['apps/operator/lib/operator-audit*.test.ts'] },
     { id: 'persona', label: 'Persona', globs: ['apps/operator/lib/operator-persona*.test.ts', 'apps/operator/lib/operator-prompt*.test.ts'] },
     { id: 'state', label: 'State', globs: ['apps/operator/lib/operator-state*.test.ts', 'apps/operator/lib/operator-trigger*.test.ts'] },
+    // Catch-the-rest: every operator-*.test.ts at lib root (converse/scan/etc.
+    // are already sectioned above; this surfaces the long tail too).
+    { id: 'lib', label: 'Lib', globs: ['apps/operator/lib/operator-*.test.ts'] },
   ],
 });
 
@@ -381,6 +403,12 @@ defineTestDomain({
     { id: 'adapters', label: 'Adapters', globs: ['apps/operator/lib/design-adapter*.test.ts'] },
     { id: 'spec', label: 'Spec', globs: ['apps/operator/lib/design-spec/**/*.test.ts'] },
     { id: 'phase-flow', label: 'Phase flow', globs: ['apps/operator/lib/design-phase*.test.ts'] },
+    // Catch-the-rest for the design-* lib surface + design-tokens outputs.
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/design-*.test.ts',
+        'apps/operator/lib/design/**/*.test.ts',
+        'design-tokens/**/*.test.ts',
+      ] },
   ],
 });
 
@@ -405,8 +433,15 @@ defineTestDomain({
   tier: 'surface',
   sections: [
     { id: 'sse', label: 'SSE', globs: ['libs/generic/sse/**/*.test.ts'] },
-    { id: 'ipc', label: 'IPC', globs: ['apps/operator/lib/endpoint-ipc/**/*.test.ts'] },
-    { id: 'adapters', label: 'Adapters', globs: ['libs/generic/desktop-ipc/src/**/*.test.ts'] },
+    { id: 'ipc', label: 'IPC', globs: [
+        'apps/operator/lib/endpoint-ipc/**/*.test.ts',
+        'libs/generic/ipc-endpoint-server/**/*.test.ts',
+        'libs/generic/ipc-framing/**/*.test.ts',
+      ] },
+    { id: 'adapters', label: 'Adapters', globs: [
+        'libs/generic/desktop-ipc/src/**/*.test.ts',
+        'apps/operator/lib/transport-adapters/**/*.test.ts',
+      ] },
   ],
 });
 
@@ -419,7 +454,7 @@ defineTestDomain({
     { id: 'shape', label: 'Shape', globs: ['apps/operator/lib/snapshot-shape*.test.ts'] },
     { id: 'locks', label: 'Locks', globs: ['apps/operator/lib/snapshot-lock*.test.ts'] },
     { id: 'fork', label: 'Fork', globs: ['apps/operator/lib/snapshot-fork*.test.ts'] },
-    { id: 'export-state', label: 'Export-state', globs: ['packages/papercusp-export-state/**/*.test.ts'] },
+    { id: 'export-state', label: 'Export-state', globs: ['libs/papercusp-export-state/src/**/*.test.ts'] },
     { id: 'routes', label: 'Routes', globs: ['apps/operator/lib/endpoint-route/__tests__/snapshot*.test.ts'] },
   ],
 });
@@ -433,8 +468,11 @@ defineTestDomain({
     { id: 'pair', label: 'Pair', globs: ['apps/operator/lib/device-pair*.test.ts'] },
     { id: 'jwt', label: 'JWT', globs: ['apps/operator/lib/device-jwt*.test.ts'] },
     { id: 'feeds', label: 'Feeds', globs: ['apps/operator/lib/device-feed*.test.ts'] },
-    { id: 'actions', label: 'Actions', globs: ['apps/operator/lib/device-action*.test.ts'] },
-    { id: 'voice-init', label: 'Voice init', globs: ['apps/operator/lib/mobile-voice*.test.ts'] },
+    // Catch-the-rest for the device-*/mobile-* lib surface.
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/device-*.test.ts',
+        'apps/operator/lib/mobile-*.test.ts',
+      ] },
   ],
 });
 
@@ -447,8 +485,9 @@ defineTestDomain({
     { id: 'runner', label: 'Runner', globs: ['apps/operator/lib/provision/runner*.test.ts'] },
     { id: 'sandbox', label: 'Sandbox', globs: ['apps/operator/lib/provision/sandbox*.test.ts'] },
     { id: 'trust-store', label: 'Trust store', globs: ['apps/operator/lib/provision/trust*.test.ts'] },
-    { id: 'templates', label: 'Templates', globs: ['apps/operator/lib/provision/template*.test.ts'] },
     { id: 'network', label: 'Network', globs: ['apps/operator/lib/provision/network*.test.ts'] },
+    // Catch-the-rest for everything under the provision/ dir.
+    { id: 'lib', label: 'Lib', globs: ['apps/operator/lib/provision/**/*.test.ts'] },
   ],
 });
 
@@ -593,6 +632,163 @@ defineTestDomain({
 });
 
 /* ---------------------------------------------------------------- *
+ * Newer subsystems that grew their own test trees after the original 20
+ * domains were hand-curated, plus catch-all domains so NO canonical test
+ * is ever invisible in the tab. Globs are directory/prefix-level so new
+ * tests in an existing area appear with no registry edit; a genuinely new
+ * subsystem (a new top-level dir) trips the coverage guard
+ * (scripts/lint-tests.ts) which forces a one-line glob add here.
+ * ---------------------------------------------------------------- */
+
+defineTestDomain({
+  id: 'gym',
+  label: 'Gym',
+  description: 'Agent gym / eval harness.',
+  tier: 'domain',
+  sections: [
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/gym/**/*.test.ts',
+        'apps/operator/lib/gym/**/*.test.tsx',
+        'apps/operator/lib/gym-*.test.ts',
+      ] },
+  ],
+});
+
+defineTestDomain({
+  id: 'dbos',
+  label: 'DBOS',
+  description: 'Durable workflow engine: steps, crash-replay, sweep glue.',
+  tier: 'domain',
+  sections: [
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/dbos/**/*.test.ts',
+        'apps/operator/lib/dbos-*.test.ts',
+      ] },
+    { id: 'integration', label: 'Integration', globs: ['apps/operator/test/dbos-*.integration.test.ts'] },
+  ],
+});
+
+defineTestDomain({
+  id: 'workspace',
+  label: 'Workspace',
+  description: 'Workspace registry, multi-workspace context, per-window scoping.',
+  tier: 'domain',
+  sections: [
+    { id: 'lib', label: 'Lib', globs: [
+        'apps/operator/lib/workspace-*.test.ts',
+        'apps/operator/lib/workspaces-*.test.ts',
+        'apps/operator/lib/workspace/**/*.test.ts',
+      ] },
+  ],
+});
+
+defineTestDomain({
+  id: 'adv',
+  label: 'ADV Shell',
+  description: 'The /adv operator shell: dock panels, sessions, contributors, Vite SPA.',
+  tier: 'domain',
+  sections: [
+    { id: 'panels', label: 'Panels', globs: [
+        'apps/operator/app/adv/**/*.test.ts',
+        'apps/operator/app/adv/**/*.test.tsx',
+        'apps/operator/lib/adv-*.test.ts',
+      ] },
+    { id: 'vite', label: 'Vite SPA', globs: [
+        'apps/operator-vite/src/**/*.test.ts',
+        'apps/operator-vite/src/**/*.test.tsx',
+      ] },
+  ],
+});
+
+defineTestDomain({
+  id: 'operator-core',
+  label: 'Operator (core & misc)',
+  description: 'Flat catch-all for the operator app: every lib/app/bin/script/integration test, so nothing is invisible. Files here may also appear under a more specific domain — overlap is intentional.',
+  tier: 'domain',
+  sections: [
+    { id: 'lib-root', label: 'lib (root)', globs: [
+        'apps/operator/lib/*.test.ts',
+        'apps/operator/lib/*.test.tsx',
+      ] },
+    { id: 'lib-subdirs', label: 'lib (subdirs)', globs: [
+        'apps/operator/lib/*/*.test.ts',
+        'apps/operator/lib/*/*.test.tsx',
+        'apps/operator/lib/*/__tests__/**/*.test.ts',
+        'apps/operator/lib/*/__tests__/**/*.test.tsx',
+        'apps/operator/lib/endpoint-route/routes/**/*.test.ts',
+      ] },
+    { id: 'lib-tests', label: 'lib/__tests__', globs: [
+        'apps/operator/lib/__tests__/**/*.test.ts',
+        'apps/operator/lib/__tests__/**/*.test.tsx',
+      ] },
+    { id: 'app', label: 'app', globs: [
+        'apps/operator/app/**/*.test.ts',
+        'apps/operator/app/**/*.test.tsx',
+      ] },
+    { id: 'bin-scripts', label: 'bin / scripts', globs: [
+        'apps/operator/bin/**/*.test.ts',
+        'apps/operator/scripts/**/*.test.ts',
+        'apps/operator/scripts/**/*.test.mjs',
+      ] },
+    { id: 'integration', label: 'Integration (test/)', globs: [
+        'apps/operator/test/**/*.test.ts',
+        'apps/operator/__tests__/**/*.test.ts',
+      ] },
+    { id: 'e2e', label: 'E2E (all specs)', globs: ['apps/operator/e2e/*.spec.ts'] },
+  ],
+});
+
+defineTestDomain({
+  id: 'libraries',
+  label: 'Libraries',
+  description: 'Shared libs + packages the operator depends on (libs/*, packages/*, tools/*).',
+  tier: 'surface',
+  sections: [
+    { id: 'generic', label: 'libs/generic', globs: [
+        'libs/generic/**/*.test.ts',
+        'libs/generic/**/*.test.tsx',
+        // papergrid + search-core use `.spec.ts` for Vitest (Restart-style).
+        'libs/generic/**/*.spec.ts',
+      ] },
+    { id: 'papercusp', label: 'libs/papercusp', globs: [
+        'libs/papercusp/packages/**/*.test.ts',
+        'libs/papercusp/packages/**/*.test.tsx',
+        'libs/papercusp/packages/**/*.spec.ts',
+        'libs/papercusp/libs/**/*.test.ts',
+      ] },
+    { id: 'operator-libs', label: 'operator libs', globs: [
+        'libs/papercup-shared/src/**/*.test.ts',
+        'libs/papercup-shared/src/**/*.test.tsx',
+        'libs/papercusp-export-state/src/**/*.test.ts',
+        'libs/papercusp-publish-auth/src/**/*.test.ts',
+        'libs/host-platform/src/**/*.test.ts',
+        'libs/flags/src/**/*.test.ts',
+        'libs/test-config/src/**/*.test.ts',
+        'libs/testing-shell/src/**/*.test.ts',
+        'libs/testing-shell/src/**/*.test.tsx',
+        // The standalone publish worker (Cloudflare).
+        'apps/papercusp-publish/src/**/*.test.ts',
+      ] },
+    { id: 'ui-libs', label: 'UI libs', globs: [
+        'libs/marketplace-public-ui/src/**/*.test.ts',
+        'libs/marketplace-public-ui/src/**/*.test.tsx',
+        'libs/agent-chat/src/**/*.test.ts',
+        'libs/agent-chat/src/**/*.test.tsx',
+      ] },
+    { id: 'packages', label: 'packages', globs: [
+        'packages/**/*.test.ts',
+        'packages/**/*.test.tsx',
+        'packages/**/*.spec.ts',
+      ] },
+    { id: 'tools', label: 'tools', globs: [
+        'tools/**/*.test.ts',
+        'tools/**/*.test.mjs',
+        'tools/**/*.spec.ts',
+      ] },
+  ],
+});
+
+/* ---------------------------------------------------------------- *
  * Composed views (P-011). `papercuspRegistry` = the 20 declared above
  * (read back from the Map by id); `adminRegistry` = universal + papercusp
  * = the full /admin/testing set. The SPA nav order is TestingClient's own
@@ -604,6 +800,8 @@ const PAPERCUSP_IDS = [
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
   'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
   'provisioning', 'docs', 'dogfood',
+  // Subsystems + catch-alls added by the test-framework coverage audit.
+  'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'libraries',
 ] as const;
 
 export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {

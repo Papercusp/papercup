@@ -1,5 +1,5 @@
 {
-  "_comment": "Harness-owned test-domain contract for the papercup dogfood harness. Generated from the operator adminRegistry (testing-domains-registry.ts); read by GET /api/harness/:slug/testing/domains. Regenerate when domains change.",
+  "_comment": "Harness-owned test-domain contract for the papercup dogfood harness. GENERATED from testing-domains-registry.ts by scripts/gen-testing-domains-contract.ts — do not hand-edit. Run `npx tsx scripts/gen-testing-domains-contract.ts` after changing domains.",
   "domains": [
     {
       "id": "test-runs",
@@ -71,7 +71,7 @@
     {
       "id": "routes",
       "label": "Routes",
-      "description": "Per-route INP rollup + Hono endpoint test surface.",
+      "description": "Endpoint test surface — the project’s HTTP/RPC route tests.",
       "tier": "universal",
       "sections": [
         {
@@ -167,6 +167,23 @@
           ]
         },
         {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/harness-*.test.ts",
+            "apps/operator/lib/harness/**/*.test.ts",
+            "apps/operator/lib/harness-insights/**/*.test.ts",
+            "apps/operator/lib/harness-state/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "app",
+          "label": "App UI",
+          "globs": [
+            "apps/operator/app/harness/**/*.test.*"
+          ]
+        },
+        {
           "id": "e2e",
           "label": "E2E",
           "globs": [
@@ -222,6 +239,14 @@
             "apps/operator/lib/stt-spend.test.ts",
             "apps/operator/lib/tts-spend.test.ts",
             "apps/operator/lib/elevenlabs-webhook-auth.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/voice-*.test.ts",
+            "apps/operator/lib/voice/**/*.test.ts"
           ]
         },
         {
@@ -393,6 +418,20 @@
           ]
         },
         {
+          "id": "tools",
+          "label": "Tools",
+          "globs": [
+            "apps/operator/lib/agent-tools/plans/__tests__/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "app",
+          "label": "App UI",
+          "globs": [
+            "apps/operator/app/admin/plans/**/*.test.*"
+          ]
+        },
+        {
           "id": "ui",
           "label": "UI",
           "globs": [
@@ -437,8 +476,7 @@
           "id": "cards",
           "label": "Cards",
           "globs": [
-            "apps/operator/lib/operator-card*.test.ts",
-            "apps/operator/lib/operator-cards/**/*.test.ts"
+            "apps/operator/lib/operator-card*.test.ts"
           ]
         },
         {
@@ -470,6 +508,13 @@
           "globs": [
             "apps/operator/lib/operator-state*.test.ts",
             "apps/operator/lib/operator-trigger*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/operator-*.test.ts"
           ]
         }
       ]
@@ -506,6 +551,15 @@
           "label": "Phase flow",
           "globs": [
             "apps/operator/lib/design-phase*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/design-*.test.ts",
+            "apps/operator/lib/design/**/*.test.ts",
+            "design-tokens/**/*.test.ts"
           ]
         }
       ]
@@ -570,14 +624,17 @@
           "id": "ipc",
           "label": "IPC",
           "globs": [
-            "apps/operator/lib/endpoint-ipc/**/*.test.ts"
+            "apps/operator/lib/endpoint-ipc/**/*.test.ts",
+            "libs/generic/ipc-endpoint-server/**/*.test.ts",
+            "libs/generic/ipc-framing/**/*.test.ts"
           ]
         },
         {
           "id": "adapters",
           "label": "Adapters",
           "globs": [
-            "libs/generic/desktop-ipc/src/**/*.test.ts"
+            "libs/generic/desktop-ipc/src/**/*.test.ts",
+            "apps/operator/lib/transport-adapters/**/*.test.ts"
           ]
         }
       ]
@@ -613,7 +670,7 @@
           "id": "export-state",
           "label": "Export-state",
           "globs": [
-            "packages/papercusp-export-state/**/*.test.ts"
+            "libs/papercusp-export-state/src/**/*.test.ts"
           ]
         },
         {
@@ -653,17 +710,11 @@
           ]
         },
         {
-          "id": "actions",
-          "label": "Actions",
+          "id": "lib",
+          "label": "Lib",
           "globs": [
-            "apps/operator/lib/device-action*.test.ts"
-          ]
-        },
-        {
-          "id": "voice-init",
-          "label": "Voice init",
-          "globs": [
-            "apps/operator/lib/mobile-voice*.test.ts"
+            "apps/operator/lib/device-*.test.ts",
+            "apps/operator/lib/mobile-*.test.ts"
           ]
         }
       ]
@@ -696,17 +747,17 @@
           ]
         },
         {
-          "id": "templates",
-          "label": "Templates",
-          "globs": [
-            "apps/operator/lib/provision/template*.test.ts"
-          ]
-        },
-        {
           "id": "network",
           "label": "Network",
           "globs": [
             "apps/operator/lib/provision/network*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/provision/**/*.test.ts"
           ]
         }
       ]
@@ -870,6 +921,226 @@
           "description": "Browser collaboration flows (Playwright).",
           "globs": [
             "apps/operator/e2e/collab-*.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gym",
+      "label": "Gym",
+      "description": "Agent gym / eval harness.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/gym/**/*.test.ts",
+            "apps/operator/lib/gym/**/*.test.tsx",
+            "apps/operator/lib/gym-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dbos",
+      "label": "DBOS",
+      "description": "Durable workflow engine: steps, crash-replay, sweep glue.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/dbos/**/*.test.ts",
+            "apps/operator/lib/dbos-*.test.ts"
+          ]
+        },
+        {
+          "id": "integration",
+          "label": "Integration",
+          "globs": [
+            "apps/operator/test/dbos-*.integration.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace",
+      "label": "Workspace",
+      "description": "Workspace registry, multi-workspace context, per-window scoping.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "apps/operator/lib/workspace-*.test.ts",
+            "apps/operator/lib/workspaces-*.test.ts",
+            "apps/operator/lib/workspace/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adv",
+      "label": "ADV Shell",
+      "description": "The /adv operator shell: dock panels, sessions, contributors, Vite SPA.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "panels",
+          "label": "Panels",
+          "globs": [
+            "apps/operator/app/adv/**/*.test.ts",
+            "apps/operator/app/adv/**/*.test.tsx",
+            "apps/operator/lib/adv-*.test.ts"
+          ]
+        },
+        {
+          "id": "vite",
+          "label": "Vite SPA",
+          "globs": [
+            "apps/operator-vite/src/**/*.test.ts",
+            "apps/operator-vite/src/**/*.test.tsx"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "operator-core",
+      "label": "Operator (core & misc)",
+      "description": "Flat catch-all for the operator app: every lib/app/bin/script/integration test, so nothing is invisible. Files here may also appear under a more specific domain — overlap is intentional.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib-root",
+          "label": "lib (root)",
+          "globs": [
+            "apps/operator/lib/*.test.ts",
+            "apps/operator/lib/*.test.tsx"
+          ]
+        },
+        {
+          "id": "lib-subdirs",
+          "label": "lib (subdirs)",
+          "globs": [
+            "apps/operator/lib/*/*.test.ts",
+            "apps/operator/lib/*/*.test.tsx",
+            "apps/operator/lib/*/__tests__/**/*.test.ts",
+            "apps/operator/lib/*/__tests__/**/*.test.tsx",
+            "apps/operator/lib/endpoint-route/routes/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "lib-tests",
+          "label": "lib/__tests__",
+          "globs": [
+            "apps/operator/lib/__tests__/**/*.test.ts",
+            "apps/operator/lib/__tests__/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "app",
+          "label": "app",
+          "globs": [
+            "apps/operator/app/**/*.test.ts",
+            "apps/operator/app/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "bin-scripts",
+          "label": "bin / scripts",
+          "globs": [
+            "apps/operator/bin/**/*.test.ts",
+            "apps/operator/scripts/**/*.test.ts",
+            "apps/operator/scripts/**/*.test.mjs"
+          ]
+        },
+        {
+          "id": "integration",
+          "label": "Integration (test/)",
+          "globs": [
+            "apps/operator/test/**/*.test.ts",
+            "apps/operator/__tests__/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "e2e",
+          "label": "E2E (all specs)",
+          "globs": [
+            "apps/operator/e2e/*.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "libraries",
+      "label": "Libraries",
+      "description": "Shared libs + packages the operator depends on (libs/*, packages/*, tools/*).",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "generic",
+          "label": "libs/generic",
+          "globs": [
+            "libs/generic/**/*.test.ts",
+            "libs/generic/**/*.test.tsx",
+            "libs/generic/**/*.spec.ts"
+          ]
+        },
+        {
+          "id": "papercusp",
+          "label": "libs/papercusp",
+          "globs": [
+            "libs/papercusp/packages/**/*.test.ts",
+            "libs/papercusp/packages/**/*.test.tsx",
+            "libs/papercusp/packages/**/*.spec.ts",
+            "libs/papercusp/libs/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "operator-libs",
+          "label": "operator libs",
+          "globs": [
+            "libs/papercup-shared/src/**/*.test.ts",
+            "libs/papercup-shared/src/**/*.test.tsx",
+            "libs/papercusp-export-state/src/**/*.test.ts",
+            "libs/papercusp-publish-auth/src/**/*.test.ts",
+            "libs/host-platform/src/**/*.test.ts",
+            "libs/flags/src/**/*.test.ts",
+            "libs/test-config/src/**/*.test.ts",
+            "libs/testing-shell/src/**/*.test.ts",
+            "libs/testing-shell/src/**/*.test.tsx",
+            "apps/papercusp-publish/src/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "ui-libs",
+          "label": "UI libs",
+          "globs": [
+            "libs/marketplace-public-ui/src/**/*.test.ts",
+            "libs/marketplace-public-ui/src/**/*.test.tsx",
+            "libs/agent-chat/src/**/*.test.ts",
+            "libs/agent-chat/src/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "packages",
+          "label": "packages",
+          "globs": [
+            "packages/**/*.test.ts",
+            "packages/**/*.test.tsx",
+            "packages/**/*.spec.ts"
+          ]
+        },
+        {
+          "id": "tools",
+          "label": "tools",
+          "globs": [
+            "tools/**/*.test.ts",
+            "tools/**/*.test.mjs",
+            "tools/**/*.spec.ts"
           ]
         }
       ]

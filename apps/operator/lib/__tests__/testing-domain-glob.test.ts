@@ -61,6 +61,15 @@ describe('remainderToRegex', () => {
     expect(re.test('fooXbar.test.ts')).toBe(false);
   });
 
+  it('treats literal [brackets] as literals, not a regex char class', () => {
+    // Next.js dynamic-route dirs like app/users/github/[id]/... must match
+    // the literal `[id]` segment — not the char class [id] (any of i/d).
+    const re = remainderToRegex('[id]/x.test.ts');
+    expect(re.test('[id]/x.test.ts')).toBe(true);
+    expect(re.test('i/x.test.ts')).toBe(false);
+    expect(re.test('d/x.test.ts')).toBe(false);
+  });
+
   it('rejects unsupported extglob', () => {
     expect(() => remainderToRegex('!(node_modules)/*.ts')).toThrow(
       /unsupported extglob/,
@@ -80,12 +89,14 @@ describe('expandGlobs against a real tmp dir', () => {
     await mkdir(join(dir, 'lib/voice'), { recursive: true });
     await mkdir(join(dir, 'lib/voice/cards'), { recursive: true });
     await mkdir(join(dir, 'lib/harness'), { recursive: true });
+    await mkdir(join(dir, 'app/users/[id]/__tests__'), { recursive: true });
     await mkdir(join(dir, 'node_modules/should-skip'), { recursive: true });
     await writeFile(join(dir, 'lib/voice/commands.test.ts'), '');
     await writeFile(join(dir, 'lib/voice/engine-health.test.ts'), '');
     await writeFile(join(dir, 'lib/voice/cards/card.test.ts'), '');
     await writeFile(join(dir, 'lib/voice/notes.md'), '');
     await writeFile(join(dir, 'lib/harness/dock.test.ts'), '');
+    await writeFile(join(dir, 'app/users/[id]/__tests__/Profile.test.tsx'), '');
     await writeFile(join(dir, 'node_modules/should-skip/whatever.test.ts'), '');
     return dir;
   }
@@ -123,6 +134,12 @@ describe('expandGlobs against a real tmp dir', () => {
     const hits = await expandGlobs(root, ['**/*.test.ts']);
     const paths = hits.map((h) => h.path);
     expect(paths.every((p) => !p.startsWith('node_modules'))).toBe(true);
+  });
+
+  it('matches globs through literal [param] (Next.js dynamic-route) dirs', async () => {
+    const root = await seed();
+    const hits = await expandGlobs(root, ['app/users/[id]/__tests__/**/*.test.tsx']);
+    expect(hits.map((h) => h.path)).toEqual(['app/users/[id]/__tests__/Profile.test.tsx']);
   });
 
   it('returns size + mtime for each hit', async () => {
