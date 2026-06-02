@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Phases 1, 2 (store drain logic) and 4 (tool surface) SHIPPED. Agents can now end-to-end: locks:acquire_resource (shared/exclusive with wait:{max_drain_sec}), release_resource, heartbeat_resource, list (registry + holders + draining). The exclusive wait loop (resource-acquire-wait.ts) subscribes ch_coord before acquire, wakes on the resource_grant_cascade NOTIFY with a ceiling+poke fallback, returns held / drain_timeout (P-006). Submodule libs/papercusp@20990a6, superproject@c7675503b. Verified: 44/44 locks integration green (9 new tests), new files type-clean, tools-md-sync 46/46. Sibling-tools design recorded in D-014.
+**State:** Phases 1, 2, 3, 4 SHIPPED — the feature is end-to-end usable. Phase 3 adds the coord broadcasts: drain-start sends a targeted "release please" to each shared holder (P-009, via the wait loop's onDrainStart hook), back-up announces the resource free on exclusive release (P-010), both fireNotifications to resource:&lt;name&gt; watchers (P-011). Submodule libs/papercusp@e1564c2, superproject@cf6ef4f21. Verified: 48/48 locks integration green, new files type-clean, tools-md-sync 46/46. Discovered + worked around a pre-existing getOrgPg first-call race (D-015, not fixed — flagged). Remaining: Phase 5 (rules/docs), Phase 6 (more tests), Phase 8 (defineTool requiresLock — the `enforced` rung of P-015), Phase 7 ship gate.
 
-**Next:** Phase 3 — wire the coord broadcasts (drain-start "release please" to shared holders P-009, "back up" on exclusive release P-010) via fireNotifications; the PG state + NOTIFY wake already work, these are the politeness layer telling peers to act. Then Phase 5 (rules/docs), Phase 6 (more tests), Phase 8 (defineTool requiresLock — the `enforced` rung of P-015 + the Bash matcher).
+**Next:** Phase 5 — inject the registry rule_text into the SU playbook / a locks:list-driven discovery (P-017) and document the named-lock + drain protocol (P-018); or jump to Phase 8 (defineTool requiresLock dispatcher integration + Bash matcher).
 
 ## Background
 
@@ -111,9 +111,9 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 ## Phase 3 — Broadcast & resume (event delivery)
 
-- **P-009** `todo` Drain-start broadcast: on entering `draining`, `fireNotifications` to all current `shared` holders + watchers ("draining for restart by X — release when current use done"), delivered via the coord injection hook. blocked-by: P-004
-- **P-010** `todo` Release broadcast + resume: on `exclusive` release, broadcast "back up" to the wait queue + watchers so parked agents re-acquire `shared`. Event-push only; never poll. blocked-by: P-005
-- **P-011** `todo` Auto-wire lock lifecycle → watch notifications (today the watch notify is hand-fired via `fireNotifications`); fold lock acquire/drain/release into the `coord:watch` trigger set. blocked-by: P-009
+- **P-009** `done` Drain-start broadcast: on entering `draining`, `fireNotifications` to all current `shared` holders + watchers ("draining for restart by X — release when current use done"), delivered via the coord injection hook. blocked-by: P-004
+- **P-010** `done` Release broadcast + resume: on `exclusive` release, broadcast "back up" to the wait queue + watchers so parked agents re-acquire `shared`. Event-push only; never poll. blocked-by: P-005
+- **P-011** `done` Auto-wire lock lifecycle → watch notifications (today the watch notify is hand-fired via `fireNotifications`); fold lock acquire/drain/release into the `coord:watch` trigger set. blocked-by: P-009 (drain-start + back-up fireNotifications to resource:&lt;name&gt; watchers; plain shared acquire/release watch-notify not wired low value)
 
 ## Phase 4 — Tool surface & enforcement dial
 
@@ -226,6 +226,11 @@ Related: P-026
 Date: 2026-06-02
 The agent surface is sibling tools — `locks:acquire_resource` / `release_resource` / `heartbeat_resource` / `list` — alongside the file-path `locks:acquire`/`release`/`heartbeat`/`queue`, rather than overloading `locks:acquire` with a `resource`/`mode` branch as P-012 literally proposed. Reason: the two are fundamentally different in arg shape (`paths[]` vs `resource`+`mode`), result shape (`held[]`/`busy[]` vs `mode`/`status`/`shared_holders`), and wait mechanics (FIFO path-waiter queue via `agent_lock_waiters` vs writer-priority drain via status polling). Overloading one verb would be a thin top-level if-branch with no real unification — two tools wearing one name — while separate tools give each a distinct `guidance.when` and far simpler, independently-testable handlers. Unification is preserved at the namespace level (`locks:*`). `locks:list` covers BOTH discovery (P-014) and queue/drain visibility (P-013) — registry rows + live holders + a `draining` flag.
 Related: P-012
+
+
+### D-015 — Latent getOrgPg first-call race found while wiring coord broadcasts
+Date: 2026-06-02
+While testing the Phase 3 coord broadcasts I hit a pre-existing fragility in `getOrgPg()` (`libs/papercusp/libs/db/src/connection.ts`): the FIRST call in a process can throw `TypeError: Cannot read properties of null (reading 'constructor')` from drizzle's `extractTablesRelationalConfig` — a `sharedSchema` module-load-order race when getOrgPg runs before the schema modules finish resolving. It assigns `_adminClient` (the usable postgres-js client) on line 298 but throws on line 300 building the drizzle handle, so the SECOND call returns `{ sql: <valid>, drizzle: null }` and any consumer needing only `.sql` (coord appendLine/readLines, the subscription store) works thereafter. Coord writes need only `.sql`, so I worked around it in the resource-broadcast test with a beforeAll warm-up (`readInbox(...).catch(()=>{})`) rather than touch connection.ts. NOT fixed here — it is a load-bearing submodule file, out of this plan's scope, and likely test-env-only (the operator runtime calls getOrgPg after module load). Flagged for a dedicated fix: getOrgPg should not leave `_adminClient` set on a partial init failure (so a retry rebuilds the drizzle handle), or schema load should be forced before first use.
 
 ## Open questions
 
