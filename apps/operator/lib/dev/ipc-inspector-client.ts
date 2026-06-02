@@ -158,7 +158,21 @@ let installed = false;
  */
 export function installIpcInspector(): void {
   if (installed || typeof window === 'undefined') return;
-  if (process.env.NODE_ENV === 'production') return;
+  // Dev builds: always on. Production: OFF unless explicitly opted in via a
+  // localStorage flag. This matters because a RELEASE desktop build is the only
+  // build that actually runs IPC (debug builds skip the sidecar spawn) — yet a
+  // release build is NODE_ENV=production. Without this opt-in the inspector and
+  // IPC could never coexist, making it useless for verifying the SSE-over-IPC
+  // churn fork. To observe a release build: localStorage['papercusp.ipcInspector']
+  // = '1' then reload. Real users never set it, so it stays off in the wild.
+  // Plan: calltool-endpoint-seam-2026-06-01 (Phase C/D).
+  if (process.env.NODE_ENV === 'production') {
+    try {
+      if (window.localStorage?.getItem('papercusp.ipcInspector') !== '1') return;
+    } catch {
+      return; // localStorage unavailable (sandboxed) → stay off
+    }
+  }
   installed = true;
   setIpcInspector(record);
   (window as unknown as { __ipcInspector: IpcInspectorApi }).__ipcInspector = api;

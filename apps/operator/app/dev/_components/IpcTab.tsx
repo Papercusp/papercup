@@ -207,8 +207,11 @@ export default function IpcTab(): JSX.Element {
 
         {!inspector ? (
           <p style={{ opacity: 0.7, fontSize: 13, marginTop: 10 }}>
-            <code>window.__ipcInspector</code> is not installed — it&apos;s dev-only and
-            registers at app boot. Reload the desktop window if this persists.
+            <code>window.__ipcInspector</code> is not installed. It registers at app
+            boot in dev. In a <strong>release</strong> build (the only build that runs
+            IPC), opt in with{' '}
+            <code>localStorage[&apos;papercusp.ipcInspector&apos;]=&apos;1&apos;</code>{' '}
+            then reload.
           </p>
         ) : (
           <>
