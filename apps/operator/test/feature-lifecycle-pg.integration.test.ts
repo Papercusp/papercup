@@ -42,6 +42,20 @@ const SHARED_SCHEMA_DDL = `
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
+
+  -- readFeaturesPg LEFT JOINs the consolidated table for the G2 auditor-admission
+  -- gate (origin/audit_verdict — added by P-008/097-098). This hand-rolled fixture
+  -- seeds no consolidated rows, so the JOIN yields NULL → features are treated as
+  -- local/pickable. Minimal stub with just the join-referenced columns.
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
+    workspace_id   TEXT,
+    harness_slug   TEXT        NOT NULL,
+    feature_id     TEXT        NOT NULL,
+    status         TEXT,
+    origin         TEXT        NOT NULL DEFAULT 'local',
+    audit_verdict  TEXT,
+    PRIMARY KEY (harness_slug, feature_id)
+  );
 `;
 
 /** Physical harness_features (not the view) with workspace_id from migration 009. */
