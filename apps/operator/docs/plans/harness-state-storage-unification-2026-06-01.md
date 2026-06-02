@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** DECIDED → B. **P-001 + P-002 DONE.** The spec is the standard (storage-policy.mdx + CLAUDE.md), and the per-table registry is complete: `apps/operator/lib/harness-state/table-registry.ts` — `resolveTableSpec()` + `classifyInventory()`, validated against the live schema (186/186 classified, 0 unreviewed: 80 workspace-owned, 46 default, 25 git, 9 peer-log, 19 security, 7 legacy), 13/13 tests. The model + its source-of-truth registry exist; what remains is the build.
+**State:** DECIDED → B. P-001 + P-002 DONE. **P-003 SCOPED** (D-003): the peer-log/Model-B path is mature + default-on (a generic `registerProjection`/outbox-drain engine already exists) → P-003's peer-log half is a REFACTOR (drive it from the table-registry). The §7.2 git-export path is NOT built (design-only; document tables are PG-only today) → that half is GREENFIELD and the bulk of the work. Split: P-003a (registry-driven peer-log reg + boot fail-loud coverage) → P-003b (git-export adapter, new code) → P-003c (unify on `resolveTableSpec().sync`). `lib/sync/hyperbee/**` is hot (Model-B active) — P-003a needs a lock + declare-intent.
 
-**Next:** P-003 (the heavy build) — generalize ONE projection engine reading the registry: PG↔git-export for `sync:'git'` document tables + PG↔peer-log (Model-B) for `sync:'peer-log'` live tables, replacing the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths. Wire `classifyInventory()` at boot to fail loud on any unclassified table. Then P-004 (consolidate per-harness tables → slug-keyed PG) + P-005 (config → workspace-owned store).
+**Next:** Owner decision before building: (1) build git-export now (P-003b) or defer it and ship P-003a+c first (nothing regresses — git-export isn't built today); (2) confirm OK to touch the hot `lib/sync/hyperbee` substrate (coordinate with the Model-B devs). Then start P-003a (lowest-risk: connect the P-002 registry to the existing engine + boot coverage assertion).
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -120,3 +120,22 @@ Date: 2026-06-02
 Owner chose **B**: PG is the uniform **runtime store-of-record** for every harness table; cross-machine sharing is a projection layer (git-export for document tables, peer-log/Model-B for live machine-row tables). Items P-001–P-007 allocated; plan started.
 
 Reaffirming D-001 to prevent mis-reads: this is a **store-axis** change only. **git remains the *sync authority* for document-shaped shared state** (dogfood D-001/D-020 intact); only "what the operator reads/writes locally" changed (files → PG). Supersedes un-hardcode's consolidate-vs-hybrid question + the HYPERBEE/GIT/LOCAL bucket taxonomy.
+
+### D-003 — P-003 scope: peer-log = refactor (engine exists, default-on); git-export = greenfield; sequence a→b→c
+Date: 2026-06-02
+Mapped the three paths read-only (2026-06-01).
+
+**peer-log (Model-B) — MATURE + DEFAULT-ON; refactor only.** A generic projection registry already exists: `lib/sync/hyperbee/projection.ts` (`TableProjection<Row>` + `registerProjection()` + `applyOp` + `lwwPick` + `ProjectionLookup`). 8 projections hand-wired in `projections/register-all.ts`; engine = `outbox-drain.ts` + `wire-outbox.ts` + `peer-log.ts` + `read-merge.ts`/`read-admission.ts`; boots via `boot-all.ts` (`host-bootstrap.ts:217` — the `PAPERCUSP_DOGFOOD_SUBSTRATE_ENABLE` gate was REMOVED Stage-4d, so Model-B per-peer-log is the live default). P-003's peer-log half is a REFACTOR: drive registration from `table-registry` (`sync:'peer-log'` tables) instead of 8 hand-wired calls.
+
+**git-export — NOT BUILT (greenfield).** §7.2's file-per-row `.harness/state/<table>/<id>` + write-hooks + boot-rebuild is design-only — no `.harness/state` writer/rebuilder exists in `lib/`. Document (`sync:'git'`) tables are PG-only today (effectively unsynced). This is the bulk of new P-003 work.
+
+**none — no-op** (no projection).
+
+**Build split + sequence:**
+- **P-003a (small, low-risk):** registry-driven peer-log registration + wire `classifyInventory()` at boot to FAIL-LOUD on any unclassified live table. Connects the P-002 registry to the existing engine.
+- **P-003b (greenfield, the bulk):** GIT-export adapter — per `sync:'git'` table: serializer (row→file), write-hook (PG→file→debounce-commit), boot-rebuild (scan→upsert PG). New dir `lib/harness-state/git-export/`; model on the `TableProjection` shape.
+- **P-003c:** one engine entry routing on `resolveTableSpec(t).sync` → peer-log registry | git adapter | no-op.
+
+**Coordination:** `lib/sync/hyperbee/**` is HOT (Model-B actively developed; coord shows substrate-outbox work). P-003a touches `register-all.ts`/`projection.ts` → declare-intent + `locks:acquire` those during the edit. P-003b is NEW code in a new dir → low contention. Recommend P-003a first (proves registry-drives-engine, minimal blast radius), then P-003b, then P-003c.
+
+**Open owner question:** build git-export now (P-003b), or defer it (documents stay PG-only / peer-log-eligible) and ship P-003a+c first? Deferring git-export is viable since it isn't built today anyway — nothing regresses.
