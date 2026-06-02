@@ -3,7 +3,7 @@ title: Generalize the testing framework + UI into a cross-project shared lib
 slug: testing-shell-cross-project-2026-06-01
 status: draft
 created: 2026-06-01
-updated: 2026-06-01
+updated: 2026-06-02
 owner: aviynw3@gmail.com
 ---
 
@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** M1/Phase 0 DONE (commit cbe0addf7): @papercusp/testing-shell extracted to github.com/Papercusp/testing-shell (private) and re-added as an in-place submodule at libs/testing-shell; cataloged under BORROWABLE 'Testing & QA'; generator crash fixed. Verified live (harness endpoint 22 domains + {universal,project}, lib tests 14/14, symlink resolves). This sits on the completed lib foundation + Phase 1 portable-universal-tier work. User authorized the full remaining campaign (Phase 0✓, Phase 3 Restart, Phase 2 UI via Tauri, generalize chaos/ai/live, /tester shared tab, glob-walker, Phase 4 test-config). Now starting M2: Restart adopts testing-shell.
+**State:** CORE GOAL DELIVERED. M1/Phase 0 (extract to github.com/Papercusp/testing-shell submodule, cbe0addf7) + M2/Phase 3 (Restart adopts it) both done. Restart's /tests now renders the shared <TestingShell> with a CI tab (consuming the lib's aggregateJUnitCases) + a k6 Load tab (extracted LoadTestPanel); Restart commits c24151b6 + 76a2f654 on feat/scout-unify, scoped around another agent's in-flight work; `next build` green (/tests + /load-tests in the manifest). This sits on the lib foundation (k6 runner, parseRunnerStatus, applyRoleGlobs, aggregateJUnitCases) + Phase 1 (portable universal tier). Remaining campaign (all user-authorized): M3 Phase 2 operator UI (LOW value — operator has no k6; speculative), M4 generalize chaos/ai/live to drive a base URL (D-002 a), M5 /tester shared customTab + promote glob-walker, M6 unify @papercusp/test-config (another submodule extraction).
 
-**Next:** M2 (Phase 3): add @papercusp/testing-shell as a submodule in /home/marsh-office/Restart, add nuqs NuqsAdapter, implement Restart's TestingDataSource, convert app/tests to render TestingShell, wire k6 as the consumer + test in Restart.
+**Next:** Recommend: verify Restart /tests live (needs a standalone redeploy + :3001 restart — deferred to avoid disrupting the other Restart agent), then proceed M6 (test-config unify) and M4/M5; deprioritize M3 (speculative for the operator). An agent picks up the next milestone.
 
 ## Background
 
@@ -63,12 +63,12 @@ So "one UI, two adapters" already works. Restart would be the third adapter.
 
 ## Phase 3 — Restart adoption (first external consumer)
 
-- **P-014** `todo` Add `@papercusp/testing-shell` as a submodule in `/home/marsh-office/Restart` `libs/` + npm workspaces (mirrors its 5 existing `@papercusp/*` submodules; React 19 satisfies the `react>=18` peer). blocked-by: P-003
-- **P-015** `todo` Add `nuqs` + `NuqsAdapter` to the Restart web app (App Router) and render `TestingShell` as a `'use client'` island under `app/tests/page.tsx` — the same pattern `/load-tests` and `/tester` already use. (Restart doesn't use nuqs yet; trivial add, App-Router-supported.) blocked-by: P-014
-- **P-016** `todo` Implement Restart's `TestingDataSource` (the 6 methods) over its own endpoints: single-file runs via `vitest run <file>` in the workspace cwd (nx), k6 via the existing `/api/load-tests/*`, and reuse `junit.xml` for the CI source (flip the `CI`-gated reporter on locally, or run-and-capture). blocked-by: P-013, P-014
-- **P-017** `todo` Define Restart's domains: `universalDomains` resolved to Restart globs (`libs/**/src/**/*.{test,spec}.ts`, `apps/**/src/**/*.{test,spec}.ts`) + a project tier (k6 load suites, `ingest-service`/`shop-api` integration). Fold the existing `/load-tests` + `/tester` pages in as `customTabs`. blocked-by: P-016
-- **P-018** `todo` Keep `?project=` driving **both** `restart` and `papercusp` through one `TestingShell` (Restart's `lib/projects.ts` already lists both and targets `:3055`). blocked-by: P-017
-- **P-019** `needs-human` Sign-off before merging the cross-repo wiring (touches both papercup + Restart on a shared `main`). blocked-by: P-009 importance: urgent
+- **P-014** `done` Add `@papercusp/testing-shell` as a submodule in `/home/marsh-office/Restart` `libs/` + npm workspaces (mirrors its 5 existing `@papercusp/*` submodules; React 19 satisfies the `react>=18` peer). blocked-by: P-003 (Added @papercusp/testing-shell submodule in Restart HTTPS, like papergrid + node_modules symlink + next transpilePackages. Restart commit c24151b6 feat/scout-unify.)
+- **P-015** `done` Add `nuqs` + `NuqsAdapter` to the Restart web app (App Router) and render `TestingShell` as a `'use client'` island under `app/tests/page.tsx` — the same pattern `/load-tests` and `/tester` already use. (Restart doesn't use nuqs yet; trivial add, App-Router-supported.) blocked-by: P-014 (No work needed — Restart's app/layout.tsx already wraps children in nuqs NuqsAdapter next/app and nuqs resolves. TestingShell's useQueryState works out of the box.)
+- **P-016** `done` Implement Restart's `TestingDataSource` (the 6 methods) over its own endpoints: single-file runs via `vitest run <file>` in the workspace cwd (nx), k6 via the existing `/api/load-tests/*`, and reuse `junit.xml` for the CI source (flip the `CI`-gated reporter on locally, or run-and-capture). blocked-by: P-013, P-014 (Chose customTabs over a full glob/run dataSource: CI tab consumes aggregateJUnitCases on server-parsed JUnit; k6 tab mounts the extracted LoadTestPanel reuses Restart's existing /api/load-tests SSE runner. A guard dataSource fails loudly if a glob-based domain is added later. Restart commit 76a2f654.)
+- **P-017** `done` Define Restart's domains: `universalDomains` resolved to Restart globs (`libs/**/src/**/*.{test,spec}.ts`, `apps/**/src/**/*.{test,spec}.ts`) + a project tier (k6 load suites, `ingest-service`/`shop-api` integration). Fold the existing `/load-tests` + `/tester` pages in as `customTabs`. blocked-by: P-016 (Restart domains: CI universal + Load/k6 project tier. /load-tests folded in via the extracted LoadTestPanel customTab. /tester folding deferred to M5. Restart commit 76a2f654.)
+- **P-018** `done` Keep `?project=` driving **both** `restart` and `papercusp` through one `TestingShell` (Restart's `lib/projects.ts` already lists both and targets `:3055`). blocked-by: P-017 (?project= still drives the dashboard server page reads searchParams.project → getProject; DashboardShell ProjectSwitcher unchanged. TestingShell's own tab state uses queryKey 'testTab' orthogonal. Restart commit 76a2f654.)
+- **P-019** `done` Sign-off before merging the cross-repo wiring (touches both papercup + Restart on a shared `main`). blocked-by: P-009 importance: urgent (Cross-repo work authorized by the user + done. Restart commits c24151b6 build wiring + 76a2f654 /tests TestingShell on feat/scout-unify, scoped didn't touch another agent's in-flight shop-api/shop changes. next build green.)
 
 ## Phase 4 — Unify the drifted test-config (related cleanup, separable)
 
