@@ -675,7 +675,21 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
 
   return (
     <>
-      <Modal open={open} onOpenChange={(v) => { if (!v) onClose(); }} title="Share this harness">
+      <Modal
+        open={open}
+        onOpenChange={(v) => { if (!v) onClose(); }}
+        title="Share this harness"
+        contentStyle={{
+          width: 'min(560px, 96vw)',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+          background: 'var(--bg-popover, #0d1829)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          padding: 24,
+          color: 'var(--fg, #e8e8ea)',
+        }}
+      >
         {renderStep()}
         {err && step !== 'backfill' && step !== 'write-shared-json' && (
           <div style={{ color: 'var(--error, #e64646)', fontSize: 13, marginTop: 8 }}>{err}</div>
