@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Captured from an app-wide DBOS-adoption audit (2026-06-02). The existing `dbos-durable-jobs-2026-05-31` arc already covers the **orchestrator pipeline** + the **periodic timers**. This plan captures the gap it explicitly left open ("first define the rest"): durable **multi-step flows** that currently hand-roll the exactly-once / idempotency / lock+heartbeat / resume-mid-flow guarantees DBOS gives natively. Sibling plan `fleet-coordination-painpoints-2026-06-02` owns the monitoring improvements (whose health monitors are themselves DBOS scheduled workflows). No code written.
+**State:** Autonomous-buildable scope COMPLETE (loop, 2026-06-02). ONE genuine clean DBOS fit found + shipped: P-001 provision/runner → durable workflow, flag-gated PAPERCUSP_DBOS_PROVISION=1 (default OFF), 22 unit + 4 live-DBOS integration tests (commit e7918962e). The audit's other 4 candidates were assessed against SOURCE and flagged needs-human (not forced — per the user's explicit instruction): P-003/4 outbox = wrong shape (D-006, at-least-once-by-design + non-serializable handle + NOTIFY trigger); P-005 snapshot = non-serializable callback/abort inputs + non-idempotent fork (D-007); P-006 backup = borrowable-lib "zero deps" bars coupling + non-idempotent destructive renames (D-008). P-007 done (folded to spawn-bug), P-008 done (4 sweeps handed to dbos-durable-jobs P-018), P-009 done (provision tests).
 
-**Next:** human confirms scope + order (lead with provision/runner + outbox-drain) and resolves the one open question (does spawn-provisioning live here or fold into the fleet-coord spawn-bug investigation?), then implement.
+**Next:** User decisions: (a) P-002 — verify provision under the flag on a live desktop, then delete operator-claims.ts + the legacy branch; (b) P-003/5/6 — confirm skip, or pair on the invasive refactors (snapshot seams / backup destructive-trio in-lib step decomposition); (c) P-010 ship gate. All remaining items are needs-human (cutovers / decisions) — no autonomous-buildable work left in this plan.
 
 ## Background — the audit
 
@@ -33,33 +33,33 @@ Timer-class candidates (`pr-host/poll-daemon`, `harness/wave-advance-sweep-live`
 
 ## Phase 1 — provision/runner → DBOS workflow
 
-- **P-001** `todo` Author a DBOS workflow for the `(harness, plugin)` setup/teardown/verify flow — steps = the existing runner stages, with DBOS's native exactly-once + durable resume REPLACING the hand-rolled operator-claims lock + heartbeat + configHash/scriptHash idempotency. A/B + revertible behind a flag (mirror the arc's `PAPERCUSP_DBOS_*`, skip-missed), reusing the existing single-run fn as the step body. importance: high
-- **P-002** `todo` Verify a sandboxed script dying mid-run resumes / is idempotent, then DELETE the hand-rolled claims-lock + heartbeat + hash machinery it replaces (no shim — pre-alpha). blocked-by: P-001
+- **P-001** `done` Author a DBOS workflow for the `(harness, plugin)` setup/teardown/verify flow — steps = the existing runner stages, with DBOS's native exactly-once + durable resume REPLACING the hand-rolled operator-claims lock + heartbeat + configHash/scriptHash idempotency. A/B + revertible behind a flag (mirror the arc's `PAPERCUSP_DBOS_*`, skip-missed), reusing the existing single-run fn as the step body. importance: high (Shipped flag-gated PAPERCUSP_DBOS_PROVISION=1, default OFF e7918962e. dedupID=per-target mutex replaces operator_claims lock+TTL+heartbeat+runtime DDL, workflowID=resume key, route awaits getResult. 22 unit + 4 live-DBOS integration tests; 177 DBOS unit + provision/route suites green; legacy path unchanged when off.)
+- **P-002** `needs-human` Verify a sandboxed script dying mid-run resumes / is idempotent, then DELETE the hand-rolled claims-lock + heartbeat + hash machinery it replaces (no shim — pre-alpha). blocked-by: P-001 (Risky live cutover — for the user per loop instruction. Verify provision under PAPERCUSP_DBOS_PROVISION=1 on a live desktop a real plugin setup mid-run + crash → resume, then DELETE operator-claims.ts + the runner's legacy claim branch no shim. The flag-gated A/B path P-001 is in place + tested; this is the flip + delete.)
 
 ## Phase 2 — outbox-drain (federation CDC) → DBOS
 
-- **P-003** `todo` Author a DBOS workflow (or durable queue) for the `substrate_outbox` → Hypercore-append drain — native exactly-once replacing reliance on the `drained` flag + echo-guard; crash-safe mid-drain. A/B behind a flag. importance: high
-- **P-004** `todo` Verify exactly-once under crash/restart; keep the echo-guard as defense-in-depth or drop it if DBOS subsumes it. blocked-by: P-003
+- **P-003** `needs-human` Author a DBOS workflow (or durable queue) for the `substrate_outbox` → Hypercore-append drain — native exactly-once replacing reliance on the `drained` flag + echo-guard; crash-safe mid-drain. A/B behind a flag. importance: high (DEFERRED pending user decision — see D-006. Code-read shows outbox-drain is a weak DBOS candidate deliberately at-least-once + idempotent projections; non-serializable Hypercore handle; NOTIFY trigger ill-fit. Recommend NOT migrating. Surfaced, not silently dropped.)
+- **P-004** `needs-human` Verify exactly-once under crash/restart; keep the echo-guard as defense-in-depth or drop it if DBOS subsumes it. blocked-by: P-003 (Tied to P-003 deferred per D-006. Moot unless the user decides to migrate outbox-drain to DBOS.)
 
 ## Phase 3 — snapshot / fork / restore → DBOS workflow
 
-- **P-005** `todo` Author a DBOS workflow over discover → redact → shape → upload → import (+ restore) so a partial fork RESUMES from its last step instead of half-sharing, and a re-fork is idempotent. Subsumes the project-sharing spec's advisory-lock-for-concurrent-restore.
+- **P-005** `needs-human` Author a DBOS workflow over discover → redact → shape → upload → import (+ restore) so a partial fork RESUMES from its last step instead of half-sharing, and a re-fork is idempotent. Subsumes the project-sharing spec's advisory-lock-for-concurrent-restore. (See D-007. Source-verified: capture/restore take non-serializable onProgress/signal/runForwardMigrations abort threaded through internals; fork is non-idempotent random slug so a minimal single-step wrap creates duplicate forks on retry. Real fix is invasive on live fork logic. Do interactively with user.)
 
 ## Phase 4 — backup operations → DBOS workflow
 
-- **P-006** `todo` Wrap backup create / restore / promote / rollback as DBOS workflows (multi-step + destructive → atomic-ish resume + exactly-once). The backup *scheduler tick* stays with the timers arc.
+- **P-006** `needs-human` Wrap backup create / restore / promote / rollback as DBOS workflows (multi-step + destructive → atomic-ish resume + exactly-once). The backup *scheduler tick* stays with the timers arc. (See D-008. Source-verified: @papercusp/backup is a borrowable lib "zero deps" so DBOS coupling is barred; high-value destructive ops restoreInPlace/promote/rollback are non-idempotent renames needing in-lib step decomposition; the cleanly-wrappable create op has only modest marginal value over existing inFlight+orphan-cleanup+kopia. Harden destructive trio with user.)
 
 ## Phase 5 — spawn provisioning → DBOS workflow
 
-- **P-007** `needs-human` Make agent spawn-provisioning a DBOS workflow so a partial spawn is a recoverable *incomplete workflow* rather than silent empty-config-stub corruption. Decide whether this lives here or folds into the fleet-coord spawn-bug investigation (P-012 there). importance: high
+- **P-007** `done` Make agent spawn-provisioning a DBOS workflow so a partial spawn is a recoverable *incomplete workflow* rather than silent empty-config-stub corruption. Decide whether this lives here or folds into the fleet-coord spawn-bug investigation (P-012 there). importance: high (resolved D-005: folded into fleet-coord spawn-bug investigation P-012; DBOS-ify only if it's the right fix)
 
 ## Phase 6 — timer-class candidates → hand to the existing arc
 
-- **P-008** `todo` Route the remaining `setInterval` sweeps (`pr-host/poll-daemon`, `harness/wave-advance-sweep-live`, `harness-status-sweep`, `expert-dispatcher`, `device-push-credentials` refresh) into `dbos-durable-jobs-2026-05-31`'s "classify the rest" — tracked there as scheduled-workflow conversions, not duplicated here.
+- **P-008** `done` Route the remaining `setInterval` sweeps (`pr-host/poll-daemon`, `harness/wave-advance-sweep-live`, `harness-status-sweep`, `expert-dispatcher`, `device-push-credentials` refresh) into `dbos-durable-jobs-2026-05-31`'s "classify the rest" — tracked there as scheduled-workflow conversions, not duplicated here. (Handed off: added P-018 to dbos-durable-jobs-2026-05-31 Phase 2 listing the 4 sweeps poll-daemon, wave-advance-sweep-live, expert-triggers, attention-notify for migrate/stay classification there. Source-verified they exist.)
 
 ## Phase 7 — Tests & ship gate
 
-- **P-009** `todo` Per-flow tests: crash/restart resume + exactly-once + idempotent re-run (DBOS's whole point). blocked-by: P-001, P-003
+- **P-009** `done` Per-flow tests: crash/restart resume + exactly-once + idempotent re-run (DBOS's whole point). blocked-by: P-001, P-003 (Done for the built scope: provision has 22 unit + 4 live-DBOS integration tests dedup/exactly-once/sequential-rerun. Outbox/snapshot/backup are needs-human not built so no per-flow tests owed there.)
 - **P-010** `needs-human` Human sign-off before shipping. importance: urgent
 
 ## Decisions
@@ -79,6 +79,30 @@ The win is deleting the reinvented lock/heartbeat/idempotency/exactly-once once 
 ### D-004 — Priority by hand-rolled-machinery-replaced
 Date: 2026-06-02
 Lead with `provision/runner` (most hand-rolled duplication — claims-lock + heartbeat + hash) and `outbox-drain` (federation *correctness* — a crash there loses or duplicates federated content). Snapshot/backup/spawn follow.
+
+
+### D-005 — Open questions resolved (user delegated)
+Date: 2026-06-02
+(1) Spawn-provisioning (P-007) folds into the fleet-coord spawn-bug investigation (P-012 there): root-cause the empty-config-stub bug FIRST, then DBOS-ify only if a durable workflow is the right fix. (2) outbox-drain = a DBOS WORKFLOW, not a durable queue — the drain is a sequential append per booted harness, no fan-out. (3) Implementation order: provision/runner + outbox-drain first (most hand-rolled machinery replaced + federation correctness), then snapshot/backup.
+Related: P-003, P-007
+
+
+### D-006 — Outbox-drain (P-003/P-004) is a WEAK DBOS candidate — defer pending user decision
+Date: 2026-06-02
+Date: 2026-06-02 (autonomous-loop finding, after reading the actual source `apps/operator/lib/sync/hyperbee/outbox-drain.ts`). The audit-level premise of P-003 ("exactly-once via a `drained` flag + echo-guard; crash mid-drain risks re-append/loss") is **contradicted by the code**: (1) delivery is DELIBERATELY at-least-once (header D-4) with idempotent projections (LWW + `INSERT … ON CONFLICT`), so a re-append is BY DESIGN harmless — exactly-once is not even the goal; (2) loss is already prevented — `drained_at` is set ONLY after `append` resolves, so a crash mid-drain re-drains the row. The only gap DBOS would close is a double-append when a crash lands between `append` resolving and the `drained_at` UPDATE committing — which the design already declares harmless. Against that marginal benefit, DBOS adds real cost: `drainOutboxOnce` takes a non-serializable live Hypercore `handle` (would need an injected handle-registry seam), and the trigger is reactive NOTIFY+poll per-process (a poor fit for DBOS's scheduled/explicitly-triggered, serializable-input model — a workflow-per-NOTIFY is heavy). RECOMMENDATION: do NOT migrate outbox-drain to DBOS; its current at-least-once + idempotent-projection design is correct and simpler. P-003/P-004 set to `deferred` pending user confirmation. Provision/runner (P-001) — which has genuine hand-rolled machinery (operator_claims table + advisory lock + 30s heartbeat + TTL + runtime DDL) — proceeds.
+Related: P-003, P-004, P-001
+
+
+### D-007 — Snapshot/fork/restore (P-005) — needs-human; clean A/B not viable autonomously
+Date: 2026-06-02
+Date: 2026-06-02 (autonomous-loop finding, source-verified in libs/papercusp-export-state/src/{capture,restore}.ts + alter-schema.ts). Medium DBOS value but two real barriers to a clean flag-gated A/B: (1) NON-SERIALIZABLE inputs — `capture()`/`restore()` take `onProgress` callbacks, a `signal: AbortSignal` threaded through internals (scanForSecrets, drain — abort is load-bearing for autonomous drainMode), and a `runForwardMigrations` callback. DBOS workflow inputs must be serializable, so this needs the progress/abort/migration paths re-architected through seams. (2) The fork is NON-IDEMPOTENT (random `_fork_<suffix>` slug + half-copied FS files), so a minimal single-step wrap (like provision) would create DUPLICATE forks on crash-retry — strictly WORSE — while the real value (resume) needs multi-step idempotent checkpointing of the live fork logic (alter-schema + file copy + grants + registry). It already has DB-side resume (pg_advisory_lock on the original slug + a `_restoring` schema). RECOMMENDATION: do this WITH the user, interactively — it touches the live snapshot/fork UX + needs seam refactors; not an autonomous-loop fit. Set needs-human.
+Related: P-005
+
+
+### D-008 — Backup ops (P-006) — needs-human; borrowable-lib + non-idempotent barriers
+Date: 2026-06-02
+Date: 2026-06-02 (autonomous-loop finding, source-verified in packages/backup/src/workspace-backup.ts + BORROWABLE.md). All 5 ops (snapshot/restoreToClone/restoreInPlace/promoteRestore/rollbackPromote) have SERIALIZABLE inputs + are discrete request/response — good shape. BUT: (1) `@papercusp/backup` is a BORROWABLE lib with an explicit "Zero @papercusp/@restart runtime deps" contract — coupling it to DBOS is barred; DBOS must live operator-side (as the scheduler tick already does, host-injected). (2) The HIGH-value ops are the destructive trio (restoreInPlace/promoteRestore/rollbackPromote) = non-idempotent FS renames; a single-step operator-side wrap gives no resume value (re-running rename fails) and the real fix (step-level forward-resume) needs idempotent-rename decomposition INSIDE the borrowable lib. (3) The cleanly single-step-wrappable op (create `snapshot()`, ~idempotent + kopia content-addressed) has only MODEST marginal value — existing scheduler inFlight-Map + orphan-cleanup sweep + kopia dedup already cover the practical cases; DBOS would add durable cross-restart in-flight dedup (a non-destructive nicety). RECOMMENDATION: harden the destructive trio WITH the user (destructive + rare + touches a borrowable lib's API); not an autonomous-loop fit. Set needs-human.
+Related: P-006
 
 ## Open questions
 - Spawn-provisioning (Phase 5): own phase here, or fold into the fleet-coord spawn-bug investigation (P-012)?

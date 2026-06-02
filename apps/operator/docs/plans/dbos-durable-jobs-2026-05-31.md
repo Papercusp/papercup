@@ -3,7 +3,7 @@ title: Adopt DBOS Transact for durable background jobs + orchestrator durability
 slug: dbos-durable-jobs-2026-05-31
 status: ready
 created: 2026-05-31
-updated: 2026-05-31
+updated: 2026-06-02
 owner: avi@storewolf.com
 ---
 
@@ -360,6 +360,8 @@ Once Phase 1 validates the pattern, fold the rest in — but first define "the r
 
 > **Excluded — not a background timer:** "doc-build" is `npm run build` from `apps/operator-docs`, run manually
 > / at operator build, not a `setInterval`/cron job. Verified; nothing to migrate.
+- **P-018** `todo` Classify 4 more timer-class sweeps surfaced by the dbos-durable-flows audit (its P-008 hand-off): `pr-host/poll-daemon.ts` (setInterval — PR poll), `harness/wave-advance-sweep-live.ts` (setInterval — wave advance), `expert-triggers.ts` (expert-dispatcher), `attention-notify.ts` (device-push-credentials refresh). For each: migrate→scheduled-workflow (skip-missed) vs stay-and-why, same as the other P-008 timers. Source-verified they exist 2026-06-02.
+
 
 ## Phase 3 — Orchestrator durability (gate APPROVED, D-012)
 
