@@ -23,7 +23,6 @@ import {
   setAdvSessionWindowId,
 } from '@/lib/adv-sessions';
 import { mergeRoster, dedupeEndedAgainstActive } from '@/lib/adv-roster';
-import { getAgentDetail } from '@/lib/adv-agent-detail';
 import { readOmpConfig } from '@/lib/omp-config';
 import {
   findOmpSessionNear,
@@ -406,6 +405,10 @@ const agentDetail = defineTool({
         headers: JSON_HEADERS,
       });
     }
+    // Lazy import: the dossier joins the heavy locks + coord graph, but it's
+    // hit only when a detail pane opens. Keeping it out of the route module's
+    // top-level import keeps registration (and the roster route) light.
+    const { getAgentDetail } = await import('@/lib/adv-agent-detail');
     const detail = await getAgentDetail(owner);
     return new Response(JSON.stringify(detail), { status: 200, headers: JSON_HEADERS });
   },

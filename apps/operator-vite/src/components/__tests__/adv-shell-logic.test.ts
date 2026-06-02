@@ -37,14 +37,18 @@ describe('ADV_TABS', () => {
   it('prs is excluded from ADV_TABS but present in the type union', () => {
     // prs has its own redirect route; it is NOT in the strip but IS a valid
     // AdvTabId value (the type comes from ADV_TAB_IDS which includes prs).
-    expect(ADV_TABS.every((t) => t.id !== 'prs')).toBe(true);
+    // Cast to string: 'prs' was removed from ADV_TABS, so its element-id union
+    // no longer overlaps 'prs' (the assertion is exactly that it's absent).
+    expect(ADV_TABS.every((t) => (t.id as string) !== 'prs')).toBe(true);
   });
 
-  it('plans and sessions and harnesses support workspace-wide (all-mode)', () => {
+  it('plans and harnesses support workspace-wide (all-mode); sessions moved into the Plans shell', () => {
     const supportAll = ADV_TABS.filter((t) => t.supportsAll).map((t) => t.id);
     expect(supportAll).toContain('plans');
-    expect(supportAll).toContain('sessions');
     expect(supportAll).toContain('harnesses');
+    // Sessions is no longer a standalone AdvShell tab — it became the 3rd
+    // ?view= in the combined Plans/Inbox shell (adv-sessions-live-roster P-005).
+    expect(supportAll).not.toContain('sessions');
   });
 
   it('per-harness tabs do not support all-mode', () => {
