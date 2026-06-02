@@ -23,11 +23,12 @@
  * and `peer-log` tables are hydrated-from / exported-to their authority; PG is
  * never a "disposable cache" (see the storage-policy reframe).
  *
- * STATUS: P-002 first cut. Rule-derived from the dogfood §7 buckets + D-1.
- * The DEFAULT covers the large majority (per-install, slug-keyed result tables
- * that don't sync). Only the EXCEPTIONS are declared. Tables in NEEDS_REVIEW
- * still need an owner judgment before P-003 (the projection engine) consumes
- * this. Completeness must be validated against the live schema (P-002 tail).
+ * STATUS: P-002 classification COMPLETE — every previously-ambiguous table now
+ * has an explicit call (NEEDS_REVIEW is empty). The DEFAULT covers the large
+ * majority (per-install, slug-keyed result tables that don't sync); only the
+ * EXCEPTIONS are declared. Live-schema-drift coverage (a NEW table added later
+ * must be classified, not silently DEFAULTed) is asserted by the P-003
+ * projection engine at boot via `classifyInventory()` against the live schema.
  */
 
 export type TableKey = 'slug-shared' | 'workspace-owned';
@@ -40,6 +41,8 @@ export interface TableSpec {
   sync: SyncAuthority;
   /** never cross machines under any circumstance (§7.5 SECURITY); forces sync='none'. */
   security?: boolean;
+  /** legacy/dead surface (kept for reference; not extended) — D-008 papercup-org. */
+  legacy?: boolean;
   /** why this differs from DEFAULT / where it came from. */
   note?: string;
 }
@@ -54,8 +57,8 @@ export const DEFAULT_SPEC: TableSpec = { key: 'slug-shared', sync: 'none' };
 const GIT_DOCS = [
   'harness_decisions', 'harness_summaries', 'harness_escalations',
   'harness_design_artifacts', 'harness_text_artifacts', 'harness_chunk_plans',
-  'harness_feature_notes', 'feature_audit_consolidated', 'harness_tests',
-  'llm_test_fixtures', 'llm_test_claims', 'llm_test_findings',
+  'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
+  'harness_tests', 'llm_test_fixtures', 'llm_test_claims', 'llm_test_findings',
   'harness_phases', 'harness_promotions', 'harness_lanes', 'harness_checkpoints',
   'harness_branch_actions', 'harness_snapshots', 'harness_experts',
   'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
@@ -83,6 +86,11 @@ const WORKSPACE_OWNED_EXPLICIT = [
   'harness_prompt_overrides',     // the (workspace,harness,role) 3-tier override — across-workspaces Phase 1b
   'orchestrator_settings', 'setup_wizard_state', 'workspace_backup_settings',
   'pr_reviewer_settings', 'insights_first_visit', 'known_schema_versions',
+  'adaptive_telemetry', 'spawned_agents', 'hidden_plugins',  // P-002 review: per-install/per-workspace
+  // P-002 completeness review (classifyInventory over live schema surfaced these per-workspace tables):
+  'harness_registry',          // per-workspace harness membership list (one JSONB row/workspace) — NOT slug-shared
+  'autoloop_state', 'harness_dock_layouts', 'saved_prompts',
+  'harness_brainstorm', 'harness_plan_review', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped
 ];
 
 /**
@@ -99,54 +107,40 @@ const SECURITY = [
   'provision_state', 'provision_audit_log', 'auth_audit_log', 'webhook_audit',
 ];
 
-/** Name-prefix → workspace-owned (operator/user/session/device-personal state). */
+/**
+ * Name-prefix → workspace-owned (operator/user/session/device-personal +
+ * P-002-reviewed per-install operational classes: coord, plugin, backup,
+ * telemetry, mem0, invocations).
+ */
 const WORKSPACE_OWNED_PREFIXES = [
   'operator_', 'user_', 'users', 'auth_', 'mobile_', 'voice_', 'ui_',
   'pi_sessions', 'power_user_sessions', 'adv_sessions',
+  'coord_', 'plugin_', 'backup_', 'telemetry_', 'memory_',
+  'tool_invocations', 'route_invocations',
+];
+
+/** Legacy / dead (D-008 papercup-org departments) — classified DEFAULT, not extended. */
+const LEGACY_DEAD = [
+  'org_charter', 'org_decisions', 'org_departments', 'org_inbox',
+  'org_notes', 'org_outbox', 'org_projects',
 ];
 
 const GIT_SET = new Set(GIT_DOCS);
 const PEER_SET = new Set(PEER_LOG_LIVE);
 const WS_EXPLICIT_SET = new Set(WORKSPACE_OWNED_EXPLICIT);
 const SECURITY_SET = new Set(SECURITY);
+const LEGACY_SET = new Set(LEGACY_DEAD);
 
 /**
- * Tables whose classification is a genuine judgment call — DO NOT trust the
- * resolved DEFAULT for these until an owner signs off (P-002 review gate).
+ * Remaining genuine judgment calls — EMPTY as of P-002 close. New entries here
+ * mark a table whose classification an owner must confirm before it ships.
  */
-export const NEEDS_REVIEW: Record<string, string> = {
-  // legacy papercup-org department schema — D-008 (out of scope / legacy):
-  org_charter: 'legacy org', org_decisions: 'legacy org', org_departments: 'legacy org',
-  org_inbox: 'legacy org', org_notes: 'legacy org', org_outbox: 'legacy org',
-  org_projects: 'legacy org',
-  // SU coordination layer — per-install or cross-peer? presence may want peer-log:
-  coord_event_log: 'coord: local vs peer?', coord_presence: 'coord: local vs peer?',
-  coord_subscriptions: 'coord: local vs peer?', coord_watermarks: 'coord: local vs peer?',
-  // plugin config — workspace-owned vs per-harness key axis:
-  plugin_configs: 'plugin key axis', plugin_enables: 'plugin key axis',
-  plugin_capability_grants: 'plugin key axis', plugin_kv: 'plugin key axis',
-  plugin_reload_state: 'plugin key axis', hidden_plugins: 'plugin key axis',
-  // per-install runtime telemetry — workspace-owned vs slug-shared key:
-  tool_invocations: 'telemetry key (has workspace RLS today → likely workspace-owned)',
-  tool_invocations_artifacts: 'telemetry key', tool_invocations_spawn_tree: 'telemetry key',
-  route_invocations: 'telemetry key', telemetry_reports: 'telemetry key',
-  telemetry_reports_archive: 'telemetry key', adaptive_telemetry: 'telemetry key',
-  // mem0 per-engineer memory (§7.4 LOCAL) — workspace-owned key:
-  memory_anchors: 'mem0 per-engineer → workspace-owned?', memory_canonical: 'mem0 key',
-  memory_vec_local: 'mem0 key', memory_vec_openai: 'mem0 key',
-  // backup operational state:
-  backup_events: 'backup key', backup_snapshots: 'backup key',
-  // misc judgment calls:
-  spawned_agents: 'has workspace RLS today → workspace-owned?',
-  harness_feature_debug_notes: 'document (git) vs runtime (none)?',
-  pr_check_status_cache: 'prs-related: peer-log vs none cache?',
-  substrate_meta: 'sync machinery itself', substrate_outbox: 'sync machinery itself',
-};
+export const NEEDS_REVIEW: Record<string, string> = {};
 
 /**
- * Resolve a table's two-axis spec. Order: explicit overrides → security →
- * prefix rules → DEFAULT. Strip a `harness_shared.` / `papercup_shared.`
- * schema qualifier before calling.
+ * Resolve a table's two-axis spec. Order: security → git → peer-log →
+ * workspace-explicit → legacy → workspace-prefix → DEFAULT. Strip a
+ * `harness_shared.` / `papercup_shared.` schema qualifier before calling.
  */
 export function resolveTableSpec(table: string): TableSpec {
   const t = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
@@ -154,6 +148,7 @@ export function resolveTableSpec(table: string): TableSpec {
   if (GIT_SET.has(t)) return { key: 'slug-shared', sync: 'git', note: '§7.2 GIT document' };
   if (PEER_SET.has(t)) return { key: 'slug-shared', sync: 'peer-log', note: '§7.1 live shared' };
   if (WS_EXPLICIT_SET.has(t)) return { key: 'workspace-owned', sync: 'none', note: 'config/settings (D-1)' };
+  if (LEGACY_SET.has(t)) return { ...DEFAULT_SPEC, legacy: true, note: 'legacy/dead — D-008 papercup-org' };
   for (const p of WORKSPACE_OWNED_PREFIXES) {
     if (t === p || t.startsWith(p)) return { key: 'workspace-owned', sync: 'none', note: `prefix:${p}` };
   }
@@ -164,4 +159,39 @@ export function resolveTableSpec(table: string): TableSpec {
 export function needsReview(table: string): boolean {
   const t = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
   return t in NEEDS_REVIEW;
+}
+
+export interface InventoryClassification {
+  total: number;
+  /** count per `${key}/${sync}` bucket. */
+  byBucket: Record<string, number>;
+  /** tables that fell through to DEFAULT (slug-shared/none) — intentional, but reviewable. */
+  defaulted: string[];
+  /** tables still flagged NEEDS_REVIEW (should be empty at/after P-002 close). */
+  unreviewed: string[];
+}
+
+/**
+ * Classify a full list of live tables (P-003 engine boot passes the live
+ * `information_schema` set here). Surfaces the DEFAULT fall-through set + any
+ * still-unreviewed table so a NEW table can never silently inherit DEFAULT
+ * without someone seeing it.
+ */
+export function classifyInventory(tables: string[]): InventoryClassification {
+  const byBucket: Record<string, number> = {};
+  const defaulted: string[] = [];
+  const unreviewed: string[] = [];
+  for (const raw of tables) {
+    const t = raw.includes('.') ? raw.slice(raw.indexOf('.') + 1) : raw;
+    const spec = resolveTableSpec(t);
+    const bucket = `${spec.key}/${spec.sync}${spec.security ? '/sec' : ''}${spec.legacy ? '/legacy' : ''}`;
+    byBucket[bucket] = (byBucket[bucket] ?? 0) + 1;
+    const isExplicit =
+      SECURITY_SET.has(t) || GIT_SET.has(t) || PEER_SET.has(t) ||
+      WS_EXPLICIT_SET.has(t) || LEGACY_SET.has(t) ||
+      WORKSPACE_OWNED_PREFIXES.some((p) => t === p || t.startsWith(p));
+    if (!isExplicit) defaulted.push(t);
+    if (needsReview(t)) unreviewed.push(t);
+  }
+  return { total: tables.length, byBucket, defaulted, unreviewed };
 }
