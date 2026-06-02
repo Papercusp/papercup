@@ -31,7 +31,15 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
         title TEXT, content TEXT, ts BIGINT
       )`);
     await ensureGitExportOutbox(db.sql);
-    await attachGitCaptureTrigger(db.sql, 'harness_decisions', 'id');
+    await attachGitCaptureTrigger(db.sql, 'harness_decisions', ['id']);
+    // a synthetic composite-PK (chunk-plans-shaped) structured git table
+    await db.sql.unsafe(`
+      CREATE TABLE harness_shared.harness_chunk_plans (
+        workspace_id TEXT, harness_slug TEXT, origin TEXT,
+        feature_id TEXT, chunk_id TEXT, plan JSONB,
+        PRIMARY KEY (workspace_id, harness_slug, feature_id, chunk_id)
+      )`);
+    await attachGitCaptureTrigger(db.sql, 'harness_chunk_plans', ['feature_id', 'chunk_id']);
   }, 90_000);
 
   afterAll(async () => {
@@ -80,5 +88,19 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
     expect(res.deleted).toBe(1);
     const abs = join(root, gitFilePath('harness_decisions', 'D-001'));
     await expect(stat(abs)).rejects.toBeTruthy();
+  });
+
+  it('composite key → "__"-joined leaf + round-trippable json file', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.harness_chunk_plans (workspace_id, harness_slug, origin, feature_id, chunk_id, plan)
+      VALUES (${WS}, ${SLUG}, 'local', 'F-9', 'c3', ${db.sql.json({ a: 1 })})`;
+    const ob = await db.sql<{ key: string }[]>`
+      SELECT key FROM harness_shared.git_export_outbox WHERE table_name = 'harness_chunk_plans'`;
+    expect(ob[0]?.key).toBe('F-9__c3');
+    const res = await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root });
+    expect(res.exported).toBe(1);
+    const abs = join(root, gitFilePath('harness_chunk_plans', 'F-9__c3'));
+    const parsed = parseFile('harness_chunk_plans', await readFile(abs, 'utf8'));
+    expect(parsed).toMatchObject({ feature_id: 'F-9', chunk_id: 'c3', plan: { a: 1 } });
   });
 });

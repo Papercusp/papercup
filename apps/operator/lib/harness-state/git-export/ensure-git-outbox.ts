@@ -14,19 +14,41 @@ import type postgres from 'postgres';
 import { GIT_TABLES } from '../table-registry';
 
 /**
- * Key column per git table (the file leaf = this column's value). Best-effort;
- * defaults to 'id'. The real PKs must be verified before the production attach
- * (P-003b tail) — a wrong key column collides file names.
+ * File-key columns per git table — the real PK MINUS `workspace_id`/`harness_slug`
+ * (those are implied by which harness's `.harness/state/` the file lives in).
+ * Verified against the live `harness_shared` PKs (2026-06-01). Composite keys
+ * are composed into one leaf with `__`. Unknown tables default to `['id']`.
  */
-export const GIT_KEY_COL: Record<string, string> = {
-  harness_text_artifacts: 'rel_path',
-  harness_feature_notes: 'note_id',
-  feature_audit_consolidated: 'feature_id',
-  harness_chunk_plans: 'chunk_id',
+export const GIT_KEY_COLS: Record<string, string[]> = {
+  harness_decisions: ['line_hash'],
+  harness_summaries: ['phase'],
+  harness_escalations: ['phase'],
+  harness_design_artifacts: ['id'],
+  harness_text_artifacts: ['rel_path'],
+  harness_chunk_plans: ['feature_id', 'chunk_id'],
+  harness_feature_notes: ['feature_id'],
+  harness_feature_debug_notes: ['feature_id'],
+  feature_audit_consolidated: ['id'],
+  harness_tests: ['phase', 'test_id'],
+  llm_test_fixtures: ['id'],
+  llm_test_claims: ['claim_key'],
+  llm_test_findings: ['id'],
+  harness_phases: ['phase'],
+  harness_promotions: ['promotion_id'],
+  harness_lanes: ['phase', 'role'],
+  harness_checkpoints: ['name'],
+  harness_branch_actions: ['branch'],
+  harness_snapshots: ['snapshot_id'],
+  harness_experts: ['expert_id'],
+  harness_skills: ['name'],
+  goals: ['id'],
+  harness_proposals_shared: ['phase', 'proposal_id'],
+  snapshot_features: ['snapshot_id', 'feature_id'],
+  project_spec_revisions: ['id'],
 };
 
-export function gitKeyCol(table: string): string {
-  return GIT_KEY_COL[table] ?? 'id';
+export function gitKeyCols(table: string): string[] {
+  return GIT_KEY_COLS[table] ?? ['id'];
 }
 
 /** Ensure the dedicated git-export outbox table + capture function (idempotent). */
@@ -51,14 +73,19 @@ export async function ensureGitExportOutbox(sql: postgres.Sql): Promise<void> {
     RETURNS TRIGGER AS $body$
     DECLARE
       v_op TEXT; v_rec RECORD; v_row JSONB; v_key TEXT; v_ws TEXT; v_slug TEXT;
-      v_keycol TEXT := TG_ARGV[0];
+      i INT;
     BEGIN
       IF (TG_OP = 'DELETE') THEN v_op := 'del'; v_rec := OLD;
       ELSE v_op := 'put'; v_rec := NEW; END IF;
       v_row := to_jsonb(v_rec);
       -- echo-loop guard: skip remote-origin writes (hydrate/projection writes).
       IF COALESCE(v_row ->> 'origin', 'local') <> 'local' THEN RETURN v_rec; END IF;
-      v_key  := v_row ->> v_keycol;
+      -- compose the file key from the variadic key columns (PK minus
+      -- workspace_id/harness_slug), joined with '__' for composite keys.
+      v_key := '';
+      FOR i IN 0 .. TG_NARGS - 1 LOOP
+        v_key := v_key || (CASE WHEN i > 0 THEN '__' ELSE '' END) || COALESCE(v_row ->> TG_ARGV[i], '');
+      END LOOP;
       v_ws   := COALESCE(v_row ->> 'workspace_id', '');
       v_slug := v_row ->> 'harness_slug';
       INSERT INTO harness_shared.git_export_outbox
@@ -76,12 +103,13 @@ export async function ensureGitExportOutbox(sql: postgres.Sql): Promise<void> {
 export async function attachGitCaptureTrigger(
   sql: postgres.Sql,
   table: string,
-  keyCol: string = gitKeyCol(table),
+  keyCols: string[] = gitKeyCols(table),
 ): Promise<void> {
+  const args = keyCols.map((c) => `'${c.replace(/'/g, "''")}'`).join(', ');
   await sql.unsafe(
     `CREATE OR REPLACE TRIGGER capture_git_export_outbox_trg ` +
       `AFTER INSERT OR UPDATE OR DELETE ON harness_shared.${table} ` +
-      `FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_git_export_outbox('${keyCol}')`,
+      `FOR EACH ROW EXECUTE FUNCTION harness_shared.capture_git_export_outbox(${args})`,
   );
 }
 
