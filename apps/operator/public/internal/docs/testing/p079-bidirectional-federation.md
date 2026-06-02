@@ -10,7 +10,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 > (`cd papercusp-desktop && npm run dev`). Drive the operator through the Tauri
 > shell, not a browser (see [Agent E2E playbook](/internal/docs/testing/agent-e2e)).
 
-This is the **manual acceptance test** for Phase-1b bidirectional federation: two
+This is the acceptance test for Phase-1b bidirectional federation: two
 **different** GitHub engineers join/share a harness and sync state **both ways**
 over the Model B Hyperswarm substrate. It is the gate that closes implementation
 **Open-Risk R-1** (see below) — the one thing that cannot be asserted offline.
@@ -21,17 +21,41 @@ The deterministic offline proof (module + transport, gate stubbed) already exist
 covers what that test *can't*: the real GitHub publish→verify loop with two real
 identities.
 
-The **channel-2 publish→verify loop** — the offline-impossible crux — was run live
-with two genuinely distinct GitHub accounts (`papercupai` + `aviynw`): each created
-a real attestation **gist** under its own account, and the **real**
-`verifyAttestation` / `verifyChannel2` accepted each peer for the correct identity
-**bidirectionally**, while a *forged* identity claim (one account's gist claimed as
-the other's id) was rejected with `github_user_id_mismatch` (D-006 holds live). That
-run also surfaced + fixed a real bug: the attestation **gist filename** used a raw
-base64 pubkey prefix, but a gist filename can't contain `/` (\~11% of device keys) —
-fixed in `attestationGistFilename` (commit `ae5e25be3`). What remains for a *full*
-Mode-A pass is the two-Tauri-instance swarm/transport half (steps 4–7), which the
-offline `two-peer-swarm-bidi` test already proves at the module level.
+The **whole identity path** — not just the gist crux — now runs **in-process with
+two real GitHub identities** as a creds-gated acceptance test:
+`apps/operator/lib/identity/p079-live-federation.live.test.ts`
+(`P079_LIVE=1 npx vitest run p079-live-federation.live`). With both accounts authed
+on one box, "two machines" collapses to "two distinct GitHub identities", which IS
+automatable. The test stubs **nothing** on the identity path: real OAuth
+`verifyChannel1` (`GET /user`), real attestation gists owned by each account, real
+device-signed contributor files on `user/<id>` branches of a real shared repo, the
+**real `verifyChannel2` (no override)** admitting each peer **both ways**, forgery
+rejection (`oauth_user_id_mismatch` + `github_user_id_mismatch`), and a
+**real-Hyperswarm bidirectional feature federation gated by the real `verifyChannel2`
+adapter** (local testnet DHT). It self-cleans its gists + `user/<id>` branches +
+throwaway keychain entries. The **manual** steps below are now only needed for
+**Mode B** — two real *machines*, where NAT/firewall/public-DHT reachability is the
+thing that can't be faked on one host.
+
+The **channel-2 publish→verify loop** — the offline-impossible crux — was first run
+live 2026-06-01 with two genuinely distinct GitHub accounts (`papercupai` +
+`aviynw`): each created a real attestation **gist** under its own account, and the
+**real** `verifyAttestation` / `verifyChannel2` accepted each peer for the correct
+identity **bidirectionally**, while a *forged* identity claim (one account's gist
+claimed as the other's id) was rejected with `github_user_id_mismatch` (D-006 holds
+live). That run also surfaced + fixed a real bug: the attestation **gist filename**
+used a raw base64 pubkey prefix, but a gist filename can't contain `/` (\~11% of
+device keys) — fixed in `attestationGistFilename` (commit `ae5e25be3`).
+
+On **2026-06-02** this was extended to a **full in-process Mode-A pass** and
+captured as the gated `p079-live-federation.live.test.ts` (above): the same two real
+identities published real gists **and** real signed contributor files to a real
+shared repo, the **real `verifyChannel2` (no override)** admitted each peer both
+ways, and they **federated a feature bidirectionally over the real Hyperswarm
+transport with the real channel-2 adapter as the admission gate** — i.e. the
+swarm/transport half (steps 4–7) is now exercised against the real gate, not just
+the `two-peer-swarm-bidi` stub. The only thing left for a *true* Mode-B pass is two
+real **machines** (public-DHT/NAT reachability).
 
 **Historical:** the original design required the contributor-file *commit* to be
 GitHub-**verified** (`commit.verification.verified === true`). A live probe found

@@ -1,23 +1,27 @@
 /**
  * ensure-binding-published — ensures the caller's device-signed contributor
- * file is published to the shared GitHub repo via a GitHub-verified commit.
+ * file is published to the shared GitHub repo's `user/<id>` branch.
  *
- * ## Why the GitHub Contents API (Plan Open-Risk R-1)
- * `two-channel-verifier.ts` `verifyChannel2` requires the commit that
- * published the contributor file to be GitHub-**verified**
- * (`commit.verification.verified === true`) and authored by the token's
- * user. A plain local `git commit` + push produces an UNVERIFIED commit.
- * Publishing via `octokit.rest.repos.createOrUpdateFileContents` (PUT
- * /repos/{owner}/{repo}/contents/{path}) goes through GitHub's web-flow,
- * which creates a GitHub-signed, web-flow-authored commit → verified. Do
- * NOT shell out to git here.
+ * ## Why the GitHub Contents API (NOT local git)
+ * R-1 is RESOLVED: channel-2 step (c) anchors on **gist ownership**
+ * (`verifyChannel2` → `verifyAttestation`: the `device_attestation_gist_id`
+ * gist is owned by the claimed `github_user_id`), NOT on a GitHub-**verified
+ * commit**. A live probe found Contents-API commits come back UNVERIFIED
+ * (`reason: unsigned`), so the old "the publishing commit must be
+ * `verification.verified === true`" requirement was unsatisfiable and has
+ * been dropped from `verifyChannel2`. We still publish via
+ * `octokit.rest.repos.createOrUpdateFileContents` (PUT
+ * /repos/{owner}/{repo}/contents/{path}) — but for the mundane reasons that
+ * it needs no local clone / SSH key and produces a clean single-file commit
+ * on the branch — NOT because the commit must be verified. Channel-2's trust
+ * comes from the device-key signature over the file body + the gist-ownership
+ * anchor, both of which this path satisfies regardless of commit signing.
  *
- * ## R-1 tripwire
- * The `verification.verified === true` property is a GitHub *runtime*
- * behavior and CANNOT be asserted in an offline unit test (the Octokit is
- * faked). It is verified by DESIGN (we use `createOrUpdateFileContents`,
- * never local git). Live verification is left to manual / integration
- * acceptance.
+ * ## What the offline unit test can / can't assert
+ * The gist-ownership + signature checks are pure crypto/HTTP and ARE covered
+ * offline (`two-channel-verifier.test.ts`, faked fetch). The real two-identity
+ * publish→verify loop is exercised live by the gated
+ * `apps/operator/lib/identity/p079-live-federation.live.test.ts` (`P079_LIVE=1`).
  *
  * ## Idempotency
  * If the file already exists AND carries the current `device_pubkey` AND
