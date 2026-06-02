@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Design captured from an interactive session (2026-06-02). No code written. The model (shared/exclusive named-resource locks), the per-resource enforcement dial, and the writer-priority drain protocol are settled; the three gotchas (drain timeout, no lock-upgrade, zombie safety) are recorded as decisions.
+**State:** Approved; implementation started. Reading the real substrate corrected two assumptions (D-009): the lock store is a separate `papercusp_su` db with the package's own migration runner (schema → `packages/locks/src/sql/005-…`, not `harness_shared/107`), and named resources need a SEPARATE `agent_resource_locks` table (the file-lock `(domain,path)` PK is exclusive-only and safety-critical). Scope expanded on user input: registered-names-only (D-010), and a defineTool `requiresLock` integration that makes the shared dispatcher the enforcement point (D-011) with a registry-driven Bash command-matcher to close the raw-shell bypass (D-012, new Phase 8). No code committed yet beyond the plan itself.
 
-**Next:** human reviews the design + scope (P-023) — in particular whether to build the drain lock alone or also fold the "agent asks a question and waits" feature onto the same request/await/notify backbone (D-008) — before any implementation starts.
+**Next:** An agent writes `packages/locks/src/sql/005-named-resource-locks.sql` (tables + `resource_grant_cascade` + dev-server/db-schema registry seed) and the `resource-lock-store.ts` store layer (registry-required acquire, drain state machine), with an integration test mirroring `su-locks.integration.test.ts`.
 
 ## Background
 
@@ -98,6 +98,8 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 - **P-001** `todo` Extend the `@papercusp/locks` lock model: add a `resource` (named logical lock) key kind alongside file `paths`, and `mode: shared | exclusive`. Today's path locks become `{ kind: 'path', mode: 'exclusive' }` under one model.
 - **P-002** `todo` Migration `107-named-resource-locks.sql` — idempotent, NO runtime DDL (per `self-contained-migration-baseline-2026-06-02`): named-lock holder rows (resource, mode, owner_id, lease/heartbeat, drain state) + a resource registry table (name, description, rule text, enforcement level). PG store-of-record; sync authority `none`. blocked-by: P-001
 - **P-003** `todo` Seed the registry with the first named locks — `dev-server` and `db-schema` — each with rule text + an enforcement level. blocked-by: P-002
+- **P-024** `todo` Registry-required acquire: `tryAcquireResource` validates `resource` against `agent_resource_registry` and rejects an unknown name with `unknown_resource` (D-010). `locks:list` is the authoritative discovery surface. blocked-by: P-002
+
 
 ## Phase 2 — Drain state machine
 
@@ -137,6 +139,13 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 - **P-023** `needs-human` Human sign-off before shipping — review the model, enforcement dial, and drain protocol; confirm scope (drain lock only, or also the "ask a question and wait" feature on the same backbone). importance: urgent
 
+
+## Phase 8 — defineTool integration & universal enforcement
+
+- **P-025** `todo` defineTool `requiresLock: { resource, mode, drain?, maxDrainSec? }` — the shared endpoint dispatcher auto-acquires the declared lock (full drain protocol for `exclusive`), runs the tool body, releases on success/error. Realizes the `enforced` rung declaratively at the dispatch chokepoint (D-011). blocked-by: P-012, P-015
+- **P-026** `todo` Close the raw-Bash bypass: a registry-driven command-matcher (resource carries match patterns) on the `Bash` tool's dispatch maps a command to a registered resource and acquires it — mirroring the file-edit hook's path matcher — so raw shell can't sidestep a registered lock (D-012). Document that non-agent actors (human/paperclip/Tauri shell) are out of scope of dispatch enforcement. blocked-by: P-025
+
+
 ## Decisions
 
 ### D-001 — Extend coord:*/locks:*, not a new subsystem
@@ -170,6 +179,33 @@ New tables go in migration `107-named-resource-locks.sql` (idempotent, ≥ 107 a
 ### D-008 — The drain backbone is shared with the "ask a question and wait" feature
 Date: 2026-06-02
 Both features are request → await → notify over coord: the drain lock is claim-exclusive → drain → broadcast → resume; the question feature is post-question → answer → resume. Building the drain protocol first yields the await/notify substrate the question feature reuses. Whether to build both now is the open scope question. refs: P-023
+
+
+### D-009 — Implementation corrections from reading the locks substrate
+Date: 2026-06-02
+Reading the real code (`libs/papercusp/packages/locks/`) corrected two assumptions from the design pass:
+
+(1) **Schema home — supersedes D-007/P-002.** The locks substrate is NOT in `harness_shared` on the main `papercusp` db. It lives in a SEPARATE side database `papercusp_su` with the package's OWN migration runner (`ensureBootstrap` applies `packages/locks/src/sql/NNN-*.sql`, tracked in `su_meta`). So the new schema is `packages/locks/src/sql/005-named-resource-locks.sql`, NOT `libs/papercusp/libs/db/sql/107`. This package migration runner is the sanctioned migration system for this db, so it does not violate the "schema = migrations only, no runtime DDL" rule (that rule governs the main harness_shared schema).
+
+(2) **Separate table — refines D-001.** `agent_file_locks` is `(coordination_domain, path)` PRIMARY KEY = strictly exclusive-per-path, and it is the safety-critical hot path every agent's edit-lock hook depends on. Shared mode structurally breaks that PK. So named resources get a SEPARATE `agent_resource_locks` table (+ `agent_resource_registry`), leaving the file-lock tables/functions 100% untouched. "Extend, not rebuild" (D-001) holds at the substrate level: same `papercusp_su` db, same `ch_coord_<domain>` NOTIFY channel, same `inWorkspaceTxn` advisory-lock wrapper, and a sibling `resource_grant_cascade` mirroring `grant_cascade` — but a distinct table, because reshaping the file-lock PK would risk every agent's editing.
+Related: P-002
+
+
+### D-010 — Registered names only — acquiring an unregistered resource fails
+Date: 2026-06-02
+A resource must be pre-registered in `agent_resource_registry` to be acquirable; `tryAcquireResource` rejects an unknown name with `unknown_resource`. Rationale: free-form lock names silently fail to coordinate — one agent locking `dev-server` and another `devserver` get NO mutual exclusion, which is worse than no lock (false confidence). The registry is the single source of (a) the valid name set, (b) each lock's injectable rule text, and (c) its enforcement level — so `locks:list` is authoritative and there is exactly one home for "what locks exist and how strict each is." User-requested.
+
+
+### D-011 — Locks integrate with defineTool via requiresLock; the dispatcher is the enforcement point
+Date: 2026-06-02
+A tool authored with `defineTool` may declare `requiresLock: { resource, mode, drain?, maxDrainSec? }`. The shared endpoint dispatcher — which already gates capability, quota, and role before running a tool body — also acquires the declared lock (running the full writer-priority drain protocol for `mode: exclusive`), runs the body, and releases on success OR error. This is how the `enforced` rung of the enforcement dial (D-002) is realized: declaratively, at the one chokepoint every tool call passes through, instead of a bespoke `PreToolUse` hook per destructive action. It also subsumes the manual `locks:acquire` call for any action expressible as a tool — the agent literally cannot run the tool body without holding the lock. The registry (D-010) still owns the resource's existence + rule text + level; `requiresLock` just binds a tool to a registered resource.
+Related: P-015
+
+
+### D-012 — Enforcement boundary: dispatch binds agents, not the world; close the raw-Bash bypass
+Date: 2026-06-02
+Answering "is there any command we can't route through defineTool?": a `defineTool` body runs in the operator's Node process, so it can spawn/exec anything the host can (shell, `systemctl`, `psql`, HTTP) — every destructive action is EXPRESSIBLE as a tool. But routing through a tool only yields ENFORCEMENT for actions that actually flow through the dispatcher. Two leaks remain: (1) the raw `Bash`/shell tool — an agent can `systemctl restart` directly, bypassing any wrapper. Close it with a registry-driven command-matcher (resource carries match patterns; Bash dispatch maps a command to a registered resource and acquires it, exactly as the file-edit hook maps a path to a file lock). (2) NON-agent actors — a human at a terminal, paperclip, the Tauri shell — never hit the dispatcher at all, so no tool-level enforcement can reach them; for them only the advisory rule + the drain broadcast applies. Conclusion: `enforced` means "enforced for agents going through the dispatcher," never a true world mutex — which is consistent with the loose-by-design philosophy. The clean end-state is: all agent actions flow through one dispatcher; `requiresLock` covers fixed-resource tools and the command-matcher covers the generic Bash tool; the dial just sets how strict the dispatcher is per resource.
+Related: P-015
 
 ## Open questions
 
