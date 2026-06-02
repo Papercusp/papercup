@@ -282,6 +282,15 @@ under load. Skip the cycle.
 for compound-key tables. Add a column to an existing table or write a
 migration in `libs/papercusp/libs/db/sql/<NNN>-...sql`.
 
+**Two axes — runtime store-of-record vs sync authority.** Harness state separates
+*where the operator reads/writes locally* (the **runtime store-of-record** = PG,
+uniformly) from *how a shared table merges/propagates across machines* (the **sync
+authority** = `none`/`git`/`peer-log`). **Never write bare "canonical" — name the
+axis.** Per `harness-state-storage-unification-2026-06-01` (D-002): PG is the
+runtime store-of-record for every harness table; git stays the *sync authority* for
+document tables (dogfood D-001/D-020 intact). Full spec:
+`/internal/docs/system/storage-policy` (`system/storage-policy.mdx`).
+
 ### Database topology — embedded-pg is the ship target; this dev box runs native PG
 
 The **shipping** product is a desktop app backed by **embedded Postgres**

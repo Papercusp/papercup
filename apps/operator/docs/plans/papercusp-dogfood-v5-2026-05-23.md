@@ -5,7 +5,7 @@ date: 2026-05-23
 status: active
 owners: [aviynw3]
 supersedes: papercusp-dogfood-v4-2026-05-23
-updated: 2026-06-01
+updated: 2026-06-02
 ---
 
 ## Now
@@ -1527,6 +1527,15 @@ SUPERSEDED — do NOT implement as written in v5:
 STILL LIVE reference: §0.2.7 two-channel binding, §5.1 canonical-repo binding/claim, §17 trust tiers (A/B/C/D), §9.0 Insights, §10 Cupboard (minus the Model-B per-author ingest cap), §18 user profile.
 
 Canonical replacements: `papercusp-substrate-model-b-rewrite-2026-05-31` (+ -impl), `papercusp-phase1b-bidirectional-federation-2026-06-01`, `papercusp-substrate-revocation-v1/v2-2026-06-01`.
+
+
+### D-033 — §7 "git-canonical" = sync authority (git vs Hyperbee), NOT runtime store
+Date: 2026-06-02
+Clarification per the storage-unification plan (`harness-state-storage-unification-2026-06-01`, D-002). Where §7 / D-001 / D-020 say "GIT is the canonical store," they mean the **sync authority** — git (committed `.harness/state/` files, GitHub-merged) vs Hyperbee/Model-B — for cross-machine propagation of document-shaped shared state. **That decision STANDS.**
+
+It is NOT a runtime-store claim. The **runtime store-of-record is PG** for every harness table (the operator reads/writes PG locally; git is the export/sync layer for document tables). Read §7.2's "PG rebuilds from files on boot" as "PG *hydrates from* the git sync authority," not "PG is a disposable cache."
+
+Vocabulary (banned word): never write bare "canonical" — say "**runtime store-of-record**" (store axis) or "**sync authority**" (sync axis). Full spec: `system/storage-policy.mdx`.
 
 ## Open questions
 
