@@ -730,6 +730,31 @@ type _TG = { __dogfoodTriggersWired?: boolean };
 const _gTrig = globalThis as unknown as _TG;
 
 /**
+ * A per-table trigger CREATE inside `wireDogfoodTriggers` can fail for two
+ * reasons we TOLERATE (skip that one table) rather than abort the whole pass:
+ *   1. the table isn't provisioned yet (fresh harness, pre-scaffold), or
+ *   2. the connecting role lacks TRIGGER privilege on it — a grant gap (e.g.
+ *      `harness_admin` can't trigger `harness_feature_prs` on the dev box).
+ * A throw here aborts wireDogfoodTriggers BEFORE the later loops (capture-outbox
+ * + ws-fill triggers) and leaves `__dogfoodTriggersWired` unset, so ONE
+ * inaccessible table strands the triggers on ALL the others (this silently
+ * blocked the P-070 usage capture trigger). Returns true if tolerable; the
+ * permission-denied case is logged so the grant gap stays visible.
+ */
+function tolerableTriggerWireError(tableName: string, msg: string): boolean {
+  if (/does not exist|relation .* does not exist/i.test(msg)) return true;
+  if (/permission denied/i.test(msg)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[dogfood-triggers] skipping trigger on harness_shared.${tableName}: ${msg} ` +
+        `— role lacks TRIGGER privilege (grant gap); wiring continues for other tables`,
+    );
+    return true;
+  }
+  return false;
+}
+
+/**
  * Attach `harness_shared.emit_change_notify()` (defined in migration 078)
  * to every table in `DOGFOOD_REACTIVE_TABLES`. Idempotent via
  * `CREATE OR REPLACE TRIGGER` (PG 14+). Safe to call on every boot.
@@ -774,12 +799,9 @@ export async function wireDogfoodTriggers(): Promise<void> {
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (/does not exist|relation .* does not exist/i.test(msg)) {
-        // Table not yet provisioned in this workspace — fine, will retry
-        // on next boot. Don't log noisily; this is the expected pre-
-        // scaffold state.
-        continue;
-      }
+      // Tolerate missing table (pre-scaffold) OR a grant gap (permission denied)
+      // so one inaccessible table doesn't abort the rest of the wiring.
+      if (tolerableTriggerWireError(tableName, msg)) continue;
       throw e;
     }
   }
@@ -808,9 +830,7 @@ export async function wireDogfoodTriggers(): Promise<void> {
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (/does not exist|relation .* does not exist/i.test(msg)) {
-        continue;
-      }
+      if (tolerableTriggerWireError(tableName, msg)) continue;
       throw e;
     }
   }
@@ -836,9 +856,7 @@ export async function wireDogfoodTriggers(): Promise<void> {
       );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (/does not exist|relation .* does not exist/i.test(msg)) {
-        continue;
-      }
+      if (tolerableTriggerWireError(tableName, msg)) continue;
       throw e;
     }
   }
