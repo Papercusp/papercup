@@ -100,22 +100,29 @@ compliance across the `op-S13..S16` voice scenarios:
 
 | Model | 1-turn latency | Voice compliance |
 |---|---|---|
-| `haiku` | ~21 s | Weak — overruns the 220-char `<say>` cap (246/225/301), S15 fails on judge rubric |
-| `sonnet` | ~17 s | Good — S15 **passes**, length cap respected; minor drift (stacks 2 questions S13; skips the disambiguation card S16; one 222-char overrun) |
-| `opus` | **~100 s** | Most compliant (uses `chat_ask_choice` for disambiguation) but **far too slow** |
+| `haiku` | ~21 s | Weak — overruns the 220-char `<say>` cap, S15 fails |
+| `sonnet` | ~17 s | **Still non-compliant** (validated 3× below) — fast but consistently overruns the cap + skips cards |
+| `opus` | **~100 s** | Most compliant (uses `chat_ask_choice`) but **far too slow** for voice |
 
-**Takeaways:**
-- **Voice should NOT run on `opus`.** 100 s/turn blows the scenarios' 90 s
-  `maxWallSecs` + the runner's 90 s initial-event timeout, and 100 s of dead air
-  before the operator speaks is an unusable voice UX. The production default is
-  pinned to `claude-opus-4-7` — for the *voice* surface that pin is wrong on
-  latency alone.
-- **`sonnet` is the sweet spot for voice** — fast (17 s) and capable (over-length
-  resolves vs haiku; S15 passes). Use `LLM_TEST_SIM_MODEL`/`JUDGE_MODEL=haiku`
-  (cheap) + brain `sonnet` for representative voice runs.
-- The residual sonnet findings (`oneQuestionMarkPerTurn`, `cardUsage`, marginal
-  length overrun) are real persona-compliance drift — candidates for operator
-  voice-persona tuning, not test-infra issues. The judge ran on `haiku`; rerun
-  the judge on `sonnet` before treating a *judge*-only finding as authoritative
-  (the deterministic asserts — length, one-question, has-say — are model-judge-free
-  and trustworthy as-is).
+**Latency takeaway (firm):** Voice should NOT run on `opus` — 100 s/turn blows the
+90 s `maxWallSecs` + the runner's 90 s initial-event timeout, and 100 s of dead
+air is an unusable voice UX. The production default pins `claude-opus-4-7`; for
+the *voice* surface that pin is wrong on latency alone. `sonnet` (17 s) is the
+right speed.
+
+**⚠ N=1 vs 3× — a correction.** A single `--no-matrix` sonnet run looked clean
+(S13 stayed under 220, S15 passed) and I wrongly concluded "over-length resolves
+on sonnet." A **3× matrix with a sonnet judge** overturned that: over-length is
+**consistent and severe on sonnet** (`<say>` of 260/275/361/442/549 chars across
+runs), `cardUsage` fails every disambiguation run, plus groundedness misses
+(hallucinated harness slugs, announced-but-not-executed actions) and high
+behavioral variance (speakability stddev 1.70). **Always run the declared
+`runMatrix` (drop `--no-matrix`) + a `sonnet` judge before drawing a
+production-readiness verdict** — voice behavior is high-variance and N=1 samples
+mislead. The deterministic asserts (length, one-question, has-say) are
+model-judge-free and trustworthy per-run; the rubric findings need the sonnet judge.
+
+These are **real operator voice-persona gaps**, not test-infra issues — the suite
+is correctly catching that the voice operator isn't production-ready. Fixing them
+(terseness within 220, card-based disambiguation, grounded tool use) is a focused
+voice-persona design effort, tracked separately.
