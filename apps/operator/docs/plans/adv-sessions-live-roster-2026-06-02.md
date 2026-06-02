@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phases 1–2 shipped. P-001/P-002 (coord_owner_id join + mergeRoster) and P-003 (GET /api/adv/roster, returning {active, ended}) are done, tested (28 tests across the roster/sessions/route suites), and committed (29895bf80, 7a3702c, c2fc44539). The endpoint + launcher wiring go live on the next :3070 restart (no hot-reload; the column is already applied). Remaining in Phase 2: P-009 (Tier-3 locks+coord enrichment, importance low) — deferred to pair with its only consumer, the P-007 detail dossier.
+**State:** Phases 1–3 shipped. Data (P-001/P-002), endpoint (P-003 GET /api/adv/roster), and the UI integration are done: P-004 (shared LivenessDot + dep-free @/lib/liveness leaf), P-006 (SessionsRosterView — grouped rich rows: plan / always-shown No-plan + presence-only, LivenessDot + intent + file chips, polls the roster endpoint), and P-005 (Sessions is now the 3rd ?view= in the combined Plans/Inbox shell, rail-filtered; the standalone ?tab=sessions peer is removed). ~40 tests green across the suites; apps/operator typecheck clean on touched files. NOT yet live-verified in the Tauri shell: the SPA renders, but the roster's fetch of /api/adv/roster (and new-launch coord_owner_id population) needs the deferred :3070 host restart.
 
-**Next:** Phase 3 — fold Sessions into the combined Plans/Inbox shell as the 3rd ?view= (P-004 shared LivenessDot/PresenceRow, P-005 shell integration + remove standalone tab + rail filter, P-006 rich rows). Higher blast radius (edits the shared PlansClient) — confirm before starting.
+**Next:** Live-verify in the Tauri shell after the (deferred, user-held) :3070 restart. Then Phase 4: P-007 detail dossier (reusing AdvSessionsClient's SessionDetail) + P-009 (locks/coord enrichment), P-008 files-in-play map, P-010 filters + design-token polish.
 
 ## Background
 
@@ -113,9 +113,9 @@ RAIL (shared) │ Plans │ Inbox │ *Sessions               │ AGENT DETAIL
 
 ## Phase 3 — Shell integration (Sessions = 3rd view)
 
-- **P-004** `todo` Extract a shared LivenessDot + PresenceRow from CoordDashboard.tsx (3-state dot keyed on heartbeat age + relative "active Ns ago" + source icon).
-- **P-005** `todo` Fold Sessions into the combined Plans/Inbox shell as a third ?view= (Plans|Inbox|Sessions) in PlansClient; remove the standalone ?tab=sessions peer from AdvShell + routes/adv/index.tsx; consume the rail's ?itemPlans as planFilters to scope the roster; always-render the No-plan + presence-only groups regardless of rail selection. (D-003, D-005) importance: high
-- **P-006** `todo` Rich roster rows wired to the merged endpoint: grouped (plan / No-plan / presence-only); per-row liveness dot, intent, current_files chips, held/waiting lock counts, age·tokens·$·model line; Focus/Resume for terminal-backed rows. (D-006)
+- **P-004** `done` Extract a shared LivenessDot + PresenceRow from CoordDashboard.tsx (3-state dot keyed on heartbeat age + relative "active Ns ago" + source icon). (@/lib/liveness dep-free leaf + app/coord/presence-ui.tsx LivenessDot shared, used by CoordDashboard; drift-guard test. Commit 397f6d466.)
+- **P-005** `done` Fold Sessions into the combined Plans/Inbox shell as a third ?view= (Plans|Inbox|Sessions) in PlansClient; remove the standalone ?tab=sessions peer from AdvShell + routes/adv/index.tsx; consume the rail's ?itemPlans as planFilters to scope the roster; always-render the No-plan + presence-only groups regardless of rail selection. (D-003, D-005) importance: high (PlansClient: Sessions = 3rd ?view= rail filters roster via itemPlans, D-003/D-005; standalone ?tab=sessions removed from AdvShell + adv route. Commit 2813058ee.)
+- **P-006** `done` Rich roster rows wired to the merged endpoint: grouped (plan / No-plan / presence-only); per-row liveness dot, intent, current_files chips, held/waiting lock counts, age·tokens·$·model line; Focus/Resume for terminal-backed rows. (D-006) (SessionsRosterView.tsx/.css: grouped rich rows plan/no-plan/presence-only, D-005, LivenessDot+intent+file chips, polls /api/adv/roster. 6 jsdom tests. Commit 5d17de307.)
 
 ## Phase 4 — Detail dossier + polish
 
