@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Approved; implementation started. Reading the real substrate corrected two assumptions (D-009): the lock store is a separate `papercusp_su` db with the package's own migration runner (schema → `packages/locks/src/sql/005-…`, not `harness_shared/107`), and named resources need a SEPARATE `agent_resource_locks` table (the file-lock `(domain,path)` PK is exclusive-only and safety-critical). Scope expanded on user input: registered-names-only (D-010), and a defineTool `requiresLock` integration that makes the shared dispatcher the enforcement point (D-011) with a registry-driven Bash command-matcher to close the raw-shell bypass (D-012, new Phase 8). No code committed yet beyond the plan itself.
+**State:** Design fully captured (D-001–D-013; Phases 1–8). The model: shared/exclusive named locks with a writer-priority drain, in a separate `agent_resource_locks` table in the `papercusp_su` db (D-009), registered-names-only (D-010). Two enforcement points settled: the shared dispatcher via `requiresLock` for tool-expressed actions (D-011, owns the slow drain + progress), and a FAST `PreToolUse` Bash hook for raw destructive commands (D-012/D-013, deny-if-draining or acquire-shared), with blessed `dev:restart`/`db:migrate` wrapper tools as the canonical path (P-027). Matchable-asymmetry: gate the small destructive command set; keep shared usage explicit. Nothing coded yet beyond the plan doc.
 
-**Next:** An agent writes `packages/locks/src/sql/005-named-resource-locks.sql` (tables + `resource_grant_cascade` + dev-server/db-schema registry seed) and the `resource-lock-store.ts` store layer (registry-required acquire, drain state machine), with an integration test mirroring `su-locks.integration.test.ts`.
+**Next:** An agent implements Phase 1: write `packages/locks/src/sql/005-named-resource-locks.sql` (registry incl. `match_patterns`, `agent_resource_locks`, `resource_grant_cascade`, dev-server/db-schema seed) + `resource-lock-store.ts` (registry-required acquire + drain state machine) + an integration test mirroring `su-locks.integration.test.ts`.
 
 ## Background
 
@@ -144,6 +144,8 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 - **P-025** `todo` defineTool `requiresLock: { resource, mode, drain?, maxDrainSec? }` — the shared endpoint dispatcher auto-acquires the declared lock (full drain protocol for `exclusive`), runs the tool body, releases on success/error. Realizes the `enforced` rung declaratively at the dispatch chokepoint (D-011). blocked-by: P-012, P-015
 - **P-026** `todo` Close the raw-Bash bypass: a registry-driven command-matcher (resource carries match patterns) on the `Bash` tool's dispatch maps a command to a registered resource and acquires it — mirroring the file-edit hook's path matcher — so raw shell can't sidestep a registered lock (D-012). Document that non-agent actors (human/paperclip/Tauri shell) are out of scope of dispatch enforcement. blocked-by: P-025
+- **P-027** `todo` Blessed wrapper tools — `dev:restart` (exclusive `dev-server`) and `db:migrate` (exclusive `db-schema`) authored with `requiresLock`, as the canonical path agents use instead of raw `systemctl`/`psql`. They get the full dispatcher drain protocol (D-011) for free; the Bash command-matcher (P-026) is the backstop for raw use. ("Both" approach — wrapper tools + matcher.) blocked-by: P-025
+
 
 
 ## Decisions
@@ -206,6 +208,18 @@ Related: P-015
 Date: 2026-06-02
 Answering "is there any command we can't route through defineTool?": a `defineTool` body runs in the operator's Node process, so it can spawn/exec anything the host can (shell, `systemctl`, `psql`, HTTP) — every destructive action is EXPRESSIBLE as a tool. But routing through a tool only yields ENFORCEMENT for actions that actually flow through the dispatcher. Two leaks remain: (1) the raw `Bash`/shell tool — an agent can `systemctl restart` directly, bypassing any wrapper. Close it with a registry-driven command-matcher (resource carries match patterns; Bash dispatch maps a command to a registered resource and acquires it, exactly as the file-edit hook maps a path to a file lock). (2) NON-agent actors — a human at a terminal, paperclip, the Tauri shell — never hit the dispatcher at all, so no tool-level enforcement can reach them; for them only the advisory rule + the drain broadcast applies. Conclusion: `enforced` means "enforced for agents going through the dispatcher," never a true world mutex — which is consistent with the loose-by-design philosophy. The clean end-state is: all agent actions flow through one dispatcher; `requiresLock` covers fixed-resource tools and the command-matcher covers the generic Bash tool; the dial just sets how strict the dispatcher is per resource.
 Related: P-015
+
+
+### D-013 — Raw-command gating = a fast PreToolUse Bash hook; the dispatcher owns the slow drain
+Date: 2026-06-02
+Confirmed against the live hook config: file locks already gate `Edit|Write|MultiEdit` via a `PreToolUse` hook (`~/.papercusp/hooks/cc/pretooluse-locks-acquire.sh`). The raw-shell matcher (D-012/P-026) is the SAME shape with matcher `Bash` — the hook receives the command string on stdin and returns allow/deny.
+
+Division of labor with D-011: the Bash hook does a FAST check only — deny if the resource is exclusive/draining (with a "wait, X is restarting" reason), else acquire a shared lease and allow — because a PreToolUse hook runs synchronously under a timeout and cannot sit in a multi-minute drain. The full drain-wait (and progress streaming) lives in the dispatcher path (`requiresLock`, D-011).
+
+Matchable asymmetry: the DESTRUCTIVE side (restart/migrate) is a small, matchable command set — gate it in the Bash hook and/or via `requiresLock` wrapper tools. The SHARED "usage" side (e.g. `curl :3070`) has too many forms to regex reliably — keep it EXPLICIT (`locks:acquire { mode: shared }`, or `requiresLock` on the specific tools that hit the resource), not Bash-pattern-matched. So `agent_resource_registry` gains a `match_patterns` column (regex/glob) the Bash hook reads to map a command → registered resource.
+
+Per-client reality: hard enforcement on Claude + OMP (PreToolUse fires); soft on codex (it does not fire PreToolUse on `Bash`/`apply_patch` yet — upstream gap, identical to the file-lock asymmetry). Non-agent actors (human terminal, paperclip, Tauri shell) never invoke the hook — out of scope, advisory + drain broadcast only (D-012).
+Related: P-026
 
 ## Open questions
 
