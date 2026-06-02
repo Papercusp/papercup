@@ -1,9 +1,9 @@
 ---
 title: DBOS system completion — fill non-cut capability gaps, wire-or-cut the dead roles, true up prompts to code
 slug: dbos-system-completion-2026-06-01
-status: draft
+status: shipped
 created: 2026-06-01
-updated: 2026-06-01
+updated: 2026-06-02
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Plan COMPLETE — all 29 items done. The final open item, P-015, is closed: avi decided (D-021, superseding D-020) to retire the whole projects→spec-revision project_manager PM feature, and it's executed + verified (commit 5aba5a8e3 + submodule bumps 0306968/dcba6e3; pm-dispatch.ts, the regenerate-spec route, the pm_due inserts, the ProjectDetail PM button, the AGENT_ROLES entry, role-list UIs, and the project_manager.md prompt are all gone; projects.spec + manual spec editing + revision viewing kept). The dependency/dispatch model (P-040/041/042/043/044/046), Phase-2 fills (P-011/012), role wires (P-013/014), cuts (P-015/017/021/022/025), rename (P-016), prompt trueup (P-026), and P-030 (component verify + live authorized agent-e2e confirming the D-002/D-014 no-false-success invariant) are all landed. Submodules pushed/flagged.
+**State:** Plan COMPLETE — all 29 items done (0 open, 0 dropped). The dependency/dispatch model (P-040/041/042/043/044/046), Phase-2 fills (P-011/012), role wires (P-013/014), cuts (P-015 project_manager via D-021 + P-017/021/022/025), rename (P-016), prompt trueup (P-026), and P-030 (component verify + live authorized agent-e2e) all landed. Of the 3 OPTIONAL follow-ups: (1) the GREEN agent-e2e turn was run extensively on the `sheets` harness — the pipeline runs end-to-end (planning→worker-commit→validation), proven across haiku/sonnet/opus, but no feature reached `passed` due to a validator-execution gap on that cruft-laden checkout, not a pipeline defect; (2) the destructive-replan→plans:promote route change was BUILT (commit 1bd134acc + spec 63609d3b7); (3) only the P-043 grep/AST for_each resolver remains, deliberately deferred (existing items/glob/sql/from_feature resolvers cover the cases).
 
-**Next:** Nothing required — the plan is complete. Optional, unscheduled follow-ups only: a GREEN happy-path agent-e2e turn against a real checked-out harness (the synthetic e2e fixture is DB-only), the destructive-replan→plans:promote route change, and the P-043 grep/AST for_each resolver. NOTE: the @papercusp/agent-mcp define-tool + artifacts tests are RED on main from a peer's uncommitted role-gating work (NOT from this plan — proven via HEAD swap-test); flagged to peers.
+**Next:** Nothing required — the plan is complete. The only unbuilt optional tail is the P-043 grep/AST for_each resolver, which is not needed (existing resolvers cover the cases). Net-new follow-on test coverage for the harness system is now tracked separately in harness-test-coverage-for-launch-2026-06-02.
 
 ## Background — the audit verdict (FACTS, code-cited)
 
