@@ -15,12 +15,12 @@
  *
  * Server-only.
  */
-import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { listSavedPrompts } from './saved-prompts-store';
 import { writeClaudeCommands, writeCodexPrompts, type MaterializeResult } from './saved-prompts-projection';
-import { papercuspRootForWorkspace } from './papercusp-root';
 import { resolveProjectDir } from './spawn-config';
 
 function db(sql?: postgres.Sql): postgres.Sql {
@@ -28,20 +28,25 @@ function db(sql?: postgres.Sql): postgres.Sql {
 }
 
 /**
- * The workspace HOME — the dir the launched client uses as `$HOME`, under
- * which `.claude/` lives. It is the parent of the workspace's `.papercusp`
- * root: `<root>/<id>/.papercusp` → `<root>/<id>`, and the legacy
- * `~/.papercusp` → `~`. P-012: on a non-remapped box this is the real HOME;
- * the desktop `PAPERCUSP_HOME` remap path is the one to verify before relying
- * on it for desktop.
+ * The HOME the launched client uses, under which `.claude/` lives.
+ *
+ * P-012: the launchers (console-launch / bootstrap-role|su) set `PAPERCUSP_HOME`
+ * but do NOT remap the child's unix `$HOME`, so the client inherits the
+ * operator's HOME — `os.homedir()`. On the desktop product the operator's HOME
+ * IS the per-workspace dir (`~/.papercusp-workspaces/<id>`), so this resolves
+ * to the "workspace folder"; on a dev box it is the real home, which is also
+ * where the user's ambient `claude` reads user-scope commands. Either way it is
+ * the directory the client actually reads, which is the only thing that makes
+ * the prompt invokable. (If a launcher ever remaps the child HOME per-workspace,
+ * this resolver must change to match it.)
  */
-export function workspaceHomeDir(workspaceId: string): string {
-  return dirname(papercuspRootForWorkspace(workspaceId));
+export function workspaceHomeDir(): string {
+  return homedir();
 }
 
-/** `<workspace HOME>/.claude/commands` — Claude user scope + OMP user scope. */
-export function workspaceCommandsDir(workspaceId: string): string {
-  return join(workspaceHomeDir(workspaceId), '.claude', 'commands');
+/** `<HOME>/.claude/commands` — Claude user scope + OMP user scope. */
+export function workspaceCommandsDir(): string {
+  return join(workspaceHomeDir(), '.claude', 'commands');
 }
 
 /** `<harness repo>/.claude/commands` — Claude/OMP project scope. Null if unregistered. */
@@ -62,7 +67,7 @@ export async function materializeWorkspacePrompts(
   opts: MaterializeOpts = {},
 ): Promise<MaterializeResult> {
   const rows = await listSavedPrompts(db(opts.sql), workspaceId, { kind: 'workspace' });
-  return writeClaudeCommands(opts.dir ?? workspaceCommandsDir(workspaceId), rows);
+  return writeClaudeCommands(opts.dir ?? workspaceCommandsDir(), rows);
 }
 
 /** Project a harness's prompts to its repo's Claude/OMP commands dir (committed). */
