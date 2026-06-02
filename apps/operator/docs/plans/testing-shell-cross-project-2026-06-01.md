@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** M1 (extract testing-shell), M2 (Restart adopts it: /tests renders TestingShell + CI + k6 tabs, next build green), and M6 (unify @papercusp/test-config into a shared submodule — both repos, verified) all DONE. Two new private repos created (Papercusp/testing-shell, Papercusp/test-config); both consumed as submodules in papercup + Restart. On top of the lib foundation + Phase 1 (portable universal tier). Remaining: M4 (generalize chaos/ai/live to drive a project base URL — D-002 a; the deepest item, since these are Tauri-shell/admin-bound harnesses) + M5 (/tester shared customTab + promote testing-domain-glob). M3 (operator Phase 2 UI) deprioritized as speculative.
+**State:** CAMPAIGN COMPLETE (M1, M2, M4, M5, M6 done; M3 deprioritized as speculative per user). The /adv testing framework + UI is fully abstracted into two shared private submodules — Papercusp/testing-shell (registry, TestingShell/DomainTestPanel, dataSource, k6 runner, parseRunnerStatus, applyRoleGlobs, aggregateJUnitCases, +/glob subpath) and Papercusp/test-config (vitest config + testcontainers-PG + MSW + make-fixture) — both consumed as submodules in papercup AND Restart, cataloged in BORROWABLE. Restart's /tests now renders the shared TestingShell with CI + Load(k6) + API-tester tabs; next build green. The universal tier is portable (Phase 1); ai-explore base URL is configurable (M4). All committed across both repos with scoped commits (never touched the other agent's in-flight Restart work).
 
-**Next:** M4: investigate the chaos/ai/live harness implementations to scope the base-URL generalization (ai/Stagehand likely cleanest; chaos's Tauri-bridge coupling deepest), then M5.
+**Next:** One manual verification remains: eyeball Restart /tests live (needs a standalone redeploy + :3001 restart — deferred to avoid disrupting the other Restart agent). Optional future: generalize chaos/live to a generic browser driver (D-008, no consumer yet); M3 operator Phase-2 UI (speculative).
 
 ## Background
 
