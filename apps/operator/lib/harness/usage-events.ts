@@ -108,7 +108,7 @@ export async function emitUsageEvent(
     VALUES
       (${input.harness_slug}, ${event_id}, ${input.github_user_id}, ${input.device_pubkey},
        ${input.kind}, ${input.ref_id ?? null},
-       ${input.payload == null ? null : sql.json(input.payload as Parameters<typeof sql.json>[0])},
+       ${input.payload == null ? null : JSON.stringify(input.payload)}::jsonb,
        to_timestamp(${nowMs} / 1000.0),
        ${USAGE_EVENT_SCHEMA_VERSION})
     ON CONFLICT (harness_slug, event_id) DO NOTHING
