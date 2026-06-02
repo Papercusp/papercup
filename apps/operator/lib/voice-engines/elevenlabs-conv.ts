@@ -418,7 +418,10 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
  * rest were configured as webhook tools on the EL dashboard during agent
  * setup, and the agent calls our server directly for those.
  */
-function buildClientTools(opts: {
+// Exported for unit-test coverage (plan voice-production-test-coverage P-004:
+// reflexive client-tool dispatch). The sole production caller is
+// startElevenLabsConv above.
+export function buildClientTools(opts: {
   workspace: string;
   tabId: string;
   endSession: () => Promise<void>;
