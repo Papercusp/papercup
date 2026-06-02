@@ -60,15 +60,22 @@ only voice changes, leaving the opus brain for text orchestration if desired.
 ## Phases (proposed)
 
 ### Phase 1 — terseness (highest impact)
-- **P-001** `todo` Strengthen the voice block to make ≤220 a HARD behavioral rule:
-  lead with the single most important fact in ≤220 chars; never read lists or
-  multiple facts in one `<say>`; offer to continue or surface a card for the rest.
-  Edit the voice-mode section (`operator-converse-prompt.ts` say-format + the
-  voice instruction in `agent-tools/operator/converse-prompt.ts`). Restart the
-  `:3070` host (tsx, no hot-reload). Re-validate 3×.
+- **P-001** `doing` Strengthened the voice block (`agent-tools/operator/converse-prompt.ts`,
+  commit `99817ff20`): ≤220 chars HARD per `<say>`, lead with one fact + offer to
+  continue (never dump lists), one question per turn. **Validation BLOCKED by the
+  shared box's rate-limit/API overload (2026-06-02)** — a 3× sonnet-judge re-run
+  mostly *errored* on environment ("fetch failed", "terminated", 600s timeout; mem0
+  `AnthropicLLM` API errors in the host log), at near-zero cost = the brain produced
+  nothing. The ONE run that completed (S13 run3) **passed** (encouraging, not
+  conclusive). **Next: re-run `op-S13`/`op-S16` at 3× with a sonnet judge when the
+  account isn't rate-limited** to confirm the over-length fix holds.
 - **P-002** `todo` If a stronger instruction doesn't hold the cap (models are weak
   at hard limits), consider a structural answer: emit multiple short `<say>` blocks,
   or a "headline + offer to continue" pattern, rather than relying on the model.
+- **P-006** `todo` Investigate the recurring **600s `operator:converse` timeout** on
+  S16 (pre- and post-fix) — the brain occasionally loops/hangs for the full
+  `TOTAL_CAP_MS`. Likely a tool-call loop (ToolSearch + hallucinated names, see
+  finding #5); could be its own SUT-health bug, not just persona.
 
 ### Phase 2 — disambiguation cards
 - **P-003** `todo` Make card-based disambiguation explicit: "when a voice
