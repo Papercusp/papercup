@@ -3,7 +3,7 @@ title: Agent-tools deny-by-default workspace isolation (P-062) — harness_app +
 slug: agent-tools-workspace-isolation-2026-06-01
 status: draft
 created: 2026-06-01
-updated: 2026-06-01
+updated: 2026-06-02
 owner: aviynw10@gmail.com
 ---
 
@@ -141,4 +141,13 @@ KEY DE-RISK: the dispatch stack's own bookkeeping (tool_invocations + quota) rec
 VERIFIED: routing 9/9 unit (scoped-handle.test.ts); RLS substrate isolation via psql against live dev PG — harness_app + GUC='default' → 257 harness_decisions, foreign/absent workspace → 0 (deny-by-default), harness_admin → 257 (rolbypassrls); Phase-3 seam still 6/6 + agent-mcp 28/28; tooldef tsc clean; no new agent-mcp tsc errors (the 19 pre-existing camelCase-rename errors are unrelated).
 
 REMAINING before flipping default-on (the P-004 gate): a flag-ON end-to-end pass across all HTTP tools confirming (a) each scoped tool works for its own workspace, (b) grant coverage — harness_app has DML on every table each tool touches (Phase 1 covered harness_shared operational tables; per-harness `harness_<slug>.*` schema access + any table outside the 095 grant set is unverified), and (c) no WITH-CHECK rejection on app writes (writes must set workspace_id). Must run in an ISOLATED host, not the shared :3070 (flipping the flag there changes behavior for the whole dev box).
+Related: P-004
+
+### D-008 — D-008 — crossWorkspace now honored on BOTH transports (HTTP catchall + MCP); transport asymmetry closed
+Date: 2026-06-02
+Follow-up to the Phase-4 flip (owner-requested). The crossWorkspace opt-out was initially wired only into the HTTP catchall's chooseScopedHandle. The MCP transport (_mcp-handler.ts) scopes concrete-workspace calls via its own withWorkspace(harness_app) and left ctx.tx unset for '*' — it ignored crossWorkspace, so a future ctx.tx-based crossWorkspace tool would be RLS-scoped to one workspace (or empty for the superuser/'*' discovery case).
+
+SHIPPED (superproject 4f64f9f7b): added a crossWorkspace branch in _mcp-handler.ts (checked BEFORE needsTx) that hands the admin (rolbypassrls) handle + synthesizes the principal — mirroring the HTTP catchall. Also fixed papercusp:list_workspaces (61afa07c9) to read getOrgPg() directly (it's the cross-workspace enumerator but read ctx.tx, which the MCP transport leaves unset for '*' — so it returned empty for its primary discovery use). Verified live via MCP: list_workspaces returns all 3 workspaces; operator:multi_workspace returns cross-workspace aggregation; normal tools skip the branch (guarded by crossWorkspace===true) so are unaffected.
+
+Net: deny-by-default workspace isolation is now consistent across HTTP-bearer AND MCP transports; superuser + crossWorkspace tools get the admin handle on both; everything else is RLS-scoped to its workspace. P-062 fully complete + the transport asymmetry is closed.
 Related: P-004
