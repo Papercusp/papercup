@@ -189,7 +189,7 @@ One cycle:
 
 - **P-012** `done` PG schema `harness_gym`: gym_tasks (with pool), gym_variants, gym_runs, gym_scores, gym_cycles, gym_runs_params (frozen run-params). importance: high (harness_gym schema 6 tables + idempotent gym-PG-resident ensureGymSchema; 6 live-PG sentinel tests green)
 - **P-013** `todo` Comparison read API: variant-A-vs-B per-task diff, frontier view, cycle history, real-anchor + monitor surfacing. blocked-by: P-012
-- **P-014** `needs-human` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028
+- **P-014** `harness-ready-run-deferred` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028 (2026-06-02 human said GO. Built+fake-validated the bounded A/B executor: `ab-runner.ts`/`ab-runner-real.ts`/`ab-run.ts` (+ repeat/variance support, meridian streaming fix `d352a68`). Fake-mode end-to-end AB-RUN OK ~20s, zero-LLM. REAL run = `GYM_AB_REPEATS=2 npx tsx lib/gym/ab-run.ts` (real agents + real opus judge). DEFERRED: shared Claude session is 429-rate-limited (cap probe timed out in retries); run on capacity / off-peak. The variance→ε/δ/min-n + cost + real-anchor correlation numbers come out of that real run.)
 
 ## Phase 4 — Proposer
 
