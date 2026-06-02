@@ -133,6 +133,14 @@ class OperatorSession implements ChatSession {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
+      // Stamp the workspace the brain should run in. WITHOUT this, the
+      // converse handler resolves activeWorkspaceId() to registry.current
+      // (this dev box: `papercusp-workspace`), which has NO operator system
+      // principal — so converse.ts gates `mcpConfig` to undefined and the
+      // brain runs TOOL-LESS (deflects on every status/tool assert). The
+      // operator/oracle principals + the scenario harnesses (sheets, …) live
+      // in `default`, so target that. Overridable via PAPERCUSP_LLM_TEST_WORKSPACE.
+      'x-papercusp-workspace': process.env.PAPERCUSP_LLM_TEST_WORKSPACE ?? 'default',
     };
     if (this.state.hasOverride) {
       headers['X-Tool-Dispatch-Override-Id'] = this.state.runId;

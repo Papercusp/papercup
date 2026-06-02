@@ -283,6 +283,13 @@ export default defineTool({
           mcpConfig,
           allowedTools: [...allowedTools],
           permissionMode: 'bypassPermissions',
+          // Isolate the claude-code brain spawn from the host ~/.claude so
+          // it loads ONLY its agentmcp tools + persona — not the dev box's
+          // MCP servers (coord_*/harness_*/papercusp-su) + SessionStart
+          // skills hook, which under bypassPermissions make the brain go
+          // agentic and emit no clean turn (turns=0). No-op for non-claude
+          // backends. See plan operator-brain-test-isolation-2026-06-02.
+          isolateConfig: true,
           signal: ctx.signal,
         })) {
           if (ctx.signal.aborted) break;

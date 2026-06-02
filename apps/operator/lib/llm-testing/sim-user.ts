@@ -71,6 +71,11 @@ export class SimUser {
     this.totalCostUsd += result.costUsd;
 
     let action = parseAction(result.json);
+    if (process.env.LLM_TEST_DEBUG_SIM) {
+      console.error('[sim-debug] raw text:', JSON.stringify(result.text).slice(0, 800));
+      console.error('[sim-debug] parsed json:', JSON.stringify(result.json).slice(0, 400));
+      console.error('[sim-debug] action:', JSON.stringify(action));
+    }
     if (!action) {
       // One retry with a stricter nudge.
       const retry = await llmCall({
