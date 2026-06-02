@@ -25,6 +25,7 @@ import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { provisionGymDatabase } from './gym-db-init';
 import { buildGymOperatorBootSpec } from './boot-spec';
+import { collectTrace } from './collector';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '../../../..');
@@ -187,7 +188,11 @@ async function main(): Promise<void> {
     try {
       const wfPrefix = `pipeline:${SLUG}:${FEATURE}:e`;
       let status = 'PENDING';
-      const deadline = Date.now() + 120_000;
+      // The fake-agent feature ends 'failing' and cycles a nondeterministic number of
+      // debugger/rework turns before the director concludes (observed 25–50 agent runs,
+      // ~2.5s each). 300s absorbs the worst observed cycle so the workflow reliably
+      // reaches a terminal state rather than the poll deadline catching it mid-run.
+      const deadline = Date.now() + 300_000;
       while (Date.now() < deadline) {
         const rows = await gym<{ status: string }[]>`
           SELECT status FROM dbos.workflow_status WHERE workflow_uuid LIKE ${wfPrefix + '%'} ORDER BY created_at DESC LIMIT 1`;
@@ -206,6 +211,42 @@ async function main(): Promise<void> {
         SELECT run_id, role FROM harness_shared.harness_run_output WHERE harness_slug = ${SLUG} ORDER BY started_at`;
       report.runOutputRows = runs.length;
       report.roles = runs.map((r) => r.role);
+
+      // 8b. P-002 trace collector — validate it assembles a REAL RawTrace from the real
+      // run: per-role transcripts (harness_run_output.out_body) + the real `git diff
+      // <base> HEAD` in the clone + terminal state, then writes a trace bundle. This is
+      // the bridge "pipeline ran → scoreable trace"; previously only DI-fake-tested,
+      // never against a real pipeline's output.
+      {
+        const traceDir = join(scratch, 'traces');
+        mkdirSync(traceDir, { recursive: true });
+        const { rawTrace, traceRef } = await collectTrace(
+          { harnessSlug: SLUG, clonePath: cloneDir, baseCommit, terminalState: status, signals: { runOutputRows: runs.length } },
+          {
+            readRunOutputs: async (slug) => {
+              const rows = await gym<{ run_id: string; role: string | null; out_body: string }[]>`
+                SELECT run_id, role, out_body FROM harness_shared.harness_run_output
+                 WHERE harness_slug = ${slug} ORDER BY started_at`;
+              return rows.map((r) => ({ runId: r.run_id, role: r.role ?? '', outBody: r.out_body }));
+            },
+            gitDiff: async (clonePath, base) =>
+              execFileSync('git', ['-C', clonePath, 'diff', base, 'HEAD'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+            writeBundle: async (text) => {
+              const p = join(traceDir, `${SLUG}.trace.json`);
+              writeFileSync(p, text);
+              return p;
+            },
+          },
+        );
+        report.collector = {
+          transcriptCount: rawTrace.roleTranscripts.length,
+          diffBytes: rawTrace.diff.length,
+          hasWorkerDiff: rawTrace.diff.includes('GYM_FAKE_WORK'),
+          terminalState: rawTrace.terminalState,
+          traceRefWritten: existsSync(traceRef),
+        };
+        log(`collector → ${rawTrace.roleTranscripts.length} transcripts, ${rawTrace.diff.length}B diff, bundle written=${existsSync(traceRef)}`);
+      }
     } finally {
       await gym.end({ timeout: 5 });
     }
@@ -217,7 +258,13 @@ async function main(): Promise<void> {
       report.diffStat = execFileSync('git', ['diff', '--stat', baseCommit, head], { cwd: cloneDir, encoding: 'utf8' }).trim();
     }
 
-    ok = report.workflowStatus === 'SUCCESS';
+    // PASS = the spine reached terminal SUCCESS AND the P-002 collector assembled a
+    // real, non-empty trace (transcripts from the real run) and wrote its bundle.
+    ok =
+      report.workflowStatus === 'SUCCESS' &&
+      !!report.collector &&
+      (report.collector as { transcriptCount: number }).transcriptCount > 0 &&
+      (report.collector as { traceRefWritten: boolean }).traceRefWritten === true;
   } catch (err) {
     report.error = String(err);
   } finally {
