@@ -326,7 +326,15 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
   for (const step of plan.steps) {
     try {
       if (step.kind === 'invoke') {
+        const finalizeStartedAt = Date.now();
         const r = await spawnInvokeOnce(projectDir, step.role, step.extras, extraEnv);
+        // P-070 (best-effort): the finalizer's curator/documenter runs are agent
+        // runs too. They carry no idempotency key (run once per finalization), so
+        // synthesize a stable run_id from feature+role+phase.
+        void emitAgentRunCompleted(harnessSlug, `${featureId}:${step.role}:finalize`, {
+          role: step.role,
+          durationMs: Date.now() - finalizeStartedAt,
+        });
         console.log(`[dbos-finalize] ${step.role}: ${(r.output || '').slice(0, 160) || '(no output)'}`);
       } else if (step.kind === 'postCuratorOutputs') {
         await postCuratorOutputs({ stateDir, harnessDir: harnessPackageDir() }).catch(() => {});
