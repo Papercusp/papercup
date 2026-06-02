@@ -1371,9 +1371,14 @@
   display: grid;
   align-content: start;
   gap: 14px;
-  min-height: 0;
   /* No own scroll — the enclosing .pc-plans__main scrolls and the detail
-     pane is sticky within it (mirrors the Sessions two-pane). */
+     pane is sticky within it (mirrors the Sessions two-pane). MUST NOT
+     flex-shrink: .pc-plans__main is a bounded flex-column, so a shrinkable
+     child would collapse to the viewport height — that in turn shrinks the
+     detail pane's containing block (.pc-items__layout) and the sticky pane
+     un-pins after one viewport. flex:0 0 auto keeps this content-tall so it
+     overflows the scroller and the sticky pane pins for the whole list. */
+  flex: 0 0 auto;
   padding: 18px;
   color: var(--fg-dim);
 }

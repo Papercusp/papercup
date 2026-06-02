@@ -297,7 +297,13 @@ export default function AdvShell({
         .pc-advshell {
           display: flex;
           flex-direction: column;
-          min-height: calc(100vh - 56px);
+          /* Viewport-bounded (NOT min-height) so the shell never grows past
+             the window. This makes the per-tab content panes the real
+             scrollers — without it the whole shell grows and the WINDOW
+             scrolls, which defeats every inner sticky/overflow pane (e.g.
+             the Plans preview pane never sticks). */
+          height: calc(100vh - 56px);
+          min-height: 0;
           background:
             radial-gradient(circle at top left, color-mix(in oklab, var(--accent, #38bdf8), transparent 91%), transparent 30%),
             linear-gradient(180deg, var(--bg, #07101d), #04111b);
@@ -597,7 +603,10 @@ export default function AdvShell({
           background: linear-gradient(90deg, var(--h-main-tab-accent), color-mix(in oklab, var(--h-main-tab-accent), white 28%));
           box-shadow: 0 0 14px color-mix(in oklab, var(--h-main-tab-accent), transparent 54%);
         }
-        .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+        /* Fallback scroller: tabs that lay out their own internal overflow
+           panes (Plans, Sessions) scroll there; tabs that don't (Brainstorm,
+           Insights) scroll here instead of growing the shell + window. */
+        .pc-advshell__body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
 
         /* Flat in-page buttons. Action buttons / pills inside the page body
            get NO embossed bevel, raised drop-shadow, glow, or hover-lift —
