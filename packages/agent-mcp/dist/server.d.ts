@@ -13,7 +13,7 @@
  *     in the same Node process call the same handlers without going
  *     over a wire — same contract, no transport overhead).
  */
-import type { Principal, ToolDefinition, ToolResponse } from './types';
+import type { Principal, PromptResult, ResourceContents, ResourceListEntry, ToolDefinition, ToolResponse } from '@papercusp/tooldef';
 export interface DispatchOptions {
     toolName: string;
     args: unknown;
@@ -33,6 +33,71 @@ export interface DispatchResult {
  * (Operator/Oracle).
  */
 export declare function dispatch(opts: DispatchOptions): Promise<DispatchResult>;
+export interface ListResourcesResult {
+    ok: boolean;
+    resources?: ResourceListEntry[];
+    error?: {
+        code: string;
+        message: string;
+    };
+}
+export interface ReadResourceOptions {
+    uri: string;
+    bearer: string;
+}
+export interface ReadResourceResult {
+    ok: boolean;
+    contents?: ResourceContents;
+    error?: {
+        code: string;
+        message: string;
+    };
+}
+/**
+ * Enumerate every resource the bearer is allowed to see. Templated
+ * resources expand via their `list` callback (one URI per harness, etc.);
+ * concrete resources contribute one entry each.
+ */
+export declare function listResources(bearer: string): Promise<ListResourcesResult>;
+/**
+ * Read a single resource by URI. Matches the URI against registered
+ * templates, capability-checks the bearer, then runs the resource's
+ * `read` callback inside a workspace-bound transaction.
+ */
+export declare function readResource(opts: ReadResourceOptions): Promise<ReadResourceResult>;
+export interface ListPromptsResult {
+    ok: boolean;
+    prompts?: Array<{
+        name: string;
+        description: string;
+        arguments?: Array<{
+            name: string;
+            description?: string;
+            required?: boolean;
+        }>;
+    }>;
+    error?: {
+        code: string;
+        message: string;
+    };
+}
+export interface GetPromptOptions {
+    name: string;
+    args: Record<string, string>;
+    bearer: string;
+}
+export interface GetPromptResult {
+    ok: boolean;
+    result?: PromptResult;
+    error?: {
+        code: string;
+        message: string;
+    };
+}
+/** Enumerate prompts visible to the bearer. */
+export declare function listPrompts(bearer: string): Promise<ListPromptsResult>;
+/** Render a prompt by name with the given args. */
+export declare function getPrompt(opts: GetPromptOptions): Promise<GetPromptResult>;
 export interface StartServerOptions {
     /** Use stdio transport. Default true. */
     stdio?: boolean;

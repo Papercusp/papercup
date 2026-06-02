@@ -43,11 +43,6 @@ import type { DeviceKeypairId } from '../identity/attestation-types';
 import {
   verifyChannel1,
 } from '../identity/two-channel-verifier';
-import {
-  ensureMyBindingPublished,
-  type EnsureBindingResult,
-} from './ensure-binding-published';
-import { signWithDeviceKey } from '../identity/sign-with-device-key';
 // Pure step vocabulary lives in the dependency-free leaf ./join-steps (so the
 // client join UI imports it without this module's server fan-in). Imported for
 // local use + re-exported below for existing server consumers.
@@ -97,10 +92,8 @@ export interface JoinState {
   cloneDir?: string;
   /** Base64 raw-bytes device public key (set after step 1). */
   pubkeyBase64?: string;
-  /** Attestation gist id (set after step 1). */
+  /** Attestation gist id (set after step 1; carried on the announce). */
   attestationGistId?: string;
-  /** SHA of the contributor-file publish commit (set after step 3). */
-  channel2CommitSha?: string;
   /** GitHub user id (mirrors opts, for resume). */
   githubUserId?: number;
   /** GitHub login (mirrors opts, for resume). */
@@ -278,40 +271,29 @@ export async function step2_cloneRepo(opts: {
 
 // ─── step 3: publish_binding ─────────────────────────────────────────────────
 //
-// Publishes the device-signed contributor file to the shared GitHub repo via
-// a GitHub-VERIFIED commit (GitHub Contents API). Model B has NO Hyperbee
-// contributor rows — the binding IS the contributor file + the signed announce.
-//
-// CRITICAL: attestationGistId MUST be non-empty. `isContributorFileBody`
-// validates it; an empty gist id causes channel-2 to reject the file.
+// Write-free join (non-collaborator-join-fork-pr-2026-06-02): the binding is the
+// attestation GIST (created in step 1 oauth_attest) + the SIGNED announce (sent
+// in step 4 boot_federate). There is NO shared-repo contributor file anymore, so
+// this step performs NO repo write (a non-collaborator needs no write access to
+// join). It confirms the attestation gist id resolved in step 1 is present — so
+// peers can admit via `verifyAttestation` — and carries it forward. An empty
+// gist id is a hard failure (a peer cannot verify an empty id).
 
-export type PublishBindingResult = EnsureBindingResult;
+export interface PublishBindingResult {
+  attestationGistId: string;
+}
 
 export async function stepPublishBinding(opts: {
-  repoOwner: string;
-  repoName: string;
-  defaultBranch: string;
-  identity: {
-    token: string;
-    githubUserId: number;
-    githubLogin: string;
-  };
-  keychainId: string;
-  devicePubkeyBase64: string;
   attestationGistId: string;
-  octokit?: unknown;
 }): Promise<PublishBindingResult> {
-  return ensureMyBindingPublished({
-    repoOwner: opts.repoOwner,
-    repoName: opts.repoName,
-    identity: opts.identity,
-    keychainId: opts.keychainId,
-    devicePubkeyBase64: opts.devicePubkeyBase64,
-    sign: signWithDeviceKey,
-    defaultBranch: opts.defaultBranch,
-    attestationGistId: opts.attestationGistId,
-    octokit: opts.octokit,
-  });
+  if (!opts.attestationGistId) {
+    throw new JoinStepError(
+      'publish_binding',
+      'attestation_gist_missing',
+      'attestation gist id is empty — cannot publish a verifiable binding',
+    );
+  }
+  return { attestationGistId: opts.attestationGistId };
 }
 
 // ─── step 4: boot_federate ───────────────────────────────────────────────────
@@ -510,26 +492,12 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
     await saveAndEmit();
   }
 
-  // ── Step 3: publish_binding ──
+  // ── Step 3: publish_binding (write-free: confirm the attestation gist id) ──
   if (state.steps.publish_binding.status !== 'done') {
     markRunning('publish_binding');
     const gistId = state.attestationGistId ?? opts.existingGistId ?? '';
     try {
-      const r = await stepPublishBinding({
-        repoOwner: opts.link.repoOwner,
-        repoName: opts.link.repoName,
-        defaultBranch: 'main',
-        identity: {
-          token: opts.token,
-          githubUserId: opts.githubUserId,
-          githubLogin: opts.githubLogin,
-        },
-        keychainId: opts.keychainId,
-        devicePubkeyBase64: state.pubkeyBase64!,
-        attestationGistId: gistId,
-        octokit: opts.octokit,
-      });
-      state.channel2CommitSha = r.commitSha;
+      await stepPublishBinding({ attestationGistId: gistId });
       markDone('publish_binding');
     } catch (e: unknown) {
       const err = e instanceof JoinStepError ? e : null;

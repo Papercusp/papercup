@@ -12,9 +12,15 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
-const define_tool_1 = require("../../define-tool");
-exports.default = (0, define_tool_1.defineTool)({
+const tooldef_1 = require("@papercusp/tooldef");
+exports.default = (0, tooldef_1.defineTool)({
+    name: 'audit:list',
+    profile: 'engineer',
     capability: 'audit:read',
+    guidance: {
+        when: 'User asks "what happened recently?", "who did X?", or you need a forensic timeline of agent + user actions.',
+        notWhen: 'For ACTIVE / in-flight work, use `harness:status` or `actions:recent`. Audit is a write-log, not a live view.',
+    },
     args: zod_1.z.object({
         detail: zod_1.z.enum(['summary', 'full']).default('summary'),
         actor: zod_1.z.string().optional(),

@@ -91,7 +91,7 @@ export default function AdvPlansTabs({ children }: { children: React.ReactNode }
 
   const tabs: Tab[] = useMemo(() => {
     const base: Tab[] = [
-      { id: 'index', label: 'Plans', closeable: false },
+      { id: 'index', label: 'Create', closeable: false },
       {
         id: 'search',
         label: queryTrimmed ? `Search: "${truncate(queryTrimmed, 28)}"` : 'Search',

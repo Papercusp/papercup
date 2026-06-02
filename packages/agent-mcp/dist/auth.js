@@ -33,21 +33,26 @@ async function resolveBearer(bearer) {
     if (!bearer)
         return null;
     // token_index lookup is admin-context — needs to read across workspaces
-    // to find which workspace this bearer belongs to. RLS does not apply
-    // to this query because the search itself is what derives workspace.
-    // The caller (resolveBearer) is the only place that escapes RLS for
-    // token resolution. We use the admin connection here intentionally;
-    // the lint rule allows it because we're not inside a tx callback.
+    // to find which workspace this bearer belongs to. RLS bypass is handled
+    // at the role level: harness_admin has BYPASSRLS (per
+    // sql/010-workspace-scoping-rls.sql's documented intent and the
+    // matching `ALTER ROLE harness_admin BYPASSRLS` granted at provisioning
+    // time). Without that grant the policy `workspace_id =
+    // current_setting('app.workspace_id', true)` would filter out every
+    // row because the GUC is unset outside withWorkspace.
     const { sql } = (0, db_org_1.getOrgPg)();
+    // token_index column is named `harness_slug` per the original 008 migration.
+    // It holds slugs for harnesses; for system: and pi: principals (added in
+    // 009) the same column stores the prefixed slug (e.g. "system:operator").
     const rows = await sql `
-    SELECT token, kind, slug, workspace_id
+    SELECT token, kind, harness_slug, workspace_id
       FROM harness_shared.token_index
      WHERE token = ${bearer}
      LIMIT 1
   `;
     if (!rows.length)
         return null;
-    const { kind, slug, workspace_id: workspaceId } = rows[0];
+    const { kind, harness_slug: slug, workspace_id: workspaceId } = rows[0];
     if (kind !== 'system' && kind !== 'pi') {
         // Harness bearers are out of scope for v1.
         return null;
@@ -60,7 +65,17 @@ async function resolveBearer(bearer) {
     const capabilities = await loadCapabilities(workspaceId, kind, slug, bearerHash(bearer));
     if (!capabilities)
         return null;
-    const principal = { kind, slug, workspaceId, capabilities };
+    // Bearer-token-resolved principals are 'trusted' — the bearer hash was
+    // verified against the row in PG. authMethod stays 'bearer-token'
+    // for both 'system' (operator self / superuser shell) and 'pi' kinds.
+    const principal = {
+        kind,
+        slug,
+        workspaceId,
+        capabilities,
+        authMethod: 'bearer-token',
+        trust: 'trusted',
+    };
     CACHE.set(ck, principal);
     return principal;
 }

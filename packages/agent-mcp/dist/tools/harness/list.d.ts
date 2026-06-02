@@ -4,9 +4,11 @@
  * Returns slug, status, and last-activity timestamp for each. Use to
  * answer "what harnesses do I have?" or to find a slug before calling
  * harness:get / harness:status.
+ *
+ * Typed via `schemaOf(projects).select`.
  */
 import { z } from 'zod';
-declare const _default: import("../..").ToolDefinition<z.ZodObject<{
+declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<{
     detail: z.ZodDefault<z.ZodEnum<{
         summary: "summary";
         full: "full";

@@ -2,12 +2,26 @@
 /**
  * List tasks across the workspace, optionally filtered by status, goal,
  * or harness. Summary returns id + title + status; full returns the row.
+ *
+ * Typed via `schemaOf(harness_features_consolidated).select` — response
+ * row shape matches the column definition; no hand-typed Record.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+const postgres_js_1 = require("drizzle-orm/postgres-js");
+const drizzle_orm_1 = require("drizzle-orm");
 const zod_1 = require("zod");
-const define_tool_1 = require("../../define-tool");
-exports.default = (0, define_tool_1.defineTool)({
+const db_org_1 = require("@papercusp/db-org");
+const tooldef_1 = require("@papercusp/tooldef");
+const features = db_org_1.generated.harnessFeaturesConsolidatedInHarnessShared;
+const FeatureSelect = (0, db_org_1.schemaOf)(features).select;
+exports.default = (0, tooldef_1.defineTool)({
+    name: 'tasks:list',
     capability: 'tasks:read',
+    guidance: {
+        when: 'User asks "what tasks do I have?", "what\'s on my plate", or you need a task id before calling `tasks:get`/`tasks:update`/`tasks:close`.',
+        notWhen: 'For ONE task by id, use `tasks:get`. For creating a task, use `tasks:create`. For PROJECTS / FEATURES (work the harness is doing), use `harness:*` — tasks are separate from harness features.',
+        chaining: 'Pair with `tasks:get` for detail on a specific row.',
+    },
     args: zod_1.z.object({
         detail: zod_1.z.enum(['summary', 'full']).default('summary'),
         status: zod_1.z.string().optional(),
@@ -17,23 +31,30 @@ exports.default = (0, define_tool_1.defineTool)({
         cursor: zod_1.z.string().optional(),
     }),
     async handler(args, ctx) {
-        // Tasks live in per-harness schemas (harness_<slug>.tasks). For a
-        // workspace-wide list, query the consolidated features table which
-        // mirrors them. For a harness-specific query, use the per-harness
-        // table directly via the harness_features_consolidated table
-        // (filtered by harness_slug).
-        const tagFilter = args.harnessSlug ? args.harnessSlug : null;
-        const statusFilter = args.status ?? null;
-        const rows = await ctx.tx `
-      SELECT harness_slug, feature_id, title, summary, status, updated_ts,
-             attempts, kind, project_id, expected_cost_cents, goal_id
-        FROM harness_shared.harness_features_consolidated
-       WHERE (${tagFilter}::text IS NULL OR harness_slug = ${tagFilter})
-         AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
-         AND (${args.goalId ?? null}::text IS NULL OR goal_id = ${args.goalId ?? null})
-       ORDER BY updated_ts DESC
-       LIMIT ${args.limit}
-    `;
+        const txDb = (0, postgres_js_1.drizzle)(ctx.tx);
+        const preds = [
+            args.harnessSlug ? (0, drizzle_orm_1.eq)(features.harnessSlug, args.harnessSlug) : undefined,
+            args.status ? (0, drizzle_orm_1.eq)(features.status, args.status) : undefined,
+            args.goalId ? (0, drizzle_orm_1.eq)(features.goalId, args.goalId) : undefined,
+        ].filter((p) => p !== undefined);
+        const rows = (await txDb
+            .select({
+            harness_slug: features.harnessSlug,
+            feature_id: features.featureId,
+            title: features.title,
+            summary: features.summary,
+            status: features.status,
+            updated_ts: features.updatedTs,
+            attempts: features.attempts,
+            kind: features.kind,
+            project_id: features.projectId,
+            expected_cost_cents: features.expectedCostCents,
+            goal_id: features.goalId,
+        })
+            .from(features)
+            .where(preds.length ? (0, drizzle_orm_1.and)(...preds) : undefined)
+            .orderBy((0, drizzle_orm_1.desc)(features.updatedTs))
+            .limit(args.limit));
         if (args.detail === 'summary') {
             return {
                 data: rows.map((r) => ({

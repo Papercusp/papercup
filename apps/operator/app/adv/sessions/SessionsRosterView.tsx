@@ -538,6 +538,9 @@ export default function SessionsRosterView({
   const live = active.filter((e) => e.liveness === 'live').length;
   const idle = active.filter((e) => e.liveness === 'idle').length;
   const stale = active.filter((e) => e.liveness === 'stale').length;
+  const visiblePlanSessions = planGroups.reduce((sum, group) => sum + group.entries.length, 0);
+  const activeFileCount = filesInPlay.length;
+  const contendedFileCount = filesInPlay.filter((f) => f.contended).length;
   const filtered = hasActiveFilters(filters);
 
   const select = useCallback(
@@ -555,7 +558,10 @@ export default function SessionsRosterView({
     <div className="pc-sessions">
       <div className="pc-roster">
         <header className="pc-roster__head">
-          <span className="pc-roster__head-title">Active agents</span>
+          <div className="pc-roster__head-copy">
+            <span className="pc-roster__eyebrow">Live roster</span>
+            <span className="pc-roster__head-title">Agent sessions</span>
+          </div>
           <span
             className="pc-roster__head-summary"
             title="idle = no tool call in the last minute (may be mid-reasoning), not gone"
@@ -565,6 +571,31 @@ export default function SessionsRosterView({
             {stale ? ` · ${stale} stale` : ''}
           </span>
         </header>
+
+        <div className="pc-roster__stats" aria-label="Session roster summary">
+          <span className="pc-roster__stat">
+            <strong>{active.length}</strong>
+            <span>visible</span>
+          </span>
+          <span className="pc-roster__stat pc-roster__stat--live">
+            <strong>{live}</strong>
+            <span>live</span>
+          </span>
+          <span className="pc-roster__stat">
+            <strong>{visiblePlanSessions}</strong>
+            <span>plan-linked</span>
+          </span>
+          <span className="pc-roster__stat">
+            <strong>{activeFileCount}</strong>
+            <span>files</span>
+          </span>
+          {contendedFileCount > 0 ? (
+            <span className="pc-roster__stat pc-roster__stat--warn">
+              <strong>{contendedFileCount}</strong>
+              <span>contended</span>
+            </span>
+          ) : null}
+        </div>
 
         <FilterBar
           filters={filters}

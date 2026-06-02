@@ -173,96 +173,20 @@ describe('step2_cloneRepo', () => {
 
 // ─── stepPublishBinding ───────────────────────────────────────────────────────
 
-describe('stepPublishBinding', () => {
-  it('calls ensureMyBindingPublished with NON-empty attestationGistId', async () => {
-    // Build a fake Octokit that accepts the GET (404 = no existing file) and PUT.
-    // getRef is called twice in ensureBranchExists:
-    //   1st call: check if user/<id> branch exists → 404 (doesn't exist)
-    //   2nd call: get default branch HEAD to create from → success
-    let getRefCallCount = 0;
-    const fakeOctokit = {
-      rest: {
-        git: {
-          getRef: vi.fn().mockImplementation(async () => {
-            getRefCallCount++;
-            if (getRefCallCount === 1) {
-              // Branch doesn't exist yet
-              const e: { status: number } = { status: 404 };
-              throw e;
-            }
-            // 2nd call: return default branch HEAD sha
-            return { data: { object: { sha: 'deadbeef-main-sha' } } };
-          }),
-          createRef: vi.fn().mockResolvedValue({}),
-        },
-        repos: {
-          getContent: vi.fn().mockRejectedValue({ status: 404 }),
-          createOrUpdateFileContents: vi.fn().mockResolvedValue({
-            data: { commit: { sha: 'abc-commit-sha' } },
-          }),
-        },
-      },
-    };
-
-    // We need a keychain entry for signing.
-    const keychainId = 'test-publish-' + Date.now();
-    const { keychainStore } = await import('../../identity/keychain');
-    const privDer = _priv.export({ type: 'pkcs8', format: 'der' }) as Buffer;
-    await keychainStore(keychainId, privDer);
-
-    const result = await stepPublishBinding({
-      repoOwner: 'myorg',
-      repoName: 'myrepo',
-      defaultBranch: 'main',
-      identity: {
-        token: 'tok-ok',
-        githubUserId: 42,
-        githubLogin: 'alice',
-      },
-      keychainId,
-      devicePubkeyBase64: DEVICE_PUBKEY_B64,
-      attestationGistId: 'gist-nonempty-123',
-      octokit: fakeOctokit,
-    });
-
-    // ensureMyBindingPublished called createOrUpdateFileContents → got commit sha.
-    expect(result.commitSha).toBe('abc-commit-sha');
-    expect(result.devicePubkeyBase64).toBe(DEVICE_PUBKEY_B64);
-
-    // Confirm attestationGistId was embedded in the file (NOT empty).
-    const putCall = fakeOctokit.rest.repos.createOrUpdateFileContents.mock.calls[0][0];
-    const fileContent = Buffer.from(putCall.content, 'base64').toString('utf8');
-    const parsed = JSON.parse(fileContent) as Record<string, unknown>;
-    expect(parsed.device_attestation_gist_id).toBe('gist-nonempty-123');
+describe('stepPublishBinding (write-free: confirm the attestation gist id)', () => {
+  it('returns the attestation gist id and performs NO repo write', async () => {
+    // Write-free join: step 3 does NOT touch the repo — it confirms the gist id
+    // (created in step 1) is present and carries it forward. No Octokit, no
+    // keychain, no Contents-API PUT.
+    const result = await stepPublishBinding({ attestationGistId: 'gist-nonempty-123' });
+    expect(result.attestationGistId).toBe('gist-nonempty-123');
   });
 
-  it('propagates errors from ensureMyBindingPublished', async () => {
-    const fakeOctokit = {
-      rest: {
-        git: {
-          getRef: vi.fn().mockRejectedValue({ status: 500, message: 'server error' }),
-        },
-        repos: {},
-      },
-    };
-
-    const keychainId = 'test-publish-fail-' + Date.now();
-    const { keychainStore } = await import('../../identity/keychain');
-    const privDer = _priv.export({ type: 'pkcs8', format: 'der' }) as Buffer;
-    await keychainStore(keychainId, privDer);
-
-    await expect(
-      stepPublishBinding({
-        repoOwner: 'myorg',
-        repoName: 'myrepo',
-        defaultBranch: 'main',
-        identity: { token: 'tok', githubUserId: 1, githubLogin: 'alice' },
-        keychainId,
-        devicePubkeyBase64: DEVICE_PUBKEY_B64,
-        attestationGistId: 'gist-123',
-        octokit: fakeOctokit,
-      }),
-    ).rejects.toBeDefined();
+  it('throws JoinStepError(attestation_gist_missing) when the gist id is empty', async () => {
+    await expect(stepPublishBinding({ attestationGistId: '' })).rejects.toMatchObject({
+      name: 'JoinStepError',
+      code: 'attestation_gist_missing',
+    });
   });
 });
 

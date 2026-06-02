@@ -15,7 +15,7 @@
  * (handled by the operator's permissions UI) emit a NOTIFY that the
  * server LISTENs to in order to invalidate the cache.
  */
-import type { Principal } from './types';
+import type { Principal } from '@papercusp/tooldef';
 export declare function resolveBearer(bearer: string): Promise<Principal | null>;
 /** Invalidate cache entry. Called by the LISTEN handler when capabilities change. */
 export declare function invalidate(workspaceId: string, slug: string): void;

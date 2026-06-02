@@ -1,18 +1,34 @@
 "use strict";
 /**
- * Read a harness's inbox (messages addressed to it). Useful for
- * "what messages are pending for harness X?"
+ * messages:inbox — read messages addressed to a harness, or (with
+ * `feature_id`) to a specific feature's pipeline lane within it.
+ *
+ * Reads `harness_<slug>.messages`:
+ *   - no feature_id  → harness-level messages (to_feature_id IS NULL):
+ *                      directives, worker replies, harness notes.
+ *   - feature_id set → that feature's thread (to_feature_id = feature_id).
+ *
+ * (Subsumes the old `messages:feature_inbox` — one verb, optional feature
+ * scope.)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
-const define_tool_1 = require("../../define-tool");
+const tooldef_1 = require("@papercusp/tooldef");
 const SLUG_RE = /^[a-z0-9._-]+$/i;
-exports.default = (0, define_tool_1.defineTool)({
+const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
+exports.default = (0, tooldef_1.defineTool)({
+    name: 'messages:inbox',
     capability: 'messages:read',
+    guidance: {
+        when: 'What\'s pending for me? Harness-level messages (directives, worker replies) — or pass `feature_id` for one feature\'s thread.',
+        notWhen: 'For sent items use `messages:outbox`. To soft-hide a handled message use `messages:dismiss`.',
+    },
     args: zod_1.z.object({
         slug: zod_1.z.string().min(1),
+        /** Scope to one feature's thread. Omit for harness-level messages. */
+        feature_id: zod_1.z.string().regex(FEATURE_ID_RE, 'feature_id must match F-XXX[-NNN]').optional(),
         detail: zod_1.z.enum(['summary', 'full']).default('summary'),
-        status: zod_1.z.enum(['pending', 'acknowledged', 'all']).default('pending'),
+        status: zod_1.z.enum(['pending', 'acknowledged', 'archived', 'all']).default('pending'),
         limit: zod_1.z.number().int().positive().max(200).default(50),
     }),
     async handler(args, ctx) {
@@ -23,18 +39,22 @@ exports.default = (0, define_tool_1.defineTool)({
                 degradedReasons: [`invalid slug ${JSON.stringify(args.slug)}`],
             };
         }
-        // Per-harness messages live in `harness_<slug>.messages`. Slug is
-        // validated by SLUG_RE above; identifier embedding via ctx.tx() is
-        // safe.
-        const schemaIdent = ctx.tx(`harness_${args.slug}`);
+        // Per-harness schemas are `harness_<lower-slug, hyphens→underscores>`
+        // (migration 044's `'harness_' || lower(replace(slug,'-','_'))`). Slug
+        // is validated above; identifier embedding via ctx.tx() is safe.
+        const schemaIdent = ctx.tx(`harness_${args.slug.toLowerCase().replace(/-/g, '_')}`);
         const statusFilter = args.status === 'all' ? null : args.status;
+        const featureFilter = args.feature_id ?? null;
         let rows = [];
         try {
             rows = await ctx.tx `
-        SELECT id, ts, from_slug, kind, subject, body, status
+        SELECT id, created_at, from_slug, from_feature_id, to_role, to_feature_id,
+               kind, subject, body, status, parent_message_id
           FROM ${schemaIdent}.messages
          WHERE (${statusFilter}::text IS NULL OR status = ${statusFilter})
-         ORDER BY ts DESC
+           AND ( (${featureFilter}::text IS NULL AND to_feature_id IS NULL)
+                  OR to_feature_id = ${featureFilter} )
+         ORDER BY created_at DESC
          LIMIT ${args.limit}
       `;
         }
@@ -52,6 +72,7 @@ exports.default = (0, define_tool_1.defineTool)({
                 data: rows.map((r) => ({
                     id: r.id,
                     from: r.from_slug,
+                    feature: r.to_feature_id,
                     kind: r.kind,
                     subject: r.subject,
                 })),

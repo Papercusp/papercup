@@ -2,11 +2,13 @@
 /**
  * Provisioning for system:<name> principals.
  *
- * Creates a fresh bearer, writes it to the three required places per
- * spec/system-and-pi-principals:
- *   1. <papercuspRoot>/system/<name>/config.json (mode 0600)
- *   2. harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
- *   3. harness_shared.token_index (token, kind='system', slug='system:<name>', workspace_id)
+ * Creates a fresh bearer and writes it to two PG tables:
+ *   1. harness_shared.system_principals (workspace_id, name, bearer_hash, capabilities)
+ *   2. harness_shared.token_index (token, kind='system', slug='system:<name>', workspace_id)
+ *
+ * Was previously also duplicated to `<papercuspRoot>/system/<name>/config.json`
+ * for read-access by the operator's dispatch routes — that file is gone;
+ * routes now read the bearer from token_index via apps/operator/lib/system-principal.ts.
  *
  * Idempotent per (workspace, name): re-running with the same name skips
  * if a row already exists (use `force: true` to rotate the bearer).
@@ -16,8 +18,6 @@ exports.provisionSystemPrincipal = provisionSystemPrincipal;
 exports.startPiSession = startPiSession;
 exports.endPiSession = endPiSession;
 const node_crypto_1 = require("node:crypto");
-const node_fs_1 = require("node:fs");
-const node_path_1 = require("node:path");
 const db_org_1 = require("@papercusp/db-org");
 function genBearer() {
     return (0, node_crypto_1.randomBytes)(32).toString('base64url');
@@ -53,7 +53,7 @@ async function provisionSystemPrincipal(args) {
             await tx `
         DELETE FROM harness_shared.token_index
          WHERE kind = 'system'
-           AND slug = ${`system:${name}`}
+           AND harness_slug = ${`system:${name}`}
            AND workspace_id = ${workspaceId}
       `;
         }
@@ -64,15 +64,11 @@ async function provisionSystemPrincipal(args) {
       `;
         }
         await tx `
-      INSERT INTO harness_shared.token_index (token, kind, slug, workspace_id)
+      INSERT INTO harness_shared.token_index (token, kind, harness_slug, workspace_id)
       VALUES (${bearer}, 'system', ${`system:${name}`}, ${workspaceId})
       ON CONFLICT (token) DO UPDATE
-        SET kind = 'system', slug = ${`system:${name}`}, workspace_id = ${workspaceId}
+        SET kind = 'system', harness_slug = ${`system:${name}`}, workspace_id = ${workspaceId}
     `;
-        // Persist config file mode 0600.
-        (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(configPath), { recursive: true });
-        (0, node_fs_1.writeFileSync)(configPath, JSON.stringify({ bearer, name, workspaceId, capabilities }, null, 2));
-        (0, node_fs_1.chmodSync)(configPath, 0o600);
         return {
             workspaceId,
             name,
@@ -101,7 +97,7 @@ async function startPiSession(args) {
       VALUES (${workspaceId}, ${sessionId}, ${bearerHash}, ${JSON.stringify(caps)}::jsonb)
     `;
         await tx `
-      INSERT INTO harness_shared.token_index (token, kind, slug, workspace_id)
+      INSERT INTO harness_shared.token_index (token, kind, harness_slug, workspace_id)
       VALUES (${bearer}, 'pi', ${`pi:${sessionId}`}, ${workspaceId})
     `;
         return { bearer, sessionId };
@@ -116,7 +112,7 @@ async function endPiSession(workspaceId, sessionId) {
     `;
         await tx `
       DELETE FROM harness_shared.token_index
-       WHERE kind = 'pi' AND slug = ${`pi:${sessionId}`} AND workspace_id = ${workspaceId}
+       WHERE kind = 'pi' AND harness_slug = ${`pi:${sessionId}`} AND workspace_id = ${workspaceId}
     `;
     });
 }

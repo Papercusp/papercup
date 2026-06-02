@@ -7,9 +7,9 @@ import {
   BookOpen,
   Boxes,
   FlaskConical,
+  FilePlus2,
   GitBranch,
   Lightbulb,
-  ListChecks,
   Plus,
   Settings,
   Share2,
@@ -48,7 +48,7 @@ export const ADV_TABS: ReadonlyArray<{
   supportsAll?: boolean;
 }> = [
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
-  { id: 'plans', label: 'Plans', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
+  { id: 'plans', label: 'Create', icon: FilePlus2, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
   { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250', supportsAll: true },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },

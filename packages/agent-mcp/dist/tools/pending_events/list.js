@@ -2,12 +2,25 @@
 /**
  * List pending_events in the workspace. Summary-only — pending_events
  * is a queue and concierge agents are observers, never consumers.
+ *
+ * Typed via `schemaOf(pending_events).select`.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+const postgres_js_1 = require("drizzle-orm/postgres-js");
+const drizzle_orm_1 = require("drizzle-orm");
 const zod_1 = require("zod");
-const define_tool_1 = require("../../define-tool");
-exports.default = (0, define_tool_1.defineTool)({
+const db_org_1 = require("@papercusp/db-org");
+const tooldef_1 = require("@papercusp/tooldef");
+const pe = db_org_1.generated.pendingEventsInHarnessShared;
+const PESelect = (0, db_org_1.schemaOf)(pe).select;
+exports.default = (0, tooldef_1.defineTool)({
+    name: 'pending_events:list',
+    profile: 'engineer',
     capability: 'pending_events:read',
+    guidance: {
+        when: 'User asks "what\'s queued up?", "what events are pending?", or you need to inspect the hook-event backlog.',
+        notWhen: 'For approvals (plan reviews, escalations awaiting user yes/no), use `pending_reviews_list`. Pending EVENTS are hook plumbing; pending REVIEWS are user-facing decisions.',
+    },
     args: zod_1.z.object({
         detail: zod_1.z.enum(['summary']).default('summary'),
         kind: zod_1.z.string().optional(),
@@ -15,14 +28,24 @@ exports.default = (0, define_tool_1.defineTool)({
         limit: zod_1.z.number().int().positive().max(200).default(50),
     }),
     async handler(args, ctx) {
-        const rows = await ctx.tx `
-      SELECT id, kind, target_role, due_at, created_at, consumed_at
-        FROM harness_shared.pending_events
-       WHERE (${args.kind ?? null}::text IS NULL OR kind = ${args.kind ?? null})
-         AND (${args.targetRole ?? null}::text IS NULL OR target_role = ${args.targetRole ?? null})
-       ORDER BY created_at DESC
-       LIMIT ${args.limit}
-    `;
+        const txDb = (0, postgres_js_1.drizzle)(ctx.tx);
+        const preds = [
+            args.kind ? (0, drizzle_orm_1.eq)(pe.kind, args.kind) : undefined,
+            args.targetRole ? (0, drizzle_orm_1.eq)(pe.targetRole, args.targetRole) : undefined,
+        ].filter((p) => p !== undefined);
+        const rows = (await txDb
+            .select({
+            id: pe.id,
+            kind: pe.kind,
+            target_role: pe.targetRole,
+            due_at: pe.dueAt,
+            created_at: pe.createdAt,
+            consumed_at: pe.consumedAt,
+        })
+            .from(pe)
+            .where(preds.length ? (0, drizzle_orm_1.and)(...preds) : undefined)
+            .orderBy((0, drizzle_orm_1.desc)(pe.createdAt))
+            .limit(args.limit));
         return {
             data: rows.map((r) => ({
                 id: r.id,

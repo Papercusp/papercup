@@ -1,9 +1,12 @@
 /**
  * List tasks across the workspace, optionally filtered by status, goal,
  * or harness. Summary returns id + title + status; full returns the row.
+ *
+ * Typed via `schemaOf(harness_features_consolidated).select` — response
+ * row shape matches the column definition; no hand-typed Record.
  */
 import { z } from 'zod';
-declare const _default: import("../..").ToolDefinition<z.ZodObject<{
+declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<{
     detail: z.ZodDefault<z.ZodEnum<{
         summary: "summary";
         full: "full";

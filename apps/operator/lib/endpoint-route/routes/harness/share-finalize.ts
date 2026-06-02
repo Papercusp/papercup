@@ -359,7 +359,7 @@ const realDeps: FinalizeShareDeps = {
   // + step1_oauthAttest). Uses the same signWithDeviceKey signer as the join
   // path and announce path (local-announce-identity.ts). Non-fatal — callers
   // catch errors and surface them as bindingWarning.
-  ensureBinding: async ({ repoOwner, repoName, defaultBranch }) => {
+  ensureBinding: async () => {
     const { resolveLocalGithubIdentity } = await import('@/lib/identity/resolve-local-github-identity');
     const identity = await resolveLocalGithubIdentity();
     if (identity.kind === 'gh_auth_required') {
@@ -367,16 +367,18 @@ const realDeps: FinalizeShareDeps = {
     }
 
     const { resolveDeviceKeychainId } = await import('@/lib/identity/device-keychain-id');
-    const { loadOrGenerateDeviceKeypair, createAttestationGist } = await import('@/lib/identity/attest');
-    const { signWithDeviceKey } = await import('@/lib/identity/sign-with-device-key');
-    const { ensureMyBindingPublished } = await import('@/lib/harness/ensure-binding-published');
+    const { loadOrGenerateDeviceKeypair, ensureAttestationGist } = await import('@/lib/identity/attest');
 
     const keychainId = resolveDeviceKeychainId(identity.githubUserId);
     const keypair = await loadOrGenerateDeviceKeypair(keychainId);
 
-    // Ensure a non-empty attestation gist id (required by isContributorFileBody).
-    // Reuse the same create-or-reuse approach as step1_oauthAttest in join-shared-harness.ts.
-    const gistResult = await createAttestationGist({
+    // Write-free (non-collaborator-join-fork-pr-2026-06-02): publishing the
+    // publisher's binding = ensuring its attestation GIST exists (idempotent
+    // find-or-create — no duplicate gist on re-share). The signed announce sent
+    // at boot carries the gist id; remote peers admit via verifyAttestation.
+    // There is NO shared-repo contributor-file write — sharing needs no extra
+    // repo permission beyond what the publisher already has.
+    await ensureAttestationGist({
       keychainId,
       pubkeyBase64: keypair.pubkeyBase64,
       deviceLabel: 'unnamed-device',
@@ -384,21 +386,7 @@ const realDeps: FinalizeShareDeps = {
       githubLogin: identity.githubLogin,
       token: identity.token,
     });
-
-    return ensureMyBindingPublished({
-      repoOwner,
-      repoName,
-      identity: {
-        token: identity.token,
-        githubUserId: identity.githubUserId,
-        githubLogin: identity.githubLogin,
-      },
-      keychainId,
-      devicePubkeyBase64: keypair.pubkeyBase64,
-      sign: signWithDeviceKey,
-      defaultBranch,
-      attestationGistId: gistResult.gistId,
-    });
+    return { devicePubkeyBase64: keypair.pubkeyBase64 };
   },
 };
 

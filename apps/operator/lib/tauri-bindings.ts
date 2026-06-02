@@ -8,7 +8,29 @@ export const commands = {
 	workspacesCreate: (name: string) => typedError<Workspace, string>(__TAURI_INVOKE("workspaces_create", { name })),
 	workspacesRename: (id: string, name: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_rename", { id, name })),
 	workspacesDelete: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_delete", { id })),
+	/**
+	 *  Switch the *registry default* workspace (Phase E, P-050).
+	 * 
+	 *  Pre-Phase-E this killed the sidecar + per-workspace PG and `app.restart()`'d
+	 *  — the only way to swap a per-process fake-HOME. Now ONE shared sidecar
+	 *  serves every workspace and scoping is per-request (`?ws=` / the workspace
+	 *  header → ALS → RLS GUC), so a switch is just a per-WINDOW navigation that
+	 *  the frontend performs (`switchWorkspace` → navigate to `/harness?ws=<id>`).
+	 *  This command only persists `registry.current` so a fresh launch / the first
+	 *  window defaults to it. It NO LONGER restarts — other windows are untouched
+	 *  (P-031).
+	 */
 	workspacesSwitch: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_switch", { id })),
+	/**
+	 *  Open an ADDITIONAL window pinned to a workspace (Phase E, P-053).
+	 * 
+	 *  The one shared sidecar serves it; the window self-identifies via `?ws=<id>`
+	 *  in its URL, so `getBrowserWorkspaceId()` + the header/`?ws=` stamping scope
+	 *  every request — and the RLS `app.workspace_id` GUC — to this workspace. The
+	 *  window is labeled `ws-<id>` so it matches the `ws-*` capability pattern that
+	 *  grants IPC (see capabilities/default.json); re-opening focuses the existing
+	 *  one.
+	 */
 	workspacesOpenWindow: (id: string) => typedError<null, string>(__TAURI_INVOKE("workspaces_open_window", { id })),
 	/**
 	 *  Raise a native OS notification (planning-attention-importance D-007).
@@ -67,7 +89,7 @@ export const commands = {
 	consoleLaunch: (envelope: ConsoleEnvelope) => __TAURI_INVOKE<ConsoleLaunchResult>("console_launch", { envelope }),
 	/**
 	 *  Tauri command — invoked from the webview. The wire shape mirrors
-	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` will send.
+	 *  what `apps/operator/lib/transport-adapters/ipc-stream.ts` sends.
 	 */
 	endpointInvoke: (toolName: string, input: "Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }, channel: Channel<EndpointEvent>) => typedError<number, string>(__TAURI_INVOKE("endpoint_invoke", { toolName, input, channel })),
 	// Tauri command — cancel an in-flight call.

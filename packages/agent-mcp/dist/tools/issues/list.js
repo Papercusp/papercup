@@ -6,9 +6,15 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
-const define_tool_1 = require("../../define-tool");
-exports.default = (0, define_tool_1.defineTool)({
+const tooldef_1 = require("@papercusp/tooldef");
+exports.default = (0, tooldef_1.defineTool)({
+    name: 'issues:list',
+    profile: 'engineer',
     capability: 'issues:read',
+    guidance: {
+        when: 'User asks "any open issues?", "what bugs are tracked", or "what\'s outstanding?". NOTE: this is a v1 stub — issues live in per-harness schemas (`harness_<slug>.issues`) with no cross-harness consolidation yet, so it returns an empty `degraded` list. Until consolidation lands, use `harness:status`, which surfaces a harness\'s recent issues.',
+        notWhen: 'For LIVE phase + activity counts (not problems), use `harness:status`. For static facts about the harness, use `harness:get`.',
+    },
     args: zod_1.z.object({
         detail: zod_1.z.enum(['summary', 'full']).default('summary'),
         taskId: zod_1.z.string().optional(),

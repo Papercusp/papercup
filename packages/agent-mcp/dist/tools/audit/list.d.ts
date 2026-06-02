@@ -10,7 +10,7 @@
  * surfaces this as substantial trust.
  */
 import { z } from 'zod';
-declare const _default: import("../..").ToolDefinition<z.ZodObject<{
+declare const _default: import("@papercusp/tooldef").ToolDefinition<z.ZodObject<{
     detail: z.ZodDefault<z.ZodEnum<{
         summary: "summary";
         full: "full";

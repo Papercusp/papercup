@@ -186,7 +186,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     const names = all.map((r) => r.resource);
     expect(names).toContain('dev-server');
     expect(names).toContain('db-schema');
-    expect((await getResource(getTxPool(), 'dev-server'))?.enforcement).toBe('advisory');
+    expect((await getResource(getTxPool(), 'dev-server'))?.enforcement).toBe('enforced'); // P-016 (migration 006)
     expect((await getResource(getTxPool(), 'db-schema'))?.enforcement).toBe('checked');
     await _resetForTests();
   });

@@ -1,1 +1,10 @@
 lastChangelogVersion: 15.5.13
+memory: 
+  backend: hindsight
+hindsight: 
+  apiUrl: http://localhost:8888
+  scoping: per-project-tagged
+  autoRecall: true
+  autoRetain: true
+modelRoles: 
+  default: kimi-k2.5

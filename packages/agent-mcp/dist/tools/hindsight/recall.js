@@ -2,6 +2,16 @@
 /**
  * Recall memories from the workspace's Hindsight bank.
  *
+ * **DEPRECATED 2026-05-09.** No live writers populate the Hindsight bank
+ * for harness workflows; this tool returns useless empty results in
+ * practice and competes with the `features:*` MCP tools (which are the
+ * canonical agent-side memory surface). Scheduled for removal one
+ * release after agent traffic is verified to have moved off it.
+ *
+ * If you reach this code from a tool dispatch in production, file an
+ * issue with the calling agent so we can route them to `features:get`
+ * / `features:history` / `features:search` instead.
+ *
  * Bank ID is auth-derived: workspace registry's `companyId` field
  * resolves to `paperclip::<companyId>`. Body-supplied scope is rejected.
  * If the workspace has no `companyId`, returns degraded with empty
@@ -9,16 +19,17 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 const zod_1 = require("zod");
-const node_fs_1 = require("node:fs");
-const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
-const define_tool_1 = require("../../define-tool");
+const host_platform_1 = require("@papercusp/host-platform");
+const tooldef_1 = require("@papercusp/tooldef");
 function resolveCompanyId(workspaceId) {
-    const path = (0, node_path_1.join)((0, node_os_1.homedir)(), '.papercusp-workspaces', 'registry.json');
-    if (!(0, node_fs_1.existsSync)(path))
+    const platform = (0, host_platform_1.getHostPlatform)();
+    const path = (0, node_path_1.join)(platform.homedir(), '.papercusp-workspaces', 'registry.json');
+    const raw = platform.readTextFileSync(path);
+    if (raw === null)
         return null;
     try {
-        const reg = JSON.parse((0, node_fs_1.readFileSync)(path, 'utf8'));
+        const reg = JSON.parse(raw);
         const ws = reg.workspaces.find((w) => w.id === workspaceId);
         return ws?.companyId ?? null;
     }
@@ -26,19 +37,31 @@ function resolveCompanyId(workspaceId) {
         return null;
     }
 }
-exports.default = (0, define_tool_1.defineTool)({
+exports.default = (0, tooldef_1.defineTool)({
+    name: 'hindsight:recall',
     capability: 'hindsight:recall',
+    guidance: {
+        when: 'User asks "have we seen X before?", "what did the last debugger find?", or you need cross-agent shared memory about a topic.',
+        notWhen: 'For YOUR conversation history with the user, just rely on the chat context — hindsight is for cross-agent shared memory, not session memory. For LIVE state (current task list, harness status), call the dedicated tool — hindsight may be stale.',
+    },
     args: zod_1.z.object({
         query: zod_1.z.string().min(1),
         limit: zod_1.z.number().int().positive().max(50).default(10),
     }),
     async handler(args, ctx) {
+        // Deprecation telemetry — every call is a candidate for migration
+        // to features:* tools. Logged at info level (not warn) so it
+        // doesn't noise up dashboards while we're confirming zero traffic.
+        ctx.log('info', 'hindsight:recall is deprecated; prefer features:get/features:history/features:search', {
+            principal: ctx.principal.slug,
+            query_len: args.query.length,
+        });
         const companyId = resolveCompanyId(ctx.principal.workspaceId);
         if (!companyId) {
             return {
                 data: [],
                 degraded: true,
-                degradedReasons: ['hindsight_not_configured_for_workspace'],
+                degradedReasons: ['hindsight_not_configured_for_workspace', 'tool_deprecated_use_features_tools'],
             };
         }
         const bank = `paperclip::${companyId}`;

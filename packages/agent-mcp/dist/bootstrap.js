@@ -14,16 +14,42 @@ require("./tools/harness/get");
 require("./tools/harness/status");
 require("./tools/tasks/list");
 require("./tools/tasks/get");
+require("./tools/features/get");
+require("./tools/features/history");
+require("./tools/features/search");
+require("./tools/features/list_related");
+require("./tools/features/tag_vocabulary");
 require("./tools/goals/list");
 require("./tools/goals/get");
 require("./tools/issues/list");
 require("./tools/messages/inbox");
 require("./tools/messages/outbox");
 require("./tools/audit/list");
+require("./tools/intel/spawn_tree");
+require("./tools/intel/artifacts");
+require("./tools/papercusp/list_workspaces");
 require("./tools/pending_events/list");
 require("./tools/search/query");
-// Write tools — Operator-only by capability
-require("./tools/messages/send");
-require("./tools/tasks/create");
-require("./tools/tasks/update");
-require("./tools/tasks/close");
+// Artifacts — PG-canonical text store, role-gated (D1a)
+require("./tools/artifacts/load");
+require("./tools/artifacts/save");
+require("./tools/artifacts/append");
+require("./tools/artifacts/delete");
+// Write tools formerly here (tasks:create, messages:send, messages:dismiss)
+// moved to apps/operator/lib/agent-tools/{tasks,messages}/ after the
+// function-as-truth audit: they call executeAction() in-process now
+// instead of HTTP-roundtripping /api/admin/execute-action, which required an
+// operator-side import the package can't make. tasks:update + tasks:close were
+// removed — they referenced a non-existent 'update_feature' op and never worked.
+// mcp-ui fixture (Phase E) — proves the UI tool path; replace with a
+// real use case when one lands. See tools/dev/hello-card.ts.
+require("./tools/dev/hello-card");
+// Resources — read-only browsable URIs (Phase A: agent-mcp resources)
+require("./resources/harness/list");
+require("./resources/harness/issues");
+require("./resources/goals/list");
+require("./resources/audit/recent");
+// Prompts — discoverable templates (Phase B: agent-mcp prompts)
+require("./prompts/agent/role");
+require("./prompts/operator/scanner");
+require("./prompts/dispatch/framing");
