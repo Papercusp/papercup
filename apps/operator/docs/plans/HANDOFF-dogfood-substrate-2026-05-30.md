@@ -348,6 +348,59 @@ once the host restarts.
   the real two-peer P-079 (user's manual acceptance step) would confirm it on the
   wire alongside feature/issue federation.
 
+## Session 9 (2026-06-02) — P-070 taken LIVE + verified e2e; 2 real bugs fixed
+
+Restarted the `:3070` host to load the Session-8 code and verified P-070 end to
+end against the running operator. The live run caught + fixed two REAL bugs the
+unit tests (which mock `sql`) could never catch:
+
+- **jsonb double-bind bug** (`06192af31`): `emitUsageEvent` + the usage projection
+  bound the payload via postgres-js `sql.json(obj)`, which THROWS under the
+  operator's `getOrgPg` client ("Buffer.byteLength received Object") — so every
+  object-payload emit silently failed (best-effort swallowed it). Fixed to
+  `${JSON.stringify(payload)}::jsonb`. Verified live: `jsonb_typeof(payload)='object'`.
+  ⚠️ The testcontainer client (`_pg-helpers`) binds jsonb OPPOSITELY (sql.json
+  works there, JSON.stringify::jsonb double-encodes) despite identical config —
+  so integration tests CANNOT faithfully test jsonb binding; verify against the
+  live host. Full write-up: `agent-insights/postgres-js-jsonb-binding.mdx`. The
+  same `sql.json` bug still lives in 4 other files (issues/contributors/
+  harness-features projections + dock-layouts) — broadcast to coord, not fixed here.
+- **boot-wiring fragility** (`642f8ef98`): `wireDogfoodTriggers` threw on
+  `permission denied for table harness_feature_prs` (harness_admin lacks TRIGGER
+  priv) — its catch only tolerated `does not exist`, so the throw aborted the
+  WHOLE pass before the capture-trigger loop, silently blocking the P-070 capture
+  trigger (and re-application of all others). Fixed with a `tolerableTriggerWireError`
+  helper (tolerate+log `permission denied` per-table). Verified live: dropped the
+  trigger, restarted → wireDogfoodTriggers re-applied it + reached `boot complete
+  failed=0` (was aborting before).
+
+Also: `agent_run_completed` now fires for the finalizer's curator/documenter runs
+(`4c4a3c144`); a real-PG integration test (`9caec4cf2`, client-agnostic asserts).
+
+**LIVE-VERIFIED e2e** (create feature via real API → ledger → outbox → rollup):
+`POST /api/harness/papercup/features` (status=passed) → `feature_authored` row
+landed (correct actor 279242982, ref_id, jsonb payload, origin=local) → captured
+to `substrate_outbox` → `GET /contributor-usage` rollup returned
+`feature_authored=1, total=1`. Test data cleaned up.
+
+### Migrations-only reconciliation (NOT done — flagged to the baseline owner)
+The `self-contained-migration-baseline` refactor landed mid-session (migrations
+only; `ensure-schema.ts` deleted; 000-baseline + 107). P-070's `origin` column +
+the usage `capture_substrate_outbox_trg` are NOT in migrations — they're
+provisioned by the still-present runtime `ensure-schema-dogfood.ts` (so it WORKS
+on native + embedded-pg at boot; verify-baseline gate unaffected). Per policy they
+should be **migration 108** (exact idempotent DDL sent to su-4871fff9, the
+migration-system owner — did NOT add it myself to avoid colliding on the
+freshly-squashed `libs/papercusp` submodule pointer). 107 wired only the
+change-notify trigger; it missed the origin column + the usage capture trigger.
+
+### Still genuinely remaining (unchanged — user-only or other-owners')
+- **Migration 108** for P-070's origin col + usage capture trigger (baseline owner).
+- **harness_feature_prs grant gap** (harness_admin lacks TRIGGER priv) — grant owner.
+- **sql.json bug in 4 other files** — federation/dock owners (broadcast).
+- **#2 live papercup share** + **cross-machine P-079 / R-1** — user's manual steps.
+- **revocation v2** — owner's trust-model decision. **#3 packaged smoke** — user-skipped.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
