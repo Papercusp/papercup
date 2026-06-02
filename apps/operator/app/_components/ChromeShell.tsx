@@ -198,6 +198,7 @@ export default function ChromeShell() {
             const p = navLinkProps('/dev');
             return <RouteLink href="/dev" {...p} className={`${p.className} is-dev`}>DEV</RouteLink>;
           })()}
+          <a href="https://cupboard.papercusp.com" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">Cupboard</a>
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           {oracleFlag ? <TutorialButton /> : null}
           <UpdateChip />
