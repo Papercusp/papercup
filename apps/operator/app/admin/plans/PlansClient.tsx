@@ -243,6 +243,16 @@ export default function PlansClient() {
     }
     return m;
   }, [planList.data]);
+  // plan-slug → human title, for the Sessions roster's plan-group headers
+  // (head each group with the plan's title instead of its raw slug). Derived
+  // from the same fetched plan list; under scope=all this spans every harness.
+  const planTitleBySlug = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [slug, meta] of planMetaBySlug) {
+      if (meta.title) m.set(slug, meta.title);
+    }
+    return m;
+  }, [planMetaBySlug]);
 
   // The three item-status categories are fetched separately (the server
   // filters each), then unioned + tagged so the additive filter can pick
@@ -666,6 +676,7 @@ export default function PlansClient() {
              for now; the rail plan-filter is the primary scoping. */
           <SessionsRosterView
             planFilters={itemPlans}
+            planTitleBySlug={planTitleBySlug}
             selectedAgent={selectedAgent}
             onSelectAgent={(id) => void setSelectedAgent(id)}
             filters={

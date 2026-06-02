@@ -95,6 +95,19 @@ export const EMPTY_FILTERS: RosterFilters = {
   file: '',
 };
 
+/** Stable empty default for the optional plan-title lookup — avoids a fresh
+ *  Map identity on every render when the prop is omitted. */
+const EMPTY_PLAN_TITLES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * Fallback plan-group header when a plan has no human title: strip the
+ * trailing `-YYYY-MM-DD` date suffix so the raw slug reads a little better.
+ * Mirrors AdvPlansTabs' labelForPlan fallback.
+ */
+function planSlugFallback(slug: string): string {
+  return slug.replace(/-\d{4}-\d{2}-\d{2}$/, '');
+}
+
 export function hasActiveFilters(f: RosterFilters): boolean {
   return !!(f.client || f.liveness || f.role || f.file.trim());
 }
@@ -488,6 +501,7 @@ export default function SessionsRosterView({
   onSelectAgent,
   filters = EMPTY_FILTERS,
   onFilterChange,
+  planTitleBySlug = EMPTY_PLAN_TITLES,
 }: {
   planFilters?: string[];
   workspaceId?: string | null;
@@ -498,6 +512,10 @@ export default function SessionsRosterView({
   /** Facet filters (P-010), owned by the parent shell's nuqs params. */
   filters?: RosterFilters;
   onFilterChange?: (next: RosterFilters) => void;
+  /** plan-slug → human title, from the parent's plan list. Used to head each
+   *  plan group with the plan's title instead of its raw slug; falls back to
+   *  the (date-stripped) slug for plans absent from the map. */
+  planTitleBySlug?: ReadonlyMap<string, string>;
 }): React.JSX.Element {
   const { data, error, loading } = useRoster(workspaceId);
   const rawActive = data?.active ?? [];
@@ -563,16 +581,22 @@ export default function SessionsRosterView({
           <div className="pc-roster__empty">No agents match the current filters.</div>
         ) : null}
 
-        {planGroups.map((g) => (
-          <GroupSection
-            key={g.slug}
-            title={g.slug}
-            subtitle="plan"
-            entries={g.entries}
-            selectedAgent={selectedAgent}
-            onSelect={select}
-          />
-        ))}
+        {planGroups.map((g) => {
+          // Head each plan group with the plan's human title; keep the slug as
+          // the subtitle so it stays discoverable. Falls back to the
+          // date-stripped slug when the title isn't known.
+          const planTitle = planTitleBySlug.get(g.slug);
+          return (
+            <GroupSection
+              key={g.slug}
+              title={planTitle ?? planSlugFallback(g.slug)}
+              subtitle={planTitle ? g.slug : 'plan'}
+              entries={g.entries}
+              selectedAgent={selectedAgent}
+              onSelect={select}
+            />
+          );
+        })}
         <GroupSection
           title="No plan · ad-hoc SU sessions"
           entries={noPlan}
