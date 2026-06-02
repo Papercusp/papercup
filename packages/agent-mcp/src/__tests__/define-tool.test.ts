@@ -75,20 +75,20 @@ describe('defineTool', () => {
       description: 'role-gated probe',
       capability: 'operator:scan',
       requirePrincipal: false,
-      roles: ['operator', 'reviewer'],
+      agentRoles: ['operator', 'reviewer'],
       args: z.object({ x: z.number() }),
       async handler(args, ctx) {
         return { content: [{ type: 'text', text: `ok ${args.x} role=${ctx.role}` }] };
       },
     });
     expect(def.requirePrincipal).toBe(false);
-    expect(def.roles).toEqual(['operator', 'reviewer']);
+    expect(def.agentRoles).toEqual(['operator', 'reviewer']);
     // NOT in the legacy catalog (only principal-gated tools land there).
     expect(lookup('operator:scan_test')).toBeUndefined();
 
     const tool = lookupByMcpName('operator:scan_test');
     expect(tool).toBeDefined();
-    expect(tool!.roles).toEqual(['operator', 'reviewer']);
+    expect(tool!.agentRoles).toEqual(['operator', 'reviewer']);
 
     // No principal on ctx — would be 401 for principal-gated tools, but
     // role-gated should pass through to the handler.
@@ -117,7 +117,7 @@ describe('defineTool', () => {
       description: 'role-gate probe',
       capability: 'operator:scan',
       requirePrincipal: false,
-      roles: ['operator'],
+      agentRoles: ['operator'],
       args: z.object({}),
       async handler() {
         return { content: [{ type: 'text', text: 'should not run' }] };
@@ -324,7 +324,7 @@ describe('JSON schema flattening for OpenAI compat', () => {
       description: 'absent modality — defaults to both at the filter layer',
       capability: 'test:read',
       requirePrincipal: false,
-      roles: ['operator'],
+      agentRoles: ['operator'],
       args: z.object({}),
       async handler() { return { content: [{ type: 'text', text: 'ok' }] }; },
     });

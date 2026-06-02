@@ -50,8 +50,8 @@ describe('artifacts:load', () => {
   it('returns found:false when no row matches', async () => {
     const tool = lookupByMcpName('artifacts:load')!;
     expect(tool).toBeDefined();
-    expect(tool.roles).toContain('worker');
-    expect(tool.roles).toContain('curator');
+    expect(tool.agentRoles).toContain('worker');
+    expect(tool.agentRoles).toContain('curator');
 
     const r = await dispatchProjectedTool(
       tool,
@@ -131,11 +131,11 @@ describe('artifacts:load', () => {
 describe('artifacts:save', () => {
   it('write roles allowlist excludes validator + reviewer', async () => {
     const tool = lookupByMcpName('artifacts:save')!;
-    expect(tool.roles).toContain('worker');
-    expect(tool.roles).toContain('architect');
-    expect(tool.roles).toContain('operator');
-    expect(tool.roles).not.toContain('validator');
-    expect(tool.roles).not.toContain('reviewer');
+    expect(tool.agentRoles).toContain('worker');
+    expect(tool.agentRoles).toContain('architect');
+    expect(tool.agentRoles).toContain('operator');
+    expect(tool.agentRoles).not.toContain('validator');
+    expect(tool.agentRoles).not.toContain('reviewer');
   });
 
   it('returns byte count + updated_at', async () => {
@@ -203,7 +203,7 @@ describe('artifacts:append', () => {
 describe('artifacts:delete', () => {
   it('only architect/operator/curator roles allowed', async () => {
     const tool = lookupByMcpName('artifacts:delete')!;
-    expect(tool.roles).toEqual(['architect', 'operator', 'curator']);
+    expect(tool.agentRoles).toEqual(['architect', 'operator', 'curator']);
   });
 
   it('rejects worker role via dispatcher gate', async () => {
