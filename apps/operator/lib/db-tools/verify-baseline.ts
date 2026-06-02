@@ -27,6 +27,7 @@ import { applyPendingMigrations } from '../../../../libs/papercusp/packages/embe
 const REPO_ROOT = resolve(process.cwd(), '../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 const EXPECTED_MIN_TABLES = 184; // harness_shared base tables in the complete baseline
+const EXPECTED_MIN_REACTIVE_TRIGGERS = 18; // emit_change_notify_trg on the reactive tables (migration 107)
 
 const ROLES_DDL = `
   DO $pg$ BEGIN
@@ -92,7 +93,20 @@ async function main() {
       console.log(`[verify-baseline] harness_shared tables: ${tables} (expected ≥ ${EXPECTED_MIN_TABLES})`);
       if (tables < EXPECTED_MIN_TABLES) fail(`only ${tables} tables — baseline is incomplete`);
 
-      console.log('[verify-baseline] ✅ GATE GREEN — migration set alone builds the full schema, idempotently.');
+      // Triggers are NOT covered by a table/column/index/policy diff, so they were a
+      // blind spot once (the dogfood emit_change_notify_trg reactivity triggers lived
+      // only in runtime wireDogfoodTriggers()). Migration 107 moved them into the set;
+      // assert they're present so the gap can't silently reopen.
+      const [{ reactive }] = await sql.unsafe(
+        `SELECT count(*)::int AS reactive FROM pg_trigger
+         WHERE NOT tgisinternal AND tgname = 'emit_change_notify_trg'`,
+      );
+      console.log(`[verify-baseline] emit_change_notify_trg reactivity triggers: ${reactive} (expected ≥ ${EXPECTED_MIN_REACTIVE_TRIGGERS})`);
+      if (reactive < EXPECTED_MIN_REACTIVE_TRIGGERS) {
+        fail(`only ${reactive} emit_change_notify_trg triggers — reactivity triggers missing from the migration set (see migration 107)`);
+      }
+
+      console.log('[verify-baseline] ✅ GATE GREEN — migration set alone builds the full schema (+ reactivity triggers), idempotently.');
     } finally {
       await sql.end({ timeout: 5 });
     }
