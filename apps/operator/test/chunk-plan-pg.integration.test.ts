@@ -14,8 +14,9 @@
  * round-trip as an array in production (readPlan returns a string typed as
  * string[]). Captured as a tripwire below.
  *
- * chunk-plan-pg exports no DDL (its table is migration 042-harness-chunk-plans),
- * so the table is created inline from that migration.
+ * chunk-plan-pg exports no DDL (its table is defined in the squashed
+ * 000-baseline.sql — migration 042 was folded in), so the table is created
+ * inline from the DDL below.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
@@ -30,7 +31,7 @@ import {
   type ChunkPlanPgCtx,
 } from '../../../libs/papercusp/packages/orchestrator/src/chunk-plan-pg';
 
-// From libs/papercusp/libs/db/sql/042-harness-chunk-plans.sql.
+// Mirrors harness_shared.harness_chunk_plans as defined in 000-baseline.sql.
 const CHUNK_PLANS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.harness_chunk_plans (
     workspace_id TEXT NOT NULL, harness_slug TEXT NOT NULL, feature_id TEXT NOT NULL,
