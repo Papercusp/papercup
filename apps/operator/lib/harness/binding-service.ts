@@ -80,6 +80,13 @@ export type SrbcRow = {
  * format, an ISO string, an existing Date, and an epoch number alike.
  */
 function toIso(v: Date | string | number): string {
+  // getOrgPg never returns null for a NOT NULL timestamptz; a null here means
+  // real corruption — surface it loudly rather than silently emitting the
+  // 1970 epoch that `new Date(null)` produces. (Nullable columns are guarded by
+  // the caller's `if (r.<col>)` before reaching toIso.)
+  if (v == null) {
+    throw new Error('toIso: null/undefined timestamp (NOT NULL column violated)');
+  }
   return new Date(v).toISOString();
 }
 

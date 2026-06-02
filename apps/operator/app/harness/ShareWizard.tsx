@@ -263,8 +263,8 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
     }
   }, [open]);
 
-  const advance = useCallback(() => {
-    const t = nextStep(step, state);
+  const advance = useCallback((override?: ShareWizardState) => {
+    const t = nextStep(step, override ?? state);
     setErr(null);
     if (t.kind === 'block') {
       setErr(blockReasonCopy(t.reason));
@@ -391,9 +391,13 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
                   style={buttonPrimary}
                   disabled={busy}
                   onClick={() => {
-                    // Flip the whole flow to the private workflow, then advance.
-                    setState((s) => flipToPrivateShare(s));
-                    advance();
+                    // Flip the whole flow to the private workflow, then advance —
+                    // pass the flipped state to advance() so it transitions on the
+                    // post-flip state, not the pre-flip `state` from its closure
+                    // (robust even if a future step's transition reads `privacy`).
+                    const flipped = flipToPrivateShare(state);
+                    setState(flipped);
+                    advance(flipped);
                   }}
                 >
                   Share as a private harness →
@@ -733,7 +737,7 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 16 }}>
           <button style={buttonSecondary} disabled={!canBack} onClick={back}>← Back</button>
           {!isLast && (
-            <button style={buttonPrimary} disabled={busy} onClick={advance}>Next →</button>
+            <button style={buttonPrimary} disabled={busy} onClick={() => advance()}>Next →</button>
           )}
           {isLast && finalized && (
             <button style={buttonPrimary} onClick={onClose}>Done</button>

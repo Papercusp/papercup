@@ -68,4 +68,10 @@ describe('rowToBinding timestamp normalization', () => {
     expect(b.claimed_at).toBeUndefined();
     expect(b.last_permission_verified_at).toBeUndefined();
   });
+
+  it('throws on a null created_at (NOT NULL corruption) rather than silently emitting the 1970 epoch', () => {
+    // new Date(null) === epoch; a null in a NOT NULL column means real
+    // corruption, so toIso must surface it instead of returning 1970-01-01.
+    expect(() => rowToBinding(row({ created_at: null as unknown as Date }))).toThrow(/null/i);
+  });
 });

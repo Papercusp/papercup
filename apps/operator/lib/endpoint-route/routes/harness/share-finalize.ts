@@ -375,13 +375,18 @@ const realDeps: FinalizeShareDeps = {
       return { committed: false, reason: 'not a git repository' };
     }
     try {
-      await run('git', ['-C', projectDir, 'add', '--', rel]);
+      // Check status vs HEAD BEFORE staging: if nothing changed, return without
+      // a `git add`, so the nothing-to-commit path never leaves shared.json
+      // staged in the index (an unrelated later commit would otherwise sweep it
+      // up — violating this function's scoped-commit guarantee). Untracked (`??`)
+      // and modified (` M`) both show non-empty here.
       const { stdout: status } = await run('git', [
         '-C', projectDir, 'status', '--porcelain', '--', rel,
       ]);
       if (status.trim() === '') {
         return { committed: false, reason: 'nothing to commit (shared.json unchanged)' };
       }
+      await run('git', ['-C', projectDir, 'add', '--', rel]);
       await run('git', [
         '-C', projectDir,
         'commit', '--no-verify', '-m', `chore(share): record ${rel}`, '--', rel,
