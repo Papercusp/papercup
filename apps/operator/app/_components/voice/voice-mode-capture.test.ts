@@ -285,3 +285,58 @@ describe('shouldSkipVoicemodeWhisperOnThisRuntime', () => {
     expect(mod.shouldSkipVoicemodeWhisperOnThisRuntime()).toBe(false);
   });
 });
+
+// P-011 (voice-production-test-coverage): barge-in. cancelAllSpeech() is the
+// interruption primitive (wired to wake/utterance via activateListening, and
+// to mode-off). The existing speak/cancel test only checks cancel() fired;
+// these cover the user-facing semantics — return-to-idle, queue-clear (no
+// overlap), mode-off stop, and clean resume.
+describe('barge-in (TTS interruption)', () => {
+  const synth = () => (globalThis as { window: { speechSynthesis: { speak: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> } } }).window.speechSynthesis;
+
+  it('cancel while speaking returns to idle and clears the speaking role', async () => {
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('always-on');
+    mod.speak('a long operator utterance', 'system:operator', 'polite', { force: true });
+    expect(mod.getVoiceState().status).toBe('speaking');
+    expect(mod.getVoiceState().speakingRole).toBe('system:operator');
+    mod.cancelAllSpeech();
+    expect(synth().cancel).toHaveBeenCalled();
+    expect(mod.getVoiceState().status).toBe('idle');
+    expect(mod.getVoiceState().speakingRole).toBeNull();
+  });
+
+  it('clears the queue so a pending utterance never plays (no overlap)', async () => {
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('always-on');
+    mod.speak('first', 'system:operator', 'polite', { force: true }); // plays now
+    mod.speak('second', 'system:operator', 'polite', { force: true }); // queued behind first
+    expect(synth().speak).toHaveBeenCalledTimes(1);
+    const firstUtt = synth().speak.mock.calls[0][0] as { onend?: () => void };
+    mod.cancelAllSpeech(); // barge-in clears the queue
+    // the first utterance "ending" must NOT pull the (cleared) second off the queue
+    firstUtt.onend?.();
+    expect(synth().speak).toHaveBeenCalledTimes(1);
+    expect(mod.getVoiceState().status).toBe('idle');
+  });
+
+  it('turning voice mode off stops in-progress speech', async () => {
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('always-on');
+    mod.speak('mid-sentence', 'system:operator', 'polite', { force: true });
+    synth().cancel.mockClear();
+    mod.setVoiceMode('off');
+    expect(synth().cancel).toHaveBeenCalled();
+    expect(mod.getVoiceState().status).toBe('off');
+  });
+
+  it('a fresh utterance speaks again after a barge-in (capture resumes)', async () => {
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('always-on');
+    mod.speak('first', 'system:operator', 'polite', { force: true });
+    mod.cancelAllSpeech();
+    mod.speak('second after barge-in', 'system:operator', 'polite', { force: true });
+    expect(synth().speak).toHaveBeenCalledTimes(2);
+    expect(mod.getVoiceState().status).toBe('speaking');
+  });
+});
