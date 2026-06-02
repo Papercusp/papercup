@@ -612,7 +612,14 @@ export async function saveLayout(
       }>
     >`
       UPDATE harness_shared.harness_dock_layouts
-         SET layout_json = ${JSON.stringify(doc)}::jsonb,
+         -- jsonb write MUST use sql.json() for the db() pool. db() is a default-config
+         -- postgres-js pool, unlike the operator getOrgPg client where sql.json throws
+         -- "Buffer.byteLength received Object" (see 7b4cfb25c /
+         -- agent-insights/postgres-js-jsonb-binding). On this pool the JSON.stringify
+         -- form double-encodes: postgres-js json-serializes the already-stringified
+         -- text, storing a jsonb STRING (jsonb_typeof=string), so reads return a string
+         -- and the dock white-screens (collectTypes walks a string -> undefined.kind).
+         SET layout_json = ${sql.json(doc as unknown as Record<string, unknown>)},
              schema_version = ${doc.schemaVersion},
              updated_ts = ${now}
        WHERE workspace_id = ${principal.workspaceId}
@@ -643,7 +650,9 @@ export async function saveLayout(
       (workspace_id, user_id, layout_name, schema_version, layout_json, updated_ts, created_ts)
     VALUES
       (${principal.workspaceId}, ${principal.userId}, ${name}, ${doc.schemaVersion},
-       ${JSON.stringify(doc)}::jsonb, ${now}, ${now})
+       -- sql.json() here too (see the UPDATE branch above) — JSON.stringify(doc)::jsonb
+       -- double-encodes to a jsonb string on this default postgres-js pool.
+       ${sql.json(doc as unknown as Record<string, unknown>)}, ${now}, ${now})
     ON CONFLICT (workspace_id, user_id, layout_name) DO UPDATE
       SET layout_json    = EXCLUDED.layout_json,
           schema_version = EXCLUDED.schema_version,

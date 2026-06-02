@@ -59,6 +59,19 @@ export function useDockLayout(name: string): UseDockLayoutResult {
       throw new Error(`GET /api/dock-layouts/${name} → ${resp.status}: ${text}`);
     }
     const row = (await resp.json()) as DockLayoutRow;
+    // Defense-in-depth: a double-encoded jsonb write (a postgres-js client that
+    // turns `JSON.stringify(doc)::jsonb` into a jsonb STRING — see dock-layouts.ts
+    // saveLayout) makes layoutJson arrive as a JSON string instead of an object.
+    // Parse it so the dock never crashes on `(string).root.kind` (white-screened
+    // the /adv git tab). Leave non-string / unparseable values for downstream
+    // schemaVersion validation to handle.
+    if (typeof (row as { layoutJson?: unknown }).layoutJson === 'string') {
+      try {
+        row.layoutJson = JSON.parse((row as unknown as { layoutJson: string }).layoutJson);
+      } catch {
+        /* leave as-is — validateLayoutDoc / schemaVersion gate will reject it */
+      }
+    }
     rowRef.current = row;
     return row;
   }, [name]);
