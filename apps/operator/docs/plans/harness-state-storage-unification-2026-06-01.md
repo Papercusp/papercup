@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** DECIDED → B. P-001 + P-002 DONE. **P-003 SCOPED** (D-003): the peer-log/Model-B path is mature + default-on (a generic `registerProjection`/outbox-drain engine already exists) → P-003's peer-log half is a REFACTOR (drive it from the table-registry). The §7.2 git-export path is NOT built (design-only; document tables are PG-only today) → that half is GREENFIELD and the bulk of the work. Split: P-003a (registry-driven peer-log reg + boot fail-loud coverage) → P-003b (git-export adapter, new code) → P-003c (unify on `resolveTableSpec().sync`). `lib/sync/hyperbee/**` is hot (Model-B active) — P-003a needs a lock + declare-intent.
+**State:** DECIDED → B. P-001 + P-002 DONE. **P-003a DONE** — `lib/harness-state/projection-engine.ts`: `syncAuthorityFor()` + `checkPeerLogConsistency()` (drift guard, cross-checked against the live `REGISTERED_PROJECTION_TAGS`) + `checkInventoryCoverage()`, wired as a non-fatal fail-loud boot block in `host-bootstrap.ts`; 19/19 tests. **P-003b git-export DESIGNED** (D-004): the write-capture is a generic trigger-fed `substrate_outbox`, so git-export is ADDITIVE — a second drainer filtered to `sync:'git'` tables with its own cursor + file serialize/rebuild + boot hydrate, without rewriting the Model-B peer-log drainer.
 
-**Next:** Owner decision before building: (1) build git-export now (P-003b) or defer it and ship P-003a+c first (nothing regresses — git-export isn't built today); (2) confirm OK to touch the hot `lib/sync/hyperbee` substrate (coordinate with the Model-B devs). Then start P-003a (lowest-risk: connect the P-002 registry to the existing engine + boot coverage assertion).
+**Next:** Build P-003b in a focused session: (1) the pure file serialize/parse + `.harness/state/<table>/<key>` path mapping as unit-tested functions (net-new, verifiable); then (2) the drainer/trigger/boot-hydrate integration — needs a live boot + integration test and touches Model-B-owned `substrate_outbox`/`wireDogfoodTriggers`, so coord + lock first. Then P-003c (router on `resolveTableSpec().sync`).
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -84,7 +84,7 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 
 ## Phase 2 — Projection & migration
 
-- **P-003** `todo` Generalize ONE projection engine: PG↔git-export (document tables) + PG↔peer-log (Model-B), driven by the per-table declaration — replaces the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths.
+- **P-003** `wip` Generalize ONE projection engine: PG↔git-export (document tables) + PG↔peer-log (Model-B), driven by the per-table declaration — replaces the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths. (P-003a DONE projection-engine seam + peer-log drift guard + boot coverage; 19 tests. P-003b git-export DESIGNED D-004: reuse substrate_outbox + separate filtered drainer + file serialize/rebuild; additive. P-003c router pending. git-export integration = focused-session build on Model-B-owned substrate.)
 - **P-004** `todo` Consolidate all remaining per-harness tables → slug-keyed PG (the 032 auto-updatable-view pattern); retire 002-per-harness-template.sql + scaffold-harness-schema.
 - **P-005** `todo` Route config tables (config_token, prompt/3-tier overrides, …) to the workspace-owned store keyed by (workspace, harness, role) — the harnesses-across-workspaces Phase-1b path; never slug-shared.
 
@@ -139,3 +139,15 @@ Mapped the three paths read-only (2026-06-01).
 **Coordination:** `lib/sync/hyperbee/**` is HOT (Model-B actively developed; coord shows substrate-outbox work). P-003a touches `register-all.ts`/`projection.ts` → declare-intent + `locks:acquire` those during the edit. P-003b is NEW code in a new dir → low contention. Recommend P-003a first (proves registry-drives-engine, minimal blast radius), then P-003b, then P-003c.
 
 **Open owner question:** build git-export now (P-003b), or defer it (documents stay PG-only / peer-log-eligible) and ship P-003a+c first? Deferring git-export is viable since it isn't built today anyway — nothing regresses.
+
+### D-004 — P-003b git-export design: reuse substrate_outbox + separate filtered drainer + file serialize/rebuild (additive)
+Date: 2026-06-02
+Mapped the write-capture (2026-06-01). `harness_shared.substrate_outbox` is a GENERIC trigger-captured outbox — columns `(workspace_id, harness_slug, table_name, op put|del, key, row jsonb, ts, drained_at)`. A PG trigger `capture_substrate_outbox()` (wired by `wireDogfoodTriggers()` in `lib/ensure-schema-dogfood.ts`) appends a row on every local-origin write; the peer-log drainer (`lib/sync/hyperbee/outbox-drain.ts`) reads undrained rows → appends to the peer Hyperbee log. So git-export is ADDITIVE, not greenfield.
+
+**Design (additive — do NOT rewrite the peer-log drainer):**
+- **Capture:** attach `capture_substrate_outbox` to the `sync:'git'` tables too (additive; confirm current coverage in `wireDogfoodTriggers`).
+- **Disjoint consumers:** `sync:'git'` and `sync:'peer-log'` are mutually exclusive in the registry, so each outbox row belongs to exactly ONE consumer via `table_name → resolveTableSpec().sync`. Give git-export its OWN cursor (a `git_exported_at` column or a `substrate_git_cursor` row) rather than sharing the peer-log `drained_at`; add a table-filter so neither drainer marks the other's rows.
+- **Export drainer** (new `lib/harness-state/git-export/`): undrained git rows → serialize → `.harness/state/<table>/<key>.{md|json}` (md+frontmatter for prose tables: decisions/escalations/summaries/notes/supervisor_notes/design; json for structured) → debounce git-commit → advance the git cursor.
+- **Boot hydrate** (reverse): scan `.harness/state/<git tables>/` → upsert PG (git is the sync authority; PG converges to it). Runs at boot before the gate, like `wireDogfoodTriggers`.
+
+**Build order + verification/coordination:** (1) build the file serialize/parse + path mapping as PURE, unit-tested functions (net-new `lib/harness-state/git-export/`, no contention) — verifiable here; (2) the drainer/trigger/boot integration touches the shared `substrate_outbox` + `wireDogfoodTriggers` (Model-B-owned) and needs a live boot + integration test → focused session, `coord:declare-intent` + `locks:acquire` on `ensure-schema-dogfood.ts` + the new module, and do NOT modify `outbox-drain.ts` beyond adding a table-filter.
