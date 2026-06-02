@@ -54,7 +54,8 @@ import {
 } from '../harness/usage-emitters';
 import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
-import { governorForBackend, classifySubprocessResult } from '@papercusp/papercup-shared/agent';
+import { governorForBackend, classifyTurnError } from '@papercusp/papercup-shared/agent';
+import { resolveSpawnBackendModel } from '../harness-invoke-once';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 // How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
@@ -129,8 +130,12 @@ export async function spawnInvokeOnce(
   // unchanged). PACING ONLY — concurrency/rate gate + penalize the governor on a detected
   // 429, so the whole operator's agent spawns stay under the account's rate limit. We do
   // NOT retry here: the orchestrator/director already owns turn retries (avoid double-retry).
+  // Key the bucket to the backend+model the spawn ACTUALLY uses (the default `omp -p`
+  // self-paces → its own concurrency-only bucket; claude → the Anthropic per-class bucket)
+  // rather than the old hardcoded `('claude-code','')` which mis-bucketed everything.
   if (process.env.PAPERCUSP_AGENT_GOVERNOR === '1') {
-    const gov = governorForBackend('claude-code', '');
+    const { backend, model } = resolveSpawnBackendModel(role);
+    const gov = governorForBackend(backend, model);
     const release = await gov.acquire({}, { maxWaitMs: GOVERNOR_MAX_WAIT_MS });
     if (!release) {
       return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
@@ -139,8 +144,8 @@ export async function spawnInvokeOnce(
       const inner = await runChild(command, args, projectDir, env, role);
       // Classify the outcome; on a detected 429/overload, pause the SHARED governor so the
       // operator's other agent spawns back off too. No retry here — the director owns that.
-      const te = classifySubprocessResult({ exitCode: inner.exitCode, stderr: inner.stderr, stdout: inner.output }, 'anthropic');
-      if (te.class === 'rate_limited' || te.class === 'overloaded') gov.penalize({ retryAfterMs: te.retryAfterMs });
+      const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
+      if (te.class === 'rate_limited' || te.class === 'overloaded') gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
       return inner;
     } finally {
       release();

@@ -18,6 +18,26 @@
  */
 import { invokeOnceBin, tsxBin } from '@/lib/harness-paths';
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
+import type { TurnBackend } from '@papercusp/papercup-shared/agent';
+
+/**
+ * Infer the `{ backend, model }` the spawned CLI will actually use for `role` — from the
+ * resolved per-role agent command (`AGENT_CMD`/`CLAUDE` + the `AGENT_MODELS` override). Used
+ * to key the SHARED RateLimitGovernor to the right `(provider, model-class)` bucket (RB-012)
+ * so the pipeline spawn paces against the bucket it really hits: the default `omp -p` is
+ * self-pacing (collapses to omp's concurrency-only bucket), `claude …` → the Anthropic
+ * per-model-class bucket (opus/sonnet are separate buckets), `codex …` → the OpenAI bucket.
+ * Previously the orchestrator hardcoded `('claude-code', '')`, which both mis-attributed the
+ * default omp spawns to Anthropic AND collapsed every role into one `anthropic:default`
+ * bucket. Exported for unit testing.
+ */
+export function resolveSpawnBackendModel(role: string): { backend: TurnBackend; model: string } {
+  const cmd = applyRoleModel(process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p', role);
+  const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+  const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
+  const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);
+  return { backend, model: m?.[1] ?? '' };
+}
 
 /**
  * Apply a PER-ROLE model override to the base agent command. `AGENT_MODELS` is a

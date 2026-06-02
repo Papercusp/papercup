@@ -17,7 +17,7 @@ vi.mock('@/lib/embedded-pg-discovery', () => ({
   getHarnessAdminUrl: () => 'postgres://admin/resolved',
 }));
 
-import { applyRoleModel, buildInvokeOnce, type InvokeOnceSpec } from './harness-invoke-once';
+import { applyRoleModel, buildInvokeOnce, resolveSpawnBackendModel, type InvokeOnceSpec } from './harness-invoke-once';
 
 const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
   projectDir: '/proj',
@@ -150,5 +150,35 @@ describe('applyRoleModel — per-role model override', () => {
     const d = buildInvokeOnce(spec({ role: 'director' })).env;
     expect(d.AGENT_CMD).toBe('claude -p --model haiku');
     expect(d.CLAUDE).toBe('claude -p --model haiku');
+  });
+});
+
+describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn (RB-012)', () => {
+  it("default `omp -p` → omp backend (self-pacing), no model", () => {
+    vi.stubEnv('AGENT_CMD', undefined as unknown as string);
+    vi.stubEnv('CLAUDE', undefined as unknown as string);
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'omp', model: '' });
+  });
+
+  it('claude command → claude-code backend + the --model id', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model claude-opus-4-8');
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
+  });
+
+  it('codex command → codex backend; -m short flag is read', () => {
+    vi.stubEnv('AGENT_CMD', 'codex exec -m gpt-5.5');
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'codex', model: 'gpt-5.5' });
+  });
+
+  it('per-role AGENT_MODELS override flows into the resolved model (so opus/sonnet get separate buckets)', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model claude-sonnet-4-6');
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ architect: 'claude-opus-4-8' }));
+    expect(resolveSpawnBackendModel('architect')).toEqual({ backend: 'claude-code', model: 'claude-opus-4-8' });
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'claude-sonnet-4-6' });
+  });
+
+  it('--model=<x> equals form is parsed', () => {
+    vi.stubEnv('AGENT_CMD', 'claude -p --model=claude-haiku-4-5');
+    expect(resolveSpawnBackendModel('worker')).toEqual({ backend: 'claude-code', model: 'claude-haiku-4-5' });
   });
 });
