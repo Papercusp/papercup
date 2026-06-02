@@ -1188,6 +1188,45 @@
       ]
     },
     {
+      "id": "harness-framework",
+      "label": "Harness Framework",
+      "description": "libs/papercusp framework end-to-end smokes (bash). Live — drive real services; surfaced as shell runners, not Vitest.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "smokes",
+          "label": "Smokes",
+          "description": "Full-stack, planner, and service-gate smokes for the Papercusp harness framework.",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "libs/papercusp/bin/papercusp-smoketest.sh"
+              ],
+              "label": "framework full-stack"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "libs/papercusp/packages/harness/bin/smoke-test.sh"
+              ],
+              "label": "planner smoke"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "libs/papercusp/packages/harness/bin/service-smoke-test.sh"
+              ],
+              "label": "service gate (run.sh DONE)"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "acceptance",
       "label": "Acceptance",
       "description": "VAL-covering tests written by the tester (from .harness/tests.json).",

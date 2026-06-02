@@ -802,6 +802,25 @@ defineTestDomain({
   ],
 });
 
+defineTestDomain({
+  id: 'harness-framework',
+  label: 'Harness Framework',
+  description: 'libs/papercusp framework end-to-end smokes (bash). Live — drive real services; surfaced as shell runners, not Vitest.',
+  tier: 'surface',
+  sections: [
+    {
+      id: 'smokes',
+      label: 'Smokes',
+      description: 'Full-stack, planner, and service-gate smokes for the Papercusp harness framework.',
+      runners: [
+        { kind: 'shell', cmd: 'bash', args: ['libs/papercusp/bin/papercusp-smoketest.sh'], label: 'framework full-stack' },
+        { kind: 'shell', cmd: 'bash', args: ['libs/papercusp/packages/harness/bin/smoke-test.sh'], label: 'planner smoke' },
+        { kind: 'shell', cmd: 'bash', args: ['libs/papercusp/packages/harness/bin/service-smoke-test.sh'], label: 'service gate (run.sh DONE)' },
+      ],
+    },
+  ],
+});
+
 /* ---------------------------------------------------------------- *
  * Composed views (P-011). `papercuspRegistry` = the 20 declared above
  * (read back from the Map by id); `adminRegistry` = universal + papercusp
@@ -815,7 +834,7 @@ const PAPERCUSP_IDS = [
   'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
-  'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'libraries',
+  'gym', 'dbos', 'workspace', 'adv', 'operator-core', 'libraries', 'harness-framework',
 ] as const;
 
 export const papercuspRegistry: TestDomain[] = PAPERCUSP_IDS.map((id) => {
