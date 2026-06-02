@@ -97,6 +97,9 @@ function makeIdentityOverride(login: string, userId: number, keychainId: string)
         keychainId,
         resolveGithubUser: async () => ({ id: userId, login }),
         loadKeypair: async (id: string) => ({ keychainId: id, pubkeyBase64: devicePubkey }),
+        // Channel-2 gate is stood in for by verifyBindingOverride; the announce
+        // just needs a (signed-over) gist id present — a fake suffices here.
+        resolveAttestationGistId: async () => `gist-${login}`,
       },
       // Sign with the in-test private key (NOT the keychain) — the matching key
       // for `devicePubkey`, so the announce sig verifies over the wire.

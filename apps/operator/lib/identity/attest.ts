@@ -139,6 +139,51 @@ export async function createAttestationGist(
   return { gistId: data.id, gistUrl: data.html_url, body };
 }
 
+/**
+ * Idempotently resolve THIS device's attestation gist id under the
+ * authenticated user, creating it on first use. Used by the write-free join
+ * path (`non-collaborator-join-fork-pr-2026-06-02`): the gist id rides the
+ * signed announce, so each boot needs its own gist id without a shared-repo
+ * contributor file (and without local persistence — GitHub is the store).
+ *
+ * The attestation gist filename is DETERMINISTIC from the device pubkey
+ * (`attestationGistFilename`), so we can find an existing gist by listing the
+ * user's gists and matching that filename, then confirming it verifies for
+ * `(pubkey, githubUserId)`. If none verifies, we create a fresh one.
+ */
+export async function ensureAttestationGist(
+  input: CreateAttestationGistInput,
+): Promise<string> {
+  const expectedFilename = attestationGistFilename(input.pubkeyBase64);
+  try {
+    const resp = await fetch('https://api.github.com/gists?per_page=100', {
+      headers: {
+        Authorization: 'token ' + input.token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (resp.ok) {
+      const gists = (await resp.json()) as Array<{
+        id?: string;
+        files?: Record<string, unknown> | null;
+      }>;
+      for (const g of gists) {
+        if (!g.id || !g.files || !(expectedFilename in g.files)) continue;
+        const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId, {
+          skipCache: true,
+        });
+        if (v.valid) return g.id;
+      }
+    }
+  } catch {
+    // Network/list failure → fall through to create (idempotent enough: a
+    // duplicate gist is harmless; both verify identically).
+  }
+  const created = await createAttestationGist(input);
+  return created.gistId;
+}
+
 // ─── verification ─────────────────────────────────────────────────────────────
 
 /**

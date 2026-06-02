@@ -38,12 +38,14 @@ function rawPubkeyBase64(publicKey: ReturnType<typeof generateKeyPairSync>['publ
 }
 
 const FIXED_NOW_MS = 1_700_000_000_000; // deterministic epoch for tests
+const TEST_GIST_ID = 'abc123def456gist'; // deterministic attestation gist id
 
 function makeBody(pubkeyBase64: string): AnnounceBody {
   return {
     device_pubkey: pubkeyBase64,
     github_user_id: 4242,
     github_login: 'alice',
+    attestation_gist_id: TEST_GIST_ID,
     log_core_key: 'a'.repeat(64), // 64-hex hypercore key shape
     ts: FIXED_NOW_MS,
   };
@@ -88,12 +90,14 @@ describe('announce', () => {
     expect(announceSigningBytes(body).equals(announceSigningBytes(frame))).toBe(true);
     // they do not contain the signature
     expect(announceSigningBytes(frame).toString('utf8')).not.toContain('sig');
-    // fixed field order: device_pubkey, github_user_id, github_login, log_core_key, ts
+    // fixed field order: device_pubkey, github_user_id, github_login,
+    // attestation_gist_id, log_core_key, ts
     expect(announceSigningBytes(body).toString('utf8')).toBe(
       JSON.stringify({
         device_pubkey: body.device_pubkey,
         github_user_id: body.github_user_id,
         github_login: body.github_login,
+        attestation_gist_id: body.attestation_gist_id,
         log_core_key: body.log_core_key,
         ts: body.ts,
       }),
@@ -215,6 +219,7 @@ describe('announce', () => {
       device_pubkey: pubkeyBase64,
       github_user_id: 4242,
       github_login: 'alice',
+      attestation_gist_id: TEST_GIST_ID,
       log_core_key: 'a'.repeat(64),
       ts: FIXED_NOW_MS,
       nonce: 'original-nonce',
@@ -236,6 +241,7 @@ describe('announce', () => {
       device_pubkey: pubkeyBase64,
       github_user_id: 1,
       github_login: 'x',
+      attestation_gist_id: TEST_GIST_ID,
       log_core_key: 'a'.repeat(64),
       ts: FIXED_NOW_MS,
     };
@@ -248,5 +254,40 @@ describe('announce', () => {
     const bytesWithNonce = announceSigningBytes(bodyWithNonce).toString('utf8');
     expect(bytesWithNonce).toContain(`"ts":${FIXED_NOW_MS}`);
     expect(bytesWithNonce).toContain('"nonce":"abc123"');
+  });
+
+  // ── write-free join: the attestation gist id rides the SIGNED announce ──
+  // (replaces the shared-repo contributor file as the carrier of the gist id;
+  // admission proves the binding from the announce + verifyAttestation(gist)).
+
+  it('attestation_gist_id round-trips and is covered by the signature', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const frame = await buildTestAnnounce(body, privateKey);
+
+    expect(frame.attestation_gist_id).toBe(TEST_GIST_ID);
+    expect(verifyAnnounce(frame, { nowMs: FIXED_NOW_MS })).toBe(true);
+
+    // Tampering the gist id after signing must break the sig (it's signed-over).
+    const tampered: SignedAnnounce = { ...frame, attestation_gist_id: 'attacker-controlled-gist' };
+    expect(verifyAnnounce(tampered, { nowMs: FIXED_NOW_MS })).toBe(false);
+  });
+
+  it('signing bytes include attestation_gist_id', () => {
+    const { publicKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    expect(announceSigningBytes(body).toString('utf8')).toContain(
+      `"attestation_gist_id":"${TEST_GIST_ID}"`,
+    );
+  });
+
+  it('rejects a frame missing attestation_gist_id (shape check, never throws)', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const body = makeBody(rawPubkeyBase64(publicKey));
+    const frame = await buildTestAnnounce(body, privateKey);
+
+    const { attestation_gist_id: _omit, ...without } = frame;
+    void _omit;
+    expect(verifyAnnounce(without as unknown as SignedAnnounce, { nowMs: FIXED_NOW_MS })).toBe(false);
   });
 });

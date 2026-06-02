@@ -240,6 +240,52 @@ describe('verifyAttestation', () => {
     vi.unstubAllGlobals();
   });
 
+  it('ensureAttestationGist: returns an existing verified gist id without creating', async () => {
+    const { ensureAttestationGist } = await import('./attest');
+    const { attestationGistFilename } = await import('./attestation-types');
+    const { pubkeyBase64, body } = makeFakeGistResponse();
+    // Key the gist files under the REAL deterministic filename so both the
+    // find-by-filename match and the verifyAttestation lookup hit.
+    const filename = attestationGistFilename(pubkeyBase64);
+    const validGist = {
+      id: 'g-existing',
+      owner: { id: 12345 },
+      files: { [filename]: { content: JSON.stringify(body, null, 2) } },
+    };
+
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
+      void init;
+      if (typeof url === 'string' && url.includes('/gists?')) {
+        // The "list my gists" call → one gist carrying the attestation filename.
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: 'g-existing', files: { [filename]: {} } }],
+        };
+      }
+      // The verifyAttestation gist-by-id fetch.
+      return { ok: true, status: 200, json: async () => validGist };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const id = await ensureAttestationGist({
+      keychainId: 'unused-on-find-path',
+      pubkeyBase64,
+      deviceLabel: 'test',
+      githubUserId: 12345,
+      githubLogin: 'testuser',
+      token: 'tok',
+    });
+
+    expect(id).toBe('g-existing');
+    // It must NOT POST a new gist when an existing verified one is found.
+    const posted = fetchMock.mock.calls.some(
+      (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+    );
+    expect(posted).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it('returns gist_not_found on 404', async () => {
     const { verifyAttestation } = await import('./attest');
 

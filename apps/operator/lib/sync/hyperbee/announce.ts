@@ -47,6 +47,15 @@ export interface AnnounceBody {
   device_pubkey: string;
   github_user_id: number;
   github_login: string;
+  /** P-011 device-attestation gist id. The channel-2 anchor rides the SIGNED
+   *  announce so a remote peer can admit via
+   *  `verifyAttestation(attestation_gist_id, device_pubkey, github_user_id)`
+   *  WITHOUT fetching a shared-repo contributor file — i.e. join needs no repo
+   *  write (write-free join, `non-collaborator-join-fork-pr-2026-06-02`). It is
+   *  covered by the signature, so it cannot be substituted in transit; and
+   *  `verifyAttestation` pins gist `owner.id === github_user_id`, so a peer can
+   *  only bind a gist it actually owns. */
+  attestation_gist_id: string;
   /** 64-hex Hypercore key of the peer's writable log. */
   log_core_key: string;
   /** Epoch-ms timestamp at announce-build time. Covered by sig; used for
@@ -77,6 +86,7 @@ export function announceSigningBytes(body: AnnounceBody): Buffer {
     device_pubkey: body.device_pubkey,
     github_user_id: body.github_user_id,
     github_login: body.github_login,
+    attestation_gist_id: body.attestation_gist_id,
     log_core_key: body.log_core_key,
     ts: body.ts,
   };
@@ -130,6 +140,7 @@ export function verifyAnnounce(
       typeof frame.device_pubkey !== 'string' ||
       typeof frame.github_user_id !== 'number' ||
       typeof frame.github_login !== 'string' ||
+      typeof frame.attestation_gist_id !== 'string' ||
       typeof frame.log_core_key !== 'string' ||
       typeof frame.sig !== 'string'
     ) {

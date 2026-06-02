@@ -1037,6 +1037,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           device_pubkey: identity.devicePubkeyBase64,
           github_user_id: identity.githubUserId,
           github_login: identity.githubLogin,
+          attestation_gist_id: identity.attestationGistId,
           log_core_key: ownLog.keyHex,
         },
         (bytes) => signAnnounce(identity.keychainId, bytes),

@@ -39,6 +39,7 @@ describe('resolveLocalAnnounceIdentity', () => {
       resolveGithubUser,
       loadKeypair,
       buildKeychainId,
+      resolveAttestationGistId: async () => 'g',
     });
 
     // The keychain id is keyed by the resolved gh user id — NOT a fixed string.
@@ -58,6 +59,7 @@ describe('resolveLocalAnnounceIdentity', () => {
       logCoreKeyHex: LOG_CORE_KEY,
       resolveGithubUser: stubUser(777, 'bob'),
       loadKeypair: stubKeypair(),
+      resolveAttestationGistId: async () => 'g',
       // no buildKeychainId override → the canonical resolver is used
     });
     // Same id the join path would build for this user on this machine.
@@ -85,6 +87,7 @@ describe('resolveLocalAnnounceIdentity', () => {
       resolveGithubUser,
       buildKeychainId,
       loadKeypair,
+      resolveAttestationGistId: async () => 'g',
     });
 
     // user must resolve before the id is built + the keypair is loaded.
@@ -101,10 +104,33 @@ describe('resolveLocalAnnounceIdentity', () => {
       resolveGithubUser: stubUser(),
       loadKeypair,
       buildKeychainId,
+      resolveAttestationGistId: async () => 'g',
     });
     expect(identity.keychainId).toBe('explicit-id');
     expect(buildKeychainId).not.toHaveBeenCalled();
     expect(loadKeypair).toHaveBeenCalledWith('explicit-id');
+  });
+
+  it('resolves the attestation gist id via the injected resolver (write-free join)', async () => {
+    const resolveAttestationGistId = vi.fn(async () => 'gist-xyz-789');
+    const identity = await resolveLocalAnnounceIdentity({
+      logCoreKeyHex: LOG_CORE_KEY,
+      resolveGithubUser: stubUser(4242, 'alice'),
+      loadKeypair: stubKeypair(),
+      buildKeychainId: (uid: number) => `${uid}:m`,
+      resolveAttestationGistId,
+    });
+    // The resolver is called with this peer's resolved identity inputs.
+    expect(resolveAttestationGistId).toHaveBeenCalledWith(
+      expect.objectContaining({
+        keychainId: '4242:m',
+        pubkeyBase64: 'PUBKEY==',
+        githubUserId: 4242,
+        githubLogin: 'alice',
+      }),
+    );
+    // The gist id rides the announce identity (carried on the signed announce).
+    expect(identity.attestationGistId).toBe('gist-xyz-789');
   });
 
   it('throws when logCoreKeyHex is missing', async () => {

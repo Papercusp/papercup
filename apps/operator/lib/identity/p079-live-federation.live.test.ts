@@ -255,6 +255,8 @@ function announceOverrideFor(peer: LivePeer) {
       keychainId: peer.keychainId,
       resolveGithubUser: async () => ({ id: peer.userId, login: peer.login }),
       loadKeypair: async (id: string) => ({ keychainId: id, pubkeyBase64: peer.pubkeyBase64 }),
+      // Carry this peer's REAL attestation gist id on the announce.
+      resolveAttestationGistId: async () => peer.gistId,
     },
     sign: async (_id: string, bytes: Buffer) => nodeSign(null, bytes, peer.privateKey),
   };

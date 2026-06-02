@@ -29,14 +29,27 @@
  * can't announce simply doesn't federate, which is correct.
  */
 
-import { loadOrGenerateDeviceKeypair } from '@/lib/identity/attest';
+import { loadOrGenerateDeviceKeypair, ensureAttestationGist } from '@/lib/identity/attest';
 import { getAuthenticatedGithubUser } from '@/lib/identity/resolve-local-github-identity';
 import { resolveDeviceKeychainId } from '@/lib/identity/device-keychain-id';
+import { getGhAuthToken } from '@/lib/identity/gh-token';
 
 export interface LocalAnnounceIdentity {
   keychainId: string;
   /** Raw 32-byte Ed25519 device pubkey, base64 (== binding device_pubkey). */
   devicePubkeyBase64: string;
+  githubUserId: number;
+  githubLogin: string;
+  /** This device's attestation gist id — carried on the signed announce so a
+   *  remote peer admits via `verifyAttestation` with NO shared-repo read
+   *  (write-free join, `non-collaborator-join-fork-pr-2026-06-02`). */
+  attestationGistId: string;
+}
+
+/** Inputs the gist resolver receives — this peer's resolved device identity. */
+export interface ResolveAttestationGistArgs {
+  keychainId: string;
+  pubkeyBase64: string;
   githubUserId: number;
   githubLogin: string;
 }
@@ -62,6 +75,12 @@ export interface ResolveLocalAnnounceIdentityOpts {
    * `resolveDeviceKeychainId`.
    */
   buildKeychainId?: (githubUserId: number) => string;
+  /**
+   * Resolve this device's attestation gist id. Defaults to the idempotent
+   * find-or-create over the gh-token (`ensureAttestationGist`). Injectable for
+   * tests (and for any path that already holds the gist id).
+   */
+  resolveAttestationGistId?: (args: ResolveAttestationGistArgs) => Promise<string>;
 }
 
 async function defaultResolveGithubUser(): Promise<{ id: number; login: string }> {
@@ -70,6 +89,23 @@ async function defaultResolveGithubUser(): Promise<{ id: number; login: string }
     throw new Error('local-announce-identity: gh not authenticated (run `gh auth login`)');
   }
   return user;
+}
+
+async function defaultResolveAttestationGistId(
+  args: ResolveAttestationGistArgs,
+): Promise<string> {
+  const tok = await getGhAuthToken();
+  if (tok.kind !== 'ok') {
+    throw new Error('local-announce-identity: gh token required to resolve attestation gist');
+  }
+  return ensureAttestationGist({
+    keychainId: args.keychainId,
+    pubkeyBase64: args.pubkeyBase64,
+    deviceLabel: `papercusp-${args.githubLogin}`,
+    githubUserId: args.githubUserId,
+    githubLogin: args.githubLogin,
+    token: tok.token,
+  });
 }
 
 /**
@@ -93,11 +129,19 @@ export async function resolveLocalAnnounceIdentity(
   const user = await resolveUser();
   const keychainId = opts.keychainId ?? buildKeychainId(user.id);
   const keypair = await loadKeypair(keychainId);
+  const resolveGist = opts.resolveAttestationGistId ?? defaultResolveAttestationGistId;
+  const attestationGistId = await resolveGist({
+    keychainId,
+    pubkeyBase64: keypair.pubkeyBase64,
+    githubUserId: user.id,
+    githubLogin: user.login,
+  });
 
   return {
     keychainId,
     devicePubkeyBase64: keypair.pubkeyBase64,
     githubUserId: user.id,
     githubLogin: user.login,
+    attestationGistId,
   };
 }
