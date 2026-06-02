@@ -117,20 +117,25 @@ The fake-agent pipeline reaches terminal, but the WORKER invoke throws Postgres
 (`runOutputRows: 0`, `workerCommitted: false`). Ruled out: hyphen in slug (fixed →
 hyphen-free), missing view (the per-harness `harness_features` view IS created),
 clone-dir basename (now == slug), `HARNESS_SLUG` env, DBOS-on-gym-DB (confirmed via the
-boot log's "System Database URL"). **Hypothesis:** invoke-once's PG state client
-(`state-pg.ts readFeaturesPg` → unqualified `FROM harness_features`, relying on
-`pg-bootstrap.ts` setting `search_path = harness_<slug>,harness_shared,public`) resolves
-to the wrong schema/DB for the role subprocess. **To pin it:** run the smoke to a
-SUCCESS, read `report.workerPgDiag` (now captured in the smoke's finally — the worker's
-`PG bootstrap: connected (search_path=…)` line + the DB it hit). If it shows the wrong
-DB → fix the gym-side spawn env (ensure `HARNESS_ADMIN_DATABASE_URL`/`DATABASE_URL`
-reaches invoke-once, not the live `embedded-pg.json`/native fallback). If wrong
-search_path with a hyphen-free slug → deeper orchestrator-state issue (don't edit shared
-code unattended; bring to avi). **Blocker on the dev box:** capturing `workerPgDiag` was
-repeatedly blocked by testcontainer ECONNREFUSED flakes (a reused-container/teardown race,
-worse under load). For a reliable run, point the smoke's gym PG at a DEDICATED, non-reused
-superuser PG (the desktop's embedded-pg, or a fresh `docker run` of the pgvector image)
-instead of `getTestPg()`.
+boot log's "System Database URL").
+
+**PINNED (2026-06-02, via the reliable dedicated-container smoke):** the gym-side setup
+is CORRECT. `report.workerPgDiag` shows the worker's pg-bootstrap repeatedly logging
+`PG bootstrap: connected (search_path=harness_<slug>,harness_shared,public); ctx.pg
+active` — i.e. the right per-harness schema IS first on the search_path, ctx.pg is on,
+the `harness_features` view exists there, and DBOS is on the gym DB. So it is NOT
+slug / search_path / DB (the hyphen-free + clone-basename + dedicated-DB fixes resolved
+those). The remaining cause is **deeper in the orchestrator state layer**: some code path
+in `invoke.ts`/`state-pg.ts` resolves `harness_features` on a connection WITHOUT the
+harness search_path (e.g. a `getOrgPg()`-style default client, or a view-body dependency
+that fails in a fresh schema), throwing `relation "harness_features" does not exist`.
+
+**Handoff (NOT done unattended — shared orchestrator code the live fleet depends on):**
+trace which query/client in invoke()'s worker path throws (add a stack/log to the
+`relation … does not exist` catch, or to `state-pg.ts`), confirm it's a non-`ctx.pg`
+client, and point it at the harness-scoped client. The smoke is now RELIABLE
+(`npx tsx lib/gym/smoke.ts`, dedicated pgvector container) so this is a ~2-minute
+trace-and-rerun loop.
 
 ### Open item 2 — P-014 (human gate): the real A/B
 
