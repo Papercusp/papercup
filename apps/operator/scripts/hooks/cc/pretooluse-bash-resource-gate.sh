@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# PreToolUse hook — gate raw `Bash` commands against the named-resource lock
+# registry (plan named-resource-locks-drain, P-026/D-013). When a command
+# would collide with an in-flight EXCLUSIVE hold on a registered resource
+# (e.g. a peer is mid `dev:restart`), block it; otherwise proceed.
+#
+# Cheap by design: a local keyword pre-filter lets the overwhelming majority
+# of commands (ls/git/grep/…) return immediately with NO HTTP call. Only a
+# command that looks destructive (systemctl/overmind/psql/npm run dev) is
+# checked against the operator via locks:check_command.
+#
+# Fail-open everywhere: not installed, operator unreachable, or any parse
+# error → ALLOW (cooperative enforcement only works while the system is up).
+# Only an explicit decision === 'block' denies.
+#
+# NOTE: the pre-filter tokens mirror the seeded resources' match_patterns; a
+# new resource with a novel pattern needs a token added here (or drop the
+# pre-filter to always-check). Decision logic is server-side (registry-driven).
+
+set -euo pipefail
+
+OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
+TOKEN_PATH="${HOME}/.papercusp/superuser-token"
+AGENT_ID_PATH="${HOME}/.papercusp/su-agent-id"
+
+if [ ! -s "$TOKEN_PATH" ] || [ ! -s "$AGENT_ID_PATH" ]; then
+  exit 0
+fi
+
+TOKEN=$(cat "$TOKEN_PATH")
+AGENT_ID=$(cat "$AGENT_ID_PATH")
+INPUT=$(cat)
+
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
+import json, os, re, sys, urllib.request, urllib.parse
+
+raw, operator_url, token, agent_id = sys.argv[1:5]
+
+def allow():
+    sys.exit(0)
+
+def deny(reason):
+    json.dump({'hookSpecificOutput': {
+        'hookEventName': 'PreToolUse',
+        'permissionDecision': 'deny',
+        'permissionDecisionReason': reason,
+    }}, sys.stdout)
+    sys.exit(0)
+
+try:
+    payload = json.loads(raw)
+except Exception:
+    allow()
+
+tool_name = payload.get('tool_name', '') or ''
+tool_input = payload.get('tool_input', {})
+if tool_name != 'Bash':
+    allow()
+
+command = tool_input.get('command') if isinstance(tool_input, dict) else None
+if not isinstance(command, str) or not command.strip():
+    allow()
+
+# Cheap local pre-filter — skip the HTTP round-trip for the 99% of commands
+# that can't touch a registered resource. Tokens mirror the seeded patterns.
+if not re.search(r'systemctl|overmind|psql|npm\s+run\s+dev', command):
+    allow()
+
+# Per-session owner (so the caller's OWN exclusive doesn't gate their own
+# commands) — same precedence the file-lock hook uses.
+env_sid = os.environ.get('PAPERCUSP_SID')
+session_id = payload.get('session_id')
+owner = (
+    env_sid if isinstance(env_sid, str) and env_sid
+    else session_id if isinstance(session_id, str) and session_id
+    else agent_id
+)
+
+body = json.dumps({
+    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+    'params': {'name': 'locks:check_command', 'arguments': {'command': command}},
+}).encode()
+
+req = urllib.request.Request(
+    operator_url.rstrip('/') + '/api/mcp?superuser=1&client='
+    + urllib.parse.quote(owner, safe=''),
+    data=body,
+    headers={
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+    },
+    method='POST',
+)
+try:
+    resp = urllib.request.urlopen(req, timeout=4)
+    raw_resp = resp.read().decode('utf-8', errors='replace')
+except Exception as e:
+    print(f'[resource-gate] operator unreachable ({e}); allowing (fail-open)', file=sys.stderr)
+    allow()
+
+result = None
+for line in raw_resp.splitlines():
+    line = line.strip()
+    if not line or line.startswith('event:'):
+        continue
+    if line.startswith('data:'):
+        line = line[5:].strip()
+    try:
+        cand = json.loads(line)
+        if isinstance(cand, dict) and 'result' in cand:
+            result = cand['result']
+            break
+    except Exception:
+        pass
+if not result:
+    allow()
+
+inner = None
+for item in (result.get('content') or []):
+    if item.get('type') == 'text':
+        try:
+            inner = json.loads(item['text'])
+            break
+        except Exception:
+            continue
+if not inner or inner.get('decision') != 'block':
+    allow()
+
+matched = inner.get('matched') or []
+names = ', '.join(m.get('resource', '?') for m in matched) or 'a registered resource'
+deny(
+    f"resource-gate: this command touches {names}, which has an exclusive hold "
+    f"in flight (a peer is restarting/migrating it). Wait for the 'back up' "
+    f"broadcast, or coordinate via locks:list / locks:acquire_resource. "
+    f"Use the blessed wrapper (dev:restart / db:migrate) instead of a raw command."
+)
+PYEOF
