@@ -88,6 +88,34 @@ curl -sN http://127.0.0.1:3070/api/agent-mcp/operator-converse \
 A healthy turn calls `mcp__agentmcp__harness_status` (underscore — MCP tool names
 can't contain `:`; `ALL_AGENT_MCP_TOOLS` lists colon forms but `--allowed-tools`
 is moot under `bypassPermissions`, so the format mismatch is harmless) and emits
-a `<say>` block. Note the brain's model is operator agent-config
-`models['operator']` (pinned default `claude-opus-4-7`); set it to `haiku` for
-cheap test runs and restore after.
+a `<say>` block. Set the brain model via agent-config `models['operator']` for a
+test run (see below) and restore to `{}` after.
+
+## Brain model: latency vs compliance (2026-06-02 voice runs)
+
+The brain (SUT) model is set per-run via `POST /api/agent-config
+{models:{operator:'haiku'|'sonnet'|'opus'}}` (claude CLI rejects full ids like
+`claude-haiku-4-5` — use the bare alias). Measured one-turn latency + voice
+compliance across the `op-S13..S16` voice scenarios:
+
+| Model | 1-turn latency | Voice compliance |
+|---|---|---|
+| `haiku` | ~21 s | Weak — overruns the 220-char `<say>` cap (246/225/301), S15 fails on judge rubric |
+| `sonnet` | ~17 s | Good — S15 **passes**, length cap respected; minor drift (stacks 2 questions S13; skips the disambiguation card S16; one 222-char overrun) |
+| `opus` | **~100 s** | Most compliant (uses `chat_ask_choice` for disambiguation) but **far too slow** |
+
+**Takeaways:**
+- **Voice should NOT run on `opus`.** 100 s/turn blows the scenarios' 90 s
+  `maxWallSecs` + the runner's 90 s initial-event timeout, and 100 s of dead air
+  before the operator speaks is an unusable voice UX. The production default is
+  pinned to `claude-opus-4-7` — for the *voice* surface that pin is wrong on
+  latency alone.
+- **`sonnet` is the sweet spot for voice** — fast (17 s) and capable (over-length
+  resolves vs haiku; S15 passes). Use `LLM_TEST_SIM_MODEL`/`JUDGE_MODEL=haiku`
+  (cheap) + brain `sonnet` for representative voice runs.
+- The residual sonnet findings (`oneQuestionMarkPerTurn`, `cardUsage`, marginal
+  length overrun) are real persona-compliance drift — candidates for operator
+  voice-persona tuning, not test-infra issues. The judge ran on `haiku`; rerun
+  the judge on `sonnet` before treating a *judge*-only finding as authoritative
+  (the deterministic asserts — length, one-question, has-say — are model-judge-free
+  and trustworthy as-is).

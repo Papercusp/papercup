@@ -71,14 +71,23 @@ working down from the `turns=0` symptom. All fixed in `433ff44dd`
 
 ### Follow-ups (NOT part of this plan — surfaced for the owner)
 
-- **Brain model pin.** Production default is `anthropic/claude-opus-4-7` (opus → lowest
-  Claude-Max rate limits); the `.env.local` `AGENT_CMD="claude -p --model haiku"` override
-  is *dead* (the branch's own `--model` wins, last-flag), so the brain actually runs on
-  opus. Decide the intended production brain model + set it via agent-config, not AGENT_CMD.
-- **Voice persona findings** (over-length `<say>`, missing choice-card, over-asking) are
-  operator-persona tuning items for the voice-production effort, not this isolation plan.
-- These were run on **haiku** for cost (per D-003); a representative-model pass (sonnet/opus)
-  may shift some pass/fail verdicts.
+- **Brain model pin — opus is too SLOW for voice (measured 2026-06-02).** Production
+  default is `anthropic/claude-opus-4-7`; the `.env.local` `AGENT_CMD="claude -p --model
+  haiku"` override is *dead* (the branch's own `--model` wins, last-flag), so the brain
+  actually runs on opus. One-turn latency: **haiku ~21 s, sonnet ~17 s, opus ~100 s.** Opus
+  blows the voice scenarios' 90 s `maxWallSecs` + the 90 s initial-event timeout, and 100 s
+  of dead air is an unusable voice UX. **Recommendation: run the voice surface on `sonnet`**
+  (fast + capable) — set it via agent-config `models['operator']` (or a voice surface
+  override), NOT AGENT_CMD. See agent-insight `llm-test-operator-workspace-principal`
+  → "Brain model: latency vs compliance".
+- **Voice persona findings.** Cross-model (haiku→sonnet→opus) results: haiku's over-length
+  `<say>` (246/225/301 > 220) was a model artifact — **resolves on sonnet**; S15 fails on
+  haiku but **passes on sonnet**. Persistent on sonnet: `oneQuestionMarkPerTurn` (S13 stacked
+  2 questions — deterministic), `cardUsage` (S16 didn't surface a voiceAnswerable
+  disambiguation card — sonnet skips it, opus uses it), one 222-char overrun. These are
+  operator voice-persona tuning items (the persona already states the rules at
+  `operator-converse-prompt.ts:201` etc.), **not** isolation-plan work — flagged for the
+  voice-production owner.
 
 ---
 
