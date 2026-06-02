@@ -179,7 +179,7 @@ One cycle:
 
 ## Phase 2 — Judge + scoring
 
-- **P-008** `todo` Frozen Opus judge: **generic, judgment-based** prompt (D1 intent+spec-gaps, D2 code quality, D3 process correctness); pin model + weights + **sampling temperature** + `rubric_hash`; emit per-dim scores + rationale. importance: high
+- **P-008** `wip` Frozen Opus judge: **generic, judgment-based** prompt (D1 intent+spec-gaps, D2 code quality, D3 process correctness); pin model + weights + **sampling temperature** + `rubric_hash`; emit per-dim scores + rationale. importance: high (core built+unit-tested rubric/rubricHash/composite/parse/prompt/judgeGymRun, opus-4-8+thinking plumbing; real opus-4-8 call validated at P-014)
 - **P-029** `todo` Trace distillation: select/summarize a multi-hour multi-agent run into a judge-sized input; validate it as a noise source. blocked-by: P-002
 - **P-009** `todo` Composite + gates: judge composite = reward; pass-count = observability; gates = dev-anchor no-regress + probe + no-new-regressions + cost. blocked-by: P-008, P-003
 - **P-010** `todo` Re-judge-from-cache: re-score cached distilled traces on rubric change, no pipeline rerun. blocked-by: P-008
