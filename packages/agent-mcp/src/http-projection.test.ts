@@ -538,6 +538,42 @@ describe('handleHttpToolRequestStreaming', () => {
     expect(seenRunIds).not.toContain('standalone');
   });
 
+  describe('?superuser=1 must be validated — reject, never fall through to anonymous dispatch', () => {
+    it('rejects with 401 and does NOT run the tool when validateSuperuser returns false', async () => {
+      const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
+      registerProjectedTool(makeTool({ requirePrincipal: false, fn }));
+      const res = await handleHttpToolRequest(
+        MAKE_REQ({ searchParams: new URLSearchParams('superuser=1') }),
+        MAKE_EXTRAS({ validateSuperuser: () => false }),
+      );
+      expect(res.status).toBe(401);
+      expect(res.body).toMatchObject({ error: { code: 'unauthorized' } });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 401 when ?superuser=1 but NO validateSuperuser is provided (absent validator ⇒ deny)', async () => {
+      const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
+      registerProjectedTool(makeTool({ requirePrincipal: false, fn }));
+      const res = await handleHttpToolRequest(
+        MAKE_REQ({ searchParams: new URLSearchParams('superuser=1') }),
+        MAKE_EXTRAS(), // host did not wire a superuser validator at all
+      );
+      expect(res.status).toBe(401);
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('admits and runs the tool when validateSuperuser returns true', async () => {
+      const fn = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'ran' }] }));
+      registerProjectedTool(makeTool({ requirePrincipal: false, fn }));
+      const res = await handleHttpToolRequest(
+        MAKE_REQ({ searchParams: new URLSearchParams('superuser=1') }),
+        MAKE_EXTRAS({ validateSuperuser: () => true }),
+      );
+      expect(res.status).toBe(200);
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {
     // Regression: tools declaring `error: z.string()` (architect/brainstorm)
     // expect raw text on the wire so the submodule consumer can do
