@@ -119,6 +119,30 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     expect(n).toBeGreaterThanOrEqual(18);
   });
 
+  it('builds the core global schemas (papercusp_auth + audit, migration 109)', async () => {
+    // The reference dump was scoped to harness_shared + papercup_shared, so these were a
+    // baseline blind spot until 109 restored them.
+    const rows = await sql.unsafe(
+      `SELECT nspname FROM pg_namespace WHERE nspname = ANY($1)`,
+      [['harness_shared', 'papercup_shared', 'papercusp_auth', 'audit']],
+    );
+    expect(rows.length).toBe(4);
+  });
+
+  it('grants the runtime app role access (harness_app can read its tables — migration 109)', async () => {
+    // --no-privileges stripped every grant from the baseline; 109 restores them. Connect AS
+    // harness_app (not the migration superuser) to prove a fresh boot doesn't lock the app out.
+    const u = new URL(adminUri);
+    const appUri = `postgresql://harness_app:harness_app_pwd@${u.hostname}:${u.port}/${dbName}`;
+    const app = postgres(appUri, { max: 1, onnotice: () => {} });
+    try {
+      await expect(app.unsafe(`SELECT count(*) FROM harness_shared.harness_features_consolidated`)).resolves.toBeDefined();
+      await expect(app.unsafe(`SELECT count(*) FROM papercusp_auth.users`)).resolves.toBeDefined();
+    } finally {
+      await app.end({ timeout: 5 });
+    }
+  });
+
   it('is idempotent — a second run applies nothing', async () => {
     const second = await applyPendingMigrations({ client: sql, sqlDir: SQL_DIR });
     expect(second.appliedCount).toBe(0);
