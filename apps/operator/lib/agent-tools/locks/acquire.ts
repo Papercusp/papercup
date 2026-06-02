@@ -113,7 +113,7 @@ const PLACEHOLDER_INTENT = '(active — see coord:presence for current work)';
  * paid rarely. See the SU playbook's note nudging agents to declare a real
  * intent so these blocks are useful.
  */
-async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
+export async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
   const owners = [...new Set(rows.map((r) => r.owner))];
   const byOwner = new Map<string, Awaited<ReturnType<typeof getPresence>>>();
   await Promise.all(
