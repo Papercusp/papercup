@@ -401,6 +401,39 @@ change-notify trigger; it missed the origin column + the usage capture trigger.
 - **#2 live papercup share** + **cross-machine P-079 / R-1** — user's manual steps.
 - **revocation v2** — owner's trust-model decision. **#3 packaged smoke** — user-skipped.
 
+## Session 10 (2026-06-02) — #3 packaged two-instance smoke: harness delivered, BLOCKED on a corrupt .deb
+
+Took on #3 (the packaged two-instance cross-process federation smoke). Worked out
+the full recipe + delivered a **repeatable harness script** —
+`papercusp-desktop/bin/two-instance-federation-smoke.sh` (papercusp-desktop commit
+`f9c7801`): extract the .deb → clobber pre-check → launch the packaged binary ×2
+headless under Xvfb :99 (vglrun), each with an isolated HOME (→ own ~/.papercusp /
+embedded-PG / corestore / dynamically-picked sidecar port) → share one synthetic
+harness (same `github_repository_id` → same swarm topic) → verify boot + isolation
++ Hyperswarm peer discovery. Cleans up on exit.
+
+**BLOCKER (not my code): the release .deb is CORRUPT.** Launching it for real
+showed the embedded-PG 0-byte-binary clobber RECURRED
+(`project_desktop_bundle_empty_pg_binaries`, "resolved 2026-06-01"): the Jun-1
+20:32 `.deb` ships an entirely 0-byte sidecar bundle (host.mjs, embedded-postgres-
+server.mjs, initdb, postgres, pglite-server.mjs, spa/index.html all 0B) → embedded-
+PG can't init → "falling through to pglite" (itself 0B) → wholly non-functional.
+The harness's clobber pre-check fails loud (exit 2) on it. **A clean
+`bin/release-local.sh` rebuild is required before the smoke can run.** Broadcast to
+coord for the desktop-build owner (+ make the bundle assertion fail the build on
+any 0-byte sidecar file).
+
+**Federation MERGE remains P-079-gated regardless of the .deb:** a synthetic repo
+id can't publish a channel-2 binding, so two same-box instances connect + replicate
+raw cores but neither ADMITS the other's log → no merge. The merge logic is
+wire-proven (two distinct identities, real testnet-DHT swarm, PG convergence) by
+`apps/operator/lib/sync/hyperbee/__tests__/two-peer-swarm-bidi.test.ts`. A real
+packaged merge needs real GitHub bindings (the live two-machine P-079, or a real
+throwaway repo both identities can publish to). Decision: did NOT rebuild the
+desktop overnight (heavy on the shared box + clobber-recurrence risk + the merge
+ceiling makes the payoff low) — the harness + diagnosis + clean-rebuild path is
+the deliverable; the user/build-owner runs it after a clean build.
+
 ## What shipped session 1 (verified present on disk + wired)
 
 1. **Hyperbee→PG read-loop** — commit `409681ff`
