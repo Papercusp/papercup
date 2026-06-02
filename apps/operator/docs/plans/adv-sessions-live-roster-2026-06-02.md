@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Phase 1 shipped (P-001 + P-002). `coord_owner_id` is on `adv_sessions` (migration 106 + runtime DDL, applied to the dev box), threaded through adv-sessions.ts, and recorded by both psu launchers (bootstrap-su `su-<uuid>`, bootstrap-role `role-<uuid>`). `mergeRoster()` (apps/operator/lib/adv-roster.ts) joins coord_presence (primary) ← adv_sessions on coord_owner_id and derives liveness; pure core has 9 unit tests; the LEFT JOIN is validated live. New launches populate the join after the next operator restart (the :3070 host has no hot-reload; the column already exists, so existing sessions just show null enrichment until relaunched — expected per D-001).
+**State:** Phases 1–2 shipped. P-001/P-002 (coord_owner_id join + mergeRoster) and P-003 (GET /api/adv/roster, returning {active, ended}) are done, tested (28 tests across the roster/sessions/route suites), and committed (29895bf80, 7a3702c, c2fc44539). The endpoint + launcher wiring go live on the next :3070 restart (no hot-reload; the column is already applied). Remaining in Phase 2: P-009 (Tier-3 locks+coord enrichment, importance low) — deferred to pair with its only consumer, the P-007 detail dossier.
 
-**Next:** Phase 2 — P-003: the merged roster endpoint (extend GET /api/adv/sessions or add GET /api/adv/roster) consuming mergeRoster() + recent ended sessions; then P-009 enrichment.
+**Next:** Phase 3 — fold Sessions into the combined Plans/Inbox shell as the 3rd ?view= (P-004 shared LivenessDot/PresenceRow, P-005 shell integration + remove standalone tab + rail filter, P-006 rich rows). Higher blast radius (edits the shared PlansClient) — confirm before starting.
 
 ## Background
 
@@ -108,7 +108,7 @@ RAIL (shared) │ Plans │ Inbox │ *Sessions               │ AGENT DETAIL
 
 ## Phase 2 — Endpoint (merged roster + enrichment)
 
-- **P-003** `todo` Merged roster endpoint (extend GET /api/adv/sessions or add GET /api/adv/roster): active agents (presence-primary) + adv_sessions enrichment + recent ended sessions for the durable list. Consumes mergeRoster().
+- **P-003** `done` Merged roster endpoint (extend GET /api/adv/sessions or add GET /api/adv/roster): active agents (presence-primary) + adv_sessions enrichment + recent ended sessions for the durable list. Consumes mergeRoster(). (GET /api/adv/roster: {active: mergeRoster, ended: listEndedAdvSessions} + dedupeEndedAgainstActive + ?workspace/?endedLimit. 19 tests, typecheck clean, SQL validated live. Registered via routes/adv/sessions array. Live on next :3070 restart. Commit c2fc44539.)
 - **P-009** `todo` Tier-3 enrichment for the detail dossier: per-agent locks-held + expiry (locks:queue / papercusp_su) and coord state (last message, open handoffs/escalations, unread count from coord_event_log). Lazy / per-agent so the roster query stays cheap. importance: low
 
 ## Phase 3 — Shell integration (Sessions = 3rd view)
