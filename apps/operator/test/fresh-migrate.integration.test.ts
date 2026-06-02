@@ -140,6 +140,82 @@ describe('fresh migrate — empty Postgres → head (tripwire for the owed basel
 });
 
 /*
+ * Idempotency + duplicate-NNN safety (plan harness-test-coverage-for-launch P-010).
+ *
+ * The STRICT SUCCESS GATE below (incl. a clean head idempotency check) can't be
+ * enabled until the owed baseline rebuild lands. But the runner's core safety
+ * property — it keys `schema_migrations` on FILENAME, so a re-run never re-applies
+ * an already-applied file and duplicate-NNN prefixes don't collide — is testable
+ * NOW against the self-contained prefix that does apply. These tests run AFTER the
+ * tripwire describe above, so the prefix is already applied to the shared DB.
+ */
+describe('migration runner — idempotency + duplicate-NNN safety (current prefix)', () => {
+  const freshConn = (): postgres.Sql => {
+    const u = new URL(adminUri);
+    u.pathname = `/${dbName}`;
+    // max:1 — the runner applies each file in an explicit BEGIN/COMMIT.
+    return postgres(u.toString(), { max: 1, onnotice: () => {} });
+  };
+  const appliedFilenames = async (): Promise<string[]> => {
+    const c = freshConn();
+    try {
+      const rows = await c.unsafe(
+        `SELECT filename FROM harness_shared.schema_migrations ORDER BY filename`,
+      );
+      return rows.map((r: { filename: string }) => r.filename);
+    } finally {
+      await c.end({ timeout: 5 });
+    }
+  };
+
+  it('a second run re-applies nothing — schema_migrations is byte-identical (filename-keyed guard)', async () => {
+    const before = await appliedFilenames();
+    expect(before.length).toBeGreaterThan(40); // the prefix from the tripwire run
+
+    // Re-run on a FRESH connection (the tripwire's throw left the shared one in an
+    // aborted txn). It throws again at the same not-yet-self-contained migration,
+    // but must skip the whole already-applied prefix.
+    const conn = freshConn();
+    try {
+      await expect(applyPendingMigrations({ client: conn, sqlDir: SQL_DIR })).rejects.toThrow();
+    } finally {
+      await conn.end({ timeout: 5 });
+    }
+
+    const after = await appliedFilenames();
+    expect(after).toEqual(before); // no re-application, no extra rows, no PK crash
+  });
+
+  it('records each migration filename at most once (filename is the PK, not the NNN)', async () => {
+    const c = freshConn();
+    try {
+      const dupes = await c.unsafe(
+        `SELECT filename FROM harness_shared.schema_migrations
+          GROUP BY filename HAVING count(*) > 1`,
+      );
+      expect(dupes).toHaveLength(0);
+    } finally {
+      await c.end({ timeout: 5 });
+    }
+  });
+
+  it('duplicate-NNN files are tracked independently — every 029-* migration is applied', async () => {
+    // The audit flagged ~12 duplicate NNN prefixes (007, 029-032, 048-049, …).
+    // Because the runner keys on full FILENAME and applies in lexical order, each
+    // file in a duplicated-NNN group is tracked separately — none is skipped or
+    // overwritten. 029 sits inside the applied prefix, so both files must be there.
+    const { readdirSync } = await import('node:fs');
+    const dup029 = readdirSync(SQL_DIR)
+      .filter((f) => /^029-.*\.sql$/.test(f))
+      .sort();
+    expect(dup029.length).toBeGreaterThanOrEqual(2); // the duplicate NNN actually exists
+
+    const applied = new Set(await appliedFilenames());
+    for (const f of dup029) expect(applied.has(f)).toBe(true);
+  });
+});
+
+/*
  * STRICT SUCCESS GATE — enable once the migration set is self-contained from
  * empty (the owed baseline rebuild). Replace the tripwire `describe` above with:
  *
