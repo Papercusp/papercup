@@ -37,6 +37,11 @@ describe('scenario registry', () => {
       'op-S11-voice-card-answer',
       'op-S12-tool-error-recovery',
       'op-S12b-tool-error-injected',
+      // voice-mode brain behaviors (voice-production-test-coverage-2026-06-01 P-019)
+      'op-S13-voice-terse-complex',
+      'op-S14-voice-no-code',
+      'op-S15-voice-error-recovery',
+      'op-S16-voice-disambiguation',
       // operator brain-emission contracts (M-prefixed; operator-behavior-tests-2026-05-14)
       'op-M1-continue-paired-with-say',
       'op-M2-mutex-card-vs-continue',
