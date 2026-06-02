@@ -1,7 +1,7 @@
 ---
 title: Platform-variant test domains: browser-equivalent chaos + live
 slug: testing-shell-platform-variants-2026-06-01
-status: draft
+status: shipped
 created: 2026-06-01
 updated: 2026-06-02
 owner: aviynw3@gmail.com
@@ -12,9 +12,9 @@ parent: testing-shell-cross-project-2026-06-01
 
 ## Now
 
-**State:** IMPLEMENTATION COMPLETE + VERIFIED on both projects (2026-06-02). Lib core (submodule `c1b4bc8`). **Restart 'web' side** (P-007 `/api/chaos-web` route + P-010 tabs, `platform='web'`): live chaos run drove `:3001`, both panels render (Restart `da4315ae`). **papercup 'both' side** (P-006 `/api/admin/testing/chaos-web` route + P-009 wiring; papercup `636198f0f`): 3 live chaos runs drove the built `:3070` SPA (real clicks + caught 401/403 console errors); the operator-vite bundle rebuilt with the tabs; the **Tauri-shell DOM eval** confirms `/admin/testing` renders Chaos (web) + Live (web) (`tabCount 24`, `hasChaosWeb`/`hasLiveWeb` true). Three findings vs the plan's assumptions: (1) **P-008 was a NO-OP** — both projects already ship Playwright + chromium; (2) the contended `testing-domains-registry.ts` was **NOT touched** — `/admin/testing`'s TABS are hardcoded in operator-vite's `TestingClient.tsx`, so platform tagging lives there, not the registry; (3) papercup chaos-web drives **`:3070`** (the built SPA the desktop loads), NOT `:3055` (the Vite HMR dev server throws `createHotContext` in a plain headless browser).
+**State:** SHIPPED 2026-06-02. Browser-equivalent chaos + live variants live in `@papercusp/testing-shell` (submodule), wired into Restart (`platform='web'`, commit `da4315ae`) and papercup (`platform='both'`, commit `636198f0f`), both live-verified (Restart chaos run drove `:3001`; papercup Tauri-shell DOM eval confirmed Chaos (web) + Live (web)). P-012 human sign-off RECEIVED (user) — the cross-repo wiring is accepted as shipped.
 
-**Next:** only **P-012** (human sign-off on the cross-repo wiring) remains — the user's call.
+**Next:** Done — plan shipped. No action.
 
 ## Background — approved design
 
@@ -53,7 +53,7 @@ parent: testing-shell-cross-project-2026-06-01
 ## Phase 5 — Verify
 
 - **P-011** `done` Lib units (`visibleTabs`, observer mapping) + `chaos-runner` smoke; papercup + Restart `next build`/operator-config; live-render eyeball of both dashboards. blocked-by: P-009, P-010 (lib 30 tests green; chaos-runner exercised by both routes' live runs; Restart `next build` ×2 + operator-vite bundle rebuild clean; Restart /tests eyeballed via Playwright (6 tabs + StatusStrip), papercup /admin/testing eyeballed via the Tauri-shell bridge DOM eval (Chaos (web)+Live (web) present).)
-- **P-012** `needs-human` Sign-off before the cross-repo wiring is considered shipped (touches papercup + Restart). importance: high blocked-by: P-011
+- **P-012** `done` Sign-off before the cross-repo wiring is considered shipped (touches papercup + Restart). importance: high blocked-by: P-011 (SIGNED OFF 2026-06-02 user — cross-repo wiring accepted: papercup platform='both' 636198f0f, Tauri-shell DOM eval + Restart platform='web' da4315ae, live chaos run on :3001. Both live-verified.)
 
 ## Decisions
 
