@@ -63,7 +63,10 @@ describe('emitUsageEvent', () => {
     expect(values[3]).toBe('dev-abc'); // device_pubkey
     expect(values[4]).toBe('feature_authored'); // kind
     expect(values[5]).toBe('F-1'); // ref_id
-    expect(sql.json).toHaveBeenCalledWith({ title: 'Do it' }); // payload via sql.json
+    // payload is bound as JSON.stringify(...)::jsonb (NOT sql.json — that throws
+    // under the operator's getOrgPg client; see agent-insights/postgres-js-jsonb-binding).
+    expect(values[6]).toBe(JSON.stringify({ title: 'Do it' }));
+    expect(sql.json).not.toHaveBeenCalled();
     expect(values[7]).toBe(1_700_000_000_000); // ts ms (inside to_timestamp)
     expect(values[8]).toBe(1); // schema_version
   });
