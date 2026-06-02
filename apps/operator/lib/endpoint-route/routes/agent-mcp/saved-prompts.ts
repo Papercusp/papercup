@@ -1,7 +1,10 @@
 /**
- * GET/PUT/DELETE /api/agent-mcp/saved-prompts — cross-client saved-prompts
- * CRUD for the harness-settings + personalization UI (plan
- * saved-prompts-cross-client).
+ * Cross-client saved-prompts CRUD for the harness-settings + personalization
+ * UI (plan saved-prompts-cross-client):
+ *
+ *   GET  /api/agent-mcp/saved-prompts          — list one scope
+ *   POST /api/agent-mcp/saved-prompts          — upsert
+ *   POST /api/agent-mcp/saved-prompts/remove   — delete by name
  *
  * Route-shaped `defineTool` with `auth: 'public'` (loopback-trusted), the
  * same shape every other settings surface uses (operator-config,
@@ -10,7 +13,18 @@
  * principal-gated D-005). Each write re-materializes the affected scope's
  * on-disk command files so ambient Claude/OMP sessions pick them up.
  *
- * Scope: no `?harness=` ⇒ workspace-global; `?harness=<slug>` ⇒ that harness.
+ * Why writes are POST, not PUT/DELETE (D-010): the desktop WebView
+ * (WebKitGTK) silently fails CORS preflight handshakes, and the client
+ * routes these calls through the sibling loopback host (crossOriginUrl) to
+ * escape SSE socket-pool starvation — which makes them cross-origin. Only
+ * GET/HEAD/POST + a safelisted content-type (text/plain) are CORS-"simple"
+ * (no preflight); PUT/DELETE always preflight. So both writes are POST and
+ * the client sends `text/plain` bodies. The global `/api/*` host CORS
+ * (bin/host-cors.ts) reflects the loopback origin on the response, so no
+ * per-route `cors` field is needed (mirrors the git/show read).
+ * `req.json()` parses the body regardless of its content-type header.
+ *
+ * Scope: no `?harness=`/`harness` ⇒ workspace-global; a slug ⇒ that harness.
  * Workspace is the request's active workspace.
  */
 import { defineTool } from '@papercusp/agent-mcp';
@@ -50,8 +64,8 @@ const get = defineTool({
   },
 });
 
-const put = defineTool({
-  method: 'PUT',
+const upsert = defineTool({
+  method: 'POST',
   path: '/agent-mcp/saved-prompts',
   auth: 'public',
   async handler(req) {
@@ -87,21 +101,23 @@ const put = defineTool({
   },
 });
 
-const del = defineTool({
-  method: 'DELETE',
-  path: '/agent-mcp/saved-prompts',
+const remove = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/saved-prompts/remove',
   auth: 'public',
   async handler(req) {
-    const url = new URL(req.url);
-    const harness = url.searchParams.get('harness');
-    const name = (url.searchParams.get('name') ?? '').trim();
+    const body = (await req.json().catch(() => ({}))) as {
+      harness?: string | null;
+      name?: string;
+    };
+    const name = (body.name ?? '').trim();
     if (!name) return Response.json({ error: 'missing_name' }, { status: 400 });
     const ws = activeWorkspaceId();
-    const scope = scopeFromHarness(harness?.trim() || null);
+    const scope = scopeFromHarness(body.harness?.trim() || null);
     const removed = await removeSavedPrompt(getOrgPg().sql, ws, scope, name);
     await rematerialize(ws, scope);
     return Response.json({ removed });
   },
 });
 
-export default [get, put, del];
+export default [get, upsert, remove];

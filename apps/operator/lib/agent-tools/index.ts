@@ -145,6 +145,8 @@ import './flags/list';
 import './flags/get';
 import './flags/set';
 
+import './saved_prompts/list';
+
 import './backup/snapshot_create';
 import './backup/snapshot_list';
 import './backup/restore';
