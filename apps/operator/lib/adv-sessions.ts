@@ -404,6 +404,54 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
 }
 
 /**
+ * Recently-ended adv_sessions — the durable history half of the live-roster
+ * view (the active half is the presence-driven mergeRoster). Scoped to a
+ * workspace when given, else cross-workspace. Most-recently-ended first.
+ * adv-sessions-live-roster P-003.
+ */
+export async function listEndedAdvSessions(
+  opts: { workspaceId?: string | null; limit?: number } = {},
+): Promise<AdvSessionRow[]> {
+  const limit = opts.limit ?? 50;
+  const ws = opts.workspaceId ?? null;
+  try {
+    await ensureAdvSessionsTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{
+      id: number;
+      workspace_id: string;
+      plan_slug: string | null;
+      agent: string | null;
+      role: string | null;
+      feature: string | null;
+      mode: 'omp' | 'console';
+      terminal_bin: string | null;
+      pid: number | null;
+      window_id: string | null;
+      omp_thread_id: string | null;
+      label: string | null;
+      cwd: string | null;
+      coord_owner_id: string | null;
+      started_at: string | Date;
+      ended_at: string | Date | null;
+      exit_code: number | null;
+    }>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NOT NULL
+         AND (${ws}::text IS NULL OR workspace_id = ${ws})
+       ORDER BY ended_at DESC
+       LIMIT ${limit}
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    console.warn('[adv-sessions] listEndedAdvSessions failed:', (e as Error).message);
+    return [];
+  }
+}
+
+/**
  * Resolve a pid → X11 window id via `wmctrl -lp`. Best-effort: returns
  * null on any failure (no wmctrl, no DISPLAY, pid not yet windowed,
  * etc.). Callers should accept the null and surface a "couldn't focus"

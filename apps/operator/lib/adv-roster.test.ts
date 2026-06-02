@@ -3,6 +3,7 @@ import {
   deriveLiveness,
   scopePresenceToWorkspace,
   mergeRosterEntries,
+  dedupeEndedAgainstActive,
   LIVE_MS,
   GLOBAL_WORKSPACE,
 } from './adv-roster';
@@ -130,5 +131,23 @@ describe('mergeRosterEntries', () => {
       NOW,
     );
     expect(got.map((r) => r.ownerId)).toEqual(['x', 'y', 'z']);
+  });
+});
+
+describe('dedupeEndedAgainstActive', () => {
+  it('drops ended rows whose coord owner is still live in the active roster', () => {
+    const ended = [adv({ id: 1, coordOwnerId: 'su-live' }), adv({ id: 2, coordOwnerId: 'su-gone' })];
+    const got = dedupeEndedAgainstActive(ended, [{ ownerId: 'su-live' }]);
+    expect(got.map((r) => r.id)).toEqual([2]); // su-live shown in active; su-gone kept as ended
+  });
+
+  it('keeps ended rows with no coord_owner_id (console/legacy cannot collide)', () => {
+    const ended = [adv({ id: 5, coordOwnerId: null })];
+    expect(dedupeEndedAgainstActive(ended, [{ ownerId: 'su-x' }]).map((r) => r.id)).toEqual([5]);
+  });
+
+  it('keeps everything when nothing is active', () => {
+    const ended = [adv({ id: 1, coordOwnerId: 'a' }), adv({ id: 2, coordOwnerId: 'b' })];
+    expect(dedupeEndedAgainstActive(ended, []).map((r) => r.id)).toEqual([1, 2]);
   });
 });

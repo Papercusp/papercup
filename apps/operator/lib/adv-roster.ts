@@ -18,6 +18,20 @@
 import { listPresence, PRESENCE_STALE_MS, type PresenceRecord } from './agent-tools/coordination/presence';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
 
+/**
+ * Drop ended adv_sessions whose coord owner is still live in the active
+ * roster — that agent is already shown (with richer presence), so listing its
+ * ended terminal row too would double-count it. Rows with no coord_owner_id
+ * (console/legacy) can't collide, so they always pass. Pure → unit-tested.
+ */
+export function dedupeEndedAgainstActive(
+  ended: AdvSessionRow[],
+  active: { ownerId: string }[],
+): AdvSessionRow[] {
+  const liveOwners = new Set(active.map((a) => a.ownerId));
+  return ended.filter((r) => !r.coordOwnerId || !liveOwners.has(r.coordOwnerId));
+}
+
 /** A presence row whose workspace is '*' is workspace-agnostic (an unscoped
  *  SU/engineer shell) — it belongs to every workspace's roster. */
 export const GLOBAL_WORKSPACE = '*';

@@ -15,12 +15,14 @@ import {
   focusWindowId,
   getAdvSession,
   listAdvSessions,
+  listEndedAdvSessions,
   listResumableSessions,
   resolveWindowIdForPid,
   resolveWindowIdForTitleFragment,
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
 } from '@/lib/adv-sessions';
+import { mergeRoster, dedupeEndedAgainstActive } from '@/lib/adv-roster';
 import { readOmpConfig } from '@/lib/omp-config';
 import {
   findOmpSessionNear,
@@ -344,4 +346,38 @@ const resumable = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, resumable];
+/**
+ * GET /api/adv/roster — the live "who's active, on what" roster (plan
+ * adv-sessions-live-roster, P-003). coord_presence is the primary source (every
+ * active psu agent heartbeats per tool call), LEFT-joined to adv_sessions on
+ * coord_owner_id for plan/role/feature + Focus/Resume handles. Returns:
+ *   - active: RosterEntry[]  (presence-primary, liveness from heartbeat)
+ *   - ended:  AdvSessionRow[] (recently-ended terminals not already live above)
+ * Workspace-scoped via `?workspace=<id>`; omit or `all` for every workspace.
+ * Non-breaking: leaves GET /adv/sessions intact until the UI rewires (P-005).
+ */
+const roster = defineTool({
+  method: 'GET',
+  path: '/adv/roster',
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    const wsParam = url.searchParams.get('workspace');
+    const workspaceId = !wsParam || wsParam === 'all' ? null : wsParam;
+    const endedLimitRaw = Number(url.searchParams.get('endedLimit') ?? 50);
+    const endedLimit = Number.isFinite(endedLimitRaw) && endedLimitRaw > 0 ? endedLimitRaw : 50;
+
+    const [active, endedAll] = await Promise.all([
+      mergeRoster({ workspaceId }),
+      listEndedAdvSessions({ workspaceId, limit: endedLimit }),
+    ]);
+    const ended = dedupeEndedAgainstActive(endedAll, active);
+
+    return new Response(JSON.stringify({ active, ended }), {
+      status: 200,
+      headers: JSON_HEADERS,
+    });
+  },
+});
+
+export default [list, focus, alive, state, search, resumable, roster];
