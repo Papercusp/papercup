@@ -193,6 +193,7 @@ import agentMcp_operatorAudit from './agent-mcp/operator-audit';
 import agentMcp_operatorBudget from './agent-mcp/operator-budget';
 import agentMcp_operatorCartesiaTest from './agent-mcp/operator-cartesia-test';
 import agentMcp_operatorConfig from './agent-mcp/operator-config';
+import agentMcp_savedPrompts from './agent-mcp/saved-prompts';
 import agentMcp_operatorConverse from './agent-mcp/operator-converse';
 import agentMcp_operatorConvVoice from './agent-mcp/operator-conv-voice';
 import agentMcp_operatorCredentials from './agent-mcp/operator-credentials';
@@ -403,6 +404,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorBudget as AnyRoute[]),
   ...flatten(agentMcp_operatorCartesiaTest as AnyRoute),
   ...flatten(agentMcp_operatorConfig as AnyRoute[]),
+  ...flatten(agentMcp_savedPrompts as AnyRoute[]),
   ...flatten(agentMcp_operatorConverse as AnyRoute),
   ...flatten(agentMcp_operatorConvVoice as AnyRoute[]),
   ...flatten(agentMcp_operatorCredentials as AnyRoute[]),
