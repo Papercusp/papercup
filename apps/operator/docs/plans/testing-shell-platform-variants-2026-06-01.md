@@ -12,9 +12,9 @@ parent: testing-shell-cross-project-2026-06-01
 
 ## Now
 
-**State:** Lib core COMPLETE + committed (submodule 511c384, all TDD'd): platform prop + visibleTabs (P-001), in-page web observer + LiveWebPanel (P-002/P-003), chaos-runner.mjs Playwright clicker + ChaosWebPanel (P-004/P-005). 26 lib tests green; lib self-typechecks. Remaining is host integration: P-006 papercup chaos-web SSE route (papercup HAS Playwright+chromium ✓), P-007 Restart chaos-web route, P-008 add Playwright+chromium to Restart, Phase 4 wiring (papercup platform='both', Restart 'web'), Phase 5 verify. TWO complications surfaced: (1) another agent is concurrently editing apps/operator/lib/testing-domains-registry.ts (added a domain → 22; line-16-vs-97 looks inconsistent) — papercup Phase-4 wiring must coordinate/re-read; (2) Restart has NO Playwright + no browser binary, so P-008 is a heavy install (npm install is broken there + chromium binary download), unlike live-web which needs nothing.
+**State:** Lib core COMPLETE (submodule now `c1b4bc8` — the lib also gained AdoptionMatrixPanel + a TestingShell `railHeader` slot via a sibling task; all TDD'd, 30 lib tests green). **Restart 'web' side SHIPPED + verified (2026-06-02):** P-007 `/api/chaos-web` spawn route (resolves chaos-runner via project.repoRoot, relays NDJSON) + P-010 wiring (`platform='web'` + Live (web)/Chaos (web) tabs) — a 3-step chaos run drove `:3001` (start/step/done NDJSON) and both panels render; **P-008 was a NO-OP** — Restart already ships Playwright + chromium (its shop tests use them), so the plan's "Restart has NO Playwright" assumption was stale. Remaining = the **papercup side**: P-006 (operator chaos-web SSE route; papercup HAS Playwright+chromium ✓) + P-009 (wiring `platform='both'`, tag desktop chaos/live `'desktop'`, register chaos-web/live-web `'web'` → `:3055`), then P-011 verify + P-012 sign-off. Complication still live: another agent is concurrently editing `apps/operator/lib/testing-domains-registry.ts` (now 22 domains) — papercup P-009 must coordinate via locks/coord + re-read before editing.
 
-**Next:** Human: OK to (a) install Playwright + chromium in Restart for chaos-web (heavy), or keep Restart to live-web only for now? Then an agent does P-006 + the papercup/Restart wiring (live-web needs no dep). live-web can ship to both projects immediately; chaos-web to papercup immediately, to Restart after P-008.
+**Next:** papercup P-006 + P-009 (papercup has Playwright; live-web needs no dep). Then P-011 verify via the **Tauri shell** (papercup is desktop-only-testable per CLAUDE.md — not a browser eyeball of `:3055`) + Restart `next dev`, and P-012 human sign-off.
 
 ## Background — approved design
 
@@ -42,13 +42,13 @@ parent: testing-shell-cross-project-2026-06-01
 - **P-004** `done` `src/web/chaos-runner.mjs`: Playwright headless random-clicker over `baseUrl`, N steps, capture console/crash/dialog, emit NDJSON. Smoke-test against a static fixture page (asserts clicks + events + clean exit). blocked-by: P-001 (chaos-runner.mjs: Playwright headless random-clicker over baseUrl, NDJSON events console/pageerror/crash/dialog/step/done. Pure helpers TDD'd 3/3; Playwright dynamically imported. ./web/chaos-runner export. submodule 511c384.)
 - **P-005** `done` `ChaosWebPanel` customTab: start/stream/stop run UI (mirror Restart's `LoadTestPanel`); POSTs to the host's chaos-web SSE endpoint. blocked-by: P-004 (ChaosWebPanel customTab: start/stream/stop, POSTs {baseUrl,maxSteps} to a host runEndpoint, parses the NDJSON stream. Exported from the client barrel. submodule 511c384.)
 - **P-006** `todo` papercup: operator SSE route that spawns `chaos-runner.mjs` (pattern of `ai-explore` / `load-tests`). blocked-by: P-004
-- **P-007** `todo` Restart: `_hono` SSE route that spawns `chaos-runner.mjs`. blocked-by: P-004, P-008
-- **P-008** `todo` Add Playwright as a Restart dependency (D-005) — `npm install` is broken there, so use the `npm pack`+extract workaround; `chaos-runner` needs it (`live-web` needs nothing).
+- **P-007** `done` Restart: `_hono` SSE route that spawns `chaos-runner.mjs`. blocked-by: P-004 (app/api/_hono/chaos-web.ts: POST /run spawns chaos-runner via project.repoRoot, relays NDJSON verbatim; localhost-only baseUrl guard; /stop kills. Registered at /api/chaos-web. Verified: 3-step run vs :3001 → start/step/done. Restart da4315ae.)
+- **P-008** `done` (NO-OP) Add Playwright to Restart — **already satisfied**: `playwright` resolves from Restart root + chromium binaries present in `~/.cache/ms-playwright` (the shop tests use them). The plan's "Restart has NO Playwright" was stale. No install needed.
 
 ## Phase 4 — Wiring
 
 - **P-009** `todo` papercup (`platform='both'`): tag desktop `chaos`/`live` `platform:'desktop'`; register `chaos-web`/`live-web` `platform:'web'` (baseUrl → `:3055` SPA); set the harness + `/admin/testing` `TestingShell` `platform='both'`. blocked-by: P-003, P-005, P-006
-- **P-010** `todo` Restart (`platform='web'`): add `chaos-web` + `live-web` tabs to `TestsClient` (baseUrl → `:3001`); pass `platform='web'`. blocked-by: P-003, P-005, P-007
+- **P-010** `done` Restart (`platform='web'`): add `chaos-web` + `live-web` tabs to `TestsClient` (baseUrl → `:3001`); pass `platform='web'`. blocked-by: P-003, P-005, P-007 (TestsClient: platform='web' + Live (web)/Chaos (web) tabs tier 'project' platform:'web', LiveWebPanel + RestartChaosWebPanel(hostBase). Verified: rail shows 6 tabs Universal[2]/Restart[4], both panels render, no pageerrors. Restart da4315ae.)
 
 ## Phase 5 — Verify
 
