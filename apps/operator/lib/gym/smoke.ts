@@ -215,23 +215,6 @@ async function main(): Promise<void> {
       report.diffStat = execFileSync('git', ['diff', '--stat', baseCommit, head], { cwd: cloneDir, encoding: 'utf8' }).trim();
     }
 
-    // DIAGNOSTIC: capture the worker invoke's run log (pg-bootstrap search_path / DB)
-    // before teardown removes the clone — to pin why harness_features isn't resolved.
-    try {
-      const logsDir = join(cloneDir, '.harness', 'logs');
-      const files = existsSync(logsDir) ? readdirSync(logsDir) : [];
-      report.harnessLogFiles = files;
-      let blob = '';
-      for (const f of files) {
-        try { blob += readFileSync(join(logsDir, f), 'utf8') + '\n'; } catch { /* ignore */ }
-      }
-      report.workerPgDiag = mask(
-        blob.split('\n').filter((l) => /PG bootstrap|DATABASE_URL|embedded-pg|search_path|harness_features|getHarnessAdminUrl|USE_PG_STATE/i.test(l)).slice(-25).join('\n'),
-      );
-    } catch (e) {
-      report.workerPgDiag = `err: ${String(e)}`;
-    }
-
     ok = report.workflowStatus === 'SUCCESS';
   } catch (err) {
     report.error = String(err);
@@ -249,6 +232,27 @@ async function main(): Promise<void> {
       } catch {
         /* ignore */
       }
+    }
+    // DIAGNOSTIC (in finally so a poll flake can't lose it): capture the worker
+    // invoke's pg-bootstrap line (search_path / DB) to pin why harness_features
+    // isn't resolved. Read both candidate log homes.
+    try {
+      let blob = '';
+      const logsDir = join(cloneDir, '.harness', 'logs');
+      if (existsSync(logsDir)) {
+        report.harnessLogFiles = readdirSync(logsDir);
+        for (const f of report.harnessLogFiles as string[]) {
+          try { blob += readFileSync(join(logsDir, f), 'utf8') + '\n'; } catch { /* ignore */ }
+        }
+      }
+      for (const p of [join(tmpdir(), `harness-${SLUG}.log`), `/tmp/harness-${SLUG}.log`]) {
+        try { blob += readFileSync(p, 'utf8') + '\n'; } catch { /* ignore */ }
+      }
+      report.workerPgDiag = mask(
+        blob.split('\n').filter((l) => /PG bootstrap|DATABASE_URL|embedded-pg|search_path|harness_features|getHarnessAdminUrl|USE_PG_STATE|connected|opted-out|verification/i.test(l)).slice(-30).join('\n'),
+      ) || '(no worker run-log lines found)';
+    } catch (e) {
+      report.workerPgDiag = `capture err: ${String(e)}`;
     }
     try { rmSync(scratch, { recursive: true, force: true }); } catch { /* ignore */ }
     // Stop the dedicated gym testcontainer (drops the gym DB with it).
