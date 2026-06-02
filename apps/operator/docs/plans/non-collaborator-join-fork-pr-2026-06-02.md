@@ -17,14 +17,35 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Spec drafted. Sub-project A (write-free join) is the foundation and is
-being implemented first (TDD + live re-verify with the two real identities).
-Sub-project B (fork-based code→PR) is sequenced after A (A removes B's biggest
-blocker — the upstream-write requirement for binding).
+**State (autonomous loop, 2026-06-02):**
+- ✅ **A1 — build side** (`4b3e75cd3`): `attestation_gist_id` now rides the
+  SIGNED announce (`announce.ts` + signing + shape-check, TDD), resolved by
+  `local-announce-identity` via `ensureAttestationGist` (idempotent
+  find-or-create, no local persistence), threaded through `boot.ts`'s
+  `buildAnnounce`. Admission UNCHANGED this increment. Green: announce(16),
+  local-announce-identity(7), two-peer-swarm + bidi(2), new ensureAttestationGist
+  unit test.
+- ⏳ **A2 — verify side (NEXT):** switch the admission gate from `verifyChannel2`
+  (reads shared-repo file) to `verifyAttestation(frame.attestation_gist_id,
+  device_pubkey, github_user_id)`. Files: `read-admission.ts` (AdmissionInput +
+  verifyBinding gain the gist id), `verify-binding-adapter.ts` (direct
+  verifyAttestation, drop repo-context), `boot.ts` (onAnnounce → AdmissionInput,
+  pending-retry rebuild, admittedIdentities, reverifyAdmitted). Update
+  read-admission + verify-binding-adapter tests.
+- ⏳ **A3:** drop the contributor-file WRITE (`ensure-binding-published` + the 2
+  call sites: share-finalize, join step 3) → join becomes truly write-free.
+- ⏳ **A4:** re-home owner-revocation `revoke-contributor.ts` branch-delete →
+  gist-delete; demote/remove `verifyChannel2`.
+- ⏳ **A-live:** extend `p079-live-federation.live.test.ts` — boot both real
+  identities with NO contributor files (gists + announces only) → bidirectional
+  admission. Proves write-free join.
+- ⏳ **B:** fork create + cross-fork PR (pr-host) + authed/fork clone + pushable
+  feature branch (orchestrator submodule). Sequenced after A.
 
-**Next:** Implement A → live-verify → implement B (fork create + cross-fork PR +
-authed/fork clone + pushable feature branch) → live-verify the full
-non-collaborator round-trip.
+**Pre-existing issues observed (NOT introduced here, flagged for follow-up):**
+broad operator-suite test redness (environmental); `attest.test.ts` flakiness
+(global verify-cache not reset between tests + a fixture that hardcodes the gist
+filename instead of `attestationGistFilename`).
 
 ## The problem & the model (from the user)
 
