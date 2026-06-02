@@ -161,6 +161,68 @@ describe('private repo disables shared-public at the privacy step', () => {
   });
 });
 
+// ── private-repo offer at the URL/lookup step (step 2) ────────────────────
+
+describe('private-repo offer at the lookup step (explain + flip to private)', () => {
+  it('on a PRIVATE repo, step 2 explains the issue + offers "Share as a private harness"', async () => {
+    const user = userEvent.setup();
+    renderWizard({ initialRemote: 'https://github.com/owner/repo', repoPrivate: true });
+    await user.click(screen.getByText('Next →')); // 1 → 2
+    await waitFor(() => screen.getByText('Step 2 of 9'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('private-repo-offer'));
+    expect(screen.getByText(/can only be shared privately/i)).toBeTruthy();
+    screen.getByText('Share as a private harness →');
+    screen.getByText('Cancel');
+  });
+
+  it('on a PUBLIC repo, no private-repo offer shows at step 2', async () => {
+    const user = userEvent.setup();
+    renderWizard({ initialRemote: 'https://github.com/owner/repo', repoPrivate: false });
+    await user.click(screen.getByText('Next →')); // 1 → 2
+    await waitFor(() => screen.getByText('Step 2 of 9'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('no-binding-message'));
+    expect(screen.queryByTestId('private-repo-offer')).toBeNull();
+  });
+
+  it('"Share as a private harness" flips to shared-private + advances (private pre-selected at step 6)', async () => {
+    const user = userEvent.setup();
+    renderWizard({ initialRemote: 'https://github.com/owner/repo', repoPrivate: true });
+    await user.click(screen.getByText('Next →')); // 1 → 2
+    await waitFor(() => screen.getByText('Step 2 of 9'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('private-repo-offer'));
+    await user.click(screen.getByText('Share as a private harness →')); // flip + advance
+    await waitFor(() => screen.getByText('Step 3 of 9'));
+    // Walk to the privacy step — shared-private must be pre-selected by the flip.
+    await user.click(screen.getByText('Next →')); // 3 → 4
+    await waitFor(() => screen.getByText('Step 4 of 9'));
+    await user.click(screen.getByText('Generate topic'));
+    await user.click(screen.getByText('Next →')); // 4 → 5
+    await waitFor(() => screen.getByText('Step 5 of 9'));
+    await user.click(screen.getByText('Next →')); // 5 → 6
+    await waitFor(() => screen.getByText('Step 6 of 9'));
+    const radios = screen.getAllByRole('radio') as HTMLInputElement[];
+    expect(radios[0].checked).toBe(true); // shared-private pre-selected
+    expect(radios[1].disabled).toBe(true); // shared-public still blocked
+  });
+
+  it('"Cancel" closes the wizard', async () => {
+    const user = userEvent.setup();
+    const { onClose } = renderWizard({
+      initialRemote: 'https://github.com/owner/repo',
+      repoPrivate: true,
+    });
+    await user.click(screen.getByText('Next →')); // 1 → 2
+    await waitFor(() => screen.getByText('Step 2 of 9'));
+    await user.click(screen.getByText('Look up binding'));
+    await waitFor(() => screen.getByTestId('private-repo-offer'));
+    await user.click(screen.getByText('Cancel'));
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
 // ── P-029b — existing binding stops the flow ──────────────────────────────
 
 describe('P-029b — existing-binding alert', () => {

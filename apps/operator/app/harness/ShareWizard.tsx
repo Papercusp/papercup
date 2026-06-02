@@ -43,6 +43,8 @@ import {
   emptyShareWizardState,
   nextStep,
   previousStep,
+  shouldOfferPrivateShare,
+  flipToPrivateShare,
   type ShareWizardStep,
   type ShareWizardState,
 } from '@/lib/harness/share-wizard-step-types';
@@ -366,6 +368,40 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
           {looked && !state.existing_binding_found && (
             <div data-testid="no-binding-message" style={{ fontSize: 13, color: 'var(--fg-dim)' }}>
               No binding found for repository_id {state.github_repository_id}. Ready to create one.
+            </div>
+          )}
+          {looked && !state.existing_binding_found && shouldOfferPrivateShare(state) && (
+            <div
+              data-testid="private-repo-offer"
+              style={{ ...cardStyle, marginTop: 12, marginBottom: 0, background: 'var(--bg-warning, #4a2a1a)', borderColor: 'var(--border-warning, #b45a32)' }}
+            >
+              <div style={{ marginBottom: 6 }}>
+                <strong>⚠ This repository is private on GitHub</strong>
+              </div>
+              <div style={{ fontSize: 13, marginBottom: 12 }}>
+                A public harness is listed on the public Cupboard registry, which
+                can’t list a private repo — so this can only be shared privately.
+                <br />
+                <span style={{ color: 'var(--fg-dim)' }}>
+                  (To share publicly, make the repo public on GitHub first, then re-run Share.)
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  style={buttonPrimary}
+                  disabled={busy}
+                  onClick={() => {
+                    // Flip the whole flow to the private workflow, then advance.
+                    setState((s) => flipToPrivateShare(s));
+                    advance();
+                  }}
+                >
+                  Share as a private harness →
+                </button>
+                <button style={buttonSecondary} disabled={busy} onClick={() => onClose()}>
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </div>

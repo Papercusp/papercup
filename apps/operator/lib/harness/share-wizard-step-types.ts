@@ -229,6 +229,31 @@ export function isStateCompleteForFinalize(state: ShareWizardState): boolean {
 }
 
 /**
+ * Step 2 (lookup-binding): when the resolved repo is PRIVATE on GitHub, the
+ * wizard surfaces an explainer + an in-wizard "Share as a private harness"
+ * action — right at the URL/lookup step — rather than letting the user walk
+ * all the way to step 6 only to dead-end on shared-public (the public Cupboard
+ * registry refuses a private repo). True → render the offer.
+ *
+ * `undefined` visibility (unknown) does NOT gate — the finalize/backend still
+ * guards, and we don't want to mislabel a repo whose visibility we couldn't
+ * resolve.
+ */
+export function shouldOfferPrivateShare(state: ShareWizardState): boolean {
+  return state.repo_private === true;
+}
+
+/**
+ * The "Share as a private harness" action: pre-selects `shared-private` so the
+ * remaining steps are the private workflow (the choose-privacy step shows it
+ * pre-selected, with shared-public disabled). Pure — returns a new state,
+ * preserving all prior input (P-029a back-step invariant).
+ */
+export function flipToPrivateShare(state: ShareWizardState): ShareWizardState {
+  return { ...state, privacy: 'shared-private' };
+}
+
+/**
  * Empty starting state — caller initializes the wizard with this.
  */
 export function emptyShareWizardState(): ShareWizardState {

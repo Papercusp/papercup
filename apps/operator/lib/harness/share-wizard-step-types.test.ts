@@ -11,6 +11,8 @@ import {
   isStateCompleteForFinalize,
   nextStep,
   previousStep,
+  shouldOfferPrivateShare,
+  flipToPrivateShare,
   type ShareWizardState,
 } from './share-wizard-step-types';
 
@@ -267,5 +269,46 @@ describe('getStepPosition / getStepProgressPercent', () => {
 
   it('step 5 → ~56% progress', () => {
     expect(getStepProgressPercent('choose-discord')).toBe(56);
+  });
+});
+
+describe('shouldOfferPrivateShare — step-2 private-repo offer', () => {
+  it('true when the resolved repo is private', () => {
+    expect(shouldOfferPrivateShare({ repo_private: true })).toBe(true);
+  });
+
+  it('false when the repo is public', () => {
+    expect(shouldOfferPrivateShare({ repo_private: false })).toBe(false);
+  });
+
+  it('false when visibility is unknown (do not gate on undefined)', () => {
+    expect(shouldOfferPrivateShare({})).toBe(false);
+  });
+});
+
+describe('flipToPrivateShare — the "Share as a private harness" action', () => {
+  it('pre-selects shared-private so the rest of the flow is the private workflow', () => {
+    const flipped = flipToPrivateShare({ github_repository_id: 1, repo_private: true });
+    expect(flipped.privacy).toBe('shared-private');
+  });
+
+  it('preserves all other accumulated state (pure, non-mutating)', () => {
+    const before: ShareWizardState = {
+      github_remote: 'https://github.com/o/r.git',
+      github_repository_id: 42,
+      repo_private: true,
+      topic: VALID_TOPIC,
+    };
+    const after = flipToPrivateShare(before);
+    expect(after).toEqual({ ...before, privacy: 'shared-private' });
+    expect(before.privacy).toBeUndefined(); // original untouched
+  });
+
+  it('the flipped state then passes the choose-privacy gate (no shared-public block)', () => {
+    const flipped = flipToPrivateShare({ repo_private: true });
+    expect(nextStep('choose-privacy', flipped)).toEqual({
+      kind: 'next',
+      step: 'privacy-confirm',
+    });
   });
 });
