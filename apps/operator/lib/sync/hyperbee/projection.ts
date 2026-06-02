@@ -28,7 +28,15 @@ import { observeMergedOp } from './clobber-events';
  * the writer doesn't hold. The writer just stamps the values it receives.
  */
 export interface ProvenanceContext {
-  /** The raw hex writer pubkey from the op (maps to `author_pubkey` column). */
+  /**
+   * The UNFORGEABLE writer identity for this op (maps to `author_pubkey`
+   * column). P-002/D-004: for a `local` op it's the own device pubkey (the
+   * trustworthy self-declared `writerPubkey`); for a `remote` op it's the
+   * receiver-stamped, immutable `sourceLogKeyHex` (the source log core key) —
+   * NOT the self-declared field, which a remote peer controls. `''` when a
+   * remote op carries no source key. Resolve a remote value to its
+   * device/GitHub identity at read time via the admission map.
+   */
   authorPubkey: string;
   /** 'local' | 'remote' — derived from log-source (own vs admitted-remote). */
   origin: 'local' | 'remote';
@@ -140,7 +148,6 @@ export async function applyOpVia(
   // global-registry path) we default to 'local' (safe for single-peer use).
   let provenance: ProvenanceContext | undefined;
   if (op.writerPubkey !== undefined || applyOpts?.ownLogKeyHex !== undefined) {
-    const authorPubkey = op.writerPubkey ?? '';
     let origin: 'local' | 'remote' = 'local';
     if (applyOpts?.ownLogKeyHex !== undefined) {
       // Log-source approach (preferred, D-006): compare source log to own log.
@@ -151,6 +158,18 @@ export async function applyOpVia(
     }
     // If ownLogKeyHex is absent but writerPubkey is present, default to 'local'
     // (the global-registry / legacy path never has remote peers; no wrong split).
+    //
+    // P-002/D-004 — attribution must be UNFORGEABLE. The op's `writerPubkey` is
+    // self-declared (a field in the op value), so a remote peer can set it to
+    // anything. For a REMOTE op, attribute by the receiver-stamped, immutable
+    // `sourceLogKeyHex` (the source log core key — resolvable to its admitted
+    // device/GitHub identity at read time via the admission map; immutable, so
+    // it never goes stale on revocation/rotation the way a baked-in resolved
+    // pubkey would). With no source key on a remote op, record `''` rather than
+    // trust the forgeable field. For a LOCAL op the `writerPubkey` is the
+    // operator's OWN write — trustworthy, and the meaningful device pubkey.
+    const authorPubkey =
+      origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
     provenance = { authorPubkey, origin };
   }
 

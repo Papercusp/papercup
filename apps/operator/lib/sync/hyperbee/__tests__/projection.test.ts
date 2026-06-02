@@ -29,6 +29,7 @@ import {
   lwwPick,
   _clearRegistryForTests,
   type ProjectionLookup,
+  type ProvenanceContext,
   type TableProjection,
 } from '../projection';
 import type { OpEnvelope } from '../op-envelope-types';
@@ -188,6 +189,61 @@ describe('lwwPick tiebreak binds to the unforgeable sourceLogKeyHex (P-001 — D
     expect(fold([z, y, x])).toBe(z);
     expect(fold([y, z, x])).toBe(z);
     expect(fold([y, x, z])).toBe(z);
+  });
+});
+
+describe('provenance attribution binds to the unforgeable source log, not the self-declared field (P-002 — D-004)', () => {
+  // A projection that captures the ProvenanceContext handed to writeToPg.
+  function provCapture(tableTag = 'presence') {
+    const seen: Array<ProvenanceContext | undefined> = [];
+    const proj: TableProjection<{ id: string }> = {
+      tableTag,
+      composeKey: (r) => r.id,
+      decodeValue: (raw) => (raw && typeof raw === 'object' ? (raw as { id: string }) : null),
+      writeToPg: async (_row, provenance) => { seen.push(provenance); },
+      deleteFromPg: async () => {},
+    };
+    const set = new Map<string, TableProjection<unknown>>([[tableTag, proj as TableProjection<unknown>]]);
+    const lookup: ProjectionLookup = (t) => set.get(t) ?? null;
+    return { lookup, seen };
+  }
+
+  const putOp = (extra: Partial<OpEnvelope>): OpEnvelope => ({
+    type: 'put', table: 'presence', hbKey: 'k', value: { id: 'k' }, ...extra,
+  });
+
+  it('a REMOTE op stamps author from the unforgeable source-log key, ignoring a forged writerPubkey', async () => {
+    const { lookup, seen } = provCapture();
+    await applyOpVia(
+      lookup,
+      putOp({ writerPubkey: 'FORGED-DEVICE', sourceLogKeyHex: 'REMOTE-LOG-KEY' }),
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    // origin=remote (source ≠ own) → attribution is the receiver-stamped log
+    // key, NOT the attacker-controlled writerPubkey.
+    expect(seen[0]).toEqual({ authorPubkey: 'REMOTE-LOG-KEY', origin: 'remote' });
+  });
+
+  it('a LOCAL op keeps the trustworthy self-declared writerPubkey (own writes are not a forgery vector)', async () => {
+    const { lookup, seen } = provCapture();
+    await applyOpVia(
+      lookup,
+      putOp({ writerPubkey: 'MY-OWN-DEVICE', sourceLogKeyHex: 'OWN-LOG-KEY' }),
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    expect(seen[0]).toEqual({ authorPubkey: 'MY-OWN-DEVICE', origin: 'local' });
+  });
+
+  it('a REMOTE op with no source key records NO forgeable identity (never the self-declared field)', async () => {
+    const { lookup, seen } = provCapture();
+    await applyOpVia(
+      lookup,
+      putOp({ writerPubkey: 'FORGED-DEVICE', sourceLogKeyHex: undefined }),
+      { ownLogKeyHex: 'OWN-LOG-KEY' },
+    );
+    // source undefined ≠ own ⇒ origin=remote; with no unforgeable source the
+    // author is left empty rather than trusting the forged writerPubkey.
+    expect(seen[0]).toEqual({ authorPubkey: '', origin: 'remote' });
   });
 });
 

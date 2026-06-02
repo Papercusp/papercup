@@ -109,7 +109,7 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
     expect(captured[0].provenance?.authorPubkey).toBe(LOCAL_PUBKEY);
   });
 
-  it('remote op (sourceLogKeyHex !== ownLogKeyHex) → origin=remote + peer pubkey stamped', async () => {
+  it('remote op (sourceLogKeyHex !== ownLogKeyHex) → origin=remote + UNFORGEABLE source-log key stamped', async () => {
     const { projection, captured } = capturingProjection();
     const lookup = (tag: string) => (tag === projection.tableTag ? projection : null);
 
@@ -122,7 +122,9 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
     expect(applied).toBe(true);
     expect(captured).toHaveLength(1);
     expect(captured[0].provenance?.origin).toBe('remote');
-    expect(captured[0].provenance?.authorPubkey).toBe(REMOTE_PUBKEY);
+    // P-002/D-004: remote attribution is the receiver-stamped, unforgeable
+    // sourceLogKeyHex — NOT the self-declared writerPubkey.
+    expect(captured[0].provenance?.authorPubkey).toBe(REMOTE_LOG_KEY);
   });
 
   it('op with no sourceLogKeyHex but ownLogKeyHex present → treated as remote (unknown source)', async () => {
@@ -177,7 +179,7 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
     expect(deletedKeys).toEqual(['F-001']);
   });
 
-  it('forged author pubkey matching own identity does NOT bypass remote detection', async () => {
+  it('forged author pubkey matching own identity affects neither origin nor stored attribution', async () => {
     // D-006: a remote op whose writerPubkey is forged to look like the local
     // device's pubkey MUST still be detected as remote via sourceLogKeyHex.
     const { projection, captured } = capturingProjection();
@@ -193,9 +195,11 @@ describe('G1 Provenance — applyOpVia origin determination', () => {
     await applyOpVia(lookup, op, { ownLogKeyHex: OWN_LOG_KEY });
     // The log-source wins: sourceLogKeyHex !== ownLogKeyHex → remote.
     expect(captured[0].provenance?.origin).toBe('remote');
-    // author_pubkey is still the forged value (attribution, not access control —
-    // D-004: provenance is attribution, not rejection).
-    expect(captured[0].provenance?.authorPubkey).toBe(LOCAL_PUBKEY);
+    // P-002/D-004: stored attribution is the UNFORGEABLE sourceLogKeyHex, so the
+    // forged writerPubkey does NOT land in author_pubkey (it would deceive an
+    // auditor). The op is still applied — provenance is attribution, not
+    // rejection — but the recorded author is the real, unforgeable source.
+    expect(captured[0].provenance?.authorPubkey).toBe(REMOTE_LOG_KEY);
   });
 
   it('empty writerPubkey results in empty string authorPubkey, not null', async () => {
@@ -238,7 +242,8 @@ describe('G1 Provenance — buildHarnessProjectionApply with ownLogKeyHex', () =
       { ownLogKeyHex: OWN_LOG_KEY },
     );
     expect(captured[0].provenance?.origin).toBe('remote');
-    expect(captured[0].provenance?.authorPubkey).toBe(REMOTE_PUBKEY);
+    // P-002/D-004: unforgeable source-log key, not the self-declared writerPubkey.
+    expect(captured[0].provenance?.authorPubkey).toBe(REMOTE_LOG_KEY);
   });
 });
 
