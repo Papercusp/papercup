@@ -59,16 +59,15 @@ only voice changes, leaving the opus brain for text orchestration if desired.
 
 ## Phases (proposed)
 
-### Phase 1 — terseness (highest impact)
-- **P-001** `doing` Strengthened the voice block (`agent-tools/operator/converse-prompt.ts`,
+### Phase 1 — terseness + cards (VALIDATED ✅)
+- **P-001** `done` Strengthened the voice block (`agent-tools/operator/converse-prompt.ts`,
   commit `99817ff20`): ≤220 chars HARD per `<say>`, lead with one fact + offer to
-  continue (never dump lists), one question per turn. **Validation BLOCKED by the
-  shared box's rate-limit/API overload (2026-06-02)** — a 3× sonnet-judge re-run
-  mostly *errored* on environment ("fetch failed", "terminated", 600s timeout; mem0
-  `AnthropicLLM` API errors in the host log), at near-zero cost = the brain produced
-  nothing. The ONE run that completed (S13 run3) **passed** (encouraging, not
-  conclusive). **Next: re-run `op-S13`/`op-S16` at 3× with a sonnet judge when the
-  account isn't rate-limited** to confirm the over-length fix holds.
+  continue (never dump lists), one question per turn. **VALIDATED 2026-06-02** (3× matrix,
+  brain=sonnet, judge=sonnet): S13 went **verdict FAIL → PASS** — `formatLength220` fired
+  in ALL 3 pre-fix runs (260–549 chars) and **ZERO post-fix runs**. The over-length gap is
+  closed.
+- **P-003** `done` Card-disambiguation rule (same commit). S16's `cardUsage` dropped from
+  failing-every-run to **no longer in the failure set** (variance 0.94). Helped.
 - **P-002** `todo` If a stronger instruction doesn't hold the cap (models are weak
   at hard limits), consider a structural answer: emit multiple short `<say>` blocks,
   or a "headline + offer to continue" pattern, rather than relying on the model.
@@ -82,11 +81,27 @@ only voice changes, leaving the opus brain for text orchestration if desired.
   instruction is ambiguous (≥2 candidates), surface ONE `chat:ask_choice`
   `voiceAnswerable:true` card — do NOT guess." Re-validate S16 3×.
 
-### Phase 3 — grounding + tool naming
-- **P-004** `todo` Tighten grounding: never narrate an action as done without the
-  tool call in the same turn; never pass a slug the user/tools didn't surface.
-- **P-005** `todo` Confirm + fix the colon/underscore tool-name mismatch if the
-  persona advertises colon names the model can't call.
+### Phase 3 — grounding + tool discipline (remaining S16 blockers, confirmed post-Phase-1)
+After Phase 1 fixed over-length + cards, the 3× post-fix run surfaced the NEXT layer
+of S16/S13 findings (sonnet judge):
+- **P-004** `todo` Grounding: never narrate state/an action before the tool result
+  exists in the same/earlier turn (S13 run1 stated "5 harnesses all in progress" in
+  Turn 0, contradicted by Turn 1's real data); never pass a slug the user/tools didn't
+  surface.
+- **P-005** `todo` Tool-name mismatch (RECURRING — root of the "tool flailing"). The
+  persona advertises colon names (`converse-prompt.ts:207`: `harness:list / harness:status
+  / issues:list / …`) but the model's actual tools are underscore
+  (`mcp__agentmcp__harness_status`). The brain `ToolSearch`es the colon names → resolves
+  nothing → flails/retries. Fix: refer to tools by the real (underscore) names in the
+  persona, or add an explicit "tools are named `harness_status`, not `harness:status`,
+  and are already loaded — don't ToolSearch for them" note.
+- **P-007** `todo` Voice jargon: ban domain-internal jargon/IDs in `<say>` for voice
+  ("papercusp flags match dash-delimited parsing", "dig the chunks") — speak plain
+  language a generic listener parses.
+- **P-008** `todo` Stray built-ins: the brain emitted `Bash({command:'echo …'})` as a
+  no-op "comment" and a `<spawn role="debugger">`. The operator shouldn't reach for
+  built-in `Bash`/Task at all on a chat turn — consider whether the spawn surface should
+  exclude built-ins, or the persona should forbid them.
 
 ## Decisions
 
