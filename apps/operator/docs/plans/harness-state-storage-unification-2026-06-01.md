@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** DECIDED → B. P-001 + P-002 DONE. **P-003a DONE** — `lib/harness-state/projection-engine.ts`: `syncAuthorityFor()` + `checkPeerLogConsistency()` (drift guard, cross-checked against the live `REGISTERED_PROJECTION_TAGS`) + `checkInventoryCoverage()`, wired as a non-fatal fail-loud boot block in `host-bootstrap.ts`; 19/19 tests. **P-003b git-export DESIGNED** (D-004): the write-capture is a generic trigger-fed `substrate_outbox`, so git-export is ADDITIVE — a second drainer filtered to `sync:'git'` tables with its own cursor + file serialize/rebuild + boot hydrate, without rewriting the Model-B peer-log drainer.
+**State:** DECIDED → B. P-001 + P-002 + **P-003a DONE**. **P-003b underway**: the pure file serialize/parse + path-mapping is built + round-trip-tested (`lib/harness-state/git-export/serialize.ts` — `.harness/state/<dir>/<key>.{md|json}`; prose→md+frontmatter, structured→json; 8/8 tests). The remaining P-003b work is the INTEGRATION (D-004): attach the `capture_substrate_outbox` trigger to the `sync:'git'` tables, a git-export drainer (filtered to git tables, own cursor, debounce-commit), and boot-hydrate (scan files → upsert PG). That touches Model-B-owned `substrate_outbox`/`wireDogfoodTriggers` + needs a live boot + integration test. Total tests across harness-state: 27 (13 registry + 6 engine + 8 serialize).
 
-**Next:** Build P-003b in a focused session: (1) the pure file serialize/parse + `.harness/state/<table>/<key>` path mapping as unit-tested functions (net-new, verifiable); then (2) the drainer/trigger/boot-hydrate integration — needs a live boot + integration test and touches Model-B-owned `substrate_outbox`/`wireDogfoodTriggers`, so coord + lock first. Then P-003c (router on `resolveTableSpec().sync`).
+**Next:** P-003b integration (focused session): `coord:declare-intent` + `locks:acquire` on `lib/ensure-schema-dogfood.ts` (+ new `lib/harness-state/git-export/drainer.ts`); attach the capture trigger to git tables, build the filtered drainer + boot-hydrate (reuse the serialize module), verify with a live boot + integration test, and do NOT modify `outbox-drain.ts` beyond a table-filter. Then P-003c (router on `resolveTableSpec().sync`).
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
