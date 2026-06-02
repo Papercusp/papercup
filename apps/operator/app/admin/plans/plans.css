@@ -920,6 +920,35 @@
 .pc-plan-rail__item--unknown .pc-plan-row { border-left-color: rgba(255, 255, 255, 0.20); }
 .pc-plan-rail__item--started { background: color-mix(in oklab, rgba(34,197,94,0.06), transparent); }
 
+/* Drag-to-reorder handle (P-045). The handle — a plain <span>, NOT the row
+   <button> — is the HTML5 drag source: an interactive button child swallows
+   drag initiation, so a draggable <li> wrapping a full-bleed button could
+   never be grabbed (the "started plans aren't draggable" bug). The handle
+   overlays the row's left strip; .has-drag-handle reserves padding so the
+   title doesn't sit under it. */
+.pc-plan-row__drag-handle {
+  position: absolute;
+  left: 4px; /* clear the 4px status left-border */
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  cursor: grab;
+  color: rgba(148, 163, 184, 0.5);
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.pc-plan-row__drag-handle:hover { color: rgba(214, 236, 248, 0.95); }
+.pc-plan-row__drag-handle:active { cursor: grabbing; }
+.pc-plan-row.has-drag-handle { padding-left: 24px; }
+.pc-plan-rail__item.is-dragging { opacity: 0.45; }
+.pc-plan-rail__item.is-drag-over .pc-plan-row { box-shadow: inset 0 2px 0 var(--accent, #38bdf8); }
+
 .pc-plan-row__start-btn {
   all: unset;
   display: inline-flex;

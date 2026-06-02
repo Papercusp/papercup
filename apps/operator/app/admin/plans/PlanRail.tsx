@@ -375,24 +375,36 @@ function PlanRow({
   return (
     <li
       className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}${isDragging ? ' is-dragging' : ''}${isDragOver ? ' is-drag-over' : ''}`}
-      draggable={draggable}
-      onDragStart={onDragStart}
       onDragOver={onDragOver}
-      onDragEnd={onDragEnd}
     >
+      {draggable && (
+        // The DRAG SOURCE is this handle, NOT the <li> or the row <button>:
+        // an interactive <button> child swallows HTML5 drag initiation, so a
+        // draggable <li> wrapped around a full-bleed button can never be
+        // grabbed — that's why "started plans aren't draggable". A plain
+        // draggable <span> outside the button drags cleanly; the button still
+        // handles the click-to-select. (P-045 fix.)
+        <span
+          className="pc-plan-row__drag-handle"
+          draggable
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          role="button"
+          tabIndex={-1}
+          aria-label={`Drag to reorder ${plan.slug}`}
+          title="Drag to set dispatch priority"
+        >
+          ⠿
+        </span>
+      )}
       <button
         type="button"
-        className={`pc-plan-row ${active ? 'is-active' : ''}`}
+        className={`pc-plan-row${draggable ? ' has-drag-handle' : ''}${active ? ' is-active' : ''}`}
         onClick={onSelect}
         aria-label={`Open plan ${title} (${plan.slug})`}
         aria-current={active ? 'page' : undefined}
       >
         <div className="pc-plan-row__head">
-          {draggable && (
-            <span className="pc-plan-row__drag-handle" aria-hidden="true" title="Drag to reorder">
-              ⠿
-            </span>
-          )}
           <span className="pc-plan-row__title">{title}</span>
           {showStartToggle ? (
             <button
