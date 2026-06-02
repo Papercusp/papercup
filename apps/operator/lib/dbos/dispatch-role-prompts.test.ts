@@ -20,15 +20,21 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseDecision, resolvePromptFile, type PromptResolveContext } from '@papercusp/orchestrator';
+import { AGENT_ROLES } from '@papercusp/agent-mcp';
 import { classifyDecision } from './orchestrator-decide';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // apps/operator/lib/dbos → repo root is four up; prompts live under the harness pkg.
 const HARNESS_DIR = resolve(__dirname, '../../../../libs/papercusp/packages/harness');
 
-// The phases a harness can run a dispatched role in. A role resolves if it has a
-// prompt in at least one of them (resolvePromptFile falls back to prompts/<role>.md).
-const PHASES = ['', 'staging', 'testing', 'production'];
+// The phases/location tiers a role's prompt can live under. A role "resolves"
+// if it has a prompt in at least one (resolvePromptFile falls back to
+// prompts/<role>.md). 'base'/'department' are generic-prompt tiers.
+const PHASES = ['', 'staging', 'testing', 'production', 'base', 'department'];
+
+// Chat-surface roles are answered inline (operator-converse / oracle SSE), NOT
+// spawned from a prompt file — so they are deliberately prompt-less.
+const CHAT_ROLES = new Set(['operator', 'oracle']);
 
 function resolvesInSomePhase(role: string): boolean {
   return PHASES.some((phase) => {
@@ -90,5 +96,24 @@ describe('the test-creating role is wired end-to-end', () => {
     expect(prompt).toMatch(/write/i);
     expect(prompt).toMatch(/TEST_WRITER\b/); // the "<count> generated" stdout marker
     expect(prompt).toMatch(/\.spec\.ts|test_/); // a concrete test-file convention
+  });
+});
+
+describe('every spawnable AGENT_ROLES role has a prompt (registry ↔ prompt consistency)', () => {
+  const spawnable = AGENT_ROLES.filter((r) => !CHAT_ROLES.has(r));
+
+  it.each(spawnable)('role "%s" resolves to a prompt file in some phase', (role) => {
+    expect(
+      resolvesInSomePhase(role),
+      `AGENT_ROLES declares "${role}" but no prompt resolves for it in any phase — it can't be spawned`,
+    ).toBe(true);
+  });
+
+  it('the chat roles (operator/oracle) are deliberately prompt-less', () => {
+    // Documents the intentional exception: if someone gives operator/oracle a
+    // prompt file, that's a signal the role model changed — revisit this test.
+    for (const role of CHAT_ROLES) {
+      expect(AGENT_ROLES).toContain(role);
+    }
   });
 });
