@@ -1,0 +1,70 @@
+---
+title: Writing JSONB columns with postgres-js — use JSON.stringify::jsonb, not sql.json
+description: "In operator runtime code (getOrgPg) sql.json(obj) THROWS and a bare object param THROWS — bind JSONB as ${JSON.stringify(value)}::jsonb. The testcontainer client (_pg-helpers) binds JSONB differently, so integration tests can't faithfully test it; verify against the live host."
+discovered: 2026-06-02
+tags: [postgres-js, jsonb, db, getOrgPg, integration-tests, gotcha]
+status: active
+sidebar:
+  order: 72
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## TL;DR
+
+To write a JS object/array into a **JSONB** column through the operator runtime
+client (`getOrgPg().sql`, `libs/papercusp/libs/db/connection.ts`), bind it as:
+
+```ts
+await sql`INSERT INTO t (payload) VALUES (${value == null ? null : JSON.stringify(value)}::jsonb)`;
+```
+
+**Do NOT** use `sql.json(value)` and **do NOT** pass a bare object `${value}` —
+both THROW under `getOrgPg`:
+
+```
+TypeError [ERR_INVALID_ARG_TYPE]: The "string" argument must be of type string
+or an instance of Buffer or ArrayBuffer. Received an instance of Object
+    at Buffer.byteLength (node:buffer)
+    at .../postgres/cjs/src/bytes.js  (the Bind step)
+```
+
+Verified live (P-070 `contributor_usage_events.payload`): `JSON.stringify(v)::jsonb`
+stores a real jsonb object — `jsonb_typeof(payload)='object'`, `payload->>'k'` works.
+
+## The trap: the testcontainer client behaves OPPOSITELY
+
+The integration-test client (`apps/operator/test/_pg-helpers.ts`, used by every
+`*.integration.test.ts`) binds JSONB params **differently** from the operator
+runtime client — despite *identical* postgres-js config (`prepare:false`, same
+`types:{bigint}`, same postgres 3.4.9):
+
+| form | `getOrgPg` (runtime / production) | `_pg-helpers` (testcontainer) |
+|---|---|---|
+| `sql.json(obj)` | **throws** | works (jsonb object) |
+| `${obj}` (bare) | **throws** | works (jsonb object) |
+| `${JSON.stringify(obj)}::jsonb` | **jsonb object** ✓ | double-encodes → jsonb **string** |
+
+The root cause of the divergence is unexplained (configs match); it is likely a
+postgres-js protocol/connection nuance. The practical consequences:
+
+<Aside type="caution" title="Integration tests can't faithfully test JSONB binding here">
+A `*.integration.test.ts` using `_pg-helpers` will give the WRONG answer for
+JSONB param binding — `sql.json` passes there but breaks in production, and the
+correct `JSON.stringify::jsonb` form looks "double-encoded" there. **Verify JSONB
+write behavior against the live host** (`jsonb_typeof(payload)` over the running
+operator's DB), not the testcontainer. Assert only client-agnostic things
+(no-throw, row lands, rollup counts) in the integration test.
+</Aside>
+
+## Still-affected files (latent bug)
+
+As of 2026-06-02, `sql.json(...)` is still used for object JSONB columns in
+(these will throw on a non-null object write in production):
+
+- `apps/operator/lib/sync/hyperbee/projections/issues.ts` (`notes`)
+- `apps/operator/lib/sync/hyperbee/projections/contributors.ts`
+- `apps/operator/lib/sync/hyperbee/projections/harness-features.ts` (`metadata`, `tags`)
+- `apps/operator/lib/dock-layouts.ts`
+
+Fixed in P-070: `lib/harness/usage-events.ts` + `lib/sync/hyperbee/projections/usage.ts`.
