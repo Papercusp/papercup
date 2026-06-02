@@ -23,6 +23,7 @@ import {
   setAdvSessionWindowId,
 } from '@/lib/adv-sessions';
 import { mergeRoster, dedupeEndedAgainstActive } from '@/lib/adv-roster';
+import { getAgentDetail } from '@/lib/adv-agent-detail';
 import { readOmpConfig } from '@/lib/omp-config';
 import {
   findOmpSessionNear,
@@ -386,4 +387,28 @@ const roster = defineTool({
   },
 });
 
-export default [list, focus, alive, state, search, resumable, roster];
+/**
+ * GET /api/adv/roster/agent?owner=<ownerId> — the lazy Tier-3 dossier for ONE
+ * agent (plan adv-sessions-live-roster, P-009). Joins across stores that the
+ * cheap roster query deliberately skips: SU file-locks (held + waiting, with
+ * blockers) and coord state (last message, unread, open handoffs/escalations).
+ * Fetched on demand when a detail pane opens, keyed by coord owner id.
+ */
+const agentDetail = defineTool({
+  method: 'GET',
+  path: '/adv/roster/agent',
+  auth: 'public',
+  async handler(req) {
+    const owner = new URL(req.url).searchParams.get('owner')?.trim() ?? '';
+    if (!owner) {
+      return new Response(JSON.stringify({ error: 'owner_required' }), {
+        status: 400,
+        headers: JSON_HEADERS,
+      });
+    }
+    const detail = await getAgentDetail(owner);
+    return new Response(JSON.stringify(detail), { status: 200, headers: JSON_HEADERS });
+  },
+});
+
+export default [list, focus, alive, state, search, resumable, roster, agentDetail];
