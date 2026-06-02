@@ -172,6 +172,9 @@ import './locks/acquire_resource';
 import './locks/release_resource';
 import './locks/heartbeat_resource';
 import './locks/list';
+// Blessed wrappers for destructive shared actions (requiresLock via guardResource)
+import './dev/restart';
+import './db/migrate';
 
 // L1 agent coordination (identity & presence) — see
 // agent-coordination-architecture-v2-2026-05-20.md
