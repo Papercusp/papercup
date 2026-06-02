@@ -122,9 +122,9 @@ async function writeToPg(
        author_pubkey, origin)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
-       ${row.metadata == null ? null : sql.json(row.metadata as unknown as Parameters<typeof sql.json>[0])},
+       ${row.metadata == null ? null : JSON.stringify(row.metadata)}::jsonb,
        ${row.kind}, ${row.project_id}, ${row.expected_cost_cents},
-       ${row.tags == null ? null : sql.json(row.tags as unknown as Parameters<typeof sql.json>[0])},
+       ${row.tags == null ? null : JSON.stringify(row.tags)}::jsonb,
        ${row.needs_human_review},
        ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},
