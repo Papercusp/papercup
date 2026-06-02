@@ -172,7 +172,7 @@ One cycle:
 
 ## Phase 1 — Task generator
 
-- **P-005** `todo` Task generator (model ≠ judge model): intent-first, then a deliberately-realistic, mildly-underspecified spec so spec-gaps exist; grounded in a real substrate repo. importance: high
+- **P-005** `wip` Task generator (model ≠ judge model): intent-first, then a deliberately-realistic, mildly-underspecified spec so spec-gaps exist; grounded in a real substrate repo. importance: high (core built+unit-tested buildTaskGenPrompt/parseGeneratedTask/generateGymTask, generator≠judge guard D-015; real generation validated at P-014)
 - **P-006** `todo` Planted-bug probe generator: spell out **where the planted bug lives and what the harness must do with it** so the gate is not vacuous (e.g. a pre-existing defect in the touched area the validator must catch). blocked-by: P-005
 - **P-007** `todo` Task pools + filter: produce `train`, a **frozen `dev-anchor`** (fixed for the run), and a **fresh `monitor`** set (regenerated each cycle); drop tasks the baseline can't even attempt. blocked-by: P-005
 - **P-028** `todo` Real-feature correlation anchor: a small **fixed** `real-anchor` set of real shipped features, scored but never optimized — the falsifiability check (D-014). importance: high
@@ -295,3 +295,15 @@ Why not the alternatives:
 
 This satisfies D-016 (the pinned checkout's SHA is recorded as `gym_runs_params.harness_commit`; no drift for the duration of an optimization run) and D-009 (substrate = throwaway clones at pinned commits), at the lowest viable build/runtime cost. "PG per instance" in the data-model prose is read as a dedicated gym PG *database*, not one PG per run (all `gym_*` tables live in a single `harness_gym` schema). Gym code lives under `apps/operator/lib/gym/` (paralleling the reused `apps/operator/lib/llm-testing/`).
 Related: P-001, P-004, P-012
+
+### D-019 — Unattended autonomous build — bounded real spend + fake-agent-first validation
+Date: 2026-06-02
+Date: 2026-06-02. avi put the implementing agent on an overnight loop to complete + test EVERY plan item, explicitly authorizing judgment calls ("I trust your judgement"). Policy the agent adopts for safe unattended operation:
+
+1. **Build + TDD all items' code** — the bulk of "complete and tested" is achievable with zero real LLM spend.
+2. **Fake-agent-first:** validate the full runner→capture→signals→judge plumbing end-to-end with a DETERMINISTIC stub agent (no LLM spend, fast, no multi-hour waits) before any real pipeline run. This stub is itself a committed test artifact.
+3. **Bounded real runs:** a minimal real smoke (1 task × 1 variant × 1 opus-4-8 judge call) to obtain cost-per-run + cost-per-judge numbers and confirm real integration; then a SMALL real A/B (≤2 variants × ≤3 tasks, 1 run each) for the P-014 judge-variance measurement — only if the smoke's cost/wall-clock is sane (soft caps; if a single pipeline run is excessively costly/slow, scale down to fake-agent validation + document).
+4. **Loop runs capped:** P-022 autonomous loop is exercised only under a hard budget cap / few cycles to prove it works, NOT an unbounded overnight optimization. Honors the plan's own "cost estimate before the loop" gate (P-014 / D-017).
+5. **Human gates (P-014, P-023):** the agent PRODUCES all deliverables + makes the threshold judgment calls itself and documents them for morning review. But it does NOT point any real production harness at the champion (P-023's outward action) — that stays for explicit human opt-in; and there is no production anyway (CLAUDE.md). The gym's own dedicated harness is promoted unattended per D-012.
+6. **Don't disrupt the sleeping user's environment:** the gym-operator is isolated (separate PG database + port + scoped autoloop, D-018); the live :3070 fleet is never restarted or touched; scratch clones + the gym DB + spawned processes are torn down; a free high port is chosen.
+Related: P-014, P-022, P-023
