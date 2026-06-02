@@ -382,6 +382,7 @@ import marketplaceInstall from './marketplace/install';
 import marketplaceInstallPlugin from './marketplace/install-plugin';
 import marketplaceUninstall from './marketplace/uninstall';
 import marketplaceSpawnable from './marketplace/spawnable';
+import gymControl from './gym/control';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -763,4 +764,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(marketplaceInstallPlugin as AnyRoute),
   ...flatten(marketplaceUninstall as AnyRoute),
   ...flatten(marketplaceSpawnable as AnyRoute),
+  // Gym control-plane (gym-ui-handoff backend). /gym/harnesses (literal) precedes
+  // /gym/:slug (param) within the array so it isn't shadowed.
+  ...flatten(gymControl as unknown as AnyRoute[]),
 ];
