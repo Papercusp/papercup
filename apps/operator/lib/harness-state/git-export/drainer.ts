@@ -73,3 +73,98 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
   if (changedPaths.length > 0 && opts.onChanged) await opts.onChanged(changedPaths);
   return { exported, deleted, changedPaths };
 }
+
+const GIT_EXPORT_NOTIFY = 'git_export_outbox';
+const DEFAULT_GIT_POLL_MS = 5_000;
+
+export interface StartGitExportDrainOpts extends DrainGitExportOpts {
+  /** Poll-fallback cadence (ms). Default 5000. 0 disables the timer (tests). */
+  pollMs?: number;
+}
+
+export interface GitExportDrainHandle {
+  /** Stop the loop: clear the poll timer + close the LISTEN connection. Idempotent. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Start the per-harness git-export drain loop (mirrors `startOutboxDrain`):
+ *   - an immediate catch-up drain (backlog from while the process was down);
+ *   - a `LISTEN git_export_outbox` that drains when a NOTIFY payload matches
+ *     this harness's `${workspaceId}::${harnessSlug}` (the capture trigger emits it);
+ *   - a bounded poll-fallback timer (liveness if a NOTIFY is missed).
+ *
+ * Resilient: a drain error is logged, not fatal — the next NOTIFY/poll retries.
+ * Drains are serialized + coalesced so passes can't overlap.
+ */
+export function startGitExportDrain(opts: StartGitExportDrainOpts): GitExportDrainHandle {
+  const { sql, workspaceId, harnessSlug } = opts;
+  const pollMs = Number.isFinite(opts.pollMs as number) ? (opts.pollMs as number) : DEFAULT_GIT_POLL_MS;
+  const wantPayload = `${workspaceId}::${harnessSlug}`;
+
+  let stopped = false;
+  let draining = false;
+  let runAgain = false;
+
+  async function drainSafely(): Promise<void> {
+    if (stopped) return;
+    if (draining) {
+      runAgain = true;
+      return;
+    }
+    draining = true;
+    try {
+      do {
+        runAgain = false;
+        await drainGitExportOnce(opts);
+      } while (runAgain && !stopped);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[git-export-drain] drain failed for ${wantPayload}:`,
+        e instanceof Error ? e.message : String(e),
+      );
+    } finally {
+      draining = false;
+    }
+  }
+
+  void drainSafely(); // immediate catch-up
+
+  const listenReq = sql.listen(GIT_EXPORT_NOTIFY, (payload) => {
+    if (stopped) return;
+    if (payload === wantPayload) void drainSafely();
+  });
+  void Promise.resolve(listenReq).catch((e: unknown) => {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[git-export-drain] LISTEN setup failed for ${wantPayload}:`,
+      e instanceof Error ? e.message : String(e),
+    );
+  });
+
+  const pollTimer = pollMs > 0 ? setInterval(() => void drainSafely(), pollMs) : null;
+  if (pollTimer && typeof (pollTimer as { unref?: () => void }).unref === 'function') {
+    (pollTimer as { unref: () => void }).unref();
+  }
+
+  return {
+    async stop(): Promise<void> {
+      if (stopped) return;
+      stopped = true;
+      if (pollTimer) {
+        try {
+          clearInterval(pollTimer);
+        } catch {
+          // no-op
+        }
+      }
+      try {
+        const req = await listenReq;
+        await req.unlisten();
+      } catch {
+        // no-op
+      }
+    },
+  };
+}
