@@ -11,6 +11,17 @@
  *     raw-markdown body (the one prose column), so the body diffs/edits cleanly
  *     in git (dogfood D-020) while every scalar/JSONB field still round-trips.
  *   • everything else → pretty `.json` (deterministic key order → clean diffs).
+ *
+ * KNOWN REFINEMENT (P-003b follow-up, correctness): the serialized row still
+ * includes per-install PROVENANCE/CONTEXT columns (`workspace_id`, `origin`,
+ * and the redundant `harness_slug`). Those should NOT live in a committed git
+ * file — `workspace_id`/`harness_slug` are implied by which harness's
+ * `.harness/state/` dir the file is in, and `origin` is local provenance.
+ * Committing them leaks one peer's `workspace_id` to others on `git pull`. The
+ * fix is to strip them on serialize and re-inject them on hydrate (from the
+ * harness context + `origin='remote'`) — which needs the per-table column set,
+ * so it's deferred, not done here. Today the path round-trips faithfully on a
+ * single install.
  */
 
 /** Tables whose body column holds human-authored markdown → `.md` + frontmatter. */

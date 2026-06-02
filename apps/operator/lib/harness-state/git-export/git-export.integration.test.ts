@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { ensureGitExportOutbox, attachGitCaptureTrigger } from './ensure-git-outbox';
 import { drainGitExportOnce } from './drainer';
+import { hydrateGitTable } from './hydrate';
 import { parseFile, gitFilePath } from './serialize';
 
 const WS = 'ws_git';
@@ -102,5 +103,33 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
     const abs = join(root, gitFilePath('harness_chunk_plans', 'F-9__c3'));
     const parsed = parseFile('harness_chunk_plans', await readFile(abs, 'utf8'));
     expect(parsed).toMatchObject({ feature_id: 'F-9', chunk_id: 'c3', plan: { a: 1 } });
+  });
+
+  it('hydrate: file → PG (clone-and-go) restores a deleted row', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.harness_decisions (id, workspace_id, harness_slug, origin, title, content, ts)
+      VALUES ('D-rt', ${WS}, ${SLUG}, 'local', 'RT', 'body text\n\nx', 7)`;
+    await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root }); // → file
+    // simulate a fresh clone: file present, PG row gone
+    await db.sql`DELETE FROM harness_shared.harness_decisions WHERE id = 'D-rt'`;
+    expect((await db.sql`SELECT 1 FROM harness_shared.harness_decisions WHERE id='D-rt'`).length).toBe(0);
+
+    const n = await hydrateGitTable({ sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'] });
+    expect(n).toBeGreaterThanOrEqual(1);
+    const after = await db.sql<{ id: string; title: string; content: string }[]>`
+      SELECT id, title, content FROM harness_shared.harness_decisions WHERE id = 'D-rt'`;
+    expect(after[0]).toMatchObject({ id: 'D-rt', title: 'RT', content: 'body text\n\nx' });
+  });
+
+  it('hydrate does NOT re-enqueue an export (capture trigger disabled during load)', async () => {
+    const q = db.sql<{ c: number }[]>`
+      SELECT count(*)::int AS c FROM harness_shared.git_export_outbox
+       WHERE table_name = 'harness_decisions' AND key = 'D-rt' AND op = 'put'`;
+    const before = (await q)[0].c;
+    await hydrateGitTable({ sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'] });
+    const after = (await db.sql<{ c: number }[]>`
+      SELECT count(*)::int AS c FROM harness_shared.git_export_outbox
+       WHERE table_name = 'harness_decisions' AND key = 'D-rt' AND op = 'put'`)[0].c;
+    expect(after).toBe(before); // hydrate produced no new export rows
   });
 });
