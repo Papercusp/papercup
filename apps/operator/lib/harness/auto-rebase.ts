@@ -87,6 +87,19 @@ export async function autoRebaseOnPush(opts: {
     const now = Date.now();
     const stashRef = composeStashBranchRef(featureId, now);
 
+    // Defensive: `git rebase` can report a conflict in stderr while
+    // `git diff --diff-filter=U` lists no unmerged paths (submodule
+    // conflicts, or the `rebase --abort` above clearing the index before
+    // we read it). buildRebaseConflictEscalation requires a non-empty
+    // list, so fall back to an explicit sentinel rather than throwing out
+    // of autoRebaseOnPush — the conflict still escalates + the feature
+    // still resets, just labelled so a human knows the paths couldn't be
+    // enumerated.
+    const conflictedFiles =
+      conflicted.length > 0
+        ? conflicted
+        : ['<unidentified: git reported a rebase conflict but listed no unmerged paths>'];
+
     // Step 3 (P-041b): push WIP to stash branch before resetting.
     try {
       await git('push', 'origin', `HEAD:refs/heads/${stashRef}`, '--force');
@@ -98,7 +111,7 @@ export async function autoRebaseOnPush(opts: {
     const escalation = buildRebaseConflictEscalation({
       harness_slug: harnessSlug,
       feature_id: featureId,
-      conflicted_files: conflicted,
+      conflicted_files: conflictedFiles,
       now,
     });
 
@@ -120,7 +133,7 @@ export async function autoRebaseOnPush(opts: {
     return {
       ok: false,
       reason: 'conflict',
-      conflicted_files: conflicted,
+      conflicted_files: conflictedFiles,
       stash_ref: stashRef,
       escalation_slug: harnessSlug,
     };

@@ -122,15 +122,25 @@ describe('autoRebaseOnPush', () => {
     if (!res.ok) expect(res.reason).toBe('conflict');
   });
 
-  // NOTE: possible bug — when `git rebase` reports a CONFLICT in stderr but
-  // `git diff --diff-filter=U` lists zero unmerged files, autoRebaseOnPush
-  // calls buildRebaseConflictEscalation with an empty conflicted_files array,
-  // which throws (sync-with-main-types asserts non-empty). The error escapes
-  // autoRebaseOnPush rather than returning a typed result. Documented here as
-  // the current behavior; a graceful fallback (e.g. ['<unknown>'] or reason
-  // 'unknown') would be safer. See auto-rebase.ts ~line 98.
-  it('CONFLICT text with zero unmerged files currently throws (possible bug — documented)', async () => {
+  // Edge case (formerly a bug): `git rebase` reports a CONFLICT in stderr but
+  // `git diff --diff-filter=U` lists zero unmerged files (submodule conflicts,
+  // or the `rebase --abort` clearing the index before we read it). Previously
+  // autoRebaseOnPush threw out of buildRebaseConflictEscalation (non-empty
+  // assert). Now it falls back to a sentinel path so the conflict still
+  // escalates + the feature still resets, rather than throwing.
+  it('CONFLICT text with zero unmerged files escalates gracefully with a sentinel path (no throw)', async () => {
     const run = await loadAutoRebase({ rebaseErr: 'CONFLICT (content): merge conflict', diffFiles: [] });
-    await expect(run(BASE)).rejects.toThrow(/non-empty array/);
+    const res = await run({ ...BASE, githubUserId: 5 });
+    expect(res.ok).toBe(false);
+    if (!res.ok && res.reason === 'conflict') {
+      expect(res.conflicted_files).toHaveLength(1);
+      expect(res.conflicted_files[0]).toMatch(/unidentified/i);
+    } else {
+      throw new Error('expected a graceful conflict result, not ' + JSON.stringify(res));
+    }
+    // the conflict still lands an escalation + resets the feature
+    expect(ensureEscTable).toHaveBeenCalledTimes(1);
+    expect(unsafeCalls().some((q) => /INSERT INTO harness_shared\.harness_escalations/.test(q))).toBe(true);
+    expect(unsafeCalls().some((q) => /UPDATE .*\.features/.test(q) && /in_queue/.test(q))).toBe(true);
   });
 });
