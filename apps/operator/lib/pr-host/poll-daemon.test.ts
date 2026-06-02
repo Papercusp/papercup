@@ -2,10 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createPollDaemon, _resetDaemonState } from './poll-daemon';
 import type { PrHost, Pr } from './types';
 
-vi.mock('../ensure-schema-dogfood', () => ({
-  ensurePrCheckStatusCacheTable: vi.fn().mockResolvedValue(undefined),
-  ensureAutoReviewAuditTable: vi.fn().mockResolvedValue(undefined),
-}));
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));

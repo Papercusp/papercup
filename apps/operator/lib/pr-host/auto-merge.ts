@@ -5,7 +5,6 @@
  * Gates on: auto_merge=true AND PR was auto-approved by us AND checks green.
  */
 
-import { ensureAutoReviewAuditTable } from '../ensure-schema-dogfood';
 import { getOrgPg } from '@papercusp/db-org';
 import type { PrHost, Pr, PrMergeMethod } from './types';
 
@@ -84,7 +83,6 @@ async function writeAudit(
   detail: string | null,
 ): Promise<void> {
   try {
-    await ensureAutoReviewAuditTable();
     const { sql } = getOrgPg();
     await sql.unsafe(
       `INSERT INTO harness_shared.auto_review_audit

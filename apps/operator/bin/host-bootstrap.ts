@@ -233,19 +233,10 @@ export function runBootstrap(): void {
   // defensive — a swarm/identity failure leaves it local-only).
   void (async () => {
     try {
-      // Ensure the dogfood PG schema + reactivity triggers BEFORE the gate
-      // opens. The projection writers do NOT self-ensure (verified: a missing
-      // harness_shared.* table 500s the first reader — e.g. the
-      // shared_repo_binding_cache hit by /api/harness/binding/resolve), so the
-      // prior "writers ensure on first write" assumption was false and the
-      // dogfood schema was never created at host boot. wireDogfoodTriggers()
-      // is idempotent (guarded) and ensures every dogfood table first (it
-      // calls ensureAllDogfoodTables) then attaches the change-notify
-      // triggers. A failure here keeps the gate closed (the catch logs
-      // non-fatally and the substrate simply retries next boot) rather than
-      // opening it over a missing schema.
-      const { wireDogfoodTriggers } = await import('../lib/ensure-schema-dogfood');
-      await wireDogfoodTriggers();
+      // The dogfood PG schema + change-notify/capture triggers are now defined
+      // entirely by migrations (000-baseline + 107/108), applied at host boot
+      // before this block runs — so there is no runtime schema-ensure to do
+      // here anymore. Just flip the boot-gate so the substrate can start.
       const { markSqlMigrationsComplete, markRuntimeEnsureComplete } =
         await import('../lib/sync/hyperbee/boot-gate');
       markSqlMigrationsComplete();

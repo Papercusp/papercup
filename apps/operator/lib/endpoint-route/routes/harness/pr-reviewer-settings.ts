@@ -37,11 +37,6 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { resolveLocalGithubIdentity } from '@/lib/identity/resolve-local-github-identity';
 import {
-  ensurePrReviewerSettingsTable,
-  ensureTrustedAuthorsTable,
-  ensureAutoReviewAuditTable,
-} from '@/lib/ensure-schema-dogfood';
-import {
   defaultPrReviewerSettings,
   applyPrReviewerSettingsPatch,
   type PrReviewerSettingsRow,
@@ -203,11 +198,6 @@ const getSettings = defineTool({
     const now = Date.now();
 
     try {
-      await Promise.all([
-        ensurePrReviewerSettingsTable(),
-        ensureTrustedAuthorsTable(),
-        ensureAutoReviewAuditTable(),
-      ]);
       const { sql } = getOrgPg();
 
       // Settings are per-viewer; with no viewer id, return the safe defaults
@@ -334,7 +324,6 @@ const postSettings = defineTool({
     const parsed = parseSettingsPatch(await req.json().catch(() => null));
     if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
 
-    await ensurePrReviewerSettingsTable();
     const { sql } = getOrgPg();
     const now = Date.now();
 
@@ -385,7 +374,6 @@ const postTrustRemove = defineTool({
     const parsed = parseTrustRemoveBody(await req.json().catch(() => null));
     if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
 
-    await ensureTrustedAuthorsTable();
     const { sql } = getOrgPg();
     // Only the viewer's own trust entries are removable (trusted_by gate).
     await sql`

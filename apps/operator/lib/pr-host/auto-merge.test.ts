@@ -2,9 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import { tryAutoMerge } from './auto-merge';
 import type { PrHost, Pr } from './types';
 
-vi.mock('../ensure-schema-dogfood', () => ({
-  ensureAutoReviewAuditTable: vi.fn().mockResolvedValue(undefined),
-}));
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));

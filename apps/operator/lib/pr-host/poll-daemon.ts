@@ -10,7 +10,6 @@
  *   - P-042f: 404 on a known PR → mark gone → demote completion_ref
  */
 
-import { ensurePrCheckStatusCacheTable, ensureAutoReviewAuditTable } from '../ensure-schema-dogfood';
 import { getOrgPg } from '@papercusp/db-org';
 import type { PrHost, PrHostError, Pr } from './types';
 import { isRetryableError } from './types';
@@ -145,8 +144,6 @@ async function pollHarness(
 async function persistCheckStatus(harnessSlug: string, prs: Pr[]): Promise<void> {
   if (prs.length === 0) return;
   try {
-    await ensurePrCheckStatusCacheTable();
-    await ensureAutoReviewAuditTable();
     const { sql } = getOrgPg();
     // Upsert head_sha + state; we don't fetch per-check details here
     // (those are lazy-loaded on UI expand per §7.4). We just stamp

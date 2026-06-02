@@ -54,7 +54,6 @@ import {
   type AutoApproveContext,
 } from '@/lib/pr-host/auto-approve';
 import { tryAutoMerge, type AutoMergeContext } from '@/lib/pr-host/auto-merge';
-import { ensurePrCheckStatusCacheTable } from '@/lib/ensure-schema-dogfood';
 import { getOrgPg } from '@papercusp/db-org';
 import type { PrRowData } from '@/app/harness/PrRow';
 
@@ -120,7 +119,6 @@ const listPrs = defineTool({
     // Supplement check_conclusion from pr_check_status_cache.
     let checkCache: Map<string, string> = new Map();
     try {
-      await ensurePrCheckStatusCacheTable();
       const { sql } = getOrgPg();
       const rows = await sql.unsafe<{ head_sha: string; conclusion: string }[]>(
         `SELECT head_sha, conclusion
