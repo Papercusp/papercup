@@ -83,6 +83,82 @@ export function validatePublishInput(raw: unknown): { ok: true; input: PublishIn
   };
 }
 
+/**
+ * Channel-2 publisher attestation (item 1). Resolves the local GitHub
+ * identity + device keypair + idempotent device-binding gist so the publish
+ * can be attributed to a verifiable, bannable device identity. Reuses the
+ * gist `share-finalize` already ensured (find-or-create → no spam).
+ *
+ * Deps are injectable for testing; defaults lazily import the real identity
+ * modules (only the deps actually used are imported). Returns `null` on ANY
+ * failure (no gh auth, keychain miss, gist API down) — attestation is
+ * best-effort and must NEVER block a publish.
+ */
+export interface AttestationDeps {
+  resolveIdentity: () => Promise<{
+    kind: string;
+    githubUserId?: number;
+    githubLogin?: string;
+    token?: string;
+  }>;
+  keychainIdFor: (githubUserId: number) => string | Promise<string>;
+  loadKeypair: (keychainId: string) => Promise<{ pubkeyBase64: string }>;
+  ensureGist: (input: {
+    keychainId: string;
+    pubkeyBase64: string;
+    deviceLabel: string;
+    githubUserId: number;
+    githubLogin: string;
+    token: string;
+  }) => Promise<string>;
+}
+
+export async function resolvePublisherAttestation(
+  deps?: Partial<AttestationDeps>,
+): Promise<{ attestation_gist_id: string; publisher_device_pubkey: string } | null> {
+  try {
+    const resolveIdentity =
+      deps?.resolveIdentity ??
+      (async () =>
+        (await import('@/lib/identity/resolve-local-github-identity')).resolveLocalGithubIdentity());
+    const keychainIdFor =
+      deps?.keychainIdFor ??
+      (async (id: number) =>
+        (await import('@/lib/identity/device-keychain-id')).resolveDeviceKeychainId(id));
+    const loadKeypair =
+      deps?.loadKeypair ??
+      (async (k: string) => (await import('@/lib/identity/attest')).loadOrGenerateDeviceKeypair(k));
+    const ensureGist =
+      deps?.ensureGist ??
+      (async (i: Parameters<AttestationDeps['ensureGist']>[0]) =>
+        (await import('@/lib/identity/attest')).ensureAttestationGist(i));
+
+    const identity = await resolveIdentity();
+    if (
+      identity.kind === 'gh_auth_required' ||
+      identity.githubUserId == null ||
+      !identity.githubLogin ||
+      !identity.token
+    ) {
+      return null;
+    }
+    const keychainId = await keychainIdFor(identity.githubUserId);
+    const keypair = await loadKeypair(keychainId);
+    const gistId = await ensureGist({
+      keychainId,
+      pubkeyBase64: keypair.pubkeyBase64,
+      deviceLabel: 'unnamed-device',
+      githubUserId: identity.githubUserId,
+      githubLogin: identity.githubLogin,
+      token: identity.token,
+    });
+    if (!gistId) return null;
+    return { attestation_gist_id: gistId, publisher_device_pubkey: keypair.pubkeyBase64 };
+  } catch {
+    return null; // best-effort — publish proceeds without attestation
+  }
+}
+
 const cupboardPublish = defineTool({
   method: 'POST',
   path: '/harness/cupboard/publish',
@@ -107,6 +183,13 @@ const cupboardPublish = defineTool({
       );
     }
 
+    // Best-effort channel-2 attestation (item 1): attach the publisher's
+    // device-binding gist + pubkey so Cupboard can attribute + the operator
+    // can ban by a verifiable device identity. Idempotent (share-finalize
+    // already ensured the gist). null on any failure → publish unchanged.
+    const attestation = await resolvePublisherAttestation();
+    const publishBody = attestation ? { ...v.input, ...attestation } : v.input;
+
     const url = `${resolveCupboardBaseUrl()}/harnesses`;
     let upstream: Response;
     try {
@@ -117,7 +200,7 @@ const cupboardPublish = defineTool({
           'Content-Type': 'application/json',
           'User-Agent': 'papercusp-operator-cupboard-proxy',
         },
-        body: JSON.stringify(v.input),
+        body: JSON.stringify(publishBody),
       });
     } catch (e) {
       return Response.json(

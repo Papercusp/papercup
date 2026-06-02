@@ -100,6 +100,11 @@ export interface HarnessListing {
    *  'admin'|'maintain'|'write'|'triage'|'read'|'none'. Optional: Cupboard
    *  servers predating migration 002 omit it (rendered as unknown). */
   publisher_permission?: string | null;
+  /** Channel-2 (item 1): publisher's device Ed25519 pubkey (base64) +
+   *  the gist binding it to their GitHub login. Optional — present only
+   *  for attested publishes; cleared by the indexer on revocation. */
+  publisher_device_pubkey?: string | null;
+  publisher_attestation_gist_id?: string | null;
   provisional_owner_github_user_id: number;
   claim_status: CupboardClaimStatus;
   claimed_at: number | null;
@@ -364,6 +369,13 @@ export function isHarnessListing(input: unknown): input is HarnessListing {
   // publisher_permission is optional (servers predating migration 002 omit
   // it). Accept missing/null/string; reject other types.
   if (r.publisher_permission != null && typeof r.publisher_permission !== 'string') {
+    return false;
+  }
+  // Channel-2 attestation fields (migration 003) — also optional.
+  if (r.publisher_device_pubkey != null && typeof r.publisher_device_pubkey !== 'string') {
+    return false;
+  }
+  if (r.publisher_attestation_gist_id != null && typeof r.publisher_attestation_gist_id !== 'string') {
     return false;
   }
   if (
