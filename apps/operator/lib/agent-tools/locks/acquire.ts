@@ -29,7 +29,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { getPresence } from '../coordination/presence';
-import { inWorkspaceTxn } from './in-workspace-txn';
+import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
 import {
   expireWaiter,
   getTxPool,
@@ -179,16 +179,25 @@ export default defineTool({
     const startedAt = Date.now();
 
     // ── Fast path: try once, no wait ─────────────────────────────────
-    const first = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-      tryAcquire(tx, {
-        coordinationDomain,
-        owner: ownerId,
-        ownerLabel,
-        paths,
-        intent: args.intent,
-        ttlSec,
-      }),
-    );
+    let first: Awaited<ReturnType<typeof tryAcquire>>;
+    try {
+      first = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+        tryAcquire(tx, {
+          coordinationDomain,
+          owner: ownerId,
+          ownerLabel,
+          paths,
+          intent: args.intent,
+          ttlSec,
+        }),
+      );
+    } catch (err) {
+      // Same-workspace contention timed out the advisory lock (P-015): surface a
+      // structured busy result rather than leaking a raw PG error to the agent.
+      // The holder isn't enumerable here (we never got the lock), so busy is empty.
+      if (err instanceof WorkspaceContendedError) return await busy([]);
+      throw err;
+    }
 
     if (first.ok) {
       void fireNotificationsForCaller(ctx, first.held, 'lock_acquired').catch(
