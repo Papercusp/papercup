@@ -154,6 +154,33 @@ anything. The API call that makes the commit GitHub-verified is in
 
 ***
 
+## Resolved — feature *content* and issues now federate (CDC-outbox)
+
+An earlier limitation held that only queue-membership / working-set / claims /
+contributor rows reached the per-peer Hypercore log, so two federated peers never
+exchanged the actual **features** or **issues**. That is **fixed** (plan
+`papercusp-feature-content-federation-2026-06-01`): a transactional-outbox CDC seam
+captures every **local-origin** write to `harness_features_consolidated` /
+`harness_issues_consolidated` (an `AFTER` trigger → `harness_shared.substrate_outbox`
+
+* NOTIFY), and a per-harness drain appends those to the device's own log, so the
+  read-side projections write them into peers' Postgres. The end-to-end proof is the
+  Stage-6 acceptance test
+  `apps/operator/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts`
+  — two peers over a real in-process swarm with two SEPARATE Postgres databases; a
+  feature created on peer A genuinely lands in peer B's `harness_features_consolidated`
+  (and symmetrically B→A, plus issues A→B).
+
+The echo loop terminates in both directions. **Cross-peer:** the capture trigger
+enqueues only `origin='local'` rows, so a row a peer RECEIVED (`origin='remote'`) is
+never re-federated. **Intra-peer:** the read-merge re-applies the own log every pass,
+re-UPSERTing local rows — so the capture UPDATE trigger carries a
+`WHEN (OLD.* IS DISTINCT FROM NEW.*)` guard (migration 102) so an identical no-op
+re-upsert does not re-enqueue; without it the outbox grows unboundedly. The Stage-6
+test asserts the outbox reaches a fixed point under repeated merge+drain.
+
+***
+
 ## Decision record
 
 * **D-008** — Multi-device-per-login and login-rename fragility are recorded known

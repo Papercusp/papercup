@@ -995,7 +995,7 @@ window.__ipcInspector.churn()
 // FAIL → constructions climbing for one URL = a consumer is still recreating it.
 ```
 
-The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is dev-only and unset in production. IPC traffic is invisible to the devtools Network panel (it rides the unix socket, not HTTP), so the inspector is the *only* way to see the reconnect cadence — `constructions` (new channels) vs `connects`/`drops` (internal reconnects) is exactly the churn signal. Plan: `calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
+The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is on automatically in dev. **But IPC only runs in a *release* build** (debug skips the sidecar spawn — see the dormancy gates), and a release build is `NODE_ENV=production`, where the inspector is off by default — so to observe the actual fix you must opt in: **`localStorage['papercusp.ipcInspector'] = '1'` then reload** the release window (real users never set it). IPC traffic is invisible to the devtools Network panel (it rides the unix socket, not HTTP), so the inspector is the *only* way to see the reconnect cadence — `constructions` (new channels) vs `connects`/`drops` (internal reconnects) is exactly the churn signal. Plan: `calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
 
 ## The audit conclusion (2026-05-31)
 
@@ -3649,6 +3649,20 @@ This is the exact failure mode R-1 was written to prevent. The API call is not o
 Caution
 
 `buildSignedContributorFile` produces the *signed body bytes* — it does not push anything. The API call that makes the commit GitHub-verified is in `ensureMyBindingPublished`. Do not pull the push logic out of that function.
+
+***
+
+## Resolved — feature *content* and issues now federate (CDC-outbox)
+
+[Section titled “Resolved — feature content and issues now federate (CDC-outbox)”](#resolved--feature-content-and-issues-now-federate-cdc-outbox)
+
+An earlier limitation held that only queue-membership / working-set / claims / contributor rows reached the per-peer Hypercore log, so two federated peers never exchanged the actual **features** or **issues**. That is **fixed** (plan `papercusp-feature-content-federation-2026-06-01`): a transactional-outbox CDC seam captures every **local-origin** write to `harness_features_consolidated` / `harness_issues_consolidated` (an `AFTER` trigger → `harness_shared.substrate_outbox`
+
+* NOTIFY), and a per-harness drain appends those to the device’s own log, so the read-side projections write them into peers’ Postgres. The end-to-end proof is the Stage-6 acceptance test `apps/operator/lib/sync/hyperbee/__tests__/feature-content-federation.integration.test.ts` — two peers over a real in-process swarm with two SEPARATE Postgres databases; a feature created on peer A genuinely lands in peer B’s `harness_features_consolidated` (and symmetrically B→A, plus issues A→B).
+
+Note
+
+The echo loop terminates in both directions. **Cross-peer:** the capture trigger enqueues only `origin='local'` rows, so a row a peer RECEIVED (`origin='remote'`) is never re-federated. **Intra-peer:** the read-merge re-applies the own log every pass, re-UPSERTing local rows — so the capture UPDATE trigger carries a `WHEN (OLD.* IS DISTINCT FROM NEW.*)` guard (migration 102) so an identical no-op re-upsert does not re-enqueue; without it the outbox grows unboundedly. The Stage-6 test asserts the outbox reaches a fixed point under repeated merge+drain.
 
 ***
 

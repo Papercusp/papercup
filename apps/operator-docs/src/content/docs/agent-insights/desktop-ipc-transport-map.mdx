@@ -118,11 +118,15 @@ window.__ipcInspector.churn()
 ```
 
 The inspector (`apps/operator/lib/dev/ipc-inspector-client.ts` + the zero-cost
-seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is dev-only and unset in
-production. IPC traffic is invisible to the devtools Network panel (it rides the
-unix socket, not HTTP), so the inspector is the *only* way to see the reconnect
-cadence — `constructions` (new channels) vs `connects`/`drops` (internal
-reconnects) is exactly the churn signal. Plan:
+seam in `libs/generic/desktop-ipc/src/ipc-inspector.ts`) is on automatically in
+dev. **But IPC only runs in a *release* build** (debug skips the sidecar spawn —
+see the dormancy gates), and a release build is `NODE_ENV=production`, where the
+inspector is off by default — so to observe the actual fix you must opt in:
+**`localStorage['papercusp.ipcInspector'] = '1'` then reload** the release window
+(real users never set it). IPC traffic is invisible to the devtools Network panel
+(it rides the unix socket, not HTTP), so the inspector is the *only* way to see
+the reconnect cadence — `constructions` (new channels) vs `connects`/`drops`
+(internal reconnects) is exactly the churn signal. Plan:
 `calltool-endpoint-seam-2026-06-01` (Phase C/D, D-006).
 
 ## The audit conclusion (2026-05-31)
