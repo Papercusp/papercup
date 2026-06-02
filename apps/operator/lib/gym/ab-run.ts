@@ -47,7 +47,12 @@ const DB_NAME = `papercusp_gym_ab_${HEX}`;
 const WS = 'gym-ab-ws';
 const FAKE = process.env.GYM_AB_FAKE === '1';
 const REPEATS = Math.max(1, Number(process.env.GYM_AB_REPEATS ?? 2));
-const REAL_AGENT_CMD = process.env.GYM_AB_AGENT_CMD ?? 'claude -p';
+// All gym PIPELINE agents (scoper/worker/validator/curator/documenter/debugger/director)
+// run on Sonnet 4.6 via a global --model on AGENT_CMD; with no AGENT_MODELS overrides every
+// role inherits it. The JUDGE is unaffected — it's a separate meridian llmCall pinned to
+// opus-4-8 (GYM_JUDGE_RUBRIC_V1). This is gym-scoped only; the standard/prod agents are
+// configured separately via operator_agent_config and untouched here.
+const REAL_AGENT_CMD = process.env.GYM_AB_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const log = (m: string) => process.stdout.write(`[ab-run] ${m}\n`);
