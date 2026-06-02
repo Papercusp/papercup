@@ -73,8 +73,8 @@ beforeAll(async () => {
 
   // Apply the REAL 086/087 (they are self-contained — own trigger fns, only
   // depend on the harness_shared schema). This creates the tables WITH grants.
-  await sql.unsafe(readSql('086-harness-plan-status.sql')).simple();
-  await sql.unsafe(readSql('087-harness-plan-assertions.sql')).simple();
+  await sql.unsafe(readSql('archive/086-harness-plan-status.sql')).simple();
+  await sql.unsafe(readSql('archive/087-harness-plan-assertions.sql')).simple();
 
   // Reproduce the grant-less state that the filename-only runner left behind.
   for (const t of PLAN_TABLES) {
@@ -103,7 +103,7 @@ describe('harness_plan_* GRANTs (migration 092 catch-up repair)', () => {
   });
 
   it('092 re-grants DML on both plan tables to harness_app', async () => {
-    await sql.unsafe(readSql('092-regrant-harness-plan-tables.sql')).simple();
+    await sql.unsafe(readSql('archive/092-regrant-harness-plan-tables.sql')).simple();
 
     // harness_plan_status: full DML cycle as harness_app.
     await appSql`INSERT INTO harness_shared.harness_plan_status (workspace_id, harness_slug, plan_slug, status)
@@ -122,6 +122,6 @@ describe('harness_plan_* GRANTs (migration 092 catch-up repair)', () => {
   });
 
   it('is idempotent — re-running 092 does not error', async () => {
-    await expect(sql.unsafe(readSql('092-regrant-harness-plan-tables.sql')).simple()).resolves.toBeDefined();
+    await expect(sql.unsafe(readSql('archive/092-regrant-harness-plan-tables.sql')).simple()).resolves.toBeDefined();
   });
 });

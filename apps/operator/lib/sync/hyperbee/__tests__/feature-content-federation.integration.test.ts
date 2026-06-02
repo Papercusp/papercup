@@ -261,7 +261,7 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   // Apply the REAL send-side migrations verbatim (102 outbox+capture trigger,
   // 103 workspace_id fill trigger). These reference the framework roles created
   // above and the consolidated tables created above.
-  for (const file of ['102-substrate-outbox.sql', '103-issues-workspace-id-fill-trigger.sql']) {
+  for (const file of ['archive/102-substrate-outbox.sql', 'archive/103-issues-workspace-id-fill-trigger.sql']) {
     const sqlText = readFileSync(join(SQL_DIR, file), 'utf8');
     await sql.unsafe(sqlText);
   }

@@ -31,14 +31,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // __tests__/ → hyperbee/ → sync/ → lib/ → operator/ → apps/ → papercup/
 const MIGRATION_PATH = resolve(
   HERE,
-  '../../../../../../libs/papercusp/libs/db/sql/102-substrate-outbox.sql',
+  '../../../../../../libs/papercusp/libs/db/sql/archive/102-substrate-outbox.sql',
 );
 // Migration 103: BEFORE INSERT fill of workspace_id from projects on both
 // consolidated tables (the Stage-1 fix — issues had no workspace_id source, so
 // their outbox rows landed workspace_id='' and the Stage-3 drain never matched).
 const FILL_MIGRATION_PATH = resolve(
   HERE,
-  '../../../../../../libs/papercusp/libs/db/sql/103-issues-workspace-id-fill-trigger.sql',
+  '../../../../../../libs/papercusp/libs/db/sql/archive/103-issues-workspace-id-fill-trigger.sql',
 );
 
 const WS = 'ws_fed';
