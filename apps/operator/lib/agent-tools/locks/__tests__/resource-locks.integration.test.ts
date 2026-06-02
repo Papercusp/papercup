@@ -142,6 +142,17 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(h.expires_ts).not.toBeNull();
   });
 
+  it.skipIf(!live)('refuses a second exclusive requester while one is held (held_exclusive)', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const y = await acq(ws, 'Y', 'dev-server', 'exclusive'); // granted (no shared holders)
+    expect(y.ok).toBe(true);
+    if (y.ok) expect(y.status).toBe('held');
+    const z = await acq(ws, 'Z', 'dev-server', 'exclusive'); // a different owner
+    expect(z.ok).toBe(false);
+    if (!z.ok) expect(z.reason).toBe('held_exclusive');
+  });
+
   it.skipIf(!live)('release reports the resources whose exclusive was released (for back-up broadcast)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
