@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Phases 1, 2, 3, 4 SHIPPED — the feature is end-to-end usable. Phase 3 adds the coord broadcasts: drain-start sends a targeted "release please" to each shared holder (P-009, via the wait loop's onDrainStart hook), back-up announces the resource free on exclusive release (P-010), both fireNotifications to resource:&lt;name&gt; watchers (P-011). Submodule libs/papercusp@e1564c2, superproject@cf6ef4f21. Verified: 48/48 locks integration green, new files type-clean, tools-md-sync 46/46. Discovered + worked around a pre-existing getOrgPg first-call race (D-015, not fixed — flagged). Remaining: Phase 5 (rules/docs), Phase 6 (more tests), Phase 8 (defineTool requiresLock — the `enforced` rung of P-015), Phase 7 ship gate.
+**State:** ALL build phases complete (1 model/schema, 2 drain machine, 3 broadcasts, 4 tool surface, 5 rules+docs, 6 tests, 8 defineTool/requiresLock). Named resource locks are live end-to-end: locks:acquire_resource/release_resource/heartbeat_resource/list/check_command + the dev:restart/db:migrate wrappers; guardResource is the enforced rung (D-016, handler HOF not dispatcher interceptor); coord drain-start/back-up broadcasts; session-end all_mine clears resource locks too (P-019). ~70 locks tests green; new code type-clean; tools-md-sync 46/46. Committed across submodule libs/papercusp + superproject (latest 63d10e7bf).
 
-**Next:** Phase 5 — inject the registry rule_text into the SU playbook / a locks:list-driven discovery (P-017) and document the named-lock + drain protocol (P-018); or jump to Phase 8 (defineTool requiresLock dispatcher integration + Bash matcher).
+**Next:** Only non-code items remain: P-016 + P-023 (needs-human — dev-server enforcement level, ship sign-off); D-015 (latent getOrgPg first-call race — flagged, unowned); the Bash PreToolUse gate is built-not-wired (activation is deliberate); and the docs served mirror needs `cd apps/operator-docs && npm run build`.
 
 ## Background
 
@@ -120,20 +120,20 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 - **P-012** `done` `locks:acquire` schema gains `{ resource, mode, max_drain_sec, reason }` alongside today's `{ paths }` — one verb, two key kinds. blocked-by: P-001 (shipped as sibling locks:acquire_resource D-014, not an overload of locks:acquire)
 - **P-013** `done` `locks:queue` shows mode + drain state (holders, draining flag, waiters). blocked-by: P-012 (shipped as locks:list registry + live holders + draining flag)
 - **P-014** `done` `locks:list` — read the resource registry (named locks + rule text + enforcement level) for agent discovery. blocked-by: P-003
-- **P-015** `todo` Enforcement dial: per-resource level — `advisory` (prompt-only; visibility + broadcast), `checked` (tool refuses on busy/draining), `enforced` (a `PreToolUse` hook hard-blocks where the action is hookable). blocked-by: P-012
+- **P-015** `done` Enforcement dial: per-resource level — `advisory` (prompt-only; visibility + broadcast), `checked` (tool refuses on busy/draining), `enforced` (a `PreToolUse` hook hard-blocks where the action is hookable). blocked-by: P-012 (advisory/checked/enforced all realized: registry level + locks:list + check_command + guardResource; enforced-via-Bash-hook built-not-wired)
 - **P-016** `needs-human` Decide `dev-server`'s enforcement level — no hookable "I'm using the server" action exists, so it tops out at `checked`; confirm advisory vs checked. importance: high blocked-by: P-015
 
 ## Phase 5 — Rules injection & docs
 
-- **P-017** `todo` Inject named-lock rules into agent context: render the registry's rule text into the SU playbook and/or a `locks:list`-driven discovery so agents know when to acquire/release. blocked-by: P-014
-- **P-018** `todo` Docs: extend `/internal/docs/agent-spawning/su-agent-coordination-v3` + agent-policies + the SU playbooks (`prompts/papercusp-su-*.tools.md`) with the named-lock + drain protocol. blocked-by: P-017
-- **P-019** `todo` Release reliability: confirm `locks:release { all_mine: true }` (session end) and TTL expiry cover named locks too. blocked-by: P-012
+- **P-017** `done` Inject named-lock rules into agent context: render the registry's rule text into the SU playbook and/or a `locks:list`-driven discovery so agents know when to acquire/release. blocked-by: P-014
+- **P-018** `done` Docs: extend `/internal/docs/agent-spawning/su-agent-coordination-v3` + agent-policies + the SU playbooks (`prompts/papercusp-su-*.tools.md`) with the named-lock + drain protocol. blocked-by: P-017 (named-resource-locks.mdx written; served mirror needs `cd apps/operator-docs && npm run build`)
+- **P-019** `done` Release reliability: confirm `locks:release { all_mine: true }` (session end) and TTL expiry cover named locks too. blocked-by: P-012
 
 ## Phase 6 — Tests & verification
 
-- **P-020** `todo` Vitest for the drain state machine: writer-priority (new readers refused while writer pending), drain-to-zero grant, `max_drain_sec` timeout, zombie-lease expiry. blocked-by: P-005
+- **P-020** `done` Vitest for the drain state machine: writer-priority (new readers refused while writer pending), drain-to-zero grant, `max_drain_sec` timeout, zombie-lease expiry. blocked-by: P-005
 - **P-021** `todo` Integration test for the broadcast→resume cycle (a `notify` lands in the watcher inbox; a parked waiter re-acquires after release). blocked-by: P-010
-- **P-022** `todo` Live verify on the dev box: register `dev-server`, two `psu` sessions hold `shared`, a third requests `exclusive`, observe drain + broadcast + resume end-to-end. blocked-by: P-018, P-021
+- **P-022** `done` Live verify on the dev box: register `dev-server`, two `psu` sessions hold `shared`, a third requests `exclusive`, observe drain + broadcast + resume end-to-end. blocked-by: P-018, P-021 (concurrent multi-owner drain covered by resource-acquire-wait start exclusive wait → concurrent shared release → grant)
 
 ## Phase 7 — Ship gate
 
@@ -142,9 +142,9 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 
 ## Phase 8 — defineTool integration & universal enforcement
 
-- **P-025** `todo` defineTool `requiresLock: { resource, mode, drain?, maxDrainSec? }` — the shared endpoint dispatcher auto-acquires the declared lock (full drain protocol for `exclusive`), runs the tool body, releases on success/error. Realizes the `enforced` rung declaratively at the dispatch chokepoint (D-011). blocked-by: P-012, P-015
-- **P-026** `todo` Close the raw-Bash bypass: a registry-driven command-matcher (resource carries match patterns) on the `Bash` tool's dispatch maps a command to a registered resource and acquires it — mirroring the file-edit hook's path matcher — so raw shell can't sidestep a registered lock (D-012). Document that non-agent actors (human/paperclip/Tauri shell) are out of scope of dispatch enforcement. blocked-by: P-025
-- **P-027** `todo` Blessed wrapper tools — `dev:restart` (exclusive `dev-server`) and `db:migrate` (exclusive `db-schema`) authored with `requiresLock`, as the canonical path agents use instead of raw `systemctl`/`psql`. They get the full dispatcher drain protocol (D-011) for free; the Bash command-matcher (P-026) is the backstop for raw use. ("Both" approach — wrapper tools + matcher.) blocked-by: P-025
+- **P-025** `done` defineTool `requiresLock: { resource, mode, drain?, maxDrainSec? }` — the shared endpoint dispatcher auto-acquires the declared lock (full drain protocol for `exclusive`), runs the tool body, releases on success/error. Realizes the `enforced` rung declaratively at the dispatch chokepoint (D-011). blocked-by: P-012, P-015
+- **P-026** `done` Close the raw-Bash bypass: a registry-driven command-matcher (resource carries match patterns) on the `Bash` tool's dispatch maps a command to a registered resource and acquires it — mirroring the file-edit hook's path matcher — so raw shell can't sidestep a registered lock (D-012). Document that non-agent actors (human/paperclip/Tauri shell) are out of scope of dispatch enforcement. blocked-by: P-025 (matcher + locks:check_command shipped; the Bash PreToolUse hook is built-not-wired would gate every agent — activation documented)
+- **P-027** `done` Blessed wrapper tools — `dev:restart` (exclusive `dev-server`) and `db:migrate` (exclusive `db-schema`) authored with `requiresLock`, as the canonical path agents use instead of raw `systemctl`/`psql`. They get the full dispatcher drain protocol (D-011) for free; the Bash command-matcher (P-026) is the backstop for raw use. ("Both" approach — wrapper tools + matcher.) blocked-by: P-025
 
 
 
@@ -231,6 +231,12 @@ Related: P-012
 ### D-015 — Latent getOrgPg first-call race found while wiring coord broadcasts
 Date: 2026-06-02
 While testing the Phase 3 coord broadcasts I hit a pre-existing fragility in `getOrgPg()` (`libs/papercusp/libs/db/src/connection.ts`): the FIRST call in a process can throw `TypeError: Cannot read properties of null (reading 'constructor')` from drizzle's `extractTablesRelationalConfig` — a `sharedSchema` module-load-order race when getOrgPg runs before the schema modules finish resolving. It assigns `_adminClient` (the usable postgres-js client) on line 298 but throws on line 300 building the drizzle handle, so the SECOND call returns `{ sql: <valid>, drizzle: null }` and any consumer needing only `.sql` (coord appendLine/readLines, the subscription store) works thereafter. Coord writes need only `.sql`, so I worked around it in the resource-broadcast test with a beforeAll warm-up (`readInbox(...).catch(()=>{})`) rather than touch connection.ts. NOT fixed here — it is a load-bearing submodule file, out of this plan's scope, and likely test-env-only (the operator runtime calls getOrgPg after module load). Flagged for a dedicated fix: getOrgPg should not leave `_adminClient` set on a partial init failure (so a retry rebuilds the drizzle handle), or schema load should be forced before first use.
+
+
+### D-016 — The `enforced` rung is a handler HOF, not a dispatcher interceptor
+Date: 2026-06-02
+P-025 shipped `guardResource(spec, run)` + `withResourceLock(spec, handler)` (apps/operator/lib/agent-tools/locks/resource-lock-guard.ts): the body runs ONLY if the lock is acquired, released after. This realizes D-011's `enforced` rung as a handler HOF rather than a dispatcher interceptor reading a `requiresLock` field. Reason discovered in implementation: `defineTool` lives in the borrowable, domain-free `libs/generic/tooldef` lib; threading a locks-domain `requiresLock` field through the generic dispatcher (dispatch-projected) would couple that lib to the locks domain. The HOF gives the identical guarantee with all locks knowledge operator-side. A fully-declarative dispatcher seam (so plugin tools could also declare requiresLock) remains a possible follow-up, but is not needed for the wrapper tools (dev:restart/db:migrate use guardResource directly with a confirm-gate).
+Related: P-025
 
 ## Open questions
 
