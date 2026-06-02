@@ -39,7 +39,14 @@ function parseConfig(body: unknown): { ok: true; cfg: ParsedConfig } | { ok: fal
     ok: true,
     cfg: {
       goal,
-      startUrl: typeof b.startUrl === 'string' ? b.startUrl : 'http://127.0.0.1:3055/',
+      // Project-agnostic (D-002 a / M4): the AI walk drives whatever base URL
+      // it's given. Callers pass `startUrl`; the default is configurable via
+      // AI_EXPLORE_BASE_URL so a non-Papercusp project can point it at its own
+      // app instead of the operator's :3055.
+      startUrl:
+        typeof b.startUrl === 'string'
+          ? b.startUrl
+          : process.env.AI_EXPLORE_BASE_URL ?? 'http://127.0.0.1:3055/',
       model: typeof b.model === 'string' ? b.model : 'anthropic/claude-sonnet-4-6',
       maxSteps: Math.max(1, Math.min(50, Number(b.maxSteps ?? 20))),
       maxCostUsd: Math.max(0.05, Math.min(20, Number(b.maxCostUsd ?? 1.0))),

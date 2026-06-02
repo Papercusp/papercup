@@ -129,6 +129,16 @@ Implementing D-002 option (b) concretely (commit ec6f85eed). Of the five domains
 Generalizing `chaos`/`ai`/`live` to drive each project's declared base URL (D-002 option a) remains the deferred follow-up. Tier vocabulary `generalized`→`universal` was renamed throughout (lib + operator + `.harness/testing-domains.json` + `HARNESS_TESTING_TIER_LABELS`); zero visual change since the label already read "Universal". Refs P-005, P-006, P-007, P-008, P-009.
 Related: P-005, P-006, P-007, P-008, P-009
 
+
+### D-008 — M4: ai is already URL-parameterized; chaos/live are recorders; deep generic-driver abstraction deferred (no consumer)
+Date: 2026-06-02
+Investigated D-002 option (a) — generalizing chaos/ai/live to drive a non-Papercusp base URL. Finding:
+
+- **ai (Stagehand walk)** is *already* URL-parameterized: `POST /api/admin/testing/ai-explore` takes a `startUrl` and spawns `scripts/stagehand-runner.mjs` against it. The only operator-ism was the hardcoded `:3055` default, now made configurable via `AI_EXPLORE_BASE_URL` (this commit). So `ai` already generalizes — point it at any base URL.
+- **chaos / live** are *recorders/observers* (`chaos-store.ts`, `vitals-recorder.ts`, `recorder-channel.ts`), not URL-drivers. The thing that's genuinely Papercusp-bound is the *driving* substrate — they record from the **Tauri webview** (via tauri-agent-tools / a Rust bridge), not a generic browser. Truly generalizing them means a generic-browser-driver abstraction (Playwright/CDP) behind the recorder, replacing the Tauri-bridge coupling.
+
+Decision: **do not build the generic-driver abstraction now** — it is deep and has **no current consumer** (Restart's /tests uses CI + k6 customTabs, not these domains; M2). Building it would be speculative complexity. Ship the `ai` base-URL config (done) and revisit chaos/live generalization when a project actually wants to run them against its own app. Refs M4.
+
 ## Open questions / Deferred follow-ups
 
 - Generalizing `chaos`/`ai`/`live` to drive each project's declared base URL (option (a) of D-002) — deferred per the recommendation; revisit per-domain after the portable core ships.
