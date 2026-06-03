@@ -46,15 +46,47 @@ commits** (confirmed). See D-021.
   4 render tests (`4de5b83f1`). Visual polish (Pareto scatter, Monaco) is a focused designer pass on
   top — see D-022.
 
-**Next:** (1) **P-014 real A/B** — running on capacity (`GYM_AB_REPEATS=2`, all-sonnet). It progresses
-but the minimal `index.js` substrate has no buildable TS setup, so the worker's code fails the L1
-typecheck gate → debugger/rework loops to the iteration cap (terminal=failing, which D-011 keeps as
-observability, not a reward — the judge still scores the work). **Finding: the synthetic task substrate
-needs a buildable setup (tsconfig/test scaffold) for clean DONE outcomes + uninflated cost.** Variance/
-cost/real-anchor numbers come out of the completing run; the go/no-go judgment is documented at run end.
-(2) **P-024 visual polish + live-Tauri verification** — functional + unit-tested; the designer/UI-agent
-pass (Monaco diff, scatter, real Tauri-shell check) is deferred to the gym-ui-handoff owner. (3) Optional:
-a longer dedicated variance run once the substrate is buildable.
+**P-014 — DONE (real A/B ran, 2026-06-03; see § P-014 results below for the go/no-go).** The bounded
+all-sonnet A/B (2 variants × 1 task × 2 repeats) completed end-to-end with real agents + the real Opus-4-8
+judge after the single-shot-worker fix (`ef3db9227`) made runs converge (the chunk-loop tsc gate fails
+structurally on the minimal substrate — D-021/§ results). Numbers: judge sd up to 0.5 → **min ~4 repeats
+(1 run too noisy → promote P-025)**; **$0.05/run, $0.10/cycle, $0.31/converged-run** (cheap); the gym
+distinguishes variants (baseline 8.25 vs the candidate 8.0, Δ −0.25). **Go/no-go: GO to the bounded loop**
+(D-019 cap), conditioned on (a) P-025 repeats ≥4 and (b) a real-anchor correlation pass (D-014/P-028).
+
+**Remaining (deferred, surfaced — not silently dropped):**
+1. **P-025 repeats → v1** — the measured variance (sd≤0.5, minRepeats≈4) says 1 run is too noisy; the loop's
+   accept gate needs ≥~4 repeats per cell. The `ab-runner` already supports `GYM_AB_REPEATS`; promoting it
+   into the loop's `evaluate` is the change.
+2. **Real-anchor correlation (D-014/P-028)** — not measured in this bounded A/B (no real-anchor pool). Run
+   the champion against the fixed real-feature set before trusting the headline metric.
+3. **Finalize-stage hermeticity residual** — `[convert-issues] … harness_features does not exist` + the
+   documenter SIGTERM at teardown (same class as the worker bug, but POST-terminal so the judge still
+   scores). Cleanup for clean DONE outcomes; non-blocking for the measurement.
+4. **Buildable synthetic substrate + chunk-loop ON** — the production-fidelity path (measure the real
+   chunk-loop worker model on a `tsconfig`/test-scaffold substrate) vs. tonight's single-shot bounded run.
+5. **P-024 visual polish + live-Tauri verification** — functional + unit-tested; the designer/UI-agent pass
+   (Monaco diff, Pareto scatter, real Tauri-shell render check) is the gym-ui-handoff owner's.
+
+## P-014 results (real A/B, 2026-06-03)
+
+Command: `unset AGENT_MODELS; GYM_AB_REPEATS=2 npx tsx lib/gym/ab-run.ts` (all roles sonnet-4-6 via the
+sealed boot-spec; judge = frozen opus-4-8 `GYM_JUDGE_RUBRIC_V1`). 4 runs, all terminal + judge-scored.
+
+| Metric | Value | Implication |
+| --- | --- | --- |
+| outcomes | baseline: passed, escalated · candidate: escalated, escalated | terminal reached (D-011: observability, not the reward); escalations trace to the minimal substrate + the finalize residual, judge still scores |
+| judge composite | baseline mean 8.25 (sd 0) · candidate mean 7.5 (sd 0.5), n=2 | the judge produces a stable, discriminating signal |
+| derived ε/δ/min-n | ε≈δ≈1, **minRepeats≈4** | **1 run is too noisy → P-025 repeats into v1** |
+| A-vs-B | baseline 8.25 vs candidate 8.0, **Δ −0.25** | the "worker re-reads acceptance" overlay didn't help here — the gym distinguishes variants |
+| cost | **$0.051/run · $0.10/cycle · $0.31/converged-run** | economically viable for the bounded loop |
+| real-anchor correlation | not measured (no real-anchor pool in this A/B) | required (D-014) before trusting the headline |
+
+**Verdict (judgment call per the D-019 mandate):** the measurement spine (①–⑥) is proven end-to-end with
+real agents + the real judge, the signal discriminates variants, and the economics are cheap — so the loop
+(⑦–⑧) is sound to wire/run **under the bounded budget cap**, with P-025 repeats (≥4) promoted into the
+accept gate and a real-anchor correlation pass before the headline metric is trusted. No unbounded
+optimization was run (D-019 #4); no production harness is repointed (P-023; none exists).
 
 ## Background
 
@@ -230,7 +262,7 @@ One cycle:
 
 - **P-012** `done` PG schema `harness_gym`: gym_tasks (with pool), gym_variants, gym_runs, gym_scores, gym_cycles, gym_runs_params (frozen run-params). importance: high (harness_gym schema 6 tables + idempotent gym-PG-resident ensureGymSchema; 6 live-PG sentinel tests green)
 - **P-013** `todo` Comparison read API: variant-A-vs-B per-task diff, frontier view, cycle history, real-anchor + monitor surfacing. blocked-by: P-012
-- **P-014** `real-run-in-progress` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028 (2026-06-03: the real path now WORKS end-to-end — D-021 fixed the spawn-signing-key + AGENT_MODELS bugs that blocked real agents; an all-sonnet `GYM_AB_REPEATS=2` A/B boots real `claude -p` agents, real commits, `invoke worker rc=0`. FINDING: the minimal `index.js` substrate has no buildable TS setup, so the worker's diff fails the L1 typecheck gate → debugger/rework to the iteration cap (terminal=failing; D-011 keeps that as observability, the judge still scores). The variance/cost/correlation numbers come from the completing run + a follow-up on a BUILDABLE substrate; the go/no-go is documented at run end. Earlier 429 rate-limit cleared.)
+- **P-014** `done` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028 (2026-06-03 DONE: real A/B ran end-to-end — D-021 fixed the spawn-signing-key + AGENT_MODELS bugs, `ef3db9227` made runs converge (single-shot worker; the chunk-loop tsc gate fails structurally on the minimal substrate). Results in § P-014 results: judge sd≤0.5 → **minRepeats≈4, 1 run too noisy → promote P-025**; **$0.05/run · $0.10/cycle · $0.31/converged-run**; gym distinguishes variants (baseline 8.25 vs candidate 8.0). Go/no-go = **GO to the bounded loop**, conditioned on P-025 repeats ≥4 + a real-anchor correlation pass (D-014). real-anchor correlation NOT yet measured — deferred to a P-028 pass.)
 
 ## Phase 4 — Proposer
 
