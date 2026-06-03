@@ -28,6 +28,7 @@ import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { runWithWorkspace } from '@/lib/workspace-als';
+import { loopbackFetch } from '@/lib/loopback-fetch';
 import { computeNextFireAt } from '@/lib/harness/routines/cron';
 import { getSystemAction, SYSTEM_TARGET_PREFIX } from '@/lib/harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
@@ -35,6 +36,7 @@ import '@/lib/harness/routines/register-system-actions';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
+const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
 
 const routinesQueue = new WorkflowQueue('routines', { concurrency: 4 });
 
@@ -88,13 +90,23 @@ async function routineFireImpl(
         { name: `system:${action}`, retriesAllowed: true, maxAttempts: 2, intervalSeconds: 15 },
       );
     } else {
-      // Agent-role routine dispatch lands in git-sync-auto-commit P-012 (needs the
-      // role-launch path, distinct from launchAgent's backend selector). No role
-      // routines are configured yet, so log rather than throw (throwing would push
-      // the workflow into recovery for an unreachable branch).
+      // Agent-role routine: kick off the role for this harness via the invoke route
+      // (the same autonomous launch path the autoloop's fireDirector + the git-sync
+      // merge-resolver spawn use). Fire-and-forget — the agent runs detached and the
+      // next due tick re-fires; this matches the routine cadence model.
       await DBOS.runStep(async () => {
-        console.warn(
-          `[routines] role-routine dispatch not yet wired (target=${targetRole}, routine=${routineId}); see git-sync P-012`,
+        const kickoff =
+          typeof payloadTemplate?.kickoff === 'string'
+            ? payloadTemplate.kickoff
+            : `Scheduled routine '${routineId}' (role ${targetRole}).`;
+        const ws = encodeURIComponent(workspaceId);
+        const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(targetRole)}&ws=${ws}`;
+        void loopbackFetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ kickoff }),
+        }).catch((e) =>
+          console.warn(`[routines] role spawn failed (${installSlug}/${targetRole}): ${e instanceof Error ? e.message : e}`),
         );
       }, { name: `spawn:${targetRole}` });
     }
