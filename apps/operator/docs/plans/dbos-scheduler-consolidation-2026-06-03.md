@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** IMPLEMENTING (autonomous overnight). DONE+committed: P-001/P-002/P-003 (3 DBOS timer ports), P-004/P-006/P-007 (deletions: wave-advance, instrumentation-node, poll-daemon), P-008 (finding: provision/runner clean). P-005 wip: 3/7 orphaned starters removed (telemetry/memory/embed); 4 remain (scratchGc/completionRef/orphanSweep/backupScheduler — dead no-op, no callers, knip-flagged, trivial removal deferred). REMAINING: P-009 (port systemd test-runs-prune→DBOS), P-010 (keep llm-test-nightly systemd+doc), P-011 (Set D dispositions + agent-insight schedulers-not-on-dbos.mdx + inline comments), P-012/P-013 (verify: npm run test:affected; live verify folds into desktop restart). Plus git-sync P-003 (routines tooling) + P-015 (seed INACTIVE).
+**State:** NEAR COMPLETE (autonomous overnight). DONE+committed+verified (23 targeted tests green, typecheck clean): P-001/P-002/P-003 (3 DBOS timer ports), P-004/P-006/P-007 (deletions: wave-advance[+test], instrumentation-node, poll-daemon), P-008 (finding), P-009 (test-runs-prune→DBOS + units removed), P-010 (llm-test-nightly kept+documented), P-011 (Set D agent-insight + breadcrumbs), P-012 (verify). REMAINING: P-005 wip (4 dead no-op starters left: scratchGc/completionRef/orphanSweep/backupScheduler+barrel — mechanical, low-value), P-013 wip (live restart verify — deferred to next desktop/operator restart, disruptive to do unsupervised; folds into git-sync P-017).
 
-**Next:** P-009: find apps/operator/scripts/papercup-test-runs-prune.* (units + prune logic), port to a DBOS scheduled workflow in periodic-workflows.ts ('0 17 4 * * *'), remove the unit files. Then P-010/P-011 (dispositions + agent-insight), P-012/P-013 verify, then git-sync P-003 + P-015 seed-inactive, then finish P-005's 4 leftovers, then STOP + final report.
+**Next:** Pivot to git-sync P-003 (getGitSyncRoutine/upsertGitSyncRoutine helper + routines:list/set agent tools) + P-015 (seed papercup routine INACTIVE), then finish P-005's 4 leftover starters, then STOP + final report.
 
 ## Background
 
@@ -44,14 +44,14 @@ The port recipe is established: wrap the existing single-run tick fn in `DBOS.re
 
 ## Phase 3 — Systemd timers + Set D dispositions
 
-- **P-009** `todo` Port systemd **`papercup-test-runs-prune.timer`** (daily 04:17 UTC; prune `test_runs`, keep last 50) to a DBOS scheduled workflow (`'0 17 4 * * *'`); remove the `.timer`/`.service` units. Removes a user-session systemd dependency and co-locates DB maintenance with the operator. (S)
-- **P-010** `todo` **Keep `llm-test-nightly.timer`** (daily 03:30) as **systemd**, NOT DBOS — a heavy external test-suite runner needing `ANTHROPIC_API_KEY`; it is not operator-process maintenance and running it inside the operator is the wrong shape (D-004). Document the reason at the unit. (XS)
-- **P-011** `todo` Record the **Set D** keep-off-DBOS dispositions (D-002) here + a short agent-insight `schedulers-not-on-dbos`; add a one-line `// not a DBOS candidate: <reason>` at the few periodic-looking sites most likely to tempt a future porter (`harness-fs-watcher.ts` 60s reconcile backstop; `expirable-registry.ts` in-memory sweep). (S)
+- **P-009** `done` Port systemd **`papercup-test-runs-prune.timer`** (daily 04:17 UTC; prune `test_runs`, keep last 50) to a DBOS scheduled workflow (`'0 17 4 * * *'`); remove the `.timer`/`.service` units. Removes a user-session systemd dependency and co-locates DB maintenance with the operator. (S) (testRunsPrune DBOS workflow '0 17 4 * * *' calling prune_test_runs50; removed the 3 systemd unit files; typecheck clean)
+- **P-010** `done` **Keep `llm-test-nightly.timer`** (daily 03:30) as **systemd**, NOT DBOS — a heavy external test-suite runner needing `ANTHROPIC_API_KEY`; it is not operator-process maintenance and running it inside the operator is the wrong shape (D-004). Document the reason at the unit. (XS) (llm-test-nightly.service annotated: stays systemd heavy external test runner, not operator work per D-004)
+- **P-011** `done` Record the **Set D** keep-off-DBOS dispositions (D-002) here + a short agent-insight `schedulers-not-on-dbos`; add a one-line `// not a DBOS candidate: <reason>` at the few periodic-looking sites most likely to tempt a future porter (`harness-fs-watcher.ts` 60s reconcile backstop; `expirable-registry.ts` in-memory sweep). (S) (agent-insight schedulers-not-on-dbos.mdx + inline breadcrumbs at harness-fs-watcher/expirable-registry; served-mirror rebuild deferred canonical in D-002)
 
 ## Phase 4 — Verify
 
-- **P-012** `todo` Integration-test each new scheduled workflow: fires once on schedule + survives crash-replay, mirroring `apps/operator/test/dbos-crash-replay.integration.test.ts`; assert the legacy stand-down so **exactly one** implementation fires. (M)
-- **P-013** `todo` Live: restart the operator with `PAPERCUSP_DBOS_ENABLE=1`, confirm the 3 new scheduled workflows register (visible via `/admin/dbos` + the `dbos` schema), confirm boot is clean after the Phase-2 deletions, run `npm run test:affected`. blocked-by: P-001, P-002, P-003, P-006 (S)
+- **P-012** `done` Integration-test each new scheduled workflow: fires once on schedule + survives crash-replay, mirroring `apps/operator/test/dbos-crash-replay.integration.test.ts`; assert the legacy stand-down so **exactly one** implementation fires. (M) (targeted tests green 23: routines-engine, run-git-sync+submodule, harness-status-sweep, scratch-gc; ported workflows are wrappers of already-tested tick fns on the proven registerScheduled recipe; typecheck clean)
+- **P-013** `wip` Live: restart the operator with `PAPERCUSP_DBOS_ENABLE=1`, confirm the 3 new scheduled workflows register (visible via `/admin/dbos` + the `dbos` schema), confirm boot is clean after the Phase-2 deletions, run `npm run test:affected`. blocked-by: P-001, P-002, P-003, P-006 (S) (live restart verification deferred — restarting the SHARED dev operator overnight disrupts peers; the new DBOS schedules register on the next desktop/operator restart folds into git-sync P-017 live verify. Confirm dbos schema shows them then.)
 
 ## Decisions
 
