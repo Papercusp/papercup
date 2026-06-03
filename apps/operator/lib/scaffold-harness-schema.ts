@@ -63,19 +63,8 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
     );
 
-    CREATE TABLE IF NOT EXISTS ${schema}.supervisor_notes (
-      id BIGSERIAL PRIMARY KEY,
-      harness_slug TEXT NOT NULL,
-      created_at BIGINT NOT NULL,
-      content TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS ${schema}.directive_summaries (
-      id BIGSERIAL PRIMARY KEY,
-      directive_id TEXT NOT NULL,
-      created_at BIGINT NOT NULL,
-      content TEXT NOT NULL DEFAULT ''
-    );
+    -- supervisor_notes + directive_summaries consolidated to harness_shared
+    -- (migration 119); created below as auto-updatable views, not physical tables.
 
     CREATE TABLE IF NOT EXISTS ${schema}.executed_actions (
       id BIGSERIAL PRIMARY KEY,
@@ -140,12 +129,36 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
     ALTER VIEW ${schema}.agent_chats ALTER COLUMN total_output_tokens SET DEFAULT 0;
     ALTER VIEW ${schema}.agent_chats ALTER COLUMN total_cost_usd_cents SET DEFAULT 0;
 
+    CREATE OR REPLACE VIEW ${schema}.supervisor_notes AS
+      SELECT * FROM harness_shared.supervisor_notes_consolidated
+      WHERE harness_slug = '${slug.replace(/'/g, "''")}'
+      WITH CHECK OPTION;
+
+    ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN workspace_id SET DEFAULT 'default';
+    ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
+    ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN created_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
+    ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN body SET DEFAULT '';
+    ALTER VIEW ${schema}.supervisor_notes ALTER COLUMN source SET DEFAULT '';
+
+    CREATE OR REPLACE VIEW ${schema}.directive_summaries AS
+      SELECT * FROM harness_shared.directive_summaries_consolidated
+      WHERE harness_slug = '${slug.replace(/'/g, "''")}'
+      WITH CHECK OPTION;
+
+    ALTER VIEW ${schema}.directive_summaries ALTER COLUMN workspace_id SET DEFAULT 'default';
+    ALTER VIEW ${schema}.directive_summaries ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
+    ALTER VIEW ${schema}.directive_summaries ALTER COLUMN source SET DEFAULT 'ceo';
+    ALTER VIEW ${schema}.directive_summaries ALTER COLUMN summary SET DEFAULT '';
+    ALTER VIEW ${schema}.directive_summaries ALTER COLUMN created_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
+
     GRANT SELECT, INSERT, UPDATE, DELETE ON
       ${schema}.harness_features,
       ${schema}.harness_issues,
       ${schema}.agent_runs,
       ${schema}.harness_snapshots,
-      ${schema}.agent_chats
+      ${schema}.agent_chats,
+      ${schema}.supervisor_notes,
+      ${schema}.directive_summaries
       TO harness_app, harness_admin;
   `);
   try {
@@ -155,7 +168,9 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
         ${schema}.harness_issues,
         ${schema}.agent_runs,
         ${schema}.harness_snapshots,
-        ${schema}.agent_chats
+        ${schema}.agent_chats,
+        ${schema}.supervisor_notes,
+        ${schema}.directive_summaries
         TO harness_zero;
     `);
   } catch { /* harness_zero absent — skip grants */ }
