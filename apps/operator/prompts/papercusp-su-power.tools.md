@@ -133,7 +133,7 @@ the commit:
 locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wait: { max_sec: 300 } }
 ```
 
-then edit → commit → `locks:release { lock_id }`. The hook **fails open**
+then edit → `locks:release { lock_id }`. The hook **fails open**
 (operator unreachable → edit allowed + flagged at `/coord`), so an infra
 blip never wedges you.
 

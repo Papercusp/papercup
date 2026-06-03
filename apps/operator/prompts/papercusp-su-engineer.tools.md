@@ -203,11 +203,12 @@ You don't hand-lock single edits. When blocked, the result names the holder
 user** with both intents. **Never route around a block** (rename, copy,
 `--force`) — that lock is the other agent's in-flight work. Hand-call
 `locks:acquire` only for the one case the hook can't cover — a deliberate
-change across several files held across multiple edits **and** the commit:
+change across several files held across multiple edits (git-sync commits +
+pushes for you; you just keep peers off the set while you edit it):
 ```
 locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wait: { max_sec: 300 } }
 ```
-then edit → commit → `locks:release { lock_id }` (`locks:heartbeat` at the
+then edit → `locks:release { lock_id }` (`locks:heartbeat` at the
 halfway mark if held >15 min). Corners: `ok:false` busy → retry/pivot/yield;
 `waiter_cap_exceeded` → your wait loop is wrong, audit `locks:queue { owner }`;
 on session end / context loss, `locks:release { all_mine: true }`;
@@ -265,9 +266,10 @@ Names must be **registered** — `locks:list` shows the set + each one's rule +
 enforcement level. Registered today: `dev-server` (:3070), `db-schema`, `shop`
 (build + :4321 preview — acquire shared before testing it, exclusive before a
 rebuild/restart), `desktop-sidecar` (bundle build — exclusive before building,
-guards the 0-byte clobber), and `libs-papercusp-submodule` (exclusive across
-commit-on-submodule + superproject pointer-bump + push — replaces the manual
-"owner-sync" broadcasts). The blessed paths for the two seeded server/DB
+guards the 0-byte clobber), and `libs-papercusp-submodule` (held by the
+**git-sync** routine + merge-resolver around their submodule
+commit/pointer-bump/push — you rarely touch it now that git-sync owns
+commit + push). The blessed paths for the two seeded server/DB
 resources are the wrapper tools **`dev:restart`** and **`db:migrate`** (they run the whole
 drain protocol for you; **dry-run by default**, confirm:true to act). These
 locks are **loose** by design (like file locks, they fail open), so the

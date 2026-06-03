@@ -1,33 +1,33 @@
 'use client';
 
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import ChaosTab from './_components/ChaosTab';
-import AIExploreTab from './_components/AIExploreTab';
-import LiveMetricsTab from './_components/LiveMetricsTab';
-import RoutesTab from './_components/RoutesTab';
-import PackagedBuildTab from './_components/PackagedBuildTab';
-import LlmTab from './_components/LlmTab';
-import TestRunsTab from './_components/TestRunsTab';
-import MemoryTab from './_components/MemoryTab';
+import { TESTING_CUSTOM_TABS, UNIVERSAL_TESTING_TABS } from './testing-custom-tabs';
 
-type TabId = 'test-runs' | 'chaos' | 'ai' | 'live' | 'routes' | 'packaged' | 'llm' | 'memory';
-
-const TABS: Array<{ id: TabId; label: string; hint: string }> = [
+/**
+ * Retired Next-surface testing client. The LIVE /admin/testing is the
+ * operator-vite `components/admin/TestingClient`; this thin variant is kept
+ * building by delegating to the shared `TESTING_CUSTOM_TABS` (universal panels
+ * via buildUniversalTesting + operator-specific) so it never re-imports the
+ * deleted bespoke ChaosTab/AIExploreTab. universal-testing-domains-generic Phase 6.
+ */
+const TABS: Array<{ id: string; label: string; hint: string }> = [
   { id: 'test-runs', label: 'Test Runs', hint: 'suite orchestrator' },
-  { id: 'live', label: 'Live metrics', hint: 'passive observer' },
+  { id: 'vitals', label: 'Live metrics', hint: 'passive observer (desktop)' },
   { id: 'memory', label: 'Memory', hint: 'mem0 health + suite' },
-  { id: 'chaos', label: 'Chaos', hint: 'autonomous clicker' },
-  { id: 'ai', label: 'AI Explore', hint: 'LLM-driven walk' },
+  ...UNIVERSAL_TESTING_TABS.map((t) => ({ id: t.id, label: t.label, hint: t.hint ?? '' })),
   { id: 'routes', label: 'Routes', hint: 'per-route roll-up' },
   { id: 'packaged', label: 'Packaged build', hint: 'wdio + tauri-driver' },
   { id: 'llm', label: 'LLM', hint: 'scenario-driven judging' },
 ];
 
+const TAB_IDS = TABS.map((t) => t.id);
+
 export default function TestingClient() {
   const [tab, setTab] = useQueryState(
     'tab',
-    parseAsStringEnum<TabId>(['test-runs', 'chaos', 'ai', 'live', 'routes', 'packaged', 'llm', 'memory']).withDefault('test-runs'),
+    parseAsStringEnum<string>(TAB_IDS).withDefault('test-runs'),
   );
+  const Panel = TESTING_CUSTOM_TABS[tab] ?? TESTING_CUSTOM_TABS['test-runs'];
 
   return (
     <div className="pc-test-shell">
@@ -48,14 +48,7 @@ export default function TestingClient() {
         </nav>
       </aside>
       <main className="pc-test-main">
-        {tab === 'test-runs' && <TestRunsTab />}
-        {tab === 'live' && <LiveMetricsTab />}
-        {tab === 'memory' && <MemoryTab />}
-        {tab === 'chaos' && <ChaosTab />}
-        {tab === 'ai' && <AIExploreTab />}
-        {tab === 'routes' && <RoutesTab />}
-        {tab === 'packaged' && <PackagedBuildTab />}
-        {tab === 'llm' && <LlmTab />}
+        <Panel />
       </main>
     </div>
   );
