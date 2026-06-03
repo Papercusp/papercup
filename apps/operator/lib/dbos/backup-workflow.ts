@@ -35,6 +35,7 @@ import {
   workspaceBackupFor,
   type SnapshotResult,
   type SnapshotTriggerReason,
+  type WorkspaceBackup,
 } from '@papercusp/backup';
 
 export interface BackupSnapshotWorkflowInput {
@@ -121,4 +122,112 @@ export async function startBackupSnapshotWorkflow(
     workflowID: backupSnapshotWorkflowId(input, nonce),
   })(input);
   return handle.getResult();
+}
+
+// ---------------------------------------------------------------------------
+// The destructive trio (P-012) — restoreInPlace / promoteRestore / rollback.
+//
+// Same shape as the snapshot workflow: a durable envelope with an injectable
+// executor (tests inject a stub so the DBOS mechanics are proven without real
+// kopia / FS moves). The crash-resume value comes from the LIB methods, which
+// now run their phases through the injected StepRunner and (for promote /
+// rollback) derive deterministic `.broken-/.rolled-back-` names from an `opId`.
+// We pass the per-request `nonce` as BOTH the workflowID suffix AND the `opId`,
+// so a DBOS resume re-runs with the same input → the same deterministic paths →
+// the lib's idempotent swap completes from wherever the crash left off.
+// ---------------------------------------------------------------------------
+
+type RestoreInPlaceResult = Awaited<ReturnType<WorkspaceBackup['restoreInPlace']>>;
+type PromoteResult = Awaited<ReturnType<WorkspaceBackup['promoteRestore']>>;
+type RollbackResult = Awaited<ReturnType<WorkspaceBackup['rollbackPromote']>>;
+
+export interface BackupRestoreInPlaceInput {
+  workspaceId: string;
+  kopiaSnapshotId: string;
+  target?: string;
+  skipSafetySnapshot?: boolean;
+}
+export interface BackupPromoteInput {
+  workspaceId: string;
+  restoredPath: string;
+  liveTarget?: string;
+  /** Stable per-request id (= the workflow nonce) → deterministic broken-dir name. */
+  opId: string;
+}
+export interface BackupRollbackInput {
+  workspaceId: string;
+  brokenPath: string;
+  /** Stable per-request id (= the workflow nonce) → deterministic stash-dir name. */
+  opId: string;
+}
+
+/**
+ * Register one destructive-op workflow: a default executor (the real lib
+ * method), a test-injectable override, and a `start(input, nonce)` that keys
+ * the workflow by a per-request id so a crash resumes exactly that op.
+ */
+function registerBackupOp<I extends { workspaceId: string }, R>(
+  name: string,
+  defaultRun: (input: I) => Promise<R>,
+) {
+  let exec: ((input: I) => Promise<R>) | null = null;
+  const impl = async (input: I): Promise<R> => (exec ? exec(input) : defaultRun(input));
+  const workflow = DBOS.registerWorkflow(impl, { name, maxRecoveryAttempts: 5 });
+  return {
+    setExecutor: (fn: ((input: I) => Promise<R>) | null): void => {
+      exec = fn;
+    },
+    start: async (input: I, nonce: string): Promise<R> => {
+      const handle = await DBOS.startWorkflow(workflow, {
+        workflowID: `${name}:${input.workspaceId}:${nonce}`,
+      })(input);
+      return handle.getResult();
+    },
+  };
+}
+
+const restoreInPlaceOp = registerBackupOp<BackupRestoreInPlaceInput, RestoreInPlaceResult>(
+  'backup-restore-in-place',
+  (i) =>
+    workspaceBackupFor(i.workspaceId).restoreInPlace({
+      kopiaSnapshotId: i.kopiaSnapshotId,
+      target: i.target,
+      skipSafetySnapshot: i.skipSafetySnapshot,
+    }),
+);
+const promoteOp = registerBackupOp<BackupPromoteInput, PromoteResult>(
+  'backup-promote',
+  (i) =>
+    workspaceBackupFor(i.workspaceId).promoteRestore({
+      restoredPath: i.restoredPath,
+      liveTarget: i.liveTarget,
+      opId: i.opId,
+    }),
+);
+const rollbackOp = registerBackupOp<BackupRollbackInput, RollbackResult>(
+  'backup-rollback',
+  (i) => workspaceBackupFor(i.workspaceId).rollbackPromote({ brokenPath: i.brokenPath, opId: i.opId }),
+);
+
+export const setRestoreInPlaceExecutor = restoreInPlaceOp.setExecutor;
+export const setPromoteExecutor = promoteOp.setExecutor;
+export const setRollbackExecutor = rollbackOp.setExecutor;
+
+export function startBackupRestoreInPlaceWorkflow(
+  input: BackupRestoreInPlaceInput,
+  nonce: string,
+): Promise<RestoreInPlaceResult> {
+  return restoreInPlaceOp.start(input, nonce);
+}
+export function startBackupPromoteWorkflow(
+  input: Omit<BackupPromoteInput, 'opId'>,
+  nonce: string,
+): Promise<PromoteResult> {
+  return promoteOp.start({ ...input, opId: nonce }, nonce);
+}
+export function startBackupRollbackWorkflow(
+  input: Omit<BackupRollbackInput, 'opId'>,
+  nonce: string,
+): Promise<RollbackResult> {
+  return rollbackOp.start({ ...input, opId: nonce }, nonce);
 }

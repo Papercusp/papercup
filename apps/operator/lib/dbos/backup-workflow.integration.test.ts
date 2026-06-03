@@ -26,6 +26,8 @@ import type { SnapshotResult, SnapshotTriggerReason } from '@papercusp/backup';
 let DBOS: typeof DBOSType;
 let startBackupSnapshotWorkflow: typeof import('./backup-workflow').startBackupSnapshotWorkflow;
 let setBackupSnapshotExecutor: typeof import('./backup-workflow').setBackupSnapshotExecutor;
+let startBackupPromoteWorkflow: typeof import('./backup-workflow').startBackupPromoteWorkflow;
+let setPromoteExecutor: typeof import('./backup-workflow').setPromoteExecutor;
 let adminUri: string;
 let dbName: string;
 
@@ -65,6 +67,8 @@ beforeAll(async () => {
   const wf = await import('./backup-workflow');
   startBackupSnapshotWorkflow = wf.startBackupSnapshotWorkflow;
   setBackupSnapshotExecutor = wf.setBackupSnapshotExecutor;
+  startBackupPromoteWorkflow = wf.startBackupPromoteWorkflow;
+  setPromoteExecutor = wf.setPromoteExecutor;
   // Stub executor: count the run, hold briefly, then succeed. No kopia, no PG.
   setBackupSnapshotExecutor(
     async (ws: string, reason: SnapshotTriggerReason): Promise<SnapshotResult> => {
@@ -125,5 +129,27 @@ describe('DBOS backup snapshot workflow — durable result (P-011)', () => {
     expect(a.kopiaSnapshotId).toBe('kopia-ws-1-manual');
     expect(b.kopiaSnapshotId).toBe('kopia-ws-1-manual');
     expect(execCount[key('ws-1', 'manual')]).toBe(2);
+  }, 30_000);
+});
+
+describe('DBOS backup destructive trio — durable result (P-012)', () => {
+  it('promote: durable result + exactly-once per workflowID (the crash-resume property)', async () => {
+    let runs = 0;
+    // Stub the destructive op so the DBOS mechanics are proven without real FS
+    // renames; opId is threaded from the nonce (deterministic broken-dir name).
+    setPromoteExecutor(async (i) => {
+      runs++;
+      return { broken: `/.broken-${i.opId}-live`, live: i.liveTarget ?? '/live' };
+    });
+    const n = nonce();
+    const input = { workspaceId: 'ws-1', restoredPath: '/.restored/s1/live', liveTarget: '/live' };
+    const r1 = await startBackupPromoteWorkflow(input, n);
+    const r2 = await startBackupPromoteWorkflow(input, n); // same workflowID
+    expect(r1).toEqual(r2);
+    // The destructive op ran exactly once; the re-invocation replayed the
+    // durable result — exactly what makes a half-done promote safe to resume.
+    expect(runs).toBe(1);
+    expect(r1.broken).toBe(`/.broken-${n}-live`);
+    setPromoteExecutor(null);
   }, 30_000);
 });

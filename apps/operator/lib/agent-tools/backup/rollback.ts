@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { workspaceBackupFor } from '@/lib/backup';
+import { durableRollbackPromote } from '@/lib/backup/durable-ops';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const ROLLBACK_ROLES = ['operator', 'debugger'] as const;
@@ -26,8 +26,7 @@ export default defineTool({
   agentRoles: [...ROLLBACK_ROLES],
   args: z.object({ brokenPath: z.string().min(1) }),
   async handler(args) {
-    const wb = workspaceBackupFor(activeWorkspaceId());
-    const result = await wb.rollbackPromote(args);
+    const result = await durableRollbackPromote(activeWorkspaceId(), args);
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     };

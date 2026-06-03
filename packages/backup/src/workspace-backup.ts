@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdir, access } from 'node:fs/promises';
+import { mkdir, access, rename, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { backupHost, backupStepRunner } from './config';
 import { deriveRepoPassword } from './password';
@@ -502,17 +502,30 @@ export class WorkspaceBackup {
     target?: string;
     skipSafetySnapshot?: boolean;
   }): Promise<{ targetPath: string; prevSnapshotId: string | null }> {
+    // P-012: route through the durability seam so a crash mid-restore resumes
+    // from the last completed step. Both phases are repeatable — the safety
+    // snapshot is content-addressed, and `kopia snapshot restore` is a
+    // deterministic overwrite — so this needs no rename surgery, only stepping
+    // (no opId / deterministic-name work, unlike promote/rollback).
+    const steps = backupStepRunner();
     const target = opts.target ?? this.workspaceRoot;
     let prevSnapshotId: string | null = null;
     if (!opts.skipSafetySnapshot) {
-      const safety = await this.snapshot('pre_destructive', { op: 'restore_in_place_safety' });
-      prevSnapshotId = safety.kopiaSnapshotId;
+      // The safety snapshot as one durable step → a resume won't re-snapshot.
+      // (snapshot()'s own runStep calls are nested under this step, so the
+      // injected runner passes them through — fine, snapshot is ~idempotent.)
+      prevSnapshotId = await steps.runStep('restore-safety-snapshot', async () => {
+        const safety = await this.snapshot('pre_destructive', { op: 'restore_in_place_safety' });
+        return safety.kopiaSnapshotId;
+      });
     }
     const password = await deriveRepoPassword(this.workspaceId);
     const env = this.envWithPassword(password);
     await this.detachedEvent('restore', { phase: 'started', mode: 'in_place', kopiaSnapshotId: opts.kopiaSnapshotId, target, prevSnapshotId });
     try {
-      await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+      await steps.runStep('restore-kopia-apply', async () => {
+        await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+      });
       await this.detachedEvent('restore', { phase: 'done', mode: 'in_place', target });
     } catch (err) {
       await this.detachedEvent('restore', { phase: 'failed', mode: 'in_place', error: String(err) });
@@ -534,22 +547,27 @@ export class WorkspaceBackup {
   }
 
   /**
-   * Promote a restored clone to live by atomically renaming the
-   * current live workspace to `.broken-<ts>/` and the clone into its
-   * place. Reversible: rename `.broken-<ts>/` back if the promotion
-   * was wrong.
+   * Promote a restored clone to live by renaming the current live workspace
+   * to `.broken-<tag>-<name>/` and the clone into its place. Reversible via
+   * `rollbackPromote`.
    *
    * Safety:
    * - Only promotes paths under <workspaceRoot> — refuses anything
    *   outside (no path-traversal, no clobbering siblings).
    * - The "live" target is derived from the clone's basename so the
    *   slug round-trip is unambiguous.
-   * - Writes a marker `.promotion-meta.json` next to .broken-* so a
-   *   future "rollback" tool knows the original layout.
+   * - Writes a marker `<brokenDir>.meta.json` (deterministic path) recording
+   *   the original layout so `rollbackPromote` recovers the live target
+   *   without parsing the dir name.
+   *
+   * Crash-resumable (P-012): the `<tag>` is derived from `opId` (deterministic
+   * across a resume), and the rename pair runs as a single idempotent,
+   * self-undoing `promote-swap` step — so a crash mid-promote resumes to a
+   * consistent state instead of stranding the workspace live-less.
    */
-  async promoteRestore(opts: { restoredPath: string; liveTarget?: string }): Promise<{ broken: string; live: string }> {
+  async promoteRestore(opts: { restoredPath: string; liveTarget?: string; opId?: string }): Promise<{ broken: string; live: string }> {
     const { resolve, dirname, basename } = await import('node:path');
-    const { rename, writeFile } = await import('node:fs/promises');
+    const steps = backupStepRunner();
     const root = resolve(this.workspaceRoot);
     const clone = resolve(opts.restoredPath);
     if (!clone.startsWith(root + '/.restored/')) {
@@ -562,19 +580,49 @@ export class WorkspaceBackup {
     if (!liveTarget.startsWith(root)) {
       throw new Error(`refusing to promote: ${liveTarget} escapes workspace`);
     }
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const brokenDir = join(dirname(liveTarget), `.broken-${ts}-${basename(liveTarget)}`);
-    await rename(liveTarget, brokenDir);
-    try {
-      await rename(clone, liveTarget);
-    } catch (err) {
-      await rename(brokenDir, liveTarget).catch(() => {});
-      throw err;
-    }
-    await writeFile(
-      join(dirname(liveTarget), `.promotion-meta-${ts}.json`),
-      JSON.stringify({ broken: brokenDir, live: liveTarget, promotedFrom: clone, at: new Date().toISOString() }, null, 2),
-    );
+    // P-012: the broken-dir name must be DETERMINISTIC for a crash-resume to
+    // find the same path — derive it from the op id when hosted (stable across
+    // a resume), else a timestamp for standalone calls (no resume → moot).
+    const tag = sanitizeOpTag(opts.opId ?? new Date().toISOString().replace(/[:.]/g, '-'));
+    const brokenDir = join(dirname(liveTarget), `.broken-${tag}-${basename(liveTarget)}`);
+
+    // The swap is ONE step on purpose: DBOS checkpoints a step only on SUCCESS,
+    // so this all-or-nothing rename pair must NOT be split — a split could
+    // strand the workspace live-less between two cached steps. The step is
+    // internally idempotent (it inspects the live FS and finishes from wherever
+    // a prior crash stopped) and self-undoing if the second move fails.
+    await steps.runStep('promote-swap', async () => {
+      const [liveExists, brokenExists, cloneExists] = await Promise.all([
+        this.pathExists(liveTarget),
+        this.pathExists(brokenDir),
+        this.pathExists(clone),
+      ]);
+      // Resume: step 1 (live→broken) done, step 2 (clone→live) not yet.
+      if (brokenExists && !liveExists && cloneExists) {
+        await this.idempotentMove(clone, liveTarget);
+        return;
+      }
+      // Already fully swapped (broken holds the old live, clone consumed).
+      if (brokenExists && liveExists && !cloneExists) return;
+      // Fresh: move live aside, then the clone into place; undo step 1 if the
+      // second move fails so a non-resumed failure leaves live intact.
+      await this.idempotentMove(liveTarget, brokenDir);
+      try {
+        await this.idempotentMove(clone, liveTarget);
+      } catch (err) {
+        await this.idempotentMove(brokenDir, liveTarget).catch(() => {});
+        throw err;
+      }
+    });
+
+    // Marker sidecar at a DETERMINISTIC path (so rollback recovers the live
+    // target without parsing the dir name). Idempotent overwrite.
+    await steps.runStep('promote-write-meta', async () => {
+      await writeFile(
+        `${brokenDir}.meta.json`,
+        JSON.stringify({ broken: brokenDir, live: liveTarget, promotedFrom: clone }, null, 2),
+      );
+    });
     return { broken: brokenDir, live: liveTarget };
   }
 
@@ -586,29 +634,62 @@ export class WorkspaceBackup {
    * `.broken-`. The current live target is inferred from `brokenPath`
    * (strip the `.broken-<ts>-` prefix from basename, prepend dirname).
    */
-  async rollbackPromote(opts: { brokenPath: string }): Promise<{ liveBefore: string; liveAfter: string }> {
+  async rollbackPromote(opts: { brokenPath: string; opId?: string }): Promise<{ liveBefore: string; liveAfter: string }> {
     const { resolve, basename, dirname } = await import('node:path');
-    const { rename } = await import('node:fs/promises');
+    const steps = backupStepRunner();
     const root = resolve(this.workspaceRoot);
     const broken = resolve(opts.brokenPath);
     if (!broken.startsWith(root)) {
       throw new Error(`refusing to rollback: ${broken} is outside workspace`);
     }
-    const brokenBase = basename(broken);
-    const m = /^\.broken-([0-9T:.\-Z]+)-(.+)$/.exec(brokenBase);
-    if (!m) throw new Error(`refusing to rollback: ${brokenBase} doesn't match .broken-<ts>-<name>`);
-    const liveBaseName = m[2];
-    const liveTarget = join(dirname(broken), liveBaseName!);
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    // Move current live (the promoted clone) aside, then bring broken back.
-    const stash = join(dirname(broken), `.rolled-back-${ts}-${liveBaseName}`);
-    await rename(liveTarget, stash);
+    // Resolve the live target. Prefer the deterministic meta sidecar that
+    // promote writes (robust — no dir-name parsing); fall back to the legacy
+    // `.broken-<ts>-<name>` regex for pre-P-012 dirs that have no sidecar.
+    let liveTarget: string;
     try {
-      await rename(broken, liveTarget);
-    } catch (err) {
-      await rename(stash, liveTarget).catch(() => {});
-      throw err;
+      const meta = JSON.parse(await readFile(`${broken}.meta.json`, 'utf8')) as { live?: string };
+      if (!meta.live) throw new Error('meta has no live');
+      liveTarget = resolve(meta.live);
+    } catch {
+      const m = /^\.broken-([0-9T:.\-Z]+)-(.+)$/.exec(basename(broken));
+      if (!m) {
+        throw new Error(
+          `refusing to rollback: ${basename(broken)} has no .meta.json sidecar and doesn't match .broken-<ts>-<name>`,
+        );
+      }
+      liveTarget = join(dirname(broken), m[2]!);
     }
+    if (!liveTarget.startsWith(root)) {
+      throw new Error(`refusing to rollback: resolved live ${liveTarget} escapes workspace`);
+    }
+    const tag = sanitizeOpTag(opts.opId ?? new Date().toISOString().replace(/[:.]/g, '-'));
+    const stash = join(dirname(broken), `.rolled-back-${tag}-${basename(liveTarget)}`);
+
+    // One step, same all-or-nothing reasoning as promote-swap: stash the
+    // current live (the promoted clone), then bring the broken dir back to
+    // live; undo the stash if that fails. Idempotent across a resume.
+    await steps.runStep('rollback-swap', async () => {
+      const [liveExists, brokenExists, stashExists] = await Promise.all([
+        this.pathExists(liveTarget),
+        this.pathExists(broken),
+        this.pathExists(stash),
+      ]);
+      // Resume: live→stash done, broken→live not yet.
+      if (stashExists && !liveExists && brokenExists) {
+        await this.idempotentMove(broken, liveTarget);
+        return;
+      }
+      // Already fully rolled back.
+      if (stashExists && liveExists && !brokenExists) return;
+      await this.idempotentMove(liveTarget, stash);
+      try {
+        await this.idempotentMove(broken, liveTarget);
+      } catch (err) {
+        await this.idempotentMove(stash, liveTarget).catch(() => {});
+        throw err;
+      }
+    });
+
     await this.detachedEvent('rollback', { broken, liveTarget, stash });
     return { liveBefore: stash, liveAfter: liveTarget };
   }
@@ -670,6 +751,37 @@ export class WorkspaceBackup {
   }
 
   // ---------- internals ----------
+
+  private async pathExists(p: string): Promise<boolean> {
+    try {
+      await access(p);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Move `from` → `to`, idempotent on a crash-resume replay:
+   *   - from exists, to doesn't → the move (the normal case);
+   *   - from gone, to exists     → a prior attempt already completed it (no-op);
+   *   - neither exists           → data lost — throw rather than continue blindly;
+   *   - both exist               → ambiguous — refuse rather than clobber `to`.
+   * With deterministic op-id-derived names this makes the destructive renames
+   * safe to replay, which is what lets the StepRunner buy them crash-resume.
+   */
+  private async idempotentMove(from: string, to: string): Promise<void> {
+    const fromExists = await this.pathExists(from);
+    const toExists = await this.pathExists(to);
+    if (!fromExists && toExists) return;
+    if (!fromExists && !toExists) {
+      throw new Error(`idempotentMove: neither source (${from}) nor target (${to}) exists`);
+    }
+    if (fromExists && toExists) {
+      throw new Error(`idempotentMove: both source (${from}) and target (${to}) exist — refusing to clobber`);
+    }
+    await rename(from, to);
+  }
 
   private envWithPassword(password: string): NodeJS.ProcessEnv {
     return {
@@ -834,6 +946,16 @@ function tsIso(v: unknown): string | null {
   if (v instanceof Date) return v.toISOString();
   if (typeof v === 'string') return new Date(v).toISOString();
   return null;
+}
+
+/**
+ * Make an op id / timestamp safe + bounded for use inside a `.broken-*` /
+ * `.rolled-back-*` directory name. Non-`[A-Za-z0-9._-]` chars (path separators,
+ * spaces) collapse to `_` so the tag can never inject a path segment, and the
+ * length is capped so a long id can't blow past filesystem name limits.
+ */
+function sanitizeOpTag(s: string): string {
+  return s.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) || 'op';
 }
 
 /**

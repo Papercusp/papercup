@@ -50,6 +50,12 @@ import {
   wireBackupStepRunner,
   startBackupSnapshotWorkflow,
   setBackupSnapshotExecutor,
+  startBackupRestoreInPlaceWorkflow,
+  startBackupPromoteWorkflow,
+  startBackupRollbackWorkflow,
+  setRestoreInPlaceExecutor,
+  setPromoteExecutor,
+  setRollbackExecutor,
 } from './backup-workflow';
 
 afterEach(() => {
@@ -57,6 +63,9 @@ afterEach(() => {
   dbosCalls.steps.length = 0;
   captured.runner = null;
   setBackupSnapshotExecutor(null);
+  setRestoreInPlaceExecutor(null);
+  setPromoteExecutor(null);
+  setRollbackExecutor(null);
   vi.restoreAllMocks();
 });
 
@@ -107,5 +116,38 @@ describe('startBackupSnapshotWorkflow', () => {
   it('falls back to the real per-workspace snapshot when no executor is injected', async () => {
     const r = await startBackupSnapshotWorkflow({ workspaceId: 'ws-1', reason: 'manual' }, 'n1');
     expect(r.kopiaSnapshotId).toBe('kopia-default');
+  });
+});
+
+describe('destructive trio workflows (P-012)', () => {
+  it('startBackupPromoteWorkflow threads the nonce as opId to the executor', async () => {
+    const seen: unknown[] = [];
+    setPromoteExecutor(async (i) => {
+      seen.push(i);
+      return { broken: '/b', live: '/l' };
+    });
+    const r = await startBackupPromoteWorkflow(
+      { workspaceId: 'ws', restoredPath: '/r', liveTarget: '/l' },
+      'nonce-X',
+    );
+    // opId MUST equal the nonce → deterministic broken-dir name across a resume.
+    expect(seen[0]).toEqual({ workspaceId: 'ws', restoredPath: '/r', liveTarget: '/l', opId: 'nonce-X' });
+    expect(r).toEqual({ broken: '/b', live: '/l' });
+  });
+
+  it('startBackupRollbackWorkflow threads the nonce as opId to the executor', async () => {
+    const seen: unknown[] = [];
+    setRollbackExecutor(async (i) => {
+      seen.push(i);
+      return { liveBefore: '/s', liveAfter: '/l' };
+    });
+    await startBackupRollbackWorkflow({ workspaceId: 'ws', brokenPath: '/b' }, 'nonce-Y');
+    expect(seen[0]).toEqual({ workspaceId: 'ws', brokenPath: '/b', opId: 'nonce-Y' });
+  });
+
+  it('startBackupRestoreInPlaceWorkflow forwards args + awaits the durable result', async () => {
+    setRestoreInPlaceExecutor(async () => ({ targetPath: '/t', prevSnapshotId: 'p' }));
+    const r = await startBackupRestoreInPlaceWorkflow({ workspaceId: 'ws', kopiaSnapshotId: 'k' }, 'nonce-Z');
+    expect(r).toEqual({ targetPath: '/t', prevSnapshotId: 'p' });
   });
 });

@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { workspaceBackupFor } from '@/lib/backup';
+import { durableRestoreInPlace } from '@/lib/backup/durable-ops';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const RESTORE_ROLES = ['operator', 'debugger', 'reviewer'] as const;
@@ -32,15 +33,15 @@ export default defineTool({
     mode: z.enum(['clone', 'in_place']).default('clone'),
   }),
   async handler(args) {
-    const wb = workspaceBackupFor(activeWorkspaceId());
+    const ws = activeWorkspaceId();
     if (args.mode === 'in_place') {
-      const result = await wb.restoreInPlace({
+      const result = await durableRestoreInPlace(ws, {
         kopiaSnapshotId: args.kopiaSnapshotId,
         target: args.target,
       });
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
-    const result = await wb.restoreToClone(args);
+    const result = await workspaceBackupFor(ws).restoreToClone(args);
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     };

@@ -4,7 +4,7 @@
  * Ported from app/api/backups/rollback/route.ts. `auth: 'public'`.
  */
 import { z } from 'zod';
-import { workspaceBackupFor } from '@/lib/backup';
+import { durableRollbackPromote } from '@/lib/backup/durable-ops';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireLoopbackOr403 } from '../../loopback-guard';
@@ -21,8 +21,7 @@ export default defineTool({
     try {
       const body = await req.json();
       const args = Schema.parse(body);
-      const wb = workspaceBackupFor(activeWorkspaceId());
-      const result = await wb.rollbackPromote(args);
+      const result = await durableRollbackPromote(activeWorkspaceId(), args);
       return Response.json({ result });
     } catch (err) {
       return Response.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });

@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { workspaceBackupFor } from '@/lib/backup';
+import { durableRestoreInPlace } from '@/lib/backup/durable-ops';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireLoopbackOr403 } from '../../loopback-guard';
@@ -26,15 +27,15 @@ export default defineTool({
     try {
       const body = await req.json();
       const args = Schema.parse(body);
-      const wb = workspaceBackupFor(activeWorkspaceId());
+      const ws = activeWorkspaceId();
       if (args.mode === 'in_place') {
-        const result = await wb.restoreInPlace({
+        const result = await durableRestoreInPlace(ws, {
           kopiaSnapshotId: args.kopiaSnapshotId,
           target: args.target,
         });
         return Response.json({ result });
       }
-      const result = await wb.restoreToClone(args);
+      const result = await workspaceBackupFor(ws).restoreToClone(args);
       return Response.json({ result });
     } catch (err) {
       return Response.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });

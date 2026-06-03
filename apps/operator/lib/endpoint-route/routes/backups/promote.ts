@@ -4,7 +4,8 @@
  * Ported from app/api/backups/promote/route.ts. `auth: 'public'`.
  */
 import { z } from 'zod';
-import { workspaceBackupFor, triggerSnapshotEvent } from '@/lib/backup';
+import { triggerSnapshotEvent } from '@/lib/backup';
+import { durablePromoteRestore } from '@/lib/backup/durable-ops';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 import { requireLoopbackOr403 } from '../../loopback-guard';
@@ -27,8 +28,7 @@ export default defineTool({
       const ws = activeWorkspaceId();
       await triggerSnapshotEvent(ws, 'pre_destructive', { op: 'promote_restore', restoredPath: args.restoredPath })
         .catch(() => { /* non-fatal */ });
-      const wb = workspaceBackupFor(ws);
-      const result = await wb.promoteRestore(args);
+      const result = await durablePromoteRestore(ws, args);
       return Response.json({ result });
     } catch (err) {
       return Response.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });

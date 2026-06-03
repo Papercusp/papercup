@@ -6,7 +6,8 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { workspaceBackupFor, triggerSnapshotEvent } from '@/lib/backup';
+import { triggerSnapshotEvent } from '@/lib/backup';
+import { durablePromoteRestore } from '@/lib/backup/durable-ops';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const PROMOTE_ROLES = ['operator', 'debugger'] as const;
@@ -33,8 +34,7 @@ export default defineTool({
     const ws = activeWorkspaceId();
     await triggerSnapshotEvent(ws, 'pre_destructive', { op: 'promote_restore', restoredPath: args.restoredPath })
       .catch(() => { /* non-fatal */ });
-    const wb = workspaceBackupFor(ws);
-    const result = await wb.promoteRestore(args);
+    const result = await durablePromoteRestore(ws, args);
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     };
