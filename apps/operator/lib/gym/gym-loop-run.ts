@@ -131,7 +131,9 @@ async function main(): Promise<void> {
     const { tasks, substrateFiles } = fixedTasks();
     mkdirSync(substrateDir, { recursive: true });
     mkdirSync(join(substrateDir, '.harness'), { recursive: true });
-    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false } }));
+    // Single-shot worker (not the chunk loop) — the chunk loop's tsc gate fails structurally
+    // on this minimal plain-JS substrate (no tsconfig) → endless rework. See ab-run.ts.
+    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { useChunkLoop: false } }));
     for (const f of substrateFiles) writeFileSync(join(substrateDir, f.path), f.content);
     execFileSync('git', ['init', '-q'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });

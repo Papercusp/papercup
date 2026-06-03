@@ -126,7 +126,13 @@ async function main(): Promise<void> {
     const { task, substrateFiles } = fixedTask();
     mkdirSync(substrateDir, { recursive: true });
     mkdirSync(join(substrateDir, '.harness'), { recursive: true });
-    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false } }));
+    // Single-shot worker (legacy lane), NOT the chunk loop: the chunk loop's L1 typecheck
+    // GATE runs `tsc` on the substrate, which fails STRUCTURALLY on this minimal plain-JS
+    // substrate (no tsconfig) regardless of the worker's diff → 3 strikes → debugger → an
+    // endless rework loop that never reaches DONE. The single-shot worker writes + reports
+    // and lets the director/validator converge within the turn cap (a buildable substrate +
+    // the chunk loop is the production-fidelity path; this keeps the bounded A/B convergent).
+    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { useChunkLoop: false } }));
     for (const f of substrateFiles) writeFileSync(join(substrateDir, f.path), f.content);
     execFileSync('git', ['init', '-q'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });
