@@ -21,6 +21,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { sseResponse } from '@papercusp/sse';
 import { dispatchPluginApiRoute } from '@/lib/plugin-api-mount';
+import { allowedMethodsFor } from '../../method-not-allowed';
 import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 import { resolveHarnessPaths } from '@/lib/resolve-harness-paths';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
@@ -103,6 +104,23 @@ async function dispatchHttp(req: Request): Promise<Response> {
   }
 
   const result = await handleHttpToolRequest(transportReq, HOST_EXTRAS);
+  // A 404 here may actually be a KNOWN literal plugin route (e.g. POST-only
+  // /plugins/enable) hit with the wrong verb — the `/plugins/*` catch-all
+  // shadows it for non-matching methods, so the global 405 `notFound` hook
+  // never runs. Upgrade to 405 (with Allow) when the path matches a registered
+  // route under a different method. Catch-alls are excluded from the matcher,
+  // so a genuinely unknown /plugins/* path stays 404.
+  if (result.status === 404) {
+    const rel = url.pathname.replace(/^\/api/, '') || '/';
+    const allowed = allowedMethodsFor(rel);
+    const eff = req.method === 'HEAD' ? 'GET' : req.method;
+    if (allowed.length > 0 && !allowed.includes(eff)) {
+      return new Response(JSON.stringify({ error: 'method_not_allowed', allow: allowed }), {
+        status: 405,
+        headers: { 'content-type': 'application/json', Allow: allowed.join(', ') },
+      });
+    }
+  }
   return new Response(JSON.stringify(result.body), {
     status: result.status,
     headers: { 'content-type': 'application/json' },

@@ -38,12 +38,22 @@ function patternToRegex(pattern: string): RegExp {
 }
 
 /**
- * Non-catch-all routes, as `{ method, re }`. Built once at module load from
- * the static `ALL_ROUTES` registry — same source the dispatcher mounts.
+ * Non-catch-all routes, as `{ method, re }`, derived from the static
+ * `ALL_ROUTES` registry — same source the dispatcher mounts. Built LAZILY on
+ * first use (not at module load): `method-not-allowed` is imported by the
+ * plugins catch-all, which is itself in `ALL_ROUTES`, so eager top-level
+ * evaluation could race the registry's population (empty MATCHERS).
  */
-const MATCHERS: ReadonlyArray<{ method: string; re: RegExp }> = ALL_ROUTES.filter(
-  (r) => !isCatchAll(r.path),
-).map((r) => ({ method: r.method.toUpperCase(), re: patternToRegex(r.path) }));
+let _matchers: ReadonlyArray<{ method: string; re: RegExp }> | null = null;
+function matchers(): ReadonlyArray<{ method: string; re: RegExp }> {
+  if (_matchers === null) {
+    _matchers = ALL_ROUTES.filter((r) => !isCatchAll(r.path)).map((r) => ({
+      method: r.method.toUpperCase(),
+      re: patternToRegex(r.path),
+    }));
+  }
+  return _matchers;
+}
 
 /**
  * Pure resolver (exported for tests): given a request method + a basePath-
@@ -53,7 +63,7 @@ const MATCHERS: ReadonlyArray<{ method: string; re: RegExp }> = ALL_ROUTES.filte
  */
 export function allowedMethodsFor(relPath: string): string[] {
   const methods = new Set<string>();
-  for (const m of MATCHERS) if (m.re.test(relPath)) methods.add(m.method);
+  for (const m of matchers()) if (m.re.test(relPath)) methods.add(m.method);
   return [...methods];
 }
 
