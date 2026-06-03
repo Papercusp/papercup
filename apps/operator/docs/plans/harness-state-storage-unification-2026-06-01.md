@@ -3,7 +3,7 @@ title: Harness-state storage unification — one runtime store-of-record, explic
 slug: harness-state-storage-unification-2026-06-01
 status: ready
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** DECIDED → B. P-001 + P-002 + P-003a DONE. **P-003b git-export: BUILT + LIVE-BOOT VERIFIED** (2026-06-02, dev host: 15 harnesses / 15 git tables / 15 drain loops via bin/host-bootstrap.ts → bootGitExportForHarnesses). The live boot caught + we FIXED a real amplification bug (D-005): `harness_branch_actions` — an fs-watcher mirror with an unconditional `last_check_ms` heartbeat — was misclassified sync:'git' → perpetual PG→file churn on 4 active harnesses. Fix (commit 618504e28): removed it from GIT_DOCS (rule: fs-mirrors are never sync:'git'); added boot `detachStaleGitCaptureTriggers` reconciliation (registry now authoritative + self-healing — auto-dropped the live trigger on restart); + a no-op capture guard (re-upsert-amplification class). 42 harness-state tests green (29 unit + 13 integration). Churn verified stopped (outbox 288→0, trigger gone). The other live mirrors in GIT_DOCS (harness_phases/harness_summaries/harness_proposals_shared) were checked — they don't churn (mtime/change-event gated) — left in place.
+**State:** P-001 + P-002 + **P-003 ALL DONE + tested** (2026-06-02 autonomous run). P-003: ONE registry-driven projection engine — P-003a peer-log seam + drift guard, P-003b git-export (LIVE-BOOT VERIFIED; caught + fixed the harness_branch_actions fs-mirror amplification bug, D-005), P-003c the single router (projectionAdapterFor + routeProjection, load-bearing at boot). Residue resolved: auto-commit policy = a real flag-gated scoped committer (git-committer.ts, default OFF, `.harness/state`-only, no push); the papercup_shared org-demo bus removed from GIT_DOCS. 40 unit + 13 integration harness-state tests green. Commits: 618504e28, 43d0ca992, (git-committer), 0927230b4. **P-004/P-005/P-006 are BLOCKED (D-006)** — P-004 (retire per-harness model → slug-keyed) directly conflicts with the ACTIVE `self-contained-migration-baseline-2026-06-02` plan (its P-005 KEEPS 002-per-harness-template), and the territory is in heavy live contention tonight (002-template flickering, host restarting). Not solo-overnight-safe; needs owner reconciliation of the per-harness-vs-slug-keyed direction.
 
-**Next:** THREE residue items, two NEED AN OWNER DECISION: (A) auto-commit policy — the `.harness/state` committer is still a deliberate LOG-ONLY stub; decide whether/how to commit (+push?) to each harness's REAL repo before enabling. (B) papercup_shared #3 — messages/directives/briefings/directive_summaries in GIT_DOCS are the RETIRED papercup-org demo (no ws/slug/origin cols, can't fit per-harness git-export, silently skipped); RECOMMEND removing from GIT_DOCS + tagging legacy (reverses the old plan item — needs OK). (C) P-003c router naming/consolidation. THEN P-004..P-007.
+**Next:** OWNER DECISION (gating): do per-harness `harness_<slug>.*` schemas STAY (baseline plan) or get consolidated to slug-keyed PG (P-004)? This is the harnesses-across-workspaces shared-state fork. Once decided: ONE plan owns the per-harness→consolidated migration, sequenced AFTER the baseline plan lands — P-004 (migrate the 12 per-harness table types' readers/writers off harness_<slug>.* to the 6 _consolidated tables + 6 new ones, drop 218 tables across 19 schemas, retire scaffold-harness-schema + 002-template) → P-005 (config_token/prompt-overrides → workspace-owned) → P-006 (delete bespoke HYPERBEE/GIT/LOCAL bucket code) → P-007 (clone-and-go + two-peer + two-workspace verify). See D-006.
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -84,16 +84,16 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 
 ## Phase 2 — Projection & migration
 
-- **P-003** `wip` Generalize ONE projection engine: PG↔git-export (document tables) + PG↔peer-log (Model-B), driven by the per-table declaration — replaces the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths. (P-003a DONE projection-engine seam + peer-log drift guard + boot coverage; 19 tests. P-003b git-export DESIGNED D-004: reuse substrate_outbox + separate filtered drainer + file serialize/rebuild; additive. P-003c router pending. git-export integration = focused-session build on Model-B-owned substrate.)
-- **P-004** `todo` Consolidate all remaining per-harness tables → slug-keyed PG (the 032 auto-updatable-view pattern); retire 002-per-harness-template.sql + scaffold-harness-schema.
-- **P-005** `todo` Route config tables (config_token, prompt/3-tier overrides, …) to the workspace-owned store keyed by (workspace, harness, role) — the harnesses-across-workspaces Phase-1b path; never slug-shared.
+- **P-003** `done` Generalize ONE projection engine: PG↔git-export (document tables) + PG↔peer-log (Model-B), driven by the per-table declaration — replaces the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths. (P-003a DONE projection-engine seam + peer-log drift guard + boot coverage; 19 tests. P-003b git-export DESIGNED D-004: reuse substrate_outbox + separate filtered drainer + file serialize/rebuild; additive. P-003c router pending. git-export integration = focused-session build on Model-B-owned substrate.) (a peer-log seam + b git-export, live-verified, amplification fixed + c one router all done + tested; auto-commit policy resolved flag-gated committer; papercup_shared org-demo removed from GIT_DOCS)
+- **P-004** `needs-human` Consolidate all remaining per-harness tables → slug-keyed PG (the 032 auto-updatable-view pattern); retire 002-per-harness-template.sql + scaffold-harness-schema. (D-006: conflicts with active baseline plan which KEEPs the per-harness template P-004 wants to retire. Owner must reconcile per-harness vs slug-keyed direction before execution)
+- **P-005** `blocked` Route config tables (config_token, prompt/3-tier overrides, …) to the workspace-owned store keyed by (workspace, harness, role) — the harnesses-across-workspaces Phase-1b path; never slug-shared. (D-006: rides on P-004's data-model decision; config_token/prompt-overrides → workspace-owned)
 
 
 
 
 ## Phase 3 — Cutover & verify
 
-- **P-006** `todo` Cut each table's sync over to its declared authority; delete the bespoke HYPERBEE/GIT/LOCAL bucket code.
+- **P-006** `blocked` Cut each table's sync over to its declared authority; delete the bespoke HYPERBEE/GIT/LOCAL bucket code. (D-006: rides on P-004; delete bespoke HYPERBEE/GIT/LOCAL bucket code after the cutover)
 - **P-007** `todo` Verify: clone-and-go (git tables hydrate into PG), two-peer live sync (peer-log tables), two-workspace shared-by-slug results + per-workspace config.
 
 
@@ -165,3 +165,21 @@ DECISION → fs-watcher *mirror* tables (projections of already-git-tracked file
 
 Live-verified: restart → detach fired, trigger gone, outbox stable then cleared (288→0), churn stopped. 42 harness-state tests green (29 unit + 13 integration; +registry-regression, +detach-stale, +no-op-guard). The other live mirrors still in GIT_DOCS (harness_phases, harness_summaries, harness_proposals_shared) were checked and do NOT churn (mtime-gated / change-event-driven), so they were left in place pending P-002 reconfirmation.
 Related: P-003
+
+### D-006 — P-004..P-006 BLOCKED on cross-plan conflict with self-contained-migration-baseline + live contention (needs owner reconciliation)
+Date: 2026-06-03
+Investigated P-004..P-007 (2026-06-02 ~22:30, autonomous run). FINDING: they cannot be safely executed solo right now — a direct cross-plan conflict + heavy live contention.
+
+THE CONFLICT. P-004 = "consolidate all remaining per-harness tables → slug-keyed PG; RETIRE 002-per-harness-template.sql + scaffold-harness-schema." But the ACTIVE plan `self-contained-migration-baseline-2026-06-02` (status: active, being executed tonight) has P-005 = "Add 000-baseline.sql; … **KEEP 002-per-harness-template.sql**." The two plans take OPPOSITE positions on whether the per-harness `harness_<slug>.*` model should exist: harness-state wants to eliminate it (slug-keyed consolidation); the baseline plan preserves it. This is an architectural fork — and it's exactly the per-harness-vs-shared-state question the owner debated under harnesses-across-workspaces (a single harness in 2 workspaces = different settings, shared state). It needs an OWNER decision, not a unilateral overnight rip-out.
+
+THE CONTENTION. The exact files are in-flight tonight: `002-per-harness-template.sql` flickers in/out of `libs/papercusp/libs/db/sql/` between two `ls` calls (concurrent edits); `scaffold-harness-schema.ts` is mid-transition; the :3070 host is being SIGKILL/restarted by other su-agents (DBOS verify); locks on libs-papercusp-submodule churn. Racing a system-wide migration here = guaranteed collision + a broken shared tree for 5+ active agents.
+
+THE SCALE. Live state: 19 per-harness schemas × ~12 table types = 218 tables. 6 are already consolidated (agent_chats/agent_runs/feature_audit/harness_features/harness_issues/harness_snapshots `_consolidated` exist); the per-harness copies are legacy duplicates with live readers. P-004 = migrate every reader/writer of 12 table types off `harness_<slug>.*` + drop 218 tables + retire scaffold-harness-schema. P-005 (config_token/prompt-overrides → workspace-owned) and P-006 (delete bespoke HYPERBEE/GIT/LOCAL bucket code) ride on P-004's data model. Not solo-overnight-safe even without the conflict.
+
+RECOMMENDATION (owner, when awake + repo quiet):
+1. Reconcile direction: do per-harness schemas STAY (baseline) or get consolidated to slug-keyed (P-004)? This is the gating decision.
+2. If consolidating: ONE plan owns it (merge P-004..P-006 into, or sequence after, the baseline plan) so two agents don't race it. Sequence: let baseline land (squash/archive/ensure-schema-removal stable) → then per-harness→consolidated reader migration → drop per-harness tables → retire scaffold + 002-template → cut sync over (P-006) → verify (P-007).
+3. Until then P-004..P-006 = blocked; P-007's git-export half is already verifiable (P-003b tests) but the full end-state verify waits on the cutover.
+
+DONE this run instead (safe, isolated, tested): P-003 fully (a/b/c) incl. the live-boot amplification fix, the flag-gated git committer (auto-commit policy resolved), the papercup_shared org-demo removal, and the one projection router. 40 unit + 13 integration harness-state tests green.
+Related: P-004, P-005, P-006, P-007
