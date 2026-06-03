@@ -132,7 +132,6 @@ import harnessBranchActions from './harness/branch-actions';
 import harnessBranchActionRun from './harness/branch-action-run';
 import harnessBranchActionStream from './harness/branch-action-stream';
 import harnessBranchActionByNameRun from './harness/branch-action-by-name-run';
-import harnessExpertRelatedDocs from './harness/expert-related-docs';
 import harnessSaveAsTemplate from './harness/save-as-template';
 import uiPresence from './ui/presence';
 import uiIntentsStream from './ui/intents-stream';
@@ -353,7 +352,6 @@ import crossHarnessRoutes from './cross-harness/index';
 import projectsRoutes from './projects/index';
 import ptyRoutes from './pty/index';
 import agentChatsRoutes from './agent-chats/index';
-import expertsRoutes from './experts/index';
 import designFeatures from './design/features';
 import designRegressions from './design/regressions';
 import designRegressionFile from './design/regression-file';
@@ -566,7 +564,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBranchActionRun as AnyRoute),
   ...flatten(harnessBranchActionStream as AnyRoute),
   ...flatten(harnessBranchActionByNameRun as AnyRoute),
-  ...flatten(harnessExpertRelatedDocs as AnyRoute),
   ...flatten(harnessSaveAsTemplate as AnyRoute),
   ...flatten(uiPresence as AnyRoute),
   ...flatten(uiIntentsStream as AnyRoute),
@@ -734,7 +731,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(projectsRoutes as AnyRoute[]),
   ...flatten(ptyRoutes as AnyRoute[]),
   ...flatten(agentChatsRoutes as AnyRoute[]),
-  ...flatten(expertsRoutes as AnyRoute[]),
   ...flatten(designFeatures as AnyRoute),
   ...flatten(designRegressions as AnyRoute),
   ...flatten(designRegressionFile as AnyRoute),
