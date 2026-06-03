@@ -32,9 +32,13 @@ export default defineTool({
         key: b.key,
         provider: b.provider,
         modelClass: b.modelClass,
+        // D-006: precise (apiKey, token-bucket active) vs coarse (subscription, concurrency+rpm).
+        limitModel: b.limitModel,
         paused: s.pausedUntil > now,
         pausedUntil: s.pausedUntil > now ? new Date(s.pausedUntil).toISOString() : null,
         msUntilReset: s.pausedUntil > now ? s.pausedUntil - now : 0,
+        // Pre-emptive pacing gap when remaining is low (review #7/#8); 0 = healthy headroom.
+        paceDelayMs: s.paceDelayMs,
         inFlight: s.inFlight,
         maxConcurrent: s.limits.maxConcurrent,
         window: {
