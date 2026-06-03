@@ -44,17 +44,12 @@ interface Props {
   error: string | null;
   refresh: () => void;
   title: string;
-  subtitle: string;
   /** When non-empty, show only these kinds (the active per-kind facets). */
   kinds?: AttentionKind[];
   /** When non-empty, the rail's plan selection — narrows the Other list to
    *  attention items belonging to these plans, so the left sidebar acts as a
    *  filter here too (harness-level alerts with no plan are dropped). */
   planFilters?: string[];
-  /** Inbox unified layout: render ONLY the groups list (no .pc-items wrapper
-   *  and no detail pane) — PlansClient hosts one shared sticky preview that
-   *  renders the selected item via the exported OtherDetail. */
-  embedded?: boolean;
 }
 
 /** Keep only the non-plan-item kinds (optionally narrowed to `allow`), and —
@@ -80,7 +75,7 @@ function otherOnly(
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, title, kinds, planFilters, embedded = false }: Props) {
+export default function PlanOtherList({ groups, loading, error, refresh, title, kinds, planFilters }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
   // Inbox shares one preview pane across the Other + item lists; selecting an
   // Other item clears any plan-item selection so the shared pane shows it.
@@ -99,7 +94,6 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   const planList = planFilters ?? [];
   const otherGroups = otherOnly(groups, kinds ?? [], planList);
   const allItems = otherGroups.flatMap((g) => g.items);
-  const selItem = allItems.find((i) => i.id === selected) ?? null;
 
   // Auto-expand the selected item's group (mirrors the Plans tab). The ref
   // token stops us reopening a group the user just collapsed while the
@@ -122,17 +116,15 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
     void setExpandedGroups([...expandedGroups, selectedGroupKey]);
   }, [selectedGroupKey, expandedGroups, setExpandedGroups]);
 
-  // In embedded (inbox) mode this list is one section of a shared left column,
-  // so it renders bare — no .pc-items / two-pane wrapper.
-  const wrap = (inner: ReactNode) =>
-    embedded ? (
-      <section className="pc-items__section">
-        <h3 className="pc-items__section-label">{title}</h3>
-        {inner}
-      </section>
-    ) : (
-      <div className="pc-items pc-items--mixed">{inner}</div>
-    );
+  // This list is one section of the shared TwoPaneShell's left column;
+  // PlansClient hosts the one shared detail pane (rendering the selected
+  // item via the exported OtherDetail), so this renders just heading + rows.
+  const wrap = (inner: ReactNode) => (
+    <section className="pc-items__section">
+      <h3 className="pc-items__section-label">{title}</h3>
+      {inner}
+    </section>
+  );
 
   if (loading) {
     return wrap(<p className="pc-plans__placeholder">Loading…</p>);
@@ -223,26 +215,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
     </ul>
   );
 
-  if (embedded) {
-    return wrap(groupsEl);
-  }
-
-  return (
-    <div className="pc-items pc-items--mixed">
-      <div className="pc-items__layout">
-        <div className="pc-items__listpane">{groupsEl}</div>
-
-        <OtherDetail
-          key={selItem?.id ?? 'none'}
-          item={selItem}
-          onResolved={() => {
-            void setSelected(null);
-            refresh();
-          }}
-        />
-      </div>
-    </div>
-  );
+  return wrap(groupsEl);
 }
 
 export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {

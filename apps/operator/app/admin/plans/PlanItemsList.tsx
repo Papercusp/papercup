@@ -10,23 +10,22 @@
  * status (needs-human items get the Answer/Resolve/Drop toolkit).
  *
  * `planFilter` narrows the displayed groups to one plan (the left rail
- * sets it). Plans are collapsible groups; a row selects the item into the
- * right-hand PlanItemPreview rather than navigating away.
+ * sets it). Plans are collapsible groups; a row selects the item (via the
+ * `?item=` param) into the shared TwoPaneShell detail pane that PlansClient
+ * renders alongside this list, rather than navigating away.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
 import { type PlanItemRow, type PlanBucket } from './plans-api';
-import PlanItemPreview from './PlanItemPreview';
 
 interface Props {
   items: PlanItemRow[];
   loading: boolean;
   error: string | null;
   refresh: () => void;
-  onPick: (slug: string, targetId?: string) => void;
   /** plan-slug → harness-slug map; lets needs-human rows relaunch the loop. */
   harnessByPlan?: Map<string, string>;
   /** plan-slug → display title + lifecycle bucket, for the group headers.
@@ -35,15 +34,8 @@ interface Props {
   /** Narrow the list to these plans (multi-select OR; the rail toggles
    *  them). Empty/undefined = all plans. */
   planFilters?: string[];
-  /** Heading title + one-line summary of the active filter (from PlansClient). */
+  /** Section heading for the list column. */
   title: string;
-  subtitle: string;
-  /** Inbox unified layout: render ONLY the groups list (no .pc-items wrapper
-   *  and no detail pane). PlansClient hosts a single shared sticky preview
-   *  alongside the stacked Other + item lists, so each list contributes just
-   *  its rows. Default (false) keeps the standalone two-pane render used by
-   *  the Plans tab. */
-  embedded?: boolean;
 }
 
 // The items view groups by EFFECTIVE status, so the row pill surfaces that
@@ -58,12 +50,10 @@ export default function PlanItemsList({
   loading,
   error,
   refresh,
-  onPick,
   harnessByPlan,
   planMeta,
   planFilters,
   title,
-  embedded = false,
 }: Props) {
   // A single selected plan renders "bare" (no repeated title); multiple
   // selected (or none) render grouped with plan headers.
@@ -108,17 +98,15 @@ export default function PlanItemsList({
     void setExpandedGroups([...expandedGroups, selectedPlan]);
   }, [selectedPlan, selectedItemId, planFiltersKey, expandedGroups, setExpandedGroups]);
 
-  // In embedded (inbox) mode this list is just one section of a shared left
-  // column, so it renders bare — no .pc-items / two-pane wrapper.
-  const wrap = (inner: ReactNode) =>
-    embedded ? (
-      <section className="pc-items__section">
-        <h3 className="pc-items__section-label">{title}</h3>
-        {inner}
-      </section>
-    ) : (
-      <div className="pc-items pc-items--mixed">{inner}</div>
-    );
+  // This list is one section of the shared TwoPaneShell's left column (the
+  // selected item's preview lives in the shell's detail slot, owned by
+  // PlansClient), so it renders just its heading + rows.
+  const wrap = (inner: ReactNode) => (
+    <section className="pc-items__section">
+      <h3 className="pc-items__section-label">{title}</h3>
+      {inner}
+    </section>
+  );
 
   if (loading) {
     return wrap(<p className="pc-plans__placeholder">Loading…</p>);
@@ -158,8 +146,8 @@ export default function PlanItemsList({
   // pane; it no longer redirects to the full plan tab. Per-item actions
   // key off the item's own status, since the list is mixed-status.
   // Rows are plain selectable buttons. The per-item actions (Answer /
-  // Resolve / Drop for needs-human, Chat with agent) live in the right-hand
-  // PlanItemPreview toolbar — rendering them inline in the row broke the
+  // Resolve / Drop for needs-human, Chat with agent) live in the shared
+  // detail pane's toolbar — rendering them inline in the row broke the
   // layout and crowded the answer textarea.
   const renderRows = (planSlug: string, planRows: PlanItemRow[]) => (
     <ul className="pc-items__rows" role="list">
@@ -257,25 +245,9 @@ export default function PlanItemsList({
     </ul>
   );
 
-  if (embedded) {
-    return wrap(groupsEl);
-  }
-
-  return (
-    <div className="pc-items pc-items--mixed">
-      <div className="pc-items__layout">
-        <div className="pc-items__listpane">{groupsEl}</div>
-
-        <PlanItemPreview
-          planSlug={selectedPlan}
-          itemId={selectedItemId}
-          harnessSlug={selectedPlan ? harnessByPlan?.get(selectedPlan) ?? null : null}
-          onResolved={refresh}
-          onViewFullPlan={onPick}
-        />
-      </div>
-    </div>
-  );
+  // List-only now: the selected item's preview lives in the shared
+  // TwoPaneShell's detail slot (owned by PlansClient), not inside this list.
+  return wrap(groupsEl);
 }
 
 /** Encode / decode the `?item=` selection key ("<planSlug>::<itemId>"). */

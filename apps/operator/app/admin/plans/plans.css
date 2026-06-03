@@ -1438,47 +1438,6 @@
 }
 
 /* ── Cross-plan item aggregations (P-108) ─────────────────────────── */
-.pc-items {
-  /* Per-mode accent (set below) is a tint of the sky --accent, so the
-     three pages stay distinct but read as one theme — mirroring how the
-     Sessions tab (pc-adv-sessions) drives everything from --accent. */
-  --pc-items-accent: var(--accent);
-  display: grid;
-  align-content: start;
-  gap: 14px;
-  /* No own scroll — the enclosing .pc-plans__main scrolls and the detail
-     pane is sticky within it (mirrors the Sessions two-pane). MUST NOT
-     flex-shrink: .pc-plans__main is a bounded flex-column, so a shrinkable
-     child would collapse to the viewport height — that in turn shrinks the
-     detail pane's containing block (.pc-items__layout) and the sticky pane
-     un-pins after one viewport. flex:0 0 auto keeps this content-tall so it
-     overflows the scroller and the sticky pane pins for the whole list. */
-  flex: 0 0 auto;
-  padding: 18px;
-  color: var(--fg-dim);
-}
-
-/* Cool "sky arc": each accent is a tint of the sky --accent, so the
-   three pages read as one theme yet stay distinct — cyan → azure →
-   indigo (hues ~214° / 233° / 250°). The warm semantic tokens are NOT
-   used as accents here: mixing them toward sky lands on muddy grays
-   (amber is sky's near-complement), which breaks the shared-theme look. */
-.pc-items--inbox {
-  --pc-items-accent: color-mix(in oklab, var(--accent), var(--sky-hero) 55%);
-}
-
-.pc-items--actionable {
-  --pc-items-accent: var(--accent);
-}
-
-.pc-items--blocked {
-  --pc-items-accent: color-mix(in oklab, var(--accent), var(--bad) 22%);
-}
-
-.pc-items--mixed {
-  --pc-items-accent: var(--accent);
-}
-
 .pc-items__head {
   display: grid;
   grid-template-columns: minmax(240px, 0.85fr) minmax(220px, 0.45fr);
@@ -1573,16 +1532,12 @@
   gap: 10px;
 }
 
-/* ── Two-pane layout (list + read-only detail), mirroring Sessions ── */
-.pc-items__layout {
-  display: grid;
-  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
-  gap: 16px;
-  align-items: start;
-  min-height: 0;
-}
-
 .pc-items__listpane {
+  /* The list column drives every .pc-items__* accent (section labels, plan
+     headers, selected-row highlight). Lives here — on the rendered list
+     container — now that the old .pc-items wrapper that used to define it is
+     gone (Plans + Inbox both render through the shared TwoPaneShell). */
+  --pc-items-accent: var(--accent);
   min-width: 0;
   padding: 12px 14px 28px;
 }
@@ -1869,10 +1824,6 @@
   border-radius: 13px;
   background: color-mix(in oklab, var(--bg), white 2%);
   transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
-}
-
-.pc-items--actionable .pc-items__row-wrap {
-  grid-template-columns: 1fr;
 }
 
 .pc-items__row-wrap:hover,
@@ -3738,10 +3689,6 @@
   .pc-plans__empty {
     margin: 20px;
     padding: 28px;
-  }
-
-  .pc-items__layout {
-    grid-template-columns: 1fr;
   }
 
   .pc-items__detail {

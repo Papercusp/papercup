@@ -388,12 +388,6 @@ export default function PlansClient() {
   const itemTitle = istatus.length
     ? istatus.map((s) => ITEM_FILTER_LABEL[s]).join(' · ')
     : 'All items';
-  const itemSubtitle = useMemo(() => {
-    const bucketLabels = PLAN_BUCKETS.filter((b) => pBuckets.includes(b.id)).map((b) => b.label);
-    return bucketLabels.length
-      ? `In ${bucketLabels.join(' · ')} plan${bucketLabels.length > 1 ? 's' : ''}`
-      : 'Across all plans';
-  }, [pBucketsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Search-scope chips in PlanSearchResults (plans with needs-human /
   // todo items). Derived from plan-list item counts.
@@ -760,51 +754,43 @@ export default function PlansClient() {
                     <div className="pc-items__listpane">
                       {showOther ? (
                         <PlanOtherList
-                          embedded
                           groups={attention.data?.groups ?? []}
                           loading={attention.loading}
                           error={attention.error}
                           refresh={attention.refresh}
                           title="Other"
-                          subtitle={itemSubtitle}
                           kinds={otherFacets}
                           planFilters={itemPlans}
                         />
                       ) : null}
                       {showPlanItems ? (
                         <PlanItemsList
-                          embedded
                           items={filteredItems}
                           loading={itemsLoading}
                           error={itemsError}
                           refresh={refreshItems}
-                          onPick={navPlanTarget}
                           harnessByPlan={harnessByPlan}
                           planMeta={planMetaBySlug}
                           planFilters={itemPlans}
                           title={itemTitle}
-                          subtitle={itemSubtitle}
                         />
                       ) : null}
                     </div>
                   </div>
                 ) : (
-                  /* Plans — the grouped item list (list-only via `embedded`).
-                     The selected item's read-only preview shows in the shared
-                     detail pane; "Open full plan" sets ?plan= to the editor. */
+                  /* Plans — the grouped item list (list-only). The selected
+                     item's read-only preview shows in the shared detail pane;
+                     "Open full plan" sets ?plan= to the editor. */
                   <div className="pc-items__listpane pc-plans__items">
                     <PlanItemsList
-                      embedded
                       items={filteredItems}
                       loading={itemsLoading}
                       error={itemsError}
                       refresh={refreshItems}
-                      onPick={navPlanTarget}
                       harnessByPlan={harnessByPlan}
                       planMeta={planMetaBySlug}
                       planFilters={itemPlans}
                       title={itemTitle}
-                      subtitle={itemSubtitle}
                     />
                   </div>
                 )
