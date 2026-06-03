@@ -231,27 +231,6 @@ export async function flushTelemetry(): Promise<FlushResult> {
   return result;
 }
 
-let timer: ReturnType<typeof setInterval> | null = null;
-
-/**
- * Start the hourly flush timer. Idempotent — calling again is a no-op.
- * Wired from instrumentation-node.ts so it boots with the operator.
- *
- * Note: the timer ALWAYS runs (so retention still kicks in and local
- * archive stays bounded). What it forwards off-device is gated by
- * setup_wizard_state.telemetry_enabled.
- */
-export function startTelemetryFlushWorker(): void {
-  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // by default now (dbosTimersActive); the legacy timer stands down unless DBOS
-  // timers are off: PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0.
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0' && process.env.PAPERCUSP_DBOS_TIMERS !== '0') return;
-  if (timer) return;
-  const intervalMs = Number(process.env.PAPERCUSP_TELEMETRY_FLUSH_MS ?? 60 * 60 * 1000);
-  timer = setInterval(() => {
-    flushTelemetry().catch((e) => {
-      console.error('[telemetry-flush] failed:', e);
-    });
-  }, intervalMs);
-  if (typeof timer.unref === 'function') timer.unref();
-}
+// Legacy startTelemetryFlushWorker removed (consolidation P-005): DBOS owns the
+// hourly flush (periodic-workflows.ts `telemetryFlush`). `flushTelemetry` above is
+// the single-run tick that workflow calls.

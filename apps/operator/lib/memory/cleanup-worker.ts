@@ -87,24 +87,6 @@ export async function runMemoryCleanupOnce(): Promise<void> {
   await sweep();
 }
 
-export function startMemoryCleanup(): void {
-  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // by default now (dbosTimersActive); the legacy timer stands down unless DBOS
-  // timers are off: PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0.
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0' && process.env.PAPERCUSP_DBOS_TIMERS !== '0') return;
-  if (_sweepTimer) return;
-  // Initial sweep after 60s of process boot — avoids contending with
-  // every other boot-time worker for resources.
-  setTimeout(() => void sweep(), 60_000);
-  // Periodic sweep thereafter.
-  _sweepTimer = setInterval(() => void sweep(), SWEEP_INTERVAL_MS);
-  // Don't block process exit on the timer.
-  if (typeof _sweepTimer.unref === 'function') _sweepTimer.unref();
-}
-
-export function stopMemoryCleanup(): void {
-  if (_sweepTimer) {
-    clearInterval(_sweepTimer);
-    _sweepTimer = null;
-  }
-}
+// Legacy startMemoryCleanup/stopMemoryCleanup removed (consolidation P-005): DBOS
+// owns the schedule (periodic-workflows.ts `memoryCleanup`). `runMemoryCleanupOnce`
+// above is the single-run tick that workflow calls.

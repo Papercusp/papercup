@@ -361,18 +361,6 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   await _runSweepLogged('periodic');
 }
 
-export function startEmbedBackfillWorker(): void {
-  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // by default now (dbosTimersActive); the legacy timer stands down unless DBOS
-  // timers are off: PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0.
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0' && process.env.PAPERCUSP_DBOS_TIMERS !== '0') return;
-  if (_bootTimer || _periodicTimer) return;
-  _bootTimer = setTimeout(() => { void _runSweepLogged('boot'); }, 10_000);
-  _periodicTimer = setInterval(() => { void _runSweepLogged('periodic'); }, CADENCE_MS);
-  if (typeof _periodicTimer.unref === 'function') _periodicTimer.unref();
-}
-
-export function stopEmbedBackfillWorker(): void {
-  if (_bootTimer) { clearTimeout(_bootTimer); _bootTimer = null; }
-  if (_periodicTimer) { clearInterval(_periodicTimer); _periodicTimer = null; }
-}
+// Legacy startEmbedBackfillWorker/stopEmbedBackfillWorker removed (consolidation
+// P-005): DBOS owns the schedule (periodic-workflows.ts `embedBackfill`).
+// `runEmbedBackfillOnce` above is the single-run tick that workflow calls.
