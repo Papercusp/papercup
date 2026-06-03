@@ -38,7 +38,11 @@ export const S01_STATUS_QUICK: Scenario = {
     },
     { kind: 'latency_under', p95: 10000 },
     { kind: 'cost_under', usd: 0.5 },
-    { kind: 'control_tag_present', tag: 'continue', maxCount: 1 },
+    // "No <continue/> chain expected" (see description): 0 is correct, cap at 1
+    // to catch a runaway chain. control_tag_present defaults minCount to 1, so
+    // minCount:0 is required — otherwise a correct one-shot reply (0 continues)
+    // wrongly fails.
+    { kind: 'control_tag_present', tag: 'continue', minCount: 0, maxCount: 1 },
   ],
   rubric: OPERATOR_RUBRIC,
 };
