@@ -343,6 +343,42 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
+### ROUND 10 (avi: "both, in sequence" → contamination then experts) — **78-file contamination RESOLVED; pty-ws product bug fixed.**
+
+Re-measured the full operator unit suite (832 files / 8364 tests, `forks` pool). The plan's
+"116 full-suite-failing files (38 genuine + 78 contamination)" is **drastically stale** — across
+4 full runs there are **0 stable contamination failures**:
+
+- Runs 2 & 3: **0 failures** (taken in a quiet window). Run 1: 1 failure (`pty-ws`, an
+  independent flake — see below). Run 4 (with the pty-ws fix in): 1 failure
+  (`operator-rate-limit`) — a **concurrent-agent mid-edit transient** (su-4463f was live-fixing
+  its jsonb double-encode bug at that moment; the file passes 3/3 in isolation; **not**
+  contamination), and `pty-ws` itself passed (fix confirmed in-suite).
+- **Why the 78 collapsed (prior work, not this round):** (a) the 38 genuine failures were fixed
+  across rounds 8–9; (b) the **branch-actions fd-leak fix removed the dominant async-console
+  amplifier** — a `FileHandle closed during GC` finalizer logging into a random later file in the
+  same reused fork tripped `vitest-fail-on-console`, manufacturing victims; (c) the **20s unit
+  `testTimeout`** (`libs/test-config/src/vitest-config.ts:70`) removed the ~38
+  cold-import-under-load timeout victims. All three classes are gone → contamination ≈ 0. (The
+  pre-existing FS/CWD vector the brief feared is a non-issue: **zero** unit tests call
+  `process.chdir`.)
+
+- **pty-ws — FIXED (`61ec9589f`, 20/20 isolation; was ~3/15 flaky).** Root cause was a **product
+  bug**, not a test issue: the WS connection handler (`lib/pty-ws.ts`) rejected `handle.killed`
+  with 4410, which DROPPED the exit frame for a fast-exiting command (`exit 7` sets `killed=true`
+  the instant it exits → races the connection handler; the client saw `open` but never an `exit`
+  frame → 8 s timeout). This also defeated pty-bridge's documented 30 s grace window (kept so a
+  late subscriber can read the final screen + exit code). `attachWsToPty` already serves an
+  exited handle (screen replay + `exitCode!==null` exit replay) — so only a MISSING handle is a
+  real 4410 now. Also de-flaked the client side of the same file: every output read attached
+  `ws.on('message')` a microtask AFTER awaiting open, racing immediate pty output (`echo`/`printf`
+  on spawn) and the on-connect replay → start each collector before awaiting open (assertions
+  unchanged).
+
+**Net:** the core-dump plan's last open follow-up (78-file contamination) is **closed** — no
+stable contamination remains; the full unit suite is green modulo live concurrent-agent churn.
+Remaining from avi's "both, in sequence": the **experts feature rip-out** (next).
+
 ### ROUND 9 (avi: "retire #2, chase #1") — **all genuine tests resolved.** Only the experts feature-removal + 78-file contamination remain (neither is a failing test).
 
 - **chat-surface-tools — TEST RETIRED** (`02ef65e2f`). Confirmed fully obsolete: its
