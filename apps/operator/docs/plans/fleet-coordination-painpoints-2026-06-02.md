@@ -3,7 +3,7 @@ title: Fleet coordination pain points — audit-driven fixes (non-lock)
 slug: fleet-coordination-painpoints-2026-06-02
 status: draft
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 owner: aviynw@gmail.com
 ---
 
@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Buildable scope SHIPPED (autonomous loop, 2026-06-02). Phase 1 notify de-noise (filterInbox excludes notify by default + lock_acquired fire removed at source + 17,951 backlog rows GC'd + daily DBOS GC) — commit 8d83b3d15. Phase 2 migration drift-check (db:check_drift + post-boot warning) — 65380587d. Phase 3b service-health (DBOS 1-min probe + transition broadcast + dev:service_health) — e7ab0c1f8. Phase 4 build-info satisfied by existing /api/desktop/version. Phase 6 docs/tests — 96719b89a. All tests green, type-clean. DEFERRED: 3a code-health (D-009 — no clean green signal on this box: 553 pre-existing tsc errors + stale origin/main); SSE health-bus (UI nicety). NEEDS-HUMAN: P-012 spawn empty-stub bug (D-010 — needs a live repro) + P-015 ship gate.
+**State:** Buildable scope COMPLETE. P-019 desktop/Tauri health probe landed 2026-06-02 (commit 82185f193): desktop-health.ts probes the Tauri shell via dev-bridge /eval + IPC socket + toastLog error count, present:false when no desktop is running so the 1-min tick never broadcasts a phantom DOWN; up = bridgeEval && ipcConnectable, recentErrors informational only (one transient error toast must not flip DOWN); wired into probeAll + dev:service_health; 15 unit tests + tools-md-sync 46/46 green. All Phase 1/2/3b/4/6 work shipped. REMAINING (all need the user, none autonomous): P-008/P-010 code-health breaker — BLOCKED by D-009 (no clean green signal on this box: 553 pre-existing tsc errors + stale origin/main); P-012 harness-spawn empty-config-stub bug (needs-human, needs a live repro); P-015 human ship sign-off.
 
-**Next:** Sibling plan dbos-durable-flows-adoption-2026-06-02 is the remaining work (provision/runner + outbox-drain first) — higher-risk live-flow migrations, build flag-gated + A/B per D-002/D-003.
+**Next:** User decisions needed for full close: (1) P-008/P-010 — invest in a trustworthy green signal or formally drop the code-health breaker (D-009); (2) P-012 — attempt the empty-config-stub repro now or park it; (3) P-015 ship sign-off.
 
 ## Background — the audit
 
@@ -85,7 +85,7 @@ Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept del
 
 ## Phase 3b — Service health (endpoints up)
 
-- **P-019** `todo` Desktop/Tauri health (no built-in HTTP health): probe via the existing tauri-agent-tools dev bridge (webview up + JS eval) + the Tauri↔sidecar IPC unix socket (alive = healthy) + toastLog.recent (recent error toasts = unhealthy). blocked-by: P-016
+- **P-019** `done` Desktop/Tauri health (no built-in HTTP health): probe via the existing tauri-agent-tools dev bridge (webview up + JS eval) + the Tauri↔sidecar IPC unix socket (alive = healthy) + toastLog.recent (recent error toasts = unhealthy). blocked-by: P-016 (desktop-health.ts: probe via dev-bridge /eval + IPC socket + toastLog; present:false when no desktop runs diffHealth skips it → no phantom DOWN. up=bridgeEval&&ipcConnectable; recentErrors informational. Wired into probeAll + dev:service_health. 15 unit tests + tools-md-sync green. commit 82185f193)
 
 ## Decisions
 
