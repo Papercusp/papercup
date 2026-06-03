@@ -25,7 +25,7 @@ Today a plan is a filesystem-canonical markdown file at `apps/operator/docs/plan
 ### D-001 — PG-canonical, markdown rendered on demand, dropped from git (Option A)
 2026-06-03
 
-A new PG table `harness_shared.harness_plans` is the single source of truth. Markdown is produced on demand by `plans:get` / the admin UI / `plans:export`; the 219 tracked files are removed after backfill. Rejected: (B) generate `.md` as a tracked one-way artifact (still a mirror); (C) keep FS-canonical (doesn't scale, inconsistent with features).
+A new PG table `harness_shared.harness_plans` is the single source of truth. Markdown is produced on demand by `plans:get` / the admin UI / `plans:export`; the 219 tracked files are removed after backfill. Rejected: (B) generate `.md` as a tracked one-way artifact (still a mirror); (C) keep FS-canonical (doesn't scale, inconsistent with features). (Cross-plan principle, owner-confirmed 2026-06-03 — **"substrate follows distribution model":** plans are operator-internal → PG-canonical here; *distributable* artifacts that travel with a harness — e.g. the harness blueprint, `harness-blueprint-orchestration` D-006 — stay **git-canonical**. The divergence is deliberate.)
 
 ### D-002 — Two stages: lift-and-shift, then normalize
 2026-06-03

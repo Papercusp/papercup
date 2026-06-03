@@ -338,6 +338,17 @@ plan `fleet-coordination-painpoints-2026-06-02`.
   (`BORROWABLE.md`) rather than leaving it inline — don't shy off the bigger
   refactor. Just tell the user what changed; don't ask permission to do it
   right, and don't water it down to feel safe.
+- **Data fetching → `@papercusp/sync`.** Route ALL client data reads/writes
+  through `@papercusp/sync` (`useSyncQuery` / `useSyncMutate` / `useSyncPrefetch`
+  / `useOwnedSyncEntity` / `selectOwnedData`) — never hand-roll `fetch` / SWR /
+  React-Query / direct-Zero data loading. It's the one sync + optimistic-
+  reflection layer (SSE on desktop, WS in browser); going through it keeps reads
+  live and agent-driveable. Source: `libs/generic/sync`.
+- **Endpoints → the `defineTool` framework.** Author EVERY new endpoint / API
+  route / tool with `defineTool({ method, path, auth, handler, guidance })` —
+  never a hand-rolled raw route handler. The endpoint system projects one typed
+  fn onto HTTP / MCP / IPC with shared dispatch, auth-gating, quotas + telemetry;
+  follow the "Adding a tool" discipline in `CLAUDE.md` + `/internal/docs/endpoint-system`.
 - **Read the docs before answering / building.** Your training predates the
   current code; the docs are canonical for *intent* (the source is canonical
   for *truth*). See *Tool-usage patterns* for the docs-first reflex and the

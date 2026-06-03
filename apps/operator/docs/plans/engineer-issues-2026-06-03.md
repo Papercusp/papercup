@@ -25,7 +25,7 @@ Agents discover problems mid-work and have nowhere to put them: `issues:list` is
 ### D-001 — Separate engineer_issues table, shared shape in code (not one table)
 2026-06-03
 
-Engineer/SU-discovered issues are ad-hoc, often featureless, cross-cutting-capable, claimable, human-authored; pipeline issues are born in a validation round, auto-promote, per-harness, machine-authored. Different workflows → separate tables. But ONE shared TS shape (severity/status/source enums + field names) imported by both so they cannot drift. Rejected: extending the consolidated mirror (it's a derived mirror, not a store-of-record, and the auto-promote sweep would swallow engineer issues); a ground-up v2 rewrite of the pipeline (out of scope).
+Engineer/SU-discovered issues are ad-hoc, often featureless, cross-cutting-capable, claimable, human-authored; pipeline issues are born in a validation round, auto-promote, per-harness, machine-authored. Different workflows → separate tables. But ONE shared TS shape (severity/status/source enums + field names) imported by both so they cannot drift. Rejected: extending the consolidated mirror (it's a derived mirror, not a store-of-record, and the auto-promote sweep would swallow engineer issues); a ground-up v2 rewrite of the pipeline (out of scope). (Owner-confirmed 2026-06-03 vs `harness-blueprint-orchestration` D-013: engineer issues are **NOT** a `work_items` kind — `work_items` is the pipeline work-unit only; issues remain this separate coordination table.)
 
 ### D-002 — Build on the substrate
 2026-06-03

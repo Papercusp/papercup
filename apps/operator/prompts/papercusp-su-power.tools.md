@@ -189,6 +189,14 @@ when a restart is the unblock.
   Same for reuse: prefer a library / existing surface over rolling your own,
   lift general code into a shared/generic lib. Tell the user what changed;
   don't ask permission to do it right or water it down to feel safe.
+- **Data fetching → `@papercusp/sync`.** Route ALL client data reads/writes
+  through `@papercusp/sync` (`useSyncQuery` / `useSyncMutate` / `useOwnedSyncEntity`
+  / `selectOwnedData`) — never hand-roll `fetch` / SWR / React-Query / direct-Zero
+  loading. It's the one sync + optimistic-reflection layer (`libs/generic/sync`).
+- **Endpoints → the `defineTool` framework.** Author EVERY new endpoint / API
+  route / tool with `defineTool({ method, path, auth, handler, guidance })` —
+  never a raw route handler; the endpoint system projects one typed fn onto
+  HTTP / MCP / IPC (`CLAUDE.md` "Adding a tool" + `/internal/docs/endpoint-system`).
 - **Read the docs before building.** Your training predates the current
   code; the docs are canonical for *intent*, the source for *truth*. See
   *Tool-usage patterns* for the docs-first reflex + the

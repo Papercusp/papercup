@@ -38,7 +38,7 @@ Durable delivery is the PG table + watermark cursor (at-least-once, replayable);
 ### D-001 — Subscribable is a capability, not a table
 2026-06-03
 
-Conversations, issues, features, plans, topics each implement the shared capabilities; the substrate builds them once, polymorphically. Separate object tables/workflows, shared services in code — the unification without the over-merge.
+Conversations, issues, features, plans, topics each implement the shared capabilities; the substrate builds them once, polymorphically. Separate object tables/workflows, shared services in code — the unification without the over-merge. (Owner-confirmed 2026-06-03, cross-plan with `harness-blueprint-orchestration` D-013: these coordination objects stay **separate tables**; the blueprint's canonical `work_items` is the *pipeline* work-unit only — feature/research-task — NOT a universal object table that swallows issues/conversations.)
 
 ### D-002 — Postgres only; no Zero / IVM engine / external broker
 2026-06-03

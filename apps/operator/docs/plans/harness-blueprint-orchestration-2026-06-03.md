@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design **locked + peer-reviewed + adversarially code-audited + cross-plan-audited**; **all five open decisions ratified 2026-06-03**. Both plans carry **P-item build lists**. Execution model A (durable-workflow); the **gym is a blueprint** (D-022); all harness artifacts move to **`.papercusp/`** (D-020). The full DBOS-only cutover is **complete + shipped** (`dbos-durable-flows-adoption`), so the A-model substrate is settled. Companion: `harness-blueprint-distribution-2026-06-03`. **External re-audit 2026-06-03 (claude): corrected stale code citations (classifyDecision = 20 cases not 22; the Phase-C promote→import seam doesn't exist as described; `runAb`/`judgeGymRun` symbol names; migration-110 conflation; `pending_events` precision; +the `ab-runner-real.ts` gym seam) and flagged 2 OPEN cross-plan questions for owner decision — see D-013 + D-006.** Not started in code.
+**State:** Design **locked + peer-reviewed + adversarially code-audited + cross-plan-audited**; **all five open decisions ratified 2026-06-03**. Both plans carry **P-item build lists**. Execution model A (durable-workflow); the **gym is a blueprint** (D-022); all harness artifacts move to **`.papercusp/`** (D-020). The full DBOS-only cutover is **complete + shipped** (`dbos-durable-flows-adoption`), so the A-model substrate is settled. Companion: `harness-blueprint-distribution-2026-06-03`. **External re-audit 2026-06-03 (claude): corrected stale code citations (classifyDecision = 20 cases not 22; the Phase-C promote→import seam doesn't exist as described; `runAb`/`judgeGymRun` symbol names; migration-110 conflation; `pending_events` precision; +the `ab-runner-real.ts` gym seam) and flagged 2 cross-plan questions — both **RESOLVED by owner 2026-06-03** (D-013: `work_items` = pipeline work-unit only, issues/conversations stay separate; D-006: "substrate follows distribution model" — distributable=git-canonical, operator-internal=PG-canonical).** Not started in code.
 
 **Next:** Build the **vertical slice (O-3/D-025)** — Phase A engine → `coding`-blueprint lift (the gym-A/B anchor) → research slice. Coordinate with the DBOS-orchestrator owner before editing `featurePipelineImpl` (P-022/D-017) — ordinary coordination now that the cutover is done, not a race.
 
@@ -37,7 +37,7 @@ BPM/Temporal (durable engine ⟂ workflow def; human-task gates; Saga) · CWL/Ne
 ### Build vs borrow vs have
 - **BUILD:** blueprint-as-data, the generalized gym, the marketplace, agent-authoring, the work-item lifecycle, the gate system.
 - **BORROW (patterns):** above; LangGraph `Send`/`StateGraph` ergonomics — don't adopt (checkpointing ≠ durable execution).
-- **HAVE:** DBOS durable execution; plans = the Level-2 DAG; `harness_prompt_overrides` + the gym control-plane (migration 110); experts = the reactive seed; per-harness PG schemas; the `defineTool` surface (`@papercusp/tooldef`); the durable `routinesTick` scheduler (git-sync-auto-commit).
+- **HAVE:** DBOS durable execution; plans = the Level-2 DAG; `harness_prompt_overrides` (`000-baseline`) + the gym control-plane (migration 110); experts = the reactive seed; per-harness PG schemas; the `defineTool` surface (`@papercusp/tooldef`); the durable `routinesTick` scheduler (git-sync-auto-commit).
 
 ### Execution model: A (durable-workflow)
 `deriveNext(blueprint, runState)` is a **pure function inside `featurePipelineImpl`**, swapping the `classifyDecision` switch. "Deterministic" = replay-safety (non-determinism in recorded steps), not a behavior limit. Idempotency = DBOS `deduplicationID`. The full DBOS-only cutover is **complete + shipped** (`dbos-durable-flows-adoption`, 2026-06-02: `operator_claims` dropped [migration 112], the legacy route-fallback removed) — DBOS is the **sole** orchestrator, so the A-substrate is settled. Corroborated by `dbos-durable-jobs` D-004: *DBOS wraps execution as durable steps; it does not replace the LLM-driven routing* — exactly our `deriveNext`/director split.
@@ -45,24 +45,24 @@ BPM/Temporal (durable engine ⟂ workflow def; human-task gates; Saga) · CWL/Ne
 ## Phase A — Blueprint model + engine (keystone)
 - **P-001** `todo` A1 — `BlueprintSchema` (Zod) = { id, extends, version, workItem, roles[], spine, planner, reactive, gates, recursion, gym, knobs }; superset of HarnessConfig's **shape/knob fields only** (instance fields stay in `.papercusp/config.json`). The Zod schema = validator-of-record.
 - **P-002** `todo` A1 — store the blueprint git-canonical at `.papercusp/blueprint.yaml` (referencing `.md` prompts); build the **file-read/parse → PG `harness_shared.blueprints` loader** (D-021, NOT the Hyperbee `TableProjection`), beside `readConfig()`.
-- **P-003** `todo` A2 — pure `deriveNext(spine, runState)` interpreter replacing the 22-case `classifyDecision` switch (`orchestrator-decide.ts:42`); the `coding` blueprint encodes today's verbs+switch as data (behavior-preserving); flat-graph (D-024).
+- **P-003** `todo` A2 — pure `deriveNext(spine, runState)` interpreter replacing the 20-case `classifyDecision` switch (`orchestrator-decide.ts:42`, verified pure — swap is behavior-safe); the `coding` blueprint encodes today's verbs+switch as data (behavior-preserving); flat-graph (D-024).
 - **P-004** `todo` A3 — wire `deriveNext` into `featurePipelineImpl` (`orchestrator-workflow.ts:166`, at the line-199 classify call); keep the `runner()` durable step + `deduplicationID` (:310); promote `MAX_TURNS` (:161) / debugger-threshold / finalize-recipe → blueprint fields. (after P-003)
 - **P-005** `todo` A4 — pure `validateBlueprint(bp)`: reachability, termination, every node has an exit, guards well-formed, bounded recursion, work-item payload valid. Author-time + on load.
-- **P-006** `todo` A5 — ship `coding` (behavior-preserving lift) + minimal `base`; wire the **gym-A/B no-regress gate** (`runAbEvaluation`): hardcoded path vs blueprint path over a task set. (after P-004)
+- **P-006** `todo` A5 — ship `coding` (behavior-preserving lift) + minimal `base`; wire the **gym-A/B no-regress gate** (`runAb` in `ab-runner.ts`): hardcoded path vs blueprint path over a task set. (after P-004)
 
 ## Phase B — Agent-authorable creation
-- **P-007** `todo` B1 — `harness:create` + `blueprint:create/extend/validate` defineTool tools (registered in `agent-tools/index.ts`), wrapping `dispatchAction('scaffold_harness')` / `POST /api/harness/projects` (`projects.ts:175`). No `orchestrator.spawn`.
-- **P-008** `todo` B2 — `requiresRepo` flag → conditional git-init in `doScaffoldHarness` (`execute-action.ts:612`); confirm the PG-only run path for non-repo harnesses.
+- **P-007** `todo` B1 — `harness:create` + `blueprint:create/extend/validate` defineTool tools (registered in `agent-tools/index.ts`), wrapping the `scaffold_harness` action (`POST /api/admin/execute-action` → internal `dispatchAction`) / `POST /api/harness/projects` (`projects.ts:175`). No `orchestrator.spawn`.
+- **P-008** `todo` B2 — `requiresRepo` flag → conditional git-init in `doScaffoldHarness` (`execute-action.ts:545`; git-init is currently UNCONDITIONAL ~:607-616 — so this is real new work); confirm whether the conditional belongs here or whether the `papercusp init` CLI already no-ops git in non-repo contexts; confirm the PG-only run path for non-repo harnesses.
 - **P-009** `todo` B3/D-023 — generate-from-repo for kind #1: deterministic detection (test-gate **verified by running it**, tool set, monorepo/UI flags) + harvest `AGENTS.md`/`CLAUDE.md`/`TESTING.md` → an `extends: coding` override; LLM-refinement deferred.
 
 ## Phase C — Promote → new configured harness (issues #1 + #2)
-- **P-010** `todo` C — add `blueprint_slug?` to `plans:promote`; at the `promote.ts:625` seam create the new harness (`POST /api/harness/projects`) then route `postFeaturesImport` (:794) to the **new** slug. `features/import` (`features.ts:333`) is URL-parameterized — no handler change. (Builds on `dbos-system-completion` D-009/D-011: promote already emits wave/`blocked_by` parallelism = the Level-2 DAG.)
+- **P-010** `todo` C — add `blueprint_slug?` to `plans:promote`; create the new harness (`POST /api/harness/projects`), then point the feature-import at the **new** slug. **Audit correction:** `promote.ts` does NOT itself call feature-import — there is no `postFeaturesImport`, and `promote.ts` only merges branches + records promotion metadata. The import is a SEPARATE endpoint `POST /harness/:slug/features/import` (`features.ts` ~:331), and the wave/`blocked_by` writes live THERE, not in promote. So the real change is: find the planner/worker step that calls `features/import` after a promote and route it to the new slug (the endpoint is already `:slug`-parameterized → no handler change). (Builds on `dbos-system-completion` D-009/D-011: the IMPORT emits the wave/`blocked_by` parallelism = the Level-2 DAG.)
 
 ## Phase D — Port the gym to a blueprint (the gym is a meta-harness, D-022)
 - **P-011** `todo` D1 — define the `gym` blueprint: roles `task-generator`/`judge`/`proposer`; spine `generate-tasks → run-target-variant (sub-harness) → judge → propose → A/B-gate → accept (commit target blueprint)`.
-- **P-012** `todo` D3 — re-expose `lib/gym` primitives as tools/engine-primitives: `judgeGymRun` (`judge-scoring.ts:46`), `runAbEvaluation` (`ab-runner.ts`), signals (`signals.ts`), the collector.
+- **P-012** `todo` D3 — re-expose `lib/gym` primitives as tools/engine-primitives: `judgeGymRun` (in `judge.ts`; `judge-scoring.ts:46` is the rubric, not the runner), `runAb` (`ab-runner.ts`), signals (`signals.ts`), the collector.
 - **P-013** `todo` D3 — the **A/B eval-matrix** (variants × tasks × repeats + comparison) on the runtime-DAG (Level 2) + a comparison/aggregation primitive — the one genuinely-new piece.
-- **P-014** `todo` D2/D-015 — per-blueprint `blueprint.gym.collectTrace` (coding=git-diff over the clone; research=work-item-output + transcript), breaking the `collector.ts:24/28` repo-coupling.
+- **P-014** `todo` D2/D-015 — per-blueprint `blueprint.gym.collectTrace` (coding=git-diff over the clone; research=work-item-output + transcript), breaking the repo-coupling at `collector.ts:24/28` AND the hardcoded `git diff` in `ab-runner-real.ts:147` (a THIRD seam beyond collector/clone — D-015 missed it).
 - **P-015** `todo` D4 — gym extensions = harness **plugins**; keep `control-plane.ts` (`gym_proposals`/`gym_autoloop_config`, migration 110) as the gym blueprint's UI/state surface.
 - **P-016** `todo` D5 — live-edit = commit→reproject (D-007/D-021), replacing the ungated `PUT /harness/:slug/prompts/:role`; reconcile/absorb `harness-gym-eval-optimizer-2026-06-02` (coordinate with its active owner).
 
@@ -73,7 +73,7 @@ BPM/Temporal (durable engine ⟂ workflow def; human-task gates; Saga) · CWL/Ne
 ## Phase F — Cross-cutting migrations (own gated steps)
 - **P-019** `todo` D-020 — full `.harness/` → `.papercusp/` namespace migration (config/state/prompts/blueprint). **Cross-plan coordination required:** `.harness/` is load-bearing for the dogfood federation (`shared.json`, `contributors/<login>.json`), git-sync (`.harness/state/`), and the storage-unification git-export — coordinate with those owners before the rename.
 - **P-020** `todo` D-013 — **1b**: **generalize the existing `harness_features_consolidated` base into a canonical `work_items` table** (add `kind`+`payload`), keep the triggers (incl. `capture_substrate_outbox` federation CDC) **on the base**, and make `harness_features_consolidated` a thin `kind='feature'` view — per the storage-unification 032 view-pattern. Its own gated migration, after the slice proves out.
-- **P-021** `todo` D-018 — register a **`system:blueprint-run` action** (`registerSystemAction`) that a scheduled `routines` row dispatches **directly** (via `routinesTick`) to start a blueprint run / create a `work_item`. **No `pending_events` consumer** — that hop is retired (`git-sync-auto-commit` D-006).
+- **P-021** `todo` D-018 — register a **`system:blueprint-run` action** (`registerSystemAction`) that a scheduled `routines` row dispatches **directly** (via `routinesTick`) to start a blueprint run / create a `work_item`. **No new `pending_events` consumer** — the `routines → pending_events → consumer` HOP is retired (`git-sync-auto-commit` D-006). (Precision: the `pending_events` table itself stays live — the operator scanner observes it via LISTEN/NOTIFY; we just don't add a consumer.)
 - **P-022** `todo` D-017 — coordinate with the DBOS-orchestrator owner before P-003/P-004 edit `featurePipelineImpl`. The cutover is complete, so this is ordinary coordination, not a race.
 
 ## Risks & mitigations
@@ -82,7 +82,7 @@ BPM/Temporal (durable engine ⟂ workflow def; human-task gates; Saga) · CWL/Ne
 - **`.papercusp/` migration** — wide mechanical rename; **cross-plan**: touches federation/git-sync/storage `.harness/` paths — coordinate (P-019/D-020).
 - **Blueprint→PG** — file-read/parse pattern, NOT the Hyperbee `TableProjection` (D-021).
 - **Gym-port** — the A/B eval-matrix on the runtime-DAG is the one new piece (P-013/D-022); the rest re-exposes `lib/gym`; coordinate with the active gym-plan owner.
-- **Scheduler** — `routinesTick` dispatches **directly** (`pending_events` retired); the blueprint integration is a `system:blueprint-run` action (P-021/D-018), not a consumer.
+- **Scheduler** — `routinesTick` dispatches **directly** (the routines→`pending_events`→consumer hop is retired — the `pending_events` table itself stays live elsewhere, observed via LISTEN/NOTIFY); the blueprint integration is a `system:blueprint-run` action (P-021/D-018), not a consumer.
 - **Over-rename churn** — keep `featureId` in the coding path; generality in `work_items` + the blueprint.
 - **Validator gaps** → A4 + the gym safety net + the `coding` golden reference.
 - **YAML footguns** → tool-authored canonical YAML + Zod on load.
@@ -111,7 +111,7 @@ No framework accommodates our feature set — they compete with one layer (the e
 
 ### D-006 Blueprint storage = git-canonical, projected to PG
 Date: 2026-06-03
-The blueprint is a versioned file in the harness's own repo (`.papercusp/blueprint.yaml` + `.md` prompts), projected into PG (`harness_shared.blueprints`) so the interpreter reads PG. `git log/diff/revert` = audit/diff/revert, free. **Projection mechanism: file-read/parse, not the Hyperbee projector — D-021.**
+The blueprint is a versioned file in the harness's own repo (`.papercusp/blueprint.yaml` + `.md` prompts), projected into PG (`harness_shared.blueprints`) so the interpreter reads PG. `git log/diff/revert` = audit/diff/revert, free. **Projection mechanism: file-read/parse, not the Hyperbee projector — D-021.** **RESOLVED (owner, 2026-06-03) — principle: "substrate follows distribution model":** *distributable* artifacts that travel with a harness (the blueprint → Cupboard) are **git-canonical** (file = source, PG = cache); *operator-internal* artifacts that never ship (plans, `plans-pg-canonical-migration` D-001) are **PG-canonical** (git dropped). The blueprint↔plans substrate divergence is therefore **deliberate**, each following its distribution need — not an inconsistency.
 
 ### D-007 Live-edit = a git commit; mechanism is to-build
 Date: 2026-06-03
@@ -127,7 +127,7 @@ Pre-alpha: clean renames + migrations now, no shims. Drove 1b (D-013) and the `.
 
 ### D-010 Anti-over-decomposition is a first-class requirement
 Date: 2026-06-03
-The deep-research harness (105 agents) failed at a task a single agent does better. A harness earns its overhead only on context-overflow, independence, durability/gating/observability, or parallel scale. The Blueprint must collapse to one role as cheaply as the maximal, and the gym must discover that fewer roles is better (NAS). Standing default: research inline; the deep-research harness only on overflow. Applied in D-016.
+The deep-research harness (105 agents) failed at a task a single agent does better *(empirical anecdote — not code-grounded; no such config found in the repo)*. A harness earns its overhead only on context-overflow, independence, durability/gating/observability, or parallel scale. The Blueprint must collapse to one role as cheaply as the maximal, and the gym must discover that fewer roles is better (NAS). Standing default: research inline; the deep-research harness only on overflow. Applied in D-016.
 
 ### D-011 Live-edit ↔ gym fusion (jidoka / kaizen)
 Date: 2026-06-03
@@ -139,7 +139,7 @@ Migration 112 dropped `harness_shared.operator_claims` (part of the completed DB
 
 ### D-013 Work-item substrate = 1b (canonical `work_items`)
 Date: 2026-06-03
-Decided by avi. A single canonical `work_items(workspace_id, harness_slug, item_id, kind, payload jsonb, status, …)`. **Reconciled with the storage-unification 032 view-pattern (`harness-state-storage-unification` D-007):** rather than `INSTEAD OF` triggers on a view, **generalize the existing `harness_features_consolidated` *base* table into `work_items`** (add `kind`+`payload`) — the triggers (`capture_substrate_outbox` federation CDC [now spans all kinds], `emit_change_notify` SSE, `fill_needs_design`, `fill_ws_features`) **stay on the base** (normal triggers), and `harness_features_consolidated` + per-schema `harness_features` become thin `kind='feature'` views (the latter already is, `scaffold-harness-schema.ts:114`). Less invasive than the earlier "4 INSTEAD OF" framing. A gated migration (P-020), after the slice proves out on `harness_features` as-is. No `work_items` exists today.
+Decided by avi. A single canonical `work_items(workspace_id, harness_slug, item_id, kind, payload jsonb, status, …)`. **Reconciled with the storage-unification 032 view-pattern (`harness-state-storage-unification` D-007):** rather than `INSTEAD OF` triggers on a view, **generalize the existing `harness_features_consolidated` *base* table into `work_items`** (add `kind`+`payload`) — the triggers (`capture_substrate_outbox` federation CDC [now spans all kinds], `emit_change_notify` SSE, `fill_needs_design`, `fill_ws_features`) **stay on the base** (normal triggers), and `harness_features_consolidated` + per-schema `harness_features` become thin `kind='feature'` views (the latter already is, `scaffold-harness-schema.ts:114`). Less invasive than the earlier "4 INSTEAD OF" framing. A gated migration (P-020), after the slice proves out on `harness_features` as-is. No `work_items` exists today. **RESOLVED (owner, 2026-06-03):** `work_items` = the **pipeline work-unit only** (`kind` = `feature` | `research-task` | …, i.e. what the director schedules/executes). Issues + conversations stay **SEPARATE coordination objects** (`engineer-issues` D-001 + `coordination-substrate` D-001 — "never one mega-table"), sharing capabilities (Subscribable/Taggable/…) in code, NOT `work_items` kinds. Dividing line: schedule/execute → `work_items`; discuss/track → separate object.
 
 ### D-014 The zero-regression gate is a gym A/B, not a unit test
 Date: 2026-06-03
@@ -147,7 +147,7 @@ A5's gate = a gym A/B (`runAbEvaluation`): hardcoded path vs blueprint path over
 
 ### D-015 Per-blueprint gym trace collector (`blueprint.gym.collectTrace`)
 Date: 2026-06-03
-Audit-confirmed: the gym is repo-coupled below the config seams — `collector.ts:24/28` builds the trace from `git diff`; `clone.ts` clones substrate@commit. A `requiresRepo:false` blueprint can't run on it. The target's `blueprint.gym.collectTrace` is the fifth seam: coding=git-diff, research=work-item output + transcript.
+Audit-confirmed: the gym is repo-coupled below the config seams — `collector.ts:24/28` builds the trace from `git diff`; `clone.ts` clones substrate@commit; and `ab-runner-real.ts:147` runs `git diff` directly (a third, non-injected coupling the earlier audit missed). A `requiresRepo:false` blueprint can't run on it. The target's `blueprint.gym.collectTrace` is the fifth seam: coding=git-diff, research=work-item output + transcript.
 
 ### D-016 The research proof slice defaults minimal (applies D-010)
 Date: 2026-06-03
