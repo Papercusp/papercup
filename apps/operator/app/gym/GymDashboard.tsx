@@ -37,7 +37,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-const card: React.CSSProperties = { border: '1px solid var(--border, #2a2a33)', borderRadius: 8, padding: 12, background: 'var(--panel, #16161c)' };
+const card: React.CSSProperties = { border: '1px solid var(--border, #2a2a33)', borderRadius: 8, padding: 12, background: 'var(--bg-2, #16161c)' };
 const mono: React.CSSProperties = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12 };
 
 export default function GymDashboard() {
