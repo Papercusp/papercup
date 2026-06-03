@@ -95,3 +95,72 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('LOCAL-EDIT\n');
   });
 });
+
+describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first', () => {
+  let root: string;
+  let superOrigin: string; // bare superproject origin
+  let subOrigin: string; // bare submodule origin
+  let repo: string; // the "harness" working clone (with submodule checked out)
+
+  // file:// submodule add/update is blocked by default (CVE) — allow it in setup.
+  const allowFile = ['-c', 'protocol.file.allow=always'];
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'gitsync-sub-'));
+    superOrigin = join(root, 'super-origin.git');
+    subOrigin = join(root, 'sub-origin.git');
+    git(root, 'init', '--bare', '-b', 'main', superOrigin);
+    git(root, 'init', '--bare', '-b', 'main', subOrigin);
+
+    // seed the submodule's origin/main
+    const subseed = join(root, 'subseed');
+    git(root, 'clone', subOrigin, subseed);
+    configUser(subseed);
+    writeFileSync(join(subseed, 'sub.txt'), 'sub-v1\n');
+    git(subseed, 'add', '-A');
+    git(subseed, 'commit', '--no-verify', '-m', 'sub init');
+    git(subseed, 'push', '-u', 'origin', 'main');
+
+    // seed the superproject with the submodule at libs/sub
+    const superseed = join(root, 'superseed');
+    git(root, 'clone', superOrigin, superseed);
+    configUser(superseed);
+    git(superseed, ...allowFile, 'submodule', 'add', subOrigin, 'libs/sub');
+    configUser(join(superseed, 'libs/sub'));
+    git(superseed, 'add', '-A');
+    git(superseed, 'commit', '--no-verify', '-m', 'super init + submodule');
+    git(superseed, 'push', '-u', 'origin', 'main');
+
+    // the harness working clone, with the submodule checked out
+    repo = join(root, 'repo');
+    git(root, 'clone', superOrigin, repo);
+    configUser(repo);
+    git(repo, ...allowFile, 'submodule', 'update', '--init', '--recursive');
+    configUser(join(repo, 'libs/sub'));
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('pushes the submodule branch to origin FIRST, then bumps+pushes the superproject pointer', () => {
+    // dirty the submodule AND the superproject
+    writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+
+    return runGitSync('test', { repoPath: repo }).then((out) => {
+      expect(out.status).toBe('synced');
+      if (out.status === 'synced') expect(out.pushed).toBe(true);
+
+      // submodule origin received the sub commit (pushed to main from detached HEAD)
+      expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+      // superproject origin received the super commit
+      expect(git(superOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+
+      // the committed superproject pointer == the submodule's pushed HEAD (fresh clone resolves the pin)
+      const subHead = git(join(repo, 'libs/sub'), 'rev-parse', 'HEAD');
+      const pointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+      expect(pointer).toBe(subHead);
+      // and that submodule commit exists on the submodule's origin (pin is reachable remotely)
+      expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
+    });
+  });
+});
