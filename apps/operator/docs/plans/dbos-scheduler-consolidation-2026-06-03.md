@@ -70,3 +70,8 @@ Date: 2026-06-03
 ### D-004 — test-runs-prune → DBOS; llm-test-nightly stays systemd
 Date: 2026-06-03
 `papercup-test-runs-prune` is operator-DB maintenance (prune a PG table) → it belongs in the operator's DBOS schedule (P-009), and porting removes a user-session systemd dependency. `llm-test-nightly` is a heavy external test-suite runner (needs `ANTHROPIC_API_KEY`, spawns the full LLM scenario tier) → it is CI-shaped, not operator-process work, and stays as a systemd timer (P-010).
+
+### D-005 — P-007 → delete the unwired pr-host/poll-daemon
+Date: 2026-06-03
+Decided 2026-06-03 (avi): the `apps/operator/lib/pr-host/poll-daemon.ts` is fully built but never wired into bootstrap and carries in-memory backoff state. Rather than finish-and-DBOS-ify it, **delete it + its test**. PR-host polling is not a wanted capability right now; if it's needed later it can be rebuilt as a DBOS workflow with PG-backed state. P-007 becomes a straight deletion.
+Related: P-007
