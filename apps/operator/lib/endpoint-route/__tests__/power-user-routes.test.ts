@@ -14,6 +14,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+// Populate the projected-tool REGISTRY so the tools/list profile-gate test
+// below sees the real catalog. (Sibling tool tests import this too; relying on
+// registerAllRoutes → catchall to transitively load it is fragile.)
+import '@/lib/agent-tools/index';
 
 /* ─── PG mocks — token signing key + sessions table ──────────────────── */
 
@@ -388,6 +392,12 @@ describe('POST /api/mcp?power_user=1 (tools/list profile gate)', () => {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
         authorization: `Bearer ${accessToken}`,
+        // power_user=1 requires a loopback request (isLoopbackRequest). Hono's
+        // in-process app.request() doesn't synthesize a Host header the way a
+        // real HTTP client does, so set it explicitly — otherwise
+        // tryBuildSpawnContext fails 'power_user_non_loopback' and tools/list
+        // returns an empty list.
+        host: '127.0.0.1:3070',
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
     });
