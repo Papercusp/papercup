@@ -99,6 +99,39 @@ describe('GitHubPrHost.openPr', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe('validation');
   });
+
+  it('builds cross-fork head "<head_owner>:<head_ref>" while keeping owner/repo upstream', async () => {
+    const oc = mockOctokit({});
+    const host = new GitHubPrHost(oc);
+    await host.openPr({
+      remote: REMOTE, // upstream github.com/owner/repo
+      title: 'Feature from a fork',
+      body: 'b',
+      head_ref: 'harness/F-001',
+      base_ref: 'main',
+      head_owner: 'aviynw',
+    });
+    const arg = vi.mocked(oc.pulls.create).mock.calls[0][0];
+    // PR is opened ON the upstream repo, with the head namespaced to the fork.
+    expect(arg.owner).toBe('owner');
+    expect(arg.repo).toBe('repo');
+    expect(arg.head).toBe('aviynw:harness/F-001');
+    expect(arg.base).toBe('main');
+  });
+
+  it('builds same-repo head "<head_ref>" when head_owner is omitted (back-compat)', async () => {
+    const oc = mockOctokit({});
+    const host = new GitHubPrHost(oc);
+    await host.openPr({
+      remote: REMOTE,
+      title: 'Feature on a branch',
+      body: 'b',
+      head_ref: 'fix/thing',
+      base_ref: 'main',
+    });
+    const arg = vi.mocked(oc.pulls.create).mock.calls[0][0];
+    expect(arg.head).toBe('fix/thing');
+  });
 });
 
 // ---------------------------------------------------------------------------

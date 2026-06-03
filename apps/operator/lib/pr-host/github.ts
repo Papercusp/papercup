@@ -90,12 +90,17 @@ export class GitHubPrHost implements PrHost {
       return err({ kind: 'validation', message: `Cannot parse remote: ${args.remote}` });
     }
     try {
+      // Cross-fork PR: namespace the head with the fork owner
+      // (`<head_owner>:<head_ref>`) while keeping owner/repo = upstream, so a
+      // contributor's fork branch opens a PR on the upstream repo. Same-repo
+      // PRs (no head_owner) send the bare head ref.
+      const head = args.head_owner ? `${args.head_owner}:${args.head_ref}` : args.head_ref;
       const { data } = await this.oc.pulls.create({
         owner: parsed.owner,
         repo: parsed.repo,
         title: args.title,
         body: args.body,
-        head: args.head_ref,
+        head,
         base: args.base_ref,
         draft: args.draft ?? false,
       });

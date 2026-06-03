@@ -172,6 +172,16 @@ export interface OpenPrArgs {
   head_ref: string;
   base_ref: string;
   draft?: boolean;
+  /**
+   * Cross-fork PR: the GitHub login that owns the fork the head branch lives
+   * on. When set, the host sends `head: "<head_owner>:<head_ref>"` while keeping
+   * `owner/repo` = the UPSTREAM repo (from `remote`) — i.e. a PR opened on the
+   * upstream from a contributor's fork. Omit for a same-repo PR (`head_ref`
+   * alone). Used by the non-collaborator code→PR path
+   * (non-collaborator-join-fork-pr sub-project B): a contributor without
+   * upstream write pushes to their fork and opens a cross-fork PR.
+   */
+  head_owner?: string;
 }
 
 /**
