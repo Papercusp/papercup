@@ -75,17 +75,18 @@ repeats are promoted into v1 — `buildLoopDeps.evaluate` averages the composite
    operator-vite SPA build-verified. The `@uiw/react-md-editor` swap, the trainAgg-vs-cost Pareto scatter
    (needs per-run cost persisted + a wired gym run DB), and the live-Tauri eyeball/aesthetic pass remain
    the designer/UI-agent's. (`gym(P-024 item4)` `87640dfdb`.)
-5. **Real bounded loop — RAN; capacity-gated + a robustness fix.** `gym-loop-run` in REAL mode (real
-   agents + Opus judge + real proposer) on the buildable substrate, budget-capped (D-019), control plane →
-   the LIVE operator DB. The real pipeline **converged cleanly on the buildable substrate** (item 3
-   validated live: 0 chunk-loop strikes), then the run hard-failed at the proposer with
-   `LlmCallError: claude-code exited 1`. **Root cause = the Claude Code SUBSCRIPTION session limit**
-   ("You've hit your session limit · resets 4:20am"), NOT a logic bug — and a real robustness gap: that
-   message matched no `RATE_RE` pattern in `papercup-shared/agent/turn-error.ts` → classified `agent_crash`
-   → the RB-006 rate-pause rethrew instead of pausing/skipping. **FIXED** (submodule `de9332e`, pointer
-   `3b8a39c6e`): session-limit phrasing now classifies as `rate_limited` (+2 tests, 60/60 agent suite green),
-   so the loop now pauses/skips gracefully on a subscription lockout. The full real cycle (proposer →
-   `gym_proposals` in the dashboard) re-runs on capacity (session resets 4:20am ET). No UNBOUNDED loop (D-019).
+5. **Real bounded loop — DONE (end-to-end, with a real proposal in the dashboard).** `gym-loop-run` in
+   REAL mode (real agents + claude-code opus-4-8 judge + real proposer) on the buildable substrate,
+   budget-capped (D-019), control plane → the LIVE operator DB. **Result: cycles 1, accepts 1, champion
+   `cand-c1`, spent $0.35** (the whole cycle — 6 real pipeline runs + 6 judges + 1 proposer — ~30× under
+   the $12 cap; judge is ~$0.13/call, not the $2.50 the old comments guessed). The proposer suggested a
+   **validator** prompt edit; it landed as a `pending` `gym_proposals` row in the live DB → reviewable in
+   the `/gym` dashboard (Accept→promote / Reject). **The D-014 falsifiability signal fired on cycle 1:**
+   train climbed (baseline 7.0 → cand-c1 8.25) while the **real-anchor dropped** (6.75 → 6.0) — the exact
+   "optimizing a proxy" signature the real-anchor exists to surface. The first attempt hit a transient
+   concurrency burst on the shared subscription (not budget — the session was up; backend confirmed
+   claude-code via a live judge probe), now handled gracefully by the session-limit→`rate_limited` fix
+   (submodule `de9332e`, pointer `3b8a39c6e`; +2 tests, 60/60 agent suite green). No UNBOUNDED loop (D-019).
 
 ## P-014 results (real A/B, 2026-06-03)
 
