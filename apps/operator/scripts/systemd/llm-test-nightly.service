@@ -1,5 +1,10 @@
 [Unit]
 Description=Papercusp LLM testing — nightly suite run
+# Deliberately stays a systemd timer, NOT a DBOS scheduled workflow
+# (dbos-scheduler-consolidation-2026-06-03 P-010 / D-004): this is a heavy
+# external test-suite runner (needs ANTHROPIC_API_KEY, ~90min, full LLM
+# scenario tier) — CI-shaped work, not operator-process maintenance. DBOS
+# owns operator maintenance jobs; this stays infra.
 After=network-online.target
 # Don't fire while the laptop's resuming from sleep — give the
 # operator a moment to come back.
