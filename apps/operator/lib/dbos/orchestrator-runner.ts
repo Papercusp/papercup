@@ -56,6 +56,7 @@ import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
 import { governorForBackend, classifyTurnError } from '@papercusp/papercup-shared/agent';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
+import { initAgentGovernorObserver } from '../agent-governor-observer';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 // How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
@@ -461,6 +462,10 @@ let _wired = false;
 export function wireOrchestratorInvokeRunner(): void {
   if (_wired) return;
   _wired = true;
+  // RB-009: surface rate-limit-governor pauses to coord + the toast stream. Idempotent; the
+  // governor is shared by the pipeline spawn, meridian calls, and the gym, so one init here
+  // (on operator boot) covers them all.
+  initAgentGovernorObserver();
   setPipelineInvokeRunner(realRunner);
   setPipelineFinalizer(realFinalizer);
   // P-012: fire the read-only debugger before a worker when the feature has
