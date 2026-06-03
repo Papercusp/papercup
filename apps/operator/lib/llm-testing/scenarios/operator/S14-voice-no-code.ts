@@ -9,7 +9,7 @@
  */
 import { VOICE_USER } from '../../personas/blends';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { noMarkdownInSay, formatLength220 } from '../../asserts/operator-format';
+import { noMarkdownInSay, formatLength220, noJargonInSay } from '../../asserts/operator-format';
 import type { Scenario } from '../../types';
 
 export const S14_VOICE_NO_CODE: Scenario = {
@@ -25,6 +25,7 @@ export const S14_VOICE_NO_CODE: Scenario = {
   asserts: [
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
+    { kind: 'custom', name: 'noJargonInSay', eval: noJargonInSay },
   ],
   rubric: OPERATOR_RUBRIC,
 };

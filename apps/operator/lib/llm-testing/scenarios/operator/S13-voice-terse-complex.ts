@@ -10,7 +10,7 @@
  */
 import { VOICE_USER } from '../../personas/blends';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { formatLength220, noMarkdownInSay, oneQuestionMarkPerTurn } from '../../asserts/operator-format';
+import { formatLength220, noMarkdownInSay, oneQuestionMarkPerTurn, noJargonInSay, groundedCountBeforeTool } from '../../asserts/operator-format';
 import type { Scenario } from '../../types';
 
 export const S13_VOICE_TERSE_COMPLEX: Scenario = {
@@ -27,6 +27,8 @@ export const S13_VOICE_TERSE_COMPLEX: Scenario = {
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
     { kind: 'custom', name: 'oneQuestionMarkPerTurn', eval: oneQuestionMarkPerTurn },
+    { kind: 'custom', name: 'noJargonInSay', eval: noJargonInSay },
+    { kind: 'custom', name: 'groundedCountBeforeTool', eval: groundedCountBeforeTool },
   ],
   rubric: OPERATOR_RUBRIC,
 };

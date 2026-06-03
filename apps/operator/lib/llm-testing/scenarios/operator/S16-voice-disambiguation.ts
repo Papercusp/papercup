@@ -11,7 +11,7 @@
  */
 import { VOICE_USER } from '../../personas/blends';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { formatLength220 } from '../../asserts/operator-format';
+import { formatLength220, noJargonInSay } from '../../asserts/operator-format';
 import type { Scenario, RunSummary, Violation } from '../../types';
 
 const cardsAreVoiceAnswerable = (run: RunSummary): Violation[] => {
@@ -44,6 +44,7 @@ export const S16_VOICE_DISAMBIGUATION: Scenario = {
   asserts: [
     { kind: 'custom', name: 'cards-are-voice-answerable', eval: cardsAreVoiceAnswerable },
     { kind: 'custom', name: 'formatLength220', eval: formatLength220 },
+    { kind: 'custom', name: 'noJargonInSay', eval: noJargonInSay },
   ],
   rubric: OPERATOR_RUBRIC,
 };

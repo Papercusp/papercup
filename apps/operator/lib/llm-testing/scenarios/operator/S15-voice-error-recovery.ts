@@ -11,7 +11,7 @@
  */
 import { VOICE_USER } from '../../personas/blends';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import { noMarkdownInSay } from '../../asserts/operator-format';
+import { noMarkdownInSay, groundedCountBeforeTool } from '../../asserts/operator-format';
 import type { Scenario, RunSummary, Violation } from '../../types';
 
 function extractSay(text: string): string {
@@ -52,6 +52,7 @@ export const S15_VOICE_ERROR_RECOVERY: Scenario = {
   asserts: [
     { kind: 'custom', name: 'everyVoiceTurnHasSay', eval: everyVoiceTurnHasSay },
     { kind: 'custom', name: 'noMarkdownInSay', eval: noMarkdownInSay },
+    { kind: 'custom', name: 'groundedCountBeforeTool', eval: groundedCountBeforeTool },
   ],
   rubric: OPERATOR_RUBRIC,
 };
