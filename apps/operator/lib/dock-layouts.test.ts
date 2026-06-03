@@ -173,11 +173,11 @@ describe('isWellFormedLayout (non-throwing guard for the render path)', () => {
     expect(isWellFormedLayout(defaultPiTerminalsLayout())).toBe(true);
   });
 
-  it('defaultAdvCreateLayout seeds the create:* panels (option-B free panels)', () => {
+  it('defaultAdvCreateLayout seeds the two fixed regions (filter | main)', () => {
     const doc = defaultAdvCreateLayout();
     expect(() => validateLayoutDoc(doc)).not.toThrow();
     const types = JSON.stringify(doc);
-    for (const t of ['create:inbox', 'create:plans-list', 'create:sessions', 'create:preview']) {
+    for (const t of ['create:filter', 'create:main']) {
       expect(types).toContain(t);
     }
   });
@@ -324,9 +324,9 @@ describe('default seeds', () => {
 // assertions cover both paths at once. (Pi is handled by each caller, not
 // here — see seedForDockName's doc-comment.)
 describe('seedForDockName (shared seed/reset routing)', () => {
-  it('routes adv-create (exact + prefixed) to the create seed', () => {
-    expect(seedForDockName('adv-create')).toEqual(defaultAdvCreateLayout());
-    expect(seedForDockName('adv-create:papercup')).toEqual(defaultAdvCreateLayout());
+  it('routes adv-create2 (exact + prefixed) to the create seed', () => {
+    expect(seedForDockName('adv-create2')).toEqual(defaultAdvCreateLayout());
+    expect(seedForDockName('adv-create2:papercup')).toEqual(defaultAdvCreateLayout());
   });
   it('routes adv-git2 to the git seed, propagating the slug', () => {
     expect(seedForDockName('adv-git2')).toEqual(defaultAdvGitLayout(''));

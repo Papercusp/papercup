@@ -19,7 +19,7 @@ import {
 import { SessionsRosterProvider } from '@/app/adv/sessions/SessionsRosterContext';
 import { useCreateScope, usePlanListMaps, useItemPlanFilter } from './use-create-data';
 
-export default function SessionsPanel(_props: PanelComponentProps) {
+export default function SessionsPanel(_props?: Partial<PanelComponentProps>) {
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
   const [itemPlans] = useItemPlanFilter();

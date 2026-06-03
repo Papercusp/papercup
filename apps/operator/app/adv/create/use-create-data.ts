@@ -373,3 +373,14 @@ export function usePlanBucketFilter() {
 export function useItemPlanFilter() {
   return useQueryState('itemPlans', parseAsArrayOf(parseAsString).withDefault([]));
 }
+
+/* ── Active view (the create:filter buttons set it; create:main renders it) ── */
+
+export type CreateView = 'plans' | 'inbox' | 'sessions';
+export const CREATE_VIEWS: CreateView[] = ['plans', 'inbox', 'sessions'];
+
+/** Shared `?view` selector for the Create dock (Plans = single pane;
+ *  Inbox/Sessions = split). Defaults to Plans, matching the old Plans tab. */
+export function useCreateView() {
+  return useQueryState('view', parseAsStringEnum<CreateView>(CREATE_VIEWS).withDefault('plans'));
+}

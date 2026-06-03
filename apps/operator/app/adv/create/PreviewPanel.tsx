@@ -15,46 +15,24 @@ import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanItemPreview from '@/app/admin/plans/PlanItemPreview';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { usePlanAttention } from '@/app/admin/plans/plans-api';
-import { focusPanel, groupIdOfPanelType, listPanels, openPanel } from '@/app/harness/dock/dock-actions';
 import { useCreateScope, usePlanListMaps } from './use-create-data';
 
-const EDITOR_TYPE = 'create:plan-editor';
-const PREVIEW_TYPE = 'create:preview';
-
 /**
- * Open (or focus an existing) plan-editor panel for a slug. The editor opens
- * INTO the preview's group (the right region) so it stacks over the preview
- * and — with the Create dock's headers hidden — fills the full width of the
- * right side. AdvCreateDock widens that region while an editor is open.
+ * Open a plan full-width: switch to Plans view and set ?plan. create:main
+ * renders the loaded plan as a single pane. A plain URL write — nuqs patches
+ * history.replaceState to broadcast, so the ?view/?plan subscribers re-render.
  */
 export function openPlanEditor(slug: string, jump?: string): void {
-  try {
-    const existing = listPanels().find((p) => p.type === EDITOR_TYPE && p.params.plan === slug);
-    if (existing) {
-      focusPanel(existing.id);
-      return;
-    }
-    const id = openPanel({
-      type: EDITOR_TYPE,
-      title: slug,
-      // Drop into the right region (preview's group); falls back to
-      // auto-position if no preview is open.
-      group: groupIdOfPanelType(PREVIEW_TYPE),
-      params: { plan: slug, ...(jump ? { jump } : {}) },
-    });
-    focusPanel(id);
-  } catch {
-    // Dock api not bound yet — fall back to the URL param the editor also reads.
-    if (typeof window !== 'undefined') {
-      const url = new URL(window.location.href);
-      url.searchParams.set('plan', slug);
-      if (jump) url.searchParams.set('jump', jump);
-      window.history.replaceState({}, '', url.toString());
-    }
-  }
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  url.searchParams.set('view', 'plans');
+  url.searchParams.set('plan', slug);
+  if (jump) url.searchParams.set('jump', jump);
+  else url.searchParams.delete('jump');
+  window.history.replaceState({}, '', url.toString());
 }
 
-export default function PreviewPanel(_props: PanelComponentProps) {
+export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
   const [inboxItemSel] = useQueryState('item', parseAsString);

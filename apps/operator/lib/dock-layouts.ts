@@ -385,12 +385,14 @@ export function defaultAdvGitLayout(harnessSlug = ''): LayoutDoc {
  * Seed layout for the /adv "Create" dock (?tab=plans, AdvCreateDock).
  *
  * Option-B "free panels": the three former subtabs (plan browser / inbox /
- * sessions) start as tabs in a left group the user can drag apart, with a
- * shared preview pane on the right. The panels are workspace/scope-driven
- * via URL params (?slug / ?scope / ?h), so the seed carries no harnessSlug
- * — unlike the harnesses/git docks, there is nothing to rebind on slug
- * change. The plan editor (create:plan-editor) opens on demand
- * (openPanel), so it is not in the seed.
+ * Two fixed regions — a left FILTER sidebar (create:filter: New plan + the
+ * Plans/Inbox/Sessions view buttons + search/bucket filters + the plan list)
+ * and a right MAIN region (create:main) that renders the active `?view`
+ * (Plans = one full-width pane, Inbox/Sessions = split list|detail). The
+ * panels are workspace/scope-driven via URL params (?slug/?scope/?h/?view),
+ * so the seed carries no harnessSlug — nothing to rebind on slug change. The
+ * Create dock uses dockview purely for the resizable, header-less, locked
+ * sidebar|main split; navigation is the external buttons, not dockview tabs.
  */
 export function defaultAdvCreateLayout(): LayoutDoc {
   return {
@@ -402,21 +404,17 @@ export function defaultAdvCreateLayout(): LayoutDoc {
       children: [
         {
           kind: 'tabs',
-          id: 'create-left',
-          size: 0.42,
-          activePanelId: 'p-create-inbox',
-          panels: [
-            { id: 'p-create-inbox', type: 'create:inbox', params: {} },
-            { id: 'p-create-plans', type: 'create:plans-list', params: {} },
-            { id: 'p-create-sessions', type: 'create:sessions', params: {} },
-          ],
+          id: 'create-filter',
+          size: 0.24,
+          activePanelId: 'p-create-filter',
+          panels: [{ id: 'p-create-filter', type: 'create:filter', params: {} }],
         },
         {
           kind: 'tabs',
-          id: 'create-right',
-          size: 0.58,
-          activePanelId: 'p-create-preview',
-          panels: [{ id: 'p-create-preview', type: 'create:preview', params: {} }],
+          id: 'create-main',
+          size: 0.76,
+          activePanelId: 'p-create-main',
+          panels: [{ id: 'p-create-main', type: 'create:main', params: {} }],
         },
       ],
     },
@@ -599,7 +597,10 @@ export type LayoutRow = {
 export function seedForDockName(name: string): LayoutDoc {
   const slugAfter = (prefix: string) =>
     name.startsWith(prefix) ? name.slice(prefix.length) : '';
-  if (name === 'adv-create' || name.startsWith('adv-create:')) {
+  // adv-create2: bumped from adv-create when the Create dock changed from the
+  // 5-panel free layout to the fixed filter|main split — the old name's
+  // persisted rows would hydrate now-unregistered panels (create:inbox, …).
+  if (name === 'adv-create2' || name.startsWith('adv-create2:')) {
     return defaultAdvCreateLayout();
   }
   if (name === 'adv-git2' || name.startsWith('adv-git2:')) {

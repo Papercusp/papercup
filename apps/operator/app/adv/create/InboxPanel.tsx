@@ -25,7 +25,7 @@ import {
   ITEM_FILTER_LABEL,
 } from './use-create-data';
 
-export default function InboxPanel(_props: PanelComponentProps) {
+export default function InboxPanel(_props?: Partial<PanelComponentProps>) {
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
   const [istatus, setIstatus] = useItemStatusFilter();

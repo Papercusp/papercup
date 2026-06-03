@@ -1,32 +1,70 @@
 'use client';
 
 /**
- * create:plans-list dock panel — the plan browser (search + lifecycle bucket
- * filters + the plan rail). Mirrors PlansClient's left rail. Clicking a plan
- * toggles the per-plan item filter (?itemPlans) — which the inbox panel reacts
- * to — matching PlansClient's "rail as item-navigator" behavior.
+ * create:filter — the left FILTER sidebar of the Create dock, always visible.
+ * Top: New plan + the Plans/Inbox/Sessions view buttons (set ?view, which
+ * create:main renders). Below: search + plan-status bucket filters, then the
+ * plan list. The plan list acts as a filter on whichever view is active —
+ * clicking a plan in Inbox/Sessions toggles the ?itemPlans item filter; in
+ * Plans view it opens that plan full-width on the right (?plan).
  *
- * Simplification vs PlansClient (noted): the rail lists all in-scope plans
- * (bucket/search filtered) rather than only plans-with-matching-items; a
- * dedicated browser panel surfacing every plan is the more useful default.
+ * Mirrors PlansClient's rail (search + buckets + PlanRail) plus its
+ * rail-actions row (New plan + view buttons), lifted so the dock behaves like
+ * the original Plans tab.
  */
 
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
+import { ClipboardList, Inbox, Plus, Terminal } from 'lucide-react';
+import { toast } from 'sonner';
+import { launchAgent } from '@/lib/launch-agent';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanFilters from '@/app/admin/plans/PlanFilters';
 import PlanBucketTabs from '@/app/admin/plans/PlanBucketTabs';
 import PlanRail from '@/app/admin/plans/PlanRail';
 import { usePlanSearch } from '@/app/admin/plans/plans-api';
-import { useCreateScope, usePlanListMaps, useItemPlanFilter } from './use-create-data';
+import {
+  useCreateScope,
+  usePlanListMaps,
+  useItemPlanFilter,
+  useResolvedHarnessSlug,
+  useCreateView,
+} from './use-create-data';
 
-export default function PlansListPanel(_props: PanelComponentProps) {
+export default function PlansListPanel(_props?: PanelComponentProps) {
   const scope = useCreateScope();
   const maps = usePlanListMaps(scope);
+  const [view, setView] = useCreateView();
   const [q, setQ] = useQueryState('q', parseAsString.withDefault(''));
+  const [plan, setPlan] = useQueryState('plan', parseAsString);
   const [harnessFilter, setHarnessFilter] = useQueryState('h', parseAsString);
   const [itemPlans, setItemPlans] = useItemPlanFilter();
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // ── New-plan launch (mirrors PlansClient.onNewPlan) ──
+  const resolvedSlug = useResolvedHarnessSlug();
+  const [launching, setLaunching] = useState(false);
+  const onNewPlan = async () => {
+    if (launching) return;
+    setLaunching(true);
+    try {
+      const result = await launchAgent({
+        slug: resolvedSlug ?? null,
+        planSlug: null,
+        label: resolvedSlug ? `new-plan · ${resolvedSlug}` : 'new-plan',
+        kickoff: { kind: 'new-plan' },
+      });
+      if (result.ok) {
+        toast.success('Agent launched to draft a new plan.', { duration: 3000 });
+      } else if (result.installCmd) {
+        toast.error(`${result.error ?? 'OMP launch prerequisites are missing.'} Run: ${result.installCmd}`);
+      } else {
+        toast.error(`Launch failed: ${result.error ?? 'unknown error'}`);
+      }
+    } finally {
+      setLaunching(false);
+    }
+  };
 
   const railSearchHits = usePlanSearch(q);
   const searchHitSlugs = useMemo<Set<string>>(() => {
@@ -43,11 +81,64 @@ export default function PlansListPanel(_props: PanelComponentProps) {
     [maps.planList, maps.visiblePlans],
   );
 
-  const toggleItemPlan = (s: string) =>
-    void setItemPlans(itemPlans.includes(s) ? itemPlans.filter((x) => x !== s) : [...itemPlans, s]);
+  // The plan list filters whichever view is active: in Plans view it OPENS the
+  // plan full-width (?plan); in Inbox/Sessions it toggles the ?itemPlans filter.
+  const onSelectPlan = (s: string) => {
+    if (view === 'plans') {
+      void setPlan(plan === s ? null : s);
+    } else {
+      void setItemPlans(itemPlans.includes(s) ? itemPlans.filter((x) => x !== s) : [...itemPlans, s]);
+    }
+  };
+  const selectedSlugs = view === 'plans' ? (plan ? [plan] : []) : itemPlans;
 
   return (
     <div className="pc-plans__rail" style={{ height: '100%', overflow: 'auto' }}>
+      {/* New plan + the 3 view buttons — above the plan list, exactly as before. */}
+      <div className="pc-plans__rail-actions">
+        <button
+          type="button"
+          className="pc-plans__new-plan"
+          onClick={onNewPlan}
+          disabled={launching}
+          title={
+            resolvedSlug
+              ? `Launch an agent session to draft a new plan in ${resolvedSlug}`
+              : 'Launch an agent session to draft a new plan (no active harness — agent will ask)'
+          }
+        >
+          <Plus size={14} aria-hidden />
+          {launching ? 'Launching…' : 'New plan'}
+        </button>
+        <button
+          type="button"
+          className={`pc-plans__plans-btn${view === 'plans' ? ' is-active' : ''}`}
+          onClick={() => void setView('plans')}
+          title="Plans — open a plan from the list to view/edit it full-width."
+        >
+          <ClipboardList size={14} aria-hidden />
+          Plans
+        </button>
+        <button
+          type="button"
+          className={`pc-plans__inbox-btn${view === 'inbox' ? ' is-active' : ''}`}
+          onClick={() => void setView('inbox')}
+          title="Inbox — every item & attention surface across plans (list + detail)."
+        >
+          <Inbox size={14} aria-hidden />
+          <span className="pc-plans__inbox-btn-label">Inbox</span>
+        </button>
+        <button
+          type="button"
+          className={`pc-plans__sessions-btn${view === 'sessions' ? ' is-active' : ''}`}
+          onClick={() => void setView('sessions')}
+          title="Sessions — live agent roster (list + detail)."
+        >
+          <Terminal size={14} aria-hidden />
+          <span className="pc-plans__inbox-btn-label">Sessions</span>
+        </button>
+      </div>
+
       <div className="pc-plans__group">
         {maps.harnessOptions.length > 1 ? (
           <div className="pc-plans__harness-filter">
@@ -80,10 +171,10 @@ export default function PlansListPanel(_props: PanelComponentProps) {
       <div className="pc-plans__list" aria-label="Plans">
         <PlanRail
           list={filteredPlanList}
-          selectedSlugs={itemPlans}
+          selectedSlugs={selectedSlugs}
           query={q}
           searchHitSlugs={searchHitSlugs}
-          onSelect={toggleItemPlan}
+          onSelect={onSelectPlan}
           onStartToggle={() => maps.planList.refresh()}
           harnessSlug={harnessFilter ?? scope.advActiveSlug}
         />
