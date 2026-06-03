@@ -408,6 +408,23 @@ function useSyncResource<T, K extends string>(
   };
 }
 
+/** Like {@link useSyncResource} but returns the row array directly (for
+ *  hooks whose consumers expect `AsyncResult<T[]>`, not `{ key: T[] }`). */
+function useSyncRows<T>(
+  queryName: string,
+  args: Record<string, unknown>,
+  enabled = true,
+): AsyncResult<T[]> {
+  const r = useSyncQuery<T>({ queryName, args, enabled });
+  const data: T[] = enabled ? (r.data ?? []) : [];
+  return {
+    data,
+    loading: r.loading,
+    error: r.error ? r.error.message : null,
+    refresh: () => r.invalidate(),
+  };
+}
+
 export function usePlanList(params?: {
   status?: PlanStatus;
   includeArchived?: boolean;
@@ -1034,10 +1051,8 @@ export function fetchPlanRevisions(slug: string) {
 /** The Revisions panel hook (P-017) — newest-first revision chain. An
  *  empty chain (no recorded revisions) is `data: []` not an error. */
 export function usePlanRevisions(slug: string | null): AsyncResult<PlanRevision[]> {
-  return useAsyncJson<PlanRevision[]>(
-    () => (slug ? fetchPlanRevisions(slug).then((r) => r.revisions) : Promise.resolve([])),
-    [slug],
-  );
+  const args = useMemo<Record<string, unknown>>(() => (slug ? { slug } : {}), [slug]);
+  return useSyncRows<PlanRevision>('plans.revisions', args, !!slug);
 }
 
 /** plans:revision-diff result envelope (P-018). `error: 'unknown_revision'`
@@ -1137,10 +1152,8 @@ export function fetchPlanRuns(slug: string) {
 /** Agents-tab past-runs hook (P-021). Empty list when the plan has
  *  never been launched. */
 export function usePlanRuns(slug: string | null): AsyncResult<PlanRun[]> {
-  return useAsyncJson<PlanRun[]>(
-    () => (slug ? fetchPlanRuns(slug).then((r) => r.runs) : Promise.resolve([])),
-    [slug],
-  );
+  const args = useMemo<Record<string, unknown>>(() => (slug ? { slug } : {}), [slug]);
+  return useSyncRows<PlanRun>('plans.runs', args, !!slug);
 }
 
 /* ── plans:launch (P-022) ──────────────────────────────────────────── */
