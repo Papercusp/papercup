@@ -16,7 +16,10 @@
 import { test, expect, type Page } from '@playwright/test';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
-const ROUTE = process.env.OPERATOR_E2E_FIND_ROUTE ?? '/';
+// Default to `/support` — a static, auth-free SPA page with reliable text in
+// `<main data-route-transition-page>`. (`/` redirects to /adv, whose main is
+// auth-gated/sparse for an unauthenticated e2e browser → nothing to search.)
+const ROUTE = process.env.OPERATOR_E2E_FIND_ROUTE ?? '/support';
 
 /** A word (≥4 letters) that is actually present in <main>, so a match exists. */
 async function pickSearchTerm(page: Page): Promise<string> {
