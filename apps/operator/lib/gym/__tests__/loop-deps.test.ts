@@ -141,6 +141,27 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
     expect(evalResult.allProbesCaught).toBe(true);
   });
 
+  it('P-025: per-task composite is the MEAN over repeats, cost is summed, worst rationale kept', async () => {
+    // A judge that returns a different score on each call (5,7,3,...) so repeats average ≠ a single run.
+    let call = 0;
+    const seq = [5, 7, 3]; // mean of 3 = 5
+    const varyingJudge: JudgeLlmCall = async () => {
+      const v = seq[call % seq.length];
+      call++;
+      return { text: JSON.stringify({ d1: v, d2: v, d3: v, rationale: `r-${v}` }), costUsd: JUDGE_USD, inputTokens: 1, outputTokens: 1 };
+    };
+    const oneTrain: LoopTask[] = [{ taskId: 't', pool: 'train', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'x', projectContext: 'p' }];
+    const { deps } = makeDeps({ tasks: oneTrain, repeats: 3, judgeCall: varyingJudge });
+    const { evalResult, worstTraces, costUsd } = await deps.evaluate('baseline', { promptOverrides: {} });
+    // composite = mean(composite(5),composite(7),composite(3)) = composite(5) since linear in d.
+    expect(evalResult.trainAgg).toBeCloseTo((expComposite(5) + expComposite(7) + expComposite(3)) / 3, 6);
+    // meanCost is per-run: 3 runs each (pipeline + judge).
+    expect(evalResult.meanCost).toBeCloseTo(PIPELINE_USD + JUDGE_USD, 6);
+    expect(costUsd).toBeCloseTo(3 * (PIPELINE_USD + JUDGE_USD), 6);
+    // worst repeat's rationale (lowest composite = score 3) is fed to the proposer.
+    expect(worstTraces[0].rationale).toBe('r-3');
+  });
+
   it('respects worstK when selecting the worst train traces', async () => {
     const manyTrain: LoopTask[] = [2, 9, 4, 7, 1].map((n, i) => ({
       taskId: `t${i}`,

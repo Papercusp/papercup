@@ -60,6 +60,12 @@ export interface BuildLoopDepsConfig {
   maxDistillChars: number;
   /** How many worst train traces to feed the proposer (default 3). */
   worstK?: number;
+  /**
+   * P-025: repeats per (variant × task) — the per-task composite is the MEAN over repeats,
+   * to average out the judge's per-run noise. Default 1; P-014 measured sd≤0.5 → minRepeats≈4,
+   * so the loop driver should set this ≥4 for accept decisions to be trustworthy.
+   */
+  repeats?: number;
   /** Override the per-run engine (defaults to buildAbDeps); injected in unit tests. */
   abDeps?: AbDeps;
   /** Promote a champion's overrides into the gym harness (P-020). Omit ⇒ human-gated (D-020). */
@@ -77,6 +83,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
   const now = cfg.now ?? (() => Date.now());
   const sleep = cfg.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const worstK = cfg.worstK ?? 3;
+  const repeats = Math.max(1, cfg.repeats ?? 1);
 
   // Reuse the smoke-proven per-run engine (runPipeline + collectAndDistill + gym-PG store).
   const ab =
@@ -98,91 +105,112 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
     const variant = { variantId, label: variantId, overlay };
     await ab.store.upsertVariant(variant);
 
-    interface PerRun {
+    const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+
+    /** One per (task), aggregated over `repeats` runs (P-025: average out judge noise). */
+    interface PerTask {
       taskId: string;
       pool: GymTaskPool;
-      composite: number;
-      rationale: string;
-      distilled: string;
-      cost: number;
-      regression: boolean;
-      probeCaught: boolean | null;
+      composite: number; // mean over repeats
+      rationale: string; // the worst repeat's rationale (most informative for the proposer)
+      distilled: string; // the worst repeat's distilled trace
+      cost: number; // SUM over repeats
+      regression: boolean; // any repeat regressed
+      probeCaught: boolean | null; // all repeats caught (probe pool only)
     }
-    const perRun: PerRun[] = [];
+    const perTask: PerTask[] = [];
 
     for (const task of cfg.tasks) {
       await ab.store.upsertTask({ ...task, pool: task.pool });
-      const runId = `${variantId}::${task.taskId}::c${cycle}`;
-      const handle = await ab.runPipeline({
-        variant,
-        task: { ...task, pool: task.pool },
-        repeat: 0,
-        cycle,
-        harnessCommit: cfg.harnessCommit,
-        workspaceId: cfg.workspaceId,
-        scratchRoot: cfg.scratchRoot,
-      });
-      await ab.store.startRun({
-        runId,
-        variantId,
-        taskId: task.taskId,
-        cycle,
-        repeat: 0,
-        harnessSlug: handle.harnessSlug,
-        workflowId: handle.workflowID,
-      });
-      const { distilledTrace, traceRef, rawSignals } = await ab.collectAndDistill({
-        handle,
-        task: { ...task, pool: task.pool },
-        maxChars: cfg.maxDistillChars,
-      });
-      await ab.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
-      const score = await runWithRatePause(
-        () =>
-          judgeGymRun(
-            { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric },
-            { llmCall: cfg.judgeCall },
-          ),
-        { now, sleep },
-      );
-      await ab.store.recordScore(runId, score);
-      const sig = (rawSignals ?? {}) as Record<string, unknown>;
-      perRun.push({
+      const composites: number[] = [];
+      let cost = 0;
+      let regression = false;
+      let probeCaughtAll = task.pool === 'probe' ? true : null;
+      let worst: { composite: number; rationale: string; distilled: string } | null = null;
+
+      for (let repeat = 0; repeat < repeats; repeat++) {
+        const runId = `${variantId}::${task.taskId}::c${cycle}::r${repeat}`;
+        const handle = await ab.runPipeline({
+          variant,
+          task: { ...task, pool: task.pool },
+          repeat,
+          cycle,
+          harnessCommit: cfg.harnessCommit,
+          workspaceId: cfg.workspaceId,
+          scratchRoot: cfg.scratchRoot,
+        });
+        await ab.store.startRun({
+          runId,
+          variantId,
+          taskId: task.taskId,
+          cycle,
+          repeat,
+          harnessSlug: handle.harnessSlug,
+          workflowId: handle.workflowID,
+        });
+        const { distilledTrace, traceRef, rawSignals } = await ab.collectAndDistill({
+          handle,
+          task: { ...task, pool: task.pool },
+          maxChars: cfg.maxDistillChars,
+        });
+        await ab.store.finishRun(runId, { terminalState: handle.outcome, deterministicSignals: rawSignals, traceRef });
+        const score = await runWithRatePause(
+          () =>
+            judgeGymRun(
+              { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric },
+              { llmCall: cfg.judgeCall },
+            ),
+          { now, sleep },
+        );
+        await ab.store.recordScore(runId, score);
+        const sig = (rawSignals ?? {}) as Record<string, unknown>;
+        composites.push(score.composite);
+        cost += handle.pipelineUsd + score.costUsd;
+        if (sig.regressions) regression = true;
+        if (task.pool === 'probe' && !sig.planted_bug_caught) probeCaughtAll = false;
+        if (!worst || score.composite < worst.composite) {
+          worst = { composite: score.composite, rationale: score.rationale, distilled: distilledTrace };
+        }
+      }
+
+      perTask.push({
         taskId: task.taskId,
         pool: task.pool,
-        composite: score.composite,
-        rationale: score.rationale,
-        distilled: distilledTrace,
-        cost: handle.pipelineUsd + score.costUsd,
-        regression: Boolean(sig.regressions),
-        probeCaught: task.pool === 'probe' ? Boolean(sig.planted_bug_caught) : null,
+        composite: mean(composites), // P-025: per-task reward = mean over repeats
+        rationale: worst?.rationale ?? '',
+        distilled: worst?.distilled ?? '',
+        cost,
+        regression,
+        probeCaught: probeCaughtAll,
       });
     }
 
-    const mean = (xs: number[]): number => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-    const train = perRun.filter((r) => r.pool === 'train');
-    const devAnchor = perRun.filter((r) => r.pool === 'dev-anchor');
-    const probes = perRun.filter((r) => r.pool === 'probe');
+    const train = perTask.filter((r) => r.pool === 'train');
+    const devAnchor = perTask.filter((r) => r.pool === 'dev-anchor');
+    const probes = perTask.filter((r) => r.pool === 'probe');
     const trainVector = train.map((r) => r.composite);
 
+    const totalCost = perTask.reduce((s, r) => s + r.cost, 0);
+    const totalRuns = perTask.length * repeats;
     const evalResult: VariantEval = {
       variantId,
       trainAgg: mean(trainVector),
       trainVector,
       devAnchorAgg: mean(devAnchor.map((r) => r.composite)),
-      meanCost: mean(perRun.map((r) => r.cost)),
-      anyNewRegression: perRun.some((r) => r.regression),
+      // Mean cost PER RUN across every (task × repeat).
+      meanCost: totalRuns ? totalCost / totalRuns : 0,
+      anyNewRegression: perTask.some((r) => r.regression),
       // No probe tasks ⇒ the gate is vacuously satisfied (probe is a guardrail, not a target).
       allProbesCaught: probes.length === 0 ? true : probes.every((r) => r.probeCaught === true),
     };
 
-    // The proposer reflects on the WORST train traces (lowest composite first).
+    // The proposer reflects on the WORST train traces (lowest per-task mean composite first).
     const worstTraces: WorstTrace[] = [...train]
       .sort((a, b) => a.composite - b.composite)
       .slice(0, worstK)
       .map((r) => ({ taskId: r.taskId, composite: r.composite, rationale: r.rationale, distilledTrace: r.distilled }));
 
-    return { evalResult, worstTraces, costUsd: perRun.reduce((s, r) => s + r.cost, 0) };
+    return { evalResult, worstTraces, costUsd: totalCost };
   }
 
   return {

@@ -54,6 +54,9 @@ const WS = process.env.GYM_LOOP_WORKSPACE ?? 'gym-loop-ws';
 const SLUG = process.env.GYM_LOOP_HARNESS ?? 'gymloopharness';
 const FAKE = process.env.GYM_LOOP_FAKE === '1';
 const MAX_CYCLES = Math.max(1, Number(process.env.GYM_LOOP_MAX_CYCLES ?? 1));
+// P-025: repeats per (task) to average out judge noise. P-014 measured sd≤0.5 → minRepeats≈4,
+// so set GYM_LOOP_REPEATS=4 for trustworthy accept decisions; default 1 for the cheap assembly check.
+const REPEATS = Math.max(1, Number(process.env.GYM_LOOP_REPEATS ?? 1));
 const BUDGET_USD = process.env.GYM_LOOP_BUDGET_USD ? Number(process.env.GYM_LOOP_BUDGET_USD) : FAKE ? null : 50;
 const REAL_AGENT_CMD = process.env.GYM_LOOP_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
 // The proposer is decorrelated from the judge model (D-015) — judge is opus-4-8, proposer sonnet.
@@ -116,7 +119,7 @@ async function main(): Promise<void> {
   let gymSql: postgres.Sql | undefined;
   let controlSql: postgres.Sql | undefined;
   let ok = false;
-  const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', maxCycles: MAX_CYCLES, budgetUsd: BUDGET_USD, harnessSlug: SLUG };
+  const report: Record<string, unknown> = { mode: FAKE ? 'fake (zero-LLM)' : 'real', maxCycles: MAX_CYCLES, repeats: REPEATS, budgetUsd: BUDGET_USD, harnessSlug: SLUG };
 
   try {
     // 1. Dedicated gym DB (execution data).
@@ -186,6 +189,7 @@ async function main(): Promise<void> {
       timeoutMs: FAKE ? 240_000 : 1_200_000,
       pollIntervalMs: 3000,
       maxDistillChars: 60_000,
+      repeats: REPEATS, // P-025
       // Human-gated (D-020): the loop records proposals for review; the human promotes via gym:accept.
       recordProposal: makeLoopProposalRecorder(controlSql, { workspaceId: WS, harnessSlug: SLUG }),
     });
