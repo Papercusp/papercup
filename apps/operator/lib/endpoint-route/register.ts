@@ -38,7 +38,7 @@ import { ALL_ROUTES } from './routes';
  *     wildcard in Hono's `:param{regex}` syntax (`/scratch/:path{.+}`);
  *   - the single-segment MCP transport route (`/:transport`).
  */
-function isCatchAll(path: string): boolean {
+export function isCatchAll(path: string): boolean {
   return (
     path.includes('*') ||
     /\{\.[+*]/.test(path) ||

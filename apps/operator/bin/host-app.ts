@@ -16,6 +16,7 @@ import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
 import { registerRouteLiterals, registerRouteCatchalls } from '../lib/endpoint-route/register';
+import { installMethodNotAllowed } from '../lib/endpoint-route/method-not-allowed';
 import { workspaceContextMiddleware } from '../lib/workspace-context-middleware';
 
 const app = new Hono().basePath('/api');
@@ -120,5 +121,11 @@ registerRouteLiterals(app);
 // first refusal before our projected-tool catch-all. Phase 1 literals
 // registered above, before the sub-apps.
 registerRouteCatchalls(app);
+
+// 405 Method Not Allowed for known paths hit with the wrong verb. Runs via
+// Hono's `notFound` hook (only when no route matched), so it can't affect any
+// working route — it just upgrades "known path, wrong method" from 404 → 405.
+// basePath is '/api' (see `new Hono().basePath('/api')` above).
+installMethodNotAllowed(app, '/api');
 
 export { app };
