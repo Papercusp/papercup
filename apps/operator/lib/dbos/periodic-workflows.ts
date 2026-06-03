@@ -28,6 +28,7 @@ import { readRegistry } from '@/lib/workspace-registry';
 import { runHarnessStatusSweepOnce } from '@/lib/harness-status-sweep';
 import { sweepOrphanSnapshots } from '@papercusp/backup';
 import { refreshAll as refreshPushCredentials } from '@/lib/device-push-credentials';
+import { getOrgPg } from '@papercusp/db-org';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
 // enforce retention. A transient PostHog failure already degrades to retry-next,
@@ -149,3 +150,17 @@ const pushCredentialsWorkflow = DBOS.registerWorkflow(pushCredentialsTick, {
   name: 'pushCredentialsRefresh', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(pushCredentialsWorkflow, { name: 'pushCredentialsRefresh', crontab: '0 */30 * * * *' });
+
+// Daily 04:17 UTC: test_runs retention prune (consolidation P-009). Replaces the
+// papercup-test-runs-prune systemd-user timer; calls harness_shared.prune_test_runs(50)
+// (migration 083 — keep 50 rows per file_path/branch). Fail-soft inside the SQL fn.
+async function testRunsPruneTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    const { sql } = getOrgPg();
+    await sql`SELECT harness_shared.prune_test_runs(50)`;
+  }, { name: 'test-runs-prune' });
+}
+const testRunsPruneWorkflow = DBOS.registerWorkflow(testRunsPruneTick, {
+  name: 'testRunsPrune', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(testRunsPruneWorkflow, { name: 'testRunsPrune', crontab: '0 17 4 * * *' });
