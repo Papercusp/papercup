@@ -53,6 +53,7 @@ import {
   type JoinStepStatus,
   type JoinStepState,
 } from './join-steps';
+import { buildCloneUrl, cleanCloneUrl, redactToken } from './clone-url';
 
 // Lazy promisify — import-safe in the operator-vite SPA bundle (node:util is
 // browser-stubbed; a top-level promisify() call crashes at import → blank page).
@@ -239,6 +240,13 @@ export interface CloneRepoResult {
 export async function step2_cloneRepo(opts: {
   githubFullName: string;
   slug: string;
+  /**
+   * Optional gh token for an authenticated clone (B4). Required to clone a
+   * PRIVATE upstream the joiner has read on; harmless for a public one. When
+   * present the clone uses a token-embedded URL, then resets `origin` to the
+   * token-free URL so the secret never persists in `.git/config`.
+   */
+  token?: string;
   execFileFn?: (
     file: string,
     args: string[],
@@ -246,7 +254,7 @@ export async function step2_cloneRepo(opts: {
   ) => Promise<{ stdout: string; stderr: string }>;
   mkdirFn?: (path: string, opts?: { recursive?: boolean }) => Promise<unknown>;
 }): Promise<CloneRepoResult> {
-  const { githubFullName, slug } = opts;
+  const { githubFullName, slug, token } = opts;
   const exF = opts.execFileFn ?? defaultExecFile;
   const mkF = opts.mkdirFn ?? ((p, o) => mkdir(p, o ?? {}));
 
@@ -259,13 +267,28 @@ export async function step2_cloneRepo(opts: {
   }
 
   await mkF(clonesBase, { recursive: true });
-  const cloneUrl = `https://github.com/${githubFullName}`;
+  const cloneUrl = buildCloneUrl(githubFullName, token);
   try {
     await exF('git', ['clone', '--depth', '1', cloneUrl, cloneDir]);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    throw new JoinStepError('clone_repo', 'clone_failed', msg.slice(0, 300));
+    // redactToken: never let an embedded x-access-token reach an error surface.
+    throw new JoinStepError('clone_repo', 'clone_failed', redactToken(msg).slice(0, 300));
   }
+
+  // De-tokenize origin so the gh token never persists in the cloned repo's
+  // .git/config. Non-fatal — the clone already succeeded; a stale tokenized
+  // origin is a hygiene issue, not a correctness one (gh tokens are short-lived).
+  if (token) {
+    try {
+      await exF('git', [
+        '-C', cloneDir, 'remote', 'set-url', 'origin', cleanCloneUrl(githubFullName),
+      ]);
+    } catch {
+      // ignore — clone succeeded; origin de-tokenization is best-effort.
+    }
+  }
+
   return { cloneDir };
 }
 
@@ -477,6 +500,10 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
       const r = await step2_cloneRepo({
         githubFullName: opts.link.github,
         slug: opts.slug,
+        // Authenticated clone (B4): pass the joiner's gh token so a PRIVATE
+        // upstream they have read on can be cloned. step2 de-tokenizes origin
+        // afterward so the token never persists in .git/config.
+        token: opts.token,
         execFileFn: opts.execFileFn,
         mkdirFn: opts.mkdirFn,
       });
