@@ -294,7 +294,37 @@ Each a small verified commit:
   test-level verification already covers the server path). To verify all server
   changes live: Ctrl+R the Tauri shell (or restart the :3070 host) — picks up the
   new resolvers + bus. Safe to do when the user is back.
-- NEXT (resume here): P2 panel components + AdvCreateDock (build, register, DO NOT
-  swap the route mount yet) → then P3 sweeps (each needs its own resolver; mostly
-  operator-vite, lower priority, verify per-item) → optional: migrate usePlan/
-  usePlanLint once verifiable.
+- 2026-06-03 ~03:20 — **P2 CODE-COMPLETE + committed** (gated).
+  - close-guard wired into the dock bridge close path (commit `f2a3e3d21`); 184
+    dock tests pass.
+  - `app/adv/create/`: `use-create-data.ts` (shared scope + plan-list maps +
+    inbox derivation, lifted from PlansClient) + 5 panels (Inbox/Preview/
+    PlansList/Sessions/PlanEditor) + `AdvCreateDock` (commit `<this>`).
+    Typecheck clean for all adv/create/. Panels reuse PlansClient's proven
+    sub-components verbatim via the shared hooks.
+  - **Route NOT swapped** — operator-vite still mounts `<PlansClient/>`. The swap
+    (one line in `apps/operator-vite/src/routes/adv/index.tsx`: `<PlansClient/>`
+    → `<AdvCreateDock/>`) + live dock e2e are the remaining P2 step, gated on the
+    desktop.
+
+- 2026-06-03 ~03:25 — **⚠ ACTION NEEDED FROM USER: restart the dev-api host.**
+  - The operator-vite watch-build rebuilt `dist` (03:18) AFTER the P1 client
+    commit (03:01), so the live webview (`:3070`, built bundle `index-DepeCP_z.js`)
+    is running my NEW client (useSyncQuery `plans.*`). The `:3070` host
+    (`papercup-dev-api.service`, no hot-reload) is STALE (no `plans.*` resolvers).
+    → the live Create tab's plan lists are EMPTY/degraded until the host restarts.
+  - This is the normal "server has no hot-reload" dev state; the fix is the
+    routine restart that activates my server changes anyway:
+        `systemctl --user restart papercup-dev-api.service`
+    (or restart the desktop dev stack). After it: new client + new server =
+    consistent; Create tab works via PlansClient on the new resolvers.
+  - I attempted the restart; it was correctly auto-denied (unattended shared-service
+    restart needs explicit authorization). I did NOT work around it.
+
+- **STOPPING the autonomous loop here (responsible blocked point).** P3 (sweeps)
+  is DEFERRED: every P3 item is a client data-migration that the watch-build would
+  auto-deploy live while the server stays stale (same skew as P1) — and I can't
+  restart to verify it. P3 + the P2 route-swap + usePlan/usePlanLint migration
+  should be done once the user is back + can restart/verify. Resume point for a
+  future session: P3 sweeps (operator-vite polling, design panes, useHarnessData,
+  one-shot fetches) + the one-line route swap, each verified live.
