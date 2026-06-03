@@ -59,7 +59,7 @@ const GIT_DOCS = [
   'harness_design_artifacts', 'harness_text_artifacts', 'harness_chunk_plans',
   'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
   'harness_tests', 'llm_test_fixtures', 'llm_test_claims', 'llm_test_findings',
-  'harness_phases', 'harness_promotions', 'harness_lanes', 'harness_checkpoints',
+  'harness_phases', 'harness_promotions', 'harness_checkpoints',
   'harness_snapshots', 'harness_experts',
   'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
   'project_spec_revisions',
@@ -73,6 +73,12 @@ const GIT_DOCS = [
  *     drain loop (a file rewritten every ~20s with only a timestamp diff). It's
  *     recomputed locally from git-tracked files, so PG is a derived cache, not a
  *     document — it falls to DEFAULT (slug-shared / sync:none).
+ *   • `harness_lanes` — the LIVE agent-lane occupancy tracker (`pid`, `started_at`
+ *     of the OS process currently in each phase/role lane). PIDs are machine-local
+ *     ephemeral runtime ids — meaningless to git-sync across machines. Like
+ *     branch_actions it churned (re-upserted per heartbeat) and, for ephemeral
+ *     gym-smoke test harnesses with no drain loop, accumulated 600+ stuck-unexported
+ *     outbox rows. It's operational runtime state, not a document → DEFAULT.
  *   • `messages` / `directives` / `briefings` / `directive_summaries` — the
  *     RETIRED papercup-org demo bus (003-papercup-shared.sql, D-008 family). They
  *     live in the `papercup_shared` schema with NO workspace_id/harness_slug/origin,
@@ -82,9 +88,13 @@ const GIT_DOCS = [
  *     from_slug/to_slug), which was likewise never git-exported (per-harness schema,
  *     never attached) and gets an explicit classification when P-004 consolidates it.
  *     Net: removing them makes the registry match reality (they were never synced).
- * Rule: fs-watcher *mirrors* (projections of already-git-tracked files) and the
- * retired org-demo schema must never be sync:'git'. Producer-authored
- * harness_shared document tables are the git set.
+ * Rule: NEVER sync:'git' — (a) fs-watcher *mirrors* (projections of already-git-
+ * tracked files), (b) operational/runtime state (volatile columns: pid, started_at,
+ * last_check_ms, alive, port — anything machine-local or heartbeat-bumped), and
+ * (c) the retired org-demo schema. Only producer-authored harness_shared DOCUMENT
+ * tables (decisions, summaries, notes, tests, plans, …) are the git set. A
+ * volatile column makes a row "change" every write, so the no-op capture guard
+ * can't save it — the table must simply not be git-synced.
  */
 
 /**

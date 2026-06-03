@@ -90,16 +90,19 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
     }
   });
 
-  it('excludes fs-watcher-derived mirrors from git-export: harness_branch_actions (volatile last_check_ms → churn)', () => {
-    // harness_branch_actions is a local fs-watcher projection (Mirror 7k:
-    // `git log` enrichment) whose `last_check_ms` heartbeat is re-upserted on
-    // every poll regardless of content. Classifying it sync:'git' produced a
-    // perpetual export loop (P-003b live-boot). It must NOT be git-synced — the
-    // source is already in git and PG is a local recompute; it falls to DEFAULT.
-    const s = resolveTableSpec('harness_branch_actions');
-    expect(s.sync).not.toBe('git');
-    expect(s).toEqual(DEFAULT_SPEC);
-    expect(GIT_TABLES).not.toContain('harness_branch_actions');
+  it('excludes operational / fs-mirror tables from git-export (volatile columns → churn)', () => {
+    // Two P-003b live-boot lessons:
+    //  - harness_branch_actions: fs-watcher mirror (Mirror 7k git-log enrichment)
+    //    with a `last_check_ms` heartbeat re-upserted every poll → perpetual loop.
+    //  - harness_lanes: the live agent-lane occupancy tracker (pid/started_at —
+    //    machine-local runtime) → churned + accumulated 600+ stuck rows for
+    //    ephemeral gym-smoke harnesses with no drain loop.
+    // A volatile column makes the row "change" every write, so the no-op capture
+    // guard can't help; operational tables must simply not be sync:'git'.
+    for (const t of ['harness_branch_actions', 'harness_lanes']) {
+      expect(resolveTableSpec(t)).toEqual(DEFAULT_SPEC);
+      expect(GIT_TABLES).not.toContain(t);
+    }
   });
 
   it('NEEDS_REVIEW is empty at P-002 close', () => {
