@@ -1,27 +1,44 @@
 /**
  * Admin route surface — auth/loopback gating + shape contracts.
  *
- * The /api/admin/* family is loopback-only OR requires the per-install
- * superuser bearer token. These specs verify:
+ * The /api/admin/* family is gated to {trust: verified|trusted} (the D3
+ * auth-posture pass — CSRF/DNS-rebinding defense): the desktop chrome's
+ * same-origin verified session OR the per-install **superuser bearer token**
+ * is required. A raw loopback `request` (no session, no bearer) carries an
+ * `unverified-loopback` principal → 403. So the behavior specs send the SU
+ * bearer (read from `~/.papercusp/superuser-token`); they SKIP when no token
+ * is present (e.g. a clean CI box that hasn't provisioned one) rather than
+ * fail. These specs verify:
  *
- *  - Routes are reachable from loopback (200 / shape OK)
+ *  - Authed routes return their shape (200) with the SU bearer
  *  - Wrong HTTP verb returns 405
- *  - Bearer-required routes return 401 without bearer
+ *  - Bearer-required routes reject (401/403) without a bearer
  *  - Input validation rejects bad shapes
  *
- * Not covered (would mutate state):
- *  - Actually running a build command
- *  - Actually pruning executed actions
- *  - Actually rotating tokens
- *  - Actually executing a destructive admin action
+ * Not covered (would mutate state): running a build command, pruning executed
+ * actions, rotating tokens, executing a destructive admin action.
  */
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 
+/** Per-install superuser bearer — the documented auth for /api/admin/*. */
+const SU_TOKEN = (() => {
+  try {
+    return readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+})();
+const suHeaders: Record<string, string> = SU_TOKEN ? { Authorization: `Bearer ${SU_TOKEN}` } : {};
+
 test.describe('admin route surface', () => {
   test('GET /api/admin/tables returns table list', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/admin/tables`);
+    test.skip(!SU_TOKEN, 'no superuser token (~/.papercusp/superuser-token) — cannot auth /api/admin/*');
+    const res = await request.get(`${baseURL}/api/admin/tables`, { headers: suHeaders });
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(Array.isArray(body.tables)).toBe(true);
@@ -33,7 +50,8 @@ test.describe('admin route surface', () => {
   });
 
   test('GET /api/admin/commands returns command list with build/run sections', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/admin/commands`);
+    test.skip(!SU_TOKEN, 'no superuser token — cannot auth /api/admin/*');
+    const res = await request.get(`${baseURL}/api/admin/commands`, { headers: suHeaders });
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(Array.isArray(body.commands)).toBe(true);
@@ -46,12 +64,14 @@ test.describe('admin route surface', () => {
   });
 
   test('GET /api/admin/run without cmd param returns 400', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/admin/run`);
+    test.skip(!SU_TOKEN, 'no superuser token — cannot auth /api/admin/*');
+    const res = await request.get(`${baseURL}/api/admin/run`, { headers: suHeaders });
     expect(res.status()).toBe(400);
   });
 
   test('GET /api/admin/run with unknown cmd returns error', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/admin/run?cmd=totally-fake-cmd-id`);
+    test.skip(!SU_TOKEN, 'no superuser token — cannot auth /api/admin/*');
+    const res = await request.get(`${baseURL}/api/admin/run?cmd=totally-fake-cmd-id`, { headers: suHeaders });
     // 400 (unknown cmd) or 404 — either proves the route validates
     expect([400, 404]).toContain(res.status());
   });
@@ -70,11 +90,11 @@ test.describe('admin route surface', () => {
     expect(res.status()).toBe(405);
   });
 
-  test('GET /api/admin/spawn-signing/failures requires bearer', async ({ request }) => {
+  test('GET /api/admin/spawn-signing/failures rejects without a bearer', async ({ request }) => {
     const res = await request.get(`${baseURL}/api/admin/spawn-signing/failures`);
-    expect(res.status()).toBe(401);
-    const body = await res.json();
-    expect(body.error).toMatch(/invalid_bearer|unauthorized/);
+    // No bearer + a loopback principal that lacks the required trust →
+    // require-principal returns 403 (wrong-trust); a missing principal → 401.
+    expect([401, 403]).toContain(res.status());
   });
 
   test('POST /api/admin/spawn-signing/rotate requires bearer', async ({ request }) => {
@@ -107,14 +127,15 @@ test.describe('admin route surface', () => {
   });
 
   test('GET /api/admin/tables/[exportName] returns table data for a known table', async ({ request }) => {
+    test.skip(!SU_TOKEN, 'no superuser token — cannot auth /api/admin/*');
     // First fetch the list to get a known exportName.
-    const list = await request.get(`${baseURL}/api/admin/tables`);
+    const list = await request.get(`${baseURL}/api/admin/tables`, { headers: suHeaders });
     const tables = (await list.json()).tables ?? [];
     if (tables.length === 0) {
       test.skip(true, 'No admin tables present');
     }
     const first = tables[0].exportName;
-    const res = await request.get(`${baseURL}/api/admin/tables/${first}`);
+    const res = await request.get(`${baseURL}/api/admin/tables/${first}`, { headers: suHeaders });
     expect([200, 401]).toContain(res.status());
   });
 });
