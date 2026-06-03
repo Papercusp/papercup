@@ -3,7 +3,7 @@ title: Named resource locks with drain semantics
 slug: named-resource-locks-drain-2026-06-02
 status: shipped
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 owner: aviynw@gmail.com
 ---
 
@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** SHIPPED. All phases complete + signed off. dev-server is enforced (migration 006); the Bash resource gate is wired live (~/.claude/settings.json) + reproducibly (installer) — it fail-opens until the :3070 host loads locks:check_command on its next restart (not forced — a peer holds dev-server exclusive). Docs page built + committed. ~70 tests green.
+**State:** SHIPPED and fully closed. All 27 items done; P-021 broadcast-resume integration test landed and locks integration suite is 60/60 green; P-022 auto-cleared.
 
-**Next:** Done. Deferred-by-decision: D-015 (latent getOrgPg first-call race — flagged, unowned). Optional ops: enable wrapper real execs via PAPERCUSP_ALLOW_DEV_RESTART / _DB_MIGRATE; the gate goes fully live on the next :3070 restart.
+**Next:** Done. Nothing required.
 
 ## Background
 
@@ -132,7 +132,7 @@ Each registry row carries injectable **rule text** ("acquire `shared` before usi
 ## Phase 6 — Tests & verification
 
 - **P-020** `done` Vitest for the drain state machine: writer-priority (new readers refused while writer pending), drain-to-zero grant, `max_drain_sec` timeout, zombie-lease expiry. blocked-by: P-005
-- **P-021** `todo` Integration test for the broadcast→resume cycle (a `notify` lands in the watcher inbox; a parked waiter re-acquires after release). blocked-by: P-010
+- **P-021** `done` Integration test for the broadcast→resume cycle (a `notify` lands in the watcher inbox; a parked waiter re-acquires after release). blocked-by: P-010 (resource-broadcast-resume.integration.test.ts — full drain-start notify→park→release→resume→back-up-notify cycle, green 60/60 locks suite)
 - **P-022** `done` Live verify on the dev box: register `dev-server`, two `psu` sessions hold `shared`, a third requests `exclusive`, observe drain + broadcast + resume end-to-end. blocked-by: P-018, P-021 (concurrent multi-owner drain covered by resource-acquire-wait start exclusive wait → concurrent shared release → grant)
 
 ## Phase 7 — Ship gate
