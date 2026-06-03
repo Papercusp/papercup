@@ -38,15 +38,21 @@ export function resolveSpawnBackendModel(role: string): { backend: TurnBackend; 
   return { backend, model: m?.[1] ?? '' };
 }
 
+/** Reasoning-effort levels the `claude --effort` flag accepts. */
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
 /**
- * Apply a PER-ROLE model override to the base agent command. `AGENT_MODELS` is a
- * JSON map `{ <role>: <modelId> }` (mirrored from `AgentConfig.models` by
- * `applyToProcessEnv`). When the spawned role has an entry, we strip any global
- * `--model` from the base command and append the role's model — so the worker
- * (the role that writes code) can run a stronger model while the fast reasoning
- * roles (director/debugger/validator/scoper) stay on the cheap `AGENT_CMD`
- * default. A role with no entry, or an unparseable/empty `AGENT_MODELS`, keeps
- * the base command unchanged. Exported for unit testing.
+ * Apply a PER-ROLE model (and optional reasoning effort) override to the base agent
+ * command. `AGENT_MODELS` is a JSON map `{ <role>: <spec> }` (mirrored from
+ * `AgentConfig.models` by `applyToProcessEnv`). Each `<spec>` is either a bare
+ * `<modelId>` or `<modelId>:<effort>` where effort ∈ {low,medium,high,xhigh,max}
+ * — the `model:effort` form mirrors the repo's existing convention (e.g.
+ * `gpt-5.5:xhigh`) and maps to the CLI's `--model` + `--effort` flags. When the
+ * spawned role has an entry, we strip any global `--model`/`--effort` and append
+ * the role's — so e.g. the worker (or merge-resolver) runs a stronger model at
+ * higher effort while the fast reasoning roles stay on the cheap `AGENT_CMD`
+ * default. A role with no entry, or an unparseable/empty `AGENT_MODELS`, keeps the
+ * base command unchanged. Exported for unit testing.
  */
 export function applyRoleModel(baseCmd: string, role: string): string {
   const raw = process.env.AGENT_MODELS;
@@ -57,11 +63,26 @@ export function applyRoleModel(baseCmd: string, role: string): string {
   } catch {
     return baseCmd;
   }
-  const model = models[role];
-  if (typeof model !== 'string' || !model.trim()) return baseCmd;
-  // Strip any existing `--model <x>` / `--model=<x>`, then append the role model.
-  const stripped = baseCmd.replace(/\s--model(?:=|\s+)\S+/g, '').trimEnd();
-  return `${stripped} --model ${model.trim()}`;
+  const spec = models[role];
+  if (typeof spec !== 'string' || !spec.trim()) return baseCmd;
+  // Split a trailing `:<effort>` ONLY when the suffix is a known effort level, so a
+  // colon-bearing model id (unusual for claude, but possible elsewhere) stays intact.
+  const trimmed = spec.trim();
+  const lastColon = trimmed.lastIndexOf(':');
+  let model = trimmed;
+  let effort: string | undefined;
+  if (lastColon > 0 && EFFORT_LEVELS.has(trimmed.slice(lastColon + 1))) {
+    model = trimmed.slice(0, lastColon);
+    effort = trimmed.slice(lastColon + 1);
+  }
+  // Strip any existing `--model`/`--effort`, then append the role's.
+  let cmd = baseCmd
+    .replace(/\s--model(?:=|\s+)\S+/g, '')
+    .replace(/\s--effort(?:=|\s+)\S+/g, '')
+    .trimEnd();
+  cmd = `${cmd} --model ${model}`;
+  if (effort) cmd = `${cmd} --effort ${effort}`;
+  return cmd;
 }
 
 export interface InvokeOnceSpec {

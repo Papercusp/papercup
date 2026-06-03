@@ -123,6 +123,21 @@ describe('applyRoleModel — per-role model override', () => {
     expect(applyRoleModel('claude -p --model haiku', 'director')).toBe('claude -p --model haiku');
   });
 
+  it('parses a <model>:<effort> spec → appends --model AND --effort', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ 'merge-resolver': 'claude-opus-4-8:xhigh' }));
+    expect(applyRoleModel('claude -p --model haiku', 'merge-resolver')).toBe(
+      'claude -p --model claude-opus-4-8 --effort xhigh',
+    );
+  });
+
+  it('strips a pre-existing --effort and replaces it; keeps a colon-bearing model id when the suffix is not an effort', () => {
+    vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus:max', reviewer: 'vendor/model:7b' }));
+    // pre-existing --effort low is stripped, the role's max wins
+    expect(applyRoleModel('claude -p --model haiku --effort low', 'worker')).toBe('claude -p --model opus --effort max');
+    // ':7b' is not a known effort → the whole string stays as the model id (no --effort)
+    expect(applyRoleModel('claude -p --model haiku', 'reviewer')).toBe('claude -p --model vendor/model:7b');
+  });
+
   it('appends --model when the base command has none; handles --model=<x> form', () => {
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'sonnet' }));
     expect(applyRoleModel('claude -p', 'worker')).toBe('claude -p --model sonnet');
