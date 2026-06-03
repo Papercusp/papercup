@@ -11,7 +11,7 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design **locked + peer-reviewed + adversarially code-audited + cross-plan-audited**; **all five open decisions ratified 2026-06-03**. Both plans carry **P-item build lists**. Execution model A (durable-workflow); the **gym is a blueprint** (D-022); all harness artifacts move to **`.papercusp/`** (D-020). The full DBOS-only cutover is **complete + shipped** (`dbos-durable-flows-adoption`), so the A-model substrate is settled. Companion: `harness-blueprint-distribution-2026-06-03`. Not started in code.
+**State:** Design **locked + peer-reviewed + adversarially code-audited + cross-plan-audited**; **all five open decisions ratified 2026-06-03**. Both plans carry **P-item build lists**. Execution model A (durable-workflow); the **gym is a blueprint** (D-022); all harness artifacts move to **`.papercusp/`** (D-020). The full DBOS-only cutover is **complete + shipped** (`dbos-durable-flows-adoption`), so the A-model substrate is settled. Companion: `harness-blueprint-distribution-2026-06-03`. **External re-audit 2026-06-03 (claude): corrected stale code citations (classifyDecision = 20 cases not 22; the Phase-C promote→import seam doesn't exist as described; `runAb`/`judgeGymRun` symbol names; migration-110 conflation; `pending_events` precision; +the `ab-runner-real.ts` gym seam) and flagged 2 OPEN cross-plan questions for owner decision — see D-013 + D-006.** Not started in code.
 
 **Next:** Build the **vertical slice (O-3/D-025)** — Phase A engine → `coding`-blueprint lift (the gym-A/B anchor) → research slice. Coordinate with the DBOS-orchestrator owner before editing `featurePipelineImpl` (P-022/D-017) — ordinary coordination now that the cutover is done, not a race.
 
