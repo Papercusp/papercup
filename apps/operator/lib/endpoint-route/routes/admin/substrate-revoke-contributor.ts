@@ -1,17 +1,19 @@
 /**
  * POST /api/admin/substrate/revoke-contributor
  *
- * Plan: substrate-revocation-v2 Component B / D-005.
+ * Plan: non-collaborator-join-fork-pr-2026-06-02 D-001 (supersedes the old
+ * substrate-revocation-v2 branch-delete design).
  *
- * OWNER action: revoke a bad-actor contributor by deleting their
- * `user/<github_user_id>` branch on GitHub (their Channel-2 binding
- * artifact). Once deleted, Component A's re-verify loop drops them
- * from live federation on its next cycle.
+ * OWNER action: revoke a bad-actor contributor by adding their device pubkeys
+ * to the harness revocation set (the owner's own contributor-row
+ * `revoked_pubkeys`, which federates and is honored by every peer's
+ * `read-admission` union). The contributor is dropped from live federation on
+ * the next admission re-verify. (The old branch-delete is a no-op in the
+ * write-free model — admission is gated on the attestation gist, not a branch.)
  *
- * DESTRUCTIVE: this deletes a GitHub branch. Only a repo admin may
- * invoke this endpoint (enforced via the `repos.get` admin-check in
- * the core — and the `auth: { trust: ['verified', 'trusted'] }` gate
- * at the operator level).
+ * Only a repo admin may invoke this endpoint (enforced via the `repos.get`
+ * admin-check in the core — and the `auth: { trust: ['verified', 'trusted'] }`
+ * gate at the operator level).
  *
  * Auth: `{ trust: ['verified', 'trusted'] }` — same gate as the sibling
  * admin substrate endpoints. Admin-only.
@@ -20,11 +22,13 @@
  * so it's unit-testable without a live GitHub / substrate.
  *
  * Status-code mapping:
- *   ok:true              → 200
+ *   ok:true              → 200 (revokedPubkeys + live)
  *   not_admin            → 403 (caller's gh token is not a repo admin)
  *   no_context           → 404 (harness not shared / gh not authed)
+ *   no_target            → 404 (target has no device pubkeys — nothing to revoke)
  *   bad input            → 400 (missing/invalid fields, non-int githubUserId)
  *   github_error         → 502 (upstream GitHub API failure)
+ *   revoke_failed        → 500 (substrate publish of the revocation failed)
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
@@ -105,6 +109,15 @@ export async function handleRevokeContributor(
         },
         { status: 404 },
       );
+    case 'no_target':
+      return Response.json(
+        {
+          error:
+            'The target contributor has no known device pubkeys (no contributor row, or never federated) — nothing to revoke',
+          code: result.code,
+        },
+        { status: 404 },
+      );
     case 'github_error':
       return Response.json(
         {
@@ -113,6 +126,15 @@ export async function handleRevokeContributor(
           detail: result.detail,
         },
         { status: 502 },
+      );
+    case 'revoke_failed':
+      return Response.json(
+        {
+          error: 'Failed to publish the revocation to the substrate',
+          code: result.code,
+          detail: result.detail,
+        },
+        { status: 500 },
       );
     default: {
       // TypeScript exhaustiveness guard.

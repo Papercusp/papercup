@@ -25,26 +25,27 @@ function makeRevokeFn(
 }
 
 describe('handleRevokeContributor', () => {
-  it('200 on success (branch deleted)', async () => {
+  it('200 on success (pubkeys revoked)', async () => {
     const deps: RevokeContributorEndpointDeps = {
-      revoke: makeRevokeFn({ ok: true, deletedBranch: 'user/12345' }),
+      revoke: makeRevokeFn({ ok: true, revokedPubkeys: ['ed25519:k1', 'ed25519:k2'], live: true }),
     };
     const res = await handleRevokeContributor(VALID_INPUT, deps);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(body.deletedBranch).toBe('user/12345');
+    expect(body.revokedPubkeys).toEqual(['ed25519:k1', 'ed25519:k2']);
+    expect(body.live).toBe(true);
   });
 
-  it('200 on idempotent success (alreadyGone)', async () => {
+  it('200 on success when the live handle is not booted (live:false)', async () => {
     const deps: RevokeContributorEndpointDeps = {
-      revoke: makeRevokeFn({ ok: true, deletedBranch: 'user/12345', alreadyGone: true }),
+      revoke: makeRevokeFn({ ok: true, revokedPubkeys: ['ed25519:k1'], live: false }),
     };
     const res = await handleRevokeContributor(VALID_INPUT, deps);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(body.alreadyGone).toBe(true);
+    expect(body.live).toBe(false);
   });
 
   it('403 on not_admin', async () => {
@@ -83,8 +84,29 @@ describe('handleRevokeContributor', () => {
     expect(body.detail).toBe('Service Unavailable');
   });
 
+  it('404 on no_target (contributor has no device pubkeys)', async () => {
+    const deps: RevokeContributorEndpointDeps = {
+      revoke: makeRevokeFn({ ok: false, code: 'no_target' }),
+    };
+    const res = await handleRevokeContributor(VALID_INPUT, deps);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('no_target');
+  });
+
+  it('500 on revoke_failed (substrate publish failed)', async () => {
+    const deps: RevokeContributorEndpointDeps = {
+      revoke: makeRevokeFn({ ok: false, code: 'revoke_failed', detail: 'no booted handle' }),
+    };
+    const res = await handleRevokeContributor(VALID_INPUT, deps);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.code).toBe('revoke_failed');
+    expect(body.detail).toBe('no booted handle');
+  });
+
   it('passes workspaceId + harnessSlug + githubUserId through to the revoke seam', async () => {
-    const revoke = makeRevokeFn({ ok: true, deletedBranch: 'user/99' });
+    const revoke = makeRevokeFn({ ok: true, revokedPubkeys: ['ed25519:k1'], live: true });
     const deps: RevokeContributorEndpointDeps = { revoke };
     await handleRevokeContributor(
       { workspaceId: 'ws-test', harnessSlug: 'slug-test', githubUserId: 99 },
