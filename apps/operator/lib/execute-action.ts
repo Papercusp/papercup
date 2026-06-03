@@ -301,7 +301,7 @@ async function saveAction(opts: {
   await sql.unsafe(
     `INSERT INTO ${schema}.executed_actions (action_id, op, caller_slug, target_slug, reason, request, response)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
-     ON CONFLICT (action_id) DO NOTHING`,
+     ON CONFLICT (harness_slug, action_id) DO NOTHING`,
     [
       opts.actionId,
       opts.op,
