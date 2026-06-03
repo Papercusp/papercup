@@ -46,9 +46,9 @@ Root cause confirmed: native `:5432` (this dev box's substrate) has **no migrati
 
 Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept deletions without importer edits, a crash-looping host).
 
-- **P-008** `blocked` A periodic `test:affected` + `tsc` check that, on RED, broadcasts a `main RED since <commit> (<area>)` coord message so the breaker is told fast. (no clean green-signal on this box D-009 — full tsc always-red 553 pre-existing, test:affected vs stale origin/main)
+- **P-008** `dropped` A periodic `test:affected` + `tsc` check that, on RED, broadcasts a `main RED since <commit> (<area>)` coord message so the breaker is told fast. (no clean green-signal on this box D-009 — full tsc always-red 553 pre-existing, test:affected vs stale origin/main) (Dropped per user-delegated call 2026-06-02, D-009: no trustworthy green signal on this box 553 baseline tsc errors + stale origin/main + commit-whole-tree/--no-verify = red main is semi-normal, so a breaker would be noise. The useful half of main-health services up shipped via P-016–P-019. Drop beats a flaky gate pre-alpha.)
 - **P-009** `done` Decide where it runs (`/loop` / cron / the operator background loop / a git hook) + cadence. importance: normal (RESOLVED D-006: operator process — code-health via fs-watch on .git ref event, not poll, service-health via a voice-engine-health-style probe sweep; output via a health-bus @papercusp/sse + coord message)
-- **P-010** `todo` (optional) An OPT-IN pre-commit affected-typecheck a breaker can enable — explicitly NOT mandatory (the repo deliberately allows `--no-verify` + the commit-packages-whole-tree model). blocked-by: P-008
+- **P-010** `dropped` (optional) An OPT-IN pre-commit affected-typecheck a breaker can enable — explicitly NOT mandatory (the repo deliberately allows `--no-verify` + the commit-packages-whole-tree model). blocked-by: P-008 (Dropped with P-008 its parent. Already marked optional/non-mandatory; the repo deliberately allows --no-verify. An agent who wants a pre-commit typecheck can run tsc directly; no breaker needed.)
 
 ## Phase 4 — Host freshness (complements the locks)
 
@@ -56,7 +56,7 @@ Recurring: agents leave `main` tsc-red / gate-broken (partial commits, swept del
 
 ## Phase 5 — Harness-spawn empty-config-stub bug
 
-- **P-012** `needs-human` Investigate the reported bug: a FULL agent spawn (MCP + subagents + persona) writes EMPTY config stubs (`package.json`, `bunfig.toml`, `.env.*`). Reproduce, root-cause, fix; may spin out into its own plan. importance: high
+- **P-012** `needs-human` Investigate the reported bug: a FULL agent spawn (MCP + subagents + persona) writes EMPTY config stubs (`package.json`, `bunfig.toml`, `.env.*`). Reproduce, root-cause, fix; may spin out into its own plan. importance: high (ROOT-CAUSED live strace: NOT a Papercusp bug — claude-code's plugin-marketplace git auto-update checks its plugin tree out into the worker cwd O_CREAT|O_EXCL ⇒ only-missing files on a mid-spawn refresh. Fix our side: DISABLE_AUTOUPDATER=1 + isolated CLAUDE_CONFIG_DIR in the claude spawn env orchestrator invoke.ts. Not applied — load-bearing submodule path; needs go-ahead.)
 
 ## Phase 6 — Tests & docs
 
