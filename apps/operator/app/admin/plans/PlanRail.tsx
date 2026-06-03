@@ -13,7 +13,7 @@
  */
 
 import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
-import { forwardRef, useImperativeHandle, useMemo, useCallback, useState } from 'react';
+import { forwardRef, useImperativeHandle, useMemo, useCallback, useState, useRef } from 'react';
 import { Play, Pause, Clock } from 'lucide-react';
 import {
   bucketOf,
@@ -194,68 +194,70 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   // loading→loaded transition tripped exactly that and crashed the whole
   // /admin/plans page to the error boundary.
   //
-  // POINTER events, NOT native HTML5 drag-and-drop. The desktop app's
-  // WebKitGTK webview (Tauri's Linux runtime, and our only ship/test surface)
-  // does not fire `dragstart`/`dragover`/`drop` for `draggable` elements
-  // (tauri-apps/tauri#6695) — so an HTML5-DnD reorder can never even initiate
-  // there, regardless of `dragDropEnabled`. Pointer events behave identically
-  // across WebKitGTK / Chromium / Firefox: capture the pointer on the grab
-  // handle, hit-test the row under the cursor with elementFromPoint, and
-  // reorder the running bucket live.
+  // Native HTML5 drag-and-drop. It DOES work in the desktop's WebKitGTK
+  // webview — the harness dock (dockview) and PlanDetail's kanban both use it
+  // there — as long as two conditions the original reorder missed are met:
+  //   1. Tauri's OS-level drag-drop handler must not swallow the in-page drag.
+  //      It's at the default here and that's fine; dockview + PlanDetail prove
+  //      native DnD fires in this shell unmodified.
+  //   2. THE ACTUAL BUG: `dragstart` MUST call `dataTransfer.setData(...)`, or
+  //      WebKit/Gecko silently abort the drag and never fire `dragover`/`drop`.
+  //      The original handler set only React state and never touched
+  //      `dataTransfer`, so the drag never initiated in the desktop — which got
+  //      misread as "WebKitGTK doesn't support HTML5 DnD". It does.
+  // (tauri-apps/tauri#6695 is about Tauri's *file*-drop handler; the setData
+  // requirement is HTML-spec WebKit/Gecko behaviour, not a Tauri quirk.)
+  //
+  // These hooks MUST be declared BEFORE the early-return guards below: an early
+  // return that skips a useCallback changes the hook count between renders
+  // (React #310) — the loading→loaded transition tripped exactly that and
+  // crashed the whole /admin/plans page to the error boundary.
   const runningPlans = sorted.filter((p) => bucketOf(p) === 'running');
   const hasRunning = runningPlans.length > 1; // single-plan: no reorder needed
+  // Distinguishes a committed drop from an aborted drag (Esc / dropped outside
+  // a row): `drop` fires before `dragend`, so by the time dragEnd runs this is
+  // already true on success and false on abort.
+  const droppedRef = useRef(false);
 
-  const handleReorderStart = useCallback((e: React.PointerEvent, slug: string) => {
-    if (e.button !== 0) return; // primary button / touch only
-    e.preventDefault();
-    e.stopPropagation();
-    // Capture so pointermove/up keep arriving at the handle once the cursor
-    // leaves it. A real pointer never throws here; guard only so a freak
-    // failure can't leave us mid-drag with an uncaught error.
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* no active pointer to capture — ignore */
-    }
+  const handleDragStart = useCallback((e: React.DragEvent, slug: string) => {
+    // setData is load-bearing — WITHOUT it WebKitGTK aborts the drag before any
+    // dragover/drop fires (this is the bug the original reorder hit).
+    e.dataTransfer.setData('text/plain', slug);
+    e.dataTransfer.effectAllowed = 'move';
+    droppedRef.current = false;
     setDragSlug(slug);
     setDragOverSlug(slug);
     setRunningOrder(runningPlans.map((p) => p.slug));
   }, [runningPlans]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleReorderMove = useCallback((e: React.PointerEvent) => {
+  const handleDragOver = useCallback((e: React.DragEvent, slug: string) => {
     if (!dragSlug) return;
-    e.preventDefault();
-    // Pointer capture redirects EVENTS to the handle but not hit-testing, so
-    // elementFromPoint still returns the row actually under the cursor. We
-    // move the dragged slug to the target's index, which lands it back under
-    // the cursor — so repeated moves over the same spot are stable no-ops.
-    const hit = document.elementFromPoint(e.clientX, e.clientY);
-    const overSlug = hit?.closest<HTMLElement>('[data-plan-slug]')?.dataset.planSlug;
-    if (!overSlug || overSlug === dragSlug) return;
+    e.preventDefault(); // REQUIRED — without it the row is not a valid drop target
+    e.dataTransfer.dropEffect = 'move';
+    if (dragSlug === slug) return;
     setRunningOrder((prev) => {
       const cur = prev ?? runningPlans.map((p) => p.slug);
       const from = cur.indexOf(dragSlug);
-      const to = cur.indexOf(overSlug);
+      const to = cur.indexOf(slug);
       if (from < 0 || to < 0 || from === to) return cur;
       const next = [...cur];
       next.splice(from, 1);
       next.splice(to, 0, dragSlug);
       return next;
     });
-    setDragOverSlug(overSlug);
+    setDragOverSlug(slug);
   }, [dragSlug, runningPlans]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleReorderEnd = useCallback(async (e: React.PointerEvent) => {
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* capture already released — fine */
-    }
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    droppedRef.current = true;
     const order = runningOrder;
     setDragSlug(null);
     setDragOverSlug(null);
     if (!order) return;
     // Persist the new order as integer priorities (1-based, lower = first).
+    // Keep `runningOrder` until the re-fetch lands so the list doesn't snap
+    // back to the stale server order between drop and refresh.
     await Promise.all(
       order.map((slug, i) => setPlanPriority(slug, i + 1).catch(() => {})),
     );
@@ -263,9 +265,11 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
     setRunningOrder(null);
   }, [runningOrder, onStartToggle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleReorderCancel = useCallback(() => {
-    // Aborted (lost capture / cancelled): discard the local reorder and fall
-    // back to the server order — nothing is persisted.
+  const handleDragEnd = useCallback(() => {
+    // Always fires after a drag. On a committed drop, handleDrop owns the
+    // cleanup; only on an abort (no drop landed) do we discard the local
+    // reorder and fall back to the server order.
+    if (droppedRef.current) return;
     setDragSlug(null);
     setDragOverSlug(null);
     setRunningOrder(null);
@@ -313,6 +317,11 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
       <ul
         className={`pc-plan-rail__rows${dragSlug ? ' is-reordering' : ''}`}
         role="list"
+        // The whole list is a drop zone so a drop landing in an inter-row gap
+        // still commits (preventDefault marks it droppable); per-row reorder
+        // targeting happens in each row's own onDragOver.
+        onDragOver={hasRunning ? (e) => e.preventDefault() : undefined}
+        onDrop={hasRunning ? handleDrop : undefined}
       >
         {sorted.map((p) => {
           const isRunning = bucketOf(p) === 'running';
@@ -328,10 +337,9 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
               showDragHandle={canReorder}
               isDragging={dragSlug === p.slug}
               isDragOver={dragOverSlug === p.slug}
-              onHandlePointerDown={canReorder ? (e) => handleReorderStart(e, p.slug) : undefined}
-              onHandlePointerMove={canReorder ? handleReorderMove : undefined}
-              onHandlePointerUp={canReorder ? handleReorderEnd : undefined}
-              onHandlePointerCancel={canReorder ? handleReorderCancel : undefined}
+              onHandleDragStart={canReorder ? (e) => handleDragStart(e, p.slug) : undefined}
+              onRowDragOver={canReorder ? (e) => handleDragOver(e, p.slug) : undefined}
+              onHandleDragEnd={canReorder ? handleDragEnd : undefined}
             />
           );
         })}
@@ -351,10 +359,9 @@ function PlanRow({
   showDragHandle = false,
   isDragging = false,
   isDragOver = false,
-  onHandlePointerDown,
-  onHandlePointerMove,
-  onHandlePointerUp,
-  onHandlePointerCancel,
+  onHandleDragStart,
+  onRowDragOver,
+  onHandleDragEnd,
 }: {
   plan: PlanListRow;
   active: boolean;
@@ -364,10 +371,9 @@ function PlanRow({
   showDragHandle?: boolean;
   isDragging?: boolean;
   isDragOver?: boolean;
-  onHandlePointerDown?: (e: React.PointerEvent) => void;
-  onHandlePointerMove?: (e: React.PointerEvent) => void;
-  onHandlePointerUp?: (e: React.PointerEvent) => void;
-  onHandlePointerCancel?: (e: React.PointerEvent) => void;
+  onHandleDragStart?: (e: React.DragEvent) => void;
+  onRowDragOver?: (e: React.DragEvent) => void;
+  onHandleDragEnd?: (e: React.DragEvent) => void;
 }) {
   const title = plan.title ?? plan.slug;
   const source = sourceOfDraftPlan(plan);
@@ -414,22 +420,24 @@ function PlanRow({
     <li
       className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}${isDragging ? ' is-dragging' : ''}${isDragOver ? ' is-drag-over' : ''}`}
       data-plan-slug={plan.slug}
+      // The whole row is the drop target so dragging over any part of it
+      // reorders to this row's index (the handle below is the drag *source*).
+      onDragOver={onRowDragOver}
     >
       {showDragHandle && (
-        // The grab handle is a plain <span> sitting OUTSIDE the row <button>
-        // (an interactive button child would swallow the gesture, the
-        // original "started plans aren't draggable" bug). It drives the
-        // reorder with POINTER events — NOT native HTML5 `draggable` — because
-        // the desktop's WebKitGTK webview never fires HTML5 drag events
-        // (tauri-apps/tauri#6695). The pointer handlers (see PlanRail above)
-        // capture the pointer here and hit-test rows by their data-plan-slug.
-        // The row <button> still handles click-to-select. (P-045 fix.)
+        // The grab handle is a plain draggable <span> sitting OUTSIDE the row
+        // <button> (an interactive button as the drag source swallows the
+        // gesture — the original "started plans aren't draggable" bug). It uses
+        // native HTML5 `draggable` — which works in the desktop's WebKitGTK
+        // webview, same as dockview + PlanDetail — the key being that
+        // onDragStart calls dataTransfer.setData (see PlanRail handlers above);
+        // without that WebKit aborts the drag. The row <button> still handles
+        // click-to-select. (P-045 fix.)
         <span
           className="pc-plan-row__drag-handle"
-          onPointerDown={onHandlePointerDown}
-          onPointerMove={onHandlePointerMove}
-          onPointerUp={onHandlePointerUp}
-          onPointerCancel={onHandlePointerCancel}
+          draggable
+          onDragStart={onHandleDragStart}
+          onDragEnd={onHandleDragEnd}
           role="button"
           tabIndex={-1}
           aria-label={`Drag to reorder ${plan.slug}`}

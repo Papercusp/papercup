@@ -926,13 +926,13 @@
 .pc-plan-rail__item--unknown .pc-plan-row { border-left-color: rgba(255, 255, 255, 0.20); }
 .pc-plan-rail__item--started { background: color-mix(in oklab, rgba(34,197,94,0.06), transparent); }
 
-/* Drag-to-reorder handle (P-045). The handle — a plain <span>, NOT the row
-   <button> — is the drag source: an interactive button child swallows the
-   gesture, so a draggable <li> wrapping a full-bleed button could never be
-   grabbed (the original "started plans aren't draggable" bug). The reorder is
-   driven by POINTER events, not native HTML5 drag-and-drop, because the
-   desktop's WebKitGTK webview never fires HTML5 drag events
-   (tauri-apps/tauri#6695). `touch-action: none` keeps a touch-drag from
+/* Drag-to-reorder handle (P-045). The handle — a plain draggable <span>, NOT
+   the row <button> — is the drag source: an interactive button as the drag
+   source swallows the gesture (the original "started plans aren't draggable"
+   bug). The reorder uses native HTML5 drag-and-drop, which DOES work in the
+   desktop's WebKitGTK webview (same as dockview + PlanDetail) — the key is that
+   onDragStart calls dataTransfer.setData (see PlanRail.tsx); without it WebKit
+   silently aborts the drag. `touch-action: none` keeps a touch-drag from
    scrolling the rail. The handle overlays the row's left strip;
    .has-drag-handle reserves padding so the title doesn't sit under it. */
 .pc-plan-row__drag-handle {
@@ -956,7 +956,7 @@
 .pc-plan-row__drag-handle:hover { color: rgba(214, 236, 248, 0.95); }
 .pc-plan-row__drag-handle:active { cursor: grabbing; }
 .pc-plan-row.has-drag-handle { padding-left: 24px; }
-/* While a pointer-drag is live, suppress text selection across the whole
+/* While a drag is live, suppress text selection across the whole
    rail so dragging over row labels doesn't select them. */
 .pc-plan-rail__rows.is-reordering { user-select: none; -webkit-user-select: none; }
 .pc-plan-rail__rows.is-reordering .pc-plan-row__drag-handle { cursor: grabbing; }
