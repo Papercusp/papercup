@@ -242,8 +242,9 @@ type FeatureRow = {
  */
 async function selectVerifiableFeatures(
   harnessSlug: string,
+  getPg: typeof getOrgPg = getOrgPg,
 ): Promise<FeatureRow[]> {
-  const { sql } = getOrgPg();
+  const { sql } = getPg();
   const recencyCutoffMs = Date.now() - SHIPPED_RECENCY_MS;
   return sql<FeatureRow[]>`
     SELECT feature_id, completion_ref
@@ -261,8 +262,9 @@ async function applyOutcomeToRow(
   harnessSlug: string,
   featureId: string,
   outcome: VerificationOutcome,
+  getPg: typeof getOrgPg = getOrgPg,
 ): Promise<void> {
-  const { sql } = getOrgPg();
+  const { sql } = getPg();
   if (outcome === 'verified') {
     await sql`
       UPDATE harness_shared.harness_features_consolidated
@@ -296,6 +298,14 @@ async function applyOutcomeToRow(
 
 export type VerifyHarnessFeaturesDeps = {
   runGitLsRemote?: RunGitLsRemote;
+  /**
+   * Injectable PG accessor (tests) — defaults to getOrgPg. Lets a test
+   * simulate "PG unavailable" by throwing here, without depending on a live
+   * connection (and without relying on getOrgPg crashing, which it no longer
+   * does). The PG read happens before any git call, so a throw rejects before
+   * runGitLsRemote is invoked.
+   */
+  getPg?: typeof getOrgPg;
 };
 
 /**
@@ -312,14 +322,15 @@ export async function verifyHarnessFeatures(
   deps: VerifyHarnessFeaturesDeps = {},
 ): Promise<VerificationResult> {
   const runGit = deps.runGitLsRemote ?? defaultRunGitLsRemote;
-  const rows = await selectVerifiableFeatures(harnessSlug);
+  const getPg = deps.getPg ?? getOrgPg;
+  const rows = await selectVerifiableFeatures(harnessSlug, getPg);
   let verified = 0;
   let divergent = 0;
   let errors = 0;
   for (const row of rows) {
     const result = await runGit(row.completion_ref.remote, row.completion_ref.commit_sha);
     const outcome = decideVerificationOutcome(result);
-    await applyOutcomeToRow(harnessSlug, row.feature_id, outcome);
+    await applyOutcomeToRow(harnessSlug, row.feature_id, outcome, getPg);
     if (outcome === 'verified') verified += 1;
     else if (outcome === 'divergent') divergent += 1;
     else errors += 1;

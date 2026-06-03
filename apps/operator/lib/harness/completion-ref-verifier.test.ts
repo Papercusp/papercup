@@ -104,14 +104,19 @@ describe('verifyHarnessFeatures — dep injection contract', () => {
       runnerCalled = true;
       return { kind: 'not_found' };
     };
+    // Simulate PG unavailable via the injectable accessor. (Don't rely on a
+    // real connection — the dev box has live PG — nor on getOrgPg crashing,
+    // which it no longer does.) The feature read happens before any git call,
+    // so this must reject BEFORE the runner is invoked.
+    const throwingGetPg = (): never => {
+      throw new Error('PG unavailable');
+    };
     await expect(
-      verifyHarnessFeatures('does-not-exist-slug', { runGitLsRemote: stubRunner }),
-    ).rejects.toBeDefined();
-    // If PG were reachable AND had 0 verifiable rows for the slug,
-    // the runner wouldn't be called either way. So we don't assert
-    // on runnerCalled — the rejection alone proves the dep-injection
-    // path is wired (runnerCalled wouldn't be defined if the function
-    // didn't even import the symbol).
-    expect(typeof runnerCalled).toBe('boolean');
+      verifyHarnessFeatures('does-not-exist-slug', {
+        runGitLsRemote: stubRunner,
+        getPg: throwingGetPg,
+      }),
+    ).rejects.toThrow(/PG unavailable/);
+    expect(runnerCalled).toBe(false); // proves the PG read precedes any git call
   }, 5_000);
 });
