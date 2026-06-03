@@ -9,6 +9,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
+
+// Monaco can't render in jsdom (and won't load offline in the WebKitGTK Tauri webview either);
+// force the DiffEditor to throw so the LoadBoundary falls back to the robust jsdiff line-diff —
+// which is exactly the path that renders in those environments, and the one we assert on.
+vi.mock('@monaco-editor/react', () => ({
+  DiffEditor: () => { throw new Error('monaco unavailable (jsdom)'); },
+}));
+
 import GymDashboard from '../GymDashboard';
 
 const PROPOSAL = {
@@ -39,8 +47,19 @@ function mockFetch() {
   });
 }
 
-beforeEach(() => { posted = []; vi.stubGlobal('fetch', mockFetch()); });
-afterEach(() => { vi.unstubAllGlobals(); cleanup(); });
+beforeEach(() => {
+  posted = [];
+  vi.stubGlobal('fetch', mockFetch());
+  // The Monaco mock throws → the LoadBoundary catches it (the EXPECTED fallback path); React DEV
+  // logs the caught error + a component-stack notice to console.error. Swallow ONLY those; any
+  // other console.error still fails the test (matches the PlanRail.test.tsx pattern).
+  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    const msg = args.map((a) => String((a as Error)?.message ?? a)).join(' ');
+    if (/monaco unavailable|error occurred|component stack|recreate this component|MonacoDiffEditor|LoadBoundary/i.test(msg)) return;
+    throw new Error(`Unexpected console.error: ${msg}`);
+  });
+});
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); cleanup(); });
 
 const renderAt = (search: string) =>
   render(<GymDashboard />, { wrapper: withNuqsTestingAdapter({ searchParams: search }) });

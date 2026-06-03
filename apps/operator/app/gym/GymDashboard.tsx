@@ -12,13 +12,24 @@
  * the handoff) is a focused designer pass on top of this — the structure, data-binding, and
  * the accept→promote flow are complete and wired. Brief: lib/gym/DASHBOARD-MOCKUP.md.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, lazy, Suspense, Component, type ReactNode } from 'react';
 import {
   parseAsString,
   parseAsStringEnum,
   useQueryState,
 } from 'nuqs';
 import { diffLines } from 'diff';
+
+// Monaco DiffEditor (the gym-ui-handoff's named merge surface) — lazy so it never weighs on
+// first paint, and wrapped (below) in an error boundary that falls back to the robust jsdiff
+// line-diff if Monaco can't load/render in the WebKitGTK Tauri webview.
+const MonacoDiffEditor = lazy(() => import('@monaco-editor/react').then((m) => ({ default: m.DiffEditor })));
+
+class LoadBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
 
 // ── API types (mirror lib/gym/control-plane.ts + read-api.ts) ──────────────────
 interface HarnessRow { harnessSlug: string; pendingCount: number; lastCycle: number | null; autoloop: { enabled: boolean; status: string; budgetUsd: number | null; spentUsd: number } | null }
@@ -159,7 +170,7 @@ function ProposalsTab({ slug }: { slug: string }) {
               <b>{sel.role}</b> — cycle {sel.cycle}{sel.variantId ? ` · ${sel.variantId}` : ''}
             </div>
             {sel.rationale && <div style={{ ...mono, opacity: 0.85, marginBottom: 8, whiteSpace: 'pre-wrap' }}>“{sel.rationale}”</div>}
-            <DiffView original={sel.originalMd ?? ''} proposed={sel.proposedMd} />
+            <ProposalDiff original={sel.originalMd ?? ''} proposed={sel.proposedMd} />
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               <button disabled={busy} onClick={() => decide('accept')} data-testid="gym-accept"
                 style={{ ...mono, cursor: 'pointer', padding: '6px 14px', borderRadius: 6, border: 'none', background: '#2e7d32', color: '#fff' }}>
@@ -188,6 +199,27 @@ function DiffView({ original, proposed }: { original: string; proposed: string }
         </div>
       ))}
     </pre>
+  );
+}
+
+/** The proposer diff: Monaco side-by-side DiffEditor when it loads, else the jsdiff line-diff. */
+function ProposalDiff({ original, proposed }: { original: string; proposed: string }) {
+  const fallback = <DiffView original={original} proposed={proposed} />;
+  return (
+    <div data-testid="gym-diff-wrap" style={{ height: 320, border: '1px solid #2a2a33', borderRadius: 6, overflow: 'hidden' }}>
+      <LoadBoundary fallback={fallback}>
+        <Suspense fallback={fallback}>
+          <MonacoDiffEditor
+            height="320px"
+            language="markdown"
+            theme="vs-dark"
+            original={original}
+            modified={proposed}
+            options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 12, scrollBeyondLastLine: false, lineNumbers: 'off' }}
+          />
+        </Suspense>
+      </LoadBoundary>
+    </div>
   );
 }
 
