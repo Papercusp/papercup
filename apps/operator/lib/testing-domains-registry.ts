@@ -710,6 +710,10 @@ defineTestDomain({
     { id: 'vite', label: 'Vite SPA', globs: [
         'apps/operator-vite/src/**/*.test.ts',
         'apps/operator-vite/src/**/*.test.tsx',
+        // Root-level operator-vite tests (e.g. dev-dist-prune.test.ts — the
+        // dev-watch build-churn tooling lives at the package root, not src/).
+        'apps/operator-vite/*.test.ts',
+        'apps/operator-vite/*.test.tsx',
       ] },
   ],
 });

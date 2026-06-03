@@ -1044,7 +1044,9 @@
           "label": "Vite SPA",
           "globs": [
             "apps/operator-vite/src/**/*.test.ts",
-            "apps/operator-vite/src/**/*.test.tsx"
+            "apps/operator-vite/src/**/*.test.tsx",
+            "apps/operator-vite/*.test.ts",
+            "apps/operator-vite/*.test.tsx"
           ]
         }
       ]
