@@ -680,6 +680,7 @@ export default function VoiceSettingsPage() {
                 Max spoken words for cached / readout content (longer → speak gist + show in panel)
               </label>
               <input
+                aria-label="Max spoken words for cached or readout content"
                 type="number"
                 min={20}
                 max={500}
@@ -701,6 +702,7 @@ export default function VoiceSettingsPage() {
                 Auto-disconnect after this many minutes of <strong>user</strong> silence
               </label>
               <input
+                aria-label="Auto-disconnect after minutes of user silence"
                 type="number"
                 min={0}
                 max={60}
@@ -724,6 +726,7 @@ export default function VoiceSettingsPage() {
                 Hard maximum session duration (minutes)
               </label>
               <input
+                aria-label="Hard maximum session duration in minutes"
                 type="number"
                 min={0}
                 max={240}
@@ -746,6 +749,7 @@ export default function VoiceSettingsPage() {
                 Silence-nudge grace before EL teardown (seconds)
               </label>
               <input
+                aria-label="Silence-nudge grace before teardown in seconds"
                 type="number"
                 min={0}
                 max={120}
@@ -769,6 +773,7 @@ export default function VoiceSettingsPage() {
                 Max `&lt;continue/&gt;` chain depth
               </label>
               <input
+                aria-label="Max continue chain depth"
                 type="number"
                 min={1}
                 max={20}
@@ -792,6 +797,7 @@ export default function VoiceSettingsPage() {
                 Max `&lt;continue/&gt;` chain duration (seconds)
               </label>
               <input
+                aria-label="Max continue chain duration in seconds"
                 type="number"
                 min={30}
                 max={1800}
@@ -813,6 +819,7 @@ export default function VoiceSettingsPage() {
                 Papercup history budget (tokens)
               </label>
               <input
+                aria-label="Papercup history budget in tokens"
                 type="number"
                 min={5000}
                 max={150000}
@@ -891,6 +898,7 @@ export default function VoiceSettingsPage() {
               <div>
                 <label style={lbl}>Gated-mode idle timeout (seconds)</label>
                 <input
+                  aria-label="Gated-mode idle timeout in seconds"
                   type="number"
                   min={5}
                   max={300}
@@ -914,6 +922,7 @@ export default function VoiceSettingsPage() {
                 Hard monthly minute cap on ElevenLabs Conv AI
               </label>
               <input
+                aria-label="Hard monthly minute cap on ElevenLabs Conv AI"
                 type="number"
                 min={0}
                 max={50000}
@@ -977,6 +986,7 @@ export default function VoiceSettingsPage() {
         <h2>Wake word (always-on mode)</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
+            aria-label="Wake word phrase"
             type="text"
             value={config.wakeWord}
             onChange={(e) => onWakeWordChange(e.target.value)}
@@ -1073,6 +1083,7 @@ export default function VoiceSettingsPage() {
       <section className="pc-settings-section">
         <h2>Speech rate</h2>
         <input
+          aria-label="Speech rate"
           type="range"
           min={0.5} max={2.0} step={0.1}
           value={config.rate}

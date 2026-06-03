@@ -288,6 +288,15 @@ export default function AdvShell({
               );
             })}
           </Tabs.List>
+          {/* a11y (aria-valid-attr-value): AdvShell renders panel content
+              imperatively in `pc-advshell__body` below — NOT via Radix
+              Tabs.Content — so each Trigger's auto-generated `aria-controls`
+              would point at a content panel that never mounts (a dangling
+              idref axe flags as critical). Render hidden, force-mounted
+              Content stubs so the referenced ids exist and resolve. */}
+          {visibleTabs.map((t) => (
+            <Tabs.Content key={t.id} value={t.id} forceMount style={{ display: 'none' }} />
+          ))}
         </Tabs.Root>
       </header>
       <CreateHarnessPicker

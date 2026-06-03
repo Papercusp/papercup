@@ -328,6 +328,11 @@ export function ChatConversation(props: ChatConversationProps) {
         ref={scrollerRef}
         className={bodyClassName ? `oracle-body ${bodyClassName}` : 'oracle-body'}
         style={bodyStyle}
+        // Keyboard access for the scrollable message region (a11y:
+        // scrollable-region-focusable) — keyboard users can scroll it.
+        tabIndex={0}
+        role="region"
+        aria-label="Conversation messages"
       >
         {onLoadEarlier && messages.length > 0 && (
           <>
