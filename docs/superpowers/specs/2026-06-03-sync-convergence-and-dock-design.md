@@ -278,3 +278,23 @@ Each a small verified commit:
     but NOT swap the operator-vite route mount (keep `<PlansClient/>` live) until
     it's verified on a running desktop — so the working Create tab can't break
     from a blind rewrite. The route swap is the one deferred line.
+- 2026-06-03 ~03:11 — P1 reads migration extended: `usePlanRevisions` +
+  `usePlanRuns` → `useSyncQuery` (commit `23eb4474f`). So 6 of the plan reads are
+  now on the shared layer (list/items/attention/search/revisions/runs). STILL
+  bespoke (documented, not blocking): `usePlan` (PlanDetail uses its `setData`),
+  `usePlanLint` (custom tick hook), `usePlanHistory` (git; no resolver),
+  `usePlanLock` (legit polling). Their resolvers (plans.get/lint) exist where
+  applicable. **P1 essential goal MET.**
+- 2026-06-03 ~03:10 — **LIVE-HOST FINDING:** the desktop IS running (Tauri pid
+  ~228583 → :3070 Hono host pid ~774494, `tsx`, NO hot-reload) but the host
+  PREDATES my edits → serves STALE server code. Confirmed: `rest-query?name=
+  toastLog.recent` → 200 `{rows,version}` (transport OK); `name=plans.list` →
+  `unknown queryName` (proves staleness, NOT a bug). **Decision: did NOT restart
+  the user's live desktop** (tail risk of a broken desktop on wake > value, given
+  test-level verification already covers the server path). To verify all server
+  changes live: Ctrl+R the Tauri shell (or restart the :3070 host) — picks up the
+  new resolvers + bus. Safe to do when the user is back.
+- NEXT (resume here): P2 panel components + AdvCreateDock (build, register, DO NOT
+  swap the route mount yet) → then P3 sweeps (each needs its own resolver; mostly
+  operator-vite, lower priority, verify per-item) → optional: migrate usePlan/
+  usePlanLint once verifiable.
