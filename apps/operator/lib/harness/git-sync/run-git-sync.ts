@@ -159,7 +159,20 @@ async function syncOneRepo(
 
   const fetch = await runGit(['fetch', remote, branch], repoPath);
   if (fetch.code !== 0) {
-    // Offline / no remote: a local commit still happened (or nothing did).
+    // Fetch failed (offline / transient). GAP-4: when we're meant to push and HEAD has
+    // commits not on the last-known origin tip, those commits are NOT on origin — return
+    // 'error' so runGitSync DEFERS the superproject. Otherwise the superproject would
+    // commit + push a gitlink pointing at an unpushed submodule commit, which a fresh
+    // clone can't resolve (this actually corrupted origin once). With push disabled, a
+    // local commit is the expected local-only result.
+    if (doPush) {
+      const rl = await runGit(['rev-list', '--count', `${remote}/${branch}..HEAD`], repoPath);
+      const aheadCount = rl.code === 0 ? Number.parseInt(rl.stdout.trim(), 10) || 0 : 1; // ref missing → assume unpushed
+      if (committedLocal || aheadCount > 0) {
+        return { status: 'error', message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)` };
+      }
+      return { status: 'nothing' };
+    }
     return committedLocal ? { status: 'synced', pushed: false, merged: false } : { status: 'nothing' };
   }
 

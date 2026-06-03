@@ -193,6 +193,23 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
         expect(subOriginFiles).toContain('local-sub.txt');
       });
     });
+
+    it('GAP-4: a submodule unreachable while ahead → errors + DEFERS the superproject (no broken gitlink)', () => {
+      // dirty the submodule (→ ahead after its local commit) and the superproject
+      writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
+      writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+      // break the submodule's origin so its fetch/push fails mid-pass
+      git(join(repo, 'libs/sub'), 'remote', 'set-url', 'origin', join(root, 'gone.git'));
+
+      return runGitSync('test', { repoPath: repo }).then((out) => {
+        expect(out.status).toBe('error');
+        if (out.status === 'error') expect(out.errors.map((e) => e.scope)).toContain('libs/sub');
+        // the superproject must NOT be pushed — its gitlink would point at an unpushed
+        // submodule commit a fresh clone can't resolve.
+        expect(out.pushed).not.toContain('superproject');
+        expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+      });
+    });
 });
 
 describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict', () => {
