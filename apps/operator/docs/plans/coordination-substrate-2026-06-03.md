@@ -73,7 +73,7 @@ Topics, conversations, issues, features, plans are subscribable. Locks are NOT �
 ### D-008 — I own the projection engine, table-registry, and federation calls (su-08782 idle)
 2026-06-03
 
-**Reverses the earlier "ride / coordinate with su-08782's engine + final registry shape" framing.** su-08782 (storage-unification) is idle; the owner put me in charge with no coordination. So: the fan-out + federation are projections I build on the **existing** `substrate_outbox` + Hyperbee features/issues machinery (`wire-outbox`/`feature-issue-op-keys` + per-table projection modules), generalizing into one registry-driven engine opportunistically — not waiting on anyone. I classify the new tables in `table-registry.ts` myself. There must still be exactly ONE outbox consumer (a second drain would race/duplicate) — that single consumer runs both sibling projections (D-009).
+**Reverses the earlier "ride / coordinate with su-08782's engine + final registry shape" framing.** su-08782 (storage-unification) is idle; the owner put me in charge with no coordination. So: the fan-out + federation are projections I build on the **existing** `substrate_outbox` + Hyperbee features/issues machinery (`wire-outbox`/`feature-issue-op-keys` + per-table projection modules), generalizing into one registry-driven engine opportunistically — not waiting on anyone. I classify the new tables in `table-registry.ts` myself. **NB (audit): the `substrate_outbox` drain already exists** — `startOutboxDrain` is the one per-harness consumer and dispatches to **registered projections** (`registerProjection` / `register-all.ts`, 9 today). So the local-inbox fan-out is **added as a new registered projection on that existing drain**, NOT a newly-built consumer; keep exactly one drain (don't add a second).
 
 ### D-009 — Federation is PRESERVED & adapted: a sibling projection on the same engine
 2026-06-03
@@ -102,15 +102,15 @@ Topics, conversations, issues, features, plans are subscribable. Locks are NOT �
 ### Phase 1 — Topics surface
 `topics:list`/`create`/`subscribe`/`unsubscribe`/`merge` + the built-in `new_topic` topic. Read-once-at-prompt + new_topic injection (D-004). Topics are in the federated set (D-009).
 
-### Phase 2 — The single outbox consumer: fan-out + federation framework + tiering
-Build the ONE `substrate_outbox` consumer that runs both sibling projections (D-008/D-009): the local-inbox fan-out (resolve subscribers by topic/entity → per-subscriber rows honoring delivery mode) and the peer-log federation projection framework (the per-table registration pattern that conversations/issues/plans/features plug into). Extend the inbox hook to render digests + respect mode.
+### Phase 2 — Add the fan-out projection (on the existing drain) + delivery tiering
+Register the local-inbox fan-out as a **new projection on the EXISTING `substrate_outbox` drain** (`startOutboxDrain` + `registerProjection` / `register-all.ts`) — the drain already runs the federation projections; add the fan-out alongside them. The fan-out resolves subscribers by topic/entity and writes per-subscriber rows into the `coord_event_log` 'messages' surface exactly as `fireNotifications` does today (so the inbox hook needs NO change beyond delivery-mode). The peer-log federation framework is the same per-table registration pattern that conversations/issues/plans/features plug into. Extend the inbox hook to render digests + respect mode.
 
 ### Phase 3 — Retire coord:watch path-glob
 Migrate any real consumer to entity/topic subscriptions; remove the path-glob watch + manual `fireNotifications` + the opt-in notify firehose, and drop the old `coord_subscriptions` table once no consumer remains.
 
 ## Risks
 - **Firehose if tiering slips** — D-006 must land WITH Phase 2.
-- **Double outbox consumer** — there must be exactly one drain running both projections (D-008); a second would race/duplicate.
+- **Don't add a second drain** — the fan-out is a *registered projection* on the existing `startOutboxDrain` (not a new consumer); a second `substrate_outbox` consumer would race/duplicate.
 - **Federation echo/amplification** — every federated object's projection needs the echo-guard + AFTER-UPDATE-DISTINCT + jsonb-binding fixes (D-009), or the outbox self-amplifies.
 - **coord:watch retirement** — confirm no live consumer depends on path-glob notify before removal.
 - **Embedded-pg constraint** — PG-only honors it.
