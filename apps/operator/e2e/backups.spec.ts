@@ -71,31 +71,17 @@ test.describe('backup route surface', () => {
     expect(body).toBeTruthy();
   });
 
-  test('GET /api/backups/events is SSE-shaped or 401', async ({ page }) => {
-    // SSE keeps the connection open; we can't use a normal HTTP fetch here
-    // because it waits for body completion. Use fetch with manual abort.
-    const result = await page.evaluate(async (url) => {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 500);
-      try {
-        const res = await fetch(url, { signal: controller.signal });
-        return {
-          status: res.status,
-          contentType: res.headers.get('content-type') ?? '',
-        };
-      } catch (e) {
-        return { error: String(e) };
-      }
-    }, `${baseURL}/api/backups/events`);
-
-    if ('error' in result) {
-      // Aborted mid-stream is the expected SSE behavior on this route.
-      expect(result.error).toMatch(/abort/i);
-    } else {
-      expect([200, 401]).toContain(result.status);
-      if (result.status === 200) {
-        expect(result.contentType).toMatch(/event-stream/);
-      }
+  test('GET /api/backups/events returns a JSON history list (or 401)', async ({ request }) => {
+    // /api/backups/events is a paginated HISTORY query of backup_events rows
+    // (?since=&limit=) — a JSON list, NOT a live SSE stream. (Live progress, if
+    // surfaced, rides a separate channel.) See lib/endpoint-route/routes/
+    // backups/events.ts. Assert that contract, not event-stream.
+    const res = await request.get(`${baseURL}/api/backups/events?limit=5`);
+    expect([200, 401]).toContain(res.status());
+    if (res.status() === 200) {
+      expect(res.headers()['content-type'] ?? '').toMatch(/application\/json/);
+      const body = await res.json();
+      expect(Array.isArray(body.events)).toBe(true);
     }
   });
 

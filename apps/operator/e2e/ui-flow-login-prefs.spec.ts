@@ -20,7 +20,13 @@ function genUsername(prefix: string): string {
 }
 
 async function doSignup(page: import('@playwright/test').Page, username: string): Promise<void> {
-  await page.goto(`${baseURL}/login`);
+  // `?switch=1` (switch-account mode): the e2e operator is auto-signed-in as
+  // the default user, and plain /login auto-redirects away when a session
+  // exists (login.tsx: `if (j.user && !isSwitching) navigate(redirectTo)`),
+  // which destabilises the form. Switch mode skips that redirect so the
+  // signup form stays mounted — the same path a real signed-in user takes to
+  // create another account.
+  await page.goto(`${baseURL}/login?switch=1`);
 
   // Switch to signup mode — wait for the "Create a new user instead" toggle.
   // The form initially renders in login mode (only username + password checkbox).
@@ -104,17 +110,18 @@ test.describe('UI flow: signup → settings round-trip', () => {
     expect(me.user?.username).toBe('default');
   });
 
-  test('login form rejects invalid username pattern', async ({ page }) => {
-    await page.goto(`${baseURL}/login`);
+  test('login form sanitises invalid username input', async ({ page }) => {
+    await page.goto(`${baseURL}/login?switch=1`);
     await page.getByRole('button', { name: /create a new user/i }).click();
 
-    // HTML5 pattern validation blocks UPPERCASE letters
+    // The username input sanitises on change (login.tsx onChange): it lowercases
+    // and strips anything outside [a-z0-9_-], so invalid characters never reach
+    // the value. (A pattern="[a-z0-9_-]{2,32}" also guards length at submit.) So
+    // filling mixed-case + punctuation yields a clean, valid value rather than a
+    // patternMismatch — the input prevents bad input rather than just flagging it.
     const usernameInput = page.getByLabel(/^username$/i);
-    await usernameInput.fill('UPPERCASE');
-    const validity = await usernameInput.evaluate(
-      (el) => (el as HTMLInputElement).validity.patternMismatch,
-    );
-    expect(validity).toBe(true);
+    await usernameInput.fill('UPPER Case!@#-ok');
+    await expect(usernameInput).toHaveValue('uppercase-ok');
   });
 
   test('login as existing user works after signup', async ({ page, context }) => {
@@ -126,10 +133,16 @@ test.describe('UI flow: signup → settings round-trip', () => {
     await context.clearCookies();
 
     // Login as that user (passwordless flow allowed)
-    await page.goto(`${baseURL}/login`);
+    await page.goto(`${baseURL}/login?switch=1`);
     await page.getByLabel(/^username$/i).fill(username);
     await page.getByRole('button', { name: /^sign in$/i }).click();
-    await page.waitForURL((u) => !u.toString().includes('/login'), { timeout: 10_000 });
+    // waitUntil: 'commit' — resolve as soon as the post-submit navigation
+    // leaves /login; don't wait for the heavy /adv shell to fully 'load'
+    // (its persistent SSE streams + the box's load make 'load' flaky here).
+    await page.waitForURL((u) => !u.toString().includes('/login'), {
+      timeout: 15_000,
+      waitUntil: 'commit',
+    });
 
     const me = await page.request.get(`${baseURL}/api/auth/me`).then((r) => r.json());
     expect(me.user?.username).toBe(username);
