@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { normalizeJsonbInput } from './_jsonb-input';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
@@ -122,9 +123,10 @@ async function writeToPg(
        author_pubkey, origin)
     VALUES
       (${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
-       ${row.metadata == null ? null : sql.json(row.metadata)},
+       -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
+       ${row.metadata == null ? null : JSON.stringify(normalizeJsonbInput(row.metadata))}::jsonb,
        ${row.kind}, ${row.project_id}, ${row.expected_cost_cents},
-       ${row.tags == null ? null : sql.json(row.tags)},
+       ${row.tags == null ? null : JSON.stringify(normalizeJsonbInput(row.tags))}::jsonb,
        ${row.needs_human_review},
        ${row.ts}, ${row.created_ts}, ${row.updated_ts}, ${row.parent_id}, ${row.goal_id}, ${row.taken_by},
        ${row.taken_at == null ? null : sql`to_timestamp(${row.taken_at} / 1000.0)`},

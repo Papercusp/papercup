@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { normalizeJsonbInput } from './_jsonb-input';
 import type { TableProjection, ProvenanceContext } from '../projection';
 
 export interface ContributorUsageEventRow {
@@ -76,7 +77,8 @@ async function writeToPg(
     VALUES
       (${row.harness_slug}, ${row.event_id}, ${row.github_user_id}, ${row.device_pubkey},
        ${row.kind}, ${row.ref_id},
-       ${row.payload == null ? null : sql.json(row.payload)},
+       -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
+       ${row.payload == null ? null : JSON.stringify(normalizeJsonbInput(row.payload))}::jsonb,
        to_timestamp(${row.ts} / 1000.0),
        ${row.schema_version}, ${origin})
     ON CONFLICT (harness_slug, event_id) DO NOTHING

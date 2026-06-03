@@ -26,6 +26,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { normalizeJsonbInput } from './_jsonb-input';
 import type { TableProjection } from '../projection';
 import {
   isContributorRow,
@@ -70,7 +71,8 @@ async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow):
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.github_username},
        ${row.display_name}, ${row.avatar_url},
-       ${sql.json(row.device_attestations ?? [])}, ${row.revoked_pubkeys as unknown as string},
+       -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
+       ${JSON.stringify(normalizeJsonbInput(row.device_attestations) ?? [])}::jsonb, ${row.revoked_pubkeys as unknown as string},
        to_timestamp(${row.joined_at} / 1000.0),
        ${row.last_seen_at == null ? null : sql`to_timestamp(${row.last_seen_at} / 1000.0)`},
        ${row.binding_status},
