@@ -183,6 +183,20 @@ describe('reconcileProfilePref', () => {
   });
 });
 
+describe('injectedPref', () => {
+  it('returns undefined when there is no window / no injected prefs', () => {
+    expect(mod.injectedPref('theme_id')).toBeUndefined();
+  });
+
+  it('reads a field off window.__PAPERCUSP_PREFS__', () => {
+    vi.stubGlobal('window', { __PAPERCUSP_PREFS__: { theme_id: 'black', visual_effects_mode: 'minimal' } });
+    expect(mod.injectedPref('theme_id')).toBe('black');
+    expect(mod.injectedPref('visual_effects_mode')).toBe('minimal');
+    expect(mod.injectedPref('missing')).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('shallowJsonEquals', () => {
   it('compares by JSON shape', () => {
     expect(mod.shallowJsonEquals({ a: 1 }, { a: 1 })).toBe(true);

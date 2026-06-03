@@ -4,8 +4,16 @@
  * active custom:<slug> id back to its definition). The DOM/fetch paths
  * (applyCustomThemes, fetch/save/delete) are out of scope here.
  */
-import { describe, expect, it } from 'vitest';
-import { themeList, findCustomTheme, BUILTIN_THEMES, CUSTOM_PREFIX, type CustomTheme } from './theme';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  themeList,
+  findCustomTheme,
+  readActiveTheme,
+  BUILTIN_THEMES,
+  CUSTOM_PREFIX,
+  DEFAULT_THEME_ID,
+  type CustomTheme,
+} from './theme';
 
 const custom = (id: string, label = id): CustomTheme => ({ id, label }) as unknown as CustomTheme;
 
@@ -38,5 +46,34 @@ describe('findCustomTheme', () => {
 
   it('returns null when the custom slug is not found', () => {
     expect(findCustomTheme(`${CUSTOM_PREFIX}missing`, themes)).toBeNull();
+  });
+});
+
+describe('readActiveTheme', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('prefers a valid cached value', () => {
+    vi.stubGlobal('window', {
+      localStorage: { getItem: () => 'black' },
+      location: { href: 'http://127.0.0.1:3070/' },
+    });
+    expect(readActiveTheme()).toBe('black');
+  });
+
+  it('falls back to the host-injected PG value when the cache is cold (the reload-persistence fix)', () => {
+    vi.stubGlobal('window', {
+      localStorage: { getItem: () => null },
+      __PAPERCUSP_PREFS__: { theme_id: 'black' },
+      location: { href: 'http://127.0.0.1:3070/' },
+    });
+    expect(readActiveTheme()).toBe('black');
+  });
+
+  it('defaults to frost when neither cache nor injection is valid', () => {
+    vi.stubGlobal('window', {
+      localStorage: { getItem: () => null },
+      location: { href: 'http://127.0.0.1:3070/' },
+    });
+    expect(readActiveTheme()).toBe(DEFAULT_THEME_ID);
   });
 });

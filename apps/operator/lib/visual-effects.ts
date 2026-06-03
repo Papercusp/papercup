@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
-import { reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
+import { injectedPref, reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
 
 export type VisualEffectsMode = 'system' | 'full' | 'minimal';
 export type EffectiveVisualEffects = 'full' | 'minimal';
@@ -26,10 +26,15 @@ export function readVisualEffectsMode(): VisualEffectsMode {
   if (typeof window === 'undefined') return 'system';
   try {
     const stored = window.localStorage.getItem(wsLocalKey(VISUAL_EFFECTS_STORAGE_KEY));
-    return isVisualEffectsMode(stored) ? stored : 'system';
+    if (isVisualEffectsMode(stored)) return stored;
   } catch {
-    return 'system';
+    /* fall through to the injected value */
   }
+  // Cache cold/unreliable after a desktop reload: fall back to the host-injected
+  // PG value so the snapshot matches what the boot script painted (otherwise
+  // React resets data-visual-effects to 'system' on first render).
+  const injected = injectedPref('visual_effects_mode');
+  return isVisualEffectsMode(injected) ? injected : 'system';
 }
 
 export function getEffectiveVisualEffects(mode: VisualEffectsMode): EffectiveVisualEffects {

@@ -19,7 +19,7 @@
  */
 import { useSyncExternalStore } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
-import { reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
+import { injectedPref, reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
 import {
   BUILTIN_THEMES,
   CUSTOM_PREFIX,
@@ -47,10 +47,16 @@ export function readActiveTheme(): string {
   if (typeof window === 'undefined') return DEFAULT_THEME_ID;
   try {
     const stored = window.localStorage.getItem(wsLocalKey(THEME_STORAGE_KEY));
-    return isValidThemeId(stored) ? stored : DEFAULT_THEME_ID;
+    if (isValidThemeId(stored)) return stored;
   } catch {
-    return DEFAULT_THEME_ID;
+    /* fall through to the injected value */
   }
+  // Cache cold/unreliable (desktop webview after a reload): fall back to the
+  // host-injected PG value (window.__PAPERCUSP_PREFS__.theme_id) so this
+  // synchronous snapshot matches the theme the boot script already painted —
+  // otherwise React would reset data-theme to the default on first render.
+  const injected = injectedPref('theme_id');
+  return isValidThemeId(injected) ? injected : DEFAULT_THEME_ID;
 }
 
 export function applyTheme(id: string = readActiveTheme()): void {

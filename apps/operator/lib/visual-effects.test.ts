@@ -90,6 +90,14 @@ describe('readVisualEffectsMode', () => {
     stub({ stored: 'garbage' });
     expect(readVisualEffectsMode()).toBe('system');
   });
+  it('falls back to the host-injected pref when the cache is cold', () => {
+    vi.stubGlobal('window', {
+      localStorage: { getItem: () => null },
+      __PAPERCUSP_PREFS__: { visual_effects_mode: 'minimal' },
+      location: { href: 'http://127.0.0.1:3070/' },
+    });
+    expect(readVisualEffectsMode()).toBe('minimal');
+  });
 });
 
 describe('applyVisualEffectsMode', () => {

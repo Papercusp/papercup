@@ -123,6 +123,26 @@ export async function reconcileProfilePref<T>(opts: {
   return parsed;
 }
 
+/**
+ * Read a host-injected pre-paint preference from `window.__PAPERCUSP_PREFS__`
+ * (set by bin/host-spa.ts from PG, before React mounts). This is the
+ * synchronous fallback for `read*()` snapshots when the localStorage cache is
+ * cold — e.g. right after a reload on the desktop, where the webview's
+ * localStorage doesn't survive. The injected value IS the PG value at page
+ * load, so it's the correct synchronous source when the cache is empty.
+ * Returns undefined when absent (SSR, non-injecting dev origin, or pre-this-build).
+ */
+export function injectedPref(field: string): unknown {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const prefs = (window as unknown as { __PAPERCUSP_PREFS__?: Record<string, unknown> })
+      .__PAPERCUSP_PREFS__;
+    return prefs ? prefs[field] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Stable JSON-shape equality for object-valued prefs (key order independent
  *  enough for our small maps; good enough to avoid redundant adopts). */
 export function shallowJsonEquals(a: unknown, b: unknown): boolean {
