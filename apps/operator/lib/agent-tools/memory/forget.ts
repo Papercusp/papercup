@@ -24,7 +24,7 @@ export default defineTool({
     notWhen:
       'To CORRECT a memory (replace its content), use memory:update — preserves history. Only use forget for outright removal.',
   },
-  requirePrincipal: false,
+  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({

@@ -32,7 +32,7 @@ export default defineTool({
     chaining:
       'Pair with memory:update / memory:forget when the user corrects something you recall.',
   },
-  requirePrincipal: false,
+  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 200 } },
   args: z.object({

@@ -25,7 +25,7 @@ export default defineTool({
     notWhen:
       'To REMOVE a memory entirely, use memory:forget. To add a NEW memory without replacing one, use memory:remember.',
   },
-  requirePrincipal: false,
+  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({

@@ -29,7 +29,7 @@ export default defineTool({
     notWhen:
       'For semantic lookup ("what did I say about X?"), use memory:search instead.',
   },
-  requirePrincipal: false,
+  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },
   args: z.object({

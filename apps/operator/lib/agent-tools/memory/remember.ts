@@ -62,7 +62,7 @@ export default defineTool({
     chaining:
       'After writing, the persona prompt will surface this entry on the next turn\'s pre-turn injection. No need to call memory:search to verify.',
   },
-  requirePrincipal: false,
+  requirePrincipal: true, // auth-gated: principal required (unauthed HTTP → 401)
   agentRoles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 100 } },
   args: z.object({
