@@ -54,9 +54,10 @@ import {
 } from '../harness/usage-emitters';
 import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
-import { governorForBackend, classifyTurnError } from '@papercusp/papercup-shared/agent';
+import { governorForBackend, classifyTurnError, setGovernorStore } from '@papercusp/papercup-shared/agent';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { initAgentGovernorObserver } from '../agent-governor-observer';
+import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 // How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
@@ -478,6 +479,9 @@ export function wireOrchestratorInvokeRunner(): void {
   // governor is shared by the pipeline spawn, meridian calls, and the gym, so one init here
   // (on operator boot) covers them all.
   initAgentGovernorObserver();
+  // RB-007: when PAPERCUSP_AGENT_GOVERNOR_PG=1, route the governor's rate+pause budget through a
+  // PG-backed store so every operator process + the gym share ONE account budget (no co-burst).
+  maybeInstallPgGovernorStore(setGovernorStore);
   setPipelineInvokeRunner(realRunner);
   setPipelineFinalizer(realFinalizer);
   // P-012: fire the read-only debugger before a worker when the feature has
