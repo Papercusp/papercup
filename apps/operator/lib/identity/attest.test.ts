@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { generateKeyPairSync, sign as nodeSign, createPublicKey } from 'node:crypto';
+import { attestationGistFilename } from './attestation-types';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -212,7 +213,10 @@ describe('verifyAttestation', () => {
         id: 'test-gist-id',
         owner: { id: overrides?.ownerId ?? payload.github_user_id },
         files: {
-          ['papercusp-device-binding-' + pubkeyBase64.slice(0, 8) + '.json']: {
+          // Derive the filename the same way the source does — it sanitizes
+          // base64 (+→-, /→_), so a raw slice diverges for ~⅓ of random keys
+          // (the old hardcoded form made these tests flaky).
+          [attestationGistFilename(pubkeyBase64)]: {
             content: JSON.stringify(body, null, 2),
           },
         },
@@ -242,7 +246,6 @@ describe('verifyAttestation', () => {
 
   it('ensureAttestationGist: returns an existing verified gist id without creating', async () => {
     const { ensureAttestationGist } = await import('./attest');
-    const { attestationGistFilename } = await import('./attestation-types');
     const { pubkeyBase64, body } = makeFakeGistResponse();
     // Key the gist files under the REAL deterministic filename so both the
     // find-by-filename match and the verifyAttestation lookup hit.
@@ -336,7 +339,7 @@ describe('verifyAttestation', () => {
 
     // Tamper: change device_label after signing
     const tampered = { ...gistResponse };
-    const filename = 'papercusp-device-binding-' + pubkeyBase64.slice(0, 8) + '.json';
+    const filename = attestationGistFilename(pubkeyBase64);
     tampered.files = {
       [filename]: {
         content: JSON.stringify({ ...body, device_label: 'TAMPERED' }, null, 2),
@@ -373,7 +376,7 @@ describe('verifyAttestation', () => {
     const claimedPubkeyBase64 = extractRawPubkey(claimedSpki).toString('base64');
 
     // The gist's filename is derived from the CLAIMED pubkey, but the body has the REAL pubkey
-    const filename = 'papercusp-device-binding-' + claimedPubkeyBase64.slice(0, 8) + '.json';
+    const filename = attestationGistFilename(claimedPubkeyBase64);
     const confusedResponse = {
       id: 'test-gist-id',
       owner: { id: realBody.github_user_id },

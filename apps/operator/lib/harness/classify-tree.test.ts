@@ -241,7 +241,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   const isPapercupCheckout = existsSync(join(papercupRoot, '.gitmodules'));
 
   it.skipIf(!isPapercupCheckout)(
-    'matches the libs/ layout: 5 submodules + 9 plain (borrowable submodules regrouped under libs/generic/)',
+    'matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regrouped under libs/generic/)',
     () => {
       // Walk just libs/ — not the whole repo — to keep the test fast and
       // scoped to the documented assertion.
@@ -257,12 +257,14 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
       // Note: we don't assert on `worktrees` or `standalone` here because
       // libs/ isn't expected to contain either; if one shows up that's a
       // signal worth investigating (and this test will catch it).
-      // 5 direct-child submodules + 9 plain dirs (incl. `generic/`, which now
-      // holds the 20 regrouped borrowable submodules — see CLAUDE.md /
-      // BORROWABLE.md). Pre-regrouping this was 9 subs + 8 plain.
+      // 7 direct-child submodules + 7 plain dirs (incl. `generic/`, which now
+      // holds the regrouped borrowable submodules — see CLAUDE.md /
+      // BORROWABLE.md). History: 9s+8p pre-regroup → 5s+9p after regroup →
+      // 7s+7p once `test-config` + `testing-shell` were promoted to direct
+      // libs/* submodules.
       expect({ subs: summary.submodules, plain: summary.plain }).toEqual({
-        subs: 5,
-        plain: 9,
+        subs: 7,
+        plain: 7,
       });
       expect(summary.worktrees).toBe(0);
       expect(summary.standalone).toBe(0);
@@ -302,6 +304,8 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
           'papercup-db',
           'papercup-shared',
           'papercusp',
+          'test-config',
+          'testing-shell',
           'zero-harness',
         ].sort(),
       );
