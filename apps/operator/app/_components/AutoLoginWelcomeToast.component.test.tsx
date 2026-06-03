@@ -36,7 +36,9 @@ beforeAll(() => {
 vi.mock('sonner', () => ({
   toast: vi.fn(),
 }));
-vi.mock('next/navigation', () => ({
+// AutoLoginWelcomeToast imports useRouter/usePathname from the router-compat
+// layer (TanStack-Router-backed), not next/navigation — mock that path.
+vi.mock('@/lib/router-compat/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/',
 }));

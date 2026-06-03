@@ -41,7 +41,10 @@ const mockReplace = vi.fn();
 const mockSearchParamsGet = vi.fn<(k: string) => string | null>();
 const mockSetMode = vi.fn();
 
-vi.mock('next/navigation', () => ({
+// page.tsx imports useRouter/useSearchParams from the router-compat layer
+// (TanStack-Router-backed), not next/navigation — mock the path the
+// component actually imports, else the real hook runs with a null router.
+vi.mock('@/lib/router-compat/navigation', () => ({
   useRouter: () => ({ replace: mockReplace, push: vi.fn() }),
   useSearchParams: () => ({ get: mockSearchParamsGet }),
 }));
