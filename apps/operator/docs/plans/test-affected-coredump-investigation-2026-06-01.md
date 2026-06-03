@@ -343,6 +343,33 @@ skip). → **25 of 38 fully green + oauth/state 5/6.**
   the locks dup is resolved. Once it is: re-apply that mock to
   device-auth/catchall/experts and verify.
 
+### ROUND 11 (avi: "both, in sequence" → experts) — **experts + feedback feature FULLY REMOVED.**
+
+Per avi's "remove both expert + feedback" decision (a product call + large breaking refactor):
+- **Operator:** deleted experts-core, experts-data, expert-dispatcher, expert-triggers, the 7
+  experts agent-tools, the `/experts` route + expert-related-docs; rewired agent-chats-data
+  (flipExpertEngaged + EXPERT_ID_RE + role branches), sync-resolver + harness-state (harness_experts
+  table refs), dbos orchestrator-decide (NEXT_EXPERT/NEXT_FEEDBACK), UI role maps
+  (OracleDock/ControlPlaneLoading/HarnessSettingsPanel/RealAgentsPanel), user-actions,
+  shortcut-registry, testing-domains-registry, commands/chat, operator-prompt-system + ~12 comment
+  cleanups + the matching test retargets.
+- **Submodule orchestrator (libs/papercusp):** removed NEXT_EXPERT/NEXT_FEEDBACK from DECISION_VERBS
+  + SOLO_VERBS, their main-loop switch cases + handleNextExpert/handleNextFeedback handlers, the
+  role-prompt expert-instance block; emptied FLEET_NO_WRITE_ROLES; deleted expert.md + feedback.md.
+- **AGENT_ROLES:** removed `expert` + `feedback` (agent-mcp role-config).
+- **Docs:** deleted spec/experts.mdx + agents/authoring-experts.mdx, rebuilt the Starlight mirror.
+- **DB:** migration 117 drops harness_experts + harness_expert_feedback + harness_expert_turns
+  (CASCADE; all 0 rows; no pg_proc deps); removed their Drizzle defs from generated.ts.
+
+**Verified:** full operator unit suite GREEN (828 files / 0 failures — 828 = 832 − 4 deleted experts
+test files); orchestrator decision-parse + invoke green (115); fresh-migrate empty→head strict gate
+green (9/9). Committed: f4fa6fd (submodule) + 359db59e8 / 21447074b / b4993b67c / 4b3f55744 (super).
+
+**One dev-box wrinkle (NOT a code issue):** the live native :5432 papercusp DB still holds the 3
+empty orphan tables — `harness_experts` is owned by `postgres_app` (superuser), so `harness_admin`
+(the operator role) can't DROP it and no superuser creds were available. Migration 117 drops them on
+the embedded-pg ship path / when a privileged role applies it. Harmless (0 rows, no code reads them).
+
 ### ROUND 10 (avi: "both, in sequence" → contamination then experts) — **78-file contamination RESOLVED; pty-ws product bug fixed.**
 
 Re-measured the full operator unit suite (832 files / 8364 tests, `forks` pool). The plan's
