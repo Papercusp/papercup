@@ -229,14 +229,20 @@ async function patchRoutineMetadata(slug: string, patch: Record<string, unknown>
 async function recordOutcome(slug: string, outcome: GitSyncOutcome): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
+  // errors[] exists on both 'conflict' and 'error' outcomes — record it ALWAYS so a
+  // sibling (sub)repo error on a conflict tick isn't invisible (it was: a non-error
+  // status used to drop the error list entirely, e.g. a libs/papercusp push failure
+  // hidden behind a libs/generic/sync conflict).
+  const errors = 'errors' in outcome ? outcome.errors : [];
   await patchRoutineMetadata(slug, {
     last_status: outcome.status,
     last_synced_at: Date.now(),
     last_pushed: pushed,
     last_merged: merged,
     last_conflicts: outcome.status === 'conflict' ? outcome.conflicts.map((c) => c.scope) : [],
-    // GAP-3: clear the stale error on any non-error outcome (JSONB `||` keeps old keys).
-    last_error: outcome.status === 'error' ? outcome.errors.map((e) => `${e.scope}: ${e.message}`).join('; ') : null,
+    last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
+    // GAP-3: clear the stale single error on any non-error outcome (JSONB `||` keeps old keys).
+    last_error: outcome.status === 'error' ? errors.map((e) => `${e.scope}: ${e.message}`).join('; ') : null,
     ...(outcome.status === 'synced' ? { head_sha: outcome.headSha } : {}),
   });
 }
