@@ -222,9 +222,15 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
   if (result.status >= 200 && result.status < 300) {
     const slug = typeof body.slug === 'string' ? body.slug : undefined;
     void notifySyncInvalidate('plans.list', undefined).catch(() => {});
+    // Coarse (no args): the Create tab fans plans.items across many filter
+    // args (needsHuman / actionable / blocked), plans.attention across
+    // per-harness scope, and plans.lint per open plan — a slug-scoped
+    // invalidate would miss them, so invalidate every subscriber by name.
+    void notifySyncInvalidate('plans.items', undefined).catch(() => {});
+    void notifySyncInvalidate('plans.attention', undefined).catch(() => {});
+    void notifySyncInvalidate('plans.lint', undefined).catch(() => {});
     if (slug) {
       void notifySyncInvalidate('plans.get', { slug }).catch(() => {});
-      void notifySyncInvalidate('plans.items', { slug }).catch(() => {});
       if (verb === 'set-content' || verb === 'set-frontmatter' || verb === 'new' || verb === 'set-plan-status') {
         void notifySyncInvalidate('plans.history', { slug }).catch(() => {});
         void notifySyncInvalidate('plans.revisions', { slug }).catch(() => {});

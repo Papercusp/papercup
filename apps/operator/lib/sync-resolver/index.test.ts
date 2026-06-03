@@ -150,14 +150,27 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 56 migrated entries total — all live queryNames migrated', () => {
-      // P-022 migration complete: every live queryName from the
-      // 2026-05-24 audit is in the v2 registry. Pre-cutover audit
-      // (2026-05-25) found one missed entry (userActions.byHarness)
-      // and added it. plansDrafts.bySlug added 2026-05-24 (P-022).
-      // The legacy resolver fall-through is now dead code; cutover
-      // commit removes it.
-      expect(knownQueryNamesV2()).toHaveLength(56);
+    it('exposes 64 migrated entries total — all live queryNames migrated', () => {
+      // P-022 migration complete (56 entries). The Create-tab live-query
+      // migration (2026-06-03) added 8 plans.* entries (list / items /
+      // attention / search / get / revisions / runs / lint) → 64.
+      expect(knownQueryNamesV2()).toHaveLength(64);
+    });
+
+    it('includes the plans.* Create-tab live queries', () => {
+      const names = knownQueryNamesV2();
+      for (const expected of [
+        'plans.list',
+        'plans.items',
+        'plans.attention',
+        'plans.search',
+        'plans.get',
+        'plans.revisions',
+        'plans.runs',
+        'plans.lint',
+      ]) {
+        expect(names).toContain(expected);
+      }
     });
   });
 
@@ -206,13 +219,16 @@ describe('sync-resolver v2 registry', () => {
       // contract still surfaces NAME_NOT_FOUND for unknown names.
       expect(isRegisteredV2('totally.unknown')).toBe(false);
       expect(isRegisteredV2('')).toBe(false);
-      expect(isRegisteredV2('plans.list')).toBe(false); // not in audit; new API surface
+      // NOTE: `plans.list` IS registered now (the Create-tab live-query
+      // migration). Use a synthetic plans-namespace verb that will never
+      // exist to exercise the unregistered path.
+      expect(isRegisteredV2('plans.thisVerbDoesNotExist')).toBe(false);
     });
   });
 
   describe('resolveNamedQueryV2 — fall-back signal', () => {
     it('returns NAME_NOT_FOUND for unregistered names', async () => {
-      const result = await resolveNamedQueryV2('plans.list', { limit: 10 });
+      const result = await resolveNamedQueryV2('plans.thisVerbDoesNotExist', { limit: 10 });
       expect(result).toBe(NAME_NOT_FOUND);
     });
   });

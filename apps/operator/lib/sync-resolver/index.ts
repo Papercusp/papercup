@@ -1333,6 +1333,88 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return rows;
     },
   },
+
+  // ── plans.* — live queries for the Create tab (?tab=plans). ──────────
+  //
+  // File-backed reads dispatched through the canonical plans:* tools
+  // (read-dispatch.ts), so the live-query path can't drift from the admin
+  // REST path. Write-side invalidations fire from
+  // apps/operator/lib/endpoint-route/routes/admin/plans.ts (coarse, no
+  // args — the Create tab fans these across many filter args). No
+  // argsSchema: the underlying tool validates its own args.
+  //
+  // Single-object reads (get/lint) return a 1-element array to fit the
+  // useSyncQuery `data: T[]` contract; the client unwraps `data[0]`.
+  'plans.list': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('list', (args ?? {}) as Record<string, unknown>)) as {
+        plans?: unknown[];
+      };
+      return Array.isArray(r?.plans) ? r.plans : [];
+    },
+  },
+  'plans.items': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('items', (args ?? {}) as Record<string, unknown>)) as {
+        items?: unknown[];
+      };
+      return Array.isArray(r?.items) ? r.items : [];
+    },
+  },
+  'plans.attention': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('attention', (args ?? {}) as Record<string, unknown>)) as {
+        groups?: unknown[];
+      };
+      return Array.isArray(r?.groups) ? r.groups : [];
+    },
+  },
+  'plans.search': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('search', (args ?? {}) as Record<string, unknown>)) as {
+        hits?: unknown[];
+      };
+      return Array.isArray(r?.hits) ? r.hits : [];
+    },
+  },
+  'plans.get': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = await callPlansRead('get', (args ?? {}) as Record<string, unknown>);
+      return r ? [r] : [];
+    },
+  },
+  'plans.revisions': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('revisions', (args ?? {}) as Record<string, unknown>)) as {
+        revisions?: unknown[];
+      };
+      return Array.isArray(r?.revisions) ? r.revisions : [];
+    },
+  },
+  'plans.runs': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('runs', (args ?? {}) as Record<string, unknown>)) as {
+        runs?: unknown[];
+      };
+      return Array.isArray(r?.runs) ? r.runs : [];
+    },
+  },
+  'plans.lint': {
+    resolve: async (args) => {
+      const { callPlansRead } = await import('@/lib/agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('lint', (args ?? {}) as Record<string, unknown>)) as {
+        reports?: unknown[];
+      };
+      return Array.isArray(r?.reports) ? r.reports : [];
+    },
+  },
 } satisfies Record<string, QueryEntry<unknown>>;
 
 // ─── Public API ─────────────────────────────────────────────────────
