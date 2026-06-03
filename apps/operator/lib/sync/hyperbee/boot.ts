@@ -1082,8 +1082,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         swarm,
         ourAnnounce,
         onAnnounce,
-        onPeerConnected: () => {
+        onPeerConnected: (keyHex) => {
           recordBootEvent(opts.workspaceId, opts.harnessSlug, 'peer_connected');
+          // eslint-disable-next-line no-console
+          console.info(
+            `[swarm] peer_connected harness=${opts.harnessSlug}` +
+              (keyHex ? ` peer=${keyHex.slice(0, 12)}…` : ''),
+          );
         },
         onPeerRejected: (keyHex, ip) => {
           recordBootEvent(
@@ -1102,15 +1107,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         },
       });
-    } catch (e) {
-      // Swarm join failed (DHT unreachable / port blocked / etc).
-      // Record + continue — local writes still work.
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'swarm_join_failed',
-        e instanceof Error ? e.message : String(e),
+      // eslint-disable-next-line no-console
+      console.info(
+        `[swarm] joined topic ${topic.toString('hex').slice(0, 16)}… ` +
+          `harness=${opts.harnessSlug} (announcing as github_user_id=${identity.githubUserId})`,
       );
+    } catch (e) {
+      // Swarm join failed (DHT unreachable / port blocked / gh-auth or keychain
+      // can't resolve the announce identity / etc). Record + continue — local
+      // writes still work. ALSO log to stderr: a silently-local-only harness is
+      // a real federation regression that was previously invisible (only landed
+      // in in-memory boot-history), which masked packaged two-instance debugging.
+      const msg = e instanceof Error ? e.message : String(e);
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'swarm_join_failed', msg);
+      // eslint-disable-next-line no-console
+      console.warn(`[swarm] join FAILED harness=${opts.harnessSlug} — staying local-only: ${msg}`);
     }
   }
 

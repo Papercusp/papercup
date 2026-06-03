@@ -310,16 +310,51 @@ let _sharedSwarm: HyperswarmLike | null = null;
  *  topologies via PAPERCUSP_SWARM_MAX_PEERS. */
 const DEFAULT_MAX_PEERS = 256;
 
+/** One DHT bootstrap node (host + UDP port). */
+export interface DhtBootstrapNode {
+  host: string;
+  port: number;
+}
+
+/**
+ * Parse `PAPERCUSP_DHT_BOOTSTRAP` — a comma-separated `host:port` list — into
+ * hyperdht bootstrap nodes. Returns undefined when unset/empty/all-malformed
+ * (→ the swarm uses the real public DHT, the default). When set, every peer
+ * that shares the value joins the SAME isolated DHT — which is how two
+ * instances on ONE box deterministically discover each other without relying on
+ * public-DHT NAT hairpinning (the same trick the in-process p079 live test uses
+ * via `hyperdht/testnet`). Exported for unit testing.
+ */
+export function parseDhtBootstrap(raw: string | undefined): DhtBootstrapNode[] | undefined {
+  if (!raw) return undefined;
+  const nodes = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s): DhtBootstrapNode | null => {
+      const i = s.lastIndexOf(':'); // lastIndexOf tolerates IPv6-ish hosts minimally
+      if (i <= 0) return null;
+      const host = s.slice(0, i);
+      const port = Number.parseInt(s.slice(i + 1), 10);
+      return host && Number.isFinite(port) && port > 0 ? { host, port } : null;
+    })
+    .filter((n): n is DhtBootstrapNode => n !== null);
+  return nodes.length ? nodes : undefined;
+}
+
 /**
  * Constructor options for the shared Hyperswarm — the DoS resource ceiling
  * (P-001 of hyperswarm-dos-hardening). `maxPeers` caps total concurrent peer
- * connections. Pure + exported so the wiring is unit-testable without
- * constructing the real (network-touching) swarm.
+ * connections; `bootstrap` (when `PAPERCUSP_DHT_BOOTSTRAP` is set) points the
+ * underlying hyperdht at a custom/isolated DHT instead of the public one. Pure
+ * + exported so the wiring is unit-testable without constructing the real
+ * (network-touching) swarm.
  */
-export function swarmConstructorOpts(): { maxPeers: number } {
+export function swarmConstructorOpts(): { maxPeers: number; bootstrap?: DhtBootstrapNode[] } {
   const raw = Number.parseInt(process.env.PAPERCUSP_SWARM_MAX_PEERS ?? '', 10);
   const maxPeers = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_MAX_PEERS;
-  return { maxPeers };
+  const bootstrap = parseDhtBootstrap(process.env.PAPERCUSP_DHT_BOOTSTRAP);
+  return bootstrap ? { maxPeers, bootstrap } : { maxPeers };
 }
 
 /**
@@ -337,6 +372,7 @@ export async function getSharedSwarm(): Promise<HyperswarmLike> {
     mod as {
       default: new (opts?: {
         maxPeers?: number;
+        bootstrap?: DhtBootstrapNode[];
         firewall?: (remotePublicKey: Buffer) => boolean;
       }) => HyperswarmLike;
     }
