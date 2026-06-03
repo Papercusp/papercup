@@ -54,18 +54,19 @@ structurally on the minimal substrate — D-021/§ results). Numbers: judge sd u
 distinguishes variants (baseline 8.25 vs the candidate 8.0, Δ −0.25). **Go/no-go: GO to the bounded loop**
 (D-019 cap), conditioned on (a) P-025 repeats ≥4 and (b) a real-anchor correlation pass (D-014/P-028).
 
+**P-025 — DONE (2026-06-03):** the measured variance (sd≤0.5, minRepeats≈4) said 1 run is too noisy, so
+repeats are promoted into v1 — `buildLoopDeps.evaluate` averages the composite over `repeats` runs per task
+(`GYM_LOOP_REPEATS`, set 4 for trustworthy accepts). `6a807671a`.
+
 **Remaining (deferred, surfaced — not silently dropped):**
-1. **P-025 repeats → v1** — the measured variance (sd≤0.5, minRepeats≈4) says 1 run is too noisy; the loop's
-   accept gate needs ≥~4 repeats per cell. The `ab-runner` already supports `GYM_AB_REPEATS`; promoting it
-   into the loop's `evaluate` is the change.
-2. **Real-anchor correlation (D-014/P-028)** — not measured in this bounded A/B (no real-anchor pool). Run
+1. **Real-anchor correlation (D-014/P-028)** — not measured in this bounded A/B (no real-anchor pool). Run
    the champion against the fixed real-feature set before trusting the headline metric.
-3. **Finalize-stage hermeticity residual** — `[convert-issues] … harness_features does not exist` + the
+2. **Finalize-stage hermeticity residual** — `[convert-issues] … harness_features does not exist` + the
    documenter SIGTERM at teardown (same class as the worker bug, but POST-terminal so the judge still
    scores). Cleanup for clean DONE outcomes; non-blocking for the measurement.
-4. **Buildable synthetic substrate + chunk-loop ON** — the production-fidelity path (measure the real
+3. **Buildable synthetic substrate + chunk-loop ON** — the production-fidelity path (measure the real
    chunk-loop worker model on a `tsconfig`/test-scaffold substrate) vs. tonight's single-shot bounded run.
-5. **P-024 visual polish + live-Tauri verification** — functional + unit-tested; the designer/UI-agent pass
+4. **P-024 visual polish + live-Tauri verification** — functional + unit-tested; the designer/UI-agent pass
    (Monaco diff, Pareto scatter, real Tauri-shell render check) is the gym-ui-handoff owner's.
 
 ## P-014 results (real A/B, 2026-06-03)
@@ -282,7 +283,7 @@ One cycle:
 ## Phase 6 — Later
 
 - **P-024** `built-functional` nuqs operator dashboard for variants/scores/frontier/cycles. importance: low blocked-by: P-013 (2026-06-03: functional `/gym` panel SHIPPED — `apps/operator/app/gym/GymDashboard.tsx` + `apps/operator-vite/src/routes/gym.tsx`, wired to `/api/gym/*`, all four surfaces incl. the proposer-diff review→accept/promote; nuqs state; jsdom render+wiring test green. Visual polish — Monaco/md-editor, Pareto scatter, motion, live-Tauri verification — is the deferred designer/UI-agent pass per gym-ui-handoff. See D-022. Mockup+brief: `DASHBOARD-MOCKUP.md`.)
-- **P-025** `todo` Repeats-per-task / variance handling — promote into v1 if P-014 shows 1-run is too noisy. importance: normal
+- **P-025** `done` Repeats-per-task / variance handling — promote into v1 if P-014 shows 1-run is too noisy. importance: normal (2026-06-03: P-014 showed 1-run IS too noisy (sd≤0.5, minRepeats≈4), so PROMOTED into v1 — `buildLoopDeps.evaluate` now runs each task `repeats`× and takes the MEAN composite per task; `gym-loop-run` wires `GYM_LOOP_REPEATS` (set 4 for trustworthy accepts). `6a807671a` + 9th loop-deps test.)
 - **P-026** `todo` Expand real-feature replay as a *training* source (beyond the P-028 anchor). importance: low
 - **P-030** `todo` Grader-optimization phase: optimize validator/crosscheck/tester in a **separate run with an inverted objective** (recall on held-out planted defects — catch *more*, never fewer), external judge as arbiter. importance: low
 
