@@ -79,8 +79,11 @@ export class PgGovernorStore implements GovernorStore {
       const s = rows.length > 0 ? rowToState(rows[0], floor) : initGovernorState(floor);
       mutate(s);
       // Persist ONLY rate+pause fields (the shared budget). limits carries auto-tuned rpm/itpm/otpm.
-      // Pass the object via sql.json — a manual JSON.stringify + ::jsonb cast DOUBLE-ENCODES under
-      // postgres-js (jsonb ends up holding the string, not the object).
+      // Bind jsonb as `${JSON.stringify(x)}::jsonb` — NOT sql.json() and NOT a bare object: both
+      // THROW "Buffer.byteLength received Object" under the operator's getOrgPg runtime client
+      // (verified live). `rowToState` reads it back shape-tolerantly because the *testcontainer*
+      // client double-encodes this same form (the inverse divergence). See
+      // /internal/docs/agent-insights/postgres-js-jsonb-binding.
       const limitsObj = {
         ...(s.limits.rpm !== undefined ? { rpm: s.limits.rpm } : {}),
         ...(s.limits.itpm !== undefined ? { itpm: s.limits.itpm } : {}),
@@ -92,7 +95,7 @@ export class PgGovernorStore implements GovernorStore {
            paused_until, pace_delay_ms, last_acquire_at, limits, updated_at)
         VALUES
           (${key}, ${s.windowStart}, ${s.reqInWindow}, ${s.inTokInWindow}, ${s.outTokInWindow},
-           ${s.pausedUntil}, ${s.paceDelayMs}, ${s.lastAcquireAt}, ${sql.json(limitsObj)}, ${Date.now()})
+           ${s.pausedUntil}, ${s.paceDelayMs}, ${s.lastAcquireAt}, ${JSON.stringify(limitsObj)}::jsonb, ${Date.now()})
         ON CONFLICT (bucket_key) DO UPDATE SET
           window_start      = EXCLUDED.window_start,
           req_in_window     = EXCLUDED.req_in_window,
