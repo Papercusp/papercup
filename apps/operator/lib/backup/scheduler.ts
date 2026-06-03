@@ -11,7 +11,6 @@ import './configure';
 
 export {
   getKopiaDetection,
-  startBackupScheduler,
   stopBackupScheduler,
   triggerSnapshotEvent,
 } from '@papercusp/backup';

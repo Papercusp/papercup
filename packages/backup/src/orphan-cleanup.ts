@@ -73,35 +73,9 @@ let _intervalHandle: NodeJS.Timeout | null = null;
  *
  * Wire from `instrumentation-node.ts` alongside `startBackupScheduler()`.
  */
-export function startOrphanSweepWorker(): void {
-  if (_intervalHandle) return; // already running
-
-  const runOnce = async (): Promise<void> => {
-    if (_orphanSweepRunning) return;
-    // Step B2 (Tier-3 follow-up arc): battery-aware pause via the optional
-    // host seam. The sweep hits a single indexed range scan + UPDATE on
-    // N≈0 rows in steady state — cheap — but defer when the host says so
-    // (e.g. on battery below threshold) to avoid waking the disk.
-    if (backupHost().shouldPauseSweep?.()) return;
-    _orphanSweepRunning = true;
-    try {
-      const { swept } = await sweepOrphanSnapshots();
-      if (swept > 0) {
-        // eslint-disable-next-line no-console
-        console.log(`[backup-orphan-sweep] marked ${swept} stale snapshot(s) as failed`);
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[backup-orphan-sweep] error:', (err as Error).message);
-    } finally {
-      _orphanSweepRunning = false;
-    }
-  };
-
-  setTimeout(() => { void runOnce(); }, 10_000);
-  _intervalHandle = setInterval(() => { void runOnce(); }, 5 * 60_000);
-  if (typeof _intervalHandle.unref === 'function') _intervalHandle.unref();
-}
+// Legacy startOrphanSweepWorker removed (dbos-scheduler-consolidation P-005): DBOS
+// owns the schedule (periodic-workflows.ts `backupOrphanCleanup`).
+// `sweepOrphanSnapshots` above is the single-run tick that workflow calls.
 
 /** Test seam. */
 export function stopOrphanSweepWorker(): void {

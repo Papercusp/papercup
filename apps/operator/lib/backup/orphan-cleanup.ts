@@ -12,7 +12,6 @@ import './configure';
 
 export {
   sweepOrphanSnapshots,
-  startOrphanSweepWorker,
   stopOrphanSweepWorker,
   type SweepResult,
 } from '@papercusp/backup';

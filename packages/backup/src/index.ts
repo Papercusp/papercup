@@ -44,7 +44,6 @@ export {
   type KopiaServerInfo,
 } from './server';
 export {
-  startBackupScheduler,
   runBackupSchedulerTick,
   stopBackupScheduler,
   triggerSnapshotEvent,
@@ -52,7 +51,6 @@ export {
 } from './scheduler';
 export {
   sweepOrphanSnapshots,
-  startOrphanSweepWorker,
   stopOrphanSweepWorker,
   type SweepResult,
 } from './orphan-cleanup';

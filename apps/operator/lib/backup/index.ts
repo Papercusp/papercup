@@ -17,7 +17,6 @@ export {
   startKopiaServer,
   stopKopiaServer,
   kopiaServerStatus,
-  startBackupScheduler,
   stopBackupScheduler,
   triggerSnapshotEvent,
   getKopiaDetection,

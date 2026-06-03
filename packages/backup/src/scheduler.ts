@@ -67,23 +67,9 @@ export async function runBackupSchedulerTick(): Promise<void> {
   await tick();
 }
 
-export function startBackupScheduler(): void {
-  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // when PAPERCUSP_DBOS_TIMERS=1, so the legacy timer stands down.
-  if (process.env.PAPERCUSP_DBOS_TIMERS === '1') return;
-  if (timer) return;
-  kopiaDetection = detectKopia();
-  if (!kopiaDetection.ok) {
-    // eslint-disable-next-line no-console
-    console.warn(`[backup-scheduler] kopia not on PATH (${kopiaDetection.reason}); snapshots disabled. Install kopia or set KOPIA_BIN.`);
-    return;
-  }
-  // eslint-disable-next-line no-console
-  console.log(`[backup-scheduler] kopia ${kopiaDetection.version} detected; cadence tick every ${TICK_MS / 1000}s`);
-  timer = setInterval(() => { void tick(); }, TICK_MS);
-  if (typeof timer.unref === 'function') timer.unref();
-  void tick();
-}
+// Legacy startBackupScheduler removed (dbos-scheduler-consolidation P-005): DBOS
+// owns the cadence (periodic-workflows.ts `backupCadence` → runBackupSchedulerTick).
+// `runBackupSchedulerTick` above is the single-run tick that workflow calls.
 
 export function stopBackupScheduler(): void {
   if (timer) {

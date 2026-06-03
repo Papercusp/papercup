@@ -242,39 +242,6 @@ type SchedulerGlobals = typeof globalThis & {
  * The workspace registry getter is passed in (not imported directly)
  * so this module stays free of any operator-side dependencies.
  */
-export function startScratchGcScheduler(opts: {
-  getWorkspaceRegistry: () => ReadonlyArray<string>;
-}): void {
-  // Phase 2 A/B (dbos-durable-jobs-2026-05-31 D-011): DBOS owns the schedule
-  // by default now (dbosTimersActive); the legacy timer stands down unless DBOS
-  // timers are off: PAPERCUSP_DBOS_TIMERS=0 or the full revert _ORCHESTRATOR=0.
-  if (process.env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0' && process.env.PAPERCUSP_DBOS_TIMERS !== '0') return;
-  const g = globalThis as SchedulerGlobals;
-  if (!g[__SYM]) g[__SYM] = { timer: null };
-  if (g[__SYM]!.timer) return;
-  // Initial sweep so the scratch tree gets cleaned at boot.
-  try {
-    runScratchGc({ workspaceRegistry: opts.getWorkspaceRegistry() });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn('[scratch-gc] initial sweep failed:', (err as Error).message);
-  }
-  const t = setInterval(() => {
-    try {
-      const summary = runScratchGc({ workspaceRegistry: opts.getWorkspaceRegistry() });
-      if (summary.retentionEvictions || summary.deadWorkspaces || summary.quotaEvictions) {
-        // eslint-disable-next-line no-console
-        console.log(
-          `[scratch-gc] retention=${summary.retentionEvictions} (${summary.retentionEvictedBytes}B) ` +
-            `dead-ws=${summary.deadWorkspaces} (${summary.deadWorkspaceBytes}B) ` +
-            `quota=${summary.quotaEvictions} (${summary.quotaEvictedBytes}B)`,
-        );
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[scratch-gc] sweep failed:', (err as Error).message);
-    }
-  }, GC_INTERVAL_MS);
-  if (typeof t.unref === 'function') t.unref();
-  g[__SYM]!.timer = t;
-}
+// Legacy startScratchGcScheduler removed (dbos-scheduler-consolidation P-005): DBOS
+// owns the schedule (periodic-workflows.ts `scratchGc`). `runScratchGc` above is the
+// single-run tick that workflow calls.
