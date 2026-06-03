@@ -63,8 +63,6 @@ const GIT_DOCS = [
   'harness_snapshots', 'harness_experts',
   'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
   'project_spec_revisions',
-  // papercup_shared.* document tables (schema-qualified at the engine layer):
-  'messages', 'directives', 'briefings', 'directive_summaries',
 ];
 
 /**
@@ -75,8 +73,18 @@ const GIT_DOCS = [
  *     drain loop (a file rewritten every ~20s with only a timestamp diff). It's
  *     recomputed locally from git-tracked files, so PG is a derived cache, not a
  *     document — it falls to DEFAULT (slug-shared / sync:none).
- * Rule: fs-watcher *mirrors* (projections of already-git-tracked files) must
- * never be sync:'git'. Producer-authored document tables are the git set.
+ *   • `messages` / `directives` / `briefings` / `directive_summaries` — the
+ *     RETIRED papercup-org demo bus (003-papercup-shared.sql, D-008 family). They
+ *     live in the `papercup_shared` schema with NO workspace_id/harness_slug/origin,
+ *     so they cannot fit the per-harness git-export model (keyed by harness root) —
+ *     the engine only attaches to `harness_shared.*` and silently skipped them. The
+ *     bare names also collide with the REAL inter-agent bus (`harness_<slug>.messages`,
+ *     from_slug/to_slug), which was likewise never git-exported (per-harness schema,
+ *     never attached) and gets an explicit classification when P-004 consolidates it.
+ *     Net: removing them makes the registry match reality (they were never synced).
+ * Rule: fs-watcher *mirrors* (projections of already-git-tracked files) and the
+ * retired org-demo schema must never be sync:'git'. Producer-authored
+ * harness_shared document tables are the git set.
  */
 
 /**
