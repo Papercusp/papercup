@@ -86,7 +86,12 @@ const GIT_DOCS = [
  *     the engine only attaches to `harness_shared.*` and silently skipped them. The
  *     bare names also collide with the REAL inter-agent bus (`harness_<slug>.messages`,
  *     from_slug/to_slug), which was likewise never git-exported (per-harness schema,
- *     never attached) and gets an explicit classification when P-004 consolidates it.
+ *     never attached). P-004 consolidated that real bus + supervisor_notes /
+ *     directive_summaries / executed_actions into harness_shared.*_consolidated
+ *     (migrations 119/120); they resolve to DEFAULT (slug-shared / sync:'none' —
+ *     local, never synced), matching their pre-consolidation behavior. config_token
+ *     was retired entirely (token_index is the authoritative workspace-owned token
+ *     store; migration 121).
  *     Net: removing them makes the registry match reality (they were never synced).
  * Rule: NEVER sync:'git' — (a) fs-watcher *mirrors* (projections of already-git-
  * tracked files), (b) operational/runtime state (volatile columns: pid, started_at,
