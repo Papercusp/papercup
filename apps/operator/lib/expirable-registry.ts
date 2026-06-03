@@ -31,6 +31,10 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 
+// not a DBOS candidate (dbos-scheduler-consolidation-2026-06-03 D-002 / P-011):
+// this sweeps a process-local in-memory registry of TTL'd entries — a detached
+// DBOS cron can't see in-process Maps. It would only qualify if the registry
+// moved to PG (out of scope). Stays in-process.
 const SWEEP_INTERVAL_MS = 30_000;
 
 export type ExpirySweepKind =

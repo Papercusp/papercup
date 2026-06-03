@@ -82,6 +82,10 @@ import { notifySyncInvalidate } from './sync-sse';
 // The org_id column anticipates multi-org without a schema change.
 const DEFAULT_ORG_ID = 'default';
 
+// not a DBOS candidate (dbos-scheduler-consolidation-2026-06-03 D-002 / P-011):
+// the watcher is event-driven (chokidar); this 60s tick is only a reconcile
+// BACKSTOP for dropped inotify events + in-process watcher state. A detached DBOS
+// cron would lose the watcher's in-memory view — it stays in-process.
 const RECONCILE_INTERVAL_MS = 60_000;
 const DEBOUNCE_MS = 200;
 
