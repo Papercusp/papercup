@@ -79,8 +79,9 @@ Topics, conversations, issues, features, plans are subscribable. Locks are NOT �
 2026-06-03
 
 **Per owner: the federation feature cannot be removed.** It is not deferred or dropped — it is adapted into this framework. The insight: **federation and subscribe→inject are two projections of the same `substrate_outbox` change stream** — one to remote peers (peer-log/Hyperbee, the existing feature/issue machinery), one to local subscriber inboxes (the new fan-out). Same source, same engine, two targets.
-- **Federated object set (content):** features + issues (already), engineer-issues, conversations, PG-canonical plans, and **topics** (the taxonomy must be shared across the federated set or `new_topic` diverges per machine). Each registers in the wire-outbox table-tag map + a projection module, carrying the `origin='remote'` echo-guard, the AFTER-UPDATE `WHEN OLD.* IS DISTINCT FROM NEW.*` guard, and the jsonb-binding fixes (`agent-insights/postgres-js-jsonb-binding`). LWW per Model-B.
-- **Local-only (NOT federated):** subscriptions, per-subscriber inbox rows, watermarks, presence — these are machine/agent-local delivery state. Content arrives via peer-log; each machine's local fan-out delivers it to that machine's local subscribers.
+- **Federated object set (v1) — HARNESS-SCOPED content only:** features + issues (already), PG-canonical plans (as `papercup`-harness content), and the **harness-scoped** rows of engineer-issues + conversations. Each registers in the wire-outbox table-tag map + a projection module, carrying the `origin='remote'` echo-guard, the AFTER-UPDATE `WHEN OLD.* IS DISTINCT FROM NEW.*` guard, and the jsonb-binding fixes (`agent-insights/postgres-js-jsonb-binding`). LWW per Model-B.
+- **Federation-scope decision (v1 = option a, LOCAL-ONLY):** the swarm binds **per-harness only**, so **workspace-global `topics` + operator-scope (`harness:'all'`) engineer-issues/conversations are WORKSPACE-LOCAL in v1 — NOT federated** (each machine keeps its own; `new_topic` is per-machine). This does not remove federation — all harness-scoped content federates. **Deferred upgrade path** if cross-machine sharing of global objects is later needed: the *canonical-harness binding* — write global/operator-scope rows under a designated federated home harness (e.g. `papercup`) so they ride its existing swarm with no new infra; or add a workspace-level swarm binding.
+- **Local-only (NOT federated):** subscriptions, per-subscriber inbox rows, watermarks, presence (machine/agent-local delivery state) — **plus, per the v1 scope decision above, workspace-global topics + operator-scope content**. Federated content arrives via peer-log; each machine's local fan-out delivers it to that machine's local subscribers.
 - This restores plan cross-machine sync (git→peer-log, [[plans-pg-canonical-migration-2026-06-03]] D-004) and keeps features/issues federation intact, all on one mechanism.
 
 ## Surface map (whole project → owning plan)
@@ -100,7 +101,7 @@ Topics, conversations, issues, features, plans are subscribable. Locks are NOT �
 2. Shared capability TS module (`@papercusp/coordination`): the six capability interfaces + helpers imported by every domain object.
 
 ### Phase 1 — Topics surface
-`topics:list`/`create`/`subscribe`/`unsubscribe`/`merge` + the built-in `new_topic` topic. Read-once-at-prompt + new_topic injection (D-004). Topics are in the federated set (D-009).
+`topics:list`/`create`/`subscribe`/`unsubscribe`/`merge` + the built-in `new_topic` topic. Read-once-at-prompt + new_topic injection (D-004). Topics are **workspace-local in v1** (federation deferred — D-009).
 
 ### Phase 2 — Add the fan-out projection (on the existing drain) + delivery tiering
 Register the local-inbox fan-out as a **new projection on the EXISTING `substrate_outbox` drain** (`startOutboxDrain` + `registerProjection` / `register-all.ts`) — the drain already runs the federation projections; add the fan-out alongside them. The fan-out resolves subscribers by topic/entity and writes per-subscriber rows into the `coord_event_log` 'messages' surface exactly as `fireNotifications` does today (so the inbox hook needs NO change beyond delivery-mode). The peer-log federation framework is the same per-table registration pattern that conversations/issues/plans/features plug into. Extend the inbox hook to render digests + respect mode.
@@ -117,4 +118,4 @@ Migrate any real consumer to entity/topic subscriptions; remove the path-glob wa
 
 ## Dependencies / non-goals
 - **Depends on:** the existing `substrate_outbox` + Hyperbee features/issues federation machinery + the inbox hook. (No dependency on another agent — I own the engine decisions, D-008.)
-- **Non-goals:** Zero/IVM/broker; reactive query-result subscriptions (agents re-query on a nudge). Federation is explicitly IN scope (D-009), including topic federation.
+- **Non-goals:** Zero/IVM/broker; reactive query-result subscriptions (agents re-query on a nudge); **cross-machine federation of workspace-global topics + operator-scope content (deferred — v1 is local-only, D-009)**. Harness-scoped content federation IS in scope (D-009).

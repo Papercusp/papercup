@@ -50,7 +50,7 @@ An issue blocks a LIST of targets, polymorphic over `plan_item | feature` — a 
 ## Build
 
 ### Phase 1 — Issues surface on the substrate
-Migration `engineer_issues` (shared enums; scope discriminator `harness:<slug>`|`operator`; assignee, tags, federation columns) + the `issues:*` CRUD/claim/comment/close verbs (comment = Threadable; tags = Taggable; claim = Claimable). Redefine `issues:list`.
+Migration `engineer_issues` (shared enums; scope discriminator `harness:<slug>`|`operator`; assignee, tags, federation columns) + the `issues:*` CRUD/claim/comment/close verbs (comment = Threadable; tags = Taggable; claim = Claimable). Redefine `issues:list`. (Federation per substrate D-009: `harness:<slug>` rows federate via the existing outbox; `operator`-scope rows are workspace-local in v1.)
 
 ### Phase 2 — Blocking edges
 The `issue_blocks` edge (issue → plan_item|feature, many-to-many); **merge it at the `plans:get`/`list`/`items` operator call-sites POST-resolution** (the pure resolver is untouched — D-005); project into the read output ("🚧 blocked by I-NNN"). This touches the same readers [[plans-pg-canonical-migration-2026-06-03]] Stage 1 rewrites to PG — sequence Stage 1 before/with this merge.

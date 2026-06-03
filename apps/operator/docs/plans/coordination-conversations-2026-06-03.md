@@ -40,7 +40,7 @@ The experts/roles system is deprecated and not used. A new conversation is tagge
 ### D-004 — Answer-capture writeback (the loop-closer)
 2026-06-03
 
-When a question resolves, the accepted answer is written back to the knowledge layer (mem0 / an `agent-insights` page / a `harness_decisions` entry — chosen by the resolver). This makes the NEXT asker get a sync knowledge-tier hit, and is the safety net if the original asker went idle (the answer is not lost). **NB (load-bearing, per the plan audit):** because `search:semantic` does NOT index raw conversations/issues today, the knowledge-first loop closes ONLY through this writeback into indexed surfaces — answer-capture is the mechanism, not a nicety. Optional follow-up: add conversations + issues as `search:semantic` sources so even un-captured threads become findable. **NB (audit): `harness_decisions` is harness-keyed (`harness_slug NOT NULL`), so an operator-scope (`harness:'all'`) conversation has no decisions home — route its captured answer to the operator's home harness OR an `operator_decisions` surface (resolved alongside the federation-scope decision). `mem0` + `agent-insights` carry no such constraint and work for any scope.**
+When a question resolves, the accepted answer is written back to the knowledge layer (mem0 / an `agent-insights` page / a `harness_decisions` entry — chosen by the resolver). This makes the NEXT asker get a sync knowledge-tier hit, and is the safety net if the original asker went idle (the answer is not lost). **NB (load-bearing, per the plan audit):** because `search:semantic` does NOT index raw conversations/issues today, the knowledge-first loop closes ONLY through this writeback into indexed surfaces — answer-capture is the mechanism, not a nicety. Optional follow-up: add conversations + issues as `search:semantic` sources so even un-captured threads become findable. **NB (audit + federation-scope decision = local-only v1): `harness_decisions` is harness-keyed (`harness_slug NOT NULL`) — a harness-scope conversation's answer lands there, but an operator-scope (`harness:'all'`) conversation has no `harness_decisions` home. Per substrate D-009 (operator-scope content is workspace-local in v1), operator-scope answers go to `mem0` / an `agent-insights` page (no scope constraint). A dedicated `operator_decisions` surface is only needed if operator-scope content later federates via the canonical-harness binding.**
 
 ### D-005 — A conversation can promote to an issue
 2026-06-03
@@ -57,7 +57,7 @@ A question/discussion that concludes "this is a real problem" promotes into an [
 - `conversations:join` — per-thread subscribe (substrate Subscribable), for the "I can contribute" motivation.
 
 ### Phase 2 — Answer-capture + promote
-- Resolve → writeback to mem0 / insights / a `harness_decisions` entry (or `operator_decisions` for operator-scope — D-004).
+- Resolve → writeback to mem0 / insights (any scope) or a `harness_decisions` entry (harness-scope); operator-scope → mem0/insights (local v1) — D-004.
 - `conversations:promote` → issue (re-parent the thread into [[engineer-issues-2026-06-03]]).
 
 ## Risks
