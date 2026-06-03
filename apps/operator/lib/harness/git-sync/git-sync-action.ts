@@ -20,7 +20,7 @@ import { inWorkspaceTxn } from '@/lib/agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '@/lib/agent-tools/locks/su-lock-store';
 import { loopbackFetch } from '@/lib/loopback-fetch';
 import { registerSystemAction, type SystemActionCtx } from '@/lib/harness/routines/system-actions';
-import { runGitSync, type GitSyncConfig, type GitSyncOutcome } from './run-git-sync';
+import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict } from './run-git-sync';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_RESOURCES = ['git-sync', 'libs-papercusp-submodule'] as const;
@@ -101,15 +101,18 @@ async function gitSyncEscalationOpen(slug: string): Promise<boolean> {
   }
 }
 
-async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicted: string[], scope: string): Promise<void> {
+async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicts: RepoConflict[]): Promise<void> {
   const { sql } = getOrgPg();
+  const scopes = conflicts.map((c) => c.scope);
   const body = JSON.stringify({
     kind: ESCALATION_KIND,
     harness_slug: slug,
-    scope, // which repo conflicted: 'superproject' or a submodule path
-    conflicted_files: conflicted,
+    // Every (sub)repo that conflicted this pass — the escalation (UNIQUE per
+    // harness+phase) carries them all so the resolver sees the full set.
+    conflicts: conflicts.map((c) => ({ scope: c.scope, conflicted_files: c.conflictedFiles })),
+    scope: scopes.join(', '),
     emitted_at: Date.now(),
-    detail: `git-sync auto-merge conflicted in ${scope}; tree aborted clean, merge-resolver dispatched.`,
+    detail: `git-sync auto-merge conflicted in ${scopes.join(', ')}; trees aborted clean, merge-resolver dispatched.`,
   });
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -133,34 +136,98 @@ async function clearGitSyncEscalation(slug: string): Promise<void> {
   );
 }
 
-/** Fire-and-forget spawn of a merge-resolver role via the invoke route (P-012). */
-async function spawnMergeResolver(slug: string, workspaceId: string, conflicted: string[], scope: string): Promise<void> {
+/**
+ * Spawn a merge-resolver role via the invoke route (P-012) — OBSERVABLY (GAP-2).
+ *
+ * The `/invoke` route is synchronous (runs the agent to completion, up to ~90s), so
+ * we MUST NOT await it: git-sync holds the exclusive git-sync + submodule locks for
+ * the whole handler. So this stays fire-and-forget — but it is no longer SILENT:
+ *   1. a durable `last_resolver: { status:'dispatched', … }` marker is written FIRST
+ *      (awaited), so the attempt is recorded even if the process restarts mid-run;
+ *   2. the eventual result (HTTP status, agent exitCode/timedOut, or a network error)
+ *      is recorded when the dangling promise settles — instead of vanishing into a
+ *      `void … .catch(console.warn)` that went to uncaptured stdout.
+ * Query `metadata->'last_resolver'` on the routine to see whether the resolver ran.
+ */
+async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: RepoConflict[]): Promise<void> {
   const ws = encodeURIComponent(workspaceId);
   const url = `${operatorBase()}/api/harness/${encodeURIComponent(slug)}/invoke?role=merge-resolver&ws=${ws}`;
-  const where = scope === 'superproject' ? 'the superproject' : `submodule '${scope}'`;
-  // Don't await the agent run to completion — it resolves the conflict asynchronously;
-  // the next git-sync tick sees a clean tree and clears the escalation.
-  void loopbackFetch(url, {
+  const scopes = conflicts.map((c) => c.scope);
+  const filesSummary = conflicts.map((c) => `${c.scope}: ${c.conflictedFiles.join(', ')}`).join('; ');
+  const dispatchedAt = Date.now();
+
+  // (1) durable "dispatched" marker, awaited — observable even if (2) is lost.
+  await recordResolverDispatch(slug, { at: dispatchedAt, status: 'dispatched', scopes });
+
+  // (2) async result recording. The /invoke route reads `extra` (forwarded to
+  // invoke-once) — `kickoff` is for human readability only (the route ignores it);
+  // the merge-resolver also reads the open escalation, which now lists every scope.
+  loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ kickoff: `Resolve the git-sync merge conflict in ${where} (on main). Conflicted files: ${conflicted.join(', ')}` }),
-  }).catch((e) => console.warn(`[git-sync] merge-resolver spawn failed (${slug}): ${e instanceof Error ? e.message : e}`));
+    body: JSON.stringify({
+      kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on main). Conflicted: ${filesSummary}`,
+      extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
+    }),
+  })
+    .then(async (res) => {
+      let exitCode: number | undefined;
+      let timedOut: boolean | undefined;
+      let detail = '';
+      try {
+        const j = (await res.json()) as { ok?: boolean; exitCode?: number; timedOut?: boolean; stderr?: string; decisionLine?: string };
+        exitCode = j?.exitCode;
+        timedOut = j?.timedOut;
+        if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
+        await recordResolverDispatch(slug, {
+          at: dispatchedAt,
+          status: res.ok && j?.ok !== false ? 'ok' : 'failed',
+          httpStatus: res.status, exitCode, timedOut, detail,
+        });
+      } catch {
+        await recordResolverDispatch(slug, { at: dispatchedAt, status: res.ok ? 'ok' : 'failed', httpStatus: res.status });
+      }
+    })
+    .catch(async (e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[git-sync] merge-resolver dispatch failed (${slug}): ${msg}`);
+      await recordResolverDispatch(slug, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
+    });
 }
 
-async function recordOutcome(slug: string, outcome: GitSyncOutcome): Promise<void> {
+/** Record the merge-resolver dispatch lifecycle onto the routine metadata (GAP-2). */
+async function recordResolverDispatch(slug: string, info: Record<string, unknown>): Promise<void> {
+  try {
+    await patchRoutineMetadata(slug, { last_resolver: info });
+  } catch (e) {
+    console.warn(`[git-sync] failed to record resolver dispatch (${slug}): ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** Merge a partial metadata patch onto the git-sync routine's JSONB. */
+async function patchRoutineMetadata(slug: string, patch: Record<string, unknown>): Promise<void> {
   const { sql } = getOrgPg();
-  const meta = {
-    last_status: outcome.status,
-    last_synced_at: Date.now(),
-    ...(outcome.status === 'synced' ? { head_sha: outcome.headSha, pushed: outcome.pushed } : {}),
-    ...(outcome.status === 'error' ? { last_error: outcome.message } : {}),
-  };
   await sql.unsafe(
     `UPDATE harness_shared.routines
         SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
       WHERE install_slug = $1 AND target_role = 'system:git-sync'`,
-    [slug, JSON.stringify(meta)],
+    [slug, JSON.stringify(patch)],
   );
+}
+
+async function recordOutcome(slug: string, outcome: GitSyncOutcome): Promise<void> {
+  const pushed = 'pushed' in outcome ? outcome.pushed : [];
+  const merged = 'merged' in outcome ? outcome.merged : [];
+  await patchRoutineMetadata(slug, {
+    last_status: outcome.status,
+    last_synced_at: Date.now(),
+    last_pushed: pushed,
+    last_merged: merged,
+    last_conflicts: outcome.status === 'conflict' ? outcome.conflicts.map((c) => c.scope) : [],
+    // GAP-3: clear the stale error on any non-error outcome (JSONB `||` keeps old keys).
+    last_error: outcome.status === 'error' ? outcome.errors.map((e) => `${e.scope}: ${e.message}`).join('; ') : null,
+    ...(outcome.status === 'synced' ? { head_sha: outcome.headSha } : {}),
+  });
 }
 
 /** The registered `system:git-sync` handler. */
@@ -186,17 +253,21 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   await recordOutcome(slug, outcome);
 
   if (outcome.status === 'conflict') {
-    // P-010/P-012: file the escalation + spawn a resolver, deduped on the open escalation.
+    // P-010/P-012: file the escalation (listing every conflicted scope) + spawn a
+    // resolver, deduped on the open escalation. Sibling submodules still pushed (GAP-1).
     const alreadyOpen = await gitSyncEscalationOpen(slug);
-    await writeGitSyncEscalation(slug, workspaceId, outcome.conflictedFiles, outcome.scope);
+    await writeGitSyncEscalation(slug, workspaceId, outcome.conflicts);
     if (!alreadyOpen) {
-      console.warn(`[git-sync] ${slug}: merge conflict in ${outcome.scope} (${outcome.conflictedFiles.join(', ')}) — spawning merge-resolver`);
-      await spawnMergeResolver(slug, workspaceId, outcome.conflictedFiles, outcome.scope);
+      const scopes = outcome.conflicts.map((c) => c.scope).join(', ');
+      console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
+      await spawnMergeResolver(slug, workspaceId, outcome.conflicts);
     }
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.
     await clearGitSyncEscalation(slug);
   }
+  // status === 'error' (no conflict): leave any open escalation untouched; errors
+  // aren't merge conflicts and shouldn't trigger/clear the resolver.
 }
 
 registerSystemAction('git-sync', handleGitSync);

@@ -52,11 +52,31 @@ export interface GitSyncConfig {
   message?: string;
 }
 
+/** One (sub)repo that hit a merge conflict during a pass. */
+export interface RepoConflict {
+  /** Which repo conflicted: 'superproject' or a submodule path (repo-relative). */
+  scope: string;
+  conflictedFiles: string[];
+}
+/** One (sub)repo that errored (e.g. a push that wasn't a recoverable non-ff). */
+export interface RepoError {
+  scope: string;
+  message: string;
+}
+
+/**
+ * The aggregate result of one whole-repo pass. `pushed`/`merged` name the scopes
+ * ('superproject' or submodule paths) that were pushed to / merged from origin, so
+ * a caller can report exactly what moved. A pass NO LONGER stops at the first
+ * conflict: it reconciles every submodule it can, COLLECTS conflicts/errors, and
+ * only defers the superproject (see runGitSync). `status` is the worst outcome:
+ * any conflict → 'conflict', else any error → 'error', else 'synced'/'nothing'.
+ */
 export type GitSyncOutcome =
   | { status: 'nothing' }
-  | { status: 'synced'; headSha: string; pushed: boolean }
-  | { status: 'conflict'; conflictedFiles: string[]; scope: string }
-  | { status: 'error'; message: string };
+  | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
+  | { status: 'conflict'; conflicts: RepoConflict[]; errors: RepoError[]; pushed: string[]; merged: string[] }
+  | { status: 'error'; errors: RepoError[]; pushed: string[]; merged: string[] };
 
 export interface RunGitSyncOpts {
   /** Override the repo path (tests); else resolved via `projectDirForSlug(slug)`. */
@@ -114,7 +134,7 @@ const discoverSubmodulesRecursive = async (runGit: RunGit, repo: string): Promis
 
 type RepoSyncResult =
   | { status: 'nothing' }
-  | { status: 'synced'; pushed: boolean }
+  | { status: 'synced'; pushed: boolean; merged: boolean }
   | { status: 'conflict'; conflictedFiles: string[] }
   | { status: 'error'; message: string };
 
@@ -140,7 +160,7 @@ async function syncOneRepo(
   const fetch = await runGit(['fetch', remote, branch], repoPath);
   if (fetch.code !== 0) {
     // Offline / no remote: a local commit still happened (or nothing did).
-    return committedLocal ? { status: 'synced', pushed: false } : { status: 'nothing' };
+    return committedLocal ? { status: 'synced', pushed: false, merged: false } : { status: 'nothing' };
   }
 
   const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
@@ -173,14 +193,21 @@ async function syncOneRepo(
   }
 
   if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
-  return { status: 'synced', pushed };
+  return { status: 'synced', pushed, merged: mergedNew };
 }
 
 /**
  * Run one git-sync pass for `slug`. Syncs all submodules (recursively, deepest-first)
  * then the superproject. Returns a structured outcome; never throws. The caller
- * (git-sync-action) handles `conflict` (escalation + resolver, scoped to the repo
+ * (git-sync-action) handles `conflict` (escalation + resolver, scoped to each repo
  * that conflicted) and records metadata.
+ *
+ * A conflict in ONE submodule no longer aborts the whole pass: every other submodule
+ * still gets reconciled + pushed (a wedged libs/X must not block libs/Y). Conflicts +
+ * errors are COLLECTED. The superproject, however, is only synced when EVERY submodule
+ * reconciled — pushing the superproject while a submodule's local commits aren't yet on
+ * its origin would publish a gitlink a fresh clone can't resolve. So a single
+ * unreconciled submodule defers the superproject push to a later (clean) tick.
  */
 export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promise<GitSyncOutcome> {
   const runGit = opts.runGit ?? defaultRunGit;
@@ -193,9 +220,32 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const log = opts.log ?? (() => {});
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));
-  if (!repo) return { status: 'error', message: `no repo path registered for harness '${slug}'` };
+  if (!repo) {
+    return { status: 'error', errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }], pushed: [], merged: [] };
+  }
 
-  // Submodules first, deepest-first (dynamic recursive discovery).
+  const conflicts: RepoConflict[] = [];
+  const errors: RepoError[] = [];
+  const pushed: string[] = [];
+  const merged: string[] = [];
+  let didSomething = false;
+
+  const absorb = (scope: string, r: RepoSyncResult): void => {
+    if (r.status === 'conflict') {
+      conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
+      log(`[git-sync] ${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`);
+    } else if (r.status === 'error') {
+      errors.push({ scope, message: r.message });
+      log(`[git-sync] ${scope}: ${r.message} — continuing (${slug})`);
+    } else if (r.status === 'synced') {
+      didSomething = true;
+      if (r.pushed) pushed.push(scope);
+      if (r.merged) merged.push(scope);
+    }
+  };
+
+  // Submodules first, deepest-first (dynamic recursive discovery). Each is independent —
+  // a conflict/error in one is collected; the rest still sync.
   let subPaths: string[] = [];
   if (doSub) {
     subPaths = opts.submodulePaths
@@ -203,19 +253,20 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       : await discoverSubmodulesRecursive(runGit, repo);
   }
   for (const sub of subPaths) {
-    const r = await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: branch, message, doPush });
-    if (r.status === 'conflict') return { status: 'conflict', conflictedFiles: r.conflictedFiles, scope: sub };
-    if (r.status === 'error') {
-      log(`[git-sync] submodule '${sub}' failed (${slug}): ${r.message}`);
-      return { status: 'error', message: `submodule '${sub}': ${r.message}` };
-    }
-    // synced/nothing → any pointer bump is now a dirty change in the parent, synced next.
+    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: branch, message, doPush }));
   }
 
-  // Superproject last (its bumped submodule pointers are committed + pushed here).
-  const top = await syncOneRepo(runGit, repo, { remote, defaultBranch: branch, message, doPush });
-  if (top.status === 'conflict') return { status: 'conflict', conflictedFiles: top.conflictedFiles, scope: 'superproject' };
-  if (top.status === 'error') return { status: 'error', message: top.message };
-  if (top.status === 'nothing') return { status: 'nothing' };
-  return { status: 'synced', headSha: await headSha(runGit, repo), pushed: top.pushed };
+  // Superproject last — ONLY when every submodule reconciled (else its bumped pointers
+  // would reference unpushed submodule commits). One unreconciled submodule defers it.
+  const blocked = conflicts.length > 0 || errors.length > 0;
+  if (!blocked) {
+    absorb('superproject', await syncOneRepo(runGit, repo, { remote, defaultBranch: branch, message, doPush }));
+  } else {
+    log(`[git-sync] ${conflicts.length} conflict(s) + ${errors.length} error(s) in submodules — deferring superproject push (${slug})`);
+  }
+
+  if (conflicts.length > 0) return { status: 'conflict', conflicts, errors, pushed, merged };
+  if (errors.length > 0) return { status: 'error', errors, pushed, merged };
+  if (!didSomething) return { status: 'nothing' };
+  return { status: 'synced', headSha: await headSha(runGit, repo), pushed, merged };
 }
