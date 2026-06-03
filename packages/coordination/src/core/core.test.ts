@@ -87,11 +87,15 @@ describe('filterInbox', () => {
     env({ msg_id: 'c', kind: 'notify', from: 'C', to: ['B'] }),
     env({ msg_id: 'd', kind: 'message', from: 'B', to: ['B'] }), // own
   ];
-  it('selects to-me + broadcast, excludes own by default', () => {
-    expect(filterInbox(lines, 'B').map((l) => l.msg_id)).toEqual(['a', 'b', 'c']);
+  it('selects to-me + broadcast, excludes own + the notify firehose by default', () => {
+    // 'c' is a notify — excluded by default per D-002 (the firehose is opt-in);
+    // 'd' is own (from B) — excluded. So only the to-me message + broadcast.
+    expect(filterInbox(lines, 'B').map((l) => l.msg_id)).toEqual(['a', 'b']);
   });
   it('honours excludeOwn=false and kind filter', () => {
-    expect(filterInbox(lines, 'B', { excludeOwn: false }).map((l) => l.msg_id).sort()).toEqual(['a', 'b', 'c', 'd']);
+    // excludeOwn:false re-includes own ('d'); notify ('c') is still default-excluded.
+    expect(filterInbox(lines, 'B', { excludeOwn: false }).map((l) => l.msg_id).sort()).toEqual(['a', 'b', 'd']);
+    // kinds:['notify'] opts INTO the firehose — only the notify.
     expect(filterInbox(lines, 'B', { kinds: ['notify'] }).map((l) => l.msg_id)).toEqual(['c']);
   });
 });
