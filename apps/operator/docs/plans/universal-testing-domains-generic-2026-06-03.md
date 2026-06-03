@@ -14,9 +14,9 @@ supersedes: []
 
 ## Now
 
-**State:** Phase 0 DONE (P-001..003). Reconciled the two diverged testing-shell checkouts to a common main HEAD — papercup main was strictly ahead of Restart's detached 513621c (carried k6.ts category-helpers + sse.ts from the prior plan's P-010/P-011); Restart had 3 uncommitted files = a stranded CSS-token migration (hex→var(--*)) which was recovered + committed (b78dfb1) and both checkouts fast-forwarded. ./server export + optional hono/playwright/stagehand peers scaffolded. Both checkouts at 1c859ba; lib tests 57/57 green. Refinements found: lib already has k6 category-helpers (k6.ts) + readSSEStream (sse.ts) — Phase 1 reuses them rather than re-creating (so P-014's 'inline SSE reader' is unnecessary).
+**State:** Phases 0–3 DONE + committed + both checkouts synced at 9e8d5da; lib suite 91/91 green. Phase 1 k6 (server/k6 cores + k6-routes Hono router + LoadTestPanel). Phase 2 chaos-web core (server/chaos.ts spawnChaosWebStream). Phase 3 AI Explore (server/stagehand-runner.mjs moved+startUrl-required, server/ai-explore.ts cores + spawnAiExploreSSE, web/AiExplorePanel generic). Live-web/chaos-web panels already existed. Backend cores follow D-002 (framework-agnostic core + thin per-app wrapper; Hono routers behind their own subpath exports so ./server stays hono-free). Remaining: Phase 4 (chaos-desktop in-app recorder → desktop/), Phase 5 (un-narrow universal.ts + buildUniversalTesting helper), Phase 6 (rewire Restart + operator onto the lib, delete bespoke, land submodule, live-verify), Phase 7 (LLM framework → lib + Restart ScoutTarget). Note: a peer is active in apps/operator/lib/llm-testing/** — re-coordinate before Phase 7.
 
-**Next:** Start Phase 1 (k6): P-010 write server/k6.test.ts failing tests for parseScriptMeta/listK6Scripts, then implement server/k6.ts cores + createK6HonoRoutes + port LoadTestPanel (reusing ./k6 helpers + ./sse).
+**Next:** Phase 4: port the operator's in-app perf-recorder chaos (recorder-channel + RecorderHost + ChaosTab) into libs/testing-shell/src/desktop/, parameterized by {recorderUrl, route, blocklist, durations}.
 
 ## Background
 
@@ -151,27 +151,27 @@ All lib edits happen in **one** checkout to avoid double-divergence. Use the **p
 
 **`server/k6.ts` interface (extract the pure pieces from Restart's `load-tests.ts`):**
 
-```ts
-import { Hono } from 'hono';
-export interface K6ScriptMeta { id: string; name: string; description: string; category: string; estimatedDuration: string; defaultVUs: number; }
-export interface K6ResultMeta { id: string; project?: string; scriptId: string; scriptName: string; startedAt: string; exitCode: number | null; log: string[]; }
-export function parseScriptMeta(content: string, fileName: string): K6ScriptMeta;   // the @tag regex parser, content injected (testable, no fs)
-export function listK6Scripts(scriptsDir: string): K6ScriptMeta[];
-export function listK6Results(resultsDir: string): K6ResultMeta[];
-export function getK6Result(resultsDir: string, id: string): K6ResultMeta | null;
-/** Spawn `k6 run`, stream SSE `data: {type:'log'|'done'|'error',...}`. Writes a .meta.json sidecar on close. */
-export function runK6Stream(opts: { k6Bin: string; scriptId: string; scriptsDir: string; resultsDir: string; repoRoot: string; vus?: number; duration?: string; project?: string }): ReadableStream<Uint8Array>;
-/** Hono convenience router: GET /scripts, POST /run, POST /stop, GET /results, GET /results/:id.
- *  resolvePaths maps the optional ?project= to dirs (Restart's getProject; papercup a fixed dir). */
-export function createK6HonoRoutes(cfg: { k6Bin: string; resolvePaths: (project: string | undefined) => { repoRoot: string; scriptsDir: string; resultsDir: string } }): Hono;
-```
+     
+                            
+                                                                                                                                                 
+                                                                                                                                                                
+                                                                                                                                                
+                                                                  
+                                                                  
+                                                                                 
+                                                                                                                
+                                                                                                                                                                                                                
+                                                                                                 
+                                                                                                     
+                                                                                                                                                                              
+   
 
-- **P-010** `todo` Write `server/k6.test.ts` failing tests: `parseScriptMeta` extracts `@name/@category/@defaultVUs` from a sample header string and defaults id/category when absent; `listK6Scripts` over a mocked `readdirSync`+`readFileSync` returns parsed metas and `[]` when dir missing. Run `npm -w @papercusp/testing-shell test -- k6` → FAIL (module missing).
-- **P-011** `todo` Implement `parseScriptMeta`/`listK6Scripts`/`listK6Results`/`getK6Result` in `server/k6.ts` (lift the regex + fs logic verbatim from `Restart/apps/web/app/api/_hono/load-tests.ts` lines 33–60, 65–72, 188–215; take `content`/dirs as args instead of reading `c.req.query`). Run tests → PASS. Commit.
-- **P-012** `todo` Add a `runK6Stream` test: mock `spawn` to emit two stdout lines + `close(0)`; assert the stream yields `data: {"type":"log"...}` lines then `data: {"type":"done","code":0,...}` and that a `<resultId>.meta.json` is written (mock `writeFileSync`, assert called with the log array). Implement `runK6Stream` (lift `load-tests.ts` lines 95–176, SSE encoder + single-child model + sidecar write; the module-level `runningChild` becomes closure state returned alongside, or keep a module singleton — keep the singleton to preserve "one run at a time"). Run → PASS. Commit.
-- **P-013** `todo` Add `createK6HonoRoutes` test: build the router with a stub `resolvePaths`+fake dirs (mock fs), `app.request('/scripts')` → 200 JSON `{scripts}`; `app.request('/run',{method:'POST',body})` with unknown scriptId → 404; valid → streamed Response. Implement `createK6HonoRoutes` (the 5 routes delegating to the cores; `ALLOWED` scriptId regex `^[a-z0-9-]+$` preserved). Run → PASS. Commit.
-- **P-014** `todo` Port `LoadTestPanel.tsx` into `libs/testing-shell/src/web/`. Change: replace `useProject()` + hardcoded `/api/load-tests/*` with **props** `{ scriptsEndpoint, runEndpoint, stopEndpoint, resultsEndpoint, project? }`; the `?project=` query becomes `props.project ? \`?project=${props.project}\` : ''`. Replace `import { readSSEStream } from '@/lib/sse'` with a small inlined SSE line-reader (the lib can't import Restart's `@/lib/sse`) — or add `parseSSE` to `run-status.ts`/a tiny `web/sse.ts` and unit-test it. Keep the inline `<style>` and `var(--*)` tokens (lib panels already use them). Export from `index.ts`. Add a render test (RTL): given a mock `fetch` returning 2 scripts, the script list renders 2 buttons. Run → PASS. Commit.
-- **P-015** `todo` Add `LoadTestPanel` + the k6 cores to `src/server/index.ts` barrel and `src/index.ts`. Run `npm -w @papercusp/testing-shell test` (full) → PASS. Commit. (Restart rewiring happens in Phase 6.)
+- **P-010** `done` Write `server/k6.test.ts` failing tests: `parseScriptMeta` extracts `@name/@category/@defaultVUs` from a sample header string and defaults id/category when absent; `listK6Scripts` over a mocked `readdirSync`+`readFileSync` returns parsed metas and `[]` when dir missing. Run `npm -w @papercusp/testing-shell test -- k6` → FAIL (module missing).
+- **P-011** `done` Implement `parseScriptMeta`/`listK6Scripts`/`listK6Results`/`getK6Result` in `server/k6.ts` (lift the regex + fs logic verbatim from `Restart/apps/web/app/api/_hono/load-tests.ts` lines 33–60, 65–72, 188–215; take `content`/dirs as args instead of reading `c.req.query`). Run tests → PASS. Commit.
+- **P-012** `done` Add a `runK6Stream` test: mock `spawn` to emit two stdout lines + `close(0)`; assert the stream yields `data: {"type":"log"...}` lines then `data: {"type":"done","code":0,...}` and that a `<resultId>.meta.json` is written (mock `writeFileSync`, assert called with the log array). Implement `runK6Stream` (lift `load-tests.ts` lines 95–176, SSE encoder + single-child model + sidecar write; the module-level `runningChild` becomes closure state returned alongside, or keep a module singleton — keep the singleton to preserve "one run at a time"). Run → PASS. Commit.
+- **P-013** `done` Add `createK6HonoRoutes` test: build the router with a stub `resolvePaths`+fake dirs (mock fs), `app.request('/scripts')` → 200 JSON `{scripts}`; `app.request('/run',{method:'POST',body})` with unknown scriptId → 404; valid → streamed Response. Implement `createK6HonoRoutes` (the 5 routes delegating to the cores; `ALLOWED` scriptId regex `^[a-z0-9-]+$` preserved). Run → PASS. Commit.
+- **P-014** `done` Port `LoadTestPanel.tsx` into `libs/testing-shell/src/web/`. Change: replace `useProject()` + hardcoded `/api/load-tests/*` with **props** `{ scriptsEndpoint, runEndpoint, stopEndpoint, resultsEndpoint, project? }`; the `?project=` query becomes `props.project ? \`?project=${props.project}\` : ''`. Replace `import { readSSEStream } from '@/lib/sse'` with a small inlined SSE line-reader (the lib can't import Restart's `@/lib/sse`) — or add `parseSSE` to `run-status.ts`/a tiny `web/sse.ts` and unit-test it. Keep the inline `<style>` and `var(--*)` tokens (lib panels already use them). Export from `index.ts`. Add a render test (RTL): given a mock `fetch` returning 2 scripts, the script list renders 2 buttons. Run → PASS. Commit. (ported; reused ../sse readSSEStream; endpoints via props; kept token-based category colors lib k6.ts colors are hex — reconciling them is a separate cleanup.)
+- **P-015** `done` Add `LoadTestPanel` + the k6 cores to `src/server/index.ts` barrel and `src/index.ts`. Run `npm -w @papercusp/testing-shell test` (full) → PASS. Commit. (Restart rewiring happens in Phase 6.) (./server barrel exports k6 cores; ./server/k6-routes subpath added; index.ts exports LoadTestPanel. 72/72 green.)
 
 ## Phase 2 — Chaos-web backend core
 
@@ -183,19 +183,19 @@ export function createK6HonoRoutes(cfg: { k6Bin: string; resolvePaths: (project:
 
 **`server/chaos.ts` interface:**
 
-```ts
-/** localhost-only guard (lifted from both routes verbatim). */
-export const ALLOWED_BASE: RegExp;  // /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/
-export function clampMaxSteps(n: unknown): number;   // Math.max(1, Math.min(200, floor(n) || 25))
-/** Resolve chaos-runner.mjs from a repoRoot (node_modules or src path), or null. */
-export function resolveChaosRunner(repoRoot: string): string | null;
-/** Spawn chaos-runner.mjs, forward its NDJSON stdout verbatim, wrap stderr as {type:'error'}. One run at a time. */
-export function spawnChaosWebStream(opts: { baseUrl: string; maxSteps: number; repoRoot: string }): ReadableStream<Uint8Array>;
-```
+     
+                                                               
+                                                                                          
+                                                                                                  
+                                                                                    
+                                                                    
+                                                                                                                    
+                                                                                                                               
+   
 
-- **P-020** `todo` Write `chaos.test.ts`: `clampMaxSteps` (NaN→25, 0→1, 999→200, '50'→50); `ALLOWED_BASE` accepts `http://localhost:4321/` + `http://127.0.0.1:3070` and rejects `https://evil.com`; `resolveChaosRunner` returns the path when `existsSync` (mocked) true, null otherwise. Run → FAIL.
-- **P-021** `todo` Implement those three pure/near-pure fns in `server/chaos.ts`. Run → PASS. Commit.
-- **P-022** `todo` Add a `spawnChaosWebStream` test: mock `spawn` to emit one NDJSON line on stdout + `close()`; assert the stream forwards the line verbatim; emit a stderr chunk and assert it surfaces as `{"type":"error",...}\n`. Implement `spawnChaosWebStream` (lift Restart `chaos-web.ts` lines 44–78 — the ReadableStream + single `runningChild`). Export from `server/index.ts`. Run → PASS. Commit.
+- **P-020** `done` Write `chaos.test.ts`: `clampMaxSteps` (NaN→25, 0→1, 999→200, '50'→50); `ALLOWED_BASE` accepts `http://localhost:4321/` + `http://127.0.0.1:3070` and rejects `https://evil.com`; `resolveChaosRunner` returns the path when `existsSync` (mocked) true, null otherwise. Run → FAIL.
+- **P-021** `done` Implement those three pure/near-pure fns in `server/chaos.ts`. Run → PASS. Commit.
+- **P-022** `done` Add a `spawnChaosWebStream` test: mock `spawn` to emit one NDJSON line on stdout + `close()`; assert the stream forwards the line verbatim; emit a stderr chunk and assert it surfaces as `{"type":"error",...}\n`. Implement `spawnChaosWebStream` (lift Restart `chaos-web.ts` lines 44–78 — the ReadableStream + single `runningChild`). Export from `server/index.ts`. Run → PASS. Commit. (server/chaos.ts core + 5 tests; exported from ./server. Route rewiring is Phase 6. Full suite 77/77.)
 
 ## Phase 3 — AI Explore universal
 
@@ -210,22 +210,22 @@ export function spawnChaosWebStream(opts: { baseUrl: string; maxSteps: number; r
 
 **`server/ai-explore.ts` interface:**
 
-```ts
-export interface AiExploreConfig { goal: string; startUrl: string; model: string; apiKey: string; maxSteps?: number; maxCostUsd?: number; headless?: boolean; }
-export interface AiExploreModel { id: string; label: string; inputPer1M: number; outputPer1M: number; }
-export const DEFAULT_MODELS: AiExploreModel[];   // the 3 entries lifted from stagehand-runner pricing (Sonnet 4.6 / Opus 4.7 / Haiku 4.5)
-export function parseAiExploreConfig(body: unknown): { ok: true; cfg: Omit<AiExploreConfig,'apiKey'> } | { ok: false; msg: string };  // validation lifted from operator route parseConfig
-/** Resolve the bundled stagehand-runner.mjs path (from this module's dir). */
-export function resolveStagehandRunner(): string;
-/** Spawn the runner with config on stdin; return the child + a line-event async-iterator the caller maps to its transport. */
-export function spawnAiExploreStream(cfg: AiExploreConfig): { child: import('node:child_process').ChildProcess; lines: AsyncIterable<{ type: string; [k: string]: unknown }> };
-```
+     
+                                                                                                                                                               
+                                                                                                       
+                                                                                                                                          
+                                                                                                                                                                                          
+                                                                              
+                                                 
+                                                                                                                              
+                                                                                                                                                                               
+   
 
-- **P-030** `todo` Move `apps/operator/scripts/stagehand-runner.mjs` → `libs/testing-shell/src/server/stagehand-runner.mjs` (`git mv` in the operator repo is wrong — the file moves *into the submodule*; copy it into the lib, then delete the operator copy in Phase 6). Make `startUrl` required (drop the `127.0.0.1:3055` fallback; throw `{type:'error',message:'startUrl required'}` if absent). Export the pricing table as a named const so the core can re-expose it. Add the `./server/stagehand-runner` package export. Commit.
-- **P-031** `todo` Write `ai-explore.test.ts`: `parseAiExploreConfig` rejects missing `goal`/`startUrl` with a message, clamps `maxSteps` to [1,50] and `maxCostUsd` to [0.05,20] (mirror operator `parseConfig` bounds), and passes a valid body; `DEFAULT_MODELS` has the 3 ids. Run → FAIL.
-- **P-032** `todo` Implement `parseAiExploreConfig` + `DEFAULT_MODELS` + `resolveStagehandRunner` in `server/ai-explore.ts` (lift validation from operator `testing-ai-explore.ts` `parseConfig`). Run → PASS. Commit.
-- **P-033** `todo` Implement `spawnAiExploreStream` (spawn `process.execPath [runnerPath]`, write `JSON.stringify(cfg)` to stdin, `createInterface` over stdout → yield parsed JSON lines; non-JSON lines → `{type:'log',level:'info',line}`). Add a test mocking `spawn` with a fake stdout stream of two JSON lines; assert the async-iterator yields both parsed. Export from `server/index.ts`. Run → PASS. Commit.
-- **P-034** `todo` Port `AIExploreTab.tsx` → `libs/testing-shell/src/web/AiExplorePanel.tsx`. Props: `{ runEndpoint: string; defaultStartUrl: string; defaultGoal?: string; models?: AiExploreModel[] }` (default `models = DEFAULT_MODELS`). Replace operator imports (`toast` etc.) with lib-safe equivalents (inline minimal status text instead of `toast`; the panel already manages its own event list). Keep the SSE `event:`/`data:` line parser (operator lines 110–135). Export from `index.ts`. Add an RTL render test: renders the goal input + model `<select>` with `models.length` options; clicking Run with empty goal shows the inline "enter a goal" message. Run → PASS. Commit.
+- **P-030** `done` Move `apps/operator/scripts/stagehand-runner.mjs` → `libs/testing-shell/src/server/stagehand-runner.mjs` (`git mv` in the operator repo is wrong — the file moves *into the submodule*; copy it into the lib, then delete the operator copy in Phase 6). Make `startUrl` required (drop the `127.0.0.1:3055` fallback; throw `{type:'error',message:'startUrl required'}` if absent). Export the pricing table as a named const so the core can re-expose it. Add the `./server/stagehand-runner` package export. Commit. (runner COPIED into lib operator copy deleted in Phase 6/P-063; startUrl now required; ./server/stagehand-runner export added.)
+- **P-031** `done` Write `ai-explore.test.ts`: `parseAiExploreConfig` rejects missing `goal`/`startUrl` with a message, clamps `maxSteps` to [1,50] and `maxCostUsd` to [0.05,20] (mirror operator `parseConfig` bounds), and passes a valid body; `DEFAULT_MODELS` has the 3 ids. Run → FAIL.
+- **P-032** `done` Implement `parseAiExploreConfig` + `DEFAULT_MODELS` + `resolveStagehandRunner` in `server/ai-explore.ts` (lift validation from operator `testing-ai-explore.ts` `parseConfig`). Run → PASS. Commit.
+- **P-033** `done` Implement `spawnAiExploreStream` (spawn `process.execPath [runnerPath]`, write `JSON.stringify(cfg)` to stdin, `createInterface` over stdout → yield parsed JSON lines; non-JSON lines → `{type:'log',level:'info',line}`). Add a test mocking `spawn` with a fake stdout stream of two JSON lines; assert the async-iterator yields both parsed. Export from `server/index.ts`. Run → PASS. Commit. (spawnAiExplore + parseAiExploreLine + spawnAiExploreSSE; exported from ./server.)
+- **P-034** `done` Port `AIExploreTab.tsx` → `libs/testing-shell/src/web/AiExplorePanel.tsx`. Props: `{ runEndpoint: string; defaultStartUrl: string; defaultGoal?: string; models?: AiExploreModel[] }` (default `models = DEFAULT_MODELS`). Replace operator imports (`toast` etc.) with lib-safe equivalents (inline minimal status text instead of `toast`; the panel already manages its own event list). Keep the SSE `event:`/`data:` line parser (operator lines 110–135). Export from `index.ts`. Add an RTL render test: renders the goal input + model `<select>` with `models.length` options; clicking Run with empty goal shows the inline "enter a goal" message. Run → PASS. Commit. (web/AiExplorePanel.tsx generic props, no operator deps, inline model list to avoid client/server coupling; +3 RTL tests. Dropped the operator inline credential-mgmt UI backend owns the key; missing key surfaces as a run error.)
 
 ## Phase 4 — Chaos-desktop (in-app perf-recorder) universal
 
