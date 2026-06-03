@@ -11,9 +11,50 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Overnight build COMPLETE for everything safely autonomous: ~all plan items built+TDD'd+committed under apps/operator/lib/gym/ (194 unit tests + live-PG integration, green); the hermetic SPINE is smoke-validated end-to-end; the boot smoke is now RELIABLE (dedicated pgvector container — fixed the shared-reused-container ECONNREFUSED flake). The worker last-mile is now PINNED: pg-bootstrap connects with the CORRECT search_path (harness_<slug>,harness_shared,public) + ctx.pg active + the harness_features view present — so it is NOT slug/search_path/DB (the hyphen-free + basename fixes were right). The remaining failure is a deeper invoke.ts/state-pg.ts path querying harness_features on a non-ctx.pg (no harness search_path) client. Full runbook in lib/gym/README.md.
+**State (2026-06-03, second overnight pass — real-agent last-mile + runner service + dashboard):**
+The gym now runs the REAL multi-agent pipeline with REAL coding agents end-to-end — the keystone
+the prior pass's "Next" was blocked on. The prior pass had only ever validated with a FAKE agent,
+so two real-integration bugs (untested) surfaced on the first real A/B and are now FIXED:
 
-**Next:** THREE items need avi/owner (autonomous work exhausted): (1) worker last-mile — a ~2-min trace in shared orchestrator code (invoke.ts/state-pg.ts: which query/client throws 'harness_features does not exist'? point it at the harness-scoped ctx.pg) — NOT edited unattended; smoke is reliable for the trace-and-rerun. (2) P-014 real A/B (variance/cost/correlation tools ready). (3) P-024 dashboard UI (data layer ready). Loop continues on a long heartbeat; truly quiet now.
+1. **spawn-signing-key missing in a fresh gym DB** (`4124771f4`). The orchestrator's `spawn-mcp`
+   could not SIGN the agent's per-spawn `.mcp.json` (the live operator mints the key lazily on its
+   first verify callback, which never happens in a fresh gym before its first spawn), so strict
+   mode refused an unsigned URL → `.mcp.json` was never written → `claude -p --mcp-config <path>
+   --strict-mcp-config` aborted exit 1, surfaced upstream only as the opaque "decide invoke failed
+   (exit=1, empty=true)". Fix: `premintSpawnSigningKey()` during `provisionGymDatabase` (idempotent).
+2. **AGENT_MODELS leaked from the launcher** (`d9fb2b5f5`). The boot-spec pinned AGENT_CMD=sonnet
+   but not AGENT_MODELS, so the dev box's `.env.local` (`{"worker":"opus"}`) leaked in and silently
+   ran the gym worker on opus — inflated cost + a machine-dependent model (violates D-016). Fix: the
+   boot-spec ALWAYS pins AGENT_MODELS (default `{}` → every role on AGENT_CMD's model).
+
+Plus permanent observability so the previously-silent failure modes (resolveProject-null vs an
+agent that exits empty) are distinguishable (`orchestrator-runner.ts`, `PAPERCUSP_DBOS_INVOKE_DEBUG=1`).
+
+With both fixed, a real A/B boots the gym-operator, spawns real `claude -p` agents with a valid
+`.mcp.json`, and runs director→worker→validator→debugger: **`invoke worker rc=0` repeatedly, real
+commits** (confirmed). See D-021.
+
+**Built + tested this pass (committed):**
+- **D-020 autoloop runner service** — `buildLoopDeps` (real `LoopDeps` over the smoke-proven
+  per-run engine → pool→`VariantEval` aggregation + worst-traces + real proposer) and the runnable
+  `gym-loop-run.ts` (boots the operator, runs `runOptimizationLoop` budget-capped + human-gated,
+  records each scored candidate as a reviewable `gym_proposals` row). 8 unit tests + a live-PG
+  integration test of the whole loop→control-plane wiring (proposals/cycles/autoloop + accept→promote),
+  2/2 green (`d8b10e767`, `store.insertCycle`).
+- **P-024 dashboard** — a functional `/gym` instrument panel (proposer-diff review→accept/promote,
+  per-role+judge prompt editor, autoloop control, run-analytics) wired to `/api/gym/*`, nuqs state,
+  4 render tests (`4de5b83f1`). Visual polish (Pareto scatter, Monaco) is a focused designer pass on
+  top — see D-022.
+
+**Next:** (1) **P-014 real A/B** — running on capacity (`GYM_AB_REPEATS=2`, all-sonnet). It progresses
+but the minimal `index.js` substrate has no buildable TS setup, so the worker's code fails the L1
+typecheck gate → debugger/rework loops to the iteration cap (terminal=failing, which D-011 keeps as
+observability, not a reward — the judge still scores the work). **Finding: the synthetic task substrate
+needs a buildable setup (tsconfig/test scaffold) for clean DONE outcomes + uninflated cost.** Variance/
+cost/real-anchor numbers come out of the completing run; the go/no-go judgment is documented at run end.
+(2) **P-024 visual polish + live-Tauri verification** — functional + unit-tested; the designer/UI-agent
+pass (Monaco diff, scatter, real Tauri-shell check) is deferred to the gym-ui-handoff owner. (3) Optional:
+a longer dedicated variance run once the substrate is buildable.
 
 ## Background
 
@@ -189,7 +230,7 @@ One cycle:
 
 - **P-012** `done` PG schema `harness_gym`: gym_tasks (with pool), gym_variants, gym_runs, gym_scores, gym_cycles, gym_runs_params (frozen run-params). importance: high (harness_gym schema 6 tables + idempotent gym-PG-resident ensureGymSchema; 6 live-PG sentinel tests green)
 - **P-013** `todo` Comparison read API: variant-A-vs-B per-task diff, frontier view, cycle history, real-anchor + monitor surfacing. blocked-by: P-012
-- **P-014** `harness-ready-run-deferred` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028 (2026-06-02 human said GO. Built+fake-validated the bounded A/B executor: `ab-runner.ts`/`ab-runner-real.ts`/`ab-run.ts` (+ repeat/variance support, meridian streaming fix `d352a68`). Fake-mode end-to-end AB-RUN OK ~20s, zero-LLM. REAL run = `GYM_AB_REPEATS=2 npx tsx lib/gym/ab-run.ts` (real agents + real opus judge). DEFERRED: shared Claude session is 429-rate-limited (cap probe timed out in retries); run on capacity / off-peak. The variance→ε/δ/min-n + cost + real-anchor correlation numbers come out of that real run.)
+- **P-014** `real-run-in-progress` Milestone gate: review the spine (P0–3) on a real A/B; **measure judge-composite variance → derive ε/δ/min-n; produce the cost estimate; confirm real-anchor correlation** before building the loop. importance: urgent blocked-by: P-013, P-028 (2026-06-03: the real path now WORKS end-to-end — D-021 fixed the spawn-signing-key + AGENT_MODELS bugs that blocked real agents; an all-sonnet `GYM_AB_REPEATS=2` A/B boots real `claude -p` agents, real commits, `invoke worker rc=0`. FINDING: the minimal `index.js` substrate has no buildable TS setup, so the worker's diff fails the L1 typecheck gate → debugger/rework to the iteration cap (terminal=failing; D-011 keeps that as observability, the judge still scores). The variance/cost/correlation numbers come from the completing run + a follow-up on a BUILDABLE substrate; the go/no-go is documented at run end. Earlier 429 rate-limit cleared.)
 
 ## Phase 4 — Proposer
 
@@ -208,7 +249,7 @@ One cycle:
 
 ## Phase 6 — Later
 
-- **P-024** `mockup-done` nuqs operator dashboard for variants/scores/frontier/cycles. importance: low blocked-by: P-013 (mockup + designer brief + nuqs/data-binding spec at `apps/operator/lib/gym/DASHBOARD-MOCKUP.md` 2026-06-02; data layer ready in `read-api.ts`. Implementation deferred until scheduled — visual craft → designer; conceptually post-P-014 go/no-go.)
+- **P-024** `built-functional` nuqs operator dashboard for variants/scores/frontier/cycles. importance: low blocked-by: P-013 (2026-06-03: functional `/gym` panel SHIPPED — `apps/operator/app/gym/GymDashboard.tsx` + `apps/operator-vite/src/routes/gym.tsx`, wired to `/api/gym/*`, all four surfaces incl. the proposer-diff review→accept/promote; nuqs state; jsdom render+wiring test green. Visual polish — Monaco/md-editor, Pareto scatter, motion, live-Tauri verification — is the deferred designer/UI-agent pass per gym-ui-handoff. See D-022. Mockup+brief: `DASHBOARD-MOCKUP.md`.)
 - **P-025** `todo` Repeats-per-task / variance handling — promote into v1 if P-014 shows 1-run is too noisy. importance: normal
 - **P-026** `todo` Expand real-feature replay as a *training* source (beyond the P-028 anchor). importance: low
 - **P-030** `todo` Grader-optimization phase: optimize validator/crosscheck/tester in a **separate run with an inverted objective** (recall on held-out planted defects — catch *more*, never fewer), external judge as arbiter. importance: low
@@ -320,5 +361,53 @@ D-020 splits the two axes:
   - proposer suggestions awaiting review → new `harness_shared.gym_proposals` (migration 110);
   - per-harness autoloop config → new `harness_shared.gym_autoloop_config` (migration 110).
 
-Surface: `lib/gym/control-plane.ts` (typed helpers, injected `Sql`) + `/api/gym/*` routes (gym-ui-handoff backend) + the `makeLoopProposalRecorder` bridge so the loop (with `autoPromote:false`, human-gated) records scored suggestions the user accepts via `gym:accept` (→ promote into `harness_prompt_overrides`). Migration 110 is additive + idempotent + passes the fresh-migrate empty→head gate (D-018's stated guard). Tested: control-plane.test.ts (pure), control-plane.integration.test.ts (live PG), gym-control-route.test.ts (routes), + live smoke. NOTE: the analytics endpoints (cycles/variants/compare/frontier) read the ephemeral gym run DB only from a server-controlled `PAPERCUSP_GYM_DATABASE_URL` (no client-supplied connection string — SSRF). The autoloop **runner service** that drives `runOptimizationLoop` with the live recorder is the remaining piece, gated on real-run capacity (same as P-014).
+Surface: `lib/gym/control-plane.ts` (typed helpers, injected `Sql`) + `/api/gym/*` routes (gym-ui-handoff backend) + the `makeLoopProposalRecorder` bridge so the loop (with `autoPromote:false`, human-gated) records scored suggestions the user accepts via `gym:accept` (→ promote into `harness_prompt_overrides`). Migration 110 is additive + idempotent + passes the fresh-migrate empty→head gate (D-018's stated guard). Tested: control-plane.test.ts (pure), control-plane.integration.test.ts (live PG), gym-control-route.test.ts (routes), + live smoke. NOTE: the analytics endpoints (cycles/variants/compare/frontier) read the ephemeral gym run DB only from a server-controlled `PAPERCUSP_GYM_DATABASE_URL` (no client-supplied connection string — SSRF). ~~The autoloop **runner service** that drives `runOptimizationLoop` with the live recorder is the remaining piece~~ — **BUILT 2026-06-03** (`loop-deps.ts` `buildLoopDeps` + `gym-loop-run.ts`; see D-021), with the loop→control-plane wiring proven by `loop-control-plane.integration.test.ts`.
 Related: P-013, P-022, P-024, gym-ui-handoff-2026-06-02
+
+### D-021 — Real-agent last-mile: gym-DB-resident spawn-signing key + sealed AGENT_MODELS
+Date: 2026-06-03. Decided by the implementing agent under the continued overnight loop mandate.
+
+The prior pass validated the spine with a FAKE agent only (`fixtures/fake-agent.mjs`), so the
+REAL `claude -p` + per-spawn-MCP path had never run in the gym. The first real A/B surfaced two
+untested integration bugs, both gym-scoped (the live fleet is unaffected — it lives in the fallback
+DB and inherits the launcher env it sets):
+
+1. **spawn-signing key.** `spawn-mcp.loadSigningKey()` reads `harness_shared.operator_secrets` for
+   `spawn-signing-key`; the live operator mints it lazily on its first verify call, but a fresh gym
+   DB never receives one before its first spawn → missing → strict mode refuses to write the agent's
+   `.mcp.json` → `claude -p --strict-mcp-config` aborts (exit 1, empty). Fix: pre-mint a 32-byte key
+   in `provisionGymDatabase` (`premintSpawnSigningKey`, idempotent); the orchestrator (signs) and the
+   gym-operator MCP route (verifies) then read the same row → consistent HMAC.
+2. **Model hermeticity.** The boot-spec pinned `AGENT_CMD` but not `AGENT_MODELS`, so the launcher's
+   inherited `AGENT_MODELS` (the dev box's `.env.local` carries `{"worker":"opus"}`) leaked into the
+   gym and ran the worker on opus — inflated cost + machine-dependent (violates D-016). Fix: the
+   boot-spec ALWAYS pins `AGENT_MODELS` (default `{}` = every role on `AGENT_CMD`'s model; callers pass
+   `cfg.agentModels` to opt into a stronger worker for production-fidelity).
+
+Plus an observability fix: a non-zero invoke with empty stderr, and a resolveProject-null, were
+previously indistinguishable upstream ("invoke failed exit=1 empty=true"); both now log distinctly
+(`orchestrator-runner.ts`; `PAPERCUSP_DBOS_INVOKE_DEBUG=1` dumps the stdout tail). This is what made
+the bug diagnosable and is a keeper.
+
+The **D-020 runner service** is the rest of this decision: `buildLoopDeps` builds the real `LoopDeps`
+over the smoke-proven per-run engine (`buildAbDeps`) — `evaluate` runs a variant over the task pools,
+judges each, and rolls up a `VariantEval` (trainAgg/devAnchorAgg/trainVector + worst traces) — and
+`gym-loop-run.ts` is the runnable that drives `runOptimizationLoop` budget-capped, human-gated
+(`autoPromote:false`), recording each candidate via `makeLoopProposalRecorder`. Tests: `loop-deps.test.ts`
+(8, the aggregation), `loop-control-plane.integration.test.ts` (the loop→gym_cycles/gym_proposals→accept
+flow on live PG), `gym-db-init` premint regression.
+Related: P-001, P-014, P-022, D-016, D-018, D-020
+
+### D-022 — P-024 dashboard: functional first, designer pass on top
+Date: 2026-06-03. Decided by the implementing agent (consistent with the gym-ui-handoff boundary).
+
+`/gym` ships as a functional, fully-wired nuqs instrument panel over `/api/gym/*`: the proposer-diff
+review (accept→promote / reject — the headline), the per-role + judge-rubric prompt editor, the
+autoloop control, and the run-analytics views (cycles/variants/compare/frontier, which show an
+Unavailable notice until a gym run DB is wired server-side — the D-020 SSRF-safe split). State lives
+in the URL (`gymSlug/gymTab/proposalId/role/a/b/rubric`). Tested with a jsdom render+wiring test.
+The diff uses jsdiff line-rendering rather than Monaco (robust in the WebKitGTK Tauri webview);
+Monaco `DiffEditor` + `@uiw/react-md-editor` + the Pareto scatter + motion + a live-Tauri-shell
+verification are an explicit **deferred designer/UI-agent pass** per the gym-ui-handoff (the visual
+craft is intentionally not hand-rolled here). Brief: `lib/gym/DASHBOARD-MOCKUP.md`.
+Related: P-024, P-013, gym-ui-handoff-2026-06-02
