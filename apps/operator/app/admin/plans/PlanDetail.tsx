@@ -46,6 +46,11 @@ import type { PlanStatus, PlanStartStatus, PlanItem, ItemStatus } from './plans-
 interface Props {
   slug: string;
   onClose: () => void;
+  /** Show the "← All plans" back button (default true). The Create dock
+   *  embeds PlanDetail with an always-visible plan-list sidebar as the
+   *  picker, so there is no "all plans" main view to return to — it passes
+   *  `showBack={false}` to drop the button. */
+  showBack?: boolean;
   /** Reports unsaved-edit state up to PlansClient so navigation away
    *  from a dirty plan can prompt before discarding (Bug-1 guard). */
   onDirtyChange?: (dirty: boolean) => void;
@@ -58,7 +63,7 @@ interface Props {
   onPlanStatusChange?: (status?: PlanStatus) => void;
 }
 
-export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
+export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChange, startStatus, onStartStatusChange, onPlanStatusChange }: Props) {
   const { data, loading, error, refresh, setData } = usePlan(slug);
   const archived = data?.archived ?? false;
   const { data: lock } = usePlanLock(data ? slug : null, archived);
@@ -208,14 +213,14 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
 
   if (loading) {
     return (
-      <DetailShell slug={slug} onClose={onClose}>
+      <DetailShell slug={slug} onClose={onClose} showBack={showBack}>
         <p className="pc-plans__placeholder">Loading {slug}…</p>
       </DetailShell>
     );
   }
   if (error) {
     return (
-      <DetailShell slug={slug} onClose={onClose}>
+      <DetailShell slug={slug} onClose={onClose} showBack={showBack}>
         <div className="pc-plans__placeholder pc-plans__placeholder--error">
           <p>Failed to load plan:</p>
           <code>{error}</code>
@@ -228,7 +233,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
   }
   if (!data || data.error) {
     return (
-      <DetailShell slug={slug} onClose={onClose}>
+      <DetailShell slug={slug} onClose={onClose} showBack={showBack}>
         <p className="pc-plans__placeholder">
           {data?.error ? `Server: ${data.error}` : 'No data.'}
         </p>
@@ -296,6 +301,7 @@ export default function PlanDetail({ slug, onClose, onDirtyChange, startStatus, 
       slug={slug}
       title={title}
       onClose={onClose}
+      showBack={showBack}
       kickerExtra={
         draftSource ? (
           <span
@@ -611,6 +617,7 @@ function DetailShell({
   slug,
   title,
   onClose,
+  showBack = true,
   headerExtra,
   kickerExtra,
   children,
@@ -618,6 +625,7 @@ function DetailShell({
   slug: string;
   title?: string;
   onClose: () => void;
+  showBack?: boolean;
   headerExtra?: React.ReactNode;
   kickerExtra?: React.ReactNode;
   children: React.ReactNode;
@@ -625,9 +633,11 @@ function DetailShell({
   return (
     <section className="pc-plans__detail" aria-label={`Plan ${slug}`}>
       <header className="pc-plans__detail-head">
-        <button type="button" className="pc-plans__back" onClick={onClose}>
-          ← All plans
-        </button>
+        {showBack ? (
+          <button type="button" className="pc-plans__back" onClick={onClose}>
+            ← All plans
+          </button>
+        ) : null}
         <div className="pc-plans__detail-title">
           <span className="pc-plans__detail-kicker">
             Plan detail

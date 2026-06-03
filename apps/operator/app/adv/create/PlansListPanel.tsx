@@ -82,10 +82,11 @@ export default function PlansListPanel(_props?: PanelComponentProps) {
   );
 
   // The plan list filters whichever view is active: in Plans view it OPENS the
-  // plan full-width (?plan); in Inbox/Sessions it toggles the ?itemPlans filter.
+  // plan full-width (?plan) — a plain select, not a toggle, since the Plans
+  // view always shows a plan; in Inbox/Sessions it toggles the ?itemPlans filter.
   const onSelectPlan = (s: string) => {
     if (view === 'plans') {
-      void setPlan(plan === s ? null : s);
+      void setPlan(s);
     } else {
       void setItemPlans(itemPlans.includes(s) ? itemPlans.filter((x) => x !== s) : [...itemPlans, s]);
     }

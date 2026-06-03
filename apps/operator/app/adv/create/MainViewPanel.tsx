@@ -4,66 +4,32 @@
  * create:main — the right MAIN region of the Create dock. Renders the active
  * `?view` (the buttons in the create:filter sidebar set it):
  *
- *   - plans    → ONE full-width pane: the opened plan (PlanDetail), search
- *                results, or the cross-plan items list to browse.
+ *   - plans    → the FULL plan editor (PlanDetail: the plan's markdown in the
+ *                vditor, frontmatter card, and the action strip). Entering
+ *                Plans always lands on a plan — when none is selected it
+ *                auto-opens the first plan in the (scoped) list, so the pane
+ *                is the editor and never an item list (that is the Inbox
+ *                view's job). The create:filter sidebar list is the picker;
+ *                a ?q search swaps in PlanSearchResults to find another plan.
  *   - inbox    → split: InboxPanel (items) | PreviewPanel (detail).
- *   - sessions → split: the live roster (SessionsPanel is its own 2-pane).
+ *   - sessions → the live roster (SessionsPanel is its own 2-pane).
  *
- * State is nuqs (?view/?plan/?q/?item/…) shared with create:filter and the
- * child panels; the shared useSyncQuery cache dedupes fetches across them. An
- * open ?plan fills the region full-width (single pane) regardless of how it
- * was opened — that is the "Plans view is a single pane" behavior; Sessions
- * ignores ?plan (matches the original Plans tab).
+ * State is nuqs (?view/?plan/?q/…) shared with create:filter and the child
+ * panels; the shared useSyncQuery cache dedupes fetches across them. An open
+ * ?plan fills the region full-width (single pane) regardless of how it was
+ * opened; Sessions ignores ?plan (matches the original Plans tab).
  */
 
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanDetail from '@/app/admin/plans/PlanDetail';
-import PlanItemsList from '@/app/admin/plans/PlanItemsList';
 import PlanSearchResults from '@/app/admin/plans/PlanSearchResults';
 import TwoPaneShell from '@/app/_components/layout/TwoPaneShell';
 import InboxPanel from './InboxPanel';
 import PreviewPanel from './PreviewPanel';
 import SessionsPanel from './SessionsPanel';
-import {
-  useCreateScope,
-  usePlanListMaps,
-  useInboxData,
-  useItemStatusFilter,
-  usePlanBucketFilter,
-  useItemPlanFilter,
-  useCreateView,
-  ITEM_FILTER_LABEL,
-  type ItemStatusFilter,
-} from './use-create-data';
-
-/** Plans view, no plan open: the cross-plan items list, full-width (single pane). */
-function PlansItemsFull() {
-  const scope = useCreateScope();
-  const maps = usePlanListMaps(scope);
-  const [istatus] = useItemStatusFilter();
-  const [pBuckets] = usePlanBucketFilter();
-  const [itemPlans] = useItemPlanFilter();
-  const inbox = useInboxData({ istatus, pBuckets, planBucketBySlug: maps.planBucketBySlug, scope });
-  const title = istatus.length
-    ? istatus.map((s: ItemStatusFilter) => ITEM_FILTER_LABEL[s]).join(' · ')
-    : 'All items';
-  return (
-    <div className="pc-plans__items" style={{ height: '100%', overflow: 'auto' }}>
-      <PlanItemsList
-        items={inbox.filteredItems}
-        loading={inbox.loading}
-        error={inbox.error}
-        refresh={inbox.refresh}
-        harnessByPlan={maps.harnessByPlan}
-        planMeta={maps.planMetaBySlug}
-        planFilters={itemPlans}
-        title={title}
-      />
-    </div>
-  );
-}
+import { useCreateScope, usePlanListMaps, useCreateView } from './use-create-data';
 
 export default function MainViewPanel(_props?: PanelComponentProps) {
   const [view] = useCreateView();
@@ -71,13 +37,29 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
   const [q] = useQueryState('q', parseAsString.withDefault(''));
   const dirtyRef = useRef(false);
 
+  // Plans view always shows a full plan. Auto-open the first plan in the
+  // (scoped) list when none is selected and no search is active, so entering
+  // Plans lands in the editor rather than an empty pane. The sidebar list is
+  // the picker; clicking another plan swaps ?plan.
+  const scope = useCreateScope();
+  const maps = usePlanListMaps(scope);
+  const firstSlug = maps.visiblePlans[0]?.slug ?? null;
+  const searching = q.trim().length > 0;
+  useEffect(() => {
+    if (view === 'plans' && !plan && !searching && firstSlug) {
+      void setPlan(firstSlug);
+    }
+  }, [view, plan, searching, firstSlug, setPlan]);
+
   // A loaded plan fills the whole region (single pane) — except in Sessions,
-  // which ignores ?plan.
+  // which ignores ?plan. No "← All plans" back button: the sidebar list is
+  // the always-visible picker, so there is no list view to go back to.
   if (view !== 'sessions' && plan) {
     return (
       <PlanDetail
         key={plan}
         slug={plan}
+        showBack={false}
         onClose={() => {
           if (
             dirtyRef.current &&
@@ -99,7 +81,14 @@ export default function MainViewPanel(_props?: PanelComponentProps) {
   }
   if (view === 'sessions') return <SessionsPanel />;
   if (view === 'inbox') return <TwoPaneShell list={<InboxPanel />} detail={<PreviewPanel />} />;
-  // view === 'plans', no plan open
-  if (q.trim()) return <PlanSearchResults query={q} onPick={(s) => void setPlan(s)} />;
-  return <PlansItemsFull />;
+  // view === 'plans': a search finds another plan; otherwise we're between the
+  // list loading and the auto-open effect firing (or there are no plans).
+  if (searching) return <PlanSearchResults query={q} onPick={(s) => void setPlan(s)} />;
+  return (
+    <div className="pc-plans__placeholder" style={{ padding: 24, color: 'var(--fg-mute)' }}>
+      {maps.planList.loading
+        ? 'Loading plans…'
+        : 'No plans in this view yet — use “New plan” in the sidebar to start one.'}
+    </div>
+  );
 }
