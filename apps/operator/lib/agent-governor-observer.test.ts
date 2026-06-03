@@ -7,7 +7,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.mock factories are hoisted above module-scope consts, so the spies must be too.
 const { sendMessage, insertValues, notifySyncInvalidate } = vi.hoisted(() => ({
-  sendMessage: vi.fn(async () => ({})),
+  // Typed args so `sendMessage.mock.calls[0]` destructures as [identity, opts] under tsc.
+  sendMessage: vi.fn(async (_identity: unknown, _opts: { to: string[]; summary: string }) => ({})),
   insertValues: vi.fn(async () => {}),
   notifySyncInvalidate: vi.fn(async () => {}),
 }));
