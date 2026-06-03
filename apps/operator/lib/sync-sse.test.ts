@@ -122,7 +122,9 @@ describe('sync-sse notifySyncInvalidate', () => {
     const { notifySyncInvalidate } = await load();
     await notifySyncInvalidate('feature_queue.changed', { harnessSlug: 'sheets' });
     expect(notifySql).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(String(notifySql.mock.calls[0][1]));
+    // SQL is `SELECT pg_notify(${channel}, ${payload})` — channel is bound
+    // param [1], payload is [2] (the pg-adapter parameterizes the channel).
+    const payload = JSON.parse(String(notifySql.mock.calls[0][2]));
     expect(payload).toMatchObject({ name: 'feature_queue.changed', args: { harnessSlug: 'sheets' } });
   });
 
@@ -140,7 +142,7 @@ describe('sync-sse notifySyncInvalidate', () => {
     const { notifySyncInvalidate } = await load();
     const big = [{ blob: 'x'.repeat(40_000) }];
     await notifySyncInvalidate('q.big', { k: 'v' }, big);
-    const payload = JSON.parse(String(notifySql.mock.calls[0][1]));
+    const payload = JSON.parse(String(notifySql.mock.calls[0][2]));
     expect(payload.name).toBe('q.big');
     expect(payload.args).toEqual({ k: 'v' });
     expect(payload.data).toBeUndefined();
@@ -149,7 +151,7 @@ describe('sync-sse notifySyncInvalidate', () => {
   it('keeps a small data payload inline', async () => {
     const { notifySyncInvalidate } = await load();
     await notifySyncInvalidate('q.small', undefined, [{ id: 1 }]);
-    const payload = JSON.parse(String(notifySql.mock.calls[0][1]));
+    const payload = JSON.parse(String(notifySql.mock.calls[0][2]));
     expect(payload.data).toEqual([{ id: 1 }]);
   });
 });

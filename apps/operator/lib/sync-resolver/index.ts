@@ -45,6 +45,7 @@
  */
 
 import { z } from 'zod';
+import { createResolver, type QueryRegistry } from '@papercusp/sync/server';
 
 // ─── Registry types ─────────────────────────────────────────────────
 
@@ -55,9 +56,10 @@ export interface QueryEntry<TArgs = unknown> {
   resolve: (args: TArgs) => Promise<unknown[]>;
 }
 
-// Symbol used by callers to detect "name not in v2 registry, fall back".
-export const NAME_NOT_FOUND = Symbol('sync-resolver/NAME_NOT_FOUND');
-export type NameNotFound = typeof NAME_NOT_FOUND;
+// Dispatch + NAME_NOT_FOUND now come from the shared lib
+// (@papercusp/sync/server). Re-exported so existing importers of
+// `@/lib/sync-resolver` (the rest-query routes, tests) are unchanged.
+export { NAME_NOT_FOUND, type NameNotFound } from '@papercusp/sync/server';
 
 // ─── Migrated queries ───────────────────────────────────────────────
 //
@@ -1341,16 +1343,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
  * fall back to the legacy resolver). Throws on schema-validation
  * failure or downstream errors — the route handler maps to HTTP.
  */
-export async function resolveNamedQueryV2(
-  name: string,
-  args: unknown,
-): Promise<unknown[] | NameNotFound> {
-  const entry = REGISTRY[name];
-  if (!entry) return NAME_NOT_FOUND;
-
-  const validated = entry.argsSchema ? entry.argsSchema.parse(args) : args;
-  return entry.resolve(validated);
-}
+export const resolveNamedQueryV2 = createResolver(REGISTRY as unknown as QueryRegistry);
 
 /** Test-only — enumerate which names the v2 registry currently knows. */
 export function knownQueryNamesV2(): string[] {

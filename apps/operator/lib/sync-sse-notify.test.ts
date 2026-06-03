@@ -26,9 +26,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 
 import { notifySyncInvalidate } from './sync-sse';
 
-/** The JSON payload handed to pg_notify on the Nth sql call. */
+/** The JSON payload handed to pg_notify on the Nth sql call.
+ *  SQL is `SELECT pg_notify(${channel}, ${payload})` — channel is bound
+ *  param [1], payload is [2] (the @papercusp/sync/server/pg adapter
+ *  parameterizes the channel). */
 function payloadOf(call = 0): { name: string; args?: unknown; data?: unknown } {
-  return JSON.parse(String(sql.mock.calls[call][1]));
+  return JSON.parse(String(sql.mock.calls[call][2]));
 }
 
 beforeEach(() => {
