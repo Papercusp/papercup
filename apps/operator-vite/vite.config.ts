@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
 import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
+import { devDistPrunePlugin } from './dev-dist-prune';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -13,6 +14,15 @@ import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } f
 const operatorRoot = resolve(import.meta.dirname, '../operator');
 
 const enableHmr = isDesktopHmrEnabled(process.env);
+
+// `dev:nohmr` = `vite build --watch`: every fleet edit rebuilds `dist/`. With
+// Vite's default emptyOutDir each rebuild DELETES the prior hashed chunks, so a
+// long-open Tauri webview 404s its lazy imports (vditor etc. blank). In watch
+// builds we therefore RETAIN old chunks (emptyOutDir:false) and prune them by
+// age instead (devDistPrunePlugin). The production `build` (no --watch) keeps
+// emptying for a clean desktop bundle. See plan
+// `adv-build-churn-retain-chunks-2026-06-03`.
+const isWatchBuild = process.argv.includes('--watch');
 
 const noViteClientPlugin: Plugin = {
   name: 'papercusp-no-vite-client',
@@ -80,6 +90,12 @@ export default defineConfig({
     // instance — two copies would break hooks ("invalid hook call").
     dedupe: ['react', 'react-dom'],
   },
+  build: {
+    // Retain old hashed chunks across watch rebuilds so an open webview never
+    // 404s a lazy import; a one-shot/production `build` still empties for a
+    // clean bundle. The prune plugin (below) caps the resulting dist growth.
+    emptyOutDir: !isWatchBuild,
+  },
   server: {
     port: 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
@@ -105,5 +121,7 @@ export default defineConfig({
       generatedRouteTree: './src/routeTree.gen.ts',
     }),
     react(),
+    // Watch-build only: prune the chunks that emptyOutDir:false now retains.
+    ...(isWatchBuild ? [devDistPrunePlugin()] : []),
   ],
 });
