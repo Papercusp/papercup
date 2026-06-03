@@ -123,6 +123,11 @@ function makeIdentityOverride(login: string, userId: number, keychainId: string)
         keychainId,
         resolveGithubUser: async () => ({ id: userId, login }),
         loadKeypair: async (id: string) => ({ keychainId: id, pubkeyBase64: devicePubkey }),
+        // Bypass the real ensureAttestationGist (it signs with the OS keychain
+        // key for `keychainId`, which this test never seeds → AttestationError
+        // → swallowed swarm-join failure → handle.swarm null). The announce
+        // doesn't need a real gist for the in-process testnet swarm.
+        resolveAttestationGistId: async () => `gist-${login}`,
       },
       sign: async (_keychainId: string, bytes: Buffer) => nodeSign(null, bytes, privateKey),
     },
