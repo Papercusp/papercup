@@ -48,11 +48,18 @@ describe('built-in tool args schemas (invalid_args class — schema level)', () 
     }
   });
 
-  it('a no-required-args built-in accepts {} and rejects unknown keys (.strict)', () => {
-    const t = catalog.find((x) => x.name === 'papercusp:list_workspaces'); // z.object({}).strict()
-    expect(t).toBeTruthy();
+  it('a no-required-args built-in accepts {} (harness:list)', () => {
+    // papercusp:list_workspaces (the former z.object({}).strict() example)
+    // moved to the role-gated `defineTool` path, so it's no longer a NAMED
+    // entry in getCatalog() (legacy built-ins only). harness:list is the
+    // representative no-required legacy built-in. Unknown-key rejection
+    // (.strict) is no longer a per-tool Zod property of the legacy built-ins —
+    // it's enforced structurally at the projection/transport boundary via
+    // additionalProperties:false, asserted for EVERY tool in the projected
+    // suite below (stronger than the old single-tool check).
+    const t = catalog.find((x) => x.name === 'harness:list');
+    expect(t, 'harness:list present in catalog').toBeTruthy();
     expect(validateSync(t!.args, {}).ok).toBe(true);
-    expect(validateSync(t!.args, { bogus: 1 }).ok).toBe(false);
   });
 });
 
@@ -66,6 +73,17 @@ describe('projected tool inputSchemas (invalid_args class — structural)', () =
       (t) => !t.inputSchema || (t.inputSchema as { type?: string }).type !== 'object',
     );
     expect(bad.length, `${bad.length} tools with a non-object inputSchema`).toBe(0);
+  });
+
+  it('every projected tool is strict (additionalProperties:false) — unknown args rejected at the wire', () => {
+    // The wire-level equivalent of Zod's `.strict()`: an MCP client validating
+    // against the projected inputSchema rejects typo'd / unknown keys. This is
+    // where the unknown-key-rejection contract actually lives for ALL tools
+    // (legacy + role-gated), regardless of whether the source Zod used .strict().
+    const loose = projected.filter(
+      (t) => (t.inputSchema as { additionalProperties?: unknown }).additionalProperties !== false,
+    );
+    expect(loose.length, `${loose.length} projected tools allow unknown keys (want additionalProperties:false)`).toBe(0);
   });
 
   it('a substantial set of tools declare required args (contract is enforced, not vestigial)', () => {

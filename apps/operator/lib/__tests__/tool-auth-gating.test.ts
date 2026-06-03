@@ -29,7 +29,15 @@ type ProjFn = { fn: (a: unknown, c: unknown) => Promise<unknown> };
 
 describe('auth gating (missing bearer/workspace class)', () => {
   it('principal-gated built-ins reject calls with no principal/tx', async () => {
-    const names = ['features:get', 'features:history', 'audit:list', 'harness:list', 'issues:list', 'papercusp:list_workspaces'];
+    // These are LEGACY-projected built-ins (registerLegacyAsProjected): the
+    // projected wrapper itself rejects when principal/tx is absent. Tools
+    // defined via the new `defineTool` (e.g. papercusp:list_workspaces,
+    // capability workspaces:read) go through registerRoleGatedAsProjected,
+    // which by design does NOT self-gate on principal — gating is the
+    // dispatcher's role+capability+quota check (define-tool.ts §"role-gated").
+    // That dispatcher-path gating is covered separately (see file header), so
+    // role-gated tools don't belong in this principal+tx assertion.
+    const names = ['features:get', 'features:history', 'audit:list', 'harness:list', 'issues:list'];
     for (const name of names) {
       const t = lookupByMcpName(name) as ProjFn | undefined;
       expect(t, `${name} present in registry`).toBeTruthy();
