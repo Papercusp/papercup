@@ -37,7 +37,7 @@ interface ScanResult {
   error?: string;
 }
 
-async function runScan(request: string): Promise<ScanResult> {
+async function runScanOnce(request: string): Promise<ScanResult> {
   const start = Date.now();
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -94,6 +94,19 @@ async function runScan(request: string): Promise<ScanResult> {
     clearTimeout(timer);
   }
   return { toolCalls, text: assembled, durationMs: Date.now() - start };
+}
+
+// operator-scan holds a single-in-flight guard PER WORKSPACE, and the
+// server-side scan outlives the SSE response, so back-to-back scans in this
+// file can collide with "Another scan is in progress". Retry on that, waiting
+// for the prior scan to clear (it frees within one scan duration).
+async function runScan(request: string): Promise<ScanResult> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const result = await runScanOnce(request);
+    if (!/in progress/i.test(result.error ?? '')) return result;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  return runScanOnce(request);
 }
 
 const reachable = await operatorIsReachable();
