@@ -227,3 +227,54 @@ Each a small verified commit:
 ## Status Log
 - 2026-06-03 01:2x — spec written; tasks #6–#9 created; coord intent declared;
   confirmed sync is a submodule (raw-TS, additive `./server` safe). Starting P0.
+- 2026-06-03 ~02:00 — **P0 COMPLETE + committed.**
+  - sync submodule commit `9c1a948` — `src/server/{query-registry,invalidation-bus,
+    pg-adapter,http-routes,index}.ts` + tests; `package.json` exports `./server` +
+    `./server/pg`. 44 lib tests pass. Lib is fully dependency-free (postgres + sse
+    injected by host).
+  - superproject commit `c08e39835` — operator rewired: `sync-sse.ts` builds the lib
+    bus; `sync-resolver/index.ts` uses `createResolver` + re-exports NAME_NOT_FOUND;
+    submodule pointer bumped. 108 sync-touching unit tests pass.
+  - NOTE: the 3 zero-harness routes were left as thin operator wrappers (they consume
+    the lib-backed resolver+bus); the lib SHIPS + tests route factories for new
+    projects, operator adoption of them deferred as optional (low value/risk).
+  - NOTE: pg-adapter parameterizes the NOTIFY channel (`pg_notify($1,$2)`); 2 notify
+    tests updated to read payload at call-arg [2]. Behavior identical.
+  - Live-verify (desktop SSE round-trip) PENDING — unit/behavior preserved; no server
+    hot-reload, needs a desktop reload to exercise live.
+  - Starting P1 (plans → useSyncQuery).
+- 2026-06-03 ~03:00 — **P1 CORE COMPLETE + committed.**
+  - server (commit `28fa22fe4`): 8 `plans.*` resolvers (list/items/attention/
+    search/get/revisions/runs/lint) via shared `read-dispatch.ts` (callPlansRead
+    over handleHttpToolRequest — same path as the admin route). Discovered the
+    admin write path ALREADY fired `plans.*` invalidations; made items/attention/
+    lint coarse (no args) so filter-fanned + per-harness subscriptions all refetch.
+    50 resolver tests pass; the "every registered name dispatches" test now
+    exercises the plans resolvers against the real tool host.
+  - lib fix (sync commit `a9ca72e`) + client (commit `0524c0772`): the 4
+    cross-cutting reads (list/items/attention/search) migrated to `useSyncQuery`
+    via a `useSyncResource` adapter preserving the `AsyncResult` shape — shared
+    cache + server-pushed invalidation replaces the `refreshItems()` fan-out
+    (the thing blocking the P2 free-panel split). 191 plans-area tests pass;
+    `tsc` clean for changed files (loosened `PgSqlLike` so postgres `Sql` fits).
+  - **DEFERRED (judgment call, not blocking P2):** the editor-detail hooks
+    `usePlan` / `usePlanRevisions` / `usePlanRuns` / `usePlanLint` stay on
+    `useAsyncJson` for now — they feed the complex PlanDetail (+ `setData`
+    optimistic usage) and are NOT the fan-out problem. Their resolvers
+    (plans.get/revisions/runs/lint) ARE registered + ready, so migrating them is
+    a low-risk follow-up. `usePlanHistory` (git, no resolver) + `usePlanLock`
+    (legit polling per audit) stay bespoke.
+  - Live desktop SSE round-trip verification PENDING (no server hot-reload).
+  - Next: P2 foundations (close-guard seam, seed layout) → P3 safe sweeps →
+    P2 PlansClient→panels decomposition (the big UI piece; needs desktop e2e).
+- 2026-06-03 ~03:07 — **P2 FOUNDATIONS done + committed** (pending commit).
+  - `app/harness/dock/close-guard.ts` (+ test, 6) — generic veto-before-close
+    registry + injectable confirm. Standalone; wiring into the dock bridge +
+    the plan-editor panel lands with the decomposition.
+  - `lib/dock-layouts.ts` — `defaultAdvCreateLayout()` (option-B: inbox/plans/
+    sessions tabs on the left, preview right; URL-scope-driven, no harnessSlug)
+    + `adv-create` branch in `getLayout`. dock-layouts tests 27 pass.
+  - **Risk decision for the big P2 piece:** I will build the panels + AdvCreateDock
+    but NOT swap the operator-vite route mount (keep `<PlansClient/>` live) until
+    it's verified on a running desktop — so the working Create tab can't break
+    from a blind rewrite. The route swap is the one deferred line.

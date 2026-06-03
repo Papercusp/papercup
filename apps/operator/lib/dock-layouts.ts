@@ -382,6 +382,49 @@ export function defaultAdvGitLayout(harnessSlug = ''): LayoutDoc {
 }
 
 /**
+ * Seed layout for the /adv "Create" dock (?tab=plans, AdvCreateDock).
+ *
+ * Option-B "free panels": the three former subtabs (plan browser / inbox /
+ * sessions) start as tabs in a left group the user can drag apart, with a
+ * shared preview pane on the right. The panels are workspace/scope-driven
+ * via URL params (?slug / ?scope / ?h), so the seed carries no harnessSlug
+ * — unlike the harnesses/git docks, there is nothing to rebind on slug
+ * change. The plan editor (create:plan-editor) opens on demand
+ * (openPanel), so it is not in the seed.
+ */
+export function defaultAdvCreateLayout(): LayoutDoc {
+  return {
+    schemaVersion: 1,
+    root: {
+      kind: 'group',
+      id: 'root',
+      direction: 'row',
+      children: [
+        {
+          kind: 'tabs',
+          id: 'create-left',
+          size: 0.42,
+          activePanelId: 'p-create-inbox',
+          panels: [
+            { id: 'p-create-inbox', type: 'create:inbox', params: {} },
+            { id: 'p-create-plans', type: 'create:plans-list', params: {} },
+            { id: 'p-create-sessions', type: 'create:sessions', params: {} },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'create-right',
+          size: 0.58,
+          activePanelId: 'p-create-preview',
+          panels: [{ id: 'p-create-preview', type: 'create:preview', params: {} }],
+        },
+      ],
+    },
+    floating: [],
+  };
+}
+
+/**
  * Pi-tab-specific seed for Phase 2. The pi tab today owns its own
  * localStorage layout; this seeds the PG-backed replacement.
  */
@@ -601,6 +644,7 @@ export async function getLayout(
   const isPi = name === 'pi' || name.startsWith('pi:');
   const isAdvHarnesses = name === 'adv-harnesses' || name.startsWith('adv-harnesses:');
   const isAdvGit = name === 'adv-git2' || name.startsWith('adv-git2:');
+  const isAdvCreate = name === 'adv-create' || name.startsWith('adv-create:');
   let seededSlug = '';
   if (name.startsWith('dashboard:')) {
     seededSlug = name.slice('dashboard:'.length);
@@ -611,11 +655,13 @@ export async function getLayout(
   }
   const seed: LayoutDoc = isPi
     ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
-    : isAdvGit
-      ? defaultAdvGitLayout(seededSlug)
-      : isAdvHarnesses
-        ? defaultAdvHarnessesLayout(seededSlug)
-        : defaultDashboardLayout(seededSlug);
+    : isAdvCreate
+      ? defaultAdvCreateLayout()
+      : isAdvGit
+        ? defaultAdvGitLayout(seededSlug)
+        : isAdvHarnesses
+          ? defaultAdvHarnessesLayout(seededSlug)
+          : defaultDashboardLayout(seededSlug);
   return saveLayout(principal, name, seed);
 }
 

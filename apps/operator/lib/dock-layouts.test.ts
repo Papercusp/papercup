@@ -8,6 +8,7 @@ import {
   CURRENT_LAYOUT_SCHEMA_VERSION,
   LayoutValidationError,
   OPAQUE_SCHEMA_VERSION,
+  defaultAdvCreateLayout,
   defaultAdvGitLayout,
   defaultAdvHarnessesLayout,
   defaultDashboardLayout,
@@ -167,7 +168,17 @@ describe('isWellFormedLayout (non-throwing guard for the render path)', () => {
     expect(isWellFormedLayout(defaultDashboardLayout('papercup'))).toBe(true);
     expect(isWellFormedLayout(defaultAdvHarnessesLayout('papercup'))).toBe(true);
     expect(isWellFormedLayout(defaultAdvGitLayout('papercup'))).toBe(true);
+    expect(isWellFormedLayout(defaultAdvCreateLayout())).toBe(true);
     expect(isWellFormedLayout(defaultPiTerminalsLayout())).toBe(true);
+  });
+
+  it('defaultAdvCreateLayout seeds the create:* panels (option-B free panels)', () => {
+    const doc = defaultAdvCreateLayout();
+    expect(() => validateLayoutDoc(doc)).not.toThrow();
+    const types = JSON.stringify(doc);
+    for (const t of ['create:inbox', 'create:plans-list', 'create:sessions', 'create:preview']) {
+      expect(types).toContain(t);
+    }
   });
 
   // The exact corruption that crashed /adv: a v1 body whose `root` is null.
