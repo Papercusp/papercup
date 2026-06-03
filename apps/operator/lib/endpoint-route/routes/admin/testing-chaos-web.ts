@@ -1,37 +1,29 @@
 /**
  * POST /api/admin/testing/chaos-web — raw-NDJSON stream of a browser chaos run
- * (the `chaos` browser variant; testing-shell-platform-variants P-006).
+ * (the `chaos` browser variant).
  *
- * Spawns the shared libs/testing-shell/src/web/chaos-runner.mjs (a
- * headless-Chromium random-clicker) against a base URL and relays its NDJSON
- * stdout VERBATIM to <ChaosWebPanel>, which parses the lines. Deliberately NOT
- * `sseResponse`: the shared panel (also used by Restart) reads raw NDJSON, so
- * the framing must match across both hosts.
+ * Thin operator mount over `@papercusp/testing-shell/server`'s
+ * `spawnChaosWebStream` (Phase 6 of universal-testing-domains-generic-2026-06-03):
+ * the spawn/stream substance + the shared headless-Chromium clicker
+ * (`chaos-runner.mjs`) now live in the lib, so this route only validates the
+ * base URL, resolves the repo root, and returns the stream. Deliberately raw
+ * NDJSON (not `sseResponse`): the shared <ChaosWebPanel> (also used by Restart)
+ * parses NDJSON lines, so the framing must match across both hosts.
  *
- * papercup ships Playwright + chromium (its e2e suite uses them), so the runner
- * resolves `import('playwright')` from the repo node_modules. Spawn pattern
- * mirrors testing-ai-explore.ts; the default baseUrl is the BUILT operator SPA
- * on :3070 (the port the desktop webview loads) — NOT the :3055 Vite HMR dev
- * server, which fails to render `createHotContext` in a plain headless browser.
+ * The default baseUrl is the BUILT operator SPA on :3070 (the port the desktop
+ * webview loads) — NOT the :3055 Vite HMR server, which fails to render
+ * `createHotContext` in a plain headless browser.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { spawnChaosWebStream, ALLOWED_BASE, clampMaxSteps } from '@papercusp/testing-shell/server';
 import { defineTool } from '@papercusp/agent-mcp';
 
-// Browser chaos drives a same-box dev origin only — never an arbitrary URL.
-const ALLOWED_BASE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/;
-
-// chaos-runner.mjs lives in the testing-shell submodule at the repo root. The
-// :3070 host runs with cwd = apps/operator (cf. ai-explore's runner resolve);
-// tolerate cwd = repo root too.
-function resolveRunner(): string | null {
-  const rel = ['libs', 'testing-shell', 'src', 'web', 'chaos-runner.mjs'];
-  const candidates = [
-    path.resolve(process.cwd(), '..', '..', ...rel),
-    path.resolve(process.cwd(), ...rel),
-  ];
-  return candidates.find((p) => existsSync(p)) ?? null;
+// The :3070 host runs with cwd = apps/operator; the lib resolves chaos-runner.mjs
+// from <repoRoot>/libs/testing-shell/. Tolerate cwd = repo root too.
+function resolveRepoRoot(): string {
+  const up = path.resolve(process.cwd(), '..', '..');
+  return existsSync(path.join(up, 'libs', 'testing-shell')) ? up : process.cwd();
 }
 
 export default defineTool({
@@ -46,44 +38,11 @@ export default defineTool({
         ? body.baseUrl
         : process.env.CHAOS_WEB_BASE_URL ?? 'http://127.0.0.1:3070/';
     if (!ALLOWED_BASE.test(baseUrl)) return new Response('baseUrl must be a localhost http(s) URL', { status: 400 });
-    const maxSteps = Math.max(1, Math.min(200, Math.floor(Number(body?.maxSteps)) || 25));
 
-    const runnerPath = resolveRunner();
-    if (!runnerPath) return new Response('chaos-runner.mjs not found', { status: 500 });
-
-    const enc = new TextEncoder();
-    let child: ChildProcess | null = null;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        child = spawn(process.execPath, [runnerPath, baseUrl, String(maxSteps)], {
-          cwd: process.cwd(),
-          env: { ...process.env, NODE_OPTIONS: '' },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        // chaos-runner emits NDJSON on stdout — forward verbatim.
-        child.stdout?.on('data', (b: Buffer) => {
-          try { controller.enqueue(enc.encode(b.toString())); } catch { /* stream closed */ }
-        });
-        // Surface runner stderr (e.g. a failed chromium launch) as an error event.
-        child.stderr?.on('data', (b: Buffer) => {
-          const msg = b.toString().trim();
-          if (msg) {
-            try { controller.enqueue(enc.encode(JSON.stringify({ type: 'error', message: msg }) + '\n')); } catch { /* closed */ }
-          }
-        });
-        const finish = () => { try { controller.close(); } catch { /* already closed */ } };
-        child.on('close', finish);
-        child.on('error', (err: Error) => {
-          try { controller.enqueue(enc.encode(JSON.stringify({ type: 'error', message: err.message }) + '\n')); } catch { /* closed */ }
-          finish();
-        });
-        req.signal.addEventListener('abort', () => {
-          try { child?.kill('SIGTERM'); } catch { /* already dead */ }
-        });
-      },
-      cancel() {
-        try { child?.kill('SIGTERM'); } catch { /* already dead */ }
-      },
+    const stream = spawnChaosWebStream({
+      baseUrl,
+      maxSteps: clampMaxSteps(body?.maxSteps),
+      repoRoot: resolveRepoRoot(),
     });
 
     return new Response(stream, {

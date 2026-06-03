@@ -1,14 +1,20 @@
 /**
- * POST /api/admin/testing/ai-explore — SSE stream of an AI browser
- * exploration run (stagehand-runner subprocess).
+ * POST /api/admin/testing/ai-explore — SSE stream of an AI browser exploration
+ * run (stagehand-runner subprocess).
  *
- * Ported from app/api/admin/testing/ai-explore/route.ts. `auth:'public'`,
- * `sampleRate: 0` (SSE). The Next `import 'server-only'` is dropped.
+ * Thin operator mount over `@papercusp/testing-shell/server` (Phase 6 of
+ * universal-testing-domains-generic-2026-06-03): the runner, config parsing, and
+ * spawn now live in the lib (`parseAiExploreConfig` / `spawnAiExplore` /
+ * `parseAiExploreLine`). This route keeps the operator's `defineTool` +
+ * `sseResponse` wrapper (typed vocab + heartbeats) and injects the Anthropic key
+ * from the operator credential store. Hono consumers (Restart) use
+ * `spawnAiExploreSSE` directly.
  */
-import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { sseResponse } from '@papercusp/sse';
+import { parseAiExploreConfig, spawnAiExplore, parseAiExploreLine } from '@papercusp/testing-shell/server';
 import { readCredentials } from '@/lib/credentials';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -21,38 +27,11 @@ type AiExploreVocab = {
   error: { message: string };
 }
 
-type ParsedConfig = {
-  goal: string;
-  startUrl: string;
-  model: string;
-  maxSteps: number;
-  maxCostUsd: number;
-  headless: boolean;
-};
-
-function parseConfig(body: unknown): { ok: true; cfg: ParsedConfig } | { ok: false; msg: string } {
-  if (!body || typeof body !== 'object') return { ok: false, msg: 'invalid body' };
-  const b = body as Record<string, unknown>;
-  const goal = typeof b.goal === 'string' ? b.goal.trim() : '';
-  if (!goal) return { ok: false, msg: 'goal is required' };
-  return {
-    ok: true,
-    cfg: {
-      goal,
-      // Project-agnostic (D-002 a / M4): the AI walk drives whatever base URL
-      // it's given. Callers pass `startUrl`; the default is configurable via
-      // AI_EXPLORE_BASE_URL so a non-Papercusp project can point it at its own
-      // app instead of the operator's :3055.
-      startUrl:
-        typeof b.startUrl === 'string'
-          ? b.startUrl
-          : process.env.AI_EXPLORE_BASE_URL ?? 'http://127.0.0.1:3055/',
-      model: typeof b.model === 'string' ? b.model : 'anthropic/claude-sonnet-4-6',
-      maxSteps: Math.max(1, Math.min(50, Number(b.maxSteps ?? 20))),
-      maxCostUsd: Math.max(0.05, Math.min(20, Number(b.maxCostUsd ?? 1.0))),
-      headless: b.headless !== false,
-    },
-  };
+// The :3070 host runs with cwd = apps/operator; the lib resolves the bundled
+// stagehand-runner.mjs from <repoRoot>/libs/testing-shell/. Tolerate cwd = repo root too.
+function resolveRepoRoot(): string {
+  const up = path.resolve(process.cwd(), '..', '..');
+  return existsSync(path.join(up, 'libs', 'testing-shell')) ? up : process.cwd();
 }
 
 export default defineTool({
@@ -62,7 +41,11 @@ export default defineTool({
   sampleRate: 0,
   async handler(req): Promise<Response> {
     const body = await req.json().catch(() => null);
-    const parsed = parseConfig(body);
+    // Project-agnostic (D-002): the AI walk drives whatever startUrl it's given;
+    // the operator's default is its own :3055 SPA, overridable via AI_EXPLORE_BASE_URL.
+    const parsed = parseAiExploreConfig(body, {
+      defaultStartUrl: process.env.AI_EXPLORE_BASE_URL ?? 'http://127.0.0.1:3055/',
+    });
     if (!parsed.ok) return new Response(parsed.msg, { status: 400 });
 
     const creds = await readCredentials();
@@ -71,37 +54,30 @@ export default defineTool({
       return new Response('No Anthropic API key configured. Set one in /admin/testing → AI Explore.', { status: 400 });
     }
 
-    const runnerPath = path.resolve(process.cwd(), 'scripts/stagehand-runner.mjs');
-    const config = { ...parsed.cfg, apiKey };
+    const repoRoot = resolveRepoRoot();
 
     return sseResponse<AiExploreVocab>({
       signal: req.signal,
       heartbeatMs: 15_000,
       initialHeartbeat: true,
       setup: async (sink) => {
-        const child = spawn(process.execPath, [runnerPath], {
-          cwd: process.cwd(),
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, NODE_OPTIONS: '' },
-        });
+        const child = spawnAiExplore(parsed.cfg, { repoRoot, apiKey });
+        if (!child) {
+          if (!sink.closed) sink.event('error', { message: `stagehand-runner not found under ${repoRoot}` });
+          sink.done();
+          return;
+        }
 
-        child.stdin.write(JSON.stringify(config));
-        child.stdin.end();
-
-        const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+        const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });
         rl.on('line', (line) => {
           if (sink.closed) return;
-          try {
-            const evt = JSON.parse(line);
-            if (typeof evt?.type !== 'string') return;
-            const { type, ...payload } = evt;
-            sink.event(type as keyof AiExploreVocab, payload as AiExploreVocab[keyof AiExploreVocab]);
-          } catch {
-            sink.event('log', { level: 'info', line: line.slice(0, 500) });
-          }
+          const evt = parseAiExploreLine(line);
+          if (!evt) return;
+          const { type, ...payload } = evt;
+          sink.event(type as keyof AiExploreVocab, payload as AiExploreVocab[keyof AiExploreVocab]);
         });
 
-        const errRl = createInterface({ input: child.stderr, crlfDelay: Infinity });
+        const errRl = createInterface({ input: child.stderr!, crlfDelay: Infinity });
         errRl.on('line', (line) => {
           if (!sink.closed) sink.event('log', { level: 'error', line: line.slice(0, 500) });
         });
