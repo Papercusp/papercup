@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Design approved (Option 1). Implementing: `emptyOutDir:false` in dev-watch + a dev-only dist chunk-prune plugin, with a Vitest unit test for the prune logic.
+**State:** IMPLEMENTED + committed on main (8e840f6c1). `emptyOutDir:false` for watch builds + `devDistPrunePlugin` (age-prune, default 60min) in apps/operator-vite; 7 unit tests, operator-vite suite 45/45, tsc clean. Mechanism verified end-to-end against REAL `vite build --watch` with the real plugin module: emptyOutDir:false retains old chunks, plugin prunes past-TTL chunks and never over-prunes fresh ones, no config-load errors. T-001..T-004 + commit done.
 
-**Next:** TDD the prune fn → wire plugin + config gate → `npm run test:affected` → restart dev via `dev:restart` → live-verify on an isolated Xvfb Tauri instance → commit on `main`.
+**Next:** To go LIVE the vite watcher must reload the config — it runs under `papercup-dev.service`, and `dev:restart` only bounces `papercup-dev-api.service`, so a `systemctl --user restart papercup-dev.service` (reloads the Tauri window content) is the remaining step; awaiting the user's OK since it blinks their open window.
 
 ## Background
 

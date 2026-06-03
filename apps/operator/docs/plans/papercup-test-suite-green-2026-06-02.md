@@ -3,7 +3,7 @@ title: Get Papercusp green across the test surface
 slug: papercup-test-suite-green-2026-06-02
 status: active
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 owner: aviynw3@gmail.com
 ---
 
@@ -11,16 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Reviewed + approved. Baseline established from the `test_runs`
-table (latest-status-per-file): **~798 green, ~71 red** (66 on `main`),
-concentrated in `agent-tools` (32) + `endpoint-route` (12) — likely a
-shared root cause. Runnability confirmed: unit ✓, integration ✓ (Docker
-UP), cargo ✓; LLM/ai/memory route via Meridian/Claude Max (creds saved).
-The 71 is a *floor* — Phase 0 finds reds among the ~286 files `test_runs`
-has never seen (integration/e2e/cargo/never-run units).
+**State:** UNIT tier GREEN + most of INTEGRATION; all committed per-turn on main. P-010 root cause fixed (unit testTimeout 5s→20s in test-config submodule → cleared ~38 contention timeouts). All 15 genuine operator unit failures fixed + the BIG shared root cause: getOrgPg drizzle crash on the barrel's nested generated/generatedRelations namespaces — REAL fix in libs/papercusp/libs/db/connection.ts (unblocked db-org + agent-tools-catchall streaming + branch-actions/tool-auth). Plus a real pty-ws exit-frame race fix. Non-operator workspaces fixed: coordination (notify default), db-org, export-state, orchestrator pre-loop. lint:tests + gen:contract:check GREEN. Cargo (P-080): no in-scope tests (only papercusp-desktop, out per D-003) → satisfied. Integration testcontainer suite green incl. list-workspaces (rewired to getOrgPg). DEFERRED — all disruptive to the 6 active peer agents or env-dependent: (1) docs astro-version skew (root 6.1.10 vs nested 6.3.6) needs a monorepo npm install; (2) E2E Playwright + desktop suites need a dev server / dedicated Xvfb Tauri on a CPU-saturated box; (3) LLM/memory LIVE scenarios need running operator + real Meridian (framework unit tests already pass); (4) feature-content-federation.integration — real Hyperswarm testnet DHT/holepunch P2P (swarm null), specialized; (5) 6 itLive integration probes that skip in clean CI but here hit the shared :3070 peers are churning (auth 401-vs-403 contract Q, principal-provisioning state, zod-msg drift).
 
-**Next:** Phase 0 — establish the authoritative `main` baseline + a
-reusable green-gate rollup, then start Phase 1 (agent-tools cluster).
+**Next:** User decision needed on the disruptive deferred items (docs npm install; e2e dev-server/Xvfb; LLM live runs). Safe-to-resume: investigate feature-content-federation swarm boot (real regression vs native/DHT env) + decide the itLive auth 401↔403 contract.
 
 ## Background
 

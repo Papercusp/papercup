@@ -292,6 +292,114 @@ export function optionsCountWithinBounds(min: number, max: number) {
 }
 
 // =============================================================================
+// 10. No internal jargon / raw IDs spoken aloud in <say> (VOICE rule 5)
+// =============================================================================
+//
+// The voice persona (operator-converse-prompt.ts modality block, rule 5) bans
+// "internal jargon or raw IDs read aloud" — a non-engineer listener should
+// parse every <say>. The judge scores this under `speakability`, but that axis
+// is high-variance; this deterministic assert makes the failure reliable.
+// NOTE: "harness", "feature", "escalation", "review" are OPERATOR vocabulary
+// (its own opener examples say "3 harnesses active") — NOT jargon. Keep the
+// lexicon to terms a layperson genuinely wouldn't parse.
+
+/** Feature/ticket IDs spoken aloud: F-001, F-FMT-002, F-FIX-123. */
+const FEATURE_ID_RE = /\bF-(?:[A-Z]+-)*\d+\b/;
+
+/**
+ * Namespaced tool refs spoken aloud: `harness_status`, `chat:ask_choice`,
+ * `orchestrator_spawn`. The separator (`_`/`:`) must be immediately followed
+ * by a verb char, so normal "the plan: ship it" (space after the colon) does
+ * NOT match — only the no-space tool-name form does.
+ */
+const TOOL_NAME_RE =
+  /\b(?:harness|issues|plans|chat|messages|search|memory|ui|tasks|goals|audit|orchestrator|features|docs|coord|locks)[_:][a-z_]+\b/i;
+
+/** Inline backtick-quoted symbol/code — not speakable. */
+const INLINE_BACKTICK_RE = /`[^`]+`/;
+
+/**
+ * Curated impl-jargon lexicon: terms a non-engineer listener wouldn't parse.
+ * Exported so scenarios/tests can reason about coverage. Deliberately small —
+ * a false positive that fires on legitimate speech is worse than a miss.
+ */
+export const VOICE_JARGON_LEXICON: readonly string[] = [
+  'chunk',
+  'chunks',
+  'dash-delimited',
+  'ToolSearch',
+  'MCP',
+];
+
+const JARGON_WORD_RE = new RegExp(
+  `\\b(?:${VOICE_JARGON_LEXICON.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+  'i',
+);
+
+export function noJargonInSay(run: RunSummary): Violation[] {
+  const violations: Violation[] = [];
+  for (let i = 0; i < run.turns.length; i++) {
+    const matches = [...run.turns[i].assistantText.matchAll(/<say[^>]*>([\s\S]*?)<\/say>/gi)];
+    for (let j = 0; j < matches.length; j++) {
+      const content = matches[j][1];
+      let hit: string | null = null;
+      if (FEATURE_ID_RE.test(content)) hit = 'a raw feature ID';
+      else if (TOOL_NAME_RE.test(content)) hit = 'a tool name';
+      else if (INLINE_BACKTICK_RE.test(content)) hit = 'a backtick-quoted symbol';
+      else if (JARGON_WORD_RE.test(content)) hit = 'internal jargon';
+      if (hit) {
+        violations.push({
+          assertKind: 'noJargonInSay',
+          severity: 'error',
+          evidenceTurnIdx: i,
+          claim: `Turn ${i} <say> #${j} reads ${hit} aloud: '${content.slice(0, 80)}…'. Voice <say> must use plain language a non-engineer listener understands — no raw IDs, tool names, code, or jargon.`,
+          suggestion: "Say what it means in plain words (e.g. 'the formatting fix', 'the items waiting on you').",
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+// =============================================================================
+// 11. Grounded — no count/state claim before any tool result exists (VOICE rule 4)
+// =============================================================================
+//
+// Rule 4: "never state a count or status before the tool result that supports
+// it has come back". The dominant failure (S13 run1) was Turn 0 asserting
+// "5 harnesses all in progress" with ZERO tool calls. This assert flags a
+// count/state claim made while no tool has been called this run (this turn or
+// any earlier). It gives the benefit of the doubt to any turn that DID call a
+// tool — so it's strict (low false-positive) and nails the no-tool hallucination.
+
+/** A count of domain things: "3 harnesses", "five features". */
+const COUNT_CLAIM_RE =
+  /\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:harness|feature|issue|escalation|review|plan|task|chunk)\w*/i;
+
+/** A blanket state claim over a set: "all X are passing / blocked / in progress". */
+const STATE_CLAIM_RE = /\ball\b[\s\S]{0,40}?\b(?:are|in progress|blocked|failing|passing|ready|done)\b/i;
+
+export function groundedCountBeforeTool(run: RunSummary): Violation[] {
+  const violations: Violation[] = [];
+  let toolsSoFar = 0;
+  for (let i = 0; i < run.turns.length; i++) {
+    toolsSoFar += run.turns[i].toolCalls.length;
+    const say = extractSayContent(run.turns[i].assistantText);
+    const makesClaim = COUNT_CLAIM_RE.test(say) || STATE_CLAIM_RE.test(say);
+    if (makesClaim && toolsSoFar === 0) {
+      violations.push({
+        assertKind: 'groundedCountBeforeTool',
+        severity: 'error',
+        evidenceTurnIdx: i,
+        claim: `Turn ${i} states a count/status ('${say.slice(0, 80)}…') but no tool has been called this run — the claim is ungrounded.`,
+        suggestion: 'Call the tool (harness_status / issues_list / …) FIRST, then speak the result. Never invent a number and silently correct it next turn.',
+      });
+    }
+  }
+  return violations;
+}
+
+// =============================================================================
 // Helper export (used by tests)
 // =============================================================================
 

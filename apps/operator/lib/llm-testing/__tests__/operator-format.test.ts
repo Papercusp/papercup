@@ -15,6 +15,8 @@ import {
   formatLength220,
   noMarkdownInSay,
   optionsCountWithinBounds,
+  noJargonInSay,
+  groundedCountBeforeTool,
 } from '../asserts/operator-format';
 import type { RunSummary, TurnResult } from '../types';
 
@@ -244,5 +246,92 @@ describe('optionsCountWithinBounds(2,3)', () => {
   });
   it('fails when no card and no list either', () => {
     expect(fn(summary([turn('<say>just one obvious thing.</say>')]))).toHaveLength(1);
+  });
+});
+
+describe('noJargonInSay', () => {
+  it('passes plain prose (harness is operator vocabulary, not jargon)', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>Three harnesses active. Sheets is busiest — look there?</say>'
+    )]))).toHaveLength(0);
+  });
+  it('fails a raw feature ID spoken aloud (F-FMT-002)', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>I shipped F-FMT-002 just now.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('fails a short feature ID spoken aloud (F-001)', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>F-001 is ready for review.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('fails the "chunk" jargon word (rule 5: "dig the chunks")', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>Let me dig the chunks for that.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('fails a spoken namespaced tool name (harness_status)', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>Calling harness_status to check.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('fails a colon tool name spoken aloud (chat:ask_choice)', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>I will use chat:ask_choice for that.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('fails an inline backtick symbol', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>Run `npm test` first.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('fails the "dash-delimited" jargon phrase', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>The flags match dash-delimited parsing.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('passes when jargon appears only OUTSIDE <say> (e.g. spawn attrs)', () => {
+    expect(noJargonInSay(summary([turn(
+      '<say>Kicking off the auth work now.</say><spawn role="worker" chunk="auth-mod-1"/>'
+    )]))).toHaveLength(0);
+  });
+  it('no-op on a turn with no <say>', () => {
+    expect(noJargonInSay(summary([turn('<spawn role="scoper"/>')]))).toHaveLength(0);
+  });
+});
+
+describe('groundedCountBeforeTool', () => {
+  it('passes a count claim backed by a tool call in the same turn', () => {
+    expect(groundedCountBeforeTool(summary([turn(
+      '<say>3 harnesses active right now.</say>',
+      { toolCalls: [{ name: 'harness:status', input: {} }] },
+    )]))).toHaveLength(0);
+  });
+  it('fails a count claim with zero tool calls anywhere', () => {
+    expect(groundedCountBeforeTool(summary([turn(
+      '<say>5 harnesses all in progress.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('passes a say with no count/state claim and no tools (greeting)', () => {
+    expect(groundedCountBeforeTool(summary([turn(
+      '<say>Welcome back. Want to dive in?</say>'
+    )]))).toHaveLength(0);
+  });
+  it('fails "all N features are passing" with no tools', () => {
+    expect(groundedCountBeforeTool(summary([turn(
+      '<say>All 5 features are passing.</say>'
+    )]))).toHaveLength(1);
+  });
+  it('passes a later count claim when an earlier turn called a tool', () => {
+    expect(groundedCountBeforeTool(summary([
+      turn('<say>Hi there.</say>', { toolCalls: [{ name: 'harness:list', input: {} }] }),
+      turn('<say>3 issues open.</say>'),
+    ]))).toHaveLength(0);
+  });
+  it('fails a count claim across turns when no tool was ever called', () => {
+    expect(groundedCountBeforeTool(summary([
+      turn('<say>Hi there.</say>'),
+      turn('<say>3 issues open.</say>'),
+    ]))).toHaveLength(1);
   });
 });

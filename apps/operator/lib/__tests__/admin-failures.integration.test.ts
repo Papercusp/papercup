@@ -60,14 +60,19 @@ async function get(qs = '', headers: Record<string, string> = { Authorization: `
 describe('GET /api/admin/spawn-signing/failures', () => {
   afterAll(() => cleanup('s_audit_%'));
 
-  itLive('no auth → 401', async () => {
+  // These requests originate on loopback, so requirePrincipal resolves the
+  // loopback principal (trust 'unverified-loopback'); the route requires
+  // trust:['trusted'], so the trust check fails → 403 (per the documented
+  // contract in lib/auth/require-principal.ts: no-principal→401, wrong-trust→403).
+  // 401 only happens for a non-loopback request with no/invalid bearer.
+  itLive('no auth (loopback principal, wrong trust) → 403', async () => {
     const res = await get('', {});
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
   });
 
-  itLive('wrong bearer → 401', async () => {
+  itLive('wrong bearer (falls back to loopback, wrong trust) → 403', async () => {
     const res = await get('', { Authorization: 'Bearer fake' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
   });
 
   itLive('bad since → 400', async () => {

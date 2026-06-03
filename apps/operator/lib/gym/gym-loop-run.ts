@@ -35,7 +35,8 @@ import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
 import { runOptimizationLoop } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
-import { GYM_JUDGE_RUBRIC_V1 } from './judge-scoring';
+import { readPoolAggregates } from './read-api';
+import { GYM_JUDGE_RUBRIC_V1, rubricHash } from './judge-scoring';
 import type { JudgeLlmCall } from './judge';
 import type { GymLlmCall } from './task-generator';
 
@@ -85,10 +86,18 @@ function fixedTasks(): { tasks: LoopTask[]; substrateFiles: Array<{ path: string
     tasks: [
       { taskId: 'gym-loop-health', pool: 'train', spec: 'Add a health endpoint so operators can check the service is alive.', intent: 'Operators need a liveness probe for the service.', ...common },
       { taskId: 'gym-loop-version', pool: 'dev-anchor', spec: 'Expose the service version on a /version route.', intent: 'Operators need to see which build is running.', ...common },
+      // D-014/P-028 real-anchor: scored every cycle but NEVER optimized (excluded from the
+      // train/dev-anchor aggregation in buildLoopDeps.evaluate) — the falsifiability check.
+      // NOTE: a faithful real-anchor is a corpus of REAL shipped features with known outcomes;
+      // this synthetic stand-in exercises the MECHANISM (pool → scored-not-optimized → read-api
+      // surfacing). Populating it with real features is the data-gathering follow-up.
+      { taskId: 'gym-loop-ready', pool: 'real-anchor', spec: 'Add a readiness endpoint that reports the service can accept traffic.', intent: 'A representative shipped feature: operators gate traffic on a readiness signal.', ...common },
     ],
     substrateFiles: [
+      // Buildable package so the chunk-loop L1 gate (`npm run typecheck`) is meaningful — see ab-run.ts.
+      { path: 'package.json', content: JSON.stringify({ name: 'gym-substrate', version: '0.0.0', private: true, type: 'module', scripts: { typecheck: 'node --check index.js' } }, null, 2) + '\n' },
       { path: 'index.js', content: 'export function handle(req){ return { status: 404 }; }\n' },
-      { path: 'README.md', content: '# gym loop substrate\nA tiny service.\n' },
+      { path: 'README.md', content: '# gym loop substrate\nA tiny Node (ESM) service. `npm run typecheck` is the build gate.\n' },
     ],
   };
 }
@@ -134,9 +143,9 @@ async function main(): Promise<void> {
     const { tasks, substrateFiles } = fixedTasks();
     mkdirSync(substrateDir, { recursive: true });
     mkdirSync(join(substrateDir, '.harness'), { recursive: true });
-    // Single-shot worker (not the chunk loop) — the chunk loop's tsc gate fails structurally
-    // on this minimal plain-JS substrate (no tsconfig) → endless rework. See ab-run.ts.
-    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { useChunkLoop: false } }));
+    // Production-fidelity: the REAL chunk-loop worker model with the L1 gate pointed at the
+    // substrate's dependency-free `npm run typecheck`. The substrate is buildable. See ab-run.ts.
+    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { workingStateCheck: 'npm run typecheck' } }));
     for (const f of substrateFiles) writeFileSync(join(substrateDir, f.path), f.content);
     execFileSync('git', ['init', '-q'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });
@@ -222,6 +231,12 @@ async function main(): Promise<void> {
 
     report.loop = result;
     report.autoloop = await getAutoloop(controlSql, { workspaceId: WS, harnessSlug: SLUG });
+    // D-014/P-028 falsifiability surface: train vs real-anchor composite per variant. If the
+    // train aggregate climbs across variants while the real-anchor stays flat, the loop is
+    // optimizing a proxy (the real-anchor is scored every cycle but never optimized).
+    const rh = rubricHash(GYM_JUDGE_RUBRIC_V1);
+    report.trainByVariant = await readPoolAggregates(gymSql, 'train', rh);
+    report.realAnchorByVariant = await readPoolAggregates(gymSql, 'real-anchor', rh);
     ok = result.cycles >= 1 && !result.breakerTripped;
   } catch (err) {
     report.error = String(err);

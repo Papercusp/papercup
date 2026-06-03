@@ -90,8 +90,12 @@ function fixedTask(): { task: AbTask; substrateFiles: Array<{ path: string; cont
       projectContext: 'A tiny Node service (index.js) with a minimal HTTP handler.',
     },
     substrateFiles: [
+      // A BUILDABLE package: the chunk-loop L1 gate (`npm run typecheck` → `node --check`,
+      // dependency-free) passes on valid code + fails on a syntax error, so it is MEANINGFUL
+      // (not a structural failure) and the chunk-loop worker model converges to a clean DONE.
+      { path: 'package.json', content: JSON.stringify({ name: 'gym-substrate', version: '0.0.0', private: true, type: 'module', scripts: { typecheck: 'node --check index.js' } }, null, 2) + '\n' },
       { path: 'index.js', content: 'export function handle(req){ return { status: 404 }; }\n' },
-      { path: 'README.md', content: '# gym A/B substrate\nA tiny service.\n' },
+      { path: 'README.md', content: '# gym A/B substrate\nA tiny Node (ESM) service. `npm run typecheck` is the build gate.\n' },
     ],
   };
 }
@@ -126,13 +130,11 @@ async function main(): Promise<void> {
     const { task, substrateFiles } = fixedTask();
     mkdirSync(substrateDir, { recursive: true });
     mkdirSync(join(substrateDir, '.harness'), { recursive: true });
-    // Single-shot worker (legacy lane), NOT the chunk loop: the chunk loop's L1 typecheck
-    // GATE runs `tsc` on the substrate, which fails STRUCTURALLY on this minimal plain-JS
-    // substrate (no tsconfig) regardless of the worker's diff → 3 strikes → debugger → an
-    // endless rework loop that never reaches DONE. The single-shot worker writes + reports
-    // and lets the director/validator converge within the turn cap (a buildable substrate +
-    // the chunk loop is the production-fidelity path; this keeps the bounded A/B convergent).
-    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { useChunkLoop: false } }));
+    // Production-fidelity: the REAL chunk-loop worker model (plan → per-chunk implement →
+    // L1 typecheck gate → commit), with the gate pointed at the substrate's own dependency-free
+    // `npm run typecheck` (the default `pnpm typecheck` fails structurally here — no pnpm/script).
+    // The substrate is buildable (package.json above), so the gate is meaningful + runs converge.
+    writeFileSync(join(substrateDir, '.harness', 'config.json'), JSON.stringify({ worktrees: { enabled: false }, parallelWorkers: { workingStateCheck: 'npm run typecheck' } }));
     for (const f of substrateFiles) writeFileSync(join(substrateDir, f.path), f.content);
     execFileSync('git', ['init', '-q'], { cwd: substrateDir });
     execFileSync('git', ['-c', 'user.email=gym@local', '-c', 'user.name=gym', 'add', '-A'], { cwd: substrateDir });

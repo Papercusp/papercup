@@ -23,6 +23,8 @@ import { buildLoopDeps, type LoopTask } from '../loop-deps';
 import { runOptimizationLoop } from '../loop';
 import { makeLoopProposalRecorder, listProposals, decideProposal, getAutoloop, getPrompts } from '../control-plane';
 import { createGymStore } from '../ab-runner-real';
+import { readPoolAggregates } from '../read-api';
+import { rubricHash, GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
 import type { AbDeps } from '../ab-runner';
 import type { JudgeLlmCall } from '../judge';
 import type { GymLlmCall } from '../task-generator';
@@ -94,6 +96,7 @@ const TASKS: LoopTask[] = [
   { taskId: 't-train', pool: 'train', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:5', projectContext: 'p' },
   { taskId: 't-dev', pool: 'dev-anchor', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:6', projectContext: 'p' },
   { taskId: 't-probe', pool: 'probe', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:5', projectContext: 'p' },
+  { taskId: 't-anchor', pool: 'real-anchor', repoUrl: 'r', repoCommit: 'c', spec: 's', intent: 'score:7', projectContext: 'p' },
 ];
 
 describe('autonomous loop → control plane (D-020)', () => {
@@ -149,6 +152,16 @@ describe('autonomous loop → control plane (D-020)', () => {
     // Autoloop config advanced its last_cycle.
     const cfg = await getAutoloop(sql, { workspaceId: WS, harnessSlug: SLUG });
     expect(cfg?.lastCycle).toBe(1);
+
+    // D-014/P-028: the real-anchor pool is SCORED for every variant (surfaceable for the
+    // falsifiability check) but never optimized — readPoolAggregates returns it distinctly
+    // from the train pool.
+    const rh = rubricHash(GYM_JUDGE_RUBRIC_V1);
+    const anchor = await readPoolAggregates(sql, 'real-anchor', rh);
+    expect(anchor.length).toBeGreaterThanOrEqual(1);
+    expect(anchor.every((a) => a.meanComposite > 0 && a.n >= 1)).toBe(true);
+    const trainAgg = await readPoolAggregates(sql, 'train', rh);
+    expect(trainAgg.length).toBeGreaterThanOrEqual(1);
   });
 
   it('accepting a recorded proposal promotes the proposed prompt into harness_prompt_overrides', async () => {

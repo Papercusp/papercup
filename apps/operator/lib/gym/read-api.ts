@@ -63,6 +63,30 @@ export async function readScoredTrainRows(sql: Sql, rubricHash: string): Promise
   return rows.map((r) => ({ variantId: r.variant_id, taskId: r.task_id, composite: Number(r.composite) }));
 }
 
+export interface PoolAggregateRow {
+  variantId: string;
+  meanComposite: number;
+  n: number;
+}
+
+/**
+ * Per-variant mean composite for ONE pool (P-028 real-anchor / monitor surfacing, D-014).
+ * Comparing the `real-anchor` trend against the `train` trend across variants IS the
+ * falsifiability check: if the train aggregate climbs while the real-anchor stays flat, the
+ * loop is optimizing a proxy. The real-anchor pool is scored but never optimized (it never
+ * feeds the accept gate — `buildLoopDeps.evaluate` excludes it from the train/dev-anchor rollup).
+ */
+export async function readPoolAggregates(sql: Sql, pool: string, rubricHash: string): Promise<PoolAggregateRow[]> {
+  const rows = await sql<{ variant_id: string; mean: number; n: number }[]>`
+    SELECT r.variant_id, AVG(s.composite)::float8 AS mean, COUNT(*)::int AS n
+      FROM harness_gym.gym_runs r
+      JOIN harness_gym.gym_tasks t ON t.task_id = r.task_id AND t.pool = ${pool}
+      JOIN harness_gym.gym_scores s ON s.run_id = r.run_id AND s.rubric_hash = ${rubricHash}
+     GROUP BY r.variant_id
+     ORDER BY r.variant_id`;
+  return rows.map((r) => ({ variantId: r.variant_id, meanComposite: Number(r.mean), n: Number(r.n) }));
+}
+
 export interface CycleHistoryRow {
   cycle: number;
   parentId: string | null;
