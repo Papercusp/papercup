@@ -12,6 +12,7 @@
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { createSign, createPrivateKey } from 'node:crypto';
+import { dbosTimersActive } from './dbos/dbos-flags';
 
 const APNS_KEY_PATH = process.env.APNS_KEY_PATH ?? '';        // path to AuthKey_<KEY_ID>.p8
 const APNS_KEY_ID = process.env.APNS_KEY_ID ?? '';            // 10-char Key ID
@@ -26,6 +27,10 @@ let started = false;
 
 export function startPushCredentialRefresher(): void {
   if (started) return;
+  // DBOS owns the refresh as a scheduled workflow (consolidation P-003); the
+  // legacy in-process timer stands down on the SAME predicate as the
+  // periodic-workflows registration, so exactly one fires.
+  if (dbosTimersActive()) return;
   started = true;
   if (!APNS_KEY_PATH && !FCM_SA_PATH) {
     console.log('[push-creds] no credentials configured; dispatcher disabled');
@@ -37,7 +42,9 @@ export function startPushCredentialRefresher(): void {
   }, REFRESH_INTERVAL_MS).unref();
 }
 
-async function refreshAll(): Promise<void> {
+/** One refresh pass (APNs + FCM). Called by the DBOS scheduled workflow
+ *  (`pushCredentialsRefresh`, consolidation P-003) and the legacy timer. */
+export async function refreshAll(): Promise<void> {
   await Promise.allSettled([refreshApns(), refreshFcm()]);
 }
 

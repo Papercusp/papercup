@@ -25,6 +25,9 @@ import { runBackupSchedulerTick } from '@papercusp/backup';
 import { gcOldNotifies } from '@/lib/agent-tools/coordination/subscriptions';
 import { runServiceHealthTick } from '@/lib/service-health';
 import { readRegistry } from '@/lib/workspace-registry';
+import { runHarnessStatusSweepOnce } from '@/lib/harness-status-sweep';
+import { sweepOrphanSnapshots } from '@papercusp/backup';
+import { refreshAll as refreshPushCredentials } from '@/lib/device-push-credentials';
 
 // Hourly: drain the telemetry ring buffer → archive, forward to PostHog (gated),
 // enforce retention. A transient PostHog failure already degrades to retry-next,
@@ -113,3 +116,36 @@ const serviceHealthWorkflow = DBOS.registerWorkflow(serviceHealthTick, {
   name: 'serviceHealth', maxRecoveryAttempts: 5,
 });
 DBOS.registerScheduled(serviceHealthWorkflow, { name: 'serviceHealth', crontab: '0 * * * * *' });
+
+// Every 30s: harness_status / harness_lanes PID-liveness sweep (consolidation
+// P-001). Replaces the legacy setInterval in harness-status-sweep.ts (which
+// stands down on dbosTimersActive).
+async function harnessStatusSweepTick(): Promise<void> {
+  await DBOS.runStep(() => runHarnessStatusSweepOnce(), { name: 'harness-status-sweep' });
+}
+const harnessStatusSweepWorkflow = DBOS.registerWorkflow(harnessStatusSweepTick, {
+  name: 'harnessStatusSweep', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(harnessStatusSweepWorkflow, { name: 'harnessStatusSweep', crontab: '*/30 * * * * *' });
+
+// Every 5min: backup orphan-snapshot sweep (consolidation P-002). REVIVES the
+// job — its only legacy start site was the dead instrumentation-node, so this
+// both ports it to DBOS and re-activates it (D-003).
+async function orphanCleanupTick(): Promise<void> {
+  await DBOS.runStep(async () => { await sweepOrphanSnapshots(); }, { name: 'backup-orphan-cleanup' });
+}
+const orphanCleanupWorkflow = DBOS.registerWorkflow(orphanCleanupTick, {
+  name: 'backupOrphanCleanup', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(orphanCleanupWorkflow, { name: 'backupOrphanCleanup', crontab: '0 */5 * * * *' });
+
+// Every 30min: refresh APNs/FCM push credentials (consolidation P-003). Replaces
+// the legacy 50min setInterval (which stands down on dbosTimersActive); 30min is
+// comfortably inside the 60min token TTL.
+async function pushCredentialsTick(): Promise<void> {
+  await DBOS.runStep(() => refreshPushCredentials(), { name: 'push-credentials-refresh' });
+}
+const pushCredentialsWorkflow = DBOS.registerWorkflow(pushCredentialsTick, {
+  name: 'pushCredentialsRefresh', maxRecoveryAttempts: 5,
+});
+DBOS.registerScheduled(pushCredentialsWorkflow, { name: 'pushCredentialsRefresh', crontab: '0 */30 * * * *' });

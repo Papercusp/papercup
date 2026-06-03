@@ -35,6 +35,7 @@ import { and, eq } from 'drizzle-orm';
 
 const hl = generated.harnessLanesInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
+import { dbosTimersActive } from './dbos/dbos-flags';
 const SWEEP_INTERVAL_MS = 30_000;
 // Lane rows are PID-tagged by run.sh's pg_write_lane. As long as the PID is
 // alive, the lane is legitimately running — agent invocations can take an
@@ -145,14 +146,21 @@ async function sweepHarnessLanes(): Promise<void> {
   }
 }
 
-async function tick(): Promise<void> {
-  // Iteration column is orchestrator-owned. The sweeper never writes it.
-  // harness_status stalled detection moved to expirable-registry once
-  // the schema grew an explicit expires_at column (writers populate it
-  // on each pg_write_status). This sweeper only handles PID-liveness
-  // work that TTL can't model cleanly.
+/**
+ * One sweep pass — the DBOS scheduled workflow (`harnessStatusSweep` in
+ * periodic-workflows.ts, consolidation P-001) and the legacy in-process timer
+ * both call this. Iteration column is orchestrator-owned; the sweeper never
+ * writes it. harness_status stalled detection moved to expirable-registry once
+ * the schema grew an explicit expires_at column. This sweeper only handles
+ * PID-liveness work that TTL can't model cleanly.
+ */
+export async function runHarnessStatusSweepOnce(): Promise<void> {
   await sweepAgentRunsRunning();
   await sweepHarnessLanes();
+}
+
+async function tick(): Promise<void> {
+  await runHarnessStatusSweepOnce();
 }
 
 /**
@@ -162,6 +170,17 @@ async function tick(): Promise<void> {
  */
 export function ensureHarnessStatusSweep(): SweepState {
   if (_g.__harnessStatusSweep) return _g.__harnessStatusSweep;
+
+  // DBOS owns this sweep as a scheduled workflow (consolidation P-001); the
+  // legacy in-process timer stands down on the SAME predicate as the
+  // periodic-workflows registration, so exactly one of {DBOS, legacy} fires.
+  if (dbosTimersActive()) {
+    _g.__harnessStatusSweep = {
+      timer: undefined as unknown as ReturnType<typeof setInterval>,
+      stopped: true,
+    };
+    return _g.__harnessStatusSweep;
+  }
 
   const state: SweepState = {
     timer: setInterval(() => {
