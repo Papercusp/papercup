@@ -17,7 +17,19 @@
 import { test, expect, type Page } from '@playwright/test';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
-const SLUG = process.env.DOCK_E2E_SLUG ?? 'sheets';
+// Resolve a harness slug that actually exists in the e2e workspace. The old
+// hardcoded 'sheets' isn't provisioned in the default workspace, so the
+// /harness/$slug loader notFound()s (then redirects). Prefer an explicit
+// DOCK_E2E_SLUG, else a test-looking fixture, else the first project. Resolved
+// in beforeAll because /projects/lite is workspace-scoped at runtime.
+let SLUG = process.env.DOCK_E2E_SLUG ?? '';
+
+test.beforeAll(async ({ request }) => {
+  if (SLUG) return;
+  const r = await request.get(`${baseURL}/api/harness/projects/lite`);
+  const projects: Array<{ slug: string }> = (await r.json()).projects ?? [];
+  SLUG = projects.find((p) => /e2e|test/i.test(p.slug))?.slug ?? projects[0]?.slug ?? 'papercup';
+});
 
 async function gotoDock(page: Page) {
   // Clear any onboarded flag so first-visit assertions can run.
@@ -74,9 +86,10 @@ test.describe('dock route — onboarding', () => {
     await expect(bubble).toBeVisible();
     await page.getByRole('button', { name: 'Dismiss onboarding' }).click();
     await expect(bubble).toBeHidden();
-    // Re-navigate; bubble stays gone.
+    // Re-navigate; bubble stays gone. NOTE: no waitForLoadState('networkidle')
+    // — the dock shell opens long-lived SSE streams so the network never goes
+    // idle (see gotoDock). Rely on toHaveCount auto-waiting instead.
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle');
     await expect(page.getByRole('status', { name: 'Dock onboarding' })).toHaveCount(0);
   });
 });
@@ -177,8 +190,9 @@ test.describe('dock route — layout persistence across reload', () => {
     const body1 = await r1.json();
     expect(body1.layoutJson.schemaVersion).toBe(1);
 
-    // Reload — same row should be returned.
-    await page.reload({ waitUntil: 'networkidle' });
+    // Reload — same row should be returned. domcontentloaded, not networkidle:
+    // the dock shell's persistent SSE streams keep the network busy forever.
+    await page.reload({ waitUntil: 'domcontentloaded' });
     const r2 = await request.get(`${baseURL}/api/dock-layouts/${encodeURIComponent(layoutName)}`);
     const body2 = await r2.json();
     // Same createdTs (no re-seed)

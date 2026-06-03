@@ -26,9 +26,17 @@ type ProjectEntry = {
 };
 
 export const Route = createFileRoute('/harness/$slug/')({
-  validateSearch: (search): { dock?: '1' } => ({
-    dock: search.dock === '1' ? '1' : undefined,
-  }),
+  validateSearch: (search): { dock?: 1 } => {
+    // `?dock=1` opts into the dock shell. TanStack Router's default search
+    // parser coerces `?dock=1` to the NUMBER 1 and round-trips numbers
+    // verbatim (`1` ↔ `?dock=1`), so normalize to the number 1. A normalized
+    // STRING '1' is JSON-quoted to `?dock="1"` and DRIFTS across TSR's
+    // re-serialisations (eventually parsing back as the quoted string `"1"`),
+    // which breaks an `=== '1'` check → spurious redirect to /adv. (The
+    // Next.js original compared against '1' because `searchParams.dock` was a
+    // string there; under TSR it's a number.) Accept '1' too for self-heal.
+    return { dock: search.dock === 1 || search.dock === '1' ? 1 : undefined };
+  },
   loaderDeps: ({ search }) => ({ dock: search.dock }),
   loader: async ({ params, deps }) => {
     // /projects/lite — only slug+path; not the heavy /projects endpoint
@@ -41,7 +49,7 @@ export const Route = createFileRoute('/harness/$slug/')({
     if (!project) throw notFound();
     // Coding harnesses are now served by /adv; only org/department + the
     // opt-in ?dock=1 shell still render the legacy per-slug surface here.
-    if (deps.dock !== '1' && project.harness_kind !== 'department') {
+    if (deps.dock !== 1 && project.harness_kind !== 'department') {
       throw redirect({ to: '/adv', search: { tab: 'harnesses', slug: params.slug } });
     }
     return { project };
@@ -54,7 +62,7 @@ function HarnessProjectPage() {
   const search = Route.useSearch();
 
   // Phase 5 dock — opt-in via ?dock=1.
-  if (search.dock === '1') {
+  if (search.dock === 1) {
     return (
       <>
         <InsightsFirstVisitGate slug={project.slug} />

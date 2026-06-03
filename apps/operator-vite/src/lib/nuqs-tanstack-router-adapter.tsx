@@ -3,52 +3,50 @@
 import { startTransition, useCallback, useMemo } from 'react';
 import { useLocation, useRouter } from '@tanstack/react-router';
 import {
-  renderQueryString,
   unstable_createAdapterProvider as createAdapterProvider,
   type unstable_AdapterOptions as AdapterOptions,
 } from 'nuqs/adapters/custom';
 
 /**
- * Custom nuqs adapter for TanStack Router that PRESERVES search params nuqs
- * does not manage.
+ * Custom nuqs adapter for TanStack Router that preserves search params nuqs
+ * does not manage — and, crucially, lets TanStack Router own URL
+ * serialization.
  *
- * Why this exists: the stock `nuqs/adapters/tanstack-router` adapter rebuilds
- * the entire query string from ONLY the nuqs-watched keys
- * (`to: pathname + renderQueryString(<watched-only>)`). Any param owned by
- * TanStack Router's native typed search (`validateSearch` + `useSearch`) —
- * e.g. `?dock=1` (/harness/$slug), `?switch=1` (/login) — is therefore
- * dropped on EVERY nuqs write. The WorkspaceSwitcher mount effect writes
- * `?ws=<active>` via nuqs on load, which clobbered those params (≈18 e2e
- * specs across dock + login + auth).
+ * Why this exists: the stock `nuqs/adapters/tanstack-router` adapter writes
+ * the whole URL as a STRING (`to: pathname + renderQueryString(<watched>)`).
+ * That fights TanStack's typed search in two ways:
+ *   1. It rebuilds from only the nuqs-watched keys, so params owned by
+ *      TanStack's native typed search (`validateSearch` + `useSearch`) — e.g.
+ *      `?dock=1` on /harness/$slug — are dropped on every nuqs write.
+ *   2. TanStack re-stringifies that string-`to` with its own JSON encoder, so
+ *      a value it has already encoded (e.g. the string `"1"`) gets re-encoded
+ *      and duplicated on each pass — an encoding feedback loop.
  *
- * The fix: `updateUrl` merges nuqs's desired watched-key state OVER the full
- * current URL search, so non-watched params survive. (This router config
- * already preserves unvalidated params passed via the `to` string — that's
- * exactly why `?ws=` itself survived while `?dock=` was dropped — so putting
- * the other params back into the `to` string keeps them.) nuqs deletions
- * still apply: a removed watched key is absent from `nuqsSearch`, and the
- * base's copy of every watched key is dropped before re-applying nuqs's state.
- *
- * Everything else mirrors the official adapter 1:1 (the `searchParams` getter,
- * the navigate options) so nuqs behaves identically for the keys it owns.
+ * The fix: write via TanStack's FUNCTIONAL search updater
+ * (`navigate({ search: (prev) => … })`). `prev` is the current *validated*
+ * search object, so non-nuqs params survive; nuqs's watched keys are laid on
+ * top; and TanStack stringifies exactly once. nuqs deletions apply because a
+ * removed watched key is absent from `nuqsSearch` (and every watched key is
+ * stripped from `prev` before re-applying nuqs's state).
  */
 
-/** Pure merge: nuqs's watched-key state laid over the current URL search. */
-export function mergeNuqsSearchParams(
-  currentSearch: string,
+/** Pure merge: nuqs's watched-key state laid over the current search object. */
+export function applyNuqsToSearch(
+  prev: Record<string, unknown>,
   watchKeys: readonly string[],
   nuqsSearch: URLSearchParams,
-): URLSearchParams {
-  const merged = new URLSearchParams();
-  // 1. Carry over every CURRENT param nuqs does not manage (incl. arrays).
-  for (const [key, value] of new URLSearchParams(currentSearch)) {
-    if (!watchKeys.includes(key)) merged.append(key, value);
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...prev };
+  // Drop nuqs's keys from the base — nuqs re-adds exactly the ones it wants.
+  for (const key of watchKeys) delete next[key];
+  // Group nuqs's desired state (repeated keys = arrays), then overlay.
+  const grouped: Record<string, string | string[]> = {};
+  for (const [key, value] of nuqsSearch.entries()) {
+    const cur = grouped[key];
+    grouped[key] =
+      cur === undefined ? value : Array.isArray(cur) ? [...cur, value] : [cur, value];
   }
-  // 2. Apply nuqs's desired state for the watched keys (repeated keys = arrays).
-  for (const [key, value] of nuqsSearch) {
-    merged.append(key, value);
-  }
-  return merged;
+  return { ...next, ...grouped };
 }
 
 function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
@@ -77,24 +75,12 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
     ),
     updateUrl: useCallback(
       (nuqsSearch: URLSearchParams, options: AdapterOptions) => {
-        const merged = mergeNuqsSearchParams(
-          window.location.search,
-          watchKeys,
-          nuqsSearch,
-        );
-        // TEMP DIAG (remove):
-        console.info(
-          '[nuqs-merge-adapter] updateUrl from=' +
-            window.location.search +
-            ' watch=' +
-            watchKeys.join(',') +
-            ' to=' +
-            renderQueryString(merged),
-        );
         startTransition(() => {
           navigate({
             from: '/',
-            to: pathname + renderQueryString(merged),
+            to: pathname,
+            search: (prev) =>
+              applyNuqsToSearch(prev as Record<string, unknown>, watchKeys, nuqsSearch),
             replace: options.history === 'replace',
             resetScroll: options.scroll,
             hash: (prevHash) => prevHash ?? '',
@@ -107,11 +93,6 @@ function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
     ),
     rateLimitFactor: 1,
   };
-}
-
-// TEMP DIAG (remove): marker + updateUrl trace to confirm the adapter is live.
-if (typeof window !== 'undefined') {
-  (window as unknown as Record<string, unknown>).__NUQS_MERGE_ADAPTER__ = '2026-06-03';
 }
 
 export const NuqsAdapter = createAdapterProvider(useNuqsTanstackRouterAdapter);

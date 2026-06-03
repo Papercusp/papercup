@@ -19,14 +19,19 @@ import { Checkbox } from '@/app/harness/Checkbox';
 
 interface LoginSearch {
   redirect_to?: string;
-  switch?: '1';
+  switch?: 1;
   mode?: 'login' | 'signup';
 }
 
 export const Route = createFileRoute('/login')({
   validateSearch: (search): LoginSearch => ({
     redirect_to: typeof search.redirect_to === 'string' ? search.redirect_to : undefined,
-    switch: search.switch === '1' ? '1' : undefined,
+    // `?switch=1` opts into switch-account mode. Normalize to the NUMBER 1
+    // (TSR coerces `?switch=1` to 1 and round-trips numbers verbatim); a
+    // normalized STRING '1' would be JSON-quoted to `?switch="1"` and drift
+    // across re-serialisations, breaking the `=== '1'` check. Mirrors the
+    // dock fix in harness/$slug. Accept '1' too for self-heal.
+    switch: search.switch === 1 || search.switch === '1' ? 1 : undefined,
     mode: search.mode === 'signup' ? 'signup' : search.mode === 'login' ? 'login' : undefined,
   }),
   component: LoginPage,
@@ -50,7 +55,7 @@ function LoginForm() {
   // `?switch=1`. In that mode we (a) never auto-redirect even if a session
   // exists, (b) skip the one-user autofill, and (c) show a banner so the
   // user understands the in-flight session will be replaced.
-  const isSwitching = search.switch === '1';
+  const isSwitching = search.switch === 1;
 
   const [available, setAvailable] = useState<AvailableUser[]>([]);
   const [mode, setMode] = useQueryState<LoginMode>(

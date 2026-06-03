@@ -1,64 +1,58 @@
 import { describe, it, expect } from 'vitest';
-import { mergeNuqsSearchParams } from './nuqs-tanstack-router-adapter';
+import { applyNuqsToSearch } from './nuqs-tanstack-router-adapter';
 
 /**
- * Regression coverage for the nuqs ↔ TanStack-Router search-param clobber.
+ * Regression coverage for the nuqs ↔ TanStack-Router search interplay.
  *
- * The stock `nuqs/adapters/tanstack-router` adapter rebuilds the whole query
- * string from ONLY the nuqs-watched keys, so any param managed by TanStack
- * Router's native typed search (`validateSearch` + `Route.useSearch()`) — e.g.
- * `?dock=1` on /harness/$slug, `?switch=1` on /login — was dropped on EVERY
- * nuqs write. The WorkspaceSwitcher mount effect writes `?ws=<active>` via
- * nuqs on load, which clobbered those params (≈18 e2e specs).
+ * The stock `nuqs/adapters/tanstack-router` adapter rebuilds the URL as a
+ * string from only the nuqs-watched keys, so params owned by TanStack's
+ * native typed search (`?dock=1` on /harness/$slug, `?switch=1` on /login)
+ * were dropped on every nuqs write — and its string-`to` form double-encodes.
  *
- * `mergeNuqsSearchParams` is the fix: a nuqs write merges its watched-key
- * state OVER the full current URL search, preserving non-watched params.
+ * `applyNuqsToSearch` is the fix: nuqs's watched-key state laid over the
+ * current *validated* search object, handed to TanStack's functional search
+ * updater so TanStack serializes once and non-nuqs params survive.
  */
-describe('mergeNuqsSearchParams', () => {
-  const merge = (current: string, watch: string[], next: string) =>
-    mergeNuqsSearchParams(current, watch, new URLSearchParams(next));
+describe('applyNuqsToSearch', () => {
+  const apply = (prev: Record<string, unknown>, watch: string[], next: string) =>
+    applyNuqsToSearch(prev, watch, new URLSearchParams(next));
 
   it('preserves a TanStack-native param (dock) when nuqs writes ws — the bug', () => {
-    const out = merge('?dock=1', ['ws'], 'ws=sheets');
-    expect(out.get('dock')).toBe('1');
-    expect(out.get('ws')).toBe('sheets');
+    expect(apply({ dock: '1' }, ['ws'], 'ws=sheets')).toEqual({ dock: '1', ws: 'sheets' });
   });
 
   it('preserves the login ?switch param across a ws write', () => {
-    const out = merge('?switch=1', ['ws', 'wsSwitch'], 'ws=acme');
-    expect(out.get('switch')).toBe('1');
-    expect(out.get('ws')).toBe('acme');
+    expect(apply({ switch: '1' }, ['ws', 'wsSwitch'], 'ws=acme')).toEqual({
+      switch: '1',
+      ws: 'acme',
+    });
   });
 
   it('applies a nuqs deletion (watched key gone) but keeps non-watched params', () => {
-    const out = merge('?ws=old&dock=1', ['ws'], '');
-    expect(out.get('ws')).toBeNull();
-    expect(out.get('dock')).toBe('1');
+    expect(apply({ ws: 'old', dock: '1' }, ['ws'], '')).toEqual({ dock: '1' });
   });
 
-  it('replaces the stale watched value rather than duplicating it', () => {
-    const out = merge('?ws=old&dock=1', ['ws'], 'ws=new');
-    expect(out.getAll('ws')).toEqual(['new']);
-    expect(out.get('dock')).toBe('1');
+  it('replaces the stale watched value rather than keeping the old one', () => {
+    expect(apply({ ws: 'old', dock: '1' }, ['ws'], 'ws=new')).toEqual({ ws: 'new', dock: '1' });
   });
 
-  it('preserves a non-watched array param', () => {
-    const out = merge('?tag=a&tag=b&dock=1', ['ws'], 'ws=x');
-    expect(out.getAll('tag')).toEqual(['a', 'b']);
-    expect(out.get('dock')).toBe('1');
-    expect(out.get('ws')).toBe('x');
+  it('preserves unrelated nuqs-managed params on /adv (tab, slug)', () => {
+    expect(apply({ tab: 'harnesses', slug: 'papercup' }, ['ws', 'tab', 'slug'], 'tab=harnesses&slug=papercup&ws=x')).toEqual({
+      tab: 'harnesses',
+      slug: 'papercup',
+      ws: 'x',
+    });
   });
 
-  it('applies a watched array param (repeated keys) over non-watched params', () => {
-    const out = merge('?dock=1', ['f'], 'f=a&f=b');
-    expect(out.getAll('f')).toEqual(['a', 'b']);
-    expect(out.get('dock')).toBe('1');
+  it('represents a repeated watched key as an array', () => {
+    expect(apply({ dock: '1' }, ['f'], 'f=a&f=b')).toEqual({ dock: '1', f: ['a', 'b'] });
   });
 
-  it('is a no-op-ish round trip when nuqs re-writes only its own watched keys', () => {
-    const out = merge('?ws=a&dock=1&panel=prs', ['ws'], 'ws=a');
-    expect(out.get('ws')).toBe('a');
-    expect(out.get('dock')).toBe('1');
-    expect(out.get('panel')).toBe('prs');
+  it('does not duplicate a key already present in prev (no string-append loop)', () => {
+    // tab is both in prev and re-written by nuqs — must end as a single value.
+    expect(apply({ tab: 'harnesses', dock: '1' }, ['tab'], 'tab=prs')).toEqual({
+      tab: 'prs',
+      dock: '1',
+    });
   });
 });
