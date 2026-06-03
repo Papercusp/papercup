@@ -90,3 +90,63 @@ export function checkInventoryCoverage(liveTables: string[]): InventoryCoverage 
 export function syncAuthorityFor(table: string): SyncAuthority {
   return resolveTableSpec(table).sync;
 }
+
+/**
+ * P-003c — the ONE router. Maps a table's registry sync authority to the single
+ * adapter that owns its cross-machine projection, replacing the three hand-rolled
+ * dogfood §7 bucket paths (HYPERBEE / GIT / LOCAL) with one registry-driven
+ * decision:
+ *   'git-export' → PG↔`.harness/state` files (lib/harness-state/git-export/*)
+ *   'peer-log'   → PG↔Hyperbee/Model-B log (lib/sync/hyperbee/*)
+ *   'local'      → no projection (sync:'none'); PG is the only copy
+ * The adapters themselves stay in their modules; this is the dispatch seam they
+ * (and the boot wiring) consult so "which mechanism" lives in exactly one place.
+ */
+export type ProjectionAdapter = 'git-export' | 'peer-log' | 'local';
+
+export function projectionAdapterFor(table: string): ProjectionAdapter {
+  switch (syncAuthorityFor(table)) {
+    case 'git':
+      return 'git-export';
+    case 'peer-log':
+      return 'peer-log';
+    default:
+      return 'local';
+  }
+}
+
+export interface ProjectionRouting {
+  /** tables routed to the git-export adapter. */
+  gitExport: string[];
+  /** tables routed to the peer-log adapter. */
+  peerLog: string[];
+  /** tables with no projection (PG-only). */
+  local: string[];
+  /** the peer-log registry↔projection-tag drift guard (P-003a). */
+  peerLogConsistency: PeerLogConsistency;
+  /** true iff every table routes to exactly one adapter AND peer-log is consistent. */
+  ok: boolean;
+}
+
+/**
+ * Route a live table inventory through the single router and fold in the
+ * peer-log drift guard — the unified "the registry drives all three buckets
+ * correctly" check (supersedes the per-adapter checks scattered at boot).
+ * Partition is total + disjoint by construction (projectionAdapterFor returns
+ * exactly one adapter per table), so `ok` reduces to the peer-log guard, but the
+ * partitioned lists give the boot log a one-glance routing picture.
+ */
+export function routeProjection(
+  liveTables: string[],
+  registeredTags: readonly string[],
+): ProjectionRouting {
+  const gitExport: string[] = [];
+  const peerLog: string[] = [];
+  const local: string[] = [];
+  for (const t of liveTables) {
+    const adapter = projectionAdapterFor(t);
+    (adapter === 'git-export' ? gitExport : adapter === 'peer-log' ? peerLog : local).push(t);
+  }
+  const peerLogConsistency = checkPeerLogConsistency(registeredTags);
+  return { gitExport, peerLog, local, peerLogConsistency, ok: peerLogConsistency.ok };
+}

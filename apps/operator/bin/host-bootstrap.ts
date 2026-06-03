@@ -276,31 +276,34 @@ export function runBootstrap(): void {
   // table that lost its projection, logs loudly here.
   void (async () => {
     try {
-      const { checkPeerLogConsistency, checkInventoryCoverage } = await import(
+      const { routeProjection, checkInventoryCoverage } = await import(
         '../lib/harness-state/projection-engine'
       );
       const { REGISTERED_PROJECTION_TAGS } = await import(
         '../lib/sync/hyperbee/projections/register-all'
       );
-      const cons = checkPeerLogConsistency(REGISTERED_PROJECTION_TAGS);
-      if (!cons.ok) {
-        console.error(
-          `[harness-state] PEER-LOG DRIFT — missingProjection=[${cons.missingProjection.join(',')}] orphanTag=[${cons.orphanTag.join(',')}]`,
-        );
-      }
       const { getOrgPg } = await import('@papercusp/db-org');
       const { sql } = getOrgPg();
       const rows = (await sql`
         SELECT table_name FROM information_schema.tables WHERE table_schema = 'harness_shared'
       `) as Array<{ table_name: string }>;
-      const cov = checkInventoryCoverage(rows.map((r) => r.table_name));
+      const live = rows.map((r) => r.table_name);
+      // P-003c: the ONE router partitions every live table across the 3 adapters
+      // and folds in the peer-log drift guard.
+      const route = routeProjection(live, REGISTERED_PROJECTION_TAGS);
+      if (!route.peerLogConsistency.ok) {
+        console.error(
+          `[harness-state] PEER-LOG DRIFT — missingProjection=[${route.peerLogConsistency.missingProjection.join(',')}] orphanTag=[${route.peerLogConsistency.orphanTag.join(',')}]`,
+        );
+      }
+      const cov = checkInventoryCoverage(live);
       if (cov.unreviewed.length > 0) {
         console.error(
           `[harness-state] ${cov.unreviewed.length} UNCLASSIFIED table(s) — add to table-registry.ts: ${cov.unreviewed.join(', ')}`,
         );
       } else {
         console.log(
-          `[harness-state] table coverage OK — ${cov.total} tables, ${cov.defaulted.length} default; peer-log drift=${cons.ok ? 'none' : 'DETECTED'}`,
+          `[harness-state] routing OK — ${cov.total} tables → git-export=${route.gitExport.length} peer-log=${route.peerLog.length} local=${route.local.length} (${cov.defaulted.length} default); peer-log drift=${route.peerLogConsistency.ok ? 'none' : 'DETECTED'}`,
         );
       }
     } catch (err) {

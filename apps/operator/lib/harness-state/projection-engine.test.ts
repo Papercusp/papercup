@@ -4,6 +4,8 @@ import {
   checkPeerLogConsistency,
   checkInventoryCoverage,
   syncAuthorityFor,
+  projectionAdapterFor,
+  routeProjection,
 } from './projection-engine';
 import { PEER_LOG_TABLES } from './table-registry';
 // The real hand-wired tags — drift guard cross-checks against the actual substrate registry.
@@ -54,5 +56,40 @@ describe('harness-state projection-engine (P-003a)', () => {
     expect(syncAuthorityFor('harness_decisions')).toBe('git');
     expect(syncAuthorityFor('operator_preferences')).toBe('none');
     expect(syncAuthorityFor('agent_runs_consolidated')).toBe('none');
+  });
+
+  it('P-003c router maps each sync authority to exactly one adapter', () => {
+    expect(projectionAdapterFor('harness_decisions')).toBe('git-export');
+    expect(projectionAdapterFor('harness_features_consolidated')).toBe('peer-log');
+    expect(projectionAdapterFor('operator_preferences')).toBe('local');
+    expect(projectionAdapterFor('agent_runs_consolidated')).toBe('local');
+    // the fs-mirror + retired org-demo we reclassified route to 'local', not git:
+    expect(projectionAdapterFor('harness_branch_actions')).toBe('local');
+    expect(projectionAdapterFor('messages')).toBe('local');
+  });
+
+  it('routeProjection partitions a live inventory across the 3 adapters (total + disjoint)', () => {
+    const live = [
+      'harness_decisions',              // git-export
+      'harness_chunk_plans',            // git-export
+      'harness_features_consolidated',  // peer-log
+      'feature_queue',                  // peer-log
+      'operator_preferences',           // local
+      'agent_runs_consolidated',        // local
+    ];
+    const r = routeProjection(live, REGISTERED_PROJECTION_TAGS);
+    expect(r.gitExport.sort()).toEqual(['harness_chunk_plans', 'harness_decisions']);
+    expect(r.peerLog.sort()).toEqual(['feature_queue', 'harness_features_consolidated']);
+    expect(r.local.sort()).toEqual(['agent_runs_consolidated', 'operator_preferences']);
+    // total + disjoint partition: every input lands in exactly one bucket
+    expect(r.gitExport.length + r.peerLog.length + r.local.length).toBe(live.length);
+    // green peer-log guard → ok
+    expect(r.ok).toBe(true);
+  });
+
+  it('routeProjection.ok goes false when the peer-log drift guard fails', () => {
+    const r = routeProjection(['harness_decisions'], REGISTERED_PROJECTION_TAGS.filter((t) => t !== 'queue'));
+    expect(r.ok).toBe(false);
+    expect(r.peerLogConsistency.missingProjection).toContain('feature_queue');
   });
 });
