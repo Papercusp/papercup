@@ -803,11 +803,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   }
 
   // ── Read-admission decider (4c) ── the D-004 + D-002 sig+binding decision
-  // applied to an inbound announce. verifyBinding wires verifyChannel2 (D-002:
-  // channel-2 only) over the LOCAL harness's {repoOwner, repoName, token}
-  // (resolved from shared.json + gh-token, cached). Returns 3-state
-  // 'verified'|'pending'|'fail'. Fail-closed: a private harness / no-gh-auth
-  // context admits nothing, so only the own log is merged.
+  // applied to an inbound announce. verifyBinding wires the write-free adapter
+  // (verifyAttestation over the announce's attestation gist id — gists are
+  // public, so no shared-repo context / gh-token is needed). Returns 3-state
+  // 'verified'|'pending'|'fail'. Fail-closed: a missing/forged gist admits
+  // nothing, so only the own log is merged.
   const admit = makeAdmissionDecider({
     // Reuse the same `verifyBinding` adapter captured above for the re-verify
     // path — one adapter instance shared by admission and re-verify (so the

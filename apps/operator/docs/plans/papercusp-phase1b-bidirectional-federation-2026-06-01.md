@@ -5,21 +5,16 @@ status: draft
 created: 2026-06-01
 owner: avi@storewolf.com
 supersedes_design: extends papercusp-substrate-model-b-rewrite-2026-05-31 (the substrate is built through Stage 7; this wires the live join/share identity pipeline onto it so two real engineers federate bidirectionally)
+updated: 2026-06-03
 ---
 
 # Phase 1b — Bidirectional federation: join-flow Model-B redesign
 
 ## Now
 
-**State:** **DESIGN SPEC — approved in brainstorm; awaiting an implementation plan (writing-plans).** No code yet.
+**State:** SUPERSEDED in practice by `non-collaborator-join-fork-pr-2026-06-02` (write-free join via gist attestation). Verified against source 2026-06-03: this spec's 3 defects are ALL resolved in current code — Defect 1 (join-link resolves identity server-side; EntryHarnessLinkForm sends no creds → no 400), Defect 2 (admission = `verifyAttestation` gist-only in `verify-binding-adapter`, channel-1 removed from admission), Defect 3 (BOTH join step3 and share-finalize are write-free — no contributor-file write). Announce freshness (D-007 ts/nonce) shipped. 98 federation tests green incl. bidirectional over real Hyperswarm (`two-peer-swarm-bidi`). The bidirectional north star (D-001) is met at the substrate level; the live two-machine P-079 + write-free live re-verify remain (need real GitHub identities — human/network-gated residue). NOTE the actual implementation diverged from this spec for the better: admission verifies the public attestation GIST (owned by github_user_id), not a shared-repo contributor file — so no repo write is needed to join at all.
 
-**What this is:** The Model B substrate (per-peer signed logs + LWW read-merge) is built + unit-proven through Stage 7, and its transport is verified by the testnet two-peer test (`two-peer-swarm.test.ts`). The original "Phase 1b" (OAuth + clone + attestation + binding service + two-channel verifier, plan `papercusp-dogfood-phase1b-oauth-clone-attestation-2026-05-24`) is also marked complete — but it was built for the *old Autobase* substrate, and a code audit (2026-06-01) found the live join/share identity pipeline is **not** correctly wired onto Model B. This spec is that wiring, redesigned for Model B.
-
-**North star (D-001):** **Fully federated + bidirectional.** "Join succeeded" must mean data is actually flowing *both ways*: both peers publish a verifiable binding, the substrate boots on join, the peers admit each other, and a first read-merge has landed (the joiner sees the publisher's feature queue and vice-versa). This makes a gate-active two-machine P-079 a real, checkable test.
-
-**Next:** writing-plans turns this spec into staged implementation items; then build + the bidirectional verification (§9).
-
----
+**Next:** Treat this doc as design lineage; track all remaining federation work (A4 revocation, B fork-based code→PR) in non-collaborator-join-fork-pr-2026-06-02.
 
 ## Context / problem
 

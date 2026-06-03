@@ -11,10 +11,10 @@
  * join-and-federate. This test omits those injectables and asserts the defaults
  * reach the real boot-all entry points, with the 6-step orchestration completing.
  *
- * Deterministic: boot-all + ensure-binding-published + activeWorkspaceId are
- * mocked at the module boundary; GitHub (channel-1 fetch, clone, gist, publish)
- * is stubbed. No swarm, no PG, no network — federation itself is proven by the
- * integration test; this proves the orchestrator targets it.
+ * Deterministic: boot-all + activeWorkspaceId are mocked at the module
+ * boundary; GitHub (channel-1 fetch, clone, gist) is stubbed. No swarm, no PG,
+ * no network — federation itself is proven by the integration test; this proves
+ * the orchestrator targets it.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -33,9 +33,6 @@ const boot = vi.hoisted(() => ({
 vi.mock('@/lib/sync/hyperbee/boot-all', () => ({
   bootSingleHarness: boot.bootSingleHarness,
   getBootedHarness: boot.getBootedHarness,
-}));
-vi.mock('@/lib/harness/ensure-binding-published', () => ({
-  ensureMyBindingPublished: vi.fn(async () => ({ commitSha: 'sha-test', branch: 'user/42', path: '.harness/contributors/alice.json' })),
 }));
 vi.mock('@/lib/workspace-registry', async (orig) => ({
   ...(await orig<typeof import('@/lib/workspace-registry')>()),

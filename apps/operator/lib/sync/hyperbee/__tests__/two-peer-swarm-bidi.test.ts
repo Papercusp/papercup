@@ -13,8 +13,8 @@
  * Alice's apply sink.
  *
  * ## What is stood in for (offline-deterministic)
- * The channel-2 GitHub-binding fetch (the real `verifyChannel2`, which calls
- * `GET github.com/…/user/<id>/contributor.json`) is replaced by
+ * The real write-free binding gate (`verifyAttestation` over the announced
+ * attestation gist, via `buildVerifyBindingAdapter`) is replaced by
  * `verifyBindingOverride` — a pure predicate that admits the other peer by
  * `userId`. This is the same offline seam used in `two-peer-swarm.test.ts` for
  * the gate; the admission logic itself is already covered in `two-peer.test.ts`

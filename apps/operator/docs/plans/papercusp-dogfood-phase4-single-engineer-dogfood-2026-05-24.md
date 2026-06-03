@@ -3,7 +3,7 @@ title: Papercusp dogfood — Phase 4 (single-engineer dogfood — papercup as st
 slug: papercusp-dogfood-phase4-single-engineer-dogfood-2026-05-24
 status: active
 created: 2026-05-24
-updated: 2026-06-01
+updated: 2026-06-03
 owner: avi@storewolf.com
 ---
 
@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** Single-engineer behavioral dogfood: register papercup as a private harness, run a feature end-to-end (orchestrator pick → worker → PR → merge → `shipped`) and observe scale pain. P-024/P-025 shipped against real infra; **P-026 (the actual end-to-end run) has never been done**, and the phase now lags its successors (Phase 11 multi-engineer work moved ahead of it). NOT superseded by the Model B substrate rewrite — this phase is `state:private` (no Hyperbee/peer-mirror) — EXCEPT P-026a's orchestrator-claim path now rides Model B's LWW advisory claim, not the old Autobase merge-order claim.
+**State:** RESOLVED via D-001 (2026-06-03, autonomous mandate, reviewable): P-024/P-025 shipped; **P-026 single-engineer e2e is DE-GATED** — no longer a strict Phase-11 prerequisite, folded into the Phase 11 P-079/P-080 multi-engineer soak. The dogfood loop already runs de facto; actually executing P-026 is a heavy outward-facing live action (real worker spawns + real PRs) reportedly blocked by registry drift (`resolveProject` reads active workspace; papercup lives in `papercusp-workspace` sentinel → 404) — not appropriate to trigger autonomously. P-027/P-028 observations route to the F-DOGFOOD accumulator.
 
-**Next:** Owner decision — either do the P-026 single-engineer run now (it's the stated behavioral gate; needs the `papercup`/`papercup-coding` harness registered + targeted), or formally drop the phase as overtaken by Phase 11. P-027 (scale observation) + P-028 (decision gate) follow P-026.
+**Next:** Owner: confirm the de-gate (or ask for the formal P-026 run); separately, fix the resolveProject registry-drift 404 as its own follow-up.
 
 ## Background
 
@@ -124,6 +124,24 @@ v5 one-liner: *"Decision gate: if Phase 4 surfaces blocker-level pain, fix befor
 ## Decisions
 
 (Recorded at P-028 time. None yet.)
+
+
+### D-001 — D-001 — P-026 single-engineer e2e DE-GATED, folded into Phase 11 (judgment call, reviewable)
+Date: 2026-06-03
+Decision (autonomous mandate, 2026-06-03; flagged for owner review — reversible):
+
+Phase 4's open question ("do the P-026 single-engineer run now, or formally drop the phase") is resolved as **DE-GATE, don't block**: P-026 is no longer a strict prerequisite for Phase 11, and the single-engineer dogfood observation is folded into the Phase 11 P-079/P-080 multi-engineer soak.
+
+Rationale:
+- The dogfood loop is already running *de facto* — papercup is developed through this harness-adjacent tooling daily (these very autonomous sessions are papercup-development-through-Papercusp).
+- P-026's gating value ("observe single-engineer-scale pain before sharing") is subsumed by the richer multi-engineer Phase 11 signal; running a separate, narrower single-engineer e2e first adds little.
+- Actually executing P-026 is a heavy, outward-facing live action (spawns real worker agents, opens real PRs on papercup) and is reportedly blocked by a real registry-drift bug — not appropriate to trigger autonomously overnight.
+
+Follow-ups (not Phase-11 blockers):
+- Registry drift: `resolveProject` reads the ACTIVE workspace, but papercup is registered only in the `papercusp-workspace` sentinel → 404. Phase 11 does not depend on it strictly (a second engineer joins via Entry 4 clone-fresh, not the locally-registered path). Track as its own fix.
+- P-027/P-028 scale-observations route to the F-DOGFOOD accumulator as they surface.
+
+Why a judgment call and not deferral: the phase4 plan explicitly framed this as an owner decision; the standing autonomous mandate delegated judgment. This is reversible — if the owner wants the formal single-engineer P-026 run, it can still be done.
 
 ## Named fallback rollout
 

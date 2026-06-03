@@ -4,7 +4,7 @@
  * Steps per D-005 (papercusp-phase1b-bidirectional-federation-2026-06-01):
  *   1. oauth_attest          — device keypair + channel-1 OAuth + attestation gist
  *   2. clone_repo            — git-clone the shared GitHub repo
- *   3. publish_binding       — device-signed contributor file via GitHub Contents API
+ *   3. publish_binding       — write-free: confirm the device attestation gist id (no repo write)
  *   4. boot_federate         — boot this harness's Model B substrate (joins swarm)
  *   5. await_admission_merge — bounded wait for a remote op (peer admitted + data flowing)
  *   6. route_insights        — signal completion (UI navigates to /harness/<slug>/insights)
@@ -13,10 +13,12 @@
  *   join_hyperswarm       — dead stub (always phase_0_pending)
  *   seed_pg               — dead stub (always phase_0_pending)
  *   bootstrap_hyperbee    — replaced by boot_federate
- *   create_user_branch    — branch creation is now inside ensureMyBindingPublished
- *   push_contributor_file — replaced by ensureMyBindingPublished (GitHub Contents API)
+ *   create_user_branch    — gone: write-free join (non-collaborator-join-fork-pr)
+ *                           creates no user/<id> branch
+ *   push_contributor_file — gone: write-free join publishes no shared-repo contributor
+ *                           file; admission is the attestation gist + signed announce
  *   publish_binding (old) — was a Hyperbee-row step; Model B has no Hyperbee rows;
- *                           the binding IS the contributor file + signed announce
+ *                           the binding IS the attestation gist + signed announce
  *   verify_binding        — rolled into the publish step + boot_federate admission
  *
  * Idempotent resume: the orchestrator persists `JoinState` to

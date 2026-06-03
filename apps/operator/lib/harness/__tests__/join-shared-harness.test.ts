@@ -5,7 +5,7 @@
  *   - ALL_STEP_IDS / JOIN_STEP_IDS equal the 6 expected step ids (no old stubs)
  *   - step1_oauthAttest: happy path, gh_auth_required (via channel-1 fail), gist injection
  *   - step2_cloneRepo: happy path, failure wrapping
- *   - stepPublishBinding: calls ensureMyBindingPublished with non-empty attestationGistId
+ *   - stepPublishBinding: write-free — confirms a non-empty attestationGistId (no repo write)
  *   - stepBootFederate: calls injected booter
  *   - stepAwaitAdmissionMerge: resolves done when reader signals >0 peers; soft phase_0_pending on timeout
  *   - stepRouteInsights: correct path

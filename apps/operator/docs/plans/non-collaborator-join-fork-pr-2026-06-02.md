@@ -3,7 +3,7 @@ title: Non-collaborator shared-harness join + fork-based code→PR
 slug: non-collaborator-join-fork-pr-2026-06-02
 status: active
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 owner: aviynw@gmail.com
 ---
 
@@ -17,40 +17,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State (autonomous loop, 2026-06-02):**
-- ✅ **A1 — build side** (`4b3e75cd3`): `attestation_gist_id` now rides the
-  SIGNED announce (`announce.ts` + signing + shape-check, TDD), resolved by
-  `local-announce-identity` via `ensureAttestationGist` (idempotent
-  find-or-create, no local persistence), threaded through `boot.ts`'s
-  `buildAnnounce`. Admission UNCHANGED this increment. Green: announce(16),
-  local-announce-identity(7), two-peer-swarm + bidi(2), new ensureAttestationGist
-  unit test.
-- ✅ **A2 — verify side** (`e663b7f92`): admission gate switched from
-  `verifyChannel2` (shared-repo read) to `verifyAttestation(attestation_gist_id,
-  device_pubkey, github_user_id)`. `verify-binding-adapter` rewritten stateless
-  (no repo context; skipCache so gist-deletion revocation is caught), threaded
-  through `read-admission` + `boot` (onAnnounce, pending-retry, admittedIdentities,
-  reverifyAdmitted). Also fixed A1 fallout — 7 hyperbee test announce-builders were
-  missing the required field (A1 had been committed after running only a subset;
-  LESSON: run the full affected suite, not a subset). Green: 110/110 across the
-  announce/admission/swarm/revocation unit set.
-- ⏳ **A3 (NEXT):** drop the contributor-file WRITE (`ensure-binding-published` +
-  its 2 call sites: `share-finalize` ensureBinding hook, `join-shared-harness`
-  step 3 `stepPublishBinding`) → join becomes truly write-free. Keep
-  `createAttestationGist` (the gist is the anchor). Delete `ensure-binding-published`
-  + its test if it goes zero-importer. Update join + share tests.
-- ⏳ **A4:** re-home owner-revocation `revoke-contributor.ts` branch-delete →
-  gist-delete; demote/remove `verifyChannel2`.
-- ⏳ **A-live:** extend `p079-live-federation.live.test.ts` — boot both real
-  identities with NO contributor files (gists + announces only) → bidirectional
-  admission. Proves write-free join.
-- ⏳ **B:** fork create + cross-fork PR (pr-host) + authed/fork clone + pushable
-  feature branch (orchestrator submodule). Sequenced after A.
+**State:** COMPLETE (2026-06-03) — every plan item is done. Sub-project A (write-free join) + the full fork-PR path (B1/B2/B3/B4) + A4 owner-revocation shipped earlier; **A3 dead-code cleanup (P-003) is now done** under explicit user authorization ("continue with A3"). A3 deleted the zero-prod-caller `ensure-binding-published.ts` (+ its unit test) and `verifyChannel2`/`verifyBoth` from `two-channel-verifier.ts` (kept `verifyChannel1`), then migrated every consumer: the gated `p079-live-federation.live.test.ts` was rewritten to the write-free design (dropped the verifyChannel2/contributor-file test + all shared-repo/collaborator setup — proving join needs no repo write; kept verifyChannel1, verifyAttestation-crux, and the swarm test gated by the real `buildVerifyBindingAdapter`); `EnsureBindingResult` was inlined as a local type in `share-finalize.ts` (+ test repointed); the vestigial `ensure-binding-published` mock was dropped from `join-default-boot-wiring.test.ts`; and 6 paired files had stale `verifyChannel2`/`ensureMyBindingPublished` comments corrected (read-admission, boot, binding-verifier-types, contributor-file-types, two-peer-swarm-bidi, join-shared-harness test). tsc-clean (no new errors vs the pre-existing monorepo baseline); 146 identity + share-finalize + join + bidi tests green; p079 live remains `P079_LIVE=1`-gated. NOT pushed (repo convention).
 
-**Pre-existing issues observed (NOT introduced here, flagged for follow-up):**
-broad operator-suite test redness (environmental); `attest.test.ts` flakiness
-(global verify-cache not reset between tests + a fixture that hardcodes the gist
-filename instead of `attestationGistFilename`).
+**Next:** Human-only residue (network/two-machine-gated): run the p079 live test once (`P079_LIVE=1`, two real gh accounts) to confirm the write-free live path; P-077 ShareWizard on papercup, P-079 two-machine smoke, P-080 week soak, A-live. Optional knip follow-up: `buildSignedContributorFile` (contributor-file-types.ts) is now a zero-prod-caller export.
 
 ## The problem & the model (from the user)
 
@@ -251,3 +220,35 @@ topic keys on the **upstream** `github_repository_id` from the committed
   mode").
 - **Submodule landing** (orchestrator) — committed locally + superproject pointer
   bumped; not pushed (per repo convention).
+
+
+## Remaining work (owner-review-gated)
+
+- **P-001** `done` A4 — implement owner-revocation via `revoked_pubkeys` per D-001 (the plan's gist-delete is infeasible; current branch-delete is a no-op). Rewrite `revoke-contributor.ts` + its 12 tests + the agent-tool description/guidance. Operator-only, no submodule. Security-adjacent — owner glance recommended before landing. importance: high (Shipped 2b124306a — revoked_pubkeys model, 25 tests green.)
+
+
+## Remaining work (owner-review-gated)
+
+- **P-002** `done` B3-submodule — wire `openForkPr` (lib/harness/open-fork-pr.ts, built+tested this session) into the orchestrator: add `setPipelineFeaturePassedHook` to `orchestrator-workflow.ts` (fire after the validator step) + wire it in `orchestrator-runner.ts` to detect fork-mode ('no upstream write' via getCollaboratorPermissionLevel — the plan FLAGS this heuristic for a human nod) and call openForkPr; ensure the chunk-loop commits to a per-feature `harness/<fid>` branch (worker-chunk-loop.ts commitChunk). Land via submodule commit on libs/papercusp main + superproject pointer bump, NO push. importance: high (Shipped — operator-only no submodule; setPipelineFeaturePassedHook + handleFeaturePassed + runner wiring; 39 tests green. Fork-mode heuristic=read/none flagged; HEAD-branch accumulation limitation noted.)
+
+
+## Remaining work (owner-review-gated)
+
+- **P-003** `done` A3 cleanup — delete zero-prod-caller `ensure-binding-published.ts` + `verifyChannel2`/`verifyBoth` after migrating the `p079-live-federation.live.test.ts` + `join-default-boot-wiring` mock + the `share-finalize` type import. Tension: 'no TS deletion in apps/operator' memory vs repo CLAUDE.md 'delete dead code boldly' + this plan's explicit delete instruction — confirm the rust-port no-deletion rule is stale before deleting. Low value (dead code is harmless). (Done — user-authorized A3: deleted ensure-binding-published.ts+test + verifyChannel2/verifyBoth; migrated p079 live test to write-free gist path, local EnsureBindingResult in share-finalize, dropped vestigial join-default-boot mock, fixed 6 stale comments. tsc-clean; 146+ tests green; p079 live still P079_LIVE-gated. buildSignedContributorFile now zero-caller = knip follow-up.)
+
+## Decisions
+
+### D-001 — D-004 — A4 owner-revocation: 'gist-delete' is INFEASIBLE; correct path is revoked_pubkeys-publish (impl spec, flagged)
+Date: 2026-06-03
+Finding (verified against source 2026-06-03): the plan's A4 step ("re-home owner-revocation branch-delete → gist-delete, DELETE /gists/<id>") is **infeasible** — GitHub only lets you delete your OWN gists; an admin cannot delete a contributor's attestation gist (it's owned by the contributor's account). Separately, the current `lib/sync/hyperbee/revoke-contributor.ts` still deletes the contributor's `user/<id>` BRANCH, which **no longer gates admission** (admission is `verifyAttestation` on the gist per A2) — so owner-revocation is currently a silent **NO-OP**.
+
+Correct design (reuses proven primitives, no new infra):
+- `read-admission.ts` denies any `device_pubkey` in a `revoked` set FIRST (before sig/binding). That set is built by `load-revoked-pubkeys.ts`, which **UNIONS `harness_shared.contributors.revoked_pubkeys` across ALL contributor rows** for the harness.
+- Therefore OWNER-revocation = the owner adds the TARGET's device pubkey(s) to the OWNER's OWN contributor-row `revoked_pubkeys`, publishes it (federates via the substrate log → projected to PG), and calls `handle.revoke(pubkey)` for live local effect — exactly the `revoke-self-device.ts` mechanism, minus the "must be your own key" check, plus the existing repo-admin gate.
+
+Implementation spec (operator-only, no submodule):
+1. Rewrite `revokeContributorViaGithub` (`lib/sync/hyperbee/revoke-contributor.ts`): keep the admin gate (octokit `repos.get` → `permissions.admin`) + the positive-int guard + `resolveContext`. REPLACE the `git.deleteRef` step with: (a) seam `loadTargetPubkeys({workspaceId, harnessSlug, githubUserId})` → reads the target row's `device_attestations[].device_pubkey` from `harness_shared.contributors`; (b) seam `publishRevocation({workspaceId, harnessSlug, pubkeys})` → loads the OWNER's own contributor row, unions `pubkeys` into `revoked_pubkeys`, `publishContributorRow` (write-contributor-row.ts), and `handle.revoke(pk)` per pubkey (mirror `revoke-self-device.ts` realWriteRow/getHandle). Result shape → `{ok:true, revokedPubkeys: string[]}` | `{ok:false, code:'no_context'|'not_admin'|'no_target'|'github_error'}`.
+2. Rewrite `lib/sync/hyperbee/__tests__/revoke-contributor.test.ts` (12 tests) for the new behavior (admin gate unchanged; assert publishRevocation called with the target's pubkeys; idempotent on already-revoked; no_target when the target has no row/pubkeys).
+3. Update the agent-tool `lib/agent-tools/substrate/revoke-contributor.ts` description + guidance (no longer "deletes the user/<id> branch" — "adds the contributor's device pubkeys to the revocation set, which all peers honor on next re-verify"). Its wrapper test mocks the impl so it's shape-tolerant.
+
+FLAGGED — not implemented this session (autonomous mandate): security-adjacent rewrite (12 tests) of an UNUSED path (no live shared harnesses yet), and a design correction worth an owner glance before landing. The branch-delete left in place is a harmless no-op until replaced. Recommended: implement per the spec above next session or on owner confirmation.

@@ -7,9 +7,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { finalizeShare, FinalizeShareError, type FinalizeShareDeps } from '../share-finalize';
+import {
+  finalizeShare,
+  FinalizeShareError,
+  type FinalizeShareDeps,
+  type EnsureBindingResult,
+} from '../share-finalize';
 import { isHarnessSharedConfig } from '@/lib/harness/harness-shared-config-types';
-import type { EnsureBindingResult } from '@/lib/harness/ensure-binding-published';
 
 const TOPIC = 'a'.repeat(64);
 

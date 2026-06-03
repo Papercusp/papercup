@@ -317,12 +317,12 @@ export interface BuildSignedContributorFileOpts {
 /**
  * Build a fully-signed `ContributorFileBody`.
  *
- * Called by `ensureMyBindingPublished` (which publishes the result via the
- * GitHub Contents API to produce a GitHub-verified commit — see R-1 in
- * `papercusp-phase1b-bidirectional-federation-2026-06-01.md`) and by the
- * join orchestrator's publish-binding step.  The old `step7_pushContributorFile`
- * from `join-shared-harness.ts` has been deleted; this function is its
- * replacement and the single canonical signing path.
+ * NOTE: its sole caller `ensureMyBindingPublished` was removed by the
+ * write-free-join work (non-collaborator-join-fork-pr-2026-06-02) — joining +
+ * sharing now admit on the attestation gist + signed announce and write no
+ * shared-repo contributor file — so this builder currently has no production
+ * caller. Kept as the canonical contributor-file signing path (exercised by
+ * `contributor-file-types.test.ts`); a candidate for knip-driven cleanup.
  *
  * Signing payload: JCS-canonical JSON of all fields EXCEPT
  * `signature_by_device`, ordered per `CONTRIBUTOR_FILE_CANONICAL_FIELD_ORDER`.

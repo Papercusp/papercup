@@ -24,8 +24,9 @@
  *
  * This module is the PURE decider. The binding check is injected as
  * `verifyBinding(device_pubkey, github_login, github_user_id) => Promise<'verified'|'pending'|'fail'>`;
- * Stage 4 wires it to a thin adapter over `verifyChannel2(...)` that injects
- * the local harness's `{repoOwner, repoName, token}`. Do NOT call
+ * Stage 4 wires it to a thin adapter over `verifyAttestation(...)` — the
+ * write-free gist gate (non-collaborator-join-fork-pr): it verifies the
+ * announced attestation gist id with no shared-repo read. Do NOT call
  * binding-service.ts here — that's the repo↔harness ownership check and DOES
  * gate on collaborator permission, which is the wrong gate for read-admission
  * (Stage-0 spike correction #2).

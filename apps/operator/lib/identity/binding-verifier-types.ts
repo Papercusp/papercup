@@ -67,8 +67,11 @@ export type ChannelFailReason =
   | 'unknown';
 
 /**
- * Combined verification result. `verifyBoth(...)` (P-075's runtime,
- * when it lands) returns this shape.
+ * Combined two-channel verification result (the P-075 shape: per-channel
+ * results + the derived `BindingStatus`). The `verifyBoth` runtime that
+ * produced it was removed by the write-free-join work
+ * (non-collaborator-join-fork-pr-2026-06-02); the shape is retained for
+ * `deriveBindingStatus` + the binding-status types.
  */
 export interface BindingVerificationResult {
   status: BindingStatus;
@@ -126,8 +129,10 @@ export function statsAggregateForStatus(status: BindingStatus): boolean {
 
 /**
  * Derive the binding status from two channel results + the current
- * pending-grace window (if applicable). Pure function — the runtime
- * verifier (P-075) calls this after `verifyChannel1` + `verifyChannel2`.
+ * pending-grace window (if applicable). Pure function — kept as the binding
+ * state machine even though the write-free join now gates admission on
+ * `verifyAttestation` directly (its `verifyChannel2`/`verifyBoth` callers were
+ * removed in non-collaborator-join-fork-pr-2026-06-02).
  *
  * State machine (from memo):
  *   - Channel 1 fail               → unverified

@@ -3,31 +3,37 @@
  * acceptance test, run in-process with TWO genuinely distinct GitHub identities.
  *
  * This is the live counterpart to `two-peer-swarm-bidi.test.ts` (which stands in
- * for channel-2 with `verifyBindingOverride`). Here NOTHING about the GitHub
- * identity path is stubbed: real OAuth tokens for two real accounts, real
- * attestation gists owned by each account, real device-signed contributor files
- * on `user/<id>` branches of a real shared repo, and the REAL `verifyChannel1` /
- * `verifyChannel2` (no override) admitting each peer — finally over the REAL
- * Hyperswarm transport with the real channel-2 adapter as the admission gate.
+ * for the binding gate with `verifyBindingOverride`). Here NOTHING about the
+ * GitHub identity path is stubbed: real OAuth tokens for two real accounts, real
+ * attestation gists owned by each account, the REAL `verifyChannel1` (OAuth) +
+ * the REAL `verifyAttestation` (gist ownership) admitting each peer — finally
+ * over the REAL Hyperswarm transport with the real write-free admission adapter
+ * (`buildVerifyBindingAdapter`) as the gate.
+ *
+ * ## Write-free join (non-collaborator-join-fork-pr-2026-06-02)
+ * Admission proves the `device_pubkey ↔ github_user_id` binding from the
+ * device-signed announce (which carries the attestation gist id) +
+ * `verifyAttestation` on that gist — with NO shared-repo contributor file and
+ * NO upstream write at join. So this test deliberately provisions ONLY the
+ * per-account attestation gists + signed announces and creates NO shared repo,
+ * NO `user/<id>` contributor-file branches, and needs NO collaborator grant —
+ * which is exactly what proves join is genuinely write-free.
  *
  * It closes the one thing the offline `two-peer-swarm-bidi` test cannot assert:
- * the GitHub publish→verify loop with two real identities (runbook
+ * the real two-identity gist publish→verify loop (runbook
  * `/internal/docs/testing/p079-bidirectional-federation`, "Mode A").
  *
  * ## Gated — does NOT run in CI / `test:affected`
  * Requires two live `gh`-authenticated GitHub accounts + network, so it is
  * skipped unless `P079_LIVE=1`. The two identities default to `papercupai`
  * (active) + `aviynw` (keyring) and are overridable via `P079_LOGIN_A` /
- * `P079_LOGIN_B`. The shared throwaway repo defaults to
- * `<A>/papercusp-p079-live-federation` (private, auto-created) and is
- * overridable via `P079_REPO=owner/name`.
+ * `P079_LOGIN_B`.
  *
  *   P079_LIVE=1 npx vitest run p079-live-federation.live --config vitest.config.ts
  *
- * What it creates on GitHub (all auto-cleaned in afterAll except the empty
- * private repo — the tokens lack `delete_repo` scope): two public attestation
- * gists, and two `user/<id>` branches carrying a contributor file. Swarm runs on
- * a LOCAL testnet DHT (offline), not the public DHT.
+ * What it creates on GitHub (all auto-cleaned in afterAll): two public
+ * attestation gists. Swarm runs on a LOCAL testnet DHT (offline), not the
+ * public DHT.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -43,7 +49,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
-import { Octokit } from '@octokit/rest';
 
 import {
   createAttestationGist,
@@ -51,11 +56,9 @@ import {
   clearAttestationCache,
 } from '@/lib/identity/attest';
 import { keychainStore, keychainDelete } from '@/lib/identity/keychain';
-import { verifyChannel1, verifyChannel2 } from '@/lib/identity/two-channel-verifier';
-import { ensureMyBindingPublished } from '@/lib/harness/ensure-binding-published';
-import { contributorBranchRef } from '@/lib/identity/contributor-file-types';
+import { verifyChannel1 } from '@/lib/identity/two-channel-verifier';
 import { buildVerifyBindingAdapter } from '@/lib/sync/hyperbee/verify-binding-adapter';
-import { bootHarnessSubstrate, type BootedHarnessHandle } from '@/lib/sync/hyperbee/boot';
+import { bootHarnessSubstrate } from '@/lib/sync/hyperbee/boot';
 import { type HyperswarmLike } from '@/lib/sync/hyperbee/swarm';
 import type { OpEnvelope } from '@/lib/sync/hyperbee/op-envelope-types';
 import { listBootHistory, _resetBootHistoryForTests } from '@/lib/sync/hyperbee/boot-history';
@@ -90,9 +93,6 @@ interface LivePeer {
 
 let peerA: LivePeer; // publisher (Alice)
 let peerB: LivePeer; // joiner (Bob)
-let repoOwner: string;
-let repoName: string;
-let repoDefaultBranch: string;
 
 // Resources to tear down (newest-first), used by the swarm stage.
 const swarmCleanups: Array<() => void | Promise<void>> = [];
@@ -127,65 +127,6 @@ async function ghUser(token: string): Promise<{ id: number; login: string }> {
   return { id: data.id, login: data.login };
 }
 
-/** Build a per-account Octokit from a token. */
-function octokitFor(token: string): unknown {
-  return new Octokit({ auth: token });
-}
-
-/** Ensure the shared throwaway repo exists (private, auto-init). Returns default branch. */
-async function ensureSharedRepo(owner: string, name: string, ownerToken: string): Promise<string> {
-  const oc = octokitFor(ownerToken) as Octokit;
-  try {
-    const got = await oc.rest.repos.get({ owner, repo: name });
-    return (got.data as { default_branch?: string }).default_branch ?? 'main';
-  } catch (err: unknown) {
-    if ((err as { status?: number }).status !== 404) throw err;
-  }
-  const created = await oc.rest.repos.createForAuthenticatedUser({
-    name,
-    private: true,
-    auto_init: true, // seeds an initial commit so user/<id> branches can fork off it
-    description: 'Throwaway repo for the P-079 live federation acceptance test.',
-  });
-  return (created.data as { default_branch?: string }).default_branch ?? 'main';
-}
-
-/** Ensure `username` is an accepted collaborator on owner/name (idempotent). */
-async function ensureCollaborator(
-  owner: string,
-  name: string,
-  ownerToken: string,
-  username: string,
-  collaboratorToken: string,
-): Promise<void> {
-  const oc = octokitFor(ownerToken) as Octokit;
-  // 201 → invitation created; 204 → already a collaborator.
-  const res = await oc.rest.repos.addCollaborator({ owner, repo: name, username, permission: 'push' });
-  if (res.status === 204 || !res.data) return; // already a collaborator
-
-  // Accept the pending invitation as the collaborator.
-  const invResp = await fetch('https://api.github.com/user/repository_invitations', {
-    headers: {
-      Authorization: 'token ' + collaboratorToken,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
-  if (!invResp.ok) throw new Error('list invitations failed: ' + invResp.status);
-  const invites = (await invResp.json()) as Array<{ id: number; repository: { full_name: string } }>;
-  const mine = invites.find((i) => i.repository.full_name.toLowerCase() === `${owner}/${name}`.toLowerCase());
-  if (!mine) return; // nothing pending (race: already accepted)
-  const acc = await fetch('https://api.github.com/user/repository_invitations/' + mine.id, {
-    method: 'PATCH',
-    headers: {
-      Authorization: 'token ' + collaboratorToken,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
-  if (!acc.ok && acc.status !== 204) throw new Error('accept invitation failed: ' + acc.status);
-}
-
 /** Provision one peer: keypair → keychain → real attestation gist. */
 async function provisionPeer(ghAccount: string): Promise<LivePeer> {
   const token = await ghTokenFor(ghAccount);
@@ -204,21 +145,6 @@ async function provisionPeer(ghAccount: string): Promise<LivePeer> {
     token,
   });
   return { ghAccount, userId: id, login, token, keychainId, privateKey, pubkeyBase64, gistId: gist.gistId };
-}
-
-/** Publish a peer's device-signed contributor file to its user/<id> branch. */
-async function publishContributorFile(peer: LivePeer): Promise<void> {
-  await ensureMyBindingPublished({
-    repoOwner,
-    repoName,
-    identity: { token: peer.token, githubUserId: peer.userId, githubLogin: peer.login },
-    keychainId: peer.keychainId,
-    devicePubkeyBase64: peer.pubkeyBase64,
-    sign: async (_id: string, payload: Buffer) => nodeSign(null, payload, peer.privateKey),
-    defaultBranch: repoDefaultBranch,
-    attestationGistId: peer.gistId,
-    octokit: octokitFor(peer.token),
-  });
 }
 
 /** Poll `fn()` until truthy or timeout. */
@@ -266,25 +192,18 @@ function announceOverrideFor(peer: LivePeer) {
 
 describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub identities)', () => {
   beforeAll(async () => {
-    // 1. Provision both peers (tokens, ids, keypairs, real attestation gists).
+    // Provision both peers (tokens, ids, keypairs, real attestation gists). NO
+    // shared repo + NO contributor-file branches are created: write-free join
+    // (non-collaborator-join-fork-pr-2026-06-02) admits purely on the announced
+    // gist id + verifyAttestation, so the gists + announces are all we provision.
     peerA = await provisionPeer(LOGIN_A);
     peerB = await provisionPeer(LOGIN_B);
     expect(peerA.userId).not.toBe(peerB.userId); // genuinely distinct identities
 
-    // 2. Shared throwaway repo (owned by A, B as accepted collaborator).
-    const repoSpec = process.env.P079_REPO ?? `${peerA.login}/papercusp-p079-live-federation`;
-    [repoOwner, repoName] = repoSpec.split('/');
-    repoDefaultBranch = await ensureSharedRepo(repoOwner, repoName, peerA.token);
-    await ensureCollaborator(repoOwner, repoName, peerA.token, peerB.login, peerB.token);
-
-    // 3. Both peers publish their device-signed contributor files (user/<id> branches).
-    await publishContributorFile(peerA);
-    await publishContributorFile(peerB);
-
     clearAttestationCache();
     // eslint-disable-next-line no-console
     console.info(
-      `[P-079 live] A=${peerA.login}#${peerA.userId} B=${peerB.login}#${peerB.userId} repo=${repoOwner}/${repoName}@${repoDefaultBranch}`,
+      `[P-079 live] A=${peerA.login}#${peerA.userId} B=${peerB.login}#${peerB.userId} (write-free: gists + announces only, no shared repo)`,
     );
   }, 240_000);
 
@@ -312,22 +231,6 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
         /* best-effort */
       }
     }
-    // Delete the two contributor branches (A owns the repo → can delete both refs).
-    if (repoOwner && repoName && peerA?.token) {
-      const oc = octokitFor(peerA.token) as Octokit;
-      for (const peer of [peerA, peerB]) {
-        if (!peer?.userId) continue;
-        try {
-          await oc.rest.git.deleteRef({
-            owner: repoOwner,
-            repo: repoName,
-            ref: 'heads/' + contributorBranchRef(peer.userId),
-          });
-        } catch {
-          /* best-effort */
-        }
-      }
-    }
     // Delete throwaway keychain entries.
     for (const peer of [peerA, peerB]) {
       if (!peer?.keychainId) continue;
@@ -349,7 +252,7 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
     });
   }, 60_000);
 
-  it('Channel 2(c) crux (gist ownership): each attestation gist is owned by the claimed id, both ways; cross-claimed gist is rejected', async () => {
+  it('Write-free binding crux (gist ownership): each attestation gist is owned by the claimed id, both ways; cross-claimed gist is rejected', async () => {
     const a = await verifyAttestation(peerA.gistId, peerA.pubkeyBase64, peerA.userId, { skipCache: true });
     const b = await verifyAttestation(peerB.gistId, peerB.pubkeyBase64, peerB.userId, { skipCache: true });
     expect(a.valid).toBe(true);
@@ -362,44 +265,7 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
     expect(forged.reason).toBe('github_user_id_mismatch');
   }, 60_000);
 
-  it('Channel 2 full (verifyChannel2, no override): each peer is admitted by the OTHER peer reading the real signed contributor file + gist', async () => {
-    // A verifies B's binding (using A's token to read the shared repo), and vice
-    // versa. Poll to tolerate GitHub Contents-API propagation (404 → pending).
-    const aVerifiesB = await pollUntil(
-      async () => {
-        const r = await verifyChannel2({
-          repoOwner,
-          repoName,
-          githubLogin: peerB.login,
-          githubUserId: peerB.userId,
-          devicePubkeyBase64: peerB.pubkeyBase64,
-          token: peerA.token,
-        });
-        return r.kind === 'ok' ? r : r.kind === 'fail' ? r : undefined; // retry only on pending
-      },
-      { timeoutMs: 60_000, intervalMs: 2_000 },
-    );
-    const bVerifiesA = await pollUntil(
-      async () => {
-        const r = await verifyChannel2({
-          repoOwner,
-          repoName,
-          githubLogin: peerA.login,
-          githubUserId: peerA.userId,
-          devicePubkeyBase64: peerA.pubkeyBase64,
-          token: peerB.token,
-        });
-        return r.kind === 'ok' ? r : r.kind === 'fail' ? r : undefined;
-      },
-      { timeoutMs: 60_000, intervalMs: 2_000 },
-    );
-    expect(aVerifiesB, 'A→B channel-2 timed out pending').toBeTruthy();
-    expect(bVerifiesA, 'B→A channel-2 timed out pending').toBeTruthy();
-    expect(aVerifiesB).toEqual({ kind: 'ok' });
-    expect(bVerifiesA).toEqual({ kind: 'ok' });
-  }, 150_000);
-
-  it('Swarm: the two real identities federate a feature BOTH ways over real Hyperswarm, gated by the REAL verifyChannel2 (no override)', async () => {
+  it('Swarm: the two real identities federate a feature BOTH ways over real Hyperswarm, gated by the REAL write-free verifyAttestation adapter (no override)', async () => {
     clearAttestationCache();
     const testnet = await createTestnet(3);
     swarmCleanups.push(async () => {
@@ -435,7 +301,7 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
       harnessSlug,
       swarmBinding: binding,
       swarmOverride: makeSwarm(testnet.bootstrap),
-      verifyBindingOverride: gateA, // REAL verifyChannel2 adapter
+      verifyBindingOverride: gateA, // REAL write-free verifyAttestation adapter
       applyOverride: applyA,
       mergePollMs: 0,
       pendingRetryMs: 0,
@@ -453,7 +319,7 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
       harnessSlug,
       swarmBinding: binding,
       swarmOverride: makeSwarm(testnet.bootstrap),
-      verifyBindingOverride: gateB, // REAL verifyChannel2 adapter
+      verifyBindingOverride: gateB, // REAL write-free verifyAttestation adapter
       applyOverride: applyB,
       mergePollMs: 0,
       pendingRetryMs: 0,
@@ -500,8 +366,8 @@ describe.skipIf(!LIVE)('P-079 LIVE bidirectional federation (two real GitHub ide
       { timeoutMs: 45_000, intervalMs: 500 },
     );
 
-    expect(bidi?.capturedByB, "B never received A's op (A→B failed) — real channel-2 gate may have rejected").toBeTruthy();
-    expect(bidi?.capturedByA, "A never received B's op (B→A failed) — real channel-2 gate may have rejected").toBeTruthy();
+    expect(bidi?.capturedByB, "B never received A's op (A→B failed) — real write-free gate may have rejected").toBeTruthy();
+    expect(bidi?.capturedByA, "A never received B's op (B→A failed) — real write-free gate may have rejected").toBeTruthy();
     expect(bidi!.capturedByB).toMatchObject({ hbKey: 'F-A-1', writerPubkey: peerA.pubkeyBase64 });
     expect(bidi!.capturedByA).toMatchObject({ hbKey: 'F-B-1', writerPubkey: peerB.pubkeyBase64 });
 

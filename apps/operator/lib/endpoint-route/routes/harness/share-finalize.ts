@@ -46,7 +46,19 @@ import {
   type HarnessSharedPrivacy,
 } from '@/lib/harness/harness-shared-config-types';
 import type { BindingClaimStatus } from '@/lib/harness/binding-types';
-import type { EnsureBindingResult } from '@/lib/harness/ensure-binding-published';
+
+/**
+ * Result of the publisher-binding publish seam (`ensureBinding` dep below).
+ * Write-free (non-collaborator-join-fork-pr-2026-06-02): publishing the
+ * publisher's binding ensures its attestation GIST exists — there is no
+ * shared-repo write — and `devicePubkeyBase64` is the device key it attests.
+ * The value is informational: `finalizeShare` only flips `bindingPublished`
+ * on success and never reads the returned fields.
+ */
+export interface EnsureBindingResult {
+  /** The device pubkey whose attestation gist was ensured (base64, raw 32 bytes). */
+  devicePubkeyBase64: string;
+}
 
 export interface FinalizeShareInput {
   slug: string;
