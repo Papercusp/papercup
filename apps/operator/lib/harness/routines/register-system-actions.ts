@@ -7,6 +7,6 @@
  * `registerSystemAction(...)`).
  *
  * Registered handlers:
- *   - `system:git-sync` — git-sync-auto-commit P-005 (added when the pipeline lands).
+ *   - `system:git-sync` — git-sync-auto-commit P-005/P-009/P-010/P-012.
  */
-export {};
+import '@/lib/harness/git-sync/git-sync-action';

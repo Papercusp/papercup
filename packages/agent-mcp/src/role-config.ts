@@ -55,6 +55,11 @@ export const AGENT_ROLES = [
   // read-only adversarial judgment role; screens remote-authored features before
   // they reach the orchestrator pick loop. No execution capability.
   'auditor',
+  // git-sync merge-conflict resolver (git-sync-auto-commit P-011). Spawned by the
+  // `system:git-sync` action when an auto-merge with origin/main conflicts: it
+  // redoes the merge fresh on `main`, resolves, commits, leaves the tree clean, and
+  // does NOT push (the next git-sync tick pushes). Not feature-scoped.
+  'merge-resolver',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */
