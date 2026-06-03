@@ -1,7 +1,7 @@
 ---
 title: Agent turn-error robustness + rate-limit awareness (claude/omp/codex)
 slug: agent-turn-robustness-2026-06-02
-status: proposed
+status: complete
 owner: avi
 created: 2026-06-02
 harness: all
@@ -209,29 +209,73 @@ A single choke point + a single wrapper that every backend goes through.
   + headersToRecord, +2 tests) Rewrite `meridianAgentChat` to honor `retry-after` + `*-reset`
   headers and go through `runAgentTurn` (the immediate fix for judge/gym/brains). Default
   OFF = byte-identical live path. blocked-by: P-003 importance: high
-- **P-005** `deferred` (re-scoped — see Findings: runAgentChat's CLI branch serves only the
-  LOW-concurrency in-app brains; gating it is an invasive 800-line extraction for modest
-  value. Cheaper future option: just penalize the shared governor on a CLI 429. The pipeline
-  burst is P-006, not here.) Wrap the CLI spawn path (claude/omp/codex) in `runAgentChat` at the
-  **subprocess-turn** granularity: enforce the concurrency + spawn-rate cap (the burst
-  fix), classify the turn outcome from exit+stderr (P-011 extractors), apply policy
-  (wait-until-reset/backoff/pause/escalate) — and **do NOT re-retry the CLI's own
-  internal LLM retries**. omp = concurrency-cap only (self-pacing); codex = OpenAI bucket;
-  claude-CLI = Anthropic bucket. blocked-by: P-003, P-011 importance: high
-- **P-006** `todo` Orchestrator/DBOS + gym integration — `rate_limited` → wait-until-reset
-  + a rate-limit-pause/resume state (not a crash); gym `evaluate` resilient to per-run
-  `TurnError`. blocked-by: P-004, P-005 importance: high
-- **P-007** `todo` PG-backed cross-process governor (`agent_rate_budget`, leased) so the
-  fleet + gym + this dev session share ONE Anthropic-account budget. blocked-by: P-002
-  importance: normal
-- **P-008** `todo` Prompt-caching pass on stable prefixes (system prompts, tool defs) to
-  cut ITPM. importance: normal
-- **P-009** `todo` Observability: headroom + 429 telemetry; coord/UI "rate-limited —
-  paused until <reset>" status. blocked-by: P-003 importance: normal
-- **P-010** `todo` Fault-injection tests (mock 429 with retry-after, 529, timeout, crash,
-  empty/malformed) per backend → assert no parent crash + correct wait/resume. The gym
-  A/B is the live proof: it paces under the limit + never fails on a transient 429.
-  blocked-by: P-006 importance: high
+- **P-005 / RB-005** `done` (ABSORBED into RB-012, not separately deferred). The CLI spawn
+  path IS now governed: `runAgentChat` acquires a shared-governor permit before the spawn
+  (concurrency + spawn-rate cap, `governorMaxWaitMs`), classifies the subprocess TURN outcome
+  from exit+stderr (RB-011 extractors) + a wall-clock turn-timeout, and penalizes the shared
+  governor on a 429/overload — without re-retrying the CLI's own internal retries. omp =
+  concurrency-cap only (self-pacing); codex = OpenAI bucket; claude-CLI = Anthropic bucket.
+  (Committed under RB-012 `ff68689`; the original "invasive extraction" framing was wrong —
+  the acquire-before-spawn + penalize-on-429 wrapping is small.) blocked-by: P-003, P-011 importance: high
+- **P-006 / RB-006** `done` (`apps/operator/lib/gym/{rate-pause,loop,ab-runner}.ts` +
+  `llm-testing/llm-error.ts` `LlmCallError`; orchestrator-runner penalizes on rate_limited/overloaded;
+  commits super `0f362e6c0`, sub `bd67d92`) Orchestrator/DBOS + gym integration — `rate_limited`
+  → wait-until-reset + a rate-limit-pause/resume disposition (not a crash); gym `evaluate`
+  resilient to per-run `TurnError` (a rate-limited judge → run excluded from the variance sample,
+  loop pauses+resumes, never aborts). blocked-by: P-004, P-005 importance: high
+- **P-007 / RB-007** `done` (`libs/papercup-shared/src/resilience/governor.ts` GovernorStore seam;
+  `apps/operator/lib/agent-governor-pg-store.ts`; migration 111 `harness_shared.agent_rate_budget`;
+  3 integration tests) PG-backed cross-process governor so the fleet + gym + this dev session share
+  ONE account budget. DECISION: the SHARED part is the RATE window + PAUSE (the account-wide 429
+  cause); CONCURRENCY stays per-process (a per-runner burst lever — the shared rate window already
+  bounds aggregate request rate, and cross-process concurrency-leasing would be disproportionate).
+  Flag-gated `PAPERCUSP_AGENT_GOVERNOR_PG=1`; default unset = in-memory. blocked-by: P-002 importance: normal
+- **P-008 / RB-008** `done` (`chat-stream.ts` `buildMeridianSystem` — `cache_control: ephemeral`
+  on the system prefix; off-switch `PAPERCUSP_PROMPT_CACHE=0`; commit sub `ff68689`) Prompt-caching
+  pass on the stable system prefix → cache-read tokens don't count toward ITPM. importance: normal
+- **P-009 / RB-009** `done` (`libs/papercup-shared` `onGovernorPause`/`snapshotGovernors`;
+  `apps/operator/lib/agent-governor-observer.ts` coord+toast surfacing; `dev:rate_governor_status`
+  tool; commits sub `ae083d8`, super `0d78b823c`) Observability: per-bucket headroom + pause snapshot;
+  coord/toast "rate-limited — paused until <reset>" on each pause transition. blocked-by: P-003 importance: normal
+- **P-010 / RB-010** `done` (`turn-robustness.fault-injection.test.ts` 18 tests + the
+  concurrency-SLO test in `governor.test.ts`) Fault-injection matrix (429+retry-after, 529, timeout,
+  agent_crash, empty/malformed) per backend shape (meridian HTTP + CLI subprocess) → asserts no
+  parent crash + correct wait/resume + fail-fast on auth/permanent; PLUS the review's pacing SLO
+  (governed 429-rate <10% AND throughput within 50% of the ceiling vs a naive burst >50%, + header
+  auto-tune). blocked-by: P-006 importance: high
+
+## Completion (2026-06-02, overnight session — every plan item complete + tested)
+
+ALL items done. Final state by item: RB-001..004/011/012/013 (core + migration of every agent
+surface + generic resilience extraction) — done earlier. **This session closed the rest:**
+- **RB-005** — reconciled to `done` (its intent was absorbed into RB-012's CLI-spawn governance; it
+  was never genuinely deferrable work, just mislabeled).
+- **RB-006 / RB-008 / RB-009 / RB-012 / RB-013** — verified genuinely complete against the committed
+  code (gym pause/resume + LlmCallError; prompt-cache; pause observer + `dev:rate_governor_status`;
+  all surfaces governed; resilience split).
+- **Review "before the live flag" items (all 4)** — slow-as-remaining-drops (`paceDelayMs`),
+  runtime `limitModel` (D-006), subprocess turn-timeout (#6), honest window-semantics doc.
+- **RB-010** — fault-injection matrix (18 tests) + pacing SLO + header auto-tune.
+- **RB-007** — PG cross-process governor: GovernorStore seam, migration 111, `PgGovernorStore`,
+  boot wiring, 3 PG integration tests.
+
+**Test totals added/kept green this session:** papercup-shared agent+resilience suite 84 unit
+(governor 19 incl. 2 shared-budget seam tests; fault-injection 18; registry 9; turn-error 16;
+turn-runner 8; retry 5; chat-stream 9) + operator RB-007 PG integration 3 + RB-009 operator suite
+(observer 4, orchestrator-runner 13, tools-md-sync 46).
+
+**Discovered (out-of-scope, flagged not fixed):** `apps/operator/lib/operator-rate-limit.ts` writes
+jsonb via `${JSON.stringify(payload)}::jsonb`, which **double-encodes** under postgres-js (the jsonb
+column ends up holding the stringified JSON, not the object) — so its transactional read-modify-write
+likely never persists state correctly (the per-workspace scan rate-limit + 503 breaker would silently
+reset every call). RB-007's `PgGovernorStore` avoids this by using `sql.json()`. **Recommend a
+follow-up to fix operator-rate-limit.ts the same way + add a round-trip test.**
+
+**Live-flag posture:** `PAPERCUSP_AGENT_GOVERNOR` (per-call governance) and
+`PAPERCUSP_AGENT_GOVERNOR_PG` (cross-process budget) both still default OFF. All pre-flip review
+items are resolved, so flipping is now a *rollout decision* (best done with one human-watched live
+A/B), not a *correctness* blocker — left OFF pending that watched run rather than flipped blind
+overnight. See the final note at the very bottom.
 
 ## Findings during implementation (2026-06-02)
 
@@ -265,23 +309,24 @@ A strong peer review confirmed the diagnosis and found real defects. Accepted + 
   instantly — a regression vs the legacy loop. DONE + 2 tests.
 - **Miscalibrated estTokens=max_tokens** (reviewer #4) — dropped (max_tokens ≠ OTPM). DONE.
 
-**To fix before flipping the live flag / building more on top:**
-- **Abortable governor waits + per-turn maxWait** (strategic #3) — `acquire()` does a single
-  non-abortable sleep; a far-off (5-hour-limit) penalty would freeze EVERY meridian-opus
-  caller incl. interactive chat. `acquire(est, {signal, maxWaitMs})` must be able to bail so
-  interactive turns surface/escalate (D-002) instead of inheriting the gym's pause. (Doesn't
-  bite the gym — unattended wants the pause — but blocks the live flag.)
-- **Token-bucket is inert on the subscription** (reviewer #2/#3/#5). DECISION (D-006 below):
-  descope ITPM/OTPM to **API-key-only** and make `limitModel` a **runtime credential fact**
-  (not a compile-time const), so subscription-mode is honestly "concurrency + rpm +
-  honor-retry-after + never-crash" (the genuine 80%, ~done), and the token-bucket activates
-  only with an API key (which also feeds success-headers for auto-tune).
-- **Subprocess classification** (reviewer #6) — prefer exit codes + `--output-format json`
-  over stderr regex (keep regex as fallback). Add a **subprocess turn timeout**.
-- **Window semantics** (reviewer #7/#8) — it's a tumbling 60s window (allows a post-reset
-  burst), not the "continuously replenished bucket" the comment claims; either align the
-  words or switch to sliding/real-bucket, and implement "slow as remaining drops" (currently
-  all-or-nothing at remaining=0).
+**To fix before flipping the live flag / building more on top — ALL RESOLVED (2026-06-02):**
+- **Abortable governor waits + per-turn maxWait** (strategic #3) — ✅ DONE (`acquire(est, {signal,
+  maxWaitMs})` bails to null; commit sub `70c881d`). An interactive caller surfaces/escalates
+  (D-002) instead of inheriting a far-off shared pause; unattended callers pass a large/Infinity
+  maxWait and just wait.
+- **Token-bucket inert on the subscription** (reviewer #2/#3/#5) — ✅ DONE (D-006). `limitModel`
+  is now a **runtime credential fact** (`resolveLimitModel`/`resolveProviderLimitModel` from env,
+  surfaced per bucket in `dev:rate_governor_status`), not a compile-time const. Subscription-mode is
+  honestly "concurrency + rpm + honor-retry-after + never-crash"; the ITPM/OTPM token-bucket
+  activates only when an API key is present (its `*-ratelimit-*` headers auto-tune the limits).
+- **Subprocess classification** (reviewer #6) — ✅ DONE. Classifier prefers exit codes/signal +
+  `--output-format json|stream-json` (regex is the fallback), and `runAgentChat` now has a
+  wall-clock **subprocess turn-timeout** (`PAPERCUSP_AGENT_TURN_TIMEOUT_MS`, default 15m) →
+  SIGTERM/SIGKILL + `timedOut` → classified `timeout`.
+- **Window semantics** (reviewer #7/#8) — ✅ DONE. The tumbling-60s window is now honestly
+  documented (it's not a continuously-replenished bucket), and **"slow as remaining drops"** is
+  implemented: `recordHeaders` derives a capped `paceDelayMs` from low `*-remaining` headers so we
+  glide toward a reset instead of slamming into remaining=0 (no longer all-or-nothing).
 
 **Strategic reframes (accepted):**
 - **D-006 decided FIRST** (was "normal" → now the crux; see below). Determines whether the
@@ -349,35 +394,52 @@ A strong peer review confirmed the diagnosis and found real defects. Accepted + 
   cross-process (RB-007) a swap, not a rewrite. importance: high blocked-by: (refactor of
   RB-002/003)
 
-## Decisions (open)
+## Decisions (RESOLVED 2026-06-02 — judgment calls made under overnight autonomy, per the
+## plan's own recommendations + the implementation. The user delegated these: "make any
+## judgement calls you deem appropriate.")
 
-- **D-001** Governor scope first: in-process (P-002) is enough for a single runner; the
-  shared-account fleet+gym genuinely needs PG-backed (P-007). Ship in-process first,
-  PG-backed second — agree?
-- **D-002** On a handled-but-exhausted `rate_limited` turn with a far-off reset, default
-  policy = **pause the loop + resume at reset** (vs escalate-to-human vs skip). For the
-  gym (unattended, bounded) pause+resume; for interactive chat, surface + let the user
-  decide. Confirm.
-- **D-003** Read limits dynamically from headers (auto-tune) + a conservative static
-  floor for the cold start (before we've seen headers). Confirm the floor source
-  (config vs hard-coded conservative default).
-- **D-004** **omp granularity:** treat omp as self-pacing (rely on its fallback chaining
-  for per-provider 429s) and govern it with a **concurrency cap only** — vs trying to
-  parse/pace omp's internal multi-provider calls (opaque, and we'd fight its fallback).
-  Recommend concurrency-only. Confirm.
-- **D-005** **Subprocess granularity:** for claude-CLI/codex/omp, govern at the
-  spawn/turn level (concurrency + spawn-rate + turn-outcome classification), NOT
-  per-internal-LLM-call (opaque + would double-retry). Confirm this is acceptable (it
-  means our pacing for subprocess agents is coarser than for meridian — the lever is
-  "how many agents we run at once," which is the actual burst cause).
-- **D-006** **Subscription vs API key:** the meridian/claude path is on the Max
-  *subscription* (coarse, no per-minute headroom) — so the precise header-driven
-  token-bucket only fully applies if/when we point a backend at a raw **API key**.
-  Question: do we want a config option to run the gym judge (and/or pipeline) on a
-  dedicated **Anthropic API key** (precise limits + separate bucket from the shared Max
-  account) — which also unblocks the P-014 run independent of the Max rate window? This
-  is the cleanest path to both robustness AND immediate capacity.
-- **D-007** **Provider buckets:** confirm separate governor buckets per provider —
-  Anthropic (claude meridian+CLI, + omp-if-routed-to-Anthropic) and OpenAI (codex, +
-  omp-if-routed-to-OpenAI) — with omp's shared-account overlap declared in config so it
-  shares the relevant concurrency cap.
+- **D-001** ✅ DECIDED: ship BOTH. In-process (RB-002) is the default fast path; the PG-backed
+  cross-process governor (RB-007) is built + flag-gated (`PAPERCUSP_AGENT_GOVERNOR_PG=1`) for the
+  shared-account fleet+gym. In-process first, PG-backed available second — as proposed.
+- **D-002** ✅ DECIDED: pause-the-loop-and-resume-at-reset for unattended (gym pauses+resumes,
+  run excluded from variance, never aborts — RB-006); interactive callers pass `{signal, maxWaitMs}`
+  so `acquire()` bails to a structured TurnError → surface/escalate instead of inheriting a far-off
+  shared pause. Implemented.
+- **D-003** ✅ DECIDED: conservative **hard-coded** cold-start floors (`DEFAULT_FLOORS`:
+  anthropic/openai `maxConcurrent 3, rpm 45`; omp/unknown concurrency-only), auto-tuned UP from
+  `*-ratelimit-*-limit` response headers when present (API-key paths). Floor source = hard-coded
+  conservative default (not config) — simplest, and the headers correct it upward in apiKey mode.
+- **D-004** ✅ DECIDED: omp = self-pacing, **concurrency-cap only** (no token/req budget — we don't
+  know which provider its internal call hit; its fallback chaining self-heals per-provider 429s).
+  `BACKEND_PROFILES.omp.selfPacing = true` → 'self' bucket, concurrency only.
+- **D-005** ✅ DECIDED: subprocess agents governed at the **spawn/turn level** (concurrency +
+  spawn-rate cap + turn-outcome classification from exit/stderr/timeout), NOT per-internal-LLM-call
+  (opaque + would double-retry the CLI's own retries). Coarser than meridian by design — the lever
+  is "how many agents run at once," the actual burst cause.
+- **D-006** ✅ DECIDED: `limitModel` is a **runtime credential fact** (`resolveLimitModel` reads
+  `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` from env). Subscription (Max/ChatGPT OAuth, the dev-box
+  default) = coarse concurrency+rpm+honor-retry-after; pointing a backend at a raw **API key**
+  automatically flips it to precise header-driven token-bucket mode (no code change) — which is the
+  config path to run the gym judge/pipeline on a dedicated key (precise limits + separate bucket from
+  the Max account). Surfaced per bucket in `dev:rate_governor_status`.
+- **D-007** ✅ DECIDED: separate governor buckets per `(provider, modelClass)` — Anthropic (claude
+  meridian+CLI) and OpenAI (codex) are distinct buckets; opus/sonnet/haiku are distinct within
+  Anthropic. omp collapses to one concurrency-only 'self' bucket (self-pacing). Implemented in
+  `governorForBackend`/`modelClassOf`.
+
+## Final note — turning it on (the one remaining human decision)
+
+The mechanism is complete, correct, and tested; what's left is purely a rollout choice that wants a
+human watching, so it was deliberately NOT flipped blind overnight:
+
+1. **`PAPERCUSP_AGENT_GOVERNOR=1`** — turns on per-call governance for meridian + the CLI spawns.
+   Recommended first live proof: run the gym A/B with it on (the plan's intended "live proof") and
+   confirm it paces under the limit + never fails on a transient 429. Then leave it on for the fleet.
+2. **`PAPERCUSP_AGENT_GOVERNOR_PG=1`** — additionally shares the budget cross-process (fleet + gym +
+   dev sessions on one account). Turn on once #1 is proven, when multiple operator processes /
+   parallel pipelines actually run concurrently (single-process/sequential gym doesn't need it).
+3. **Optional capacity unlock (D-006):** set `ANTHROPIC_API_KEY` for a backend → it flips to precise
+   header-driven token-bucket mode + a separate bucket from the shared Max account.
+
+Suggested follow-up (separate from this plan): fix the `operator-rate-limit.ts` jsonb double-encode
+noted in Completion.
