@@ -29,6 +29,7 @@ import { MissingPanel } from './MissingPanel';
 import { toDockviewJson, toLayoutDoc, type DockviewLayout } from './layout-adapter';
 import { useDockLayout, type DockLayoutRow } from './useDockLayout';
 import { bindDockApi } from './dock-actions';
+import { canClosePanel } from './close-guard';
 import { useNavShortcuts } from './useNavShortcuts';
 import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import { useRegisterPluginPanels } from './useRegisterPluginPanels';
@@ -69,7 +70,16 @@ function makeBridge(type: string) {
         api: {
           setParams: (next) => api.updateParameters(next),
           setTitle: (t) => api.setTitle(t),
-          close: () => api.close(),
+          // Guarded close: a panel with a registered close-guard (e.g. the
+          // plan editor with unsaved edits) gets a confirm before removal.
+          // No guard → resolves true → closes as before. Covers
+          // content-initiated close (props.api.close()); the dockview tab "×"
+          // is a separate path (see close-guard.ts notes).
+          close: () => {
+            void canClosePanel(api.id).then((ok) => {
+              if (ok) api.close();
+            });
+          },
         },
       }),
       [api, params],
