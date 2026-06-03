@@ -14,7 +14,7 @@ import { step2_cloneRepo } from '../join-shared-harness';
 const UNIQUE_SLUG = 'b4-authed-clone-test-zzq-' + 'fixed';
 
 function fakeExec() {
-  return vi.fn(async () => ({ stdout: '', stderr: '' }));
+  return vi.fn(async (_file: string, _args: string[]) => ({ stdout: '', stderr: '' }));
 }
 
 describe('step2_cloneRepo — authenticated clone (B4)', () => {

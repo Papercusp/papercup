@@ -111,7 +111,12 @@ describe('GitHubPrHost.openPr', () => {
       base_ref: 'main',
       head_owner: 'aviynw',
     });
-    const arg = vi.mocked(oc.pulls.create).mock.calls[0][0];
+    const arg = vi.mocked(oc.pulls.create).mock.calls[0]?.[0] as unknown as {
+      owner: string;
+      repo: string;
+      head: string;
+      base: string;
+    };
     // PR is opened ON the upstream repo, with the head namespaced to the fork.
     expect(arg.owner).toBe('owner');
     expect(arg.repo).toBe('repo');
@@ -129,7 +134,12 @@ describe('GitHubPrHost.openPr', () => {
       head_ref: 'fix/thing',
       base_ref: 'main',
     });
-    const arg = vi.mocked(oc.pulls.create).mock.calls[0][0];
+    const arg = vi.mocked(oc.pulls.create).mock.calls[0]?.[0] as unknown as {
+      owner: string;
+      repo: string;
+      head: string;
+      base: string;
+    };
     expect(arg.head).toBe('fix/thing');
   });
 });
