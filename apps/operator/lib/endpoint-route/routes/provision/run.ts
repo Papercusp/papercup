@@ -3,17 +3,19 @@
  *
  * Drives one provision phase (setup | teardown | verify) for a
  * (harness, plugin) pair. Reads the plugin manifest + per-harness config
- * from the substrate's standard locations and invokes `runPhase`.
+ * from the substrate's standard locations and enqueues the provision DBOS
+ * workflow (the single path — dbos-flows P-002 full cutover), awaiting its
+ * result. Returns 503 if DBOS provisioning isn't active/launched.
  *
  * Ported from app/api/provision/run/route.ts. `auth: 'public'`.
- * `timeoutSec: 900` — the handler awaits `runPhase`, a long provision
- * operation; this preserves the Next route's `maxDuration = 900`.
+ * `timeoutSec: 900` — the handler awaits the durable workflow, a long
+ * provision operation; this preserves the Next route's `maxDuration = 900`.
  */
 import { promises as fs } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
-import { runPhase, type ProvisionPhase, type ProvisionRunInputs } from '@/lib/provision/runner';
+import { type ProvisionPhase, type ProvisionRunInputs } from '@/lib/provision/runner';
 import { dbosProvisionActive } from '@/lib/dbos/dbos-flags';
 import { dbosStarted } from '@/lib/dbos/bootstrap';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -120,18 +122,30 @@ export default defineTool({
       consentConfirmed: !!body.consentConfirmed,
     };
 
-    // A/B: when the provision workflow is opted-in AND DBOS actually launched,
-    // run the durable workflow (dedup mutex + crash-resume); otherwise the legacy
-    // claim path. `getResult` is awaited so the route keeps its sync contract.
-    let result;
-    if (dbosProvisionActive() && dbosStarted()) {
-      const { startProvisionWorkflow } = await import('@/lib/dbos/provision-workflow');
-      const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
-      result = await startProvisionWorkflow(activeWorkspaceId(), phase, provisionInputs, nonce);
-    } else {
-      result = await runPhase(phase, provisionInputs);
+    // Provision is DBOS-only (dbos-flows P-002 full cutover, no shim): the durable
+    // workflow is the SINGLE path — its deduplicationID is the cross-request mutex
+    // and DBOS recovery is the liveness (the hand-rolled operator-claims lock +
+    // heartbeat were deleted). There is no legacy fallback: when DBOS isn't active
+    // provision is unavailable (it needs PG to do anything useful anyway).
+    // `getResult` is awaited so the route keeps its synchronous request→result
+    // contract.
+    if (!dbosProvisionActive() || !dbosStarted()) {
+      return Response.json(
+        {
+          ok: false,
+          phase,
+          decision: 'fresh' as const,
+          durationMs: 0,
+          error:
+            'provision requires the DBOS durable workflow to be active and launched ' +
+            '(PAPERCUSP_DBOS_ORCHESTRATOR / PAPERCUSP_DBOS_PROVISION not =0, and DBOS started)',
+        },
+        { status: 503 },
+      );
     }
-
+    const { startProvisionWorkflow } = await import('@/lib/dbos/provision-workflow');
+    const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
+    const result = await startProvisionWorkflow(activeWorkspaceId(), phase, provisionInputs, nonce);
     return Response.json(result);
   },
 });
