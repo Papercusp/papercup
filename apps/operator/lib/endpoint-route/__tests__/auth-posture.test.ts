@@ -41,7 +41,19 @@ const RULES: ReadonlyArray<{
   { prefix: '/dev/', expect: VT },
   { prefix: '/credentials', expect: VT },
   { prefix: '/publish-credentials', expect: VT },
-  { prefix: '/agent-tokens/', expect: VT },
+  {
+    prefix: '/agent-tokens/',
+    expect: VT,
+    exceptions: [
+      // The refresh token (Authorization: Bearer) IS the credential, read in
+      // the handler — and during refresh the access token has expired by
+      // definition, so there's no verified/trusted transport principal to gate
+      // on. `auth: {}` per the route's doc-comment; VT 403'd every legitimate
+      // refresh (the same Authorization header can't be both a trusted-principal
+      // bearer and the refresh token).
+      { method: 'POST', path: '/agent-tokens/power-user/refresh', auth: {} },
+    ],
+  },
   { prefix: '/provision/', expect: VT },
   { prefix: '/internal/', expect: {} },
   {
