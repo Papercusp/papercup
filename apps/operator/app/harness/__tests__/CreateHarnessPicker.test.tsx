@@ -16,6 +16,17 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+// The picker calls useViewer() on mount, which fires a module-cached
+// GET /api/viewer. In tests whose mockFetch doesn't return a Response for that
+// URL it resolves undefined, and useViewer's `fetch(...).then()` throws
+// "Cannot read properties of undefined (reading 'then')" — an unhandled
+// rejection that fails the run (EXIT 1) even though every test passes. Stub the
+// hook so no test fires the fetch; provide isViewer too (the share-offer step).
+vi.mock('../../adv/harnesses/useViewer', () => ({
+  useViewer: () => ({ viewer: null }),
+  isViewer: () => false,
+}));
+
 const mockFetch = vi.fn<typeof fetch>();
 beforeEach(() => {
   mockFetch.mockReset();
