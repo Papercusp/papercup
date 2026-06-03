@@ -58,16 +58,26 @@ distinguishes variants (baseline 8.25 vs the candidate 8.0, Δ −0.25). **Go/no
 repeats are promoted into v1 — `buildLoopDeps.evaluate` averages the composite over `repeats` runs per task
 (`GYM_LOOP_REPEATS`, set 4 for trustworthy accepts). `6a807671a`.
 
-**Remaining (deferred, surfaced — not silently dropped):**
-1. **Real-anchor correlation (D-014/P-028)** — not measured in this bounded A/B (no real-anchor pool). Run
-   the champion against the fixed real-feature set before trusting the headline metric.
-2. **Finalize-stage hermeticity residual** — `[convert-issues] … harness_features does not exist` + the
-   documenter SIGTERM at teardown (same class as the worker bug, but POST-terminal so the judge still
-   scores). Cleanup for clean DONE outcomes; non-blocking for the measurement.
-3. **Buildable synthetic substrate + chunk-loop ON** — the production-fidelity path (measure the real
-   chunk-loop worker model on a `tsconfig`/test-scaffold substrate) vs. tonight's single-shot bounded run.
-4. **P-024 visual polish + live-Tauri verification** — functional + unit-tested; the designer/UI-agent pass
-   (Monaco diff, Pareto scatter, real Tauri-shell render check) is the gym-ui-handoff owner's.
+**Follow-ups (the 5 surfaced items) — addressed 2026-06-03 (second loop pass):**
+1. **Real-anchor (D-014/P-028) — DONE (mechanism).** `gym-loop-run` now scores a `real-anchor`-pooled
+   task every cycle (never optimized — excluded from the train/dev-anchor rollup); `read-api`'s new
+   `readPoolAggregates(pool)` surfaces the real-anchor trend vs the train trend (the falsifiability
+   check), printed in the loop report + live-PG integration-tested. The faithful corpus of REAL shipped
+   features is the documented data-gathering follow-up. (`gym(items 1+3)` commit.)
+2. **Finalize hermeticity — DONE.** `convertOpenIssuesToFeatures` now guards on a missing per-harness
+   `harness_features` relation (the dispatch sweep raced an ephemeral gym harness's teardown) → quiet
+   no-op; no change for real harnesses. (`fix(convert-issues)` `28bb59e08`.)
+3. **Buildable substrate + chunk-loop ON — DONE.** The gym substrates are buildable packages with a
+   dependency-free `npm run typecheck` (`node --check`) gate, and the config runs the REAL chunk-loop
+   worker model — production fidelity (replaces tonight's single-shot stopgap). (`gym(items 1+3)`.)
+4. **P-024 polish — DONE (Monaco) + designer follow-ups.** The proposer diff now uses the Monaco
+   `DiffEditor` (lazy, with the jsdiff line-diff as a WebKitGTK-safe fallback); render-tested + the
+   operator-vite SPA build-verified. The `@uiw/react-md-editor` swap, the trainAgg-vs-cost Pareto scatter
+   (needs per-run cost persisted + a wired gym run DB), and the live-Tauri eyeball/aesthetic pass remain
+   the designer/UI-agent's. (`gym(P-024 item4)` `87640dfdb`.)
+5. **Real bounded loop — RUNNING.** `gym-loop-run` in REAL mode (real agents + Opus judge + real proposer)
+   on the buildable substrate, budget-capped (D-019), control plane → the LIVE operator DB so the scored
+   proposals appear in the `/gym` dashboard. Results folded in at run end. (No UNBOUNDED loop — D-019.)
 
 ## P-014 results (real A/B, 2026-06-03)
 
