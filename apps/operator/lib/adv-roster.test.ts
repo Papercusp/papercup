@@ -55,6 +55,7 @@ function adv(overrides: Partial<AdvSessionRow> = {}): AdvSessionRow {
     label: 'worker · F-001',
     cwd: '/repo',
     coordOwnerId: 'su-1',
+    sessionId: null,
     startedAt: iso(NOW - 3_600_000),
     endedAt: null,
     exitCode: null,

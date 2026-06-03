@@ -39,8 +39,9 @@ export function parseArgs(argv) {
   for (const a of argv) {
     if (a === '--no-picker') out.picker = false;
     // `--resume` alone → pick from the recent-session list. `--resume=<id>`
-    // (or a bare id after `--resume`) → resume THAT adv_session directly,
-    // no picker. The id is the /adv adv_sessions row id.
+    // (or a bare id after `--resume`) → resume THAT session directly, no
+    // picker. The id is the /adv adv_sessions row id OR the agent's native
+    // session id (the claude --session-id UUID) — both match a tracked row.
     else if (a === '--resume') out.resume = true;
     else if (a.startsWith('--resume=')) { out.resume = true; out.resumeId = a.slice('--resume='.length) || null; }
     else if (a === '--no-plan') out.noPlan = true;
@@ -157,13 +158,18 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
  * `codex` with `--dangerously-bypass-hook-trust` (the home's only hooks are
  * ours) + the approvals/sandbox bypass MCP tool calls need.
  */
-export function suLaunchArgs(backend, { promptFile, coordExtPath } = {}) {
+export function suLaunchArgs(backend, { promptFile, coordExtPath, nativeSessionId } = {}) {
   if (backend === 'claude') {
     return {
       bin: 'claude',
       args: [
         '--dangerously-skip-permissions',
         '--append-system-prompt-file', promptFile,
+        // Force the session id bootstrap-su recorded so `psu --resume <uuid>`
+        // can correlate this session to its adv row — and resume the EXACT
+        // session, not `--continue`'s most-recent-in-cwd. claude-only (omp/codex
+        // pass null; they don't take a forced session id).
+        ...(nativeSessionId ? ['--session-id', nativeSessionId] : []),
         // No --mcp-config: claude's papercusp-su is user-level (~/.claude.json)
         // and survives a raw launch; adding it would duplicate the server.
         '--permission-mode', 'bypassPermissions',
@@ -568,18 +574,22 @@ function launchResume(session) {
   runWrapper({ wrapperBin: bin, args, cwd: session.cwd, envelopeEnv: env });
 }
 
-/** An untracked session (one psu didn't launch) has no engineer playbook
- *  loaded — and for codex, no papercusp-su tools (it ran under ~/.codex). Warn
- *  + require explicit confirmation before resuming it as if it were SU. `--yes`
- *  bypasses (scripts); non-interactive without `--yes` refuses. */
+/** A session that couldn't be matched to a tracked adv_sessions row — either a
+ *  genuinely vanilla session, or a psu session that predates native-id tracking
+ *  (its id was never recorded, so it can't be linked). Either way the engineer
+ *  playbook won't be re-injected (and for codex, the papercusp-su tools — it ran
+ *  under ~/.codex). Warn + require explicit confirmation before resuming it as
+ *  if it were SU. `--yes` bypasses (scripts); non-interactive without `--yes`
+ *  refuses. */
 async function confirmUntrackedResume(session, args) {
   const sid = session.sessionId || session.ompThreadId || '?';
   const missing = session.agent === 'codex'
-    ? 'the engineer playbook and the papercusp-su tools are'
-    : 'the engineer playbook is';
+    ? 'the engineer playbook + papercusp-su tools'
+    : 'the engineer playbook';
   console.error(
-    `psu: ⚠ session ${sid} was NOT started by psu — ${missing} not loaded ` +
-      `(a vanilla ${session.agent} session in ${session.cwd}). Resuming continues it as-is.`,
+    `psu: ⚠ session ${sid} isn't linked to a tracked psu launch — resuming it as a raw ` +
+      `${session.agent} session (${missing} won't be re-injected; ${session.cwd}). ` +
+      `Sessions psu started before native-id tracking won't match here either. Resuming continues it as-is.`,
   );
   if (args.yes) { console.error('psu: --yes given; proceeding.'); return; }
   if (!args.picker) {
@@ -592,16 +602,23 @@ async function confirmUntrackedResume(session, args) {
 }
 
 // `psu --resume` (picker) or `psu --resume=<id>` / `psu --resume <id>`
-// (direct): resume a tracked session by adv id, OR a raw (non-psu) session by
-// the agent's native session id — cd to its recorded cwd and run the agent there.
+// (direct): resume a tracked session by adv id OR its recorded native session
+// id, OR an unmatched session by the agent's native session id — cd to its
+// recorded cwd and run the agent there.
 async function resumeFlow(args = {}) {
   const data = await api('/api/adv/sessions/resumable');
   const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
 
   // Direct resume by id — skip the picker.
   if (args.resumeId) {
-    // 1. A psu-tracked session (adv_sessions row)?
-    const tracked = sessions.find((s) => String(s.id) === String(args.resumeId));
+    // 1. A psu-tracked session (adv_sessions row)? Match the integer adv id OR
+    //    the agent's recorded NATIVE session id (the claude --session-id UUID),
+    //    so resuming by EITHER handle finds the tracked row — and resumes the
+    //    exact session (resumeArgsFor prefers the native id) with NO false
+    //    "not started by psu" warning.
+    const tracked = sessions.find(
+      (s) => String(s.id) === String(args.resumeId) || (s.sessionId && s.sessionId === args.resumeId),
+    );
     if (tracked) { launchResume(tracked); return; }
 
     // 2. Not tracked → search the agents' OWN session stores for the id.
@@ -761,6 +778,9 @@ async function main() {
   const { bin, args: baseArgs } = suLaunchArgs(res.agent, {
     promptFile: res.promptFile,
     coordExtPath: res.coordExtPath,
+    // Force the recorded native session id on a FRESH launch — but not when
+    // this invocation is itself resuming one (--session-id + --resume conflict).
+    nativeSessionId: args.resumeSession ? null : res.nativeSessionId,
   });
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: args.model, resumeSession: args.resumeSession });

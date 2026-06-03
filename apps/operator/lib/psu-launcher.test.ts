@@ -293,6 +293,27 @@ describe('suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)', () =>
     expect(args).toEqual(['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox']);
   });
 
+  it('claude: forces --session-id when a nativeSessionId is supplied (resume-by-uuid correlation)', () => {
+    const { args } = suLaunchArgs('claude', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9' });
+    // --session-id sits between the appended prompt and the permission mode; it
+    // makes `psu --resume uuid-9` match the tracked adv row + resume the EXACT session.
+    expect(args).toEqual([
+      '--dangerously-skip-permissions',
+      '--append-system-prompt-file', '/lc/s.md',
+      '--session-id', 'uuid-9',
+      '--permission-mode', 'bypassPermissions',
+    ]);
+  });
+
+  it('claude: omits --session-id when no nativeSessionId is given', () => {
+    expect(suLaunchArgs('claude', { promptFile: '/lc/s.md' }).args).not.toContain('--session-id');
+  });
+
+  it('omp/codex: ignore nativeSessionId (no forced session id on those backends)', () => {
+    expect(suLaunchArgs('omp', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9' }).args).not.toContain('--session-id');
+    expect(suLaunchArgs('codex', { promptFile: '/lc/s.md', nativeSessionId: 'uuid-9' }).args).not.toContain('--session-id');
+  });
+
   it('unknown backend: throws', () => {
     expect(() => suLaunchArgs('gemini', files)).toThrow();
   });

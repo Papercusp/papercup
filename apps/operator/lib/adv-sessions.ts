@@ -37,6 +37,11 @@ export interface AdvSessionRow {
    *  join key to coord_presence.owner_id for the live roster. null for
    *  console launches and pre-existing rows (no SID minted at record time). */
   coordOwnerId: string | null;
+  /** The agent's NATIVE session id (claude/codex UUID) when psu forces +
+   *  records it — the join key that lets `psu --resume <native-uuid>`
+   *  correlate this row. null for omp (uses ompThreadId), codex (resumes via
+   *  its per-session CODEX_HOME), and rows that predate native-id tracking. */
+  sessionId: string | null;
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
@@ -60,6 +65,9 @@ export interface RecordOpts {
   /** The coord owner_id (PAPERCUSP_SID) for this session — the live-roster
    *  join key to coord_presence. Set by the psu launcher; omit for console. */
   coordOwnerId?: string | null;
+  /** The agent's native session id (claude --session-id UUID) when psu forces
+   *  it at launch. Recorded so resume-by-native-uuid can find this row. */
+  sessionId?: string | null;
 }
 
 export function toIsoTimestamp(value: string | Date | null | undefined): string | null {
@@ -85,6 +93,7 @@ function mapAdvSessionRow(r: {
   label: string | null;
   cwd: string | null;
   coord_owner_id: string | null;
+  session_id: string | null;
   started_at: string | Date;
   ended_at: string | Date | null;
   exit_code: number | null;
@@ -103,6 +112,7 @@ function mapAdvSessionRow(r: {
     ompThreadId: r.omp_thread_id,
     cwd: r.cwd,
     coordOwnerId: r.coord_owner_id ?? null,
+    sessionId: r.session_id ?? null,
     label: r.label,
     startedAt: toIsoTimestamp(r.started_at)!,
     endedAt: toIsoTimestamp(r.ended_at),
@@ -115,12 +125,12 @@ export async function recordAdvSession(opts: RecordOpts): Promise<number | null>
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id)
+        (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid, label, omp_thread_id, cwd, coord_owner_id, session_id)
       VALUES
         (${opts.workspaceId ?? activeWorkspaceId()}, ${opts.planSlug ?? null}, ${opts.agent ?? null},
          ${opts.role ?? null}, ${opts.feature ?? null}, ${opts.mode},
          ${opts.terminalBin ?? null}, ${opts.pid ?? null}, ${opts.label ?? null},
-         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null})
+         ${opts.ompThreadId ?? null}, ${opts.cwd ?? null}, ${opts.coordOwnerId ?? null}, ${opts.sessionId ?? null})
       RETURNING id
     `;
     return rows[0]?.id ?? null;

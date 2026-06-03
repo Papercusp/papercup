@@ -67,6 +67,10 @@ export interface BootstrapSuResult {
   status: 'ok';
   /** adv_sessions row id; null if the insert failed (best-effort). */
   sessionId: number | null;
+  /** The agent's NATIVE session id the launcher must force on the CLI so the
+   *  session is resumable + recognizable by id. claude → a forced UUID
+   *  (`claude --session-id`); omp/codex → null (they don't take a forced id). */
+  nativeSessionId: string | null;
   agent: SuAgent;
   /** Workspace the harness + session belong to. */
   workspaceId: string;
@@ -315,6 +319,15 @@ const post = defineTool({
     // key to coord_presence.owner_id (adv-sessions-live-roster P-001).
     const sid = `su-${randomUUID()}`;
 
+    // The agent's NATIVE session id. claude lets us FORCE it (`--session-id`),
+    // so we mint it here, record it, and the launcher passes it through — that's
+    // the only way `psu --resume <native-uuid>` can later correlate this exact
+    // session back to its adv row (without it, resume-by-uuid falls through to
+    // the false "not started by psu" path). omp's native handle is the
+    // omp_thread_id (linked post-launch); codex resumes via its per-session
+    // CODEX_HOME and can't have its rollout id forced — so both stay null.
+    const nativeSessionId = agent === 'claude' ? randomUUID() : null;
+
     // Record the tracked session first so the prompt/home files key off its id.
     const sessionId = await recordAdvSession({
       planSlug,
@@ -324,6 +337,7 @@ const post = defineTool({
       cwd,
       label: body.label?.trim() || null,
       coordOwnerId: sid,
+      sessionId: nativeSessionId,
     });
 
     const sessionKey = sessionId ?? `t-${randomUUID()}`;
@@ -383,6 +397,7 @@ const post = defineTool({
     const result: BootstrapSuResult = {
       status: 'ok',
       sessionId,
+      nativeSessionId,
       agent,
       workspaceId: workspace,
       cwd,
