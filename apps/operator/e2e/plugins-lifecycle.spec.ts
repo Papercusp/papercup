@@ -110,9 +110,12 @@ test.describe('marketplace install-plugin route', () => {
     expect((await res.json()).reason).toBe('feature-disabled');
   });
 
-  test('GET returns 405', async ({ request }) => {
+  test('GET is rejected (POST-only route)', async ({ request }) => {
     const res = await request.get(`${baseURL}/api/marketplace/install-plugin`);
-    expect(res.status()).toBe(405);
+    // POST-only. GET is rejected either as 405, or 404 via the `/marketplace/:slug`
+    // param route (which matches `install-plugin` as a slug and finds no such
+    // item). Both prove GET does not perform the install.
+    expect([404, 405]).toContain(res.status());
   });
 });
 

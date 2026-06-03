@@ -66,7 +66,10 @@ test.describe('plugin host routes', () => {
     if ('error' in result) {
       expect(result.error).toMatch(/abort/i);
     } else {
-      expect([200, 401]).toContain(result.status);
+      // 200 = SSE stream; 401 = auth-gated; 400 = the route now requires
+      // plugin/install/name query params (called bare here) — all prove the
+      // events route is reachable + validates rather than 404/500-ing.
+      expect([200, 401, 400]).toContain(result.status);
     }
   });
 
