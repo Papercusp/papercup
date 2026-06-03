@@ -92,17 +92,21 @@ function cleanup(pattern: string) {
 describe('POST /api/admin/spawn-signing/rotate', () => {
   afterAll(() => cleanup('s_admin_%'));
 
-  itLive('no auth → 401', async () => {
+  // Loopback requests resolve the loopback principal (trust 'unverified-loopback');
+  // the route requires trust:['trusted'] → 403 per require-principal.ts's
+  // documented contract (no-principal→401, wrong-trust→403). 401 is only for a
+  // non-loopback request with no/invalid bearer.
+  itLive('no auth (loopback principal, wrong trust) → 403', async () => {
     const r = await fetch(`${baseUrl}/api/admin/spawn-signing/rotate`, { method: 'POST' });
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(403);
   });
 
-  itLive('wrong bearer → 401', async () => {
+  itLive('wrong bearer (falls back to loopback, wrong trust) → 403', async () => {
     const r = await fetch(`${baseUrl}/api/admin/spawn-signing/rotate`, {
       method: 'POST',
       headers: { Authorization: 'Bearer wrong_token_xxxxxxx' },
     });
-    expect(r.status).toBe(401);
+    expect(r.status).toBe(403);
   });
 
   itLive('pre-rotate sig accepted, then rotate, then old sig rejected, new sig accepted', async () => {

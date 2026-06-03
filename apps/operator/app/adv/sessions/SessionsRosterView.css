@@ -530,8 +530,13 @@
 /* The dossier is the DETAIL slot's inner content; the shell's
    .pc-twopane__detail owns the column geometry + left border + gradient. */
 .pc-dossier {
+  --pc-dossier-text: color-mix(in oklab, var(--fg), white 12%);
+  --pc-dossier-dim: color-mix(in oklab, var(--fg-dim), white 22%);
+  --pc-dossier-mute: color-mix(in oklab, var(--fg-mute), white 26%);
+  --pc-dossier-rule: color-mix(in oklab, var(--border), white 18%);
+
   padding: 14px 16px 28px;
-  color: var(--fg);
+  color: var(--pc-dossier-text);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -545,14 +550,14 @@
   gap: 8px;
 }
 .pc-dossier__placeholder-title {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--fg-dim);
+  color: var(--pc-dossier-dim);
 }
 .pc-dossier__placeholder-hint {
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.55;
-  color: var(--fg-dim);
+  color: var(--pc-dossier-mute);
 }
 
 .pc-dossier__head {
@@ -571,7 +576,7 @@
   margin-left: auto;
   background: transparent;
   border: 1px solid transparent;
-  color: var(--fg-mute);
+  color: var(--pc-dossier-mute);
   cursor: pointer;
   font-size: 13px;
   line-height: 1;
@@ -580,7 +585,7 @@
   transition: color 120ms ease, background-color 120ms ease;
 }
 .pc-dossier__close:hover {
-  color: var(--fg);
+  color: var(--pc-dossier-text);
   background: color-mix(in oklab, var(--bg-2), transparent 10%);
 }
 .pc-dossier__close:focus-visible {
@@ -588,36 +593,37 @@
   outline-offset: -1px;
 }
 .pc-dossier__id {
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 700;
-  line-height: 1.3;
-  color: var(--fg);
+  line-height: 1.35;
+  color: var(--pc-dossier-text);
   word-break: break-all;
 }
 .pc-dossier__intent {
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.55;
   font-style: italic;
-  color: var(--fg-dim);
+  color: var(--pc-dossier-dim);
 }
 .pc-dossier__note {
-  font-size: 11.5px;
-  color: var(--fg-mute);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--pc-dossier-mute);
 }
 .pc-dossier__section {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
+  gap: 7px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pc-dossier-rule);
 }
 .pc-dossier__h {
   margin: 0;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-dim);
+  letter-spacing: 0;
+  color: var(--pc-dossier-dim);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -626,7 +632,7 @@
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
-  color: var(--fg-mute);
+  color: var(--pc-dossier-mute);
 }
 .pc-dossier__h-note--err {
   color: color-mix(in oklab, var(--bad), white 20%);
@@ -643,23 +649,24 @@
 .pc-dossier__meta-row {
   display: flex;
   gap: 10px;
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 11.5px;
+  line-height: 1.6;
 }
 .pc-dossier__meta-key {
   flex: 0 0 76px;
-  color: var(--fg-mute);
+  color: var(--pc-dossier-mute);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-size: 10px;
+  letter-spacing: 0;
+  font-size: 10.5px;
   line-height: 1.65;
 }
 .pc-dossier__meta-val {
-  color: var(--fg);
+  color: var(--pc-dossier-text);
   min-width: 0;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 1.55;
 }
 .pc-dossier__files {
   list-style: none;
@@ -667,7 +674,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 .pc-dossier__file,
 .pc-dossier__lock {
@@ -675,11 +682,12 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 .pc-dossier__file-path {
   font-family: var(--font-mono, ui-monospace, monospace);
-  color: var(--fg);
+  color: var(--pc-dossier-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -687,10 +695,10 @@
 }
 .pc-dossier__lockmark {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -707,29 +715,31 @@
 .pc-dossier__lock-exp {
   margin-left: auto;
   flex: 0 0 auto;
-  color: var(--fg-dim);
-  font-size: 10.5px;
+  color: var(--pc-dossier-dim);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .pc-dossier__lock-intent {
   flex: 1 1 100%;
   padding-left: 21px;
-  color: var(--fg-mute);
+  color: var(--pc-dossier-mute);
   font-style: italic;
-  font-size: 10.5px;
+  font-size: 11px;
+  line-height: 1.45;
 }
 .pc-dossier__coord-line {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.45;
   flex-wrap: wrap;
 }
 .pc-dossier__dir {
   flex: 0 0 auto;
-  color: var(--fg-dim);
-  font-size: 10.5px;
+  color: var(--pc-dossier-dim);
+  font-size: 11px;
 }
 .pc-dossier__dir[data-dir='outbound'] {
   color: color-mix(in oklab, var(--accent), var(--fg) 15%);
@@ -744,19 +754,20 @@
   color: var(--warn);
 }
 .pc-dossier__coord-text {
-  color: var(--fg);
+  color: var(--pc-dossier-text);
   min-width: 0;
   flex: 1 1 60%;
 }
 .pc-dossier__coord-ts {
   margin-left: auto;
-  color: var(--fg-mute);
-  font-size: 10.5px;
+  color: var(--pc-dossier-mute);
+  font-size: 11px;
   white-space: nowrap;
 }
 .pc-dossier__empty-line {
-  font-size: 11px;
-  color: var(--fg-mute);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--pc-dossier-mute);
 }
 
 /* Responsive 2-pane stacking is owned by the shared shell (TwoPaneShell.css). */

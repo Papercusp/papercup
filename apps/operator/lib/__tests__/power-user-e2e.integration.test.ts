@@ -7,6 +7,18 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// Issuing a power-user token now requires a verified|trusted principal
+// (route auth tightened from "any principal incl. loopback" → trust:
+// ['verified','trusted'] — you can't mint a power-user token from a bare
+// unauthenticated loopback request). The superuser bearer resolves to trust
+// 'trusted', so issue with it.
+let SU_TOKEN = '';
+try { SU_TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim(); } catch { /* */ }
+const suAuth = SU_TOKEN ? { Authorization: `Bearer ${SU_TOKEN}` } : {};
 
 const OP_PORT = process.env.OP_PORT ?? null;
 const BASE = OP_PORT
@@ -55,7 +67,7 @@ describe('power-user auth tier e2e', () => {
   let refresh = '';
 
   itLive('POST /api/agent-tokens/power-user issues token pair', async () => {
-    const res = await jsonPost('/api/agent-tokens/power-user', {});
+    const res = await jsonPost('/api/agent-tokens/power-user', {}, suAuth);
     expect(res.status).toBe(200);
     access = res.json?.access_token ?? '';
     refresh = res.json?.refresh_token ?? '';

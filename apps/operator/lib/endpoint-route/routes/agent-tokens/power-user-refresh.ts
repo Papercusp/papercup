@@ -20,7 +20,15 @@ function bearerFrom(req: Request): string | null {
 export default defineTool({
   method: 'POST',
   path: '/agent-tokens/power-user/refresh',
-  auth: { trust: ['verified', 'trusted'] },
+  // The refresh token (Authorization: Bearer) IS the credential, read in the
+  // handler. During a refresh the access token has expired by definition, so
+  // there's no verified/trusted principal to gate on — `auth: {}` (any resolved
+  // principal, incl. loopback) is the transport gate, exactly as the header
+  // doc-comment states. (The previous `trust: ['verified','trusted']` was
+  // copy-pasted from the issue endpoint and 403'd every legitimate refresh,
+  // since the same Authorization header can't be both a trusted-principal
+  // bearer and the refresh token.)
+  auth: {},
   async handler(req) {
     const refreshToken = bearerFrom(req);
     const claims = await verifyRefreshToken(refreshToken);

@@ -89,9 +89,14 @@ describe('chat:ask_choice card e2e', () => {
     expect(ids).toContain('no');
   });
 
+  // The args schema rejects empty / over-cap options (z.array().min(1).max(6)).
+  // Assert the stable invalid_args + failing-field path; zod v4's messages no
+  // longer embed the raw 'too_small'/'too_big' issue codes (formatIssues emits
+  // "options: <human message>").
   itLive('empty options → validation error', async () => {
     const r = await callMcpTool('chat:ask_choice', { question: 'X?', options: [] });
-    expect(r.text).toContain('too_small');
+    expect(r.text).toContain('invalid_args');
+    expect(r.text).toContain('options');
   });
 
   itLive('7 options → over-cap validation error', async () => {
@@ -99,7 +104,8 @@ describe('chat:ask_choice card e2e', () => {
       question: 'X?',
       options: Array.from({ length: 7 }, (_, i) => ({ id: `o${i}`, label: `Opt ${i}` })),
     });
-    expect(r.text).toContain('too_big');
+    expect(r.text).toContain('invalid_args');
+    expect(r.text).toContain('options');
   });
 
   itLive('POST /turns persists tools[] and turn-answer updates them', async () => {
