@@ -87,6 +87,12 @@ export default defineTool({
           });
         }
         const url = getHarnessAdminUrl();
+        // perf:allow A4 — this tool IS the sanctioned dev-only migration
+        // applier: `psql -f` runs full .sql files (dollar-quoted functions,
+        // DO blocks, COPY, \meta-commands) that postgres-js can't, and it's
+        // gated behind PAPERCUSP_ALLOW_DB_MIGRATE + the db-schema lock. Not
+        // runtime/shipped data-plane code. Mirrored in @papercusp/export-state's
+        // no-psql-shellout ALLOW set.
         const r = spawnSync('psql', [url, '-v', 'ON_ERROR_STOP=1', '-f', args.file], {
           encoding: 'utf8',
         });

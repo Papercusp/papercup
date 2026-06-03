@@ -8,11 +8,19 @@
  *   - runAction sets PAPERCUSP_* env vars correctly
  *   - listRuns marks orphaned "running" runs as failed when log is stale
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { mkdtemp, rm, writeFile, mkdir, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// runAction fires a best-effort pre-destructive backup snapshot (a deliberate
+// fire-and-forget side effect). The backup subsystem isn't configured in this
+// unit env, so the real trigger would hit getOrgPg() and console.warn a
+// "snapshot failed" line — tripping vitest-fail-on-console on a path that has
+// nothing to do with branch actions. Stub it out; backups have their own tests
+// in packages/backup.
+vi.mock('./backup', () => ({ triggerSnapshotEvent: vi.fn(async () => {}) }));
 
 import {
   BRANCHES, isBranch, listActions, listRuns, runAction, MissingEnvError,

@@ -24,10 +24,14 @@ const ROOTS = [
 ];
 
 // Allowed shell-outs — the system `pg_dump` invocation in pg-dump.ts and
-// the presence-probe in binaries.ts. Everything else must use postgres-js.
+// the presence-probe in binaries.ts. Plus the db:migrate tool, which IS the
+// sanctioned dev-only migration applier (a lock-coordinated `psql -f` wrapper
+// gated behind PAPERCUSP_ALLOW_DB_MIGRATE — psql runs full .sql files
+// postgres-js can't). Everything else must use postgres-js.
 const ALLOW = new Set<string>([
   'libs/papercusp-export-state/src/pg-dump.ts',
   'libs/papercusp-export-state/src/binaries.ts',
+  'apps/operator/lib/agent-tools/db/migrate.ts',
 ]);
 
 const TS_EXT = /\.(ts|tsx|mts|cts|mjs|cjs|js)$/;
