@@ -572,7 +572,7 @@ describe('joinSharedHarness orchestrator', () => {
 
     const fakeOctokit = makeFakeOctokit();
 
-    await joinSharedHarness({
+    const finalState = await joinSharedHarness({
       link,
       slug: SLUG + '-gist-flow',
       token: 'tok-ok',
@@ -593,13 +593,15 @@ describe('joinSharedHarness orchestrator', () => {
       octokit: fakeOctokit,
     });
 
-    // The Contents API PUT received a file with the non-empty gist id.
-    const putCall = fakeOctokit.rest.repos.createOrUpdateFileContents.mock.calls[0]?.[0];
-    expect(putCall).toBeDefined();
-    const fileContent = Buffer.from(putCall.content, 'base64').toString('utf8');
-    const parsed = JSON.parse(fileContent) as Record<string, unknown>;
-    expect(parsed.device_attestation_gist_id).toBe('gist-nonempty-flow-test');
-    expect(parsed.device_attestation_gist_id).not.toBe('');
+    // Write-free join (non-collaborator-join-fork-pr-2026-06-02): the binding IS
+    // the attestation gist + the signed announce — stepPublishBinding no longer
+    // writes a shared-repo contributor file (a non-collaborator needs no repo
+    // write to join). Verify the non-empty gist id flowed oauth_attest →
+    // publish_binding (carried on final state, step done) and that NO repo write
+    // (Contents API PUT) happened.
+    expect(finalState.attestationGistId).toBe('gist-nonempty-flow-test');
+    expect(finalState.steps.publish_binding.status).toBe('done');
+    expect(fakeOctokit.rest.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
   it('resumes from saved state, skipping already-done steps', async () => {
