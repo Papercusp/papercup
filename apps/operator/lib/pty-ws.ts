@@ -251,7 +251,10 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
     }
   };
 
+  let exitDelivered = false;
   const onExit = (code: number) => {
+    if (exitDelivered) return; // idempotent — handle both the live event and the already-exited replay below
+    exitDelivered = true;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     flush();
     try { ws.send(JSON.stringify({ type: 'exit', code }), { binary: false }); } catch { /* */ }
@@ -276,6 +279,13 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
 
   handle.onData.add(onData);
   handle.onExit.add(onExit);
+  // The pty may have already exited during the `await getScreenSerialization`
+  // above (e.g. a fast `exit`-ing command). In that case the exit event already
+  // fired and handle.onExit was cleared, so the handler we just added will
+  // never run — deliver the exit frame + close now from the recorded exitCode.
+  if (handle.exitCode !== null) {
+    onExit(handle.exitCode);
+  }
 
   // ── Client → server input + control frames ──────────────────────────
   ws.on('message', (data, isBinary) => {

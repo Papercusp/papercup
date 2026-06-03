@@ -64,7 +64,11 @@ async function awaitOpenOrClose(ws: WebSocket): Promise<{ opened: boolean; close
   });
 }
 
-async function collectBytes(ws: WebSocket, predicate: (s: string) => boolean, timeoutMs = 1500): Promise<string> {
+// Resolves early as soon as `predicate` matches, so this timeout only bites
+// when the real PTY's output is genuinely slow. 1500ms raced the shell
+// spawn+exec round-trip on the contended dev box (flaky); 8s is ample and
+// still well under the 20s vitest testTimeout.
+async function collectBytes(ws: WebSocket, predicate: (s: string) => boolean, timeoutMs = 8000): Promise<string> {
   return new Promise((resolve) => {
     let acc = '';
     const timer = setTimeout(() => resolve(acc), timeoutMs);
@@ -144,7 +148,9 @@ describe('pty-ws', () => {
   });
 
   it('applies resize via control frame', async () => {
-    const handle = spawnTestPty(['printf "tput_cols=$(tput cols)\\n"; sleep 0.5; printf "tput_cols2=$(tput cols)\\n"; sleep 0.2']);
+    // Generous sleeps so the resize control frame lands before the second
+    // tput print, and the pty stays open through the round-trip, under load.
+    const handle = spawnTestPty(['printf "tput_cols=$(tput cols)\\n"; sleep 3; printf "tput_cols2=$(tput cols)\\n"; sleep 3']);
     const ws = openWs(`/pty/${handle.id}`);
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
@@ -164,7 +170,7 @@ describe('pty-ws', () => {
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
     const exitMsg = await new Promise<{ type?: string; code?: number }>((resolve) => {
-      const timer = setTimeout(() => resolve({}), 1500);
+      const timer = setTimeout(() => resolve({}), 8000);
       ws.on('message', (data, isBinary) => {
         if (isBinary) return;
         try {
@@ -178,7 +184,13 @@ describe('pty-ws', () => {
   });
 
   it('processes ack control frames without erroring', async () => {
-    const handle = spawnTestPty(['printf "ack_payload\\n"; sleep 0.2']);
+    // Keep the pty alive long enough for the ack + keystroke round-trip to
+    // complete under load — POST_ACK is the terminal's echo of the input, so
+    // the pty must still be open when we send it. `sleep 0.2` raced the
+    // round-trip on the contended dev box (the bash exited first → no echo →
+    // ''). collectBytes still early-resolves on match, so this doesn't slow
+    // the test; afterAll kills the pty.
+    const handle = spawnTestPty(['printf "ack_payload\\n"; sleep 5']);
     const ws = openWs(`/pty/${handle.id}`);
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
