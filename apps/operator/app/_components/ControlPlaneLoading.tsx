@@ -1,11 +1,10 @@
 const statLabels = ['pulse', 'passed', '$ spent', 'lanes'];
-const tabs = ['brainstorm', 'proposals', 'experts', 'dashboard', 'summary', 'insights', 'config'];
+const tabs = ['brainstorm', 'proposals', 'dashboard', 'summary', 'insights', 'config'];
 const tabAccentClass: Record<string, string> = {
   brainstorm: 'h-tab--brainstorm',
   proposals: 'h-tab--proposals',
   dashboard: 'h-tab--dashboard',
   summary: 'h-tab--summary',
-  experts: 'h-tab--experts',
   insights: 'h-tab--insights',
   config: 'h-tab--config',
 };

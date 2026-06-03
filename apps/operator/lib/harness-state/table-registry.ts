@@ -60,7 +60,7 @@ const GIT_DOCS = [
   'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
   'harness_tests', 'llm_test_fixtures', 'llm_test_claims', 'llm_test_findings',
   'harness_phases', 'harness_promotions', 'harness_checkpoints',
-  'harness_snapshots', 'harness_experts',
+  'harness_snapshots',
   'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
   'project_spec_revisions',
 ];

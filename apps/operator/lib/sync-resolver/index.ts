@@ -251,24 +251,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // harnessExperts.byHarness — experts ordered by last-updated desc.
-  //   zql.harnessExperts.where('harnessSlug', s).orderBy('updatedAt', 'desc')
-  'harnessExperts.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
-    resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { desc, eq } = await import('drizzle-orm');
-      const t = generated.harnessExpertsInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .orderBy(desc(t.updatedAt))) as unknown[];
-    },
-  },
-
   // ── Batch 4: lanes / escalations / checkpoints / git-log / feature PRs ─
   //
   // Each filter pattern slightly different; otherwise mechanical.

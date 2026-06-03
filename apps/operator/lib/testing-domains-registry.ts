@@ -266,7 +266,6 @@ defineTestDomain({
         'apps/operator/lib/agent-tools/delegates/**/*.test.ts',
         'apps/operator/lib/agent-tools/dev/**/*.test.ts',
         'apps/operator/lib/agent-tools/docs/**/*.test.ts',
-        'apps/operator/lib/agent-tools/experts/**/*.test.ts',
         'apps/operator/lib/agent-tools/flags/**/*.test.ts',
         'apps/operator/lib/agent-tools/harness/**/*.test.ts',
         'apps/operator/lib/agent-tools/hooks/**/*.test.ts',

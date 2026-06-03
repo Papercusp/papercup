@@ -1,6 +1,6 @@
 /**
  * Misc tools — autoloop:status/control, snapshots:list/get,
- * wiki:backlinks, experts:trigger_for, omp:config.
+ * wiki:backlinks, omp:config.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,7 +27,6 @@ afterEach(() => {
   vi.doUnmock('@/lib/snapshot-discovery');
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('@/lib/wiki-backlinks');
-  vi.doUnmock('@/lib/expert-triggers');
   vi.doUnmock('@/lib/omp-config');
 });
 
@@ -164,53 +163,6 @@ describe('wiki:backlinks', () => {
     const { default: tool } = await import('@/lib/agent-tools/wiki/backlinks');
     await tool.handler({ target: 'd', harness: 'sheets' }, MAKE_CTX());
     expect(findWikiBacklinks).toHaveBeenCalledWith('d', 'sheets');
-  });
-});
-
-describe('experts:trigger_for', () => {
-  it('lifecycle source calls fireLifecycleTriggers', async () => {
-    const fireLifecycleTriggers = vi.fn(async () => [
-      { role: 'reviewer', expertId: 'EXP-1' },
-    ]);
-    vi.doMock('@/lib/expert-triggers', () => ({
-      fireLifecycleTriggers,
-      fireEventTriggers: vi.fn(),
-    }));
-    const { default: tool } = await import('@/lib/agent-tools/experts/trigger_for');
-    const result = await tool.handler(
-      { source: 'lifecycle', lifecycle: 'post_provision', installSlug: 'sheets', ctx: { x: 1 } },
-      MAKE_CTX(),
-    );
-    expect(fireLifecycleTriggers).toHaveBeenCalledWith('post_provision', 'sheets', { x: 1 });
-    const payload = parsePayload(result as never);
-    expect(payload).toEqual({
-      source: 'lifecycle',
-      lifecycle: 'post_provision',
-      dispatched: [{ role: 'reviewer', expertId: 'EXP-1' }],
-    });
-  });
-
-  it('event source calls fireEventTriggers', async () => {
-    const fireEventTriggers = vi.fn(async () => []);
-    vi.doMock('@/lib/expert-triggers', () => ({
-      fireLifecycleTriggers: vi.fn(),
-      fireEventTriggers,
-    }));
-    const { default: tool } = await import('@/lib/agent-tools/experts/trigger_for');
-    await tool.handler(
-      { source: 'event', event: 'big-thing', installSlug: 'sheets' },
-      MAKE_CTX(),
-    );
-    expect(fireEventTriggers).toHaveBeenCalledWith('big-thing', 'sheets', undefined);
-  });
-
-  it('exposes architect+operator role gate', async () => {
-    vi.doMock('@/lib/expert-triggers', () => ({
-      fireLifecycleTriggers: vi.fn(),
-      fireEventTriggers: vi.fn(),
-    }));
-    const { default: tool } = await import('@/lib/agent-tools/experts/trigger_for');
-    expect(tool.agentRoles).toEqual(['architect', 'operator']);
   });
 });
 

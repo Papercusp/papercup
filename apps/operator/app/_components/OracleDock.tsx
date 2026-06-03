@@ -51,7 +51,6 @@ import {
   SendHorizontal,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   Users,
   X,
   type LucideIcon,
@@ -104,11 +103,9 @@ const TUTORIAL_KICKOFF = 'Start the tutorial.';
 // reads the global prompts dir). The hardcoded list this replaced kept
 // drifting from disk; now there's nothing to drift from.
 //
-// Roles excluded from the picker:
-//   - 'feedback' — ephemeral, not a chat surface (matches server's NON_CHAT_ROLES).
-//   - 'expert'   — instanced (one per feature area); has its own UI in the
-//                  Directives tab and isn't meaningful as a generic role chat.
-const PICKER_ROLE_EXCLUDE = new Set(['feedback', 'expert']);
+// Roles excluded from the picker (none currently — the former 'feedback' +
+// 'expert' entries were removed with the experts feature).
+const PICKER_ROLE_EXCLUDE = new Set<string>([]);
 type AgentRole = string;
 const FALLBACK_AGENT_ROLES: string[] = [
   'worker', 'validator', 'scoper', 'reviewer', 'architect',
@@ -217,8 +214,6 @@ const ROLE_ICONS: Record<string, ChatIconComponent> = {
   'test-writer': FileText,
   tester: FlaskConical,
   'ui-qa': Monitor,
-  expert: Sparkles,
-  feedback: Bot,
 };
 function normalizeRoleKey(role: AgentRole): string {
   return role.toLowerCase().replace(/[_\s]+/g, '-');

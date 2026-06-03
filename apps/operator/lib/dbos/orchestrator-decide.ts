@@ -64,7 +64,7 @@ export function classifyDecision(
     case 'NEXT_SCOPER':
       return { kind: 'dispatch', role: 'scoper', feature, extras: [`FEATURE_ID=${feature}`] };
 
-    // ── quality / expert verbs (role names + extras match the legacy loop) ────
+    // ── quality verbs (role names + extras match the legacy loop) ────
     case 'NEXT_TESTER':
       return { kind: 'dispatch', role: 'tester', feature, extras: [`VAL_ID=${arg ?? ''}`] };
     case 'NEXT_SECURITY':
@@ -85,21 +85,6 @@ export function classifyDecision(
     case 'NEXT_UI_QA':
       // A verdict-tool visual/interaction check on a UI feature (a VAL-UI-* claim).
       return { kind: 'dispatch', role: 'ui-qa', feature, extras: [`FEATURE_ID=${feature}`] };
-    case 'NEXT_EXPERT': {
-      if (!arg) return STOP_IDLE; // malformed (legacy logs + idles)
-      return { kind: 'dispatch', role: 'expert', feature: arg, extras: [`FEATURE_ID=${arg}`, `EXPERT_ID=${arg}`] };
-    }
-    case 'NEXT_FEEDBACK': {
-      // Expect EXP-NNN.FB-NNN. Persona (a stateDir file read) is resolved in the
-      // dispatch step, not here, to keep this classifier pure.
-      if (!arg || !arg.includes('.')) return STOP_IDLE;
-      const dot = arg.indexOf('.');
-      const eid = arg.slice(0, dot);
-      const fbid = arg.slice(dot + 1);
-      if (!eid || !fbid) return STOP_IDLE;
-      return { kind: 'dispatch', role: 'feedback', feature: eid, extras: [`FEEDBACK_ID=${fbid}`, `EXPERT_ID=${eid}`] };
-    }
-
     // ── benign global / phase verbs → stop this pipeline cleanly ──────────────
     case 'CONVERTED':
     case 'FEATURE_FREEZE':

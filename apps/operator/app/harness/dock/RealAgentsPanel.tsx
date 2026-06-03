@@ -28,7 +28,6 @@ const ROLE_COLORS: Record<string, string> = {
   worker: 'var(--good)',
   validator: 'var(--warn)',
   curator: '#a78bfa',
-  expert: '#f472b6',
   unknown: 'var(--fg-mute)',
 };
 

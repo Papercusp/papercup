@@ -8,10 +8,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getLegacyClient, getOrgPg } from '@papercusp/db-org';
+import { getLegacyClient } from '@papercusp/db-org';
 import { getKnownRoles } from './known-roles';
-import { activeWorkspaceId } from './workspace-registry';
-import { notifySyncInvalidate } from './sync-sse';
 
 export interface TranscriptToolCall {
   name: string;
@@ -69,7 +67,6 @@ export type Result<T> =
   | { ok: false; status: number; error: string };
 
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9_-]*[A-Z0-9]$/i;
-const EXPERT_ID_RE = /^EXP-\d{3,}$/;
 
 function dbForSlug(slug: string) {
   return getLegacyClient(slug);
@@ -130,37 +127,6 @@ export async function readFeatureLockState(
     };
   } catch {
     return null;
-  }
-}
-
-/**
- * Flip the userEngaged flag (and corresponding awaiting_user / gathering_feedback
- * status) on an expert instance. Called when a chat opens (engaged=true) and
- * when it's archived (engaged=false). Tolerates missing rows (no-op).
- */
-export async function flipExpertEngaged(
-  slug: string,
-  expertId: string,
-  engaged: boolean,
-): Promise<void> {
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
-  const rows = await sql<{ updated: boolean }[]>`
-    UPDATE harness_shared.harness_experts
-       SET user_engaged = ${engaged},
-           status       = CASE
-             WHEN status IN ('final','max_rounds','cancelled','superseded','error') THEN status
-             WHEN ${engaged} = true THEN 'awaiting_user'
-             WHEN status = 'awaiting_user' THEN 'gathering_feedback'
-             ELSE status
-           END,
-           updated_at   = ${Date.now()}
-     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-       AND expert_id    = ${expertId}
-    RETURNING TRUE AS updated
-  `;
-  if (rows.length > 0) {
-    void notifySyncInvalidate('harnessIdentity').catch(() => {});
   }
 }
 
@@ -253,15 +219,6 @@ export async function createChat(
       ? await readFeatureLockState(input.slug, input.feature_id)
       : null;
 
-    if (input.role === 'expert' && input.feature_id && EXPERT_ID_RE.test(input.feature_id)) {
-      await flipExpertEngaged(input.slug, input.feature_id, true).catch((err) => {
-        console.warn(
-          `[agent-chats] failed to flip expert engaged for ${input.feature_id}:`,
-          err?.message ?? err,
-        );
-      });
-    }
-
     return { ok: true, data: { ...rowToChat(row), feature_lock: featureLock } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to create chat: ${(e as Error).message}` };
@@ -284,14 +241,6 @@ export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok:
     await db
       .prepare('UPDATE agent_chats SET archived_at = now(), updated_at = now() WHERE id = ?')
       .run(input.chatId);
-    if (pre?.role === 'expert' && pre.feature_id && EXPERT_ID_RE.test(pre.feature_id)) {
-      await flipExpertEngaged(input.slug, pre.feature_id, false).catch((err) => {
-        console.warn(
-          `[agent-chats] failed to flip expert engaged off for ${pre.feature_id}:`,
-          err?.message ?? err,
-        );
-      });
-    }
     return { ok: true, data: { ok: true } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to archive chat: ${(e as Error).message}` };

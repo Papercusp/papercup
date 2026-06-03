@@ -40,7 +40,6 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
-  'harness_shared.harness_experts': ['harnessExperts.byHarness'],
   'harness_shared.harness_lanes': ['harnessLanes.byHarness'],
   'harness_shared.harness_escalations': ['harnessEscalations.byHarness'],
   'harness_shared.harness_checkpoints': ['harnessCheckpoints.byHarness'],

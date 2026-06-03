@@ -165,12 +165,6 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     category: 'navigation',
   },
   {
-    id: 'goto.experts',
-    description: 'Go to Experts tab',
-    defaultCombo: 'g>e',
-    category: 'navigation',
-  },
-  {
     id: 'goto.insights',
     description: 'Go to Insights tab',
     defaultCombo: 'g>i',

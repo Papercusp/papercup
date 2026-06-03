@@ -236,12 +236,13 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       label: string | null;
       cwd: string | null;
       coord_owner_id: string | null;
+      session_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND NOT (
@@ -284,12 +285,13 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
       label: string | null;
       cwd: string | null;
       coord_owner_id: string | null;
+      session_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
@@ -321,12 +323,13 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       label: string | null;
       cwd: string | null;
       coord_owner_id: string | null;
+      session_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}
@@ -372,12 +375,13 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
       label: string | null;
       cwd: string | null;
       coord_owner_id: string | null;
+      session_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
        ORDER BY started_at DESC
@@ -422,12 +426,13 @@ export async function listEndedAdvSessions(
       label: string | null;
       cwd: string | null;
       coord_owner_id: string | null;
+      session_id: string | null;
       started_at: string | Date;
       ended_at: string | Date | null;
       exit_code: number | null;
     }>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, started_at, ended_at, exit_code
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          AND (${ws}::text IS NULL OR workspace_id = ${ws})

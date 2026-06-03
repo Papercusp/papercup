@@ -98,8 +98,6 @@ const KNOWN_ROLES = [
   'debugger',
   'scoper',
   'architect',
-  'expert',
-  'feedback',
   'reviewer',
   'curator',
   'documenter',

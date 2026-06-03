@@ -78,7 +78,7 @@ const chatOpenPane: CommandDef<z.infer<typeof OpenPaneArgs>> = {
       // ctx.sessionId check. But guard anyway.
       throw new Error('chat.open-pane must run in the browser process');
     }
-    const target = `/harness?ws=${encodeURIComponent(getWs())}&project=${encodeURIComponent(slug)}&panel=experts&chat=${encodeURIComponent(chatId)}`;
+    const target = `/harness?ws=${encodeURIComponent(getWs())}&project=${encodeURIComponent(slug)}&chat=${encodeURIComponent(chatId)}`;
     navigateClient(target);
     return { slug, chatId, navigated: true };
   },

@@ -34,8 +34,7 @@ export type ActionKind =
   | 'plugin.install'
   | 'plugin.enable'
   | 'plugin.disable'
-  | 'branch.action'
-  | 'expert.dispatch';
+  | 'branch.action';
 
 export interface ActionResult<T = unknown> {
   /** One-line user-facing summary string. */

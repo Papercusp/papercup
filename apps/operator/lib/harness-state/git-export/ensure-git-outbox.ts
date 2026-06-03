@@ -37,7 +37,6 @@ export const GIT_KEY_COLS: Record<string, string[]> = {
   harness_promotions: ['promotion_id'],
   harness_checkpoints: ['name'],
   harness_snapshots: ['snapshot_id'],
-  harness_experts: ['expert_id'],
   harness_skills: ['name'],
   goals: ['id'],
   harness_proposals_shared: ['phase', 'proposal_id'],
