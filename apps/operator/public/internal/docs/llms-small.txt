@@ -1024,6 +1024,35 @@ or an instance of Buffer or ArrayBuffer. Received an instance of Object
 ```
  Verified live (P-070 `contributor_usage_events.payload`): `JSON.stringify(v)::jsonb` stores a real jsonb object — `jsonb_typeof(payload)='object'`, `payload->>'k'` works. ## The trap: the testcontainer client behaves OPPOSITELY [Section titled “The trap: the testcontainer client behaves OPPOSITELY”](#the-trap-the-testcontainer-client-behaves-oppositely) The integration-test client (`apps/operator/test/_pg-helpers.ts`, used by every `*.integration.test.ts`) binds JSONB params **differently** from the operator runtime client — despite *identical* postgres-js config (`prepare:false`, same `types:{bigint}`, same postgres 3.4.9): | form | `getOrgPg` (runtime / production) | `_pg-helpers` (testcontainer) | | ------------------------------- | --------------------------------- | --------------------------------- | | `sql.json(obj)` | **throws** | works (jsonb object) | | `${obj}` (bare) | **throws** | works (jsonb object) | | `${JSON.stringify(obj)}::jsonb` | **jsonb object** ✓ | double-encodes → jsonb **string** | The root cause of the divergence is unexplained (configs match); it is likely a postgres-js protocol/connection nuance. The practical consequences: Integration tests can't faithfully test JSONB binding here A `*.integration.test.ts` using `_pg-helpers` will give the WRONG answer for JSONB param binding — `sql.json` passes there but breaks in production, and the correct `JSON.stringify::jsonb` form looks “double-encoded” there. **Verify JSONB write behavior against the live host** (`jsonb_typeof(payload)` over the running operator’s DB), not the testcontainer. Assert only client-agnostic things (no-throw, row lands, rollup counts) in the integration test. ## Still-affected files (latent bug) [Section titled “Still-affected files (latent bug)”](#still-affected-files-latent-bug) As of 2026-06-02, `sql.json(...)` is still used for object JSONB columns in (these will throw on a non-null object write in production): * `apps/operator/lib/sync/hyperbee/projections/issues.ts` (`notes`) * `apps/operator/lib/sync/hyperbee/projections/contributors.ts` * `apps/operator/lib/sync/hyperbee/projections/harness-features.ts` (`metadata`, `tags`) * `apps/operator/lib/dock-layouts.ts` Fixed in P-070: `lib/harness/usage-events.ts` + `lib/sync/hyperbee/projections/usage.ts`.
 
+# postgres-js double-encodes ${JSON.stringify(x)}::jsonb
+
+> Binding a jsonb column with JSON.stringify + ::jsonb wraps the value twice; use sql.json() instead.
+
+## Symptom [Section titled “Symptom”](#symptom) A jsonb column federated through the substrate CDC-outbox keeps gaining a layer of JSON-string escaping every merge cycle: 
+```plaintext
+[]  →  "[]"  →  "\"[]\""  →  "\"\\\"[]\\\"\""  →  …  (unbounded)
+```
+ Downstream effect: the migration-102 capture guard (`OLD.* IS DISTINCT FROM NEW.*`) correctly fires on every pass because the value genuinely changes, so `substrate_outbox` **never reaches a fixed point** — unbounded intra-peer self-amplification. The Stage-6 `feature-content-federation.integration` test surfaced this as “outbox never converged”; it is also a live data-corruption bug (jsonb columns silently stored as escaped strings) in any federated projection with a non-null jsonb field. ## Root cause [Section titled “Root cause”](#root-cause) postgres-js JSON-serializes a JS value **itself** when it binds a parameter for a json/jsonb context. So: 
+```ts
+await sql`INSERT ... VALUES (${JSON.stringify(row.notes ?? [])}::jsonb)`;
+```
+ double-encodes: 1. `JSON.stringify([])` → the JS string `"[]"` (layer 1) 2. postgres-js serializes **that string** for the `::jsonb` cast → the jsonb **string** `"[]"`, not the array `[]` (layer 2) Each capture → drain → re-apply round-trip reads the (already-escaped) value back and stringifies it again. Proven with a standalone postgres-js round-trip probe: `JSON.stringify(value)::jsonb` accumulates layers; `sql.json(value)` is idempotent (`[]` stays `[]`, `[{m:'hi'}]` stays `[{m:'hi'}]`). ## Fix [Section titled “Fix”](#fix) Bind via postgres-js’s `sql.json()` helper (single, correct serialization) — no manual `JSON.stringify`, no `::jsonb` cast: 
+```ts
+// WRONG — double-encodes
+${JSON.stringify(row.notes ?? [])}::jsonb
+${row.metadata == null ? null : JSON.stringify(row.metadata)}::jsonb
+
+
+// RIGHT — postgres-js serializes once
+${sql.json(row.notes ?? [])}
+${row.metadata == null ? null : sql.json(row.metadata)}   // keep the NULL guard
+```
+ Keep the `== null ? null :` guard for nullable jsonb columns so a missing value stores SQL `NULL`, not a JSON `null`. Fixed sites (all in `apps/operator/lib/sync/hyperbee/projections/`): `issues.notes`, `harness-features.metadata` + `.tags`, `usage.payload`, `contributors.device_attestations`. ## Guard against regression [Section titled “Guard against regression”](#guard-against-regression) Grep for the anti-pattern before shipping a projection: 
+```bash
+grep -rn 'JSON.stringify.*}::jsonb' apps/operator/lib
+```
+ Any hit is a double-encode. `revoked_pubkeys` (a native PG `text[]`, bound directly without `JSON.stringify`) is fine — this only affects `jsonb` columns fed a `JSON.stringify` result.
+
 # Pull daemon decision logic into pure functions, leave glue in the runtime
 
 > A poll daemon's "what should I do next?" logic is testable in isolation only when it's pure. The runtime becomes a thin shim around `decideX()` calls; every interesting branch lives in a unit-tested types module.
