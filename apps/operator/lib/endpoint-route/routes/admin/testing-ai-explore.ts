@@ -51,7 +51,7 @@ export default defineTool({
     const creds = await readCredentials();
     const apiKey = creds.anthropic_api_key;
     if (!apiKey) {
-      return new Response('No Anthropic API key configured. Set one in /admin/testing → AI Explore.', { status: 400 });
+      return new Response('No Anthropic API key configured. Set one in Settings → API keys.', { status: 400 });
     }
 
     const repoRoot = resolveRepoRoot();

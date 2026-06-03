@@ -22,7 +22,11 @@ import DesktopAttentionNotifier from '@/app/_components/DesktopAttentionNotifier
 import { UiPresenceProvider } from '@/app/_components/UiPresenceProvider';
 import DevReloadGate from '@/app/_components/DevReloadGate';
 import PerfObserverProvider from '@/app/admin/testing/_components/PerfObserverProvider';
-import RecorderHost from '@/app/admin/testing/_components/RecorderHost';
+// Universal in-app perf-recorder host (channel/storage-compatible with the
+// operator's _lib — same CHANNEL_NAME + localStorage key). Activates only when
+// ?perf-recorder=1 is set (the chaos-desktop recorder window). Phase 6 of
+// universal-testing-domains-generic-2026-06-03.
+import { RecorderHost } from '@papercusp/testing-shell';
 import ChromeShell from '@/app/_components/ChromeShell';
 import { ProgressProvider } from '@bprogress/react';
 import NotFound from '../components/NotFound';

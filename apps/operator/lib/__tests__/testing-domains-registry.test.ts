@@ -106,7 +106,7 @@ describe('Phase 1 — universal vs Papercusp split (testing-shell-cross-project 
 
   it('the Papercusp-runtime-bound domains moved out of the lib into the operator', () => {
     const papercuspIds = new Set(papercuspRegistry.map((d) => d.id));
-    for (const id of ['test-runs', 'live', 'chaos', 'ai']) expect(papercuspIds.has(id)).toBe(true);
+    for (const id of ['test-runs', 'vitals', 'chaos-desktop', 'ai-explore']) expect(papercuspIds.has(id)).toBe(true);
   });
 
   it('adminRegistry composes both into the full 29', () => {

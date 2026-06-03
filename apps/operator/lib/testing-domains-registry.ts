@@ -67,28 +67,38 @@ defineTestDomain({
   ],
 });
 
+// Operator desktop vitals (LiveMetricsTab). Renamed `live` → `vitals` so the
+// universal in-page observer (live-web, from buildUniversalTesting) owns the
+// generic "Live" slot — universal-testing-domains-generic Phase 6.
 defineTestDomain({
-  id: 'live',
-  label: 'Live',
-  description: 'Passive observer: interactions, console, layout, unhandled errors.',
+  id: 'vitals',
+  label: 'Live metrics',
+  description: 'Operator desktop vitals: interactions, console, layout, unhandled errors.',
   tier: 'quick',
   sections: [
     { id: 'all', label: 'Observers', globs: ['apps/operator/app/admin/testing/_lib/vitals-*.test.ts'] },
   ],
 });
 
+// The interactive Chaos panel is now the universal chaos-desktop (lib
+// ChaosDesktopPanel via buildUniversalTesting); this domain keeps the recorder
+// test-glob attached to the matching `chaos-desktop` id so the contract/harness
+// view stay consistent.
 defineTestDomain({
-  id: 'chaos',
-  label: 'Chaos',
-  description: 'Autonomous clicker that drives the Tauri shell looking for crashes.',
+  id: 'chaos-desktop',
+  label: 'Chaos (desktop)',
+  description: 'In-app perf-recorder clicker that drives the Tauri shell looking for crashes.',
   tier: 'quick',
   sections: [
     { id: 'host', label: 'Recorder host', globs: ['apps/operator/app/admin/testing/_lib/chaos-*.test.ts'] },
   ],
 });
 
+// The interactive AI Explore panel is now the universal ai-explore (lib
+// AiExplorePanel via buildUniversalTesting); this domain keeps the prompts suite
+// attached to the matching `ai-explore` id.
 defineTestDomain({
-  id: 'ai',
+  id: 'ai-explore',
   label: 'AI Explore',
   description: 'Stagehand LLM walk over admin routes.',
   tier: 'quick',
@@ -832,7 +842,7 @@ defineTestDomain({
  * ---------------------------------------------------------------- */
 
 const PAPERCUSP_IDS = [
-  'test-runs', 'live', 'chaos', 'ai',
+  'test-runs', 'vitals', 'chaos-desktop', 'ai-explore',
   'memory', 'packaged', 'llm', 'harness', 'voice', 'papercusp-su', 'backup',
   'plans', 'operator', 'design', 'plugins', 'transport', 'snapshots', 'mobile',
   'provisioning', 'docs', 'dogfood',

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
-// Shared id→bespoke-panel map (also used by the /adv harness Tests tab).
-import { TESTING_CUSTOM_TABS } from '@/app/admin/testing/testing-custom-tabs';
+// Shared id→panel map + the universal tab metadata (also used by the /adv harness Tests tab).
+import { TESTING_CUSTOM_TABS, UNIVERSAL_TESTING_TABS } from '@/app/admin/testing/testing-custom-tabs';
 import {
   TestingShell,
   adminTestingDataSource,
@@ -8,42 +8,36 @@ import {
 } from '@papercusp/testing-shell';
 
 /**
- * Testing-admin client — now a thin wrapper over the shared
- * <TestingShell> (@papercusp/testing-shell). The shell (left-rail +
- * panel host) was extracted in P-003 of
- * harness-tests-tab-and-tester-promotion-2026-05-26; this file supplies
- * the admin-specific tab list, tier labels, data source, and the 8
- * bespoke React tabs that can't live in the lib.
+ * Testing-admin client — a thin wrapper over the shared <TestingShell>
+ * (@papercusp/testing-shell). It supplies the admin tab list, tier labels, data
+ * source, and the custom React panels.
  *
- * Original plan: admin-testing-tab-restructure-2026-05-24, Phase 1.
- *
- * 21 tabs in three tiers:
- *  - quick:   one-click suite runners + observers (existing 8 + packaged)
- *  - domain:  per-domain test surfaces (12 of 13 new tabs)
- *  - surface: cross-cutting transports (routes, transport, docs)
- *
- * The 8 existing tabs (test-runs, live, memory, chaos, ai, routes,
- * packaged, llm) keep their bespoke React via `customTabs`; the new 13
- * tabs render via the shell's <DomainTestPanel> driven by the
+ * The universal panels (Live / Chaos-web / AI Explore / Chaos-desktop) are wired
+ * ONCE in testing-custom-tabs.tsx via buildUniversalTesting (universal-testing-
+ * domains-generic Phase 6) and surfaced here as UNIVERSAL_TESTING_TABS (re-tiered
+ * into the "quick" group). The operator-specific tabs (Test Runs, Live metrics =
+ * vitals, Memory, Routes, Packaged, LLM) keep their bespoke React; the remaining
+ * domain/surface tabs render via <DomainTestPanel> driven by the
  * testing-domains registry (server-side).
  *
- * Testing tools are eagerly imported on purpose: this is the route used
- * to measure and orchestrate performance suites, so lazy chunk
- * waterfalls only make the framework itself slower to reason about.
+ * Testing tools are eagerly imported on purpose: this is the route used to
+ * measure and orchestrate performance suites, so lazy chunk waterfalls only make
+ * the framework itself slower to reason about.
  */
 
 type TabId =
-  // existing (bespoke)
+  // operator-specific (bespoke)
   | 'test-runs'
-  | 'chaos'
-  | 'chaos-web'
-  | 'ai'
-  | 'live'
-  | 'live-web'
+  | 'vitals'
   | 'routes'
   | 'packaged'
   | 'llm'
   | 'memory'
+  // universal (from buildUniversalTesting)
+  | 'live-web'
+  | 'chaos-web'
+  | 'ai-explore'
+  | 'chaos-desktop'
   // domain (registry-driven)
   | 'harness'
   | 'voice'
@@ -66,18 +60,21 @@ interface AdminTab extends TestingShellTab {
   tier: 'quick' | 'domain' | 'surface';
 }
 
+// The universal panels live in the "quick runs" group (they were the operator's
+// quick-tier chaos/live/ai tabs before universalization).
+const UNIVERSAL_QUICK: AdminTab[] = UNIVERSAL_TESTING_TABS.map(
+  (t: TestingShellTab) => ({ ...t, tier: 'quick' }) as AdminTab,
+);
+
 const TABS: AdminTab[] = [
   // ── Tier 1: Quick runs ──
   { id: 'test-runs', label: 'Test Runs', hint: 'suite orchestrator', tier: 'quick' },
-  // chaos/live have a desktop variant (drives the Tauri shell / in-shell vitals)
-  // and a browser variant (platform-variants P-009). With platform='both' the
-  // shell shows the pair; a web-only host (e.g. Restart) shows only the 'web' one.
-  { id: 'live', label: 'Live metrics', hint: 'passive observer (desktop)', tier: 'quick', platform: 'desktop' },
-  { id: 'live-web', label: 'Live (web)', hint: 'in-page console / error / CLS', tier: 'quick', platform: 'web' },
+  // Operator desktop vitals (voice spend / lock queue / in-shell observer). Renamed
+  // from `live` → `vitals`; the universal in-page observer owns `live-web`.
+  { id: 'vitals', label: 'Live metrics', hint: 'passive observer (desktop)', tier: 'quick', platform: 'desktop' },
   { id: 'memory', label: 'Memory', hint: 'mem0 health + suite', tier: 'quick' },
-  { id: 'chaos', label: 'Chaos', hint: 'autonomous clicker (desktop)', tier: 'quick', platform: 'desktop' },
-  { id: 'chaos-web', label: 'Chaos (web)', hint: 'headless clicker over :3070', tier: 'quick', platform: 'web' },
-  { id: 'ai', label: 'AI Explore', hint: 'LLM-driven walk', tier: 'quick' },
+  // ── Universal panels (Live / Chaos-web / AI Explore / Chaos-desktop) ──
+  ...UNIVERSAL_QUICK,
   { id: 'packaged', label: 'Packaged build', hint: 'wdio + tauri-driver', tier: 'quick' },
 
   // ── Tier 2: Domains ──

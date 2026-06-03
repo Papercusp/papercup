@@ -21,10 +21,25 @@
       ]
     },
     {
-      "id": "live",
-      "label": "Live",
-      "description": "Passive observer: interactions, console, layout, unhandled errors.",
+      "id": "routes",
+      "label": "Routes",
+      "description": "Endpoint test surface — the project’s HTTP/RPC route tests.",
       "tier": "universal",
+      "sections": [
+        {
+          "id": "endpoint-tests",
+          "label": "Endpoint tests",
+          "globs": [
+            "apps/operator/lib/endpoint-route/__tests__/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vitals",
+      "label": "Live metrics",
+      "description": "Operator desktop vitals: interactions, console, layout, unhandled errors.",
+      "tier": "project",
       "sections": [
         {
           "id": "all",
@@ -36,10 +51,10 @@
       ]
     },
     {
-      "id": "chaos",
-      "label": "Chaos",
-      "description": "Autonomous clicker that drives the Tauri shell looking for crashes.",
-      "tier": "universal",
+      "id": "chaos-desktop",
+      "label": "Chaos (desktop)",
+      "description": "In-app perf-recorder clicker that drives the Tauri shell looking for crashes.",
+      "tier": "project",
       "sections": [
         {
           "id": "host",
@@ -51,10 +66,10 @@
       ]
     },
     {
-      "id": "ai",
+      "id": "ai-explore",
       "label": "AI Explore",
       "description": "Stagehand LLM walk over admin routes.",
-      "tier": "universal",
+      "tier": "project",
       "sections": [
         {
           "id": "prompts",
@@ -64,21 +79,6 @@
               "kind": "admin-suite",
               "suiteId": "ai-explore-prompts"
             }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "routes",
-      "label": "Routes",
-      "description": "Endpoint test surface — the project’s HTTP/RPC route tests.",
-      "tier": "universal",
-      "sections": [
-        {
-          "id": "endpoint-tests",
-          "label": "Endpoint tests",
-          "globs": [
-            "apps/operator/lib/endpoint-route/__tests__/**/*.test.ts"
           ]
         }
       ]
@@ -337,7 +337,6 @@
             "apps/operator/lib/agent-tools/delegates/**/*.test.ts",
             "apps/operator/lib/agent-tools/dev/**/*.test.ts",
             "apps/operator/lib/agent-tools/docs/**/*.test.ts",
-            "apps/operator/lib/agent-tools/experts/**/*.test.ts",
             "apps/operator/lib/agent-tools/flags/**/*.test.ts",
             "apps/operator/lib/agent-tools/harness/**/*.test.ts",
             "apps/operator/lib/agent-tools/hooks/**/*.test.ts",
