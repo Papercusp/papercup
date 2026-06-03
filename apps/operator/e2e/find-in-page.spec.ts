@@ -35,7 +35,9 @@ const highlightSize = (page: Page, name: string) =>
 
 async function openFind(page: Page) {
   await page.goto(`${baseURL}${ROUTE}`, { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('networkidle');
+  // NOTE: no waitForLoadState('networkidle') — the shell opens long-lived SSE
+  // streams so the network never idles (would hang 30s). The web-first assert
+  // below (main has text) is the real readiness gate.
   // Wait until <main> has rendered some text to search.
   await expect
     .poll(async () =>

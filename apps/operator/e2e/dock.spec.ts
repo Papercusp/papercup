@@ -27,7 +27,10 @@ async function gotoDock(page: Page) {
     } catch { /* ignore */ }
   });
   await page.goto(`${baseURL}/harness/${SLUG}?dock=1`, { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('networkidle');
+  // NOTE: do NOT waitForLoadState('networkidle') — the harness shell opens
+  // long-lived SSE streams (zero-harness/flags), so the network never goes
+  // idle and this would hang 30s then time out. Rely on web-first assertion
+  // auto-waiting (toBeVisible) for readiness instead.
 }
 
 test.describe('dock route — mount + chrome', () => {
