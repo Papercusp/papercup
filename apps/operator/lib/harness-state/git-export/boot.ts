@@ -26,6 +26,7 @@ import {
 } from './ensure-git-outbox';
 import { hydrateGitTable } from './hydrate';
 import { startGitExportDrain, type GitExportDrainHandle } from './drainer';
+import { makeDebouncedGitCommitter } from './git-committer';
 
 export interface GitExportGlobals {
   /** git tables whose capture trigger attached successfully on this install. */
@@ -86,33 +87,6 @@ export async function bootGitExportForHarness(opts: BootGitExportHarnessOpts): P
     await hydrateGitTable({ sql, harnessRoot, table, conflictCols, workspaceId, harnessSlug });
   }
   return startGitExportDrain({ sql, workspaceId, harnessSlug, harnessRoot, onChanged });
-}
-
-/**
- * Debounced `.harness/state` committer for the drain loop's `onChanged`.
- * ⚠️ DRAFT: currently LOG-ONLY. Auto-committing to real harness repos is
- * deliberately not enabled blind — wire `git -C <root> add .harness/state &&
- * git commit -m '…'` here once verified on a live boot. The exported files are
- * still written + visible in the working tree regardless.
- */
-export function makeDebouncedGitCommitter(harnessRoot: string, debounceMs = 1500): (paths: string[]) => void {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const pending = new Set<string>();
-  return (paths: string[]) => {
-    for (const p of paths) pending.add(p);
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      const n = pending.size;
-      pending.clear();
-      timer = null;
-      // TODO(P-003b): real debounced `git add .harness/state && git commit`.
-      // eslint-disable-next-line no-console
-      console.log(`[git-export] (draft) ${n} changed file(s) under ${harnessRoot}/.harness/state — auto-commit TODO`);
-    }, debounceMs);
-    if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
-      (timer as { unref: () => void }).unref();
-    }
-  };
 }
 
 export interface BootGitExportResult {

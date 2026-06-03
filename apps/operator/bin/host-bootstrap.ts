@@ -317,9 +317,10 @@ export function runBootstrap(): void {
   // tables (attach current set, DROP stale ones for tables removed from
   // GIT_TABLES), hydrate each from `.harness/state/` (clone-and-go), then start
   // its autonomous PG→file drain loop. Non-fatal: a failure leaves harnesses on
-  // their existing PG-only behaviour (git-export simply doesn't run). The
-  // auto-commit of the written files is intentionally still a LOG-ONLY stub
-  // (see makeDebouncedGitCommitter) pending the commit/push policy decision.
+  // their existing PG-only behaviour (git-export simply doesn't run). The drain's
+  // auto-commit (git-committer.ts) is real + scoped to `.harness/state` only and
+  // never pushes, but FLAG-GATED OFF by default (PAPERCUSP_GIT_EXPORT_COMMIT=1 to
+  // enable); until then the files are written + visible but left uncommitted.
   void (async () => {
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
