@@ -2,15 +2,20 @@
 /**
  * PlanRail drag-handle regression test (P-045).
  *
- * The "started plans aren't draggable" bug: the draggable element was the
- * `<li>`, but it wrapped a full-bleed interactive `<button>` (with the drag
- * handle nested *inside* that button). A button child swallows HTML5 drag
- * initiation, so the row could never be grabbed. The fix makes a dedicated
- * `<span>` handle — OUTSIDE the button — the drag source.
+ * Two layered bugs this guards:
+ *  1. The drag handle was nested *inside* the row's full-bleed interactive
+ *     `<button>`, which swallows the grab gesture — so the row could never be
+ *     grabbed. The fix makes a dedicated `<span>` handle OUTSIDE the button.
+ *  2. The reorder was wired with native HTML5 drag-and-drop (`draggable` +
+ *     dragstart/dragover/drop), which the desktop's WebKitGTK webview never
+ *     fires (tauri-apps/tauri#6695) — so drag could not initiate on the only
+ *     ship/test surface. The fix drives the reorder with POINTER events; the
+ *     handle is therefore NOT an HTML5 `draggable` source.
  *
- * jsdom can't exercise real HTML5 drag, so these assert the structural
- * invariant that makes drag possible: a draggable handle that is NOT a
- * descendant of any button. Drag only shows for >1 started plan.
+ * jsdom can't exercise real pointer-drag (no layout / elementFromPoint), so
+ * these assert the structural invariants that make drag possible: a handle
+ * that is NOT a descendant of any button and is NOT a native HTML5 drag
+ * source. Drag only shows for >1 started plan.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
@@ -72,19 +77,23 @@ function renderRail(plans: PlanListRow[]) {
 }
 
 describe('PlanRail drag-to-reorder handle', () => {
-  it('renders a draggable handle that is NOT inside a button (the bug)', () => {
+  it('renders a grab handle that is NOT inside a button and NOT a native HTML5 drag source', () => {
     const { container } = renderRail([plan('a-2026-01-01'), plan('b-2026-01-02')]);
     const handles = container.querySelectorAll<HTMLElement>('.pc-plan-row__drag-handle');
     // Two started plans → reorder is meaningful → both rows get a handle.
     expect(handles.length).toBe(2);
     for (const h of handles) {
-      // The fix: the handle itself is the HTML5 drag source.
-      expect(h.getAttribute('draggable')).toBe('true');
-      // The regression: the handle must NOT be swallowed by an interactive
-      // button, or drag never initiates.
+      // Regression #2: the handle must NOT be a native HTML5 drag source —
+      // WebKitGTK won't fire HTML5 drag events, so reorder is pointer-driven.
+      expect(h.hasAttribute('draggable')).toBe(false);
+      // Regression #1: the handle must NOT be swallowed by an interactive
+      // button, or the gesture never initiates.
       expect(h.closest('button')).toBeNull();
-      // And it must live inside the rail item (a sibling of the row button).
-      expect(h.closest('.pc-plan-rail__item')).not.toBeNull();
+      // And it must live inside the rail item (a sibling of the row button),
+      // which carries the data-plan-slug the pointer hit-test reads.
+      const item = h.closest('.pc-plan-rail__item');
+      expect(item).not.toBeNull();
+      expect(item?.getAttribute('data-plan-slug')).toBeTruthy();
     }
   });
 

@@ -94,7 +94,7 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   const selectedKey = selectedSlugs.join('|');
   const { data, loading, error, refresh } = list;
 
-  // Drag-to-reorder state for started plans (P-045).
+  // Pointer-drag-to-reorder state for started plans (P-045).
   const [dragSlug, setDragSlug] = useState<string | null>(null);
   const [dragOverSlug, setDragOverSlug] = useState<string | null>(null);
   // Optimistic running-plans order — null means "use server order".
@@ -193,46 +193,82 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
   // a useCallback changes the hook count between renders (React #310) — the
   // loading→loaded transition tripped exactly that and crashed the whole
   // /admin/plans page to the error boundary.
+  //
+  // POINTER events, NOT native HTML5 drag-and-drop. The desktop app's
+  // WebKitGTK webview (Tauri's Linux runtime, and our only ship/test surface)
+  // does not fire `dragstart`/`dragover`/`drop` for `draggable` elements
+  // (tauri-apps/tauri#6695) — so an HTML5-DnD reorder can never even initiate
+  // there, regardless of `dragDropEnabled`. Pointer events behave identically
+  // across WebKitGTK / Chromium / Firefox: capture the pointer on the grab
+  // handle, hit-test the row under the cursor with elementFromPoint, and
+  // reorder the running bucket live.
   const runningPlans = sorted.filter((p) => bucketOf(p) === 'running');
   const hasRunning = runningPlans.length > 1; // single-plan: no reorder needed
 
-  const handleDragStart = useCallback((slug: string) => {
+  const handleReorderStart = useCallback((e: React.PointerEvent, slug: string) => {
+    if (e.button !== 0) return; // primary button / touch only
+    e.preventDefault();
+    e.stopPropagation();
+    // Capture so pointermove/up keep arriving at the handle once the cursor
+    // leaves it. A real pointer never throws here; guard only so a freak
+    // failure can't leave us mid-drag with an uncaught error.
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* no active pointer to capture — ignore */
+    }
     setDragSlug(slug);
+    setDragOverSlug(slug);
     setRunningOrder(runningPlans.map((p) => p.slug));
   }, [runningPlans]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDragOver = useCallback((e: React.DragEvent, slug: string) => {
+  const handleReorderMove = useCallback((e: React.PointerEvent) => {
+    if (!dragSlug) return;
     e.preventDefault();
-    if (!dragSlug || dragSlug === slug) return;
-    setDragOverSlug(slug);
+    // Pointer capture redirects EVENTS to the handle but not hit-testing, so
+    // elementFromPoint still returns the row actually under the cursor. We
+    // move the dragged slug to the target's index, which lands it back under
+    // the cursor — so repeated moves over the same spot are stable no-ops.
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    const overSlug = hit?.closest<HTMLElement>('[data-plan-slug]')?.dataset.planSlug;
+    if (!overSlug || overSlug === dragSlug) return;
     setRunningOrder((prev) => {
       const cur = prev ?? runningPlans.map((p) => p.slug);
       const from = cur.indexOf(dragSlug);
-      const to = cur.indexOf(slug);
+      const to = cur.indexOf(overSlug);
       if (from < 0 || to < 0 || from === to) return cur;
       const next = [...cur];
       next.splice(from, 1);
       next.splice(to, 0, dragSlug);
       return next;
     });
+    setDragOverSlug(overSlug);
   }, [dragSlug, runningPlans]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
+  const handleReorderEnd = useCallback(async (e: React.PointerEvent) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* capture already released — fine */
+    }
+    const order = runningOrder;
     setDragSlug(null);
     setDragOverSlug(null);
-    if (!runningOrder) return;
+    if (!order) return;
     // Persist the new order as integer priorities (1-based, lower = first).
     await Promise.all(
-      runningOrder.map((slug, i) => setPlanPriority(slug, i + 1).catch(() => {})),
+      order.map((slug, i) => setPlanPriority(slug, i + 1).catch(() => {})),
     );
     onStartToggle?.(); // re-fetch so the server order reflects the new priorities
     setRunningOrder(null);
   }, [runningOrder, onStartToggle]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDragEnd = useCallback(() => {
+  const handleReorderCancel = useCallback(() => {
+    // Aborted (lost capture / cancelled): discard the local reorder and fall
+    // back to the server order — nothing is persisted.
     setDragSlug(null);
     setDragOverSlug(null);
+    setRunningOrder(null);
   }, []);
 
   if (loading) {
@@ -275,13 +311,12 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
         </p>
       )}
       <ul
-        className="pc-plan-rail__rows"
+        className={`pc-plan-rail__rows${dragSlug ? ' is-reordering' : ''}`}
         role="list"
-        onDrop={hasRunning ? handleDrop : undefined}
-        onDragOver={hasRunning ? (e) => e.preventDefault() : undefined}
       >
         {sorted.map((p) => {
           const isRunning = bucketOf(p) === 'running';
+          const canReorder = hasRunning && isRunning;
           return (
             <PlanRow
               key={p.slug}
@@ -290,12 +325,13 @@ const PlanRail = forwardRef<PlanRailHandle, Props>(function PlanRail(
               onSelect={() => onSelect(p.slug)}
               onStartToggle={onStartToggle}
               harnessSlug={harnessSlug}
-              draggable={hasRunning && isRunning}
+              showDragHandle={canReorder}
               isDragging={dragSlug === p.slug}
               isDragOver={dragOverSlug === p.slug}
-              onDragStart={hasRunning && isRunning ? () => handleDragStart(p.slug) : undefined}
-              onDragOver={hasRunning && isRunning ? (e) => handleDragOver(e, p.slug) : undefined}
-              onDragEnd={hasRunning && isRunning ? handleDragEnd : undefined}
+              onHandlePointerDown={canReorder ? (e) => handleReorderStart(e, p.slug) : undefined}
+              onHandlePointerMove={canReorder ? handleReorderMove : undefined}
+              onHandlePointerUp={canReorder ? handleReorderEnd : undefined}
+              onHandlePointerCancel={canReorder ? handleReorderCancel : undefined}
             />
           );
         })}
@@ -312,24 +348,26 @@ function PlanRow({
   onSelect,
   onStartToggle,
   harnessSlug,
-  draggable = false,
+  showDragHandle = false,
   isDragging = false,
   isDragOver = false,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
+  onHandlePointerDown,
+  onHandlePointerMove,
+  onHandlePointerUp,
+  onHandlePointerCancel,
 }: {
   plan: PlanListRow;
   active: boolean;
   onSelect: () => void;
   onStartToggle?: () => void;
   harnessSlug?: string | null;
-  draggable?: boolean;
+  showDragHandle?: boolean;
   isDragging?: boolean;
   isDragOver?: boolean;
-  onDragStart?: () => void;
-  onDragOver?: (e: React.DragEvent) => void;
-  onDragEnd?: () => void;
+  onHandlePointerDown?: (e: React.PointerEvent) => void;
+  onHandlePointerMove?: (e: React.PointerEvent) => void;
+  onHandlePointerUp?: (e: React.PointerEvent) => void;
+  onHandlePointerCancel?: (e: React.PointerEvent) => void;
 }) {
   const title = plan.title ?? plan.slug;
   const source = sourceOfDraftPlan(plan);
@@ -375,20 +413,23 @@ function PlanRow({
   return (
     <li
       className={`pc-plan-rail__item pc-plan-rail__item--${plan.status}${isStarted ? ' pc-plan-rail__item--started' : ''}${isDragging ? ' is-dragging' : ''}${isDragOver ? ' is-drag-over' : ''}`}
-      onDragOver={onDragOver}
+      data-plan-slug={plan.slug}
     >
-      {draggable && (
-        // The DRAG SOURCE is this handle, NOT the <li> or the row <button>:
-        // an interactive <button> child swallows HTML5 drag initiation, so a
-        // draggable <li> wrapped around a full-bleed button can never be
-        // grabbed — that's why "started plans aren't draggable". A plain
-        // draggable <span> outside the button drags cleanly; the button still
-        // handles the click-to-select. (P-045 fix.)
+      {showDragHandle && (
+        // The grab handle is a plain <span> sitting OUTSIDE the row <button>
+        // (an interactive button child would swallow the gesture, the
+        // original "started plans aren't draggable" bug). It drives the
+        // reorder with POINTER events — NOT native HTML5 `draggable` — because
+        // the desktop's WebKitGTK webview never fires HTML5 drag events
+        // (tauri-apps/tauri#6695). The pointer handlers (see PlanRail above)
+        // capture the pointer here and hit-test rows by their data-plan-slug.
+        // The row <button> still handles click-to-select. (P-045 fix.)
         <span
           className="pc-plan-row__drag-handle"
-          draggable
-          onDragStart={onDragStart}
-          onDragEnd={onDragEnd}
+          onPointerDown={onHandlePointerDown}
+          onPointerMove={onHandlePointerMove}
+          onPointerUp={onHandlePointerUp}
+          onPointerCancel={onHandlePointerCancel}
           role="button"
           tabIndex={-1}
           aria-label={`Drag to reorder ${plan.slug}`}
@@ -399,7 +440,7 @@ function PlanRow({
       )}
       <button
         type="button"
-        className={`pc-plan-row${draggable ? ' has-drag-handle' : ''}${active ? ' is-active' : ''}`}
+        className={`pc-plan-row${showDragHandle ? ' has-drag-handle' : ''}${active ? ' is-active' : ''}`}
         onClick={onSelect}
         aria-label={`Open plan ${title} (${plan.slug})`}
         aria-current={active ? 'page' : undefined}
