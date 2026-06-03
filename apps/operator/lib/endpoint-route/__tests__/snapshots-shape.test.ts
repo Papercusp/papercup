@@ -28,7 +28,10 @@ async function call(id: string) {
 }
 
 describe('GET /api/snapshots/:id/shape', () => {
-  it('returns 404 when snapshot is unknown', { timeout: 20000 }, async () => {
+  // First test in the file pays the full registerAllRoutes cold-import (the
+  // whole operator route graph) under vi.resetModules() — 30s headroom for a
+  // fully-parallel full-suite run on the contended dev box.
+  it('returns 404 when snapshot is unknown', { timeout: 30000 }, async () => {
     vi.doMock('@/lib/snapshot-discovery', () => ({
       findSnapshot: async () => null,
     }));

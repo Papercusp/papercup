@@ -190,7 +190,10 @@ describe('pty-ws', () => {
     // round-trip on the contended dev box (the bash exited first → no echo →
     // ''). collectBytes still early-resolves on match, so this doesn't slow
     // the test; afterAll kills the pty.
-    const handle = spawnTestPty(['printf "ack_payload\\n"; sleep 5']);
+    // sleep 30 (not 5): under a fully-parallel full-suite run on the contended
+    // box the ack_payload read + ack + keystroke round-trip can take many
+    // seconds, and the pty must stay open until the echo arrives.
+    const handle = spawnTestPty(['printf "ack_payload\\n"; sleep 30']);
     const ws = openWs(`/pty/${handle.id}`);
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
@@ -199,7 +202,7 @@ describe('pty-ws', () => {
     ws.send(JSON.stringify({ type: 'ack', bytes: 1_000_000 }));
     // Send another keystroke, verify socket still alive.
     ws.send(Buffer.from('echo POST_ACK\n'));
-    const after = await collectBytes(ws, (s) => s.includes('POST_ACK'));
+    const after = await collectBytes(ws, (s) => s.includes('POST_ACK'), 15_000);
     expect(after).toContain('POST_ACK');
     ws.close();
   });
