@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 let capturedListen: ((raw: string) => void) | null = null;
-const notifySql = vi.fn(async () => [] as unknown[]); // called as a tagged template
+const notifySql = vi.fn(async (..._args: unknown[]) => [] as unknown[]); // called as a tagged template
 let bridgeReturn: (name: string) => string[] = () => [];
 
 const T0 = 1_700_000_000_000;

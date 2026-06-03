@@ -12,7 +12,8 @@
  * change, plus an explicit `refresh()`. No SSE/live-sync in v1.
  */
 
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
@@ -376,6 +377,37 @@ function useAsyncJson<T>(fetcher: (signal: AbortSignal) => Promise<T>, deps: unk
   return { data, loading, error, refresh: () => setTick((t) => t + 1), setData };
 }
 
+/**
+ * Adapt `useSyncQuery` (shared `['sync', name, args]` cache + PG-NOTIFY →
+ * SSE invalidation) to the `AsyncResult<{ [key]: T[] }>` shape the plans
+ * consumers already expect.
+ *
+ * Create-tab live-query migration (2026-06-03): the four cross-cutting plan
+ * reads (list / items / attention / search) move off the bespoke
+ * `useAsyncJson` (per-call-site `useState`, no shared cache, manual
+ * `refresh()`) onto the shared sync layer. Two readers of the same query
+ * now share ONE cache entry, and a `plans:*` write invalidates every
+ * subscriber server-side — so the old `refreshItems()` fan-out closure is
+ * unnecessary, which is what lets the Create tab split into independent
+ * dock panels (P2).
+ */
+function useSyncResource<T, K extends string>(
+  queryName: string,
+  args: Record<string, unknown>,
+  key: K,
+  enabled = true,
+): AsyncResult<Record<K, T[]>> {
+  const r = useSyncQuery<T>({ queryName, args, enabled });
+  const rows: T[] = enabled ? (r.data ?? []) : [];
+  const data = useMemo(() => ({ [key]: rows }) as Record<K, T[]>, [key, rows]);
+  return {
+    data,
+    loading: r.loading,
+    error: r.error ? r.error.message : null,
+    refresh: () => r.invalidate(),
+  };
+}
+
 export function usePlanList(params?: {
   status?: PlanStatus;
   includeArchived?: boolean;
@@ -383,14 +415,20 @@ export function usePlanList(params?: {
   /** P-029: fan out across multiple harnesses. Pass undefined to use
    *  the ctx-resolved single harness. */
   harness_slugs?: readonly string[];
-}) {
-  // Dep key for the array: stable join so a same-content array doesn't
-  // re-trigger the fetch every render.
+}): AsyncResult<{ plans: PlanListRow[] }> {
+  // Stable join so a same-content array doesn't churn the query key.
   const harnessSlugsKey = params?.harness_slugs?.slice().sort().join('|') ?? '';
-  return useAsyncJson(
-    (signal) => fetchPlanList(params, signal),
+  const args = useMemo<Record<string, unknown>>(
+    () => ({
+      ...(params?.status ? { status: params.status } : {}),
+      ...(params?.includeArchived !== undefined ? { includeArchived: params.includeArchived } : {}),
+      ...(params?.includeLegacy !== undefined ? { includeLegacy: params.includeLegacy } : {}),
+      ...(params?.harness_slugs ? { harness_slugs: [...params.harness_slugs] } : {}),
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [params?.status, params?.includeArchived, params?.includeLegacy, harnessSlugsKey],
   );
+  return useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans');
 }
 
 export function usePlan(slug: string | null) {
@@ -408,45 +446,40 @@ export function usePlanItems(params?: {
   /** Skip the fetch (return empty) when false — lets a caller mount the
    *  hook unconditionally but only hit the network for the active view. */
   enabled?: boolean;
-}) {
+}): AsyncResult<{ items: PlanItemRow[] }> {
   const enabled = params?.enabled ?? true;
-  return useAsyncJson(
-    () =>
-      enabled
-        ? fetchPlanItems({
-            slug: params?.slug,
-            status: params?.status,
-            actionable: params?.actionable,
-            needsHuman: params?.needsHuman,
-          })
-        : Promise.resolve({ items: [] as PlanItemRow[] }),
-    [params?.slug, params?.status, params?.actionable, params?.needsHuman, enabled],
+  const args = useMemo<Record<string, unknown>>(
+    () => ({
+      ...(params?.slug ? { slug: params.slug } : {}),
+      ...(params?.status ? { status: params.status } : {}),
+      ...(params?.actionable !== undefined ? { actionable: params.actionable } : {}),
+      ...(params?.needsHuman !== undefined ? { needsHuman: params.needsHuman } : {}),
+    }),
+    [params?.slug, params?.status, params?.actionable, params?.needsHuman],
   );
+  return useSyncResource<PlanItemRow, 'items'>('plans.items', args, 'items', enabled);
 }
 
 export function usePlanAttention(params?: {
   harnessSlug?: string;
   includeArchived?: boolean;
   enabled?: boolean;
-}) {
+}): AsyncResult<{ groups: AttentionGroup[] }> {
   const enabled = params?.enabled ?? true;
-  return useAsyncJson<{ groups: AttentionGroup[] }>(
-    () =>
-      enabled
-        ? fetchPlanAttention({ harnessSlug: params?.harnessSlug, includeArchived: params?.includeArchived })
-        : Promise.resolve({ groups: [] as AttentionGroup[] }),
-    [params?.harnessSlug, params?.includeArchived, enabled],
+  const args = useMemo<Record<string, unknown>>(
+    () => ({
+      ...(params?.harnessSlug ? { harnessSlug: params.harnessSlug } : {}),
+      ...(params?.includeArchived !== undefined ? { includeArchived: params.includeArchived } : {}),
+    }),
+    [params?.harnessSlug, params?.includeArchived],
   );
+  return useSyncResource<AttentionGroup, 'groups'>('plans.attention', args, 'groups', enabled);
 }
 
-export function usePlanSearch(query: string) {
-  return useAsyncJson<{ hits: PlanSearchHit[] }>(
-    () =>
-      query.trim()
-        ? searchPlans({ query })
-        : Promise.resolve({ hits: [] as PlanSearchHit[] }),
-    [query],
-  );
+export function usePlanSearch(query: string): AsyncResult<{ hits: PlanSearchHit[] }> {
+  const q = query.trim();
+  const args = useMemo<Record<string, unknown>>(() => ({ query: q }), [q]);
+  return useSyncResource<PlanSearchHit, 'hits'>('plans.search', args, 'hits', q.length > 0);
 }
 
 /* ── Write fetchers (P-201) ────────────────────────────────────────── */

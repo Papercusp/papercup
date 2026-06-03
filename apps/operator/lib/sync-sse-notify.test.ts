@@ -18,7 +18,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const sql = vi.fn(async () => [] as unknown[]);
+const sql = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...actual, getOrgPg: () => ({ sql, db: {} }) };
