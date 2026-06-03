@@ -103,12 +103,18 @@ describe('P-012b — new-local happy path', () => {
   it('creates harness and calls onCreated on success', async () => {
     const user = userEvent.setup();
     const onCreated = vi.fn();
-    mockFetch.mockResolvedValueOnce(
-      new Response(
+    // CreateHarnessPicker calls useViewer() on mount → GET /api/viewer. With a
+    // single mockResolvedValueOnce that viewer fetch (which fires first, before
+    // the cache warms) eats the create response, so the POST returns undefined
+    // and onCreated never fires. Route by URL so the viewer fetch is harmless.
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/api/viewer')) return new Response(JSON.stringify({}), { status: 200 });
+      return new Response(
         JSON.stringify({ ok: true, project: { slug: 'my-proj', path: '/tmp/my-proj' } }),
         { status: 200 },
-      ),
-    );
+      );
+    });
     renderPicker({ onCreated });
     await user.click(screen.getByText('New local directory'));
 
