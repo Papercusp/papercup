@@ -666,18 +666,9 @@ async function doScaffoldHarness(
     };
   }
 
-  // Mirror the token into PG.
-  const newSchema = slugToSchema(action.projectSlug);
-  try {
-    await sql.unsafe(`INSERT INTO ${newSchema}.config_token (token) VALUES ($1) ON CONFLICT (token) DO NOTHING`, [harnessToken]);
-  } catch (e: any) {
-    return {
-      ok: false,
-      actionId: '',
-      error: 'internal',
-      detail: `failed to insert config_token: ${e?.message}; per-harness template may be out of date`,
-    };
-  }
+  // Persist the harness token to the authoritative store (token_index).
+  // The per-harness config_token table was retired — token_index (workspace-
+  // owned) is the single source of truth for token→harness auth lookups.
   await sql`
     INSERT INTO harness_shared.token_index (token, kind, harness_slug, workspace_id)
     VALUES (${harnessToken}, 'harness', ${action.projectSlug}, ${activeWorkspaceId()})

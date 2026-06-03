@@ -1,11 +1,14 @@
 /**
  * Inline TypeScript replacement for bin/scaffold-harness-schema.sh.
  *
- * Creates the per-harness `harness_<slug>` schema with the 8 remaining
- * physical tables (config_token, agent_chats, harness_proposals, messages,
- * supervisor_notes, directive_summaries, executed_actions, feature_audit)
- * plus the 4 auto-updatable views over the consolidated tables (Migration
- * 032: harness_features, harness_issues, agent_runs, harness_snapshots).
+ * Creates the per-harness `harness_<slug>` schema containing ONLY auto-updatable
+ * views over the slug-keyed harness_shared.*_consolidated tables — no physical
+ * per-harness tables (harness-state-storage-unification-2026-06-01, D-007).
+ * Views: harness_features, harness_issues, agent_runs, harness_snapshots
+ * (migration 032), agent_chats (116), feature_audit (118), supervisor_notes +
+ * directive_summaries (119), messages + executed_actions (120). Retired:
+ * config_token (token_index is authoritative), harness_proposals
+ * (harness_proposals_shared is authoritative).
  *
  * Idempotent. Called from add-project flow and onboard-action flow so a
  * new harness install needs no out-of-process bash.
@@ -22,37 +25,15 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
   const schema = slugToSchema(slug);
   const { sql } = getOrgPg();
 
-  // Schema + per-harness physical tables (config_token, plus 7 others).
+  // Per-harness schema only — every per-harness relation is now an auto-updatable
+  // VIEW over a slug-keyed harness_shared.*_consolidated table (created below);
+  // there are NO physical per-harness tables. Retired: config_token (token_index
+  // is the authoritative token store), harness_proposals (harness_proposals_shared
+  // is authoritative, fs-watcher-fed), feature_audit (writes go to consolidated),
+  // and agent_chats / messages / executed_actions / supervisor_notes /
+  // directive_summaries (migrations 116/118/119/120).
   await sql.unsafe(`
     CREATE SCHEMA IF NOT EXISTS ${schema};
-
-    CREATE TABLE IF NOT EXISTS ${schema}.config_token (
-      token TEXT PRIMARY KEY
-    );
-
-    -- feature_audit dropped from per-schema templates as of un-hardcode
-    -- plan item #6: writes go directly to harness_shared.feature_audit_consolidated.
-    -- Existing per-harness feature_audit tables are kept untouched as
-    -- a best-effort mirror during transition; the cleanup migration
-    -- that drops them lands separately.
-
-    -- agent_chats consolidated to harness_shared.agent_chats_consolidated
-    -- (migration 116); created below as an auto-updatable view, not a physical
-    -- per-harness table.
-
-    CREATE TABLE IF NOT EXISTS ${schema}.harness_proposals (
-      proposal_id TEXT PRIMARY KEY,
-      harness_slug TEXT NOT NULL,
-      ts BIGINT NOT NULL,
-      payload JSONB NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      mtime_ms BIGINT NOT NULL DEFAULT 0
-    );
-
-    -- messages + executed_actions consolidated to harness_shared (migration 120);
-    -- supervisor_notes + directive_summaries (migration 119); agent_chats
-    -- (migration 116) — all created below as auto-updatable views, not physical
-    -- per-harness tables.
 
     GRANT USAGE ON SCHEMA ${schema} TO harness_app, harness_admin;
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schema} TO harness_app, harness_admin;

@@ -16,10 +16,6 @@ import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
 
-function slugToSchema(slug: string): string {
-  return 'harness_' + slug.replace(/-/g, '_').toLowerCase();
-}
-
 function base64url(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
@@ -55,14 +51,12 @@ export default defineTool({
 
     const newToken = base64url(randomBytes(32));
     const oldToken = req.headers.get('authorization')!.slice(7).trim();
-    const schema = slugToSchema(slug);
-    const { db, sql } = getOrgPg();
+    const { db } = getOrgPg();
 
-    // Insert new token, update token_index, write to disk, then drop the
-    // old token. Order matters: if disk write fails we don't want the
-    // old token already gone.
+    // Insert the new token into token_index (the authoritative token store),
+    // write to disk, then drop the old token. Order matters: if disk write
+    // fails we don't want the old token already gone.
     try {
-      await sql.unsafe(`INSERT INTO ${schema}.config_token (token) VALUES ($1) ON CONFLICT (token) DO NOTHING`, [newToken]);
       await db
         .insert(ti)
         .values({ token: newToken, harnessSlug: slug, workspaceId: activeWorkspaceId() })
@@ -94,7 +88,6 @@ export default defineTool({
       // Roll back the new-token insert.
       try {
         await db.delete(ti).where(eq(ti.token, newToken));
-        await sql.unsafe(`DELETE FROM ${schema}.config_token WHERE token = $1`, [newToken]);
       } catch { /* ignore */ }
       return Response.json(
         { ok: false, error: 'internal', detail: `failed to write config.json: ${e?.message}` },
@@ -105,7 +98,6 @@ export default defineTool({
     // Drop the old token. Future requests with it return 401.
     try {
       await db.delete(ti).where(eq(ti.token, oldToken));
-      await sql.unsafe(`DELETE FROM ${schema}.config_token WHERE token = $1`, [oldToken]);
     } catch (e: any) {
       // Old token still works — not great, but the new one is also active.
       return Response.json({
