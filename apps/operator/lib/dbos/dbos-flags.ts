@@ -58,3 +58,17 @@ export function dbosProvisionActive(env: DbosEnv = process.env): boolean {
 export function dbosBackupActive(env: DbosEnv = process.env): boolean {
   return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_BACKUP === '1';
 }
+
+/**
+ * The generic DBOS routines engine (git-sync-auto-commit Phase 1 / D-001) — the
+ * durable `routinesTick` that drives `harness_shared.routines`, replacing the
+ * dormant in-process `routine-ticker` loop. A fresh capability, so **opt-in**
+ * (enable with PAPERCUSP_DBOS_ROUTINES=1) until it's live-verified — mirroring how
+ * provision + backup started opt-in before their default-on flip. Still gated by
+ * the master orchestrator switch (PAPERCUSP_DBOS_ORCHESTRATOR=0 also turns it off).
+ * Opt-in is also the safe default: a host restart won't auto-fire stale/unknown
+ * routines (e.g. the dormant git-sync routine seeded inactive) unsupervised.
+ */
+export function dbosRoutinesActive(env: DbosEnv = process.env): boolean {
+  return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_ROUTINES === '1';
+}

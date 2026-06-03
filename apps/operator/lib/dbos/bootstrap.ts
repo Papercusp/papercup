@@ -33,6 +33,7 @@ import {
   dbosTimersActive,
   dbosProvisionActive,
   dbosBackupActive,
+  dbosRoutinesActive,
 } from './dbos-flags';
 
 const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
@@ -127,6 +128,14 @@ export async function startDbos(): Promise<void> {
     // off, the lib's snapshot() runs un-stepped exactly as before.
     const { wireBackupStepRunner } = await import('./backup-workflow');
     wireBackupStepRunner();
+  }
+  if (dbosRoutinesActive()) {
+    // git-sync-auto-commit Phase 1 (opt-in; PAPERCUSP_DBOS_ROUTINES=1): the generic
+    // scheduled-routines engine — a durable `routinesTick` driving
+    // `harness_shared.routines`, replacing the dormant in-process `routine-ticker`.
+    // git-sync rides it as the first `system:` action. Registered before launch so
+    // recovery + the scheduler bind it.
+    await import('./routines-workflow');
   }
 
   await DBOS.launch();
