@@ -50,14 +50,31 @@ write behavior against the live host** (`jsonb_typeof(payload)` over the running
 operator's DB), not the testcontainer. Assert only client-agnostic things
 (no-throw, row lands, rollup counts) in the integration test.
 
-## Still-affected files (latent bug)
+## Status of affected files
 
-As of 2026-06-02, `sql.json(...)` is still used for object JSONB columns in
-(these will throw on a non-null object write in production):
+**Fixed 2026-06-03** — every getOrgPg-client jsonb write now binds via
+`${JSON.stringify(x)}::jsonb`:
 
 * `apps/operator/lib/sync/hyperbee/projections/issues.ts` (`notes`)
-* `apps/operator/lib/sync/hyperbee/projections/contributors.ts`
+* `apps/operator/lib/sync/hyperbee/projections/contributors.ts` (`device_attestations`)
 * `apps/operator/lib/sync/hyperbee/projections/harness-features.ts` (`metadata`, `tags`)
-* `apps/operator/lib/dock-layouts.ts`
+* `apps/operator/lib/sync/hyperbee/projections/usage.ts` (`payload`)
+* `apps/operator/lib/agent-governor-pg-store.ts` (`limits`)
 
-Fixed in P-070: `lib/harness/usage-events.ts` + `lib/sync/hyperbee/projections/usage.ts`.
+The projections also gained `normalizeJsonbInput()` (a `_jsonb-input.ts` helper):
+a federated row whose jsonb arrived already-stringified (from a peer on a
+double-encoding client) is re-parsed before the write, so the CDC outbox
+round-trip stays `IS DISTINCT FROM`-stable. No-op under getOrgPg.
+
+Fixed earlier in P-070: `lib/harness/usage-events.ts`.
+
+**NOT affected — do NOT "fix" these to `${JSON.stringify}::jsonb`:**
+
+* `apps/operator/lib/dock-layouts.ts` and `apps/operator/lib/llm-testing/*` use a
+  *fresh* `postgres()` pool (`db()` = `postgres(getHarnessAdminUrl(), {prepare:false})`),
+  NOT getOrgPg. On that client `sql.json()` is CORRECT and `${JSON.stringify}::jsonb`
+  double-encodes — the inverse of the getOrgPg rule. Leave their `sql.json()` as-is.
+* `apps/operator/lib/operator-rate-limit.ts` already binds correctly with
+  `${JSON.stringify}::jsonb` (live-verified `jsonb_typeof=object`, with accumulated
+  rate-limit state). A 2026-06-03 report that flagged it as a double-encode bug was a
+  false positive from testing against the testcontainer client (which behaves oppositely).

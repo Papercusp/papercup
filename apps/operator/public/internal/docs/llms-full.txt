@@ -3061,6 +3061,74 @@ The package’s own `vitest` is necessary but **not sufficient**. Before claimin
 
 See also [`generalizing-a-lib-host-seam-pattern`](/agent-insights/generalizing-a-lib-host-seam-pattern) for the src-as-entry + symlink recipe these packages follow, and the plan `papercusp-tooldef-extraction-2026-05-29` (P-051) for the commit that fixed it.
 
+# nuqs ↔ TanStack Router search params — number coercion + the stock-adapter clobber
+
+> Why ?dock=1 / ?switch=1 were unreachable, and why nuqs writes dropped TanStack-native search params. Normalize flag params to the number 1; use a functional-search nuqs adapter.
+
+## Symptom
+
+[Section titled “Symptom”](#symptom)
+
+`/harness/<slug>?dock=1` always redirected to `/adv` (the dock shell was unreachable), and `/login?switch=1` never entered switch-account mode — even though the URL clearly carried the param. Diagnostic logs showed `window.location.search = "?dock=1"` while the route’s `validateSearch` saw `search.dock === undefined`.
+
+## Two independent root causes (both Next → TanStack-Router migration regressions)
+
+[Section titled “Two independent root causes (both Next → TanStack-Router migration regressions)”](#two-independent-root-causes-both-next--tanstack-router-migration-regressions)
+
+### 1. TanStack coerces `?dock=1` to the **number** 1; `=== '1'` is false
+
+[Section titled “1. TanStack coerces ?dock=1 to the number 1; === '1' is false”](#1-tanstack-coerces-dock1-to-the-number-1--1-is-false)
+
+TanStack Router’s default search parser JSON-parses each value, so `?dock=1` becomes `dock: 1` (a **number**). The migrated `validateSearch` kept the Next check `search.dock === '1'` (Next gave a **string**) → `1 === '1'` is `false` → `dock` resolves to `undefined` → the loader redirects.
+
+**Do NOT “fix” it by normalizing to the string `'1'`.** TanStack’s default *stringifier* JSON-encodes strings, so `dock: '1'` serializes to `?dock="1"`, which then re-parses/re-stringifies and **drifts** (`"1"` → `"\"1\""` → …) until the value is the quoted string `"1"` and the `=== '1'` check fails again — intermittently, which is maddening to debug.
+
+**Fix:** normalize flag params to the **number** that the URL naturally parses to. `dock: 1` round-trips as `?dock=1` with no quoting and is stable:
+
+```ts
+validateSearch: (search): { dock?: 1 } => ({
+  dock: search.dock === 1 || search.dock === '1' ? 1 : undefined,  // accept '1' too, self-heal
+}),
+// consumers: if (search.dock === 1) …   // number, not '1'
+```
+
+### 2. The stock `nuqs/adapters/tanstack-router` clobbers + double-encodes
+
+[Section titled “2. The stock nuqs/adapters/tanstack-router clobbers + double-encodes”](#2-the-stock-nuqsadapterstanstack-router-clobbers--double-encodes)
+
+When this app mixes nuqs (`useQueryState('ws')`, tabs, …) with TanStack-native typed search (`validateSearch` + `useSearch` for `dock`/`switch`/`slug`), the stock adapter is hostile to the native params. Its `updateUrl` does:
+
+```ts
+navigate({ to: pathname + renderQueryString(search) })  // search = WATCHED keys only, as a STRING
+```
+
+Two failures fall out:
+
+* **Clobber:** it rebuilds the whole query string from only the nuqs-*watched* keys, so any TanStack-native param (`?dock=1`) is **dropped on every nuqs write**. The WorkspaceSwitcher mount effect writes `?ws=<active>` on load → that single write wipes `?dock=1`.
+* **Encoding loop:** because it hands TanStack a `to` string, TanStack re-stringifies it with its own JSON encoder, so already-encoded values get re-encoded and params duplicate (`?tab=x&tab=x`).
+
+**Fix:** a custom adapter (built on `nuqs/adapters/custom`’s `unstable_createAdapterProvider`) whose `updateUrl` uses TanStack’s **functional search updater** so TanStack owns serialization exactly once and non-nuqs params survive:
+
+```ts
+updateUrl: (nuqsSearch, options) =>
+  navigate({
+    to: pathname,
+    search: (prev) => applyNuqsToSearch(prev, watchKeys, nuqsSearch), // {...prev minus watched, ...nuqs}
+    replace: options.history === 'replace',
+  });
+```
+
+See `apps/operator-vite/src/lib/nuqs-tanstack-router-adapter.tsx` (+ its unit test) and `src/routes/__root.tsx` (imports the custom `NuqsAdapter`, not the stock one).
+
+## How to recognise it
+
+[Section titled “How to recognise it”](#how-to-recognise-it)
+
+* A search param is in `window.location.search` but `Route.useSearch()` / `validateSearch` reports it `undefined` → suspect number/string coercion.
+* A nuqs write (often a mount-effect sync like `?ws=`) makes an unrelated search param vanish, or params start duplicating / gaining `%22` quotes → suspect the stock tanstack adapter. Instrument `updateUrl`’s `to`/merge.
+
+Only 5 of \~84 operator-vite routes use `validateSearch`; the rest pass search through, so nuqs params survive there — the clobber only bit routes that mix both systems.
+
 # Octokit 7+ changed the `auth:` API — use `hook.before('request')` instead of an async factory
 
 > The async-factory `auth: async () => token` pattern that worked in @octokit/rest v3-v5 throws `Token passed to createTokenAuth is not a string` on v7. Set the Authorization header in a `before('request')` hook instead.
@@ -3934,18 +4002,26 @@ Integration tests can't faithfully test JSONB binding here
 
 A `*.integration.test.ts` using `_pg-helpers` will give the WRONG answer for JSONB param binding — `sql.json` passes there but breaks in production, and the correct `JSON.stringify::jsonb` form looks “double-encoded” there. **Verify JSONB write behavior against the live host** (`jsonb_typeof(payload)` over the running operator’s DB), not the testcontainer. Assert only client-agnostic things (no-throw, row lands, rollup counts) in the integration test.
 
-## Still-affected files (latent bug)
+## Status of affected files
 
-[Section titled “Still-affected files (latent bug)”](#still-affected-files-latent-bug)
+[Section titled “Status of affected files”](#status-of-affected-files)
 
-As of 2026-06-02, `sql.json(...)` is still used for object JSONB columns in (these will throw on a non-null object write in production):
+**Fixed 2026-06-03** — every getOrgPg-client jsonb write now binds via `${JSON.stringify(x)}::jsonb`:
 
 * `apps/operator/lib/sync/hyperbee/projections/issues.ts` (`notes`)
-* `apps/operator/lib/sync/hyperbee/projections/contributors.ts`
+* `apps/operator/lib/sync/hyperbee/projections/contributors.ts` (`device_attestations`)
 * `apps/operator/lib/sync/hyperbee/projections/harness-features.ts` (`metadata`, `tags`)
-* `apps/operator/lib/dock-layouts.ts`
+* `apps/operator/lib/sync/hyperbee/projections/usage.ts` (`payload`)
+* `apps/operator/lib/agent-governor-pg-store.ts` (`limits`)
 
-Fixed in P-070: `lib/harness/usage-events.ts` + `lib/sync/hyperbee/projections/usage.ts`.
+The projections also gained `normalizeJsonbInput()` (a `_jsonb-input.ts` helper): a federated row whose jsonb arrived already-stringified (from a peer on a double-encoding client) is re-parsed before the write, so the CDC outbox round-trip stays `IS DISTINCT FROM`-stable. No-op under getOrgPg.
+
+Fixed earlier in P-070: `lib/harness/usage-events.ts`.
+
+**NOT affected — do NOT “fix” these to `${JSON.stringify}::jsonb`:**
+
+* `apps/operator/lib/dock-layouts.ts` and `apps/operator/lib/llm-testing/*` use a *fresh* `postgres()` pool (`db()` = `postgres(getHarnessAdminUrl(), {prepare:false})`), NOT getOrgPg. On that client `sql.json()` is CORRECT and `${JSON.stringify}::jsonb` double-encodes — the inverse of the getOrgPg rule. Leave their `sql.json()` as-is.
+* `apps/operator/lib/operator-rate-limit.ts` already binds correctly with `${JSON.stringify}::jsonb` (live-verified `jsonb_typeof=object`, with accumulated rate-limit state). A 2026-06-03 report that flagged it as a double-encode bug was a false positive from testing against the testcontainer client (which behaves oppositely).
 
 # postgres-js double-encodes ${JSON.stringify(x)}::jsonb
 
@@ -4414,6 +4490,34 @@ The discriminator-extension pattern works because POST /harness/projects’s ent
 * `apps/operator/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
 * `apps/operator/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
 * [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — sister principle: signals belong on the entity they describe; the same instinct applied to error shapes here.
+
+# Which schedulers deliberately stay OFF DBOS (and why)
+
+> The audit (dbos-scheduler-consolidation-2026-06-03) moved every portable periodic job onto DBOS scheduled workflows. This is the catalog of the loops that deliberately did NOT move, with the one-line reason for each — so the next agent doesn't try to "finish the migration" by porting something that can't or shouldn't be a DBOS cron.
+
+The scheduler-consolidation pass ported the portable periodic jobs (harness-status sweep, backup orphan-cleanup, push-credential refresh, telemetry/scratch-gc/memory/ embed/completion-ref timers, test-runs prune) onto **DBOS scheduled workflows** (`apps/operator/lib/dbos/periodic-workflows.ts`). A set of recurring loops were **deliberately kept off DBOS**. If you’re tempted to “finish the migration,” check this list first — these are conscious keeps, not stragglers.
+
+## The keep list (consolidation D-002)
+
+[Section titled “The keep list (consolidation D-002)”](#the-keep-list-consolidation-d-002)
+
+* **All Rust schedulers** (`papercusp-desktop/src-tauri`, `papercup-rust-server`, `papercup-native`, `papercup-rust-mobile`). DBOS is a Node/TS library — it cannot run a Rust `tokio`/thread loop. The work is runtime-bound: Axum SSE keepalives, PG `LISTEN` reconnect, PG/zero-cache process spawn+kill lifecycle, WebSocket/ EventSource reconnect.
+
+* **Per-connection / per-request / per-spawn loops.** `expert-dispatcher` (≈100ms result-file poll during one agent run), `pty-ws`/`pty-bridge`/`device-voice-ws`/ `voice-engines/deepgram` keepalives, `run-command-sse`, the `pty` route, `agent-tools/locks/acquire` wait-poll, `voice-engine-health`, and `provision/ runner`’s `drainFifo`. Each is bound to a live in-process handle (socket / child process / session) that a detached periodic cron has no reference to. Not crons.
+
+* **In-memory sweepers.** `expirable-registry` sweeps a process-local `Map` of TTL’d entries; `harness-fs-watcher`’s 60s tick is a reconcile **backstop** to its event-driven (chokidar) watcher. A detached DBOS cron can’t see in-process memory or the watcher’s view. (Each carries an inline `// not a DBOS candidate` note.)
+
+* **`sync/hyperbee/outbox-drain`** — native at-least-once draining is the right fit; DBOS is a worse fit here (prior DBOS plan D-006).
+
+* **UI** — `ui/use-ui-presence` is a client-side React hook.
+
+* **Infra / CI** — the systemd *services* (mac VM, cloudflared ×2, pg-tunnel) and the `.github` nightly Actions cron are OS/platform-level, not operator work. `llm-test-nightly.timer` stays systemd too (a heavy external test-suite runner needing `ANTHROPIC_API_KEY`, \~90min — CI-shaped, not operator maintenance; D-004).
+
+## The rule of thumb
+
+[Section titled “The rule of thumb”](#the-rule-of-thumb)
+
+DBOS scheduled workflows are for **periodic, durable, operator-process maintenance jobs that read/write Postgres**. If a loop (a) runs in another runtime (Rust), (b) is bound to a live in-process handle (socket/child/session/Map), (c) is genuinely event-driven with the timer only a backstop, or (d) is OS/CI infra — it stays where it is.
 
 # npm-scope renames: import-grep misses the references that break fresh builds
 
