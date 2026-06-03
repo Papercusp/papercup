@@ -175,6 +175,10 @@ async function spawnMergeResolver(slug: string, workspaceId: string, conflicts: 
     body: JSON.stringify({
       kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on main). Conflicted: ${filesSummary}`,
       extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary })],
+      // A real multi-file merge by a higher-effort model needs more than the route's
+      // 90s default; give it near the route's 300s ceiling (it waits on the git-sync
+      // lock first, then does the merge).
+      timeoutMs: 280_000,
     }),
   })
     .then(async (res) => {
