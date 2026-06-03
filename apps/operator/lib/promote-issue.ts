@@ -259,6 +259,16 @@ export async function convertOpenIssuesToFeatures(
     const candidates = selectConvertCandidates(file.issues);
     if (candidates.length === 0) return { promoted: [] };
 
+    // Guard: a harness whose per-schema `harness_features` relation is absent has nothing
+    // to promote — skip QUIETLY instead of logging a "relation does not exist" error per
+    // candidate. This happens for an EPHEMERAL gym harness whose schema was dropped between
+    // the dispatch-sweep tick and here (the sweep races teardown), and for a not-yet-scaffolded
+    // schema. `to_regclass` resolves via the legacy client's `harness_<slug>` search_path.
+    const probe = (await getLegacyClient(project.slug)
+      .prepare(`SELECT to_regclass('harness_features') AS rel`)
+      .get()) as { rel: string | null } | undefined;
+    if (!probe?.rel) return { promoted: [] };
+
     const promoted: Array<{ issueId: string; featureId: string }> = [];
     for (const issue of candidates) {
       try {
