@@ -84,21 +84,28 @@ async function acquireLocks(cd: string, slug: string, acquired: string[]): Promi
   return 'acquired';
 }
 
-/** Whether an unresolved git-sync-conflict escalation is currently open for the harness. */
-async function gitSyncEscalationOpen(slug: string): Promise<boolean> {
+/** How long a 'dispatched' resolver is presumed to still be running (route caps the
+ *  agent at ~90s; give generous headroom before we'd re-dispatch). */
+const RESOLVER_INFLIGHT_MS = 5 * 60_000;
+
+/**
+ * Whether a merge-resolver is GENUINELY in-flight for this harness — i.e. a dispatch
+ * was recorded recently and hasn't settled. This replaces the old "is an escalation
+ * open?" dedup, which permanently suppressed the resolver after a SILENT dispatch
+ * failure (the escalation stayed open but nothing was ever working it). Now a failed/
+ * settled/never-dispatched resolver re-dispatches on the next conflict tick.
+ */
+async function resolverInFlight(slug: string): Promise<boolean> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ escalation: string | null }[]>`
-    SELECT escalation FROM harness_shared.harness_escalations
-     WHERE harness_slug = ${slug} AND phase = ${ESCALATION_PHASE}
+  const rows = await sql<{ lr: { status?: string; at?: number } | null }[]>`
+    SELECT metadata->'last_resolver' AS lr
+      FROM harness_shared.routines
+     WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
-  const body = rows[0]?.escalation;
-  if (!body) return false;
-  try {
-    return (JSON.parse(body) as { kind?: string }).kind === ESCALATION_KIND;
-  } catch {
-    return false;
-  }
+  const lr = rows[0]?.lr;
+  if (!lr || lr.status !== 'dispatched') return false; // never-run or already settled → retry
+  return typeof lr.at === 'number' && Date.now() - lr.at < RESOLVER_INFLIGHT_MS;
 }
 
 async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicts: RepoConflict[]): Promise<void> {
@@ -253,11 +260,10 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   await recordOutcome(slug, outcome);
 
   if (outcome.status === 'conflict') {
-    // P-010/P-012: file the escalation (listing every conflicted scope) + spawn a
-    // resolver, deduped on the open escalation. Sibling submodules still pushed (GAP-1).
-    const alreadyOpen = await gitSyncEscalationOpen(slug);
+    // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch
+    // a resolver UNLESS one is genuinely in-flight. Sibling submodules still pushed (GAP-1).
     await writeGitSyncEscalation(slug, workspaceId, outcome.conflicts);
-    if (!alreadyOpen) {
+    if (!(await resolverInFlight(slug))) {
       const scopes = outcome.conflicts.map((c) => c.scope).join(', ');
       console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
       await spawnMergeResolver(slug, workspaceId, outcome.conflicts);
