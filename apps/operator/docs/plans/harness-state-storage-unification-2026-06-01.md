@@ -1,7 +1,7 @@
 ---
 title: Harness-state storage unification — one runtime store-of-record, explicit sync authority
 slug: harness-state-storage-unification-2026-06-01
-status: ready
+status: shipped
 created: 2026-06-02
 updated: 2026-06-03
 owner: avi@storewolf.com
