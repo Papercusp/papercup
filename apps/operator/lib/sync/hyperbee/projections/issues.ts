@@ -104,7 +104,7 @@ async function writeToPg(
        to_timestamp(${row.found_at} / 1000.0),
        ${row.found_during}, ${row.repro}, ${row.evidence}, ${row.suggested_fix},
        ${row.code_pointer}, ${row.linked_feature_id}, ${row.attempts},
-       ${JSON.stringify(row.notes ?? [])}::jsonb,
+       ${sql.json(row.notes ?? [])},
        ${row.created_ts}, ${row.updated_ts}, ${authorPubkey}, ${origin})
     ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
       title = EXCLUDED.title,

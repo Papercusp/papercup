@@ -76,7 +76,7 @@ async function writeToPg(
     VALUES
       (${row.harness_slug}, ${row.event_id}, ${row.github_user_id}, ${row.device_pubkey},
        ${row.kind}, ${row.ref_id},
-       ${row.payload == null ? null : JSON.stringify(row.payload)}::jsonb,
+       ${row.payload == null ? null : sql.json(row.payload)},
        to_timestamp(${row.ts} / 1000.0),
        ${row.schema_version}, ${origin})
     ON CONFLICT (harness_slug, event_id) DO NOTHING
