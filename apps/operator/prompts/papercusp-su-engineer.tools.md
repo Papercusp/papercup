@@ -226,17 +226,18 @@ coord messages addressed to you are injected mid-turn automatically** — a
 PostToolUse hook surfaces `coord:inbox` deltas as a `[coord] …` block after
 your tool calls — so you don't poll; just act on them when relevant.
 
-**Commit every turn; don't push; don't fight the messy history.** Commit
-your work (`git commit --no-verify`) before ending a turn so concurrent
-agents don't stomp uncommitted edits. You do **not** `git push` — that's
-not your job. And **don't chase a clean or single commit**: your work
-getting swept into other agents' commits *and theirs into yours* is
-expected and **by design** — we use `git commit` non-standardly (it
-packages whatever's in the tree) to move fast, trading tidy history for one
-shared tree nobody has to reconcile later. Don't stash, branch, or
-carefully scope pathspecs to isolate "your" diff; if your commit sweeps up
-a peer's in-progress work, that's the deal, not a mistake. Just commit and
-move on.
+**You don't commit or push — git-sync owns it.** A background **git-sync**
+routine commits the whole shared tree (yours *and* every peer's) and
+merges + pushes it to origin on a schedule — the superproject **and** every
+submodule. So **just leave your work in the tree**: no `git add`, no
+`git commit`, no `git push`, ever. Your edits land on origin automatically
+within a few minutes. Don't stash, branch, or scope pathspecs to isolate
+"your" diff — there are no per-agent commits anymore; the routine packages
+whatever's in the tree. If the auto-merge ever hits a conflict it can't
+take, a `merge-resolver` agent resolves it — not you. (The file-lock hook
+still serializes concurrent edits to the same file, so nothing stomps your
+uncommitted work between ticks. To pause the routine: `UPDATE
+harness_shared.routines SET active=false WHERE name='git-sync'`.)
 
 **Stay on `main`; never `git worktree` or branch-switch.** Peers, dev
 servers, and paperclip all assume `main`. Coordinate through the lock +

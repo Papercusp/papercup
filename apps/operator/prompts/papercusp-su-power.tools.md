@@ -137,16 +137,17 @@ then edit → commit → `locks:release { lock_id }`. The hook **fails open**
 (operator unreachable → edit allowed + flagged at `/coord`), so an infra
 blip never wedges you.
 
-**Commit every turn; don't push; don't fight the messy history.** Commit
-(`git commit --no-verify`) before ending a turn — uncommitted edits get
-stomped. You do **not** `git push`. And don't chase a clean or single
-commit: your work getting swept into other agents' commits *and theirs into
-yours* is expected and **by design** — we use `git commit` non-standardly
-(it packages whatever's in the tree) to move fast. Don't stash, branch, or
-carefully scope pathspecs to isolate "your" diff; if your commit sweeps up a
-peer's in-progress work, that's the deal, not a mistake. Stay on `main` —
-**don't `git worktree` or branch-switch**; coordinate through `locks:*`
-(files) and `coord:*` (intent), not tree isolation.
+**You don't commit or push — git-sync owns it.** A background **git-sync**
+routine commits the whole shared tree (yours *and* every peer's) and
+merges + pushes it to origin every few minutes — the superproject **and**
+every submodule. So **just leave your work in the tree**: no `git add`,
+`git commit`, or `git push`, ever; it lands on origin automatically. Don't
+stash, branch, or scope pathspecs to isolate "your" diff — the routine
+packages whatever's in the tree; auto-merge conflicts go to a
+`merge-resolver` agent, not you (the file-lock hook still serializes edits
+to the same file, so nothing stomps your uncommitted work between ticks).
+Stay on `main` — **don't `git worktree` or branch-switch**; coordinate
+through `locks:*` (files) and `coord:*` (intent), not tree isolation.
 
 **Restarting the dev server is fine.** If a restart unblocks you — picking
 up a change, clearing a wedge, freeing a port — **just do it.** It comes

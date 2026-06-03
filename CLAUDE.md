@@ -203,8 +203,9 @@ systems**, not through tree isolation:
   so peers see you, and carries hand-offs / messages.
 
 Parallel agents on one `main`, serialized by locks + coord, is how
-concurrent work stays collision-free here. Don't `git push`, either —
-pushing isn't expected; just commit (see below).
+concurrent work stays collision-free here. You don't `git commit` or
+`git push` — a background **git-sync** routine owns both (see *Commit
+discipline* below); just leave your work in the tree.
 
 **Symptoms that you've forgotten this rule:**
 - `git status` shows `On branch <not-main>` in the main checkout —
@@ -215,25 +216,21 @@ pushing isn't expected; just commit (see below).
 - Dev/prod servers start serving 404s or HMR-error pages for routes
   that exist on disk — branch divergence between server and source.
 
-## Commit discipline: **commit before ending every turn**
+## Commit discipline: **git-sync owns commit + push — you do neither**
 
-Multiple agents (paperclip, claude, others) write to this repo
-concurrently and will rewrite each other's uncommitted edits.
+A background **git-sync** routine commits the whole shared tree (every
+agent's work) and merges + pushes it to origin on a schedule — the
+superproject **and** every submodule. So **you no longer `git add` /
+`git commit` / `git push`**: just leave your work in the tree and it lands
+on origin automatically within a few minutes. The per-edit file-lock hook
+still serializes concurrent edits to the same file, so a peer can't stomp
+your uncommitted work between ticks. Don't stash, branch, or scope
+pathspecs to isolate "your" diff — there are no per-agent commits anymore;
+the routine packages whatever's in the tree. An auto-merge conflict it
+can't take is resolved by a `merge-resolver` agent, not you.
 
-**Rule: before you hand control back to the user (end of every turn),
-run `git add` + `git commit --no-verify` for any edits you made that
-turn. Don't wait for the next turn — by then paperclip may have
-overwritten the file.**
-
-A small number of larger commits per session is fine; uncommitted work
-sitting between turns is not. Use `git checkout -- <path>` to recover
-from a stomp (works only if you committed).
-
-Files paperclip is most likely to rewrite:
-- `apps/operator-mobile/**`
-- `apps/operator/app/api/_hono/mobile.ts`
-- `apps/operator/app/api/mobile/qr.svg/route.ts`
-- `apps/operator/lib/mobile-*.ts`
+Pause the routine only via `UPDATE harness_shared.routines SET active=false
+WHERE name='git-sync'`. Design: `git-sync-auto-commit-2026-06-03`.
 
 ## Running the operator: `npm run dev` from `papercusp-desktop/`
 
