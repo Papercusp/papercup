@@ -3,7 +3,7 @@ title: DBOS adoption — durable multi-step flows (audit follow-on)
 slug: dbos-durable-flows-adoption-2026-06-02
 status: draft
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 owner: aviynw@gmail.com
 ---
 
@@ -11,9 +11,9 @@ owner: aviynw@gmail.com
 
 ## Now
 
-**State:** Shipped scope SIGNED OFF (P-010 done, user 2026-06-02). DONE: P-001 (provision→DBOS durable workflow) + P-002 part 1 (PAPERCUSP_DBOS_PROVISION default-on, commit 3bd5e1e1c, live-verified end-to-end on sheets/default — D-009). DROPPED per user: P-003/P-004 (outbox-drain stays native — NOTIFY + idempotent ON CONFLICT, D-006) and P-005 (snapshot/fork/restore, D-007). RESHAPED: P-006 backup-durability reframed around a GENERIC zero-dep `StepRunner` seam (D-010, supersedes D-008's coupling barrier) → decomposed into P-011 (Phase 1, buildable now) + P-012 (Phase 2, destructive, with user).
+**State:** Shipped scope SIGNED OFF (P-010, user 2026-06-02). DONE: P-001 (provision→DBOS durable workflow) + P-002 part 1 (PAPERCUSP_DBOS_PROVISION default-on, D-009) + **P-011** (backup durability seam — generic zero-dep `StepRunner` in `@papercusp/backup`, `snapshot()` routed through it, operator `backupSnapshot` DBOS workflow gated by the opt-in `PAPERCUSP_DBOS_BACKUP` flag; lib+unit+live-DBOS+flag tests green, type-clean, committed). DROPPED per user: P-003/P-004 (outbox stays native, D-006) and P-005 (snapshot/fork/restore, D-007). Two tracked follow-ons REMAIN, neither covered by the P-010 sign-off: (1) **P-002 part 2** — live crash-resume verify, then DELETE operator-claims.ts + the runner's legacy claim branch (needs-human / risky live cutover on the shared box; removes the `=0` revert); (2) **P-012** — Phase 2 of the backup seam (with the user, destructive): idempotent-decompose restoreInPlace/promoteRestore/rollbackPromote (workspace-backup.ts:472/522/561) so the StepRunner buys them crash-resume.
 
-**Next:** Two tracked follow-ons remain (NOT covered by the P-010 sign-off): (1) P-002 part 2 — live crash-resume verify, then DELETE operator-claims.ts + the runner's legacy claim branch (no shim); (2) P-011 — build the StepRunner seam + DBOS executor + route snapshot() (low-risk, buildable now), then P-012 with the user. Awaiting user go-ahead on which to start.
+**Next:** Await user go-ahead on the two remaining follow-ons: P-002 part 2 (risky live-kill + delete operator-claims.ts on the shared box) and P-012 (destructive-trio idempotent decomposition, done interactively with the user).
 
 ## Background — the audit
 
@@ -48,7 +48,7 @@ Timer-class candidates (`pr-host/poll-daemon`, `harness/wave-advance-sweep-live`
 ## Phase 4 — backup operations → DBOS workflow
 
 - **P-006** `todo` UMBRELLA (reshaped 2026-06-02, D-010 — supersedes D-008's "borrowable-lib bars DBOS coupling"): make backup create/restore/promote/rollback durable via a GENERIC zero-dep `StepRunner` seam in `@papercusp/backup` (host injects a DBOS-backed runner; the lib never imports DBOS, so the borrowable contract is preserved). Decomposed into **P-011** (Phase 1: the seam + operator DBOS executor + route `snapshot()`) and **P-012** (Phase 2, with user: idempotent-decompose the destructive trio so the seam buys crash-resume). The backup *scheduler tick* stays with the timers arc.
-- **P-011** `todo` Phase 1 (low-risk, buildable now): add a generic zero-dep `StepRunner` seam to `@papercusp/backup` (`{ runStep<T>(name, fn) }`, default pass-through so lib behavior is unchanged when no host is wired). Operator-side: inject a DBOS-backed StepRunner (`runStep → DBOS.runStep`, op registered as a workflow, host-injected like the scheduler tick). Route the ~idempotent `snapshot()` create op through it. No destructive-op changes. See D-010.
+- **P-011** `done` Phase 1 (low-risk, buildable now): add a generic zero-dep `StepRunner` seam to `@papercusp/backup` (`{ runStep<T>(name, fn) }`, default pass-through so lib behavior is unchanged when no host is wired). Operator-side: inject a DBOS-backed StepRunner (`runStep → DBOS.runStep`, op registered as a workflow, host-injected like the scheduler tick). Route the ~idempotent `snapshot()` create op through it. No destructive-op changes. See D-010. (Done 2026-06-02: zero-dep StepRunner seam in @papercusp/backup; snapshot routed via runStep insert-row is a step ⇒ no double-insert on resume. Operator backup-workflow.ts: backupSnapshot DBOS workflow + wireBackupStepRunner isInWorkflow guard + injectable executor; opt-in PAPERCUSP_DBOS_BACKUP flag; snapshot_create routed when flag+dbosStarted. Tests green.)
 - **P-012** `todo` Phase 2 (with user — destructive, per D-008): decompose the destructive trio restoreInPlace/promoteRestore/rollbackPromote (workspace-backup.ts:472/522/561) into idempotent steps — deterministic temp names derived from the op id + check-then-act, so replaying a half-done rename is a no-op. Then route them through the StepRunner so the DBOS-backed host gets true crash-resume on them. The seam (P-011) is necessary-not-sufficient; this is the idempotency work that makes it pay off. See D-010. blocked-by: P-011
 
 

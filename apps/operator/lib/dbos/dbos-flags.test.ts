@@ -4,6 +4,7 @@ import {
   dbosAutoloopActive,
   dbosTimersActive,
   dbosProvisionActive,
+  dbosBackupActive,
 } from './dbos-flags';
 
 type Env = Record<string, string | undefined>;
@@ -42,4 +43,15 @@ describe('dbosProvisionActive — default-on with the orchestrator (off only whe
     expect(dbosProvisionActive({ PAPERCUSP_DBOS_PROVISION: '0' })).toBe(false));
   test('ORCHESTRATOR=0 forces it off too (full legacy revert)', () =>
     expect(dbosProvisionActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
+});
+
+describe('dbosBackupActive — opt-in (P-011), off until explicitly =1', () => {
+  test('unset → inactive (fresh capability, opt-in)', () =>
+    expect(dbosBackupActive({})).toBe(false));
+  test('BACKUP=1 → active', () =>
+    expect(dbosBackupActive({ PAPERCUSP_DBOS_BACKUP: '1' })).toBe(true));
+  test('BACKUP=1 but ORCHESTRATOR=0 → off (master revert wins)', () =>
+    expect(dbosBackupActive({ PAPERCUSP_DBOS_BACKUP: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
+  test('BACKUP=0 → inactive', () =>
+    expect(dbosBackupActive({ PAPERCUSP_DBOS_BACKUP: '0' })).toBe(false));
 });

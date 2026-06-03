@@ -32,6 +32,7 @@ import {
   dbosAutoloopActive,
   dbosTimersActive,
   dbosProvisionActive,
+  dbosBackupActive,
 } from './dbos-flags';
 
 const PINNED_APP_VERSION = process.env.DBOS__APPVERSION || 'papercusp-jobs-v1';
@@ -117,6 +118,15 @@ export async function startDbos(): Promise<void> {
     // before launch so DBOS recovery can resume an interrupted provision. The legacy
     // claim path in provision/runner stands down when this is active.
     await import('./provision-workflow');
+  }
+  if (dbosBackupActive()) {
+    // dbos-flows P-011 (opt-in; enable with PAPERCUSP_DBOS_BACKUP=1): the workspace
+    // snapshot op as a durable workflow via the generic StepRunner seam (D-010).
+    // Register the workflow before launch (so recovery can resume an interrupted
+    // snapshot) and inject the DBOS-backed StepRunner into @papercusp/backup. When
+    // off, the lib's snapshot() runs un-stepped exactly as before.
+    const { wireBackupStepRunner } = await import('./backup-workflow');
+    wireBackupStepRunner();
   }
 
   await DBOS.launch();

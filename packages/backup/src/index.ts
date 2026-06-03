@@ -18,10 +18,11 @@
  * own pack files and balloons toward 1TB. See ./policy.
  */
 
-export { configureBackup, type BackupHost } from './config';
+export { configureBackup, configureBackupStepRunner, type BackupHost } from './config';
 export { WorkspaceBackup, type WorkspaceBackupOpts } from './workspace-backup';
 export {
   RETENTION_PRESETS,
+  passthroughStepRunner,
   type BackupSettings,
   type CadenceMode,
   type RepoStats,
@@ -31,6 +32,7 @@ export {
   type SnapshotInfo,
   type SnapshotResult,
   type SnapshotTriggerReason,
+  type StepRunner,
   type VerifyResult,
 } from './types';
 export { deriveRepoPassword } from './password';

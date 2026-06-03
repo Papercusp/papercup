@@ -7,10 +7,13 @@
  * back to backup:restore if its action goes wrong.
  */
 
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { workspaceBackupFor } from '@/lib/backup';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { dbosBackupActive } from '@/lib/dbos/dbos-flags';
+import { dbosStarted } from '@/lib/dbos/bootstrap';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
@@ -37,8 +40,20 @@ export default defineTool({
     note: z.string().max(280).optional(),
   }),
   async handler(args) {
-    const wb = workspaceBackupFor(activeWorkspaceId());
-    const result = await wb.snapshot(args.reason, args.note ? { note: args.note } : undefined);
+    const ws = activeWorkspaceId();
+    const context = args.note ? { note: args.note } : undefined;
+    // A/B (dbos-flows P-011): when the backup flag is opted-in AND DBOS actually
+    // launched, run the snapshot as a durable workflow (crash-resume via the
+    // StepRunner seam); otherwise call snapshot() directly. `getResult` is
+    // awaited so the tool keeps its synchronous request→result contract.
+    let result;
+    if (dbosBackupActive() && dbosStarted()) {
+      const { startBackupSnapshotWorkflow } = await import('@/lib/dbos/backup-workflow');
+      const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
+      result = await startBackupSnapshotWorkflow({ workspaceId: ws, reason: args.reason, context }, nonce);
+    } else {
+      result = await workspaceBackupFor(ws).snapshot(args.reason, context);
+    }
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],
     };

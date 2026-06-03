@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { passthroughStepRunner, type StepRunner } from './types';
 
 /**
  * Host seam for `@papercusp/backup`.
@@ -52,4 +53,26 @@ export function backupHost(): BackupHost {
     );
   }
   return _host;
+}
+
+/**
+ * Optional durability seam (D-010 / P-011), kept ORTHOGONAL to the data host
+ * above so the heavy DBOS import lives only in the operator module that wires
+ * this — not in the always-loaded `configureBackup` call. Unset ⇒ the
+ * pass-through runner, so backup behavior is unchanged when no host injects one.
+ */
+let _stepRunner: StepRunner | null = null;
+
+/**
+ * Inject a durability runner. The operator calls this from its DBOS bootstrap
+ * (gated behind the backup flag) to map `runStep → DBOS.runStep`; pass `null`
+ * to revert to the pass-through. Generic + reusable by any borrowable lib.
+ */
+export function configureBackupStepRunner(runner: StepRunner | null): void {
+  _stepRunner = runner;
+}
+
+/** Read the active step runner, defaulting to the no-op pass-through. */
+export function backupStepRunner(): StepRunner {
+  return _stepRunner ?? passthroughStepRunner;
 }

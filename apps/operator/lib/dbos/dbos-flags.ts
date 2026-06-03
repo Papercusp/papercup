@@ -42,3 +42,19 @@ export function dbosTimersActive(env: DbosEnv = process.env): boolean {
 export function dbosProvisionActive(env: DbosEnv = process.env): boolean {
   return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_PROVISION !== '0';
 }
+
+/**
+ * The DBOS backup-snapshot durability seam (plan dbos-durable-flows-adoption,
+ * P-011 / D-010). A fresh capability, so **opt-in** for now (enable with
+ * PAPERCUSP_DBOS_BACKUP=1) — mirroring how provision started before its
+ * live-verified flip to default-on (P-002 part 1). Still gated by the master
+ * orchestrator switch so the full-legacy revert (PAPERCUSP_DBOS_ORCHESTRATOR=0)
+ * also turns it off. When active, the manual `backup:snapshot_create` op routes
+ * through the `backupSnapshot` DBOS workflow and the lib's `snapshot()` steps run
+ * as durable checkpoints (a crash mid-snapshot resumes from the last step); when
+ * off, `snapshot()` is called directly and the injected StepRunner is a no-op
+ * pass-through — identical to today.
+ */
+export function dbosBackupActive(env: DbosEnv = process.env): boolean {
+  return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_BACKUP === '1';
+}

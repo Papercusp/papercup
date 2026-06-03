@@ -86,3 +86,39 @@ export interface VerifyResult {
   ok: boolean;
   errors: string[];
 }
+
+/**
+ * Generic, zero-dependency durability seam (dbos-durable-flows-adoption
+ * D-010 / P-011). A host can inject an implementation that wraps each named
+ * sub-operation as a durable, checkpointed step — e.g. the operator maps
+ * `runStep → DBOS.runStep` so a crash mid-op RESUMES from the last completed
+ * step instead of re-running the whole flow. Without a host wired the default
+ * `passthroughStepRunner` simply runs `fn()`, so the package's behavior is
+ * IDENTICAL when nothing is injected.
+ *
+ * The seam is deliberately generic — it names nothing about backups or DBOS —
+ * so any other borrowable lib wanting optional durability can adopt the same
+ * one-method contract. This is what lets `@papercusp/backup` keep its "zero
+ * @papercusp/@restart runtime deps" borrowable contract while still gaining
+ * crash-resume when hosted: DBOS lives entirely host-side, injected here.
+ *
+ * IMPORTANT — necessary but not sufficient: a StepRunner only buys crash-RESUME
+ * when each `fn` is idempotent (replaying a completed step must be a no-op).
+ * `snapshot()` (content-addressed kopia create) is ~idempotent and gains
+ * durability from the seam alone; the destructive restore/promote/rollback ops
+ * are non-idempotent FS renames and need idempotent decomposition first (P-012)
+ * before routing them through here pays off.
+ */
+export interface StepRunner {
+  /**
+   * Run `fn` as a single durable step labelled `name`. The default
+   * implementation just awaits `fn()`; a host implementation checkpoints the
+   * result so a resume returns the recorded value without re-running `fn`.
+   */
+  runStep<T>(name: string, fn: () => Promise<T>): Promise<T>;
+}
+
+/** Default seam: identical behavior to calling `fn()` directly (no host wired). */
+export const passthroughStepRunner: StepRunner = {
+  runStep: (_name, fn) => fn(),
+};

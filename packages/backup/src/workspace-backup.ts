@@ -18,7 +18,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { backupHost } from './config';
+import { backupHost, backupStepRunner } from './config';
 import { deriveRepoPassword } from './password';
 import { runPreSnapshotHook } from './hook';
 import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
@@ -194,56 +194,84 @@ export class WorkspaceBackup {
 
   async snapshot(reason: SnapshotTriggerReason, context?: Record<string, unknown>): Promise<SnapshotResult> {
     const sql = backupHost().getSql();
+    // Durability seam (D-010 / P-011). Pass-through unless a host injects a
+    // runner, so this is behaviorally identical to the un-stepped flow when no
+    // DBOS host is wired — and gains crash-resume when invoked inside the
+    // operator's `backupSnapshot` workflow. Each `runStep` body below is
+    // idempotent (snapshot create is content-addressed; the row INSERT is the
+    // ONE non-idempotent side effect and is itself a step so a resume returns
+    // the cached id instead of inserting a duplicate row).
+    const steps = backupStepRunner();
     await this.ensureRepo();
     const password = await deriveRepoPassword(this.workspaceId);
     const env = this.envWithPassword(password);
 
     const sources = [this.workspaceRoot];
-    const insertRows = await sql<{ id: number }[]>`
-      INSERT INTO harness_shared.backup_snapshots
-        (workspace_id, trigger_reason, trigger_context, sources_json)
-      VALUES
-        (${this.workspaceId}, ${reason}, ${context ? JSON.stringify(context) : null}::jsonb, ${JSON.stringify(sources)}::jsonb)
-      RETURNING id
-    `;
-    const snapshotRowId = insertRows[0]!.id;
-    const start = Date.now();
+    // Step 1 — create the tracking row. Must be a step: re-running it on a
+    // resume would insert a SECOND snapshot row. The cached return (id +
+    // start time) is what every later step keys off, keeping bookkeeping +
+    // durationMs stable across a resume.
+    const { id: snapshotRowId, startedAtMs } = await steps.runStep('backup-insert-row', async () => {
+      const insertRows = await sql<{ id: number }[]>`
+        INSERT INTO harness_shared.backup_snapshots
+          (workspace_id, trigger_reason, trigger_context, sources_json)
+        VALUES
+          (${this.workspaceId}, ${reason}, ${context ? JSON.stringify(context) : null}::jsonb, ${JSON.stringify(sources)}::jsonb)
+        RETURNING id
+      `;
+      return { id: insertRows[0]!.id, startedAtMs: Date.now() };
+    });
 
     await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
 
-    // Pre-snapshot DB dump hook. Failures are logged inside the hook
-    // and do not abort the snapshot — the file tree is still useful
-    // even if the dump didn't land.
+    // Step 2 — pre-snapshot DB dump hook. Failures are logged inside the hook
+    // and do not abort the snapshot — the file tree is still useful even if
+    // the dump didn't land. The hook overwrites its dump files atomically, so
+    // re-running it on a resume is idempotent.
     await this.event(snapshotRowId, 'progress', { phase: 'pre_snapshot_hook' });
-    await runPreSnapshotHook({
-      workspaceId: this.workspaceId,
-      workspaceRoot: this.workspaceRoot,
-    }).then(() => this.event(snapshotRowId, 'hook_pg_dump', { ok: true }))
-      .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
-        return this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
-      });
+    await steps.runStep('backup-pre-snapshot-hook', () =>
+      runPreSnapshotHook({
+        workspaceId: this.workspaceId,
+        workspaceRoot: this.workspaceRoot,
+      }).then(() => this.event(snapshotRowId, 'hook_pg_dump', { ok: true }))
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
+          return this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
+        }),
+    );
 
     try {
-      // Defense-in-depth: refuse to snapshot if the active policy doesn't
-      // self-exclude the repo dir. Without this guard the snapshot would
-      // recursively include kopia-repo/ and balloon toward 1TB.
-      await this.assertSelfExclusionPolicy(env);
       await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
-      const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
-      const parsed = parseKopiaSnapshotJson(out);
-      const durationMs = Date.now() - start;
-      await sql`
-        UPDATE harness_shared.backup_snapshots
-        SET kopia_snapshot_id = ${parsed.snapshotId},
-            finished_at       = now(),
-            status            = 'ok',
-            bytes_added       = ${parsed.bytesAdded},
-            bytes_total       = ${parsed.bytesTotal}
-        WHERE id = ${snapshotRowId}
-      `;
-      await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs });
+      // Step 3 — the kopia snapshot create (the expensive, non-PG side effect).
+      // Content-addressed, so a re-run on resume only re-dedups; caching the
+      // parsed result lets a resume skip the work entirely. The self-exclusion
+      // guard runs inside the step so the recursion check + the create are
+      // checkpointed together. durationMs is measured here so it's stable when
+      // the step result is replayed on resume.
+      const parsed = await steps.runStep('backup-kopia-create', async () => {
+        // Defense-in-depth: refuse to snapshot if the active policy doesn't
+        // self-exclude the repo dir. Without this guard the snapshot would
+        // recursively include kopia-repo/ and balloon toward 1TB.
+        await this.assertSelfExclusionPolicy(env);
+        const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
+        const p = parseKopiaSnapshotJson(out);
+        return { ...p, durationMs: Date.now() - startedAtMs };
+      });
+
+      // Step 4 — record the result. Idempotent UPDATE keyed by the row id.
+      await steps.runStep('backup-record-result', async () => {
+        await sql`
+          UPDATE harness_shared.backup_snapshots
+          SET kopia_snapshot_id = ${parsed.snapshotId},
+              finished_at       = now(),
+              status            = 'ok',
+              bytes_added       = ${parsed.bytesAdded},
+              bytes_total       = ${parsed.bytesTotal}
+          WHERE id = ${snapshotRowId}
+        `;
+      });
+      await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs: parsed.durationMs });
 
       // After-snapshot offsite replication (non-fatal). Local stays the
       // source of truth; if sync fails the snapshot is still safe.
@@ -253,7 +281,7 @@ export class WorkspaceBackup {
         snapshotId: snapshotRowId,
         kopiaSnapshotId: parsed.snapshotId,
         bytesAdded: parsed.bytesAdded,
-        durationMs,
+        durationMs: parsed.durationMs,
       };
     } catch (err) {
       const msg = String(err instanceof Error ? err.message : err);
