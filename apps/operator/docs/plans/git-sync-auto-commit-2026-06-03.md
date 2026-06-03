@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** IMPLEMENTING (autonomous overnight). DONE+committed+tested: Phases 1–3 (engine P-001/P-002, pipeline P-005–P-008, action P-009–P-012) + P-004 (deleted dead routine-ticker loop, submodule e899ef1 / pointer a12d79b2d). typecheck clean; 9 unit/integration tests green. REMAINING git-sync: P-003 (routines config tooling — helpers + routines:list/set agent tools), P-016 (integration: engine tick fires + crash-replay [mirror test/dbos-crash-replay.integration.test.ts], pipeline submodule real-push, conflict→escalation→resolver, + confirm no exhaustive role-map breaks on merge-resolver — check theme.ts / harness-memory-map.ts), P-015 (seed papercup routine INACTIVE). HELD go-live bundle: P-013, P-014, P-015-active, P-017. Then the WHOLE consolidation plan (dbos-scheduler-consolidation-2026-06-03).
+**State:** IMPLEMENTING (autonomous overnight). git-sync CORE COMPLETE + committed + tested: engine (P-001/P-002), pipeline (P-005–P-008), action+locks+escalation+resolver (P-009–P-012), dead-loop deletion (P-004). Tests: 9 unit/integration green (pipeline incl. real submodule push, engine cron/registry/dispatch); role-map safety verified clean. P-016 wip (live-dependent crash-replay/PG-escalation fold into held P-017). REMAINING non-held git-sync: P-003 (routines config tooling), P-015 (seed papercup routine INACTIVE). HELD go-live bundle: P-013, P-014, P-015-active, P-017. Pivoting to the bulk of remaining work: the consolidation plan.
 
-**Next:** P-016: write the integration tests (engine crash-replay + pipeline submodule real-push + the action's conflict→escalation→resolver path) and verify merge-resolver doesn't break any exhaustive role map; then P-003 tooling + P-015 seed-inactive; then the consolidation plan.
+**Next:** Pivot to dbos-scheduler-consolidation-2026-06-03 (the ~13-item bulk: port harness-status-sweep/orphan-cleanup/device-push to DBOS + delete dead instrumentation-node starters/wave-advance + P-007 delete poll-daemon + systemd timers + Set D dispositions), interleaving git-sync P-003 + P-015 (seed inactive).
 
 ## Background
 
@@ -57,7 +57,7 @@ Grounding (from code audit):
 
 ## Phase 5 — Verify
 
-- **P-016** `todo` Tests: the **engine** (routinesTick fires a due routine once, runs a `system:` action inline, dispatches a role routine, advances `next_fire_at`; crash-replay mid-tick) + the **git-sync pipeline** against a throwaway local origin + submodule fixture (happy path; no-op clean tick; conflict → `merge --abort` → escalation → resolver-spawn stub). Mirror `test/dbos-crash-replay.integration.test.ts`. (M)
+- **P-016** `wip` Tests: the **engine** (routinesTick fires a due routine once, runs a `system:` action inline, dispatches a role routine, advances `next_fire_at`; crash-replay mid-tick) + the **git-sync pipeline** against a throwaway local origin + submodule fixture (happy path; no-op clean tick; conflict → `merge --abort` → escalation → resolver-spawn stub). Mirror `test/dbos-crash-replay.integration.test.ts`. (M) (DONE: pipeline+submodule real-git 5 tests, engine cron/registry/dispatch unit 4 tests, role-map safety verified clean. DEFERRED to P-017 held, needs live system/test-PG: DBOS-launch tick crash-replay + PG escalation/dedup integration engine reuses the proven registerWorkflow/runStep recipe.)
 - **P-017** `todo` Live on `papercup`: enable the routine, make a local edit, confirm one tick commits + pushes superproject **and** a submodule branch to origin (a fresh clone resolves the pins); then push a divergent commit from a second clone and confirm the next tick aborts clean, files the escalation, and spawns one `merge-resolver`. blocked-by: P-012, P-015 (S)
 
 ## Decisions
