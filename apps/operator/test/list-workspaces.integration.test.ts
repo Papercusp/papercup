@@ -18,6 +18,9 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real tool handler
 import listWorkspaces from '../../../packages/agent-mcp/src/tools/papercusp/list_workspaces';
+// list_workspaces is a crossWorkspace defineTool: it reads getOrgPg() directly
+// (NOT ctx.tx), so we point getOrgPg at this test's DB rather than passing a tx.
+import { _resetForTests } from '@papercusp/db-org';
 
 let adminUri: string;
 let dbName: string;
@@ -40,6 +43,9 @@ beforeAll(async () => {
 
   // harness_registry shape from migration 025.
   await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
+  // getOrgPg() opens with search_path [harness_shared, papercup_shared, public];
+  // create papercup_shared so the SET search_path on its client is clean.
+  await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS papercup_shared`);
   await sql.unsafe(`
     CREATE TABLE harness_shared.harness_registry (
       workspace_id TEXT PRIMARY KEY,
@@ -56,9 +62,16 @@ beforeAll(async () => {
   await ins('default', [{ slug: 'papercup', path: '/x' }, { slug: 'sheets', path: '/y' }], 1716000000000);
   await ins('acme', [{ slug: 'docs', path: '/z' }], 1716000100000);
   await ins('empty-ws', [], 1716000200000); // a workspace with zero registered harnesses
+
+  // Point getOrgPg() (what the handler reads) at this seeded DB, then clear any
+  // cached admin connection so the next getOrgPg() picks up the new URL.
+  process.env.HARNESS_ADMIN_DATABASE_URL = u.toString();
+  await _resetForTests();
 }, 60_000);
 
 afterAll(async () => {
+  delete process.env.HARNESS_ADMIN_DATABASE_URL;
+  await _resetForTests();
   await sql?.end({ timeout: 5 });
 });
 
@@ -66,19 +79,19 @@ describe('papercusp:list_workspaces', () => {
   it('lists workspaces + their harnesses from the JSONB registry (no "column harness_slug" error)', async () => {
     // The old query threw `column "harness_slug" does not exist`; the handler
     // does not catch, so a regression would reject this await and fail the test.
+    // The new defineTool handler ignores ctx.tx (reads getOrgPg) and returns a
+    // ToolResponse { data } envelope — not the old { ok, response: { data } }.
     const res = (await (listWorkspaces as { handler: (a: unknown, c: unknown) => Promise<unknown> })
-      .handler({}, { tx: sql })) as {
-      ok: boolean;
-      response: { data: { workspaces: Array<{ slug: string; harnesses: string[]; lastActiveTs: number }>; defaultWorkspace: string | null } };
+      .handler({}, {})) as {
+      data: { workspaces: Array<{ slug: string; harnesses: string[]; lastActiveTs: number }>; defaultWorkspace: string | null };
     };
 
-    expect(res.ok).toBe(true);
-    const bySlug = Object.fromEntries(res.response.data.workspaces.map((w) => [w.slug, w]));
+    const bySlug = Object.fromEntries(res.data.workspaces.map((w) => [w.slug, w]));
 
     expect([...bySlug.default.harnesses].sort()).toEqual(['papercup', 'sheets']);
     expect(bySlug.acme.harnesses).toEqual(['docs']);
     expect(bySlug['empty-ws'].harnesses).toEqual([]); // LEFT JOIN keeps harness-less workspaces
     expect(bySlug.default.lastActiveTs).toBe(1716000000000); // updated_at is epoch-ms, emitted directly
-    expect(res.response.data.defaultWorkspace).toBe('default');
+    expect(res.data.defaultWorkspace).toBe('default');
   });
 });
