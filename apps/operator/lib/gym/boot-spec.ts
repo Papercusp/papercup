@@ -74,6 +74,9 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
     // Boot the durable orchestrator; keep auto-dispatch off by default so the
     // runner owns when each feature pipeline starts (deterministic).
     PAPERCUSP_DBOS_ENABLE: '1',
+    // Generic routines engine (git-sync-auto-commit P-001) — git-sync + future
+    // per-harness scheduled tasks. Routines stay inert unless active=true.
+    PAPERCUSP_DBOS_ROUTINES: '1',
     PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: cfg.autoloopScope ?? 'none',
     PAPERCUSP_DBOS_MAX_PIPELINES: String(cfg.maxPipelines ?? 4),
     // Isolate the gym DBOS application + keep recovery stable for the run.
