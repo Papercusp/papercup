@@ -19,6 +19,7 @@
  */
 import { useSyncExternalStore } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import { reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
 import {
   BUILTIN_THEMES,
   CUSTOM_PREFIX,
@@ -58,7 +59,13 @@ export function applyTheme(id: string = readActiveTheme()): void {
   document.documentElement.dataset.theme = safe;
 }
 
-export function writeActiveTheme(id: string): void {
+/**
+ * Write the active theme to the local cache, apply it, and notify subscribers
+ * — WITHOUT pushing to PG. Shared by {@link writeActiveTheme} (after it queues
+ * the PG write) and {@link reconcileActiveTheme} (adopting a value that came
+ * FROM PG — re-pushing it would be a redundant write-back loop).
+ */
+function setActiveThemeLocal(id: string): void {
   const safe = isValidThemeId(id) ? id : DEFAULT_THEME_ID;
   if (typeof window !== 'undefined') {
     try {
@@ -71,6 +78,34 @@ export function writeActiveTheme(id: string): void {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: { id: safe } }));
   }
+}
+
+/**
+ * Set the active theme: cache it locally + apply + notify (instant), and
+ * persist to the operator profile in PG (the source of truth — survives
+ * reloads, restarts, and the desktop webview's unreliable localStorage). This
+ * is the canonical save+apply entry point for the UI (settings page + navbar).
+ */
+export function writeActiveTheme(id: string): void {
+  const safe = isValidThemeId(id) ? id : DEFAULT_THEME_ID;
+  setActiveThemeLocal(safe);
+  writeProfileField('theme_id', safe);
+}
+
+/**
+ * Reconcile the active theme from PG on app mount. If the stored profile
+ * `theme_id` differs from the local cache (changed in another window, or the
+ * cache was lost), adopt it. The pre-paint host injection already paints the
+ * correct theme on the desktop; this keeps long-lived/other windows in sync
+ * and recovers when injection is absent (e.g. the :3055 Vite dev origin).
+ */
+export function reconcileActiveTheme(): Promise<string | null> {
+  return reconcileProfilePref<string>({
+    field: 'theme_id',
+    parse: (raw) => (isValidThemeId(raw) ? raw : null),
+    current: readActiveTheme,
+    adopt: setActiveThemeLocal,
+  });
 }
 
 export function subscribeTheme(listener: () => void): () => void {

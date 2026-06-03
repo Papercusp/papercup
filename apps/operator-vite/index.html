@@ -98,9 +98,19 @@
         };
         const valid = (v) => typeof v === 'string' && (v === 'frost' || v === 'black' || (v.indexOf('custom:') === 0 && v.length > 7));
         try {
-          let id = window.localStorage.getItem('pc:ws:' + wsId() + ':' + KEY);
+          // PG is the source of truth: the host injects window.__PAPERCUSP_PREFS__
+          // .theme_id from the user profile (see bin/host-spa.ts). Prefer it; the
+          // localStorage cache is the fallback (dev origins without injection /
+          // offline). Frost is the :root default.
+          const injected = (window.__PAPERCUSP_PREFS__ && window.__PAPERCUSP_PREFS__.theme_id) || null;
+          const cacheKey = 'pc:ws:' + wsId() + ':' + KEY;
+          let id = valid(injected) ? injected : window.localStorage.getItem(cacheKey);
           if (!valid(id)) id = DEFAULT;
           document.documentElement.dataset.theme = id;
+          // Seed the per-device cache from the injected value so the React lib's
+          // synchronous readActiveTheme() agrees with the painted theme even if
+          // this device's cache was stale/empty.
+          if (valid(injected)) { try { window.localStorage.setItem(cacheKey, injected); } catch (e) {} }
         } catch (e) {
           document.documentElement.dataset.theme = DEFAULT;
         }
@@ -139,7 +149,11 @@
           return 'default';
         };
         try {
-          let mode = window.localStorage.getItem('pc:ws:' + wsId() + ':' + KEY);
+          // PG source of truth via host injection (see bin/host-spa.ts); the
+          // localStorage cache is the fallback.
+          const injected = (window.__PAPERCUSP_PREFS__ && window.__PAPERCUSP_PREFS__.visual_effects_mode) || null;
+          const cacheKey = 'pc:ws:' + wsId() + ':' + KEY;
+          let mode = injected || window.localStorage.getItem(cacheKey);
           if (mode !== 'system' && mode !== 'full' && mode !== 'minimal') mode = 'system';
           const reduced = mode === 'system'
             && typeof window.matchMedia === 'function'
@@ -147,6 +161,7 @@
           const effective = mode === 'minimal' || reduced ? 'minimal' : 'full';
           document.documentElement.dataset.visualEffects = effective;
           document.documentElement.dataset.visualEffectsMode = mode;
+          if (injected) { try { window.localStorage.setItem(cacheKey, mode); } catch (e) {} }
         } catch (e) {
           document.documentElement.dataset.visualEffects = 'full';
           document.documentElement.dataset.visualEffectsMode = 'system';

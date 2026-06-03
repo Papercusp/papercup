@@ -19,6 +19,7 @@ const KEY = 'pc:ws:default:papercusp.shortcuts.v1';
 function stubWindow() {
   const store = new Map<string, string>();
   const dispatchEvent = vi.fn();
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response));
   vi.stubGlobal('window', {
     localStorage: {
       getItem: (k: string) => store.get(k) ?? null,
@@ -28,8 +29,9 @@ function stubWindow() {
     dispatchEvent,
     location: { href: 'http://127.0.0.1:3070/' },
   });
+  vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('CustomEvent', class { constructor(public type: string) {} });
-  return { store, dispatchEvent };
+  return { store, dispatchEvent, fetchMock };
 }
 afterEach(() => vi.unstubAllGlobals());
 
@@ -84,5 +86,17 @@ describe('override store', () => {
     resetAllOverrides();
     expect(store.get(KEY)).toBeUndefined();
     expect(dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('saveOverride pushes the full override map to PG (/api/profile)', () => {
+    const { fetchMock } = stubWindow();
+    saveOverride('feature.x', 'mod+z');
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+    );
+    expect(post?.[0]).toBe('/api/profile');
+    expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({
+      shortcut_overrides: { 'feature.x': 'mod+z' },
+    });
   });
 });

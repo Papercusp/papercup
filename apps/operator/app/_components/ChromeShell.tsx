@@ -6,13 +6,16 @@ import { usePathname } from '@/lib/router-compat/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
-import { useFancyEffectsEnabled } from '@/lib/visual-effects';
+import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
+import { reconcileActiveTheme } from '@/lib/theme';
+import { reconcileShortcutOverrides } from '@/lib/shortcut-registry';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
 import { BrainMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
+import ThemeSelector from './ThemeSelector';
 import UserPicker from './UserPicker';
 import AutoLoginWelcomeToast from './AutoLoginWelcomeToast';
 import UpdateChip from './UpdateChip';
@@ -138,6 +141,17 @@ export default function ChromeShell() {
     { scope: headerRef, dependencies: [pathname, fancyEffectsEnabled] },
   );
 
+  // Reconcile browser-presentation prefs from PG once on mount. The host
+  // pre-paints theme + visual-effects from PG (bin/host-spa.ts); this adopts
+  // any drift — changed in another window, or this device's localStorage cache
+  // lost/stale — now that these prefs are PG-backed, not localStorage-only.
+  // Placed before the chromeless early-return so hook order stays stable.
+  useEffect(() => {
+    void reconcileActiveTheme();
+    void reconcileVisualEffectsMode();
+    void reconcileShortcutOverrides();
+  }, []);
+
   if (chromeless) return null;
 
   return (
@@ -204,6 +218,7 @@ export default function ChromeShell() {
           <UpdateChip />
           <NotificationCenter />
           <RecentActionsCenter />
+          <ThemeSelector />
           <WorkspaceSwitcher />
           <UserPicker />
         </nav>

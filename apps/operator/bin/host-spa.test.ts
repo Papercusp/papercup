@@ -14,8 +14,14 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
+
+// Stub the profile read so the pre-paint prefs injection has a deterministic
+// value without a live PG connection.
+vi.mock('../lib/session', () => ({
+  readProfile: vi.fn(async () => ({ theme_id: 'black', visual_effects_mode: 'minimal' })),
+}));
 
 let spaRoutes: import('hono').Hono;
 let distDir: string;
@@ -59,6 +65,14 @@ describe('SPA shell pre-hydration globals', () => {
     const payload = JSON.parse(json);
     expect(payload.flags['papercusp-oracle']).toBe(true);
     expect(payload.source).toBe('override');
+  });
+
+  it('injects pre-paint presentation prefs (theme + visual-effects) before the bundle', async () => {
+    const res = await spaRoutes.request('/');
+    const body = await res.text();
+    expect(body).toContain('window.__PAPERCUSP_PREFS__={"theme_id":"black","visual_effects_mode":"minimal"}');
+    // Inside <head>, before the deferred module entry, so the boot scripts read it.
+    expect(body.indexOf('window.__PAPERCUSP_PREFS__=')).toBeLessThan(body.indexOf('</head>'));
   });
 
   it('serves the shell for an unknown client route (200, not 404)', async () => {

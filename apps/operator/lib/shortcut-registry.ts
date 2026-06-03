@@ -23,6 +23,7 @@
  */
 import type { ActionOptions } from './shortcut-bus';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import { reconcileProfilePref, shallowJsonEquals, writeProfileField } from '@/lib/profile-pref';
 
 export type ShortcutCategory = 'global' | 'navigation' | 'history' | 'feature-list' | 'editor' | 'palette';
 
@@ -285,6 +286,19 @@ export function loadOverrides(): OverrideMap {
   }
 }
 
+/**
+ * Write the override map to the local cache + notify in-page listeners —
+ * WITHOUT pushing to PG. Shared by the mutators (which queue the PG write
+ * separately) and {@link reconcileShortcutOverrides} (adopting a PG value).
+ * localStorage 'storage' events fire only in OTHER tabs, so emit a synthetic
+ * event so our own components re-bind.
+ */
+function setOverridesLocal(all: OverrideMap): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(wsLocalKey(STORAGE_KEY), JSON.stringify(all));
+  window.dispatchEvent(new CustomEvent('papercusp:shortcuts-changed'));
+}
+
 export function saveOverride(id: string, combo: string): void {
   if (typeof window === 'undefined') return;
   const all = loadOverrides();
@@ -294,10 +308,10 @@ export function saveOverride(id: string, combo: string): void {
   } else {
     all[id] = trimmed;
   }
-  window.localStorage.setItem(wsLocalKey(STORAGE_KEY), JSON.stringify(all));
-  // Notify in-page listeners. localStorage events normally fire only in
-  // OTHER tabs; emit a synthetic event so our own components re-bind.
-  window.dispatchEvent(new CustomEvent('papercusp:shortcuts-changed'));
+  setOverridesLocal(all);
+  // PG is the source of truth (survives the desktop webview's flaky
+  // localStorage); cache above keeps the binding instant.
+  writeProfileField('shortcut_overrides', all);
 }
 
 export function resetOverride(id: string): void {
@@ -308,6 +322,25 @@ export function resetAllOverrides(): void {
   if (typeof window === 'undefined') return;
   window.localStorage.removeItem(wsLocalKey(STORAGE_KEY));
   window.dispatchEvent(new CustomEvent('papercusp:shortcuts-changed'));
+  writeProfileField('shortcut_overrides', {});
+}
+
+/**
+ * Reconcile shortcut overrides from PG on app mount — adopt the stored profile
+ * map if it differs from the local cache. Pre-existing local-only overrides
+ * (from before this migration) are preserved: a missing PG field parses to
+ * null and is skipped, and they get pushed to PG the next time the user edits
+ * a binding.
+ */
+export function reconcileShortcutOverrides(): Promise<OverrideMap | null> {
+  return reconcileProfilePref<OverrideMap>({
+    field: 'shortcut_overrides',
+    parse: (raw) =>
+      raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as OverrideMap) : null,
+    current: loadOverrides,
+    equals: shallowJsonEquals,
+    adopt: setOverridesLocal,
+  });
 }
 
 export function effectiveCombo(id: string, overrides?: OverrideMap): string {

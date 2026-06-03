@@ -10,10 +10,15 @@ const ALLOWED = [
   'display_name',
   'default_project_dir',
   'preferred_models',
-  'theme',
   'auto_scan',
   'auto_accept',
   'toast_last_seen_ms',
+  // Browser-presentation preferences (migrated off localStorage-only storage).
+  'theme_id',
+  'visual_effects_mode',
+  'shortcut_overrides',
+  'op_chat_width',
+  'pi_dock_layouts',
 ];
 
 export default [

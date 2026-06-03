@@ -21,9 +21,9 @@ afterEach(() => vi.clearAllMocks());
 
 describe('readProfile', () => {
   it('returns the stored profile', async () => {
-    readOperatorState.mockResolvedValue({ theme: 'dark', auto_scan: true });
-    expect(await readProfile()).toEqual({ theme: 'dark', auto_scan: true });
-    expect(readOperatorState).toHaveBeenCalledWith('operator_user_profile');
+    readOperatorState.mockResolvedValue({ theme_id: 'black', auto_scan: true });
+    expect(await readProfile()).toEqual({ theme_id: 'black', auto_scan: true });
+    expect(readOperatorState).toHaveBeenCalledWith('operator_user_profile', undefined);
   });
 
   it('defaults to {} when nothing is stored', async () => {
@@ -34,12 +34,12 @@ describe('readProfile', () => {
 
 describe('writeProfile', () => {
   it('stamps updated_at, persists under the profile key, and returns the stamped profile', async () => {
-    const out = await writeProfile({ theme: 'light' });
-    expect(out.theme).toBe('light');
+    const out = await writeProfile({ theme_id: 'frost' });
+    expect(out.theme_id).toBe('frost');
     expect(typeof out.updated_at).toBe('string');
     expect(writeOperatorState).toHaveBeenCalledWith(
       'operator_user_profile',
-      expect.objectContaining({ theme: 'light', updated_at: expect.any(String) }),
+      expect.objectContaining({ theme_id: 'frost', updated_at: expect.any(String) }),
     );
   });
 });

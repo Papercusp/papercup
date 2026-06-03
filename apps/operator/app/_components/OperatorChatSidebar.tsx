@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import { reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';
@@ -67,6 +68,24 @@ export function OperatorChatSidebar() {
   useEffect(() => {
     setWidth(readStoredWidth());
     setHydrated(true);
+  }, []);
+
+  // Reconcile from PG (source of truth) on mount: if the stored profile width
+  // differs from the local cache (set on another device, or the cache was
+  // lost), adopt it. localStorage stays the instant first-paint value above.
+  useEffect(() => {
+    void reconcileProfilePref<number>({
+      field: 'op_chat_width',
+      parse: (raw) => (typeof raw === 'number' && Number.isFinite(raw) ? raw : null),
+      current: readStoredWidth,
+      adopt: (n) => {
+        const clamped = clampOperatorChatWidth(n, window.innerWidth);
+        try {
+          window.localStorage.setItem(wsLocalKey(STORAGE_KEY), String(clamped));
+        } catch { /* sandbox / quota */ }
+        setWidth(clamped);
+      },
+    });
   }, []);
 
   // Mirror the active offset width to a CSS var so app content shifts.
@@ -123,6 +142,13 @@ export function OperatorChatSidebar() {
     (e.target as Element).releasePointerCapture?.(e.pointerId);
     document.body.style.userSelect = '';
     document.body.style.cursor = '';
+    // Persist the final width to PG (source of truth) on drag-commit — once
+    // per resize, not per pointermove. The cache is kept in sync by the width
+    // effect; this just makes it durable across reload/restart.
+    try {
+      const final = clampOperatorChatWidth(e.clientX, window.innerWidth);
+      writeProfileField('op_chat_width', final);
+    } catch { /* ignore */ }
   }, []);
 
   const collapseChat = useCallback(() => {

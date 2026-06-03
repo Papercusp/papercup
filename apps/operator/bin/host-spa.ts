@@ -25,6 +25,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { getAllFlags, isBackendConfigured } from '@papercusp/flags/server';
 import { activeWorkspaceId } from '../lib/workspace-registry';
+import { readProfile } from '../lib/session';
 import { resolveDistinctId } from '../lib/flag-distinct-id';
 import { reinitFlagBackend } from '../lib/flag-bus';
 import { isTestingFeaturesEnabled } from '../lib/posthog-config';
@@ -116,6 +117,24 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
     /* registry/url unreadable — fall back to 'default' */
   }
   const globals = [`window.__PAPERCUSP_WS__=${JSON.stringify(wsId)};`];
+  // Pre-paint presentation preferences (theme, visual-effects). The boot
+  // scripts in index.html read these synchronously BEFORE React mounts so the
+  // page paints the user's saved theme + effects with no flash. PG is the
+  // source of truth (the desktop webview's localStorage is unreliable across
+  // reloads/restarts — see lib/profile-pref.ts), read here for the same
+  // workspace the window self-identifies as. Best-effort: on any error the
+  // boot scripts fall back to the localStorage cache + defaults.
+  try {
+    const profile = await readProfile(wsId);
+    const prefs = {
+      theme_id: typeof profile.theme_id === 'string' ? profile.theme_id : null,
+      visual_effects_mode:
+        typeof profile.visual_effects_mode === 'string' ? profile.visual_effects_mode : null,
+    };
+    globals.push(`window.__PAPERCUSP_PREFS__=${JSON.stringify(prefs)};`);
+  } catch {
+    /* profile unreadable — boot scripts fall back to localStorage + defaults */
+  }
   try {
     if (isBackendConfigured() !== isTestingFeaturesEnabled()) {
       reinitFlagBackend();

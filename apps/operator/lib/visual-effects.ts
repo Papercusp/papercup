@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { wsLocalKey } from '@/lib/browser-workspace';
+import { reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
 
 export type VisualEffectsMode = 'system' | 'full' | 'minimal';
 export type EffectiveVisualEffects = 'full' | 'minimal';
@@ -45,7 +46,13 @@ export function applyVisualEffectsMode(mode: VisualEffectsMode = readVisualEffec
   document.documentElement.dataset.visualEffectsMode = safeMode;
 }
 
-export function writeVisualEffectsMode(mode: VisualEffectsMode): void {
+/**
+ * Write the mode to the local cache, apply it, and notify subscribers —
+ * WITHOUT pushing to PG. Shared by {@link writeVisualEffectsMode} (after it
+ * queues the PG write) and {@link reconcileVisualEffectsMode} (adopting a
+ * value that came FROM PG).
+ */
+function setVisualEffectsModeLocal(mode: VisualEffectsMode): void {
   const safeMode = isVisualEffectsMode(mode) ? mode : 'system';
   if (typeof window !== 'undefined') {
     try {
@@ -62,6 +69,32 @@ export function writeVisualEffectsMode(mode: VisualEffectsMode): void {
       }),
     );
   }
+}
+
+/**
+ * Set the visual-effects mode: cache + apply + notify (instant), and persist
+ * to the operator profile in PG (source of truth). Canonical entry point for
+ * the settings UI.
+ */
+export function writeVisualEffectsMode(mode: VisualEffectsMode): void {
+  const safeMode = isVisualEffectsMode(mode) ? mode : 'system';
+  setVisualEffectsModeLocal(safeMode);
+  writeProfileField('visual_effects_mode', safeMode);
+}
+
+/**
+ * Reconcile the visual-effects mode from PG on app mount — adopt the stored
+ * profile value if it differs from the local cache. Mirrors the host pre-paint
+ * injection; keeps other/long-lived windows in sync and recovers when
+ * injection is absent.
+ */
+export function reconcileVisualEffectsMode(): Promise<VisualEffectsMode | null> {
+  return reconcileProfilePref<VisualEffectsMode>({
+    field: 'visual_effects_mode',
+    parse: (raw) => (isVisualEffectsMode(raw) ? raw : null),
+    current: readVisualEffectsMode,
+    adopt: setVisualEffectsModeLocal,
+  });
 }
 
 export function subscribeVisualEffects(listener: () => void): () => void {

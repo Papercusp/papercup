@@ -25,18 +25,37 @@ export interface Profile {
     reviewer?: string;
     orchestrator?: string;
   };
-  theme?: 'dark' | 'light' | 'auto';
   /** Auto-scan toggle. Was previously localStorage 'papercusp.autoScan'. */
   auto_scan?: boolean;
   auto_accept?: 'off' | 'low' | 'medium' | 'high';
   /** Last-seen timestamp (ms epoch) for the toast/notification log.
    *  Was previously localStorage 'papercusp.toastLog.lastSeen'. */
   toast_last_seen_ms?: number;
+
+  // ── Browser-presentation preferences ────────────────────────────────────
+  // PG is the source of truth; localStorage is a per-device write-through
+  // cache, and the host injects the pre-paint ones into index.html. Migrated
+  // off localStorage-only storage because the desktop WebKitGTK webview's
+  // localStorage is unreliable across reloads/restarts (origin churn +
+  // unflushed writes). See lib/profile-pref.ts.
+  /** Active color-theme id: 'frost' | 'black' | 'custom:<slug>'. Replaces the
+   *  old `theme: 'dark'|'light'|'auto'` field, which never matched the real
+   *  theme system (lib/theme-tokens.ts). Read pre-paint via host injection. */
+  theme_id?: string;
+  /** Visual-effects mode. Read pre-paint via host injection. */
+  visual_effects_mode?: 'system' | 'full' | 'minimal';
+  /** Keyboard-shortcut overrides (shortcut id → combo). */
+  shortcut_overrides?: Record<string, string>;
+  /** Operator-chat sidebar width, in px. */
+  op_chat_width?: number;
+  /** Pi/terminals dock layouts keyed by harness slug (dockview JSON blobs). */
+  pi_dock_layouts?: Record<string, unknown>;
+
   updated_at?: string;
 }
 
-export async function readProfile(): Promise<Profile> {
-  return (await readOperatorState<Profile>('operator_user_profile')) ?? {};
+export async function readProfile(wsOverride?: string): Promise<Profile> {
+  return (await readOperatorState<Profile>('operator_user_profile', wsOverride)) ?? {};
 }
 
 export async function writeProfile(profile: Profile): Promise<Profile> {

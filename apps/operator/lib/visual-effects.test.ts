@@ -29,8 +29,10 @@ function stub({ reduced = false, stored = null }: { reduced?: boolean; stored?: 
     location: { href: 'http://127.0.0.1:3070/' },
   };
   const doc = { documentElement: { dataset: {} as Record<string, string> } };
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response));
   vi.stubGlobal('window', win);
   vi.stubGlobal('document', doc);
+  vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal(
     'CustomEvent',
     class {
@@ -42,7 +44,7 @@ function stub({ reduced = false, stored = null }: { reduced?: boolean; stored?: 
       }
     },
   );
-  return { store, doc, dispatchEvent };
+  return { store, doc, dispatchEvent, fetchMock };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -115,5 +117,15 @@ describe('writeVisualEffectsMode', () => {
     const { store } = stub();
     writeVisualEffectsMode('bogus' as never);
     expect(store.get(KEY)).toBe('system');
+  });
+
+  it('persists the mode to PG via POST /api/profile (source of truth)', () => {
+    const { fetchMock } = stub();
+    writeVisualEffectsMode('minimal');
+    const post = fetchMock.mock.calls.find(
+      (c) => (c[1] as { method?: string } | undefined)?.method === 'POST',
+    );
+    expect(post?.[0]).toBe('/api/profile');
+    expect(JSON.parse((post?.[1] as { body: string }).body)).toEqual({ visual_effects_mode: 'minimal' });
   });
 });
