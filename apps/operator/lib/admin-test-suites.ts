@@ -855,7 +855,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     const probe = await runTauriEvalResultJson<{ resetReady: boolean; hasLaunch: boolean; hasStop: boolean }>(
       ctx,
       `(() => ({
-        resetReady: typeof (window).__papercuspChaosIdleReset === 'function',
+        resetReady: typeof (window).__pcChaosIdleReset === 'function',
         hasLaunch: Array.from(document.querySelectorAll('button')).some((el) => (el.textContent || '').includes('Launch recorder window')),
         hasStop: Array.from(document.querySelectorAll('button')).some((el) => (el.textContent || '').includes('Stop')),
       }))()`,
@@ -872,12 +872,12 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   }
   // Reset any stuck run state (e.g. a previous test run left the chaos store in
   // 'launching' or 'recording' state, so the button shows 'Stop' instead of
-  // 'Launch recorder window'). The __papercuspChaosIdleReset escape hatch is
-  // installed by ChaosTab while it is mounted.
+  // 'Launch recorder window'). The __pcChaosIdleReset escape hatch is installed
+  // by the lib's ChaosDesktopPanel while it is mounted.
   await runTauriEvalResultJson<boolean>(
     ctx,
     `(() => {
-      const reset = (window).__papercuspChaosIdleReset;
+      const reset = (window).__pcChaosIdleReset;
       if (typeof reset === 'function') reset();
       return true;
     })()`,
@@ -933,7 +933,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     } | null>(
       ctx,
       `(() => {
-        const getSnapshot = (window).__papercuspGetChaosSnapshot;
+        const getSnapshot = (window).__pcGetChaosSnapshot;
         if (typeof getSnapshot === 'function') {
           try {
             const snap = getSnapshot();
