@@ -41,6 +41,15 @@ describe('provisionGymDatabase', () => {
     expect(rows[0].exists).toBe(true);
   });
 
+  it('pre-mints the spawn-signing key so the first real agent spawn can sign its .mcp.json', async () => {
+    // Without this row, spawn-mcp throws "spawn-signing-key row missing" and the first
+    // director invoke fails (claude -p --strict-mcp-config aborts on a missing .mcp.json).
+    const rows = await sql<{ value_b64: string }[]>`
+      SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = 'spawn-signing-key' LIMIT 1`;
+    expect(rows).toHaveLength(1);
+    expect(Buffer.from(rows[0].value_b64, 'base64')).toHaveLength(32);
+  });
+
   it('is idempotent — re-provisioning the same db does not throw', async () => {
     await expect(provisionGymDatabase({ maintenanceUri: containerUri, dbName })).resolves.toBeTruthy();
   }, 120_000);
