@@ -70,8 +70,13 @@ describe('buildGymOperatorBootSpec', () => {
     expect(() => buildGymOperatorBootSpec({ ...base, harnessCommit: 'main' })).toThrow();
   });
 
-  it('sets AGENT_CMD / AGENT_MODELS only when provided', () => {
+  it('sets AGENT_CMD only when provided; ALWAYS pins AGENT_MODELS to seal the inherited env', () => {
+    // AGENT_CMD: caller-provided (gym callers always pass it).
     expect(buildGymOperatorBootSpec(base).env.AGENT_CMD).toBeUndefined();
+    // AGENT_MODELS: always pinned — default '{}' so the launcher's inherited AGENT_MODELS
+    // (e.g. .env.local's {worker:opus}) can't leak in and run the gym worker on a different
+    // model than declared (reproducibility, D-016 + bounded cost).
+    expect(JSON.parse(buildGymOperatorBootSpec(base).env.AGENT_MODELS)).toEqual({});
     const pinned = buildGymOperatorBootSpec({
       ...base,
       agentCmd: 'claude -p',

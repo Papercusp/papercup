@@ -83,9 +83,13 @@ export function buildGymOperatorBootSpec(cfg: GymOperatorBootConfig): GymOperato
   };
 
   if (cfg.agentCmd) env.AGENT_CMD = cfg.agentCmd;
-  if (cfg.agentModels && Object.keys(cfg.agentModels).length > 0) {
-    env.AGENT_MODELS = JSON.stringify(cfg.agentModels);
-  }
+  // ALWAYS pin per-role models (default `{}` = no overrides → every role runs AGENT_CMD's
+  // model). This SEALS the gym from the launcher's inherited AGENT_MODELS — e.g. the dev
+  // box's `.env.local` carries `{"worker":"opus"}` for the live fleet, which would otherwise
+  // leak in and silently run the gym worker on opus (inflated cost, and a different model
+  // per machine → non-reproducible, violating D-016). Callers pin a stronger worker
+  // explicitly via cfg.agentModels when they want production-fidelity.
+  env.AGENT_MODELS = JSON.stringify(cfg.agentModels ?? {});
 
   return {
     command: 'npx',
