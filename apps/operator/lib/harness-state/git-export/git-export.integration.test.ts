@@ -16,6 +16,7 @@ import {
 } from './ensure-git-outbox';
 import { drainGitExportOnce } from './drainer';
 import { hydrateGitTable } from './hydrate';
+import { gcOrphanOutboxRows } from './gc';
 import { parseFile, gitFilePath } from './serialize';
 
 const WS = 'ws_git';
@@ -176,6 +177,32 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
     expect(await hasTrigger('harness_branch_actions')).toBe(false);
     // a genuine GIT_TABLES member keeps its trigger.
     expect(await hasTrigger('harness_decisions')).toBe(true);
+  });
+
+  it('P-008 GC: deletes orphan outbox rows from non-registry harnesses, keeps live ones', async () => {
+    // seed outbox rows for a LIVE (registry) harness + an EPHEMERAL orphan harness.
+    await db.sql`
+      INSERT INTO harness_shared.git_export_outbox (workspace_id, harness_slug, table_name, op, key, row, ts)
+      VALUES
+        (${WS}, ${SLUG},          'harness_decisions', 'put', 'live-1',   ${db.sql.json({})}, 1),
+        (${WS}, 'gymsmoke-eph01', 'harness_decisions', 'put', 'orphan-1', ${db.sql.json({})}, 1),
+        (${WS}, 'gymsmoke-eph01', 'harness_lanes',     'put', 'orphan-2', ${db.sql.json({})}, 1)`;
+
+    // guard: an empty live list is a no-op (never GC-everything on a failed resolve)
+    const noop = await gcOrphanOutboxRows(db.sql, []);
+    expect(noop.deleted).toBe(0);
+
+    const gc = await gcOrphanOutboxRows(db.sql, [{ workspaceId: WS, harnessSlug: SLUG }]);
+    expect(gc.deleted).toBe(2); // the two gymsmoke-eph01 rows
+    expect(gc.orphans).toContain(`${WS}::gymsmoke-eph01`);
+
+    const live = await db.sql<{ c: number }[]>`
+      SELECT count(*)::int AS c FROM harness_shared.git_export_outbox
+       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND key = 'live-1'`;
+    expect(live[0].c).toBe(1); // the registry harness's row is untouched
+    const orphan = await db.sql<{ c: number }[]>`
+      SELECT count(*)::int AS c FROM harness_shared.git_export_outbox WHERE harness_slug = 'gymsmoke-eph01'`;
+    expect(orphan[0].c).toBe(0);
   });
 
   it('hydrate does NOT re-enqueue an export (capture trigger disabled during load)', async () => {

@@ -27,6 +27,7 @@ import {
 import { hydrateGitTable } from './hydrate';
 import { startGitExportDrain, type GitExportDrainHandle } from './drainer';
 import { makeDebouncedGitCommitter } from './git-committer';
+import { gcOrphanOutboxRows } from './gc';
 
 export interface GitExportGlobals {
   /** git tables whose capture trigger attached successfully on this install. */
@@ -93,12 +94,14 @@ export interface BootGitExportResult {
   globals: GitExportGlobals;
   handles: GitExportDrainHandle[];
   harnesses: number;
+  /** P-008: orphan outbox rows GC'd (from ephemeral / non-registry harnesses). */
+  gcDeleted: number;
 }
 
 /**
  * Boot git-export for a resolved set of harnesses. The caller (host-bootstrap)
  * supplies the harness list (workspace + slug + on-disk root) so this module
- * stays decoupled from workspace resolution. UNVERIFIED on a live boot.
+ * stays decoupled from workspace resolution. LIVE-VERIFIED (D-005).
  */
 export async function bootGitExportForHarnesses(
   sql: postgres.Sql,
@@ -124,5 +127,22 @@ export async function bootGitExportForHarnesses(
       );
     }
   }
-  return { globals, handles, harnesses: harnesses.length };
+  // P-008: GC outbox rows orphaned by ephemeral / non-registry harnesses (which
+  // never get a drain loop). Non-fatal; guarded to no-op on an empty harness list.
+  let gcDeleted = 0;
+  try {
+    const gc = await gcOrphanOutboxRows(
+      sql,
+      harnesses.map((h) => ({ workspaceId: h.workspaceId, harnessSlug: h.harnessSlug })),
+    );
+    gcDeleted = gc.deleted;
+    if (gc.deleted > 0) {
+      // eslint-disable-next-line no-console
+      console.log(`[git-export] GC'd ${gc.deleted} orphan outbox row(s) from ${gc.orphans.length} non-registry harness(es)`);
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[git-export] orphan GC failed (non-fatal):', e instanceof Error ? e.message : String(e));
+  }
+  return { globals, handles, harnesses: harnesses.length, gcDeleted };
 }
