@@ -10,6 +10,7 @@
 
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { probeDesktop } from './desktop-health';
 
 export interface EndpointSpec {
   name: string;
@@ -32,6 +33,17 @@ export interface ProbeResult {
   up: boolean;
   status: number | null;
   latencyMs: number;
+  /**
+   * For services that may legitimately be ABSENT (the desktop — see
+   * desktop-health.ts): false means "not running, don't alert". `diffHealth`
+   * skips a result with `present === false`. HTTP endpoints leave it undefined
+   * (always treated as present).
+   */
+  present?: boolean;
+  /** Human-readable detail (which signal failed, recent error toasts, …). */
+  note?: string;
+  /** Desktop only: count of recent ERROR toasts (toastLog signal). */
+  recentErrors?: number;
 }
 
 export async function probeEndpoint(spec: EndpointSpec, timeoutMs = 3000): Promise<ProbeResult> {
@@ -50,7 +62,13 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = 3000): Promi
 }
 
 export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promise<ProbeResult[]> {
-  return Promise.all(specs.map((s) => probeEndpoint(s)));
+  // The Tauri desktop has no HTTP endpoint — probe it from its local signals
+  // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones.
+  const [http, desktop] = await Promise.all([
+    Promise.all(specs.map((s) => probeEndpoint(s))),
+    probeDesktop(),
+  ]);
+  return [...http, desktop];
 }
 
 export interface HealthTransition {
@@ -72,6 +90,13 @@ export function diffHealth(
   const transitions: HealthTransition[] = [];
   const next: Record<string, boolean> = { ...prev };
   for (const r of now) {
+    if (r.present === false) {
+      // A legitimately-absent service (e.g. the desktop is not running): forget
+      // it — don't alert a phantom DOWN, and don't fire a false "recovered" when
+      // it comes back (it'll be a silent first-seen-up instead).
+      delete next[r.name];
+      continue;
+    }
     const was = prev[r.name] ?? true; // unknown → assume up (only alert on a real drop)
     if (was !== r.up) {
       transitions.push({ name: r.name, to: r.up ? 'up' : 'down' });
@@ -112,9 +137,14 @@ export async function runServiceHealthTick(): Promise<{ checked: number; transit
   lastHealth = next;
   for (const t of transitions) {
     const r = results.find((x) => x.name === t.name);
+    const downDetail = r?.note
+      ? ` — ${r.note}`
+      : r?.status
+        ? ` (HTTP ${r.status})`
+        : ' (no response)';
     const summary =
       t.to === 'down'
-        ? `⚠ service "${t.name}" is DOWN${r?.status ? ` (HTTP ${r.status})` : ' (no response)'}`
+        ? `⚠ service "${t.name}" is DOWN${downDetail}`
         : `✅ service "${t.name}" recovered`;
     await sendMessage(HEALTH_IDENTITY, { to: ['*'], summary }).catch(() => {});
   }

@@ -33,4 +33,32 @@ describe('diffHealth', () => {
   it('no change → no transitions', () => {
     expect(diffHealth({ a: true }, [r('a', true)]).transitions).toEqual([]);
   });
+
+  // A `present: false` result is a legitimately-absent service (the desktop is
+  // not running) — it must never produce a phantom DOWN/recovered (P-019).
+  const absent = (name: string): ProbeResult => ({
+    name,
+    up: false,
+    present: false,
+    status: null,
+    latencyMs: 1,
+  });
+
+  it('skips an absent (present:false) service — no transition, drops its state', () => {
+    const { transitions, next } = diffHealth({}, [absent('desktop'), r('a', true)]);
+    expect(transitions).toEqual([]); // desktop absent → no DOWN; a first-seen-up → silent
+    expect(next).toEqual({ a: true }); // desktop not carried forward
+  });
+
+  it('a previously-up service going absent does NOT alert and is forgotten', () => {
+    const { transitions, next } = diffHealth({ desktop: true }, [absent('desktop')]);
+    expect(transitions).toEqual([]);
+    expect(next.desktop).toBeUndefined();
+  });
+
+  it('a present desktop that is down DOES alert (running but unhealthy)', () => {
+    const present: ProbeResult = { name: 'desktop', up: false, present: true, status: null, latencyMs: 1 };
+    const { transitions } = diffHealth({ desktop: true }, [present]);
+    expect(transitions).toEqual([{ name: 'desktop', to: 'down' }]);
+  });
 });
