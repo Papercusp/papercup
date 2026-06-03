@@ -1,0 +1,229 @@
+# Spec: app-wide live-query convergence + generalized dock
+
+Date: 2026-06-03
+Author: Claude (autonomous run, authorized by Avi)
+Status: **IN PROGRESS** — see Status Log at bottom.
+
+> This doc is BOTH the design record AND the resumable execution checklist.
+> Each phase has a task list with `[ ]`/`[x]`. On resume after a context
+> reset, read the Status Log + the checkboxes to find where to continue.
+
+## Context
+
+The `/adv` "Create" tab (`?tab=plans`, `AdvShell.tsx:52` label "Create") is the
+last surface on a legacy bespoke data path (`plans-api.ts` `useAsyncJson`: raw
+`fetch` + per-call-site `useState`, no shared cache, manual `tick` refresh,
+"No SSE/live-sync in v1"). The rest of the app (~75% of read sites) already
+uses `@papercusp/sync`'s `useSyncQuery` — a transport-abstracted live-query
+layer (Zero WS / SSE / TanStack-Query-backed polling) with a shared
+`['sync', queryName, args]` cache and a server→client invalidation bus
+(PG `LISTEN/NOTIFY` → SSE `invalidate`/`update` → `queryClient.invalidateQueries`).
+
+We want ONE data layer, generalized into the shared lib, and the Create tab
+moved onto our dock system (`app/harness/dock`, dockview) as free panels.
+
+## Principles
+
+1. **Data layer (`@papercusp/sync`) is UI-agnostic; dock/UI is data-agnostic.**
+   They compose at the app level; neither imports the other.
+2. **Lib owns mechanism; app owns content.** Lib ships dispatch, transports,
+   cache, the PG LISTEN/NOTIFY adapter, route factories, and the dock
+   close-guard seam. App supplies resolver *entries*, panel components, domain.
+   The lib must stay drizzle-free / domain-free (resolvers are app-provided
+   closures).
+3. **Reuse, don't rebuild** — TanStack Query (via sync), the resolver-registry
+   pattern, the NOTIFY bus, dockview. No new cache primitive.
+4. **Pre-alpha** — migrate fully, delete the legacy `useAsyncJson` path, no
+   back-compat shims.
+
+## Architecture (the three layers)
+
+- **Server contract**: tooldef (`defineTool`) — every read/write is a tool,
+  projected to MCP/HTTP/IPC/in-process.
+- **Live-query data layer**: `@papercusp/sync`
+  - client (exists): `useSyncQuery({queryName,args}) → {data,loading,fetching,invalidate,error}`,
+    transports (WS/SSE/polling), shared QueryClient, `['sync',name,args]` keyspace.
+  - server (NEW, P0): named-query resolver registry + PG LISTEN/NOTIFY
+    invalidation bus + REST/SSE route factories, all behind a `configure()` seam.
+- **UI/dock layer**: `app/harness/dock` (dockview) — registry, layout, persistence,
+  actions, nav; data-agnostic. Plus a NEW data-agnostic close-guard seam.
+
+Key facts established by audit (2026-06-03):
+- `sync-sse.ts` is ~80% generic; coupling = PG-LISTEN conn (`getHarnessAdminUrl`),
+  NOTIFY channel `'sync_invalidate'`, the trigger→queryName bridge
+  (`queryNamesForTriggerEvent` / `table-to-query-names.ts`).
+- `sync-resolver/index.ts`: dispatch + registry STRUCTURE generic; the ~52
+  entries are drizzle/`getOrgPg`-coupled → lib owns structure, app owns entries.
+- REST/SSE routes (`endpoint-route/routes/zero-harness/{rest-query,rest-query-batch,sse}.ts`)
+  are generic Web handlers; inject resolver + auth.
+- `@papercusp/sync` is client-only today (`main: src/index.ts`, raw-TS workspace
+  dep, no build). Server half ships as a separate entry `./server` so `pg`
+  never enters the client bundle.
+- Plans live as git Markdown (not PG) — fine: resolver reads files (like
+  `plansDrafts.bySlug` already does); `plans:*` write tools call
+  `notifySyncInvalidate(...)` explicitly. PG-NOTIFY is just the transport.
+
+---
+
+## P0 — Lift the sync server-half into `@papercusp/sync/server`
+
+`@papercusp/sync` is a git submodule (`libs/generic/sync` → github.com/Papercusp/sync).
+Edit there, commit on its main, bump the superproject pointer. Do NOT push.
+
+### Lib modules (generic, no PG/drizzle dep)
+- `src/server/query-registry.ts`
+  - `type QueryEntry<A> = { argsSchema?: StandardSchema<A>; resolve(args:A): Promise<unknown[]> }`
+  - `type QueryRegistry = Record<string, QueryEntry<any>>`
+  - `const NAME_NOT_FOUND = Symbol(...)`
+  - `createResolver(registry) => (name, args) => Promise<unknown[] | typeof NAME_NOT_FOUND>`
+    (validate args via entry.argsSchema if present; else passthrough).
+- `src/server/invalidation-bus.ts` — generic core of sync-sse:
+  - ring buffer (`historyWindowMs`), dedupe (`dedupeWindowMs`), subscriber Set,
+    `backfillSince(id)`, monotonic id.
+  - `createInvalidationBus({ listen, notify, channel?, historyWindowMs?, dedupeWindowMs?, bridge? })`
+    → `{ subscribe(send)→handle, backfillSince(id), notifyInvalidate(name,args?,data?), start(), stop() }`
+  - `ListenSource = { start(onEvent:(raw:string)=>void): Promise<void>|void; stop(): void }`
+  - `NotifySink = { notify(payloadJson:string): Promise<void> }`
+  - `bridge?(triggerName:string): string[]` for PG-trigger→queryName synthesis.
+  - 32KB payload-drop rule preserved; emit shape `{id,ts,name,args?,data?}`.
+- `src/server/pg-adapter.ts` (sub-path export `./server/pg`) — postgres-js
+  `ListenSource`/`NotifySink` factory `createPgListenSource({url,channel})` /
+  `createPgNotifySink({sql,channel})`. Keeps `postgres` out of the bus core.
+- `src/server/http-routes.ts` — framework-neutral factories returning
+  `(req: Request) => Promise<Response>`: `createRestQueryHandler(resolver)`,
+  `createRestBatchHandler(resolver)`, `createSseHandler(bus, sseLib)`.
+  (gzip + error-envelope generic; auth injected by caller's wrapper.)
+- `src/server/index.ts` — barrel. package.json `exports`: add
+  `"./server": "./src/server/index.ts"` and `"./server/pg": "./src/server/pg-adapter.ts"`.
+  peerDeps: `postgres` (optional, only for the pg sub-path), keep zod optional
+  by accepting Standard Schema (reuse the validate helper shape).
+
+### Operator rewiring (behavior-preserving)
+- `apps/operator/lib/sync-server-config.ts` — builds the registry (existing
+  `REGISTRY` from `sync-resolver` + later plans entries), PG `ListenSource`/
+  `NotifySink` from `getHarnessAdminUrl`/`getOrgPg`, channel `'sync_invalidate'`,
+  bridge = `queryNamesForTriggerEvent`. Calls `createInvalidationBus` +
+  `createResolver`. Exports the singleton bus + resolver.
+- `sync-sse.ts` → thin re-export of the bus instance; keep
+  `notifySyncInvalidate`, `subscribe`, `backfillSince` names (every existing
+  emitter untouched).
+- `sync-resolver/index.ts` → keep the entries; `resolveNamedQueryV2 = createResolver(registry)`.
+  Keep `knownQueryNamesV2`/`isRegisteredV2` for tests.
+- 3 routes delegate to the lib handler factories (keep `defineTool` + auth).
+- **Net behavior change: zero.** Existing harness panels prove the seam.
+
+### P0 tasks
+- [ ] sync submodule: add `src/server/query-registry.ts` + unit test
+- [ ] sync submodule: add `src/server/invalidation-bus.ts` + unit test (ring/dedupe/backfill/bridge)
+- [ ] sync submodule: add `src/server/pg-adapter.ts`
+- [ ] sync submodule: add `src/server/http-routes.ts` + unit test
+- [ ] sync submodule: `src/server/index.ts` barrel + package.json exports + peerDeps
+- [ ] sync submodule: `npm test` green; commit on submodule main
+- [ ] operator: `sync-server-config.ts`
+- [ ] operator: rewire `sync-sse.ts` (re-export), `sync-resolver/index.ts` (createResolver)
+- [ ] operator: rewire the 3 zero-harness routes to lib factories
+- [ ] operator: `npm run test:affected` green; bump submodule pointer; commit superproject
+- [ ] verify: operator boots, harness panels live-update, a notify round-trips (integration)
+
+---
+
+## P1 — Converge the Create tab (plans) onto `useSyncQuery`
+
+### Server
+- Add resolver entries (operator registry) wrapping existing plans server fns:
+  `plans.list, plans.items, plans.attention, plans.search, plans.get,
+   plans.revisions, plans.runs, plans.history, plans.lint, plans.lock`.
+  Args schemas mirror current fetchers. Single-object reads return 1-elem arrays.
+- Emit `notifySyncInvalidate` from `plans:*` write tools (set-status, set-content,
+  set-now, add-item, add-decision, new, set-plan-status, start, pause, promote,
+  set-priority, set-frontmatter): invalidate `plans.list`+`plans.items`+
+  `plans.attention` (harness-scoped) and `plans.get`/`plans.revisions` (slug).
+  Lock tools already emit — wire `plans.lock` too.
+
+### Client
+- Rewrite `plans-api.ts`: each `use*` becomes a `useSyncQuery` wrapper preserving
+  the `AsyncResult<T>` shape (data/loading/error/refresh) so consumers don't all
+  churn; `refresh()` → `invalidate()`; single-object reads unwrap `data[0]`.
+- Delete `useAsyncJson`. Writes keep `useMutation`/`postJson`; drop manual refresh
+  (server NOTIFY drives it; keep optimistic `invalidate()` for snappiness).
+- Note `usePlanLock` can converge (locks emit invalidations).
+
+### P1 tasks
+- [ ] operator: add plans.* resolver entries + arg schemas + unit tests
+- [ ] operator: emit notifySyncInvalidate from each plans:* write tool
+- [ ] operator: rewrite plans-api.ts hooks → useSyncQuery; delete useAsyncJson
+- [ ] operator: update consumers if return-shape changed; `test:affected` green
+- [ ] verify: write→NOTIFY→refetch; two readers converge (integration)
+- [ ] commit
+
+---
+
+## P2 — Dock-ify the Create tab (free panels) + generalized close-guard
+
+### Panels (panelRegistry types `create:*`)
+Decompose `PlansClient` into independent panels, each reading via `useSyncQuery`
+(shared cache → no prop-drilling, no shared closure):
+- `create:plans-list`, `create:inbox`, `create:preview`,
+  `create:sessions-list`, `create:sessions-detail`, `create:plan-editor`
+  (multi-instance via `openPanel`). Left rail dissolves → panel headers + AdvShell toolbar.
+Selection/filters stay in nuqs (already). Cross-panel coherence = shared cache.
+
+### Layout + mount
+- `lib/dock-layouts.ts`: `defaultAdvCreateLayout()` + `adv-create:` branch in `getLayout`.
+- `app/adv/.../AdvCreateDock.tsx` mirrors `HarnessesDock`; swap into
+  `operator-vite/src/routes/adv/index.tsx` (replace `<PlansClient/>`).
+
+### Close-guard (dock-side, data-agnostic)
+- `app/harness/dock/close-guard.ts`: `registerCloseGuard(panelId, fn)` +
+  injectable `confirmClose` (default `window.confirm`). Dock close path
+  (`dock-actions.closePanel` / HarnessDock `onWillRemovePanel` if supported, else
+  intercept) consults it. plan-editor registers a guard from its dirty state
+  (replaces `leaveGuard`). Written domain-free to lift when the shell is extracted
+  (shell extraction itself is OUT OF SCOPE here).
+
+### P2 tasks
+- [ ] close-guard seam + unit test
+- [ ] panel components (6) reading via useSyncQuery
+- [ ] defaultAdvCreateLayout + getLayout branch + AdvCreateDock
+- [ ] swap adv/index.tsx mount; delete/retire PlansClient monolith
+- [ ] `test:affected` green; e2e via tauri-agent-tools if desktop running
+- [ ] commit
+
+---
+
+## P3 — Sweep remaining data loads onto sync
+
+Each a small verified commit:
+- [ ] operator-vite polling → useSyncQuery + resolvers: AdvNowRunning
+      (agents+status), DiscordBadge, dogfood-substrate-health (frees 6-conn cap)
+- [ ] ~7 vite one-shot fetches → useSyncQuery (projects/lite, insights, users,
+      marketplace, plugin-runtime)
+- [ ] design panes (4) → useSyncQuery (drop-in, already `['sync',...]`)
+- [ ] useHarnessData hybrid → pure useSyncQuery (REST bootstrap → resolver)
+- [ ] STAYS documented (mutations, SSE streams, auth/beforeLoad, PTY WS, health)
+- [ ] commit
+
+---
+
+## Testing strategy
+- Unit (vitest): all lib server modules (registry/dispatch, bus ring/dedupe/
+  backfill/bridge, http factories), plans resolvers, close-guard.
+- Integration (`npm run test:affected:integration`, testcontainers PG): notify
+  round-trip; plans write→invalidate→refetch.
+- `npm run test:affected` after every edit unit.
+- e2e (tauri-agent-tools, per /internal/docs/testing/agent-e2e) only if the
+  desktop is running; otherwise note live-verification pending.
+
+## Risks / gotchas
+- Shared multi-agent tree: commit ONLY my paths explicitly (other agents have
+  uncommitted plan-docs + ORT wasm in the tree). Stay on `main`, don't push.
+- `@papercusp/sync` is a submodule + shared with Restart: keep P0 ADDITIVE
+  (new `./server` export; client surface unchanged) so Restart is unaffected.
+  Commit in submodule, bump superproject pointer, don't push.
+- No server hot-reload: server-side edits need a desktop reload to go live; rely
+  on unit/integration tests for correctness, note live-verify pending.
+- Named-dollar-quote / migrations: not expected here (no schema changes).
+
+## Status Log
+- 2026-06-03 01:2x — spec written; tasks #6–#9 created; coord intent declared;
+  confirmed sync is a submodule (raw-TS, additive `./server` safe). Starting P0.
