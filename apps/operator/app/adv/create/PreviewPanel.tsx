@@ -15,12 +15,18 @@ import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanItemPreview from '@/app/admin/plans/PlanItemPreview';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { usePlanAttention } from '@/app/admin/plans/plans-api';
-import { focusPanel, listPanels, openPanel } from '@/app/harness/dock/dock-actions';
+import { focusPanel, groupIdOfPanelType, listPanels, openPanel } from '@/app/harness/dock/dock-actions';
 import { useCreateScope, usePlanListMaps } from './use-create-data';
 
 const EDITOR_TYPE = 'create:plan-editor';
+const PREVIEW_TYPE = 'create:preview';
 
-/** Open (or focus an existing) plan-editor panel for a slug. */
+/**
+ * Open (or focus an existing) plan-editor panel for a slug. The editor opens
+ * INTO the preview's group (the right region) so it stacks over the preview
+ * and — with the Create dock's headers hidden — fills the full width of the
+ * right side. AdvCreateDock widens that region while an editor is open.
+ */
 export function openPlanEditor(slug: string, jump?: string): void {
   try {
     const existing = listPanels().find((p) => p.type === EDITOR_TYPE && p.params.plan === slug);
@@ -31,6 +37,9 @@ export function openPlanEditor(slug: string, jump?: string): void {
     const id = openPanel({
       type: EDITOR_TYPE,
       title: slug,
+      // Drop into the right region (preview's group); falls back to
+      // auto-position if no preview is open.
+      group: groupIdOfPanelType(PREVIEW_TYPE),
       params: { plan: slug, ...(jump ? { jump } : {}) },
     });
     focusPanel(id);

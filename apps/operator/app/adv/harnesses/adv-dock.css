@@ -48,6 +48,14 @@
     inset 0 -1px 0 rgb(from var(--accent-strong) r g b / 0.06);
 }
 
+/* Create dock only: external top-bar buttons drive panel switching, so the
+ * per-group tab headers are dead weight — hide them. The dock is kept purely
+ * for its resizable, locked two-region split. Scoped to `.pc-adv-create` so
+ * the Harness/Git docks (which DO use their tabs) are untouched. */
+.pc-adv-create.pc-adv-dock .dockview-theme-dark .dv-tabs-and-actions-container {
+  display: none;
+}
+
 /* Tabs ride transparent over the frost strip; active tab gets a sky wash
  * + underline, hover a fainter wash. */
 .pc-adv-dock .dockview-theme-dark .dv-tab {

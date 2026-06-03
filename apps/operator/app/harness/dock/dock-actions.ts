@@ -122,6 +122,18 @@ export function setPanelTitle(panelId: string, title: string): boolean {
 }
 
 /**
+ * Group id of the first panel of `type`, or undefined if none is open.
+ * Used to open a new panel INTO an existing region (e.g. drop the plan
+ * editor into the preview's group so it swaps full-width in the right
+ * region) via openPanel({ group }).
+ */
+export function groupIdOfPanelType(type: string): string | undefined {
+  const dv = api();
+  const p = dv.panels.find((pp) => panelType(pp) === type);
+  return p?.group?.id;
+}
+
+/**
  * §9.1: agent-dispatchable layout-level actions.
  *
  * - `setFocusSlug(slug)` updates ?focusSlug= via nuqs from the URL
