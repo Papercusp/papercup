@@ -14,9 +14,9 @@ supersedes: []
 
 ## Now
 
-**State:** Design approved (2026-06-03). This un-defers `testing-shell-cross-project-2026-06-01` D-002/D-007 (which shipped only `routes` as universal and parked chaos/ai/live) and supersedes its D-008 (generic-driver "no consumer" call — there are now two consumers). It continues `testing-shell-platform-variants-2026-06-01` (the `platform` prop + web chaos/live variants already shipped). Goal: k6, Chaos, Live, and AI Explore become **config-driven universal domains in `@papercusp/testing-shell`**, consumed identically by Restart (`platform:'web'`) and the Papercusp operator (`platform:'both'`); each app supplies endpoints/baseUrl via one config object and mounts thin per-framework route wrappers.
+**State:** Design approved + plan finalized (2026-06-03), incl. Phase 7 (LLM scenario-testing framework → lib, per D-007/D-008 — a late scope add by the user). Un-defers testing-shell-cross-project D-002/D-007, supersedes its D-008; continues testing-shell-platform-variants. Seven phases: 0 scaffold+reconcile diverged submodule, 1 k6, 2 chaos-web backend core, 3 AI Explore, 4 chaos-desktop recorder, 5 universal catalog + buildUniversalTesting, 6 rewire both consumers+land+verify, 7 LLM framework (stateless lib + ChatTarget, data/storage per-app; Restart gets a ScoutTarget + fresh scenarios — no prior Scout scenarios existed to port). Execution mode: inline, phase-by-phase, check in at each phase boundary.
 
-**Next:** an agent executes Phase 0 (scaffolding + reconcile the two diverged submodule checkouts) then Phase 1 (k6). Phases are independently landable; land each before the next.
+**Next:** An agent executes Phase 0 (P-001 reconcile the two diverged testing-shell checkouts — highest risk; do not lose Restart's detached work — then P-002/P-003 scaffolding).
 
 ## Background
 
@@ -292,6 +292,21 @@ export function spawnAiExploreStream(cfg: AiExploreConfig): { child: import('nod
 - **Operator `live` id collision:** universal observer is `live-web`; operator vitals must be renamed off `live` (P-064) — they're different things.
 - **No `npm run test:all` for routine edits** (Restart CLAUDE.md); use `test:affected`. `libs/test-config` changes would require `test:all` but this plan doesn't touch it.
 
+
+## Phase 7 — LLM scenario testing universal
+
+- **P-070** `todo` `todo` Move the generic LLM framework + tests from `apps/operator/lib/llm-testing/` → `libs/testing-shell/src/llm/`: `runner.ts`, `judge.ts`, `sim-user.ts`, `llm-client.ts` (+`MODEL_PRICES`), `types.ts`, `asserts/`, `__tests__/`. Introduce the `ChatTarget` interface (open/send→TurnResult/close) and route the runner's SUT access ONLY through it, so the lib has NO papercup-shared/operator import (the agent-chat-stream usage moves to operator's OperatorTarget in P-073). Run `npm -w @papercusp/testing-shell test` green. See D-007.
+- **P-071** `todo` `todo` Define the `LlmTestStore` storage interface in the lib (`persistRunReport`/`listRuns`/`getRun`/`listFindings`/`ackFinding`); the runner takes an injected `store`. The lib NEVER touches Postgres. TDD: a fake in-memory store proves the runner persists a RunSummary + findings through the interface. See D-007 (storage stays per-app).
+- **P-072** `todo` `todo` Move the `LlmTab` UI (`apps/operator/app/admin/testing/_components/LlmTab.tsx`, 4 subtabs Targets/Scenarios/Runs/Findings) → `libs/testing-shell/src/llm/LlmTestPanel.tsx`, endpoints via props `{ scenariosEndpoint, runsEndpoint, runDetailEndpoint, findingsEndpoint, credentialsEndpoint? }` (inline any `@/lib/*` deps, like P-014). Add `llm?: {…those endpoints…}` to `UniversalTestingConfig`; `buildUniversalTesting` emits an agnostic `llm` tab (tier `universal`) rendering `LlmTestPanel`. RTL render test + universal-tabs test. Export from `index.ts`.
+- **P-073** `todo` `todo` Rewire the operator: import framework + types from `@papercusp/testing-shell/llm` (delete the moved files from `apps/operator/lib/llm-testing/`); keep operator-only data — `scenarios/`, `personas/`, `rubrics/`, and `targets/operator.ts` now `implements` the lib `ChatTarget` (the agent-chat-stream usage lands here); implement `LlmTestStore` against the existing `harness_shared` tables (keep `storage.ts` + schema + `/api/admin/llm-tests/*` routes); map `llm` into the operator's `buildUniversalTesting` config. Operator LLM behavior unchanged. Operator affected tests green; restart `:3070` (no hot-reload).
+- **P-074** `todo` `todo` Restart adoption (NO prior Scout scenarios exist to port — only 2 unit tests + 1 e2e found; author fresh — D-008): write `ScoutTarget implements ChatTarget` driving `ScoutService.chat()`/`POST /chat/stream` (map SSE session/token/products/tool_start/card → TurnResult); author ~4-6 starter scenarios (search_products-before-prose, ask_choice, governed `list_orders` routing) + a Restart rubric + shopper persona; add gpt-4o-mini to MODEL_PRICES + set Restart `LLM_TEST_SUT_MODEL`; implement `LlmTestStore` on Restart's DB + `/api/.../llm-tests/*` routes; wire `llm` into Restart's `buildUniversalTesting`. `npm run test:affected` green.
+- **P-075** `todo` `todo` Live-verify both LLM tabs end-to-end: operator `/adv` Tests tab (Tauri-under-Xvfb) runs an operator scenario (transcript + judge scores + findings render); Restart `/tests` LLM tab runs a fresh Scout scenario against the live scout-service and shows a pass/finding. blocked-by: P-073, P-074
+
+
+
+
+
+
 ## Decisions
 
 ### D-001 — Component model: separate web + desktop variants, filtered by the existing `platform` prop
@@ -317,3 +332,32 @@ Date: 2026-06-03
 ### D-006 — Stagehand + Playwright are optional peerDependencies of the lib
 Date: 2026-06-03
 AI Explore (Stagehand) and chaos-web (Playwright) pull heavy browser deps. They go in `peerDependencies` with `peerDependenciesMeta.optional:true`; the cores only `spawn`/dynamic-`import` them at run time, so a consumer that never runs those domains isn't forced to install them and importing `./server` never touches them at module load.
+
+### D-007 — LLM scenario-testing framework splits like k6 — generic framework→lib (stateless), data+storage+routes→app, via a ChatTarget abstraction
+Date: 2026-06-03
+Papercusp's LLM testing harness (`apps/operator/lib/llm-testing/`) is operator-only today. It splits exactly like k6: a **generic framework** with zero Papercusp logic, plus **per-project data**. Phase 7 moves the framework to the lib; data + storage + routes stay per-app.
+
+MOVE TO LIB (`libs/testing-shell/src/llm/`):
+- `runner.ts` (sim-user → target.send → asserts → judge → persist loop), `sim-user.ts`, `judge.ts`, `llm-client.ts` (+ `MODEL_PRICES`), `types.ts`, `asserts/` (pluggable `registerEvaluator(kind, fn)`), and their `__tests__`.
+- The `LlmTab` UI (856 lines) → `llm/LlmTestPanel.tsx`, endpoints via props: `{ scenariosEndpoint, runsEndpoint, runDetailEndpoint, findingsEndpoint, credentialsEndpoint? }` (mirrors how LoadTestPanel was parameterized).
+- The contract INTERFACES: `ChatTarget` (`open() → session`, `session.send(turnInput) → TurnResult`, `close()`), `Scenario`, `Persona`/`PersonaTraits`, `GoalSpec`, `JudgeRubric`/`JudgeAxis`, `DeterministicAssert`, `RunSummary`, `JudgeResult`.
+
+CRITICAL DECOUPLING: the runner currently imports agent-chat-stream from papercup-shared. The lib must NOT depend on papercup-shared (Restart consumes the lib). So the runner talks to the SUT ONLY through the `ChatTarget` interface; the agent-chat-stream usage moves into the operator's `OperatorTarget implements ChatTarget`. After the move the lib `llm/` has no papercup-shared / operator / agent-mcp import.
+
+STATELESS LIB (storage stays per-app — chosen over a lib storage layer): the runner takes an injected `store: LlmTestStore` interface — `persistRunReport(r)`, `listRuns(filter)`, `getRun(id)`, `listFindings(filter)`, `ackFinding(id, on)`. Each app implements it: the operator keeps its `harness_shared.llm_test_runs`/`llm_test_findings` tables + queries (`storage.ts`) + its `/api/admin/llm-tests/*` routes; Restart implements its own against its DB + routes. The lib never touches Postgres. This matches D-002 (substance in lib, mount + persistence per-app).
+
+STAYS PER-APP (data): scenario files (operator's 60+ in `scenarios/`), `ChatTarget` impls (`OperatorTarget`; Restart's new `ScoutTarget`), personas/blends, rubrics. Like k6 scripts: generic runner, per-project data.
+
+HELPER: `buildUniversalTesting` gains an optional `llm?: { scenariosEndpoint; runsEndpoint; runDetailEndpoint; findingsEndpoint; credentialsEndpoint? }` key → emits an `llm` tab (tier `universal`, platform-agnostic) rendering `LlmTestPanel` wired to those endpoints. Omit the key → no LLM tab (D-005).
+
+Model selection stays config-driven (env `LLM_TEST_SUT_MODEL`/`LLM_TEST_JUDGE_MODEL`/`LLM_TEST_SIM_MODEL` + agent-config); `MODEL_PRICES` moves with `llm-client.ts` and is extensible (the operator uses claude-*; Restart's Scout uses gpt-4o-mini/gemini/groq/qwen — add their prices when wiring Restart).
+
+### D-008 — Restart adopts LLM testing now via a ScoutTarget + freshly-authored scenarios — no prior Scout scenarios existed to port
+Date: 2026-06-03
+User asked to wire Restart's LLM testing now AND to find/port the "lot of Scout tests" agents had run. Investigation (2026-06-03) found NO saved Scout LLM scenarios/evals anywhere in Restart — nothing encodes "given user message → expect tool-call/response". The entire Scout test surface is: `apps/scout-service/src/scout/scout-governance.test.ts` (memory-scope + governed tool allow-list, 4 cases), `apps/scout-service/src/scout/card-correlator.test.ts` (ask_choice pause/resume, 4 cases), and `apps/shop/src/lib/scout-fab.e2e.test.ts` (FAB CSS visibility, Playwright). None are conversational. So there is nothing to port; Restart scenarios are authored fresh.
+
+Restart adoption (Phase 7, P-074):
+- `ScoutTarget implements ChatTarget` in `apps/scout-service` (or a Restart test lib). Drives Scout's real entry point: `ScoutService.chat(req): AsyncGenerator<CopilotSSEEvent>` (`apps/scout-service/src/scout/scout.service.ts:124`) or `POST /chat/stream` (`scout.controller.ts:98`). Request `CopilotChatRequest { sessionId?, message, pageContext?, model?, userId? }`; SSE events `{type:'session'|'token'|'products'|'tool_start'|'card'|'done'}`. The target maps these to the framework's `TurnResult` (assistant text from `token`, tool calls from `tool_start`, cards from `card`).
+- Author ~4-6 starter scenarios from Scout's documented behavior (system prompt + COPILOT_TOOLS in `scout.types.ts`): e.g. "show me laptops under $800" → asserts `tool_called: search_products` with `category:'Laptops'`, `maxPriceCents:80000`, and a `products` event before prose (the system-prompt guardrail); an `ask_choice` scenario; a governed-tool scenario ("show my orders" → `list_orders`/`orders.list`). Plus a Restart rubric (axes: helpfulness, grounded-in-catalog, tool-discipline) + a shopper persona.
+- Scout default model is gpt-4o-mini (OpenAI) — add its pricing to `MODEL_PRICES` and set Restart's `LLM_TEST_SUT_MODEL` accordingly; judge can stay a claude model.
+- Restart implements `LlmTestStore` against its DB + adds `/api/.../llm-tests/*` routes + wires `llm` into its `buildUniversalTesting` config so `/tests` gets a live LLM tab.
