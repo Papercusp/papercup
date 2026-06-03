@@ -20,6 +20,8 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { evaluateSetContent, type SetContentValue } from './set-content';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { parsePlan } from './parser';
+import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 
 const SU_ROLES = [
   'scoper',
@@ -282,6 +284,17 @@ export default defineTool({
     const payload = domainFailurePayload(result.value, args.slug, args.draftId);
     if (!payload.ok) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ error: payload.code, ...payload }) }], isError: true };
+    }
+
+    // Cross-store invariant: a committed body can carry a terminal frontmatter
+    // status. If so, clear the operational started/paused row so a terminal
+    // plan is never counted as "waiting". Best-effort — plans:list self-heals.
+    if (isTerminalPlanStatus(parsePlan(draft.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
+      try {
+        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+      } catch {
+        /* recovered by reconcileStartStatus on the next plans:list read */
+      }
     }
 
     await removeDraft(args.draftId);

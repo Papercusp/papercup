@@ -19,6 +19,7 @@ import { resolveEffectiveStatus } from './effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { reconcileStartStatus } from './plan-start-state';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
 const HARNESS_SLUGS_MAX = 64;
@@ -234,7 +235,15 @@ export default defineTool({
 
     const augmentedRows = rows.map((r) => ({
       ...r,
-      startStatus: (startStatusMap.get(r.slug) ?? null) as 'started' | 'paused' | 'done' | null,
+      // Self-heal the cross-store invariant on read: a terminal plan
+      // (shipped/superseded frontmatter) can never be operationally
+      // started/paused, so a stale PG row from a raw .md edit that bypassed
+      // the write verbs is reported as 'done'. Keeps the "N waiting" badge,
+      // the Running bucket, and the rail from ever counting a terminal plan.
+      startStatus: reconcileStartStatus(
+        (startStatusMap.get(r.slug) ?? null) as 'started' | 'paused' | 'done' | null,
+        r.status,
+      ),
       priority: priorityMap.get(r.slug) ?? null,
     }));
 

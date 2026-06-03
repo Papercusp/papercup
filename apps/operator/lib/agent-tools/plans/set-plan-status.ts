@@ -26,6 +26,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 
 const SU_ROLES = [
   'scoper',
@@ -200,6 +201,18 @@ export default defineTool({
         [`apps/operator/docs/plans/${args.slug}.md`],
         'plan_referenced',
       );
+      // Cross-store invariant: a plan that just went terminal (shipped /
+      // superseded) can no longer be operationally started/paused. Clear
+      // its harness_plan_status row so the "N waiting" badge + Running
+      // bucket stop counting it. Best-effort — plans:list self-heals a
+      // stale row on read if this misses.
+      if (isTerminalPlanStatus(args.status)) {
+        try {
+          await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+        } catch {
+          /* recovered by reconcileStartStatus on the next plans:list read */
+        }
+      }
     }
 
     return {

@@ -369,12 +369,19 @@ export default function PlansClient() {
     [itemStatusCounts],
   );
 
-  // The rail lists the plans that have matching items — a navigator +
-  // per-plan filter (itemPlan) for the item list.
+  // The rail is normally an item-navigator: it lists the plans that have
+  // matching items (+ a per-plan itemPlan filter for the item list). BUT when
+  // a plan-status bucket filter is active (`?pBuckets=`), the rail switches to
+  // listing every plan in those buckets — even ones with no open work items —
+  // so it matches the bucket-chip counts and the "N plans waiting" nudge lands
+  // on ALL started plans, not just those with actionable items. (PlanRail
+  // re-applies the same applyPlanFilters + bucket filter, so passing the full
+  // set here yields exactly the chip-counted plans.)
   const itemPlanSlugs = useMemo(() => new Set(filteredItems.map((r) => r.plan)), [filteredItems]);
   const railVisiblePlans = useMemo(
-    () => visiblePlans.filter((p) => itemPlanSlugs.has(p.slug)),
-    [visiblePlans, itemPlanSlugs],
+    () => (pBuckets.length > 0 ? visiblePlans : visiblePlans.filter((p) => itemPlanSlugs.has(p.slug))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [visiblePlans, itemPlanSlugs, pBucketsKey],
   );
   const railList = useMemo(
     () => ({

@@ -12,10 +12,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
-import { resolveCtxHarnessSlug } from './_ctx-opts';
+import { resolveCtxHarnessSlug, ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
+import { readPlanBySlug } from './source';
+import { isTerminalPlanStatus } from './plan-start-state';
 
 const SU_ROLES = [
   'scoper',
@@ -54,6 +56,33 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
     const now = new Date().toISOString();
+
+    // Cross-store invariant: refuse to start a plan that is already terminal
+    // (shipped/superseded). Starting it would create the exact started+terminal
+    // state the rest of this system works to make impossible. The lifecycle
+    // status lives in git-canonical frontmatter, so we read it here rather than
+    // rely on a (nonexistent) PG column. Legacy/missing frontmatter → draft →
+    // not terminal → start proceeds.
+    const read = await readPlanBySlug(args.slug, await ctxToPlanSourceOpts(sctx));
+    const lifecycle = read?.parsed.frontmatter.status ?? null;
+    if (isTerminalPlanStatus(lifecycle)) {
+      ctxAny.metadata?.({ slug: args.slug, harnessSlug, refused: 'plan_terminal', status: lifecycle });
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              slug: args.slug,
+              harnessSlug,
+              error: 'plan_terminal',
+              status: lifecycle,
+              message: `Plan is ${lifecycle}; reopen it (set status back to ready/draft) before starting.`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
 
     const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
       return tx<{ status: string; updated_at: string }[]>`

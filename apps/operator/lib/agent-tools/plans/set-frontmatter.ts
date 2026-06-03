@@ -31,6 +31,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock } from './with-plan-lock';
 import { parsePlan } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 
 const SU_ROLES = [
   'scoper',
@@ -192,6 +193,17 @@ export default defineTool({
         ],
         isError: true,
       };
+    }
+
+    // Cross-store invariant: a legacy plan converted straight to a terminal
+    // status must not retain an operational started/paused row. (Rare —
+    // legacy plans seldom have one — but cheap and keeps the rule total.)
+    if (isTerminalPlanStatus(args.status)) {
+      try {
+        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+      } catch {
+        /* recovered by reconcileStartStatus on the next plans:list read */
+      }
     }
 
     return {

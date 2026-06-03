@@ -41,6 +41,7 @@ import { parsePlan } from './parser';
 import { lintParsed, type LintFinding } from './lint';
 import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 
 const SU_ROLES = [
   'scoper',
@@ -207,6 +208,18 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
         isError: true,
       };
+    }
+
+    // Cross-store invariant: a whole-document write can flip the frontmatter
+    // status to a terminal value (e.g. rejectDraftPlan sets superseded). If
+    // it did, clear the operational started/paused row so a terminal plan is
+    // never counted as "waiting". Best-effort — plans:list self-heals on read.
+    if (isTerminalPlanStatus(parsePlan(args.content, { filePath: `${args.slug}.md` }).frontmatter.status)) {
+      try {
+        await clearStartedForTerminalPlan(harnessSlug ?? 'papercup', args.slug);
+      } catch {
+        /* recovered by reconcileStartStatus on the next plans:list read */
+      }
     }
 
     return {
