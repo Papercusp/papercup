@@ -22,7 +22,6 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   { name: 'operator', url: 'http://127.0.0.1:3070/api/desktop/version' }, // 200 + build-info SHA (P-011)
   { name: 'vite', url: 'http://127.0.0.1:3055/' },
   { name: 'shop', url: 'http://127.0.0.1:4321/' },
-  { name: 'zero-cache', url: 'http://127.0.0.1:4848/' },
   { name: 'scout', url: 'http://127.0.0.1:3350/' },
   { name: 'web', url: 'http://127.0.0.1:3001/' },
   { name: 'code-server', url: 'http://127.0.0.1:8082/' },

@@ -252,7 +252,6 @@ import oauthCallback from './oauth/callback';
 import oauthVerifyPaste from './oauth/verify-paste';
 import publishCredentials from './publish-credentials/index';
 import publishCredentialsRotate from './publish-credentials/rotate';
-import miscRuntimeConfig from './misc/runtime-config';
 import miscHealth from './misc/health';
 import miscToastLog from './misc/toast-log';
 import miscWikiBacklinks from './misc/wiki-backlinks';
@@ -634,7 +633,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(oauthVerifyPaste as AnyRoute),
   ...flatten(publishCredentials as AnyRoute[]),
   ...flatten(publishCredentialsRotate as AnyRoute),
-  ...flatten(miscRuntimeConfig as AnyRoute),
   ...flatten(miscHealth as AnyRoute),
   ...flatten(miscToastLog as AnyRoute[]),
   ...flatten(miscWikiBacklinks as AnyRoute),

@@ -10,11 +10,13 @@
  * tab pointed at the dev server.
  *
  * History: the browser path used to mount a Zero WebSocket adapter against
- * a separate `zero-cache` process (`/api/runtime-config` → `zeroServer`).
- * zero-cache was retired in the Level 1 + Phase 1 SSE cutover (2026-05-07);
- * `runtime-config` has returned `zeroServer: null` ever since, so the
- * WebSocket branch was unreachable and the browser silently fell through
- * to `syncType="POLLING"`.
+ * a separate `zero-cache` process, configured via `/api/runtime-config`'s
+ * `zeroServer` field. zero-cache was retired in the Level 1 + Phase 1 SSE
+ * cutover (2026-05-07), leaving that WebSocket branch unreachable (the
+ * browser silently fell through to `syncType="POLLING"`). The dead
+ * `/api/runtime-config` endpoint and the `zeroServer` plumbing were removed
+ * 2026-06-03. (The reusable WebSocket transport itself still lives in
+ * `@papercusp/sync` for other apps — Papercusp simply no longer selects it.)
  *
  * POLLING is catastrophic here: the dashboard registers ~40 distinct Zero
  * queries, and the polling adapter re-fetches *every one of them* via
