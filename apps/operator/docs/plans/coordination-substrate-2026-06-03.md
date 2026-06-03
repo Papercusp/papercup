@@ -48,7 +48,7 @@ Verified the live reactive path is trigger → `pg_notify` → SSE (invalidate+r
 ### D-003 — Reuse the delivery rail; replace the coord:watch subscription model
 2026-06-03
 
-The inbox-injection hook + table+watermark delivery is mature — reuse. The `coord:watch` model is the wrong shape (path-globs, not entities) and half-built (manual fire, opt-in/GC'd notify, no tiering) — replace with entity/topic subscriptions + CDC-driven auto-emission; retire the path-glob notify.
+The inbox-injection hook + table+watermark delivery is mature — reuse. The `coord:watch` model is the wrong shape (path-globs, not entities) and half-built (manual fire, opt-in/GC'd notify, no tiering) — replace with entity/topic subscriptions + CDC-driven auto-emission; retire the path-glob notify. (The new subscription table is a NEW table — see Phase 0 — not a reshape of the existing path-glob `coord_subscriptions`.)
 
 ### D-004 — Topics: agent-curated, tag + one sentence, prefer-existing, NO creation-time gate
 2026-06-03
@@ -96,7 +96,7 @@ Topics, conversations, issues, features, plans are subscribable. Locks are NOT �
 ## This plan's build (the substrate)
 
 ### Phase 0 — Schema + capabilities (additive, safe)
-1. Migration (next free # via `db:check_drift`): `coord_topics` (slug PK, title, one-sentence desc, created_by), `coord_subscriptions` (subscriber, target_kind, target_ref, delivery_mode, expires_ts — **local-only, not federated**), `coord_threads`/`coord_thread_posts` (polymorphic parent), `coord_links` (polymorphic edge). RLS + grants; I classify them in `table-registry.ts`.
+1. Migration (next free # via `db:check_drift`): `coord_topics` (slug PK, title, one-sentence desc, created_by), **`coord_entity_subscriptions`** (subscriber, target_kind `topic`|`object`, target_ref, delivery_mode, expires_ts — **local-only, not federated**; a NEW table — do NOT reuse/reshape the existing path-glob `coord_subscriptions`, which the Phase-3 `coord:watch` retirement drops), `coord_threads`/`coord_thread_posts` (polymorphic parent), `coord_links` (polymorphic edge). RLS + grants; I classify them in `table-registry.ts`.
 2. Shared capability TS module (`@papercusp/coordination`): the six capability interfaces + helpers imported by every domain object.
 
 ### Phase 1 — Topics surface
@@ -106,7 +106,7 @@ Topics, conversations, issues, features, plans are subscribable. Locks are NOT �
 Build the ONE `substrate_outbox` consumer that runs both sibling projections (D-008/D-009): the local-inbox fan-out (resolve subscribers by topic/entity → per-subscriber rows honoring delivery mode) and the peer-log federation projection framework (the per-table registration pattern that conversations/issues/plans/features plug into). Extend the inbox hook to render digests + respect mode.
 
 ### Phase 3 — Retire coord:watch path-glob
-Migrate any real consumer to entity/topic subscriptions; remove the path-glob watch + manual `fireNotifications` + the opt-in notify firehose.
+Migrate any real consumer to entity/topic subscriptions; remove the path-glob watch + manual `fireNotifications` + the opt-in notify firehose, and drop the old `coord_subscriptions` table once no consumer remains.
 
 ## Risks
 - **Firehose if tiering slips** — D-006 must land WITH Phase 2.

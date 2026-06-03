@@ -45,7 +45,7 @@ Once files leave git, `plans:history`/`diff`/`plan-git.ts`/`/api/admin/plans/git
 ### D-005 — Concurrency: version-column CAS is the guard; advisory lock only for ID allocation
 2026-06-03
 
-Replace the FS `O_EXCL` lock with a PG advisory lock on `(harness_slug, plan_slug)`; the real guard is optimistic `version`-column CAS (matches today's "CAS not the lock" note). `expectedHash` → `expectedVersion`. `content_hash` kept only if a consumer needs it; else vestigial.
+Replace the FS `O_EXCL` lock with a PG advisory lock on `(harness_slug, plan_slug)`; the real guard is optimistic `version`-column CAS (matches today's "CAS not the lock" note). `expectedHash` → `expectedVersion`. `content_hash` kept only if a consumer needs it; else vestigial. (Audit note: the admin UI's `expectedHash` CAS was never shipped — it is Phase-5-deferred — so the editor currently saves WITHOUT CAS; the `contentHash`→`version` repoint mainly affects the tool surface, not the UI.)
 
 ### D-006 — Prose body stays canonical; only queryable parts become a derived index
 2026-06-03
@@ -60,7 +60,7 @@ Only plan content + `harness_plan_status` move into `harness_plans`. Survive unc
 ### D-008 — I own this plan + the table-registry / migration / engine calls (su-08782 idle)
 2026-06-03
 
-**Reverses the prior "coordinate with su-08782 / hold the registry edit / await reply" decision** — su-08782 went idle and the owner put me in charge with no coordination. So I decide directly: (a) take the next free migration # via `db:check_drift` at implementation (115–117 taken); (b) classify `harness_plans` in `table-registry.ts` myself (workspace-owned; sync: **peer-log** per D-004); (c) build the fan-out + federation projections on the **existing** features/issues federation machinery (`wire-outbox`/`feature-issue-op-keys` + per-table projection modules), generalizing opportunistically — not waiting on any in-flight engine refactor.
+**Reverses the prior "coordinate with su-08782 / hold the registry edit / await reply" decision** — su-08782 went idle and the owner put me in charge with no coordination. So I decide directly: (a) take the next free migration # via `db:check_drift` at implementation (115–119 already taken as of 2026-06-03 — do not hard-pin a number); (b) classify `harness_plans` in `table-registry.ts` myself (workspace-owned; sync: **peer-log** per D-004); (c) build the fan-out + federation projections on the **existing** features/issues federation machinery (`wire-outbox`/`feature-issue-op-keys` + per-table projection modules), generalizing opportunistically — not waiting on any in-flight engine refactor.
 
 ## Stages — build sequence
 
