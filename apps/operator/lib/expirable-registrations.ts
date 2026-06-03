@@ -25,12 +25,10 @@ export function registerAllExpirables(): void {
     table: 'harness_shared.operator_scan_locks',
   });
 
-  // Provision claims — 90s TTL with refresh, set per CLAIM_TTL_SEC in
-  // provision/operator-claims.ts. Previously had no sweeper at all —
-  // expired rows accumulated until manually overwritten.
-  registerExpirable({
-    table: 'harness_shared.operator_claims',
-  });
+  // (The provision operator_claims sweeper was removed in P-002 — the
+  // hand-rolled claim/heartbeat machinery was deleted once DBOS provisioning
+  // owns concurrency, so nothing writes that table anymore. The empty table
+  // itself remains until a dedicated drop migration.)
 
   // Harness status — 5min lease via expires_at (unix-ms), refreshed on
   // each pg_write_status. Don't delete; mark 'running' rows as 'stalled'
