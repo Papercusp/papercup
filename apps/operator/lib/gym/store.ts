@@ -94,6 +94,31 @@ export async function insertRunParams(
     ON CONFLICT (run_id) DO NOTHING`;
 }
 
+/**
+ * Persist one optimization-loop cycle (P-022 audit trail → gym_cycles). The loop's
+ * `deps.persistCycle` seam binds here. `cycleId` is deterministic per cycle so a retried
+ * cycle is idempotent; `budgetSpentUsd` records the running spend at decision time.
+ */
+export async function insertCycle(
+  sql: Sql,
+  c: {
+    cycleId: string;
+    cycle: number;
+    parentId: string;
+    candidateId: string;
+    decision: 'accept' | 'reject';
+    gateResults: unknown;
+    budgetSpentUsd?: number;
+  },
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_gym.gym_cycles (cycle_id, cycle, parent_id, candidate_id, decision, gate_results, budget_spent_usd)
+    VALUES (${c.cycleId}, ${c.cycle}, ${c.parentId}, ${c.candidateId}, ${c.decision},
+            ${JSON.stringify(c.gateResults ?? {})}::jsonb, ${c.budgetSpentUsd ?? null})
+    ON CONFLICT (cycle_id) DO UPDATE
+      SET decision = EXCLUDED.decision, gate_results = EXCLUDED.gate_results, budget_spent_usd = EXCLUDED.budget_spent_usd`;
+}
+
 export interface VariantComparisonRow {
   taskId: string;
   aComposite: number | null;

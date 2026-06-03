@@ -177,6 +177,15 @@ function runChild(
       const exitCode = code ?? 1;
       const failLog = formatInvokeStderr(role, exitCode, stderr);
       if (failLog) console.error(failLog);
+      // A non-zero exit with EMPTY stderr is otherwise completely silent (the
+      // upstream "exit=1 empty=true" hides whether the agent even produced output).
+      else if (exitCode !== 0) {
+        const dbg =
+          process.env.PAPERCUSP_DBOS_INVOKE_DEBUG === '1'
+            ? `\n--- stdout tail (${role}) ---\n${stdout.length > 2000 ? stdout.slice(-2000) : stdout}`
+            : '';
+        console.error(`[dbos-invoke] role=${role} exited ${exitCode} with empty stderr (stdout ${stdout.length} chars)${dbg}`);
+      }
       resolve({ output: extractAgentOutput(stdout), exitCode, stderr });
     });
     child.on('error', (err) => {
@@ -195,6 +204,9 @@ const realRunner: PipelineInvokeRunner = async (harnessSlug, role, _featureId, i
   const project = await resolveProject(harnessSlug, workspaceId);
   if (!project) {
     // Unknown harness → empty output (the workflow parses '' → terminal → stops).
+    // Surface it: an unresolved harness and an agent that exits empty are otherwise
+    // indistinguishable upstream (both → "invoke failed exit=1 empty=true").
+    console.error(`[dbos-invoke] role=${role} resolveProject NULL — unknown harness slug=${harnessSlug} ws=${workspaceId ?? '(none)'}`);
     return { output: '', exitCode: 1 };
   }
   // P-070 usage ledger (best-effort, never throws): a worker run starting is

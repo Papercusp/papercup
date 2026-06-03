@@ -11,6 +11,7 @@
  * Isolated from the live operator DB (D-018): a separate database the gym owns.
  */
 import postgres, { type Sql } from 'postgres';
+import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyGymSchema } from './schema';
@@ -81,9 +82,35 @@ export async function provisionGymDatabase(opts: ProvisionGymDbOpts): Promise<{ 
     await boot.unsafe(EXTENSIONS_DDL);
     await applyPendingMigrations({ client: boot, sqlDir: opts.mainSqlDir ?? MAIN_SQL_DIR });
     await applyGymSchema(boot);
+    await premintSpawnSigningKey(boot);
   } finally {
     await boot.end({ timeout: 5 });
   }
 
   return { databaseUri };
+}
+
+/**
+ * Pre-mint the spawn-signing key so the orchestrator's `spawn-mcp` can SIGN the agent's
+ * per-spawn `.mcp.json` on the very FIRST agent invoke.
+ *
+ * The live operator mints this key lazily, on its first signing/verify call
+ * (`loadOrCreateKey` in apps/operator/lib/spawn-signing.ts). But a fresh gym DB never
+ * receives such a call before the gym-operator spawns its first pipeline agent — so
+ * `spawn-mcp.loadSigningKey()` reads `harness_shared.operator_secrets` for
+ * `spawn-signing-key`, finds it missing, and (strict mode being the default) refuses to
+ * emit an unsigned URL → the per-spawn `.mcp.json` is never written → `claude -p
+ * --mcp-config <path> --strict-mcp-config` aborts with "MCP config file not found" and
+ * EXIT 1, which the pipeline surfaces as "decide invoke failed (exit=1, empty=true)".
+ *
+ * Minting it here (idempotent) makes the first real agent run work. A 32-byte random key
+ * matches what `loadOrCreateKey` would mint; both the orchestrator (signs) and the
+ * gym-operator's MCP route (verifies) read this one row, so the HMAC is consistent.
+ */
+export async function premintSpawnSigningKey(sql: Sql): Promise<void> {
+  const valueB64 = randomBytes(32).toString('base64');
+  await sql`
+    INSERT INTO harness_shared.operator_secrets (name, value_b64)
+    VALUES ('spawn-signing-key', ${valueB64})
+    ON CONFLICT (name) DO NOTHING`;
 }
