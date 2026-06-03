@@ -12,7 +12,6 @@ import {
   isContributorFileBody,
   isSafeGithubLoginSegment,
   parseDevicePubkeySpec,
-  stripSignatureForSigning,
   type ContributorFileBody,
 } from './contributor-file-types';
 
@@ -196,37 +195,8 @@ describe('isContributorFileBody', () => {
   });
 });
 
-describe('stripSignatureForSigning', () => {
-  it('returns the body without signature_by_device', () => {
-    const out = stripSignatureForSigning(baseBody);
-    expect(out).not.toHaveProperty('signature_by_device');
-    expect(out.github_user_id).toBe(12345);
-    expect(out.device_pubkey).toBe(baseBody.device_pubkey);
-  });
-
-  it('does not mutate the input', () => {
-    const before = { ...baseBody };
-    stripSignatureForSigning(baseBody);
-    expect(baseBody).toEqual(before);
-  });
-
-  it('preserves all six other fields', () => {
-    const out = stripSignatureForSigning(baseBody);
-    expect(Object.keys(out).sort()).toEqual(
-      [
-        'device_attestation_gist_id',
-        'device_pubkey',
-        'github_login',
-        'github_user_id',
-        'joined_at',
-        'version',
-      ].sort(),
-    );
-  });
-});
-
 describe('CHANNEL2_PROPAGATION_GRACE_WINDOW_MS', () => {
-  it('is 24h, aligned with binding-verifier-types PENDING_GRACE_WINDOW_MS', () => {
+  it('is 24h', () => {
     expect(CHANNEL2_PROPAGATION_GRACE_WINDOW_MS).toBe(24 * 60 * 60 * 1000);
   });
 });

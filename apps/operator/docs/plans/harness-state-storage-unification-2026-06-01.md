@@ -11,9 +11,9 @@ owner: avi@storewolf.com
 
 ## Now
 
-**State:** P-001 + P-002 + **P-003 ALL DONE + live-verified** (2026-06-02 autonomous run). ONE registry-driven projection engine: P-003a peer-log seam+guard, P-003b git-export, P-003c router (projectionAdapterFor + routeProjection, load-bearing at boot: `routing OK — 190 tables → git-export=23 peer-log=9 local=158`). Live-verify caught + fixed **TWO operational-table amplifications** — `harness_branch_actions` (fs-mirror, last_check_ms heartbeat; D-005) and `harness_lanes` (agent-lane pid/started_at runtime; 600+ stuck rows from ephemeral gym-smoke harnesses). Both removed from GIT_DOCS → DEFAULT; the detach-stale boot reconciliation dropped the live triggers; outbox cleaned to 0 + verified STABLE over 60s (no churn, no latent 3rd churner — audited all 23 git tables: remaining mtime_ms/updated_at cols are file-/producer-gated, don't churn). Residue resolved: auto-commit = flag-gated scoped committer (git-committer.ts, default OFF, no push); papercup_shared org-demo removed. 40 unit + 13 integration tests green. New follow-up P-008 (low): git-export outbox GC for ephemeral non-registry harnesses. Commits: 618504e28, 43d0ca992, fbcd3d6d0, 0927230b4, 72e17237b (+plan docs). **P-004/P-005/P-006 BLOCKED (D-006)** — conflict with the active self-contained-migration-baseline plan + live contention; needs owner reconciliation.
+**State:** P-001/P-002/P-003/P-008 DONE+live-verified (one registry-driven projection engine; 2 git-export amplifications fixed; outbox GC; ~54 tests green; health clean as of 2026-06-03 12:xx — outbox 0, no churn, no regression, host stable). **D-006 RESOLVED by owner 2026-06-03 → CONSOLIDATE to slug-keyed (see D-007).** Live code map shows scope is MUCH smaller than D-006 feared: the 032 auto-updatable-VIEW pattern means readers/writers don't change. 11 template types: 4 DONE (features/issues/runs/snapshots, mig 032), 2 half-done (agent_chats/feature_audit — consolidated base exists, per-harness still physical+dual-written), 5 not-started (config_token/messages/supervisor_notes/directive_summaries/executed_actions, +harness_proposals). config_token → workspace-owned per P-005, not slug-shared. Contention gone (0 active agents) so safe to proceed; new migrations land 107+. Baseline plan's "keep 002-per-harness-template.sql" now SUPERSEDED.
 
-**Next:** OWNER DECISION (gating P-004..P-007): do per-harness `harness_<slug>.*` schemas STAY (baseline plan keeps 002-per-harness-template) or get consolidated to slug-keyed PG (P-004)? This is the harnesses-across-workspaces shared-state fork. Once decided: ONE plan owns the per-harness→consolidated migration, sequenced after the baseline plan lands → P-004 → P-005 (config→workspace-owned) → P-006 (delete bespoke buckets) → P-007 (verify). See D-006. P-008 (outbox GC) can be done anytime, unblocked.
+**Next:** su-08782: write + present the concrete consolidation execution plan (per-type 032 view-swap migrations at 107+, scaffold/template retirement, baseline reconciliation) to the owner for sign-off, THEN execute P-004→P-005→P-006→P-007.
 
 ## ⚠️ Vocabulary — read first. The bare word "canonical" is BANNED in this plan.
 
@@ -85,8 +85,8 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 ## Phase 2 — Projection & migration
 
 - **P-003** `done` Generalize ONE projection engine: PG↔git-export (document tables) + PG↔peer-log (Model-B), driven by the per-table declaration — replaces the three hand-rolled HYPERBEE/GIT/LOCAL bucket paths. (P-003a DONE projection-engine seam + peer-log drift guard + boot coverage; 19 tests. P-003b git-export DESIGNED D-004: reuse substrate_outbox + separate filtered drainer + file serialize/rebuild; additive. P-003c router pending. git-export integration = focused-session build on Model-B-owned substrate.) (a peer-log seam + b git-export, live-verified, amplification fixed + c one router all done + tested; auto-commit policy resolved flag-gated committer; papercup_shared org-demo removed from GIT_DOCS)
-- **P-004** `needs-human` Consolidate all remaining per-harness tables → slug-keyed PG (the 032 auto-updatable-view pattern); retire 002-per-harness-template.sql + scaffold-harness-schema. (D-006: conflicts with active baseline plan which KEEPs the per-harness template P-004 wants to retire. Owner must reconcile per-harness vs slug-keyed direction before execution)
-- **P-005** `blocked` Route config tables (config_token, prompt/3-tier overrides, …) to the workspace-owned store keyed by (workspace, harness, role) — the harnesses-across-workspaces Phase-1b path; never slug-shared. (D-006: rides on P-004's data-model decision; config_token/prompt-overrides → workspace-owned)
+- **P-004** `todo` Consolidate all remaining per-harness tables → slug-keyed PG (the 032 auto-updatable-view pattern); retire 002-per-harness-template.sql + scaffold-harness-schema. (D-006: conflicts with active baseline plan which KEEPs the per-harness template P-004 wants to retire. Owner must reconcile per-harness vs slug-keyed direction before execution) (D-006 resolved → consolidate D-007; unblocked)
+- **P-005** `todo` Route config tables (config_token, prompt/3-tier overrides, …) to the workspace-owned store keyed by (workspace, harness, role) — the harnesses-across-workspaces Phase-1b path; never slug-shared. (D-006: rides on P-004's data-model decision; config_token/prompt-overrides → workspace-owned) (unblocked by D-007; config_token+overrides → workspace-owned)
 - **P-008** `done` git-export outbox GC for ephemeral / non-registry harnesses (P-003b follow-up). The capture trigger fires for ALL sync:'git' writes, but the drain loop runs only for registry harnesses. Ephemeral test harnesses (gymsmoke*, contract-test-*) write git-table rows that are captured but never drained → git_export_outbox accumulates stuck-unexported orphans (found 600+ during the P-003 live-verify; cleaned manually). Fix: GC outbox rows whose (workspace_id,harness_slug) isn't a live registry harness (timer/boot), or skip capture for ephemeral harnesses. Low priority — slow leak, ephemeral only, nothing breaks; not blocked by the P-004 cutover. importance: low (gcOrphanOutboxRows wired into boot; live-verified outbox 0 + stable, harness_lanes self-heals; integration test covers orphan-delete + live-keep + empty-list guard)
 
 
@@ -95,7 +95,7 @@ Items are allocated once the store-axis call is made — they're gated on it, so
 
 ## Phase 3 — Cutover & verify
 
-- **P-006** `blocked` Cut each table's sync over to its declared authority; delete the bespoke HYPERBEE/GIT/LOCAL bucket code. (D-006: rides on P-004; delete bespoke HYPERBEE/GIT/LOCAL bucket code after the cutover)
+- **P-006** `todo` Cut each table's sync over to its declared authority; delete the bespoke HYPERBEE/GIT/LOCAL bucket code. (D-006: rides on P-004; delete bespoke HYPERBEE/GIT/LOCAL bucket code after the cutover) (unblocked by D-007; delete bespoke buckets after cutover)
 - **P-007** `todo` Verify: clone-and-go (git tables hydrate into PG), two-peer live sync (peer-log tables), two-workspace shared-by-slug results + per-workspace config.
 
 
@@ -184,4 +184,21 @@ RECOMMENDATION (owner, when awake + repo quiet):
 3. Until then P-004..P-006 = blocked; P-007's git-export half is already verifiable (P-003b tests) but the full end-state verify waits on the cutover.
 
 DONE this run instead (safe, isolated, tested): P-003 fully (a/b/c) incl. the live-boot amplification fix, the flag-gated git committer (auto-commit policy resolved), the papercup_shared org-demo removal, and the one projection router. 40 unit + 13 integration harness-state tests green.
+Related: P-004, P-005, P-006, P-007
+
+### D-007 — D-006 RESOLVED → CONSOLIDATE to slug-keyed (owner, 2026-06-03); scope much smaller than feared (032 view-pattern)
+Date: 2026-06-03
+Owner (Avi) decided 2026-06-03: **CONSOLIDATE per-harness `harness_<slug>.*` schemas → slug-keyed shared tables.** Retire `002-per-harness-template.sql` + `scaffold-harness-schema.ts`. This unblocks P-004→P-005→P-006→P-007. **This SUPERSEDES `self-contained-migration-baseline-2026-06-02` P-005's "keep 002-per-harness-template.sql"** — the squash must NOT preserve the template; the per-harness model is being retired.
+
+REFINED SCOPE (from live code map, 2026-06-03) — much smaller than D-006's "218 tables / rewrite every reader-writer" estimate. The **032 auto-updatable-VIEW pattern is the proven recipe**: a consolidated base table in `harness_shared` keyed by `(harness_slug, …)`; each per-harness physical table is dropped and replaced by `CREATE VIEW harness_<slug>.<t> AS SELECT * FROM harness_shared.<t>_consolidated WHERE harness_slug='<slug>' WITH CHECK OPTION`. Because the view keeps the SAME name as the old table, **readers/writers need NO change** — they keep doing `INSERT INTO harness_<slug>.<t>` and PG routes through the view. (Ref: archive/029-031 create consolidated + trigger-mirror; archive/032 drops physical + creates views.)
+
+PER-TYPE STATUS (11 template types):
+- DONE (consolidated + view, migration 032): harness_features, harness_issues, agent_runs, harness_snapshots.
+- HALF-DONE (consolidated base in 000-baseline, but per-harness still PHYSICAL + dual-written): agent_chats, feature_audit. → apply the 032 view-swap.
+- NOT STARTED (per-harness physical only): config_token, messages, supervisor_notes, directive_summaries, executed_actions (+ harness_proposals from scaffold). → create consolidated base + view-swap.
+- SPECIAL: config_token (+ prompt/3-tier overrides) → P-005 routes these to the **workspace-owned** store keyed by (workspace, harness, role), NOT slug-shared.
+
+SEQUENCING: D-006's "wait for repo quiet / let baseline land first" was about contention — now 0 active agents, so it's safe to proceed. New migrations land at 107+ (per the baseline plan's convention) so they don't collide with the baseline squash archiving 001-106. The baseline squash, whenever it runs, then folds these in and no longer special-cases 002. ONE plan (this one) owns the consolidation; baseline P-005 to be reconciled.
+
+NEXT: present the concrete execution plan to the owner for sign-off before destructive drops (drop physical tables, retire template + scaffold).
 Related: P-004, P-005, P-006, P-007

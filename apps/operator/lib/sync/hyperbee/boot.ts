@@ -99,9 +99,9 @@ const DEFAULT_PENDING_RETRY_MS = 5000;
 /**
  * Boot-scoped grace window for pending peers (ms). Once a peer has been in the
  * pending set longer than this, it is removed with 'announce_rejected' rather
- * than retried forever. This is smaller than the verifier-level
- * PENDING_GRACE_WINDOW_MS (24h) deliberately: the boot session may not live
- * that long, and the peer will re-announce on the next boot. 30 minutes is
+ * than retried forever. This is deliberately short (vs a ~24h binding-propagation
+ * window): the boot session may not live that long, and the peer will
+ * re-announce on the next boot. 30 minutes is
  * enough for normal GitHub propagation lag while bounding the retry budget.
  */
 const BOOT_PENDING_GRACE_MS = 30 * 60 * 1000; // 30 minutes

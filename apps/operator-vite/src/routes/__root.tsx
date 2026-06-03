@@ -1,7 +1,11 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router';
 import { Suspense } from 'react';
 import { Toaster } from 'sonner';
-import { NuqsAdapter } from 'nuqs/adapters/tanstack-router';
+// Custom nuqs adapter (NOT nuqs/adapters/tanstack-router): the stock adapter
+// rebuilds the URL from only nuqs-watched keys, dropping TanStack-native typed
+// search params (?dock, ?switch) on every nuqs write. Ours merges over the full
+// current search. See ../lib/nuqs-tanstack-router-adapter.
+import { NuqsAdapter } from '../lib/nuqs-tanstack-router-adapter';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { RootSyncProvider } from '@/app/_components/RootSyncProvider';
 import { OperatorConversationProvider } from '@/app/_components/OperatorConversationProvider';

@@ -1,21 +1,17 @@
 /**
- * binding-verifier-types — types for the two-channel binding verifier.
+ * binding-verifier-types — types for the contributor binding state.
  *
  * Sources from `dogfood-design-memo-two-channel-binding-ux-2026-05-24.md`
  * (Phase 1b P-075). Types-only — no I/O, no Octokit calls, no PG.
  *
- * Two consumers will eventually import from here:
- *   - apps/operator/lib/identity/two-channel-verifier.ts (the runtime,
- *     when the memo accepts and P-075 implementation lands)
- *   - apps/operator/app/_components/BindingStatusBadge.tsx (the UI
- *     surface used by Contributors tab, Insights People card, user
- *     profile, and claim-CTA gate per memo D-A)
- *
- * Why types-first: the memo is "draft for review" but the wire-shapes
- * + state-machine + grace-window constants are concrete enough to
- * ship without committing the behavior. Mirrors the same pattern as
- * `binding-types.ts` (P-068 groundwork, commit f05997aa) — see the
- * `types-first-from-design-memo` insight.
+ * The two-channel `verifyBoth` runtime — and its `deriveBindingStatus`
+ * pending/grace-window state machine + the `BindingVerificationResult` shape
+ * and grace-window constants — was removed by the write-free-join work
+ * (`non-collaborator-join-fork-pr-2026-06-02`): admission now gates on
+ * `verifyAttestation` directly. What remains here is the `BindingStatus`
+ * vocabulary, the `ChannelResult` shape (used by `verifyChannel1`), and the
+ * per-status predicates the Contributors tab / Insights People card consume
+ * (`statsAggregateForStatus`, `canClaimHarness`).
  */
 
 /**
@@ -67,45 +63,6 @@ export type ChannelFailReason =
   | 'unknown';
 
 /**
- * Combined two-channel verification result (the P-075 shape: per-channel
- * results + the derived `BindingStatus`). The `verifyBoth` runtime that
- * produced it was removed by the write-free-join work
- * (non-collaborator-join-fork-pr-2026-06-02); the shape is retained for
- * `deriveBindingStatus` + the binding-status types.
- */
-export interface BindingVerificationResult {
-  status: BindingStatus;
-  channel1: ChannelResult;
-  channel2: ChannelResult;
-  checkedAt: number; // epoch ms
-  /** When status is pending, the wall-clock deadline (ms) at which it
-   * should flip to unverified if not resolved. Null for verified +
-   * unverified. */
-  pendingUntil?: number;
-}
-
-/**
- * Default grace window for pending → unverified flip. Per memo D-D
- * + Q-2 (24h default). Q-2 leaves room for per-harness override
- * (1-week max); when implemented, callers pass an explicit value.
- */
-export const PENDING_GRACE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
-export const PENDING_GRACE_WINDOW_MAX_MS = 7 * 24 * 60 * 60 * 1000; // 1 week
-
-/**
- * Clamp a caller-supplied grace window into [0, max]. Defensive — UI
- * could pass a garbage number and we don't want negative or
- * year-long values silently honored.
- *
- * Exported for testing.
- */
-export function clampGraceWindowMs(ms: number): number {
-  if (!Number.isFinite(ms) || ms < 0) return PENDING_GRACE_WINDOW_MS;
-  if (ms > PENDING_GRACE_WINDOW_MAX_MS) return PENDING_GRACE_WINDOW_MAX_MS;
-  return ms;
-}
-
-/**
  * Predicate: does the binding state allow this contributor to claim
  * a harness? Per memo D-E + addendum-1: only `verified` qualifies.
  * Used by the claim-CTA gate (Phase 8 P-069e).
@@ -125,48 +82,4 @@ export function canClaimHarness(status: BindingStatus): boolean {
  */
 export function statsAggregateForStatus(status: BindingStatus): boolean {
   return status === 'verified';
-}
-
-/**
- * Derive the binding status from two channel results + the current
- * pending-grace window (if applicable). Pure function — kept as the binding
- * state machine even though the write-free join now gates admission on
- * `verifyAttestation` directly (its `verifyChannel2`/`verifyBoth` callers were
- * removed in non-collaborator-join-fork-pr-2026-06-02).
- *
- * State machine (from memo):
- *   - Channel 1 fail               → unverified
- *   - Channel 1 ok, channel 2 ok   → verified
- *   - Channel 1 ok, channel 2 fail → unverified (conclusive)
- *   - Channel 1 ok, channel 2 pending, within grace  → pending
- *   - Channel 1 ok, channel 2 pending, past grace    → unverified
- */
-export function deriveBindingStatus(input: {
-  channel1: ChannelResult;
-  channel2: ChannelResult;
-  /** When channel 2 first entered the pending state. Used to compare
-   * against the grace window. Null when channel 2 has never been
-   * pending (e.g. fresh just-joined). */
-  channel2PendingSince?: number;
-  /** Caller-supplied grace window; defaults to 24h. */
-  graceWindowMs?: number;
-  /** Current wall-clock (ms); injectable for tests. */
-  nowMs?: number;
-}): BindingStatus {
-  const { channel1, channel2 } = input;
-  if (channel1.kind === 'fail') return 'unverified';
-  // channel1.kind === 'pending' is not a valid state (channel 1 is
-  // synchronous); if it appears, treat as unverified defensively.
-  if (channel1.kind === 'pending') return 'unverified';
-
-  if (channel2.kind === 'fail') return 'unverified';
-  if (channel2.kind === 'ok') return 'verified';
-
-  // channel 2 is pending.
-  const grace = clampGraceWindowMs(
-    input.graceWindowMs ?? PENDING_GRACE_WINDOW_MS,
-  );
-  const since = input.channel2PendingSince ?? (input.nowMs ?? Date.now());
-  const now = input.nowMs ?? Date.now();
-  return now - since <= grace ? 'pending' : 'unverified';
 }
