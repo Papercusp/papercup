@@ -135,6 +135,29 @@ export function setPipelineSettledHook(fn: PipelineSettledHook): void {
   _settledHook = fn;
 }
 
+/**
+ * Feature-passed hook (non-collaborator-join-fork-pr B3 / P-002). Fired once, as
+ * a CHECKPOINTED step, when a feature's pipeline finishes with outcome `done`
+ * (the feature shipped). The operator wires this to the fork-mode code→PR path:
+ * in fork mode (the local identity lacks upstream write) it pushes the feature
+ * branch to the contributor's fork and opens a cross-fork PR; in owner/
+ * integration mode it is a no-op. Checkpointed (NOT fire-and-forget like the
+ * settled hook) because opening a PR is an outward-facing effect that must run
+ * exactly once per completion, not re-fire on workflow replay.
+ *
+ * MUST NOT THROW — best-effort. The handler swallows its own errors so a PR-open
+ * failure never fails the (already-successful) pipeline. Unwired in tests → skipped.
+ */
+export type PipelineFeaturePassedHook = (input: {
+  harnessSlug: string;
+  featureId: string;
+  workspaceId?: string;
+}) => Promise<void>;
+let _featurePassedHook: PipelineFeaturePassedHook | null = null;
+export function setPipelineFeaturePassedHook(fn: PipelineFeaturePassedHook): void {
+  _featurePassedHook = fn;
+}
+
 const MAX_TURNS = Number(process.env.PAPERCUSP_DBOS_PIPELINE_MAX_TURNS ?? 200);
 
 const key = (slug: string, feature: string, role: string, turn: number): string =>
@@ -241,6 +264,24 @@ async function featurePipelineImpl(input: PipelineInput): Promise<string> {
   // re-pickable, so those fall back to the 30s backstop to avoid a tight re-dispatch
   // loop. Fire-and-forget side effect (not a step) — idempotent if replayed.
   if (terminal?.outcome === 'done') {
+    // Fork-mode code→PR (B3): in fork mode push the feature branch to the
+    // contributor's fork + open a cross-fork PR. Checkpointed → runs exactly
+    // once per completion (replay-safe), unlike the fire-and-forget settled
+    // hook below. No-op in owner/integration mode and when unwired (tests). The
+    // handler is best-effort (never throws), so a PR-open failure cannot fail
+    // the already-successful pipeline.
+    if (_featurePassedHook) {
+      const fph = _featurePassedHook;
+      await DBOS.runStep(
+        () =>
+          fph({
+            harnessSlug: input.harnessSlug,
+            featureId: input.featureId,
+            workspaceId: input.workspaceId,
+          }),
+        { name: 'feature-passed-pr' },
+      );
+    }
     _settledHook?.(input.harnessSlug, input.workspaceId);
   }
 

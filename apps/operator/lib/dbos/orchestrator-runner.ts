@@ -41,10 +41,12 @@ import {
   setPipelineFinalizer,
   setPipelineSettledHook,
   setPipelineDebuggerHook,
+  setPipelineFeaturePassedHook,
   type PipelineInvokeRunner,
   type PipelineFinalizer,
   type PipelineDebuggerHook,
 } from './orchestrator-workflow';
+import { handleFeaturePassed, type FeaturePassedDeps } from '@/lib/harness/fork-pr-on-feature-pass';
 import { planFinalization, needsHumanGateUrl } from './orchestrator-finalize';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 import {
@@ -472,6 +474,75 @@ function archiveStateDir(stateDir: string, phase: string): void {
 let _wired = false;
 /** Wire the real invoke runner + terminal finalizer + on-completion refill +
  * G2 auditor lane into the durable pipeline. Idempotent. */
+/**
+ * Real deps for the feature-passed → fork-PR handler (B3 / P-002). Each external
+ * effect is lazily imported (the runner module is import-sensitive). The handler
+ * logic + fork-mode gating is unit-tested via injected seams in
+ * lib/harness/fork-pr-on-feature-pass.test.ts; these are the live wires.
+ */
+const realFeaturePassedDeps: FeaturePassedDeps = {
+  loadSharedConfig: async ({ harnessSlug, workspaceId }) => {
+    const project = await resolveProject(harnessSlug, workspaceId);
+    if (!project) return null;
+    const { loadSharedConfigFromProjectDir } = await import('@/lib/harness/load-shared-config');
+    const cfg = loadSharedConfigFromProjectDir(project.path);
+    return cfg
+      ? { github_remote: cfg.github_remote, github_repository_id: cfg.github_repository_id }
+      : null;
+  },
+  resolveRepoContext: async ({ harnessSlug, workspaceId }) => {
+    const project = await resolveProject(harnessSlug, workspaceId);
+    if (!project) return null;
+    const { loadSharedConfigFromProjectDir } = await import('@/lib/harness/load-shared-config');
+    const cfg = loadSharedConfigFromProjectDir(project.path);
+    if (!cfg) return null;
+    const { parseGithubUrl } = await import('@/lib/harness/clone-github');
+    const parsed = parseGithubUrl(cfg.github_remote);
+    if (!parsed) return null;
+    const { resolveLocalGithubIdentity } = await import('@/lib/identity/resolve-local-github-identity');
+    const id = await resolveLocalGithubIdentity();
+    if (id.kind !== 'ok') return null;
+    return {
+      repoPath: project.path,
+      baseBranch: 'main',
+      token: id.token,
+      upstreamOwner: parsed.owner,
+      upstreamRepo: parsed.repo,
+    };
+  },
+  getPermission: async ({ owner, repo }) => {
+    const { getOctokit } = await import('@/lib/identity/octokit-client');
+    const oc = await getOctokit();
+    if (!oc) return 'none';
+    try {
+      const { data } = await oc.rest.repos.get({ owner, repo });
+      const p = (data as {
+        permissions?: { admin?: boolean; maintain?: boolean; push?: boolean; pull?: boolean };
+      }).permissions;
+      if (p?.admin) return 'admin';
+      if (p?.maintain) return 'maintain';
+      if (p?.push) return 'write';
+      if (p?.pull) return 'read';
+      return 'none';
+    } catch {
+      return 'none';
+    }
+  },
+  ensureFeatureBranch: async ({ repoPath, featureBranch }) => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const run = promisify(execFile);
+    // Move/create the feature branch to the current HEAD WITHOUT checking it out
+    // (the integration HEAD holds the feature's committed work).
+    await run('git', ['-C', repoPath, 'branch', '-f', featureBranch, 'HEAD']);
+  },
+  openForkPr: async (opts) => {
+    const { openForkPr } = await import('@/lib/harness/open-fork-pr');
+    return openForkPr(opts);
+  },
+  log: (msg) => console.error(msg),
+};
+
 export function wireOrchestratorInvokeRunner(): void {
   if (_wired) return;
   _wired = true;
@@ -492,6 +563,13 @@ export function wireOrchestratorInvokeRunner(): void {
   setPipelineSettledHook((slug, workspaceId) =>
     refillHarnessOnSettle(slug, workspaceId ?? activeWorkspaceId()),
   );
+  // B3 (non-collaborator-join-fork-pr P-002): when a feature ships in FORK MODE
+  // (the local identity lacks upstream write), push the feature branch to the
+  // contributor's fork + open a cross-fork PR. No-op in owner/integration mode
+  // and for non-shared harnesses. Best-effort (handleFeaturePassed never throws).
+  setPipelineFeaturePassedHook(async (input) => {
+    await handleFeaturePassed(input, realFeaturePassedDeps);
+  });
   // G2 P-007: wire the real auditor spawn + escalation functions so the
   // orchestrator loop's audit lane can screen remote-pending features.
   wireAuditorLane();
