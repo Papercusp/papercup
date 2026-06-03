@@ -1,23 +1,24 @@
 /**
- * The git-sync pipeline — git-sync-auto-commit Phase 2 (P-005..P-008). The pure-ish
- * unit (inject `runGit` + `repoPath` to test); the registered `system:git-sync`
- * action handler in `git-sync-action.ts` wraps this with locks (P-009), conflict
- * escalation + resolver spawn (P-010/P-012), and routine-metadata recording.
+ * The git-sync pipeline — git-sync-auto-commit. The pure-ish unit (inject `runGit`
+ * + `repoPath` to test); `git-sync-action.ts` wraps it with locks, conflict
+ * escalation + resolver, and routine-metadata recording.
  *
- * Per tick, for one harness repo:
- *   1. Commit each dirty submodule, then **push submodule branches to origin FIRST**
- *      and stage the bumped pointer in the superproject (D-003 — so a fresh clone of
- *      pushed `main` resolves its pins).
- *   2. Commit the superproject. NOTE: unlike the SCOPED git-export committer
- *      (`git-committer.ts`, only `.harness/state`), git-sync DELIBERATELY
- *      `git add -A`s the whole tree — owning the whole-tree commit is its entire
- *      purpose (it's why agents stop committing). This is the one place a broad add
- *      is correct, because the system, not a peer agent, is the committer.
- *   3. `fetch` + `merge --no-edit origin/main` (merge, not rebase — D-002). On
- *      conflict: capture conflicted files, `merge --abort` to leave a CLEAN tree
- *      (agents must never see a half-merged tree), and return `conflict`.
- *   4. `push origin HEAD:main`. On non-fast-forward (a peer pushed mid-tick),
- *      re-fetch + re-merge once, else treat as conflict.
+ * Syncs the WHOLE repo to origin — dynamically + recursively, no hardcoded list:
+ *   - `syncOneRepo` is the per-repo primitive: commit dirty (whole-tree `git add -A`)
+ *     → fetch → merge (handles diverged / non-fast-forward) → push. On a merge
+ *     conflict it aborts to a CLEAN tree and reports the conflict (agents must never
+ *     see a half-merged tree).
+ *   - Submodules are discovered at runtime via `git submodule status --recursive`
+ *     (auto-adjusts to whatever submodules exist, to any nesting depth — add/remove
+ *     one and it's picked up with no code change) and synced **deepest-first**, so a
+ *     child's commit is on its origin before any parent's pointer to it is pushed →
+ *     a fresh clone of pushed `main` always resolves the entire tree. Each level's
+ *     pointer bump shows up as a dirty change when its parent is synced.
+ *   - The superproject is synced last.
+ *
+ * git-sync DELIBERATELY `git add -A`s each repo (unlike the SCOPED git-export
+ * committer in `git-committer.ts`) — owning the whole-tree commit is its entire
+ * purpose (it's why agents stop committing).
  */
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
@@ -40,9 +41,10 @@ const defaultRunGit: RunGit = (args, cwd) =>
 export interface GitSyncConfig {
   /** Push to origin after committing/merging (default true). */
   push?: boolean;
-  /** Commit + push submodule branches before bumping the superproject pointer (default true). */
+  /** Sync submodules too (default true). When true, ALL submodules are synced
+   *  recursively — discovery is dynamic, never a fixed list. */
   pushSubmodules?: boolean;
-  /** Branch to sync (default 'main'). */
+  /** Branch to sync when a repo is on a branch / for the superproject (default 'main'). */
   branch?: string;
   /** Remote name (default 'origin'). */
   remote?: string;
@@ -53,7 +55,7 @@ export interface GitSyncConfig {
 export type GitSyncOutcome =
   | { status: 'nothing' }
   | { status: 'synced'; headSha: string; pushed: boolean }
-  | { status: 'conflict'; conflictedFiles: string[] }
+  | { status: 'conflict'; conflictedFiles: string[]; scope: string }
   | { status: 'error'; message: string };
 
 export interface RunGitSyncOpts {
@@ -62,7 +64,7 @@ export interface RunGitSyncOpts {
   /** Inject the git runner (tests). */
   runGit?: RunGit;
   config?: GitSyncConfig;
-  /** Override submodule discovery (tests). Relative paths from the repo root. */
+  /** Override submodule discovery (tests). Repo-relative paths. */
   submodulePaths?: string[];
   log?: (m: string) => void;
 }
@@ -88,26 +90,97 @@ const conflictedFiles = async (runGit: RunGit, repo: string): Promise<string[]> 
   return r.code === 0 ? r.stdout.trim().split('\n').filter(Boolean) : [];
 };
 
-/** Submodule paths from `.gitmodules` (relative to repo root). */
-const discoverSubmodules = async (runGit: RunGit, repo: string): Promise<string[]> => {
-  const r = await runGit(['config', '--file', '.gitmodules', '--get-regexp', 'path'], repo);
-  if (r.code !== 0) return []; // no .gitmodules
-  return r.stdout
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => line.split(/\s+/).slice(1).join(' ').trim())
-    .filter(Boolean);
-};
-
 function rejectedNonFastForward(r: { stdout: string; stderr: string }): boolean {
   return /non-fast-forward|\[rejected\]|fetch first|Updates were rejected/i.test(`${r.stdout}\n${r.stderr}`);
 }
 
 /**
- * Run one git-sync pass for `slug`. Returns a structured outcome; never throws on
- * git failure (every git call is checked). The caller (git-sync-action) handles the
- * `conflict` outcome (escalation + resolver) and records metadata.
+ * Recursively discover submodule paths (repo-relative), DEEPEST-FIRST. Dynamic —
+ * reads the live submodule tree (`git submodule status --recursive`), never a
+ * hardcoded list. Skips uninitialized submodules (leading '-'). Deepest-first so a
+ * child lands on its origin before a parent's pointer to it is pushed.
+ */
+const discoverSubmodulesRecursive = async (runGit: RunGit, repo: string): Promise<string[]> => {
+  const r = await runGit(['submodule', 'status', '--recursive'], repo);
+  if (r.code !== 0) return [];
+  const paths = r.stdout
+    .split('\n')
+    .filter(Boolean)
+    .filter((l) => l[0] !== '-') // skip uninitialized
+    .map((l) => l.slice(1).trim().split(/\s+/)[1]) // "<flag><sha> <path> (<describe>)" → path
+    .filter(Boolean);
+  return paths.sort((a, b) => b.split('/').length - a.split('/').length);
+};
+
+type RepoSyncResult =
+  | { status: 'nothing' }
+  | { status: 'synced'; pushed: boolean }
+  | { status: 'conflict'; conflictedFiles: string[] }
+  | { status: 'error'; message: string };
+
+/**
+ * Sync ONE repo (superproject or a single submodule) to origin: commit dirty →
+ * fetch → merge (reconciling a diverged/behind remote) → push. Never throws.
+ */
+async function syncOneRepo(
+  runGit: RunGit,
+  repoPath: string,
+  o: { remote: string; defaultBranch: string; message: string; doPush: boolean },
+): Promise<RepoSyncResult> {
+  const { remote, message, doPush } = o;
+  const branch = (await currentBranch(runGit, repoPath)) ?? o.defaultBranch;
+
+  let committedLocal = false;
+  if (await isDirty(runGit, repoPath)) {
+    await runGit(['add', '-A'], repoPath);
+    const c = await runGit(['commit', '--no-verify', '-m', message], repoPath);
+    if (c.code === 0) committedLocal = true;
+  }
+
+  const fetch = await runGit(['fetch', remote, branch], repoPath);
+  if (fetch.code !== 0) {
+    // Offline / no remote: a local commit still happened (or nothing did).
+    return committedLocal ? { status: 'synced', pushed: false } : { status: 'nothing' };
+  }
+
+  const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
+  if (merge.code !== 0) {
+    const conflicted = await conflictedFiles(runGit, repoPath);
+    await runGit(['merge', '--abort'], repoPath); // clean tree
+    return { status: 'conflict', conflictedFiles: conflicted };
+  }
+  let mergedNew = !/Already up to date/i.test(merge.stdout);
+
+  let pushed = false;
+  if (doPush) {
+    let push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
+    if (push.code !== 0 && rejectedNonFastForward(push)) {
+      // A peer pushed between our fetch and push — re-fetch + re-merge once.
+      await runGit(['fetch', remote, branch], repoPath);
+      const m2 = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
+      if (m2.code !== 0) {
+        const conflicted = await conflictedFiles(runGit, repoPath);
+        await runGit(['merge', '--abort'], repoPath);
+        return { status: 'conflict', conflictedFiles: conflicted };
+      }
+      mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
+      push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
+    }
+    if (push.code !== 0) {
+      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
+    }
+    pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
+  }
+
+  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
+  return { status: 'synced', pushed };
+}
+
+/**
+ * Run one git-sync pass for `slug`. Syncs all submodules (recursively, deepest-first)
+ * then the superproject. Returns a structured outcome; never throws. The caller
+ * (git-sync-action) handles `conflict` (escalation + resolver, scoped to the repo
+ * that conflicted) and records metadata.
  */
 export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promise<GitSyncOutcome> {
   const runGit = opts.runGit ?? defaultRunGit;
@@ -122,76 +195,27 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));
   if (!repo) return { status: 'error', message: `no repo path registered for harness '${slug}'` };
 
-  let committedLocal = false;
-
-  // 1. Submodules first: commit dirty, push the branch, stage the bumped pointer.
-  const subPaths = opts.submodulePaths ?? (doSub ? await discoverSubmodules(runGit, repo) : []);
+  // Submodules first, deepest-first (dynamic recursive discovery).
+  let subPaths: string[] = [];
+  if (doSub) {
+    subPaths = opts.submodulePaths
+      ? [...opts.submodulePaths].sort((a, b) => b.split('/').length - a.split('/').length)
+      : await discoverSubmodulesRecursive(runGit, repo);
+  }
   for (const sub of subPaths) {
-    const subAbs = join(repo, sub);
-    if (await isDirty(runGit, subAbs)) {
-      await runGit(['add', '-A'], subAbs);
-      const c = await runGit(['commit', '--no-verify', '-m', message], subAbs);
-      if (c.code === 0) committedLocal = true;
+    const r = await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: branch, message, doPush });
+    if (r.status === 'conflict') return { status: 'conflict', conflictedFiles: r.conflictedFiles, scope: sub };
+    if (r.status === 'error') {
+      log(`[git-sync] submodule '${sub}' failed (${slug}): ${r.message}`);
+      return { status: 'error', message: `submodule '${sub}': ${r.message}` };
     }
-    if (doPush) {
-      const subBranch = (await currentBranch(runGit, subAbs)) ?? branch;
-      const push = await runGit(['push', remote, `HEAD:${subBranch}`], subAbs);
-      if (push.code !== 0) {
-        // Don't bump a superproject pointer to a commit we couldn't publish — a fresh
-        // clone would then fail to resolve the pin. Surface as error for this tick.
-        return { status: 'error', message: `submodule '${sub}' push failed: ${push.stderr.trim() || push.stdout.trim()}` };
-      }
-    }
-    // Stage the (possibly advanced) submodule pointer into the superproject index.
-    await runGit(['add', '--', sub], repo);
+    // synced/nothing → any pointer bump is now a dirty change in the parent, synced next.
   }
 
-  // 2. Superproject: deliberate whole-tree commit (git-sync owns it; see header).
-  if (await isDirty(runGit, repo)) {
-    await runGit(['add', '-A'], repo);
-    const c = await runGit(['commit', '--no-verify', '-m', message], repo);
-    if (c.code === 0) committedLocal = true;
-  }
-
-  // 3. Fetch + merge origin/branch.
-  const fetch = await runGit(['fetch', remote, branch], repo);
-  if (fetch.code !== 0) {
-    // Offline / no remote: a local commit still happened (or nothing did).
-    log(`[git-sync] fetch failed (${slug}): ${fetch.stderr.trim()}`);
-    return committedLocal
-      ? { status: 'synced', headSha: await headSha(runGit, repo), pushed: false }
-      : { status: 'nothing' };
-  }
-  const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repo);
-  if (merge.code !== 0) {
-    const conflicted = await conflictedFiles(runGit, repo);
-    await runGit(['merge', '--abort'], repo); // restore a clean tree (P-010)
-    return { status: 'conflict', conflictedFiles: conflicted };
-  }
-  const mergedNew = !/Already up to date/i.test(merge.stdout);
-
-  // 4. Push.
-  let pushed = false;
-  if (doPush) {
-    let push = await runGit(['push', remote, `HEAD:${branch}`], repo);
-    if (push.code !== 0 && rejectedNonFastForward(push)) {
-      // A peer pushed between our fetch and push — re-fetch + re-merge once.
-      await runGit(['fetch', remote, branch], repo);
-      const m2 = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repo);
-      if (m2.code !== 0) {
-        const conflicted = await conflictedFiles(runGit, repo);
-        await runGit(['merge', '--abort'], repo);
-        return { status: 'conflict', conflictedFiles: conflicted };
-      }
-      push = await runGit(['push', remote, `HEAD:${branch}`], repo);
-    }
-    if (push.code !== 0) {
-      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
-    }
-    // "Everything up-to-date" means the push moved nothing — don't count it as a sync.
-    pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
-  }
-
-  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
-  return { status: 'synced', headSha: await headSha(runGit, repo), pushed };
+  // Superproject last (its bumped submodule pointers are committed + pushed here).
+  const top = await syncOneRepo(runGit, repo, { remote, defaultBranch: branch, message, doPush });
+  if (top.status === 'conflict') return { status: 'conflict', conflictedFiles: top.conflictedFiles, scope: 'superproject' };
+  if (top.status === 'error') return { status: 'error', message: top.message };
+  if (top.status === 'nothing') return { status: 'nothing' };
+  return { status: 'synced', headSha: await headSha(runGit, repo), pushed: top.pushed };
 }

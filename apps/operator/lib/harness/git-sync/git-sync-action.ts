@@ -101,14 +101,15 @@ async function gitSyncEscalationOpen(slug: string): Promise<boolean> {
   }
 }
 
-async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicted: string[]): Promise<void> {
+async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicted: string[], scope: string): Promise<void> {
   const { sql } = getOrgPg();
   const body = JSON.stringify({
     kind: ESCALATION_KIND,
     harness_slug: slug,
+    scope, // which repo conflicted: 'superproject' or a submodule path
     conflicted_files: conflicted,
     emitted_at: Date.now(),
-    detail: 'git-sync auto-merge with origin/main conflicted; tree aborted clean, merge-resolver dispatched.',
+    detail: `git-sync auto-merge conflicted in ${scope}; tree aborted clean, merge-resolver dispatched.`,
   });
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -133,15 +134,16 @@ async function clearGitSyncEscalation(slug: string): Promise<void> {
 }
 
 /** Fire-and-forget spawn of a merge-resolver role via the invoke route (P-012). */
-async function spawnMergeResolver(slug: string, workspaceId: string, conflicted: string[]): Promise<void> {
+async function spawnMergeResolver(slug: string, workspaceId: string, conflicted: string[], scope: string): Promise<void> {
   const ws = encodeURIComponent(workspaceId);
   const url = `${operatorBase()}/api/harness/${encodeURIComponent(slug)}/invoke?role=merge-resolver&ws=${ws}`;
+  const where = scope === 'superproject' ? 'the superproject' : `submodule '${scope}'`;
   // Don't await the agent run to completion — it resolves the conflict asynchronously;
   // the next git-sync tick sees a clean tree and clears the escalation.
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ kickoff: `Resolve the git-sync merge conflict on main. Conflicted: ${conflicted.join(', ')}` }),
+    body: JSON.stringify({ kickoff: `Resolve the git-sync merge conflict in ${where} (on main). Conflicted files: ${conflicted.join(', ')}` }),
   }).catch((e) => console.warn(`[git-sync] merge-resolver spawn failed (${slug}): ${e instanceof Error ? e.message : e}`));
 }
 
@@ -186,10 +188,10 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   if (outcome.status === 'conflict') {
     // P-010/P-012: file the escalation + spawn a resolver, deduped on the open escalation.
     const alreadyOpen = await gitSyncEscalationOpen(slug);
-    await writeGitSyncEscalation(slug, workspaceId, outcome.conflictedFiles);
+    await writeGitSyncEscalation(slug, workspaceId, outcome.conflictedFiles, outcome.scope);
     if (!alreadyOpen) {
-      console.warn(`[git-sync] ${slug}: merge conflict (${outcome.conflictedFiles.join(', ')}) — spawning merge-resolver`);
-      await spawnMergeResolver(slug, workspaceId, outcome.conflictedFiles);
+      console.warn(`[git-sync] ${slug}: merge conflict in ${outcome.scope} (${outcome.conflictedFiles.join(', ')}) — spawning merge-resolver`);
+      await spawnMergeResolver(slug, workspaceId, outcome.conflictedFiles, outcome.scope);
     }
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.

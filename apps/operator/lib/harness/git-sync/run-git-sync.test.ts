@@ -163,4 +163,27 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
     });
   });
+
+  it('reconciles a DIVERGED submodule (behind its origin) via fetch+merge+push instead of erroring', () => {
+      // a peer advances the submodule's origin → the harness submodule is now behind
+      const subOther = join(root, 'subother');
+      git(root, 'clone', subOrigin, subOther);
+      configUser(subOther);
+      writeFileSync(join(subOther, 'peer.txt'), 'peer-sub-change\n');
+      git(subOther, 'add', '-A');
+      git(subOther, 'commit', '--no-verify', '-m', 'peer sub change');
+      git(subOther, 'push', 'origin', 'main');
+
+      // local change in the submodule → diverged (local commit on a now-behind base)
+      writeFileSync(join(repo, 'libs/sub', 'local-sub.txt'), 'local-sub-change\n');
+
+      return runGitSync('test', { repoPath: repo }).then((out) => {
+        // the OLD pipeline returned {status:'error'} (non-fast-forward); now it merges
+        expect(out.status).not.toBe('error');
+        // both the peer's and the local submodule commit are now on the submodule origin
+        const subOriginFiles = git(subOrigin, 'ls-tree', '-r', '--name-only', 'main');
+        expect(subOriginFiles).toContain('peer.txt');
+        expect(subOriginFiles).toContain('local-sub.txt');
+      });
+    });
 });
