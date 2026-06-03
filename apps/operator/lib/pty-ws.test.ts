@@ -128,19 +128,26 @@ describe('pty-ws', () => {
     // connect would race the close.
     const handle = spawnTestPty(['echo PTYWS_TEST_MARKER; sleep 30']);
     const ws = openWs(`/pty/${handle.id}`);
+    // Start collecting BEFORE awaiting open: `echo` fires immediately on spawn,
+    // so the live frame (or the on-connect screen replay) can arrive in the
+    // microtask gap between open and a listener attached afterwards, and ws
+    // drops messages with no listener → flaky `expected '' to contain ...`.
+    const firstRead = collectBytes(ws, (s) => s.includes('PTYWS_TEST_MARKER'));
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
-    const out = await collectBytes(ws, (s) => s.includes('PTYWS_TEST_MARKER'));
+    const out = await firstRead;
     expect(out).toContain('PTYWS_TEST_MARKER');
     ws.close();
     // Tiny gap for the close handler to detach subscribers cleanly.
     await new Promise((r) => setTimeout(r, 50));
 
     // Second connect — replay should carry the marker via P4 screen state.
+    // Same early-attach: the server sends the replay right after connect.
     const ws2 = openWs(`/pty/${handle.id}`);
+    const replayRead = collectBytes(ws2, (s) => s.includes('PTYWS_TEST_MARKER'));
     const opened2 = await awaitOpenOrClose(ws2);
     expect(opened2.opened).toBe(true);
-    const replay = await collectBytes(ws2, (s) => s.includes('PTYWS_TEST_MARKER'));
+    const replay = await replayRead;
     expect(replay).toContain('PTYWS_TEST_MARKER');
     // Replay should be SMALLER than full byte history would have been.
     expect(replay.length).toBeLessThan(8 * 1024);
@@ -152,10 +159,13 @@ describe('pty-ws', () => {
     // tput print, and the pty stays open through the round-trip, under load.
     const handle = spawnTestPty(['printf "tput_cols=$(tput cols)\\n"; sleep 3; printf "tput_cols2=$(tput cols)\\n"; sleep 3']);
     const ws = openWs(`/pty/${handle.id}`);
+    // First print fires immediately — collect before awaiting open (see the
+    // round-trip test) so the frame can't slip the open→listener gap.
+    const firstRead = collectBytes(ws, (s) => /tput_cols=\d+/.test(s));
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
     // Wait for the first reading.
-    const before = await collectBytes(ws, (s) => /tput_cols=\d+/.test(s));
+    const before = await firstRead;
     expect(before).toMatch(/tput_cols=80/);
     // Send resize and let the second printf run.
     ws.send(JSON.stringify({ type: 'resize', cols: 132, rows: 40 }));
@@ -167,9 +177,16 @@ describe('pty-ws', () => {
   it('emits exit text frame on process exit', async () => {
     const handle = spawnTestPty(['exit 7']);
     const ws = openWs(`/pty/${handle.id}`);
-    const opened = await awaitOpenOrClose(ws);
-    expect(opened.opened).toBe(true);
-    const exitMsg = await new Promise<{ type?: string; code?: number }>((resolve) => {
+    // Register the exit-frame listener SYNCHRONOUSLY, before awaiting open.
+    // `exit 7` exits instantly, and the server replays the exit frame to a
+    // late subscriber right after connect (pty-ws.ts ~L286). The only race
+    // left was client-side: attaching `ws.on('message')` a microtask AFTER
+    // `await awaitOpenOrClose` let a fast exit frame slip through the gap (ws
+    // drops messages with no listener) → flaky `expected undefined to be
+    // 'exit'`. The other tests dodge this by keeping the pty alive with
+    // `sleep`; an exit test can't, so it must subscribe before any frame can
+    // arrive. Assertions are unchanged.
+    const exitFrame = new Promise<{ type?: string; code?: number }>((resolve) => {
       const timer = setTimeout(() => resolve({}), 8000);
       ws.on('message', (data, isBinary) => {
         if (isBinary) return;
@@ -179,6 +196,9 @@ describe('pty-ws', () => {
         } catch { /* */ }
       });
     });
+    const opened = await awaitOpenOrClose(ws);
+    expect(opened.opened).toBe(true);
+    const exitMsg = await exitFrame;
     expect(exitMsg.type).toBe('exit');
     expect(exitMsg.code).toBe(7);
   });
@@ -195,9 +215,12 @@ describe('pty-ws', () => {
     // seconds, and the pty must stay open until the echo arrives.
     const handle = spawnTestPty(['printf "ack_payload\\n"; sleep 30']);
     const ws = openWs(`/pty/${handle.id}`);
+    // ack_payload prints immediately — collect before awaiting open (see the
+    // round-trip test) so the frame can't slip the open→listener gap.
+    const ackRead = collectBytes(ws, (s) => s.includes('ack_payload'));
     const opened = await awaitOpenOrClose(ws);
     expect(opened.opened).toBe(true);
-    await collectBytes(ws, (s) => s.includes('ack_payload'));
+    await ackRead;
     // Ack 1MB worth of fake bytes — should not throw or close socket.
     ws.send(JSON.stringify({ type: 'ack', bytes: 1_000_000 }));
     // Send another keystroke, verify socket still alive.

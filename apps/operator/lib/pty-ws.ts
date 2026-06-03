@@ -155,8 +155,18 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
     const ptyId = m[1];
 
     const handle = getPty(ptyId);
-    if (!handle || handle.killed) {
-      ws.close(4410, 'pty not found or killed');
+    // Accept a connection to an already-EXITED pty while its handle is still in
+    // the 30 s grace window (pty-bridge reaps killed handles 30 s after exit
+    // precisely so a late subscriber can read the final screen + exit code).
+    // attachWsToPty serves an exited handle correctly: it replays the screen
+    // serialization and, because handle.exitCode is set, delivers the `exit`
+    // frame and closes. Rejecting `handle.killed` here defeated that grace
+    // window and raced a fast `exit`-ing command — if the pty won the race
+    // against this connection handler the exit frame was dropped (the client
+    // saw `open` but never an `exit` frame). Only a missing/reaped handle is a
+    // real 4410.
+    if (!handle) {
+      ws.close(4410, 'pty not found');
       return;
     }
 
