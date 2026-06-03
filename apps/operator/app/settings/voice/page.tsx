@@ -1724,6 +1724,7 @@ function NumField({ label, value, step, onCommit, hint }: { label: string; value
     <div>
       <label style={lbl}>{label}</label>
       <input
+        aria-label={label}
         type="number"
         step={step}
         min={0}

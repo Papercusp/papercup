@@ -27,17 +27,22 @@ test.describe('voice settings', () => {
   test('renders all 5 TTS engines + 3 STT engines', async ({ page }) => {
     await page.goto('/settings/voice');
 
-    // STT selector
-    const stt = page.getByRole('combobox').first();
-    await expect(stt.locator('option', { hasText: 'Voicemode' })).toHaveCount(1);
-    await expect(stt.locator('option', { hasText: 'Web Speech' })).toHaveCount(1);
-    await expect(stt.locator('option', { hasText: 'Deepgram' })).toHaveCount(1);
+    // STT/TTS are custom Radix Selects (not native <select>) — options live in a
+    // portal mounted on open, with role="option". Open each by its trigger's
+    // accessible name, then assert the engine options are present.
+    const stt = page.getByRole('combobox', { name: 'STT engine' });
+    await stt.click();
+    await expect(page.getByRole('option', { name: /Voicemode/ })).toBeVisible();
+    await expect(page.getByRole('option', { name: /Web Speech/ })).toBeVisible();
+    await expect(page.getByRole('option', { name: /Deepgram/ })).toBeVisible();
+    await page.keyboard.press('Escape');
 
-    // TTS selector
-    const tts = page.getByRole('combobox').nth(1);
-    await expect(tts.locator('option', { hasText: 'Kokoro' })).toHaveCount(1);
-    await expect(tts.locator('option', { hasText: 'Browser' })).toHaveCount(1);
-    await expect(tts.locator('option', { hasText: 'ElevenLabs' })).toHaveCount(1);
+    const tts = page.getByRole('combobox', { name: 'TTS engine' });
+    await tts.click();
+    await expect(page.getByRole('option', { name: /Kokoro/ })).toBeVisible();
+    await expect(page.getByRole('option', { name: /Browser/ })).toBeVisible();
+    await expect(page.getByRole('option', { name: /ElevenLabs/ })).toBeVisible();
+    await page.keyboard.press('Escape');
   });
 
   test('STT spend widget renders alongside TTS spend', async ({ page }) => {
@@ -52,29 +57,59 @@ test.describe('voice settings', () => {
     await expectNoA11yViolations(page);
   });
 
-  test('cap knobs persist via PUT', async ({ page }) => {
-    await page.goto('/settings/voice');
+  // KNOWN-RED — harness limitation, NOT a product bug, NOT weakened to pass.
+  // Verified out-of-band that the feature works: a direct PUT to
+  // /api/agent-mcp/operator-tts-spend persists (GET reflects it), the EL spend
+  // section + cap-knobs render (after seeding ttsEngine=elevenlabs), and the
+  // NumField is editable. What's intractable is asserting the UI-edit → persist
+  // round-trip in headless Playwright: the SPA's commit can route through the
+  // desktop ipcFetch polyfill (so page.waitForResponse on the HTTP PUT misses
+  // it), page.reload is suppressed in desktop mode, spend GETs read back a
+  // session-scoped row, and NumField mirrors its `value` prop into a local
+  // draft via useEffect (an async spend re-fetch resets the draft mid-edit, so
+  // the blur commits a no-op). Left failing rather than asserting something
+  // weaker so the gap is visible — the right fix is a Vitest/route-level test
+  // for the spend PUT (deterministic) + a lighter e2e that only checks the knob
+  // renders + accepts input.
+  test('cap knobs persist via PUT', async ({ page, request }) => {
+    // EL spend cap-knobs render only when ttsEngine === 'elevenlabs'; seed via
+    // the prefs API (robust vs the Radix Select), restore in `finally`.
+    await request.put('/api/agent-mcp/operator-voice-prefs', { data: { ttsEngine: 'elevenlabs' } });
+    try {
+      await page.goto('/settings/voice');
 
-    const putRequest = page.waitForResponse(
-      (r) => r.url().includes('/api/agent-mcp/operator-tts-spend') && r.request().method() === 'PUT',
-    );
+      const softCap = page.getByLabel('Soft cap (USD/day)').first();
+      await expect(softCap).toBeVisible();
+      // Let the async spend fetch settle into the input — NumField mirrors its
+      // `value` prop into the draft via useEffect; editing before it lands gets
+      // clobbered, and a no-change blur won't commit.
+      await expect(softCap).toHaveValue(/^\d+(\.\d+)?$/);
+      await page.waitForTimeout(1500);
 
-    const softCap = page.getByLabel('Soft cap (USD/day)').first();
-    await softCap.fill('7');
-    await softCap.blur();
+      const current = Number(await softCap.inputValue()) || 0;
+      const target = current === 7 ? 8 : 7;
 
-    const resp = await putRequest;
-    expect(resp.ok()).toBeTruthy();
-    const body = await resp.json();
-    expect(body.softCapUsd).toBe(7);
+      await softCap.fill(String(target));
+      await softCap.blur();
 
-    // Restore default to keep tests idempotent.
-    const restore = page.waitForResponse(
-      (r) => r.url().includes('/api/agent-mcp/operator-tts-spend') && r.request().method() === 'PUT',
-    );
-    await softCap.fill('5');
-    await softCap.blur();
-    await restore;
+      await expect
+        .poll(async () => (await (await page.request.get('/api/agent-mcp/operator-tts-spend')).json()).softCapUsd, {
+          timeout: 10_000,
+        })
+        .toBe(target);
+
+      // Restore to keep tests idempotent.
+      const restoreVal = target === 7 ? 5 : 7;
+      await softCap.fill(String(restoreVal));
+      await softCap.blur();
+      await expect
+        .poll(async () => (await (await page.request.get('/api/agent-mcp/operator-tts-spend')).json()).softCapUsd, {
+          timeout: 10_000,
+        })
+        .toBe(restoreVal);
+    } finally {
+      await request.put('/api/agent-mcp/operator-voice-prefs', { data: { ttsEngine: 'kokoro' } });
+    }
   });
 });
 
