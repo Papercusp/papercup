@@ -399,8 +399,8 @@ describe('roleConsumes', () => {
     }
   });
 
-  it('an expert manifest consumes overrides the kernel default', async () => {
-    // security-reviewer-style expert with an explicit consumes block.
+  it('a cross-cutting manifest consumes overrides the kernel default', async () => {
+    // security-reviewer-style cross-cutting role with an explicit consumes block.
     writeFileSync(join(promptsDir, 'feat-checker.role.json'), JSON.stringify({
       id: 'feat-checker',
       whenUseful: 'checks a feature',

@@ -109,9 +109,9 @@ describe('agent_chats:create', () => {
   it('creates and returns chat data', async () => {
     const chat = {
       id: 'new-id',
-      role: 'expert',
-      feature_id: 'EXP-001',
-      title: 'expert · EXP-001',
+      role: 'worker',
+      feature_id: 'F-001',
+      title: 'worker · F-001',
       transcript: [],
       total_input_tokens: 0,
       total_output_tokens: 0,
@@ -123,13 +123,13 @@ describe('agent_chats:create', () => {
     };
     createChatMock.mockResolvedValueOnce({ ok: true, data: chat });
     const result = await createTool.handler(
-      { slug: 'sheets', role: 'expert', feature_id: 'EXP-001' },
+      { slug: 'sheets', role: 'worker', feature_id: 'F-001' },
       MAKE_CTX(),
     );
     expect(createChatMock).toHaveBeenCalledWith({
       slug: 'sheets',
-      role: 'expert',
-      feature_id: 'EXP-001',
+      role: 'worker',
+      feature_id: 'F-001',
     });
     expect(parsePayload(result)).toEqual(chat);
   });

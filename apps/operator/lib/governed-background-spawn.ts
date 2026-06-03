@@ -1,9 +1,9 @@
 /**
  * Governed fire-and-forget background spawn of an invoke-once agent (RB-012).
  *
- * The scoper (harness-scoper.ts) and the expert dispatcher (expert-dispatcher.ts) both
- * spawn an invoke-once CLI agent DETACHED + unref'd, then poll a result file for the
- * `__INVOCATION_DONE__` sentinel — they own no handle on the child. This is the same
+ * The scoper (harness-scoper.ts) spawns an invoke-once CLI agent DETACHED + unref'd,
+ * then polls a result file for the
+ * `__INVOCATION_DONE__` sentinel — it owns no handle on the child. This is the same
  * spawn shape, so it's lifted here with one governance point: when
  * PAPERCUSP_AGENT_GOVERNOR=1 the spawn first acquires a SHARED concurrency permit (so
  * these background agents don't pile onto a pipeline burst against the same provider

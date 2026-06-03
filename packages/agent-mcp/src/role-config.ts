@@ -11,7 +11,7 @@
  * `AGENT_ROLES` is the single runtime source of truth for the built-in role
  * ids; the type-level augmentation is *derived* from it (no hand-kept second
  * list to drift). The ordering is: the seven pipeline roles, the two chat
- * roles (operator/oracle), then the cross-cutting expert roles that show up
+ * roles (operator/oracle), then the cross-cutting roles that show up
  * in tool `roles:` allowlists.
  */
 
@@ -34,14 +34,12 @@ export const AGENT_ROLES = [
   // Chat-surface roles.
   'operator',
   'oracle',
-  // Coordinator + cross-cutting expert roles (built-in, fire on plan events).
+  // Coordinator + cross-cutting roles (built-in, fire on plan events).
   'orchestrator',
   // Promotes a plan's `## Promote` policy into the harness, all waves up front
   // (launched by a human/agent). promote-policy-and-waves-2026-05-30; the
   // wave-advance sweep that used to drive it per-wave is retired (P-044).
   'promote',
-  'expert',
-  'feedback',
   'security-reviewer',
   'infra-reviewer',
   // 'summarizer' + 'project_manager' — CUT (dbos-system-completion P-015).

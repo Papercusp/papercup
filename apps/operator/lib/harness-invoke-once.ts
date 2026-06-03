@@ -4,16 +4,15 @@
  *
  * This is the replacement for the legacy
  *   `bash -c 'source <(awk ... run.sh); invoke <role> EXTRAS...'`
- * pattern that three operator sites used to spawn an agent off run.sh's
- * bash function library: `harness-scoper.ts` (background scoper),
- * `expert-dispatcher.ts` (expert roles), and the `/harness/:slug/invoke`
- * route. `invoke-once.ts` reads ROLE / EXTRAS_JSON / RESULT_PATH plus the
+ * pattern that operator sites used to spawn an agent off run.sh's
+ * bash function library: `harness-scoper.ts` (background scoper) and the
+ * `/harness/:slug/invoke` route. `invoke-once.ts` reads ROLE / EXTRAS_JSON / RESULT_PATH plus the
  * usual PROJECT_DIR / STATE_DIR / HARNESS_DIR from env, constructs the
  * InvokeContext (with PG bootstrap), and runs the TS `invoke()` exactly
  * once — the same code path the orchestrator main loop drives.
  *
  * Callers own the spawn options (detached vs. synchronous, stdio) and any
- * result-file polling; this just assembles the command + env so the three
+ * result-file polling; this just assembles the command + env so the call
  * sites stay in lockstep.
  */
 import { invokeOnceBin, tsxBin } from '@/lib/harness-paths';
@@ -70,18 +69,18 @@ export interface InvokeOnceSpec {
   projectDir: string;
   /** STATE_DIR — usually `<projectDir>/.harness`. */
   stateDir: string;
-  /** HARNESS_DIR — normally the harness package dir, but the expert
-      dispatcher overlays a per-run prompt-shadow dir here. */
+  /** HARNESS_DIR — normally the harness package dir; a caller may
+      overlay a per-run prompt-shadow dir here. */
   harnessDir: string;
-  /** Role to invoke (scoper, worker, an expert role name, …). */
+  /** Role to invoke (scoper, worker, …). */
   role: string;
-  /** Positional `K=V` extras (e.g. `MODE=proposal`, `FEATURE_ID=F-1`,
-      `EXPERT_ID=…`) — passed to invoke-once as EXTRAS_JSON. */
+  /** Positional `K=V` extras (e.g. `MODE=proposal`, `FEATURE_ID=F-1`)
+      — passed to invoke-once as EXTRAS_JSON. */
   extras: string[];
   /** When set, invoke-once tees output here and appends the
       `__INVOCATION_DONE__` sentinel on exit (for background pollers). */
   resultPath?: string;
-  /** Extra env merged in (role-specific: SCOPER_*, EXPERT_*, decrypted
+  /** Extra env merged in (role-specific: SCOPER_*, decrypted
       search-provider keys). `undefined` values are skipped. */
   extraEnv?: Record<string, string | undefined>;
 }
@@ -110,7 +109,7 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // Production launchers must enable the PG state path + provide the DSN — the
     // pg-bootstrap otherwise runs with empty in-memory state and the spawned
     // agent's tools (spawn-mcp) fail "no PG DSN in env". Mirrors harness-launch.ts
-    // so invoke-route/scoper/expert agents hit the SAME Postgres the operator
+    // so invoke-route/scoper agents hit the SAME Postgres the operator
     // uses. `??` keeps any explicit override (e.g. tests forcing in-memory).
     PAPERCUSP_USE_PG_STATE: process.env.PAPERCUSP_USE_PG_STATE ?? '1',
     // `||` (not `??`): an EMPTY-string DATABASE_URL must fall through to the

@@ -746,8 +746,25 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
         .prepare(
           'SELECT id, role, title, updated_at FROM agent_chats WHERE feature_id = ? ORDER BY updated_at DESC LIMIT 20',
         )
-        .all(agent.feature_id)) as Array<{ id: string; role: string; title: string | null; updated_at: string }>;
-      relatedChats = rows;
+        .all(agent.feature_id)) as Array<{
+        id: string;
+        role: string;
+        title: string | null;
+        updated_at: unknown;
+      }>;
+      // agent_chats.updated_at is now bigint epoch-ms (migration 116). Coerce to
+      // the ISO string this surface's contract expects (was timestamptz).
+      relatedChats = rows.map((r) => ({
+        id: r.id,
+        role: r.role,
+        title: r.title,
+        updated_at:
+          r.updated_at == null
+            ? ''
+            : new Date(
+                typeof r.updated_at === 'bigint' ? Number(r.updated_at) : Number(r.updated_at),
+              ).toISOString(),
+      }));
     } catch {
       /* per-harness legacy client unavailable */
     }

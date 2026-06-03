@@ -127,7 +127,6 @@ table only knows about these):
 - \`/harness/<slug>?panel=brainstorm\` — brainstorm tab
 - \`/harness/<slug>?panel=proposals\` — proposals
 - \`/harness/<slug>?panel=summary\` — summary
-- \`/harness/<slug>?panel=experts\` — experts
 - \`/harness/<slug>?panel=insights\` — insights
 - \`/harness/<slug>/projects\` and \`/harness/<slug>/projects/<id>\` — projects
 - \`/wiki?target=<filename>[&harness=<slug>]\` — wiki-link resolver for cross-harness file references

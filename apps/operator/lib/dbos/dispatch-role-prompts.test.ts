@@ -55,8 +55,6 @@ const DISPATCH_VERBS = [
   'NEXT_MONITOR',
   'NEXT_CROSSCHECK F-1',
   'NEXT_UI_QA F-1',
-  'NEXT_EXPERT EXP-1',
-  'NEXT_FEEDBACK EXP-1.FB-1',
 ];
 
 describe('every dispatchable role resolves to a prompt (no orphan dispatch verb)', () => {

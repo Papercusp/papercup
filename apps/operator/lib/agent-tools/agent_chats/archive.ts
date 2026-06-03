@@ -4,7 +4,6 @@
  *
  * Calls archiveChat() in lib/agent-chats-data.ts directly — same function
  * the DELETE /api/harness/:slug/agent-chats/:chatId route projects.
- * Includes the "expert chat archive resumes the expert" side-effect.
  */
 
 import { z } from 'zod';
@@ -30,7 +29,7 @@ export default defineTool({
     notWhen: 'For DELETING a chat, this isn\'t it — archive is reversible. For UI dismissing without changing state, ignore the request and the user can do it themselves.',
     chaining: 'Pair with `agent_chats:list` first if you need to confirm the chatId.',
   },
-  description: 'Archive (soft-delete) a chat session by id. Resumes the expert lifecycle if applicable.',
+  description: 'Archive (soft-delete) a chat session by id.',
   capability: 'agent_chats:write',
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

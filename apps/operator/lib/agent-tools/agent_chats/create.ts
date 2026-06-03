@@ -4,8 +4,7 @@
  * stays on the dedicated SSE route.
  *
  * Calls createChat() in lib/agent-chats-data.ts directly — same function
- * the POST /api/harness/:slug/agent-chats route projects. Including the
- * "expert chat opens flips the expert into awaiting_user" side-effect.
+ * the POST /api/harness/:slug/agent-chats route projects.
  */
 
 import { z } from 'zod';

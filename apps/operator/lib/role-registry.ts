@@ -1,5 +1,5 @@
 /**
- * Role registry — scans for cross-cutting expert role manifests from
+ * Role registry — scans for cross-cutting role manifests from
  * two sources:
  *
  *   1. **Built-in roles**: `<harness-package>/prompts/<role>.role.json`
@@ -25,9 +25,8 @@
  *        "alwaysFireOn": [...]
  *      }]
  *
- * Either way, the scoper consumes the merged registry via the
- * `/api/harness/<slug>/expert-roles` endpoint and decides per replan
- * which roles to consult.
+ * Either way, the scoper consumes the merged registry and decides per
+ * replan which roles to consult.
  *
  * Manifest shape:
  *   {
@@ -65,19 +64,18 @@ export interface RoleManifest {
    * What the role produces:
    *   - `features`: writes feature rows to harness_features tagged with
    *     `featureKind`. The most common shape; scoper coordinates via
-   *     the kind-mismatch guard so it doesn't trample expert features.
+   *     the kind-mismatch guard so it doesn't trample cross-cutting features.
    *   - `spec`: DEPRECATED. Historically appended bullets to SPEC.md so
    *     scoper-replan would fold them in. SPEC.md is deprecated (D-004),
    *     so the dispatcher no longer writes anything for this kind — no
-   *     built-in role uses it. Routing expert output into a plan is the
-   *     deferred expert→plans redesign.
+   *     built-in role uses it.
    */
   output:
     | { kind: 'features'; featureKind: string }
     | { kind: 'spec'; specSection?: string };
   /**
    * Plugin lifecycle / event names that trigger this role outside of
-   * scoper-decides flow. The substrate's expert-triggers module reads
+   * scoper-decides flow. The substrate's role-triggers module reads
    * this field to wire post-hoc triggers (e.g. infra-reviewer fires on
    * `onProvisioned` to verify newly-provisioned infrastructure).
    */
@@ -91,8 +89,8 @@ export interface RoleManifest {
    * "does picking this role require a feature / plan?" Read by the `psu`
    * role picker, the /adv launch UIs, and `roles:get`/`roles:list`.
    * (`output` above says what a role PRODUCES; `consumes` says what it
-   * needs to start.) Omitted on an expert manifest → falls back to the
-   * kernel default in `KERNEL_ROLE_CONSUMES` / `roleConsumes()`. */
+   * needs to start.) Omitted on a cross-cutting manifest → falls back to
+   * the kernel default in `KERNEL_ROLE_CONSUMES` / `roleConsumes()`. */
   consumes?: RoleConsumes;
   /** Where this role came from. Built-in unless surfaced from a plugin manifest. */
   source: RoleSource;
@@ -126,8 +124,8 @@ function parseConsumes(raw: unknown): RoleConsumes | undefined {
  * `orchestrator/main-loop.ts` (verified 2026-05-30): worker / validator /
  * debugger / architect get a feature; documenter / reviewer optionally;
  * scoper works at plan/spec scope; curator / operator / oracle need
- * neither. Expert + plugin roles declare their own `consumes` on the
- * manifest (falls back here, then to DEFAULT_CONSUMES).
+ * neither. Plugin / cross-cutting roles declare their own `consumes` on
+ * the manifest (falls back here, then to DEFAULT_CONSUMES).
  */
 export const KERNEL_ROLE_CONSUMES: Record<string, RoleConsumes> = {
   worker: { feature: 'required', plan: 'none' },
@@ -143,7 +141,7 @@ export const KERNEL_ROLE_CONSUMES: Record<string, RoleConsumes> = {
 };
 
 /**
- * Resolve a role's launch-time context needs: an expert/plugin
+ * Resolve a role's launch-time context needs: a plugin/cross-cutting
  * manifest's own `consumes` wins, else the kernel map, else the
  * none/none default. The single source `psu` + UIs read.
  */

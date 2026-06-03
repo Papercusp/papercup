@@ -112,7 +112,7 @@ describe('classifyDecision — per-feature lifecycle dispatch', () => {
   });
 });
 
-describe('classifyDecision — quality / expert verbs (exact role names + extras)', () => {
+describe('classifyDecision — quality verbs (exact role names + extras)', () => {
   test('NEXT_TESTER VAL-7 → dispatch tester with VAL_ID extra', () => {
     expect(classifyDecision(parseDecision('NEXT_TESTER VAL-7'), DEFAULT)).toEqual({
       kind: 'dispatch',
@@ -148,38 +148,6 @@ describe('classifyDecision — quality / expert verbs (exact role names + extras
     expect(classifyDecision(parseDecision('NEXT_MONITOR'), DEFAULT)).toMatchObject({
       kind: 'dispatch',
       role: 'monitor',
-    });
-  });
-
-  test('NEXT_EXPERT EXP-3 → dispatch expert with EXPERT_ID + FEATURE_ID extras', () => {
-    expect(classifyDecision(parseDecision('NEXT_EXPERT EXP-3'), DEFAULT)).toEqual({
-      kind: 'dispatch',
-      role: 'expert',
-      feature: 'EXP-3',
-      extras: ['FEATURE_ID=EXP-3', 'EXPERT_ID=EXP-3'],
-    });
-  });
-
-  test('NEXT_EXPERT with no id → terminal idle (malformed, stop cleanly)', () => {
-    expect(classifyDecision(parseDecision('NEXT_EXPERT'), DEFAULT)).toEqual({
-      kind: 'terminal',
-      outcome: 'idle',
-    });
-  });
-
-  test('NEXT_FEEDBACK EXP-3.FB-2 → dispatch feedback with FEEDBACK_ID + EXPERT_ID', () => {
-    expect(classifyDecision(parseDecision('NEXT_FEEDBACK EXP-3.FB-2'), DEFAULT)).toEqual({
-      kind: 'dispatch',
-      role: 'feedback',
-      feature: 'EXP-3',
-      extras: ['FEEDBACK_ID=FB-2', 'EXPERT_ID=EXP-3'],
-    });
-  });
-
-  test('NEXT_FEEDBACK with no dotted id → terminal idle (malformed)', () => {
-    expect(classifyDecision(parseDecision('NEXT_FEEDBACK justexpert'), DEFAULT)).toEqual({
-      kind: 'terminal',
-      outcome: 'idle',
     });
   });
 });

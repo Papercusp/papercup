@@ -429,7 +429,7 @@ export default defineTool({
   description:
     "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks the plan's from_items as done. Always emits a `plan_event` of kind=promoted.",
   guidance: {
-    when: 'A plan is ready to enter the harness — you and the human (and any expert agents) have settled the feature list and acceptance criteria.',
+    when: 'A plan is ready to enter the harness — you and the human have settled the feature list and acceptance criteria.',
     notWhen:
       'Routine plan edits — plans:set-now / plans:add-item already cover those. Mid-debate — promote only once the design is settled.',
   },

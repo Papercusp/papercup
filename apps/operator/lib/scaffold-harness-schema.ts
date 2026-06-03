@@ -36,17 +36,9 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
     -- a best-effort mirror during transition; the cleanup migration
     -- that drops them lands separately.
 
-    CREATE TABLE IF NOT EXISTS ${schema}.agent_chats (
-      id BIGSERIAL PRIMARY KEY,
-      role TEXT NOT NULL,
-      feature_id TEXT,
-      harness_slug TEXT NOT NULL,
-      thread_id TEXT NOT NULL,
-      created_at BIGINT NOT NULL,
-      updated_at BIGINT NOT NULL,
-      archived_at BIGINT,
-      payload JSONB NOT NULL DEFAULT '{}'::jsonb
-    );
+    -- agent_chats consolidated to harness_shared.agent_chats_consolidated
+    -- (migration 116); created below as an auto-updatable view, not a physical
+    -- per-harness table.
 
     CREATE TABLE IF NOT EXISTS ${schema}.harness_proposals (
       proposal_id TEXT PRIMARY KEY,
@@ -132,11 +124,28 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
       WHERE harness_slug = '${slug.replace(/'/g, "''")}'
       WITH CHECK OPTION;
 
+    CREATE OR REPLACE VIEW ${schema}.agent_chats AS
+      SELECT * FROM harness_shared.agent_chats_consolidated
+      WHERE harness_slug = '${slug.replace(/'/g, "''")}'
+      WITH CHECK OPTION;
+
+    -- Column defaults so writers that omit these on INSERT pass through
+    -- (matches migration 116). harness_slug satisfies WITH CHECK OPTION.
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN workspace_id SET DEFAULT 'default';
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN harness_slug SET DEFAULT '${slug.replace(/'/g, "''")}';
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN created_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN updated_at SET DEFAULT (extract(epoch FROM now()) * 1000)::bigint;
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN transcript SET DEFAULT '[]'::jsonb;
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN total_input_tokens SET DEFAULT 0;
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN total_output_tokens SET DEFAULT 0;
+    ALTER VIEW ${schema}.agent_chats ALTER COLUMN total_cost_usd_cents SET DEFAULT 0;
+
     GRANT SELECT, INSERT, UPDATE, DELETE ON
       ${schema}.harness_features,
       ${schema}.harness_issues,
       ${schema}.agent_runs,
-      ${schema}.harness_snapshots
+      ${schema}.harness_snapshots,
+      ${schema}.agent_chats
       TO harness_app, harness_admin;
   `);
   try {
@@ -145,7 +154,8 @@ export async function scaffoldHarnessSchema(slug: string): Promise<void> {
         ${schema}.harness_features,
         ${schema}.harness_issues,
         ${schema}.agent_runs,
-        ${schema}.harness_snapshots
+        ${schema}.harness_snapshots,
+        ${schema}.agent_chats
         TO harness_zero;
     `);
   } catch { /* harness_zero absent — skip grants */ }

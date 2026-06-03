@@ -73,8 +73,25 @@ function dbForSlug(slug: string) {
 }
 
 export function isValidChatRole(role: string): boolean {
-  if (role === 'feedback') return false;
   return getKnownRoles().includes(role);
+}
+
+/**
+ * Coerce an epoch-millisecond timestamp (bigint | number | numeric-string, as
+ * postgres-js may return int8) to an ISO string, preserving the ChatRow API
+ * contract. agent_chats consolidated stores bigint epoch-ms (the consolidation
+ * standard); the per-harness timestamptz columns were retired in migration 116.
+ */
+function msToIso(v: unknown): string {
+  if (v == null) return '';
+  const n = typeof v === 'bigint' ? Number(v) : typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return '';
+  return new Date(n).toISOString();
+}
+function msToIsoNullable(v: unknown): string | null {
+  if (v == null) return null;
+  const iso = msToIso(v);
+  return iso === '' ? null : iso;
 }
 
 export function rowToChat(r: Record<string, unknown>): ChatRow {
@@ -99,9 +116,9 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
       typeof r.total_cost_usd_cents === 'bigint'
         ? Number(r.total_cost_usd_cents)
         : ((r.total_cost_usd_cents as number | undefined) ?? 0),
-    created_at: r.created_at as string,
-    updated_at: r.updated_at as string,
-    archived_at: (r.archived_at as string | null) ?? null,
+    created_at: msToIso(r.created_at),
+    updated_at: msToIso(r.updated_at),
+    archived_at: msToIsoNullable(r.archived_at),
   };
 }
 
@@ -190,9 +207,7 @@ export async function createChat(
     return {
       ok: false,
       status: 400,
-      error: `role must be one of: ${getKnownRoles()
-        .filter((r) => r !== 'feedback')
-        .join(', ')}`,
+      error: `role must be one of: ${getKnownRoles().join(', ')}`,
     };
   }
   if (input.feature_id && !FEATURE_ID_RE.test(input.feature_id)) {
@@ -238,9 +253,10 @@ export async function archiveChat(input: ArchiveChatInput): Promise<Result<{ ok:
       .get(input.chatId)) as
       | { role: string; feature_id: string | null }
       | undefined;
+    const nowMs = Date.now();
     await db
-      .prepare('UPDATE agent_chats SET archived_at = now(), updated_at = now() WHERE id = ?')
-      .run(input.chatId);
+      .prepare('UPDATE agent_chats SET archived_at = ?, updated_at = ? WHERE id = ?')
+      .run(nowMs, nowMs, input.chatId);
     return { ok: true, data: { ok: true } };
   } catch (e) {
     return { ok: false, status: 500, error: `failed to archive chat: ${(e as Error).message}` };

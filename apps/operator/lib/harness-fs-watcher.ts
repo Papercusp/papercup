@@ -140,7 +140,7 @@ function watchedPaths(p: ProjectEntry): string[] {
       // smoke-results.json, smoke-startup.log: producer-time PG writes
       // retired the watcher dispatch on these paths.
       // skills: producer-time PG writes via _post_curator_outputs.
-      // debug/, experts/, logs/hooks, screenshots, run.log: chokidar
+      // debug/, logs/hooks, screenshots, run.log: chokidar
       // dispatch retired across this arc — producer-time PG writes via
       // their respective endpoints.
       // Per-branch action scripts and run logs — feed harness_branch_actions.
@@ -489,10 +489,6 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
 // ── Mirror 7b9 retired: harness_skills is now written at producer
 // time by bash run.sh's _post_curator_outputs after `invoke curator`
 // → /api/internal/skill-snapshot.
-
-// ── Mirror 7c0 retired: harness_experts is now written at producer
-// time by operator endpoints in app/api/_hono/experts.ts (identity
-// columns + spec_content + harness_expert_feedback + harness_expert_turns).
 
 // ── Mirrors 7c1/7c2/7d retired: feature_prs, feature_debug_notes, and
 // smoke_test are now written at producer time:
@@ -1196,11 +1192,6 @@ function classifyAndDispatch(
   // Skills: written at producer time by bash run.sh's
   // _post_curator_outputs after `invoke curator` →
   // /api/internal/skill-snapshot. Watcher mirror retired.
-
-  // Experts: written at producer time by operator endpoints in
-  // app/api/_hono/experts.ts (identity columns + spec_content,
-  // harness_expert_feedback, harness_expert_turns). Watcher mirror
-  // retired in the experts arc.
 
   // PRs: bash run.sh's branch-iso onPass=pr handler now POSTs each PR
   // to /api/internal/pr-event at producer time. The .harness/prs.json

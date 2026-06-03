@@ -56,7 +56,7 @@ export function orchestratorRunBin(): string {
  * Absolute path to the orchestrator's single-invoke entry
  * (`bin/invoke-once.ts`) — the TS replacement for the legacy
  * `source <(awk ... run.sh); invoke <role>` shell-out that the
- * scoper-background, expert-dispatcher, and /harness spawn route used.
+ * scoper-background and /harness spawn route used.
  * Resolved the same symlink-safe way as orchestratorRunBin().
  */
 export function invokeOnceBin(): string {

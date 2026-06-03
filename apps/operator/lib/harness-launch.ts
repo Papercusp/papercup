@@ -5,7 +5,7 @@
  * entirely (deleted 2026-05-30): its iteration-driver role ended
  * 2026-05-08 when the TS orchestrator became the sole loop, and its
  * remaining function-library call sites (`invokeScoperBackground`,
- * expert-dispatcher, `/harness/:slug/invoke`) were ported onto the
+ * `/harness/:slug/invoke`) were ported onto the
  * orchestrator's `invoke-once.ts`. `PAPERCUSP_USE_TS_ORCHESTRATOR=0` is
  * no longer honored — there is no bash fallback to roll back to.
  *

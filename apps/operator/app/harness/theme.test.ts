@@ -37,7 +37,7 @@ describe('getRoleStyle', () => {
   it('different unknown roles get different colors', () => {
     const a = getRoleStyle('reviewer');
     const b = getRoleStyle('scoper');
-    const c = getRoleStyle('expert');
+    const c = getRoleStyle('curator');
     expect(a.solid).not.toBe(b.solid);
     expect(b.solid).not.toBe(c.solid);
     expect(a.solid).not.toBe(c.solid);
@@ -60,7 +60,7 @@ describe('getRoleStyle', () => {
     // Verify hash-derived HSL never accidentally produces a hex string
     // identical to a canonical override (would cause visual ambiguity).
     const canonical = new Set<string>(Object.values(ROLE).map((r) => r.solid));
-    for (const role of ['reviewer', 'scoper', 'architect', 'expert', 'feedback', 'curator', 'debugger']) {
+    for (const role of ['reviewer', 'scoper', 'architect', 'curator', 'debugger']) {
       const { solid } = getRoleStyle(role);
       expect(canonical.has(solid)).toBe(false);
       expect(solid).toMatch(/^hsl\(/);

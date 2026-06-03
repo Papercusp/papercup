@@ -79,9 +79,10 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
     expect(stillForward.sort()).toEqual(Array.from(FORWARD_DEFINED).sort());
   });
 
-  it('exposes 57 distinct camelCase names through the bridge', () => {
-    // 55 v2-registered + 2 forward-defined = 57 (added featuresConsolidated.byPlanSlug).
-    expect(allBridgedQueryNames()).toHaveLength(57);
+  it('exposes 56 distinct camelCase names through the bridge', () => {
+    // 54 v2-registered + 2 forward-defined = 56 (harness_experts removed with
+    // the experts feature).
+    expect(allBridgedQueryNames()).toHaveLength(56);
   });
 });
 

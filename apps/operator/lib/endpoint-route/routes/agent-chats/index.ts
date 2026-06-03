@@ -222,8 +222,8 @@ const messagesRoute = defineTool({
     const baseTranscript = [...chat.transcript, userTurn];
     try {
       const db = dbForSlug(slug);
-      await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = now() WHERE id = ?`)
-        .run(JSON.stringify(baseTranscript), chatId);
+      await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
+        .run(JSON.stringify(baseTranscript), Date.now(), chatId);
     } catch (e) {
       return Response.json({ error: `failed to persist user turn: ${(e as Error).message}` }, { status: 500 });
     }
@@ -385,13 +385,14 @@ const messagesRoute = defineTool({
                    total_input_tokens = total_input_tokens + ?,
                    total_output_tokens = total_output_tokens + ?,
                    total_cost_usd_cents = total_cost_usd_cents + ?,
-                   updated_at = now()
+                   updated_at = ?
              WHERE id = ?`,
           ).run(
             JSON.stringify(finalTranscript),
             tokensIn,
             tokensOut,
             finalAssistantTurn.cost_cents ?? 0,
+            Date.now(),
             chatId,
           );
         } catch (e) {

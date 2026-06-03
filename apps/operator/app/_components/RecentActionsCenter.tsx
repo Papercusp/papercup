@@ -88,7 +88,7 @@ export function RecentActionsCenter() {
         open={open}
         onOpenChange={setOpen}
         ariaLabel="Recent actions"
-        tooltipLabel="Recent actions (replan, cleanup, snapshots, plugin ops, expert dispatches)"
+        tooltipLabel="Recent actions (replan, cleanup, snapshots, plugin ops)"
         side="bottom"
         align="end"
         sideOffset={8}

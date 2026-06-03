@@ -2,7 +2,8 @@
  * Coverage for agent-chats-data pure helpers: isValidChatRole (rejects
  * 'feedback', otherwise gated on the known-roles registry) and rowToChat (the
  * PG-row → ChatRow mapping with transcript JSON-parse vs passthrough, bigint→
- * Number token/cost coercion, null defaults). known-roles is mocked.
+ * Number token/cost coercion, bigint epoch-ms → ISO timestamp coercion
+ * (migration 116), null defaults). known-roles is mocked.
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -35,14 +36,25 @@ describe('rowToChat', () => {
       total_input_tokens: 100n,
       total_output_tokens: 50n,
       total_cost_usd_cents: 7n,
-      created_at: 'c',
-      updated_at: 'u',
+      created_at: 1_700_000_000_000,
+      updated_at: 1_700_000_000_000,
     });
     expect(c.transcript).toEqual([{ role: 'user', text: 'hi' }]);
     expect(c.total_input_tokens).toBe(100);
     expect(c.total_output_tokens).toBe(50);
     expect(c.total_cost_usd_cents).toBe(7);
     expect(c.archived_at).toBeNull();
+  });
+
+  it('coerces bigint/number/string epoch-ms timestamps to ISO (migration 116)', () => {
+    const ms = 1_700_000_000_000;
+    const iso = new Date(ms).toISOString();
+    // bigint (postgres-js int8), number, and numeric-string all coerce.
+    expect(rowToChat({ id: 'c', role: 'worker', created_at: BigInt(ms), updated_at: ms }).created_at).toBe(iso);
+    expect(rowToChat({ id: 'c', role: 'worker', created_at: ms, updated_at: String(ms) }).updated_at).toBe(iso);
+    // archived_at: null stays null, a value coerces to ISO.
+    expect(rowToChat({ id: 'c', role: 'worker', created_at: ms, updated_at: ms }).archived_at).toBeNull();
+    expect(rowToChat({ id: 'c', role: 'worker', created_at: ms, updated_at: ms, archived_at: ms }).archived_at).toBe(iso);
   });
 
   it('passes an array transcript through + defaults missing fields', () => {

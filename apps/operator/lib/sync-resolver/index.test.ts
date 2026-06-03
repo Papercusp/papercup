@@ -38,7 +38,6 @@ describe('sync-resolver v2 registry', () => {
         'harnessProjectFiles.byHarness',
         'harnessSkills.byHarness',
         'harnessDecisions.byHarness',
-        'harnessExperts.byHarness',
       ]) {
         expect(names).toContain(expected);
       }
@@ -150,11 +149,12 @@ describe('sync-resolver v2 registry', () => {
       }
     });
 
-    it('exposes 64 migrated entries total — all live queryNames migrated', () => {
+    it('exposes 63 migrated entries total — all live queryNames migrated', () => {
       // P-022 migration complete (56 entries). The Create-tab live-query
       // migration (2026-06-03) added 8 plans.* entries (list / items /
-      // attention / search / get / revisions / runs / lint) → 64.
-      expect(knownQueryNamesV2()).toHaveLength(64);
+      // attention / search / get / revisions / runs / lint) → 64, minus
+      // harnessExperts.byHarness (experts feature removed) → 63.
+      expect(knownQueryNamesV2()).toHaveLength(63);
     });
 
     it('includes the plans.* Create-tab live queries', () => {

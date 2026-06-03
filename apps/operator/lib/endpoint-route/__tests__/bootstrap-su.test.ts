@@ -222,6 +222,27 @@ describe('bootstrap-su', () => {
     );
   });
 
+  it('claude: mints + records + returns a native session id (the launcher forces it via --session-id)', async () => {
+    const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
+    expect(json.nativeSessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    // Recorded on the adv row so `psu --resume <native-uuid>` can correlate it.
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'claude', sessionId: json.nativeSessionId }),
+    );
+  });
+
+  it('omp/codex: no forced native session id (resume via thread id / CODEX_HOME)', async () => {
+    const omp = await (await callPost({ agent: 'omp', harness_slug: 'papercup', plan_slug: null })).json();
+    expect(omp.nativeSessionId).toBeNull();
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'omp', sessionId: null }));
+
+    vi.clearAllMocks();
+    recordAdvSessionMock.mockResolvedValue(42);
+    const codex = await (await callPost({ agent: 'codex', harness_slug: null, plan_slug: null })).json();
+    expect(codex.nativeSessionId).toBeNull();
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex', sessionId: null }));
+  });
+
   it('rejects an unknown agent kind', async () => {
     const res = await callPost({ agent: 'gemini', harness_slug: 'papercup' });
     expect(res.status).toBe(400);

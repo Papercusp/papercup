@@ -23,10 +23,9 @@ afterAll(async () => {
 
 describe('integration globalSetup — full schema from migrations alone', () => {
   it('has the ex-ensure-schema tables (created lazily at runtime before the baseline)', async () => {
-    // These were the 6 tables the empty→head tripwire used to choke on / that
+    // These were the tables the empty→head tripwire used to choke on / that
     // ensure-schema created out-of-band. They must now exist from 000-baseline.
     const expected = [
-      'harness_experts',
       'operator_turns',
       'harness_decisions',
       'autoloop_state',

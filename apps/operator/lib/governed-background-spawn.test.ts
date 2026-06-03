@@ -1,6 +1,6 @@
 /**
  * Unit tests for spawnInvokeOnceBackground (RB-012) — the governed fire-and-forget
- * spawn shared by the scoper + expert dispatcher. Asserts: flag OFF = a plain detached
+ * spawn used by the scoper. Asserts: flag OFF = a plain detached
  * spawn (no governor touched); flag ON = acquire-before-spawn + release-on-exit; bail
  * (permit denied) = no spawn + DONE sentinel appended so the caller's poll ends.
  */
