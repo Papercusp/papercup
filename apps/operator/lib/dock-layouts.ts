@@ -584,6 +584,34 @@ export type LayoutRow = {
 // ───────── CRUD ─────────
 
 /**
+ * Seed layout for a dock `name`, resolved by its conventional prefix. Shared
+ * by getLayout (read-miss seed) and resetLayout (hard reset) so the two can't
+ * drift — the `adv-create` dock was wired into the seed path but silently
+ * missing from reset, so a Shift+Esc reset reseeded it to the dashboard
+ * layout. Pi is intentionally NOT handled here: its two call sites diverge
+ * (getLayout seeds an opaque placeholder body; resetLayout seeds
+ * defaultPiTerminalsLayout), so each handles pi itself before delegating.
+ *
+ * `dashboard:<slug>` / `adv-git2:<slug>` / `adv-harnesses:<slug>` carry the
+ * harnessSlug so seeded panels fetch the right harness; adv-create is
+ * scope-driven via URL params and carries no slug.
+ */
+export function seedForDockName(name: string): LayoutDoc {
+  const slugAfter = (prefix: string) =>
+    name.startsWith(prefix) ? name.slice(prefix.length) : '';
+  if (name === 'adv-create' || name.startsWith('adv-create:')) {
+    return defaultAdvCreateLayout();
+  }
+  if (name === 'adv-git2' || name.startsWith('adv-git2:')) {
+    return defaultAdvGitLayout(slugAfter('adv-git2:'));
+  }
+  if (name === 'adv-harnesses' || name.startsWith('adv-harnesses:')) {
+    return defaultAdvHarnessesLayout(slugAfter('adv-harnesses:'));
+  }
+  return defaultDashboardLayout(slugAfter('dashboard:'));
+}
+
+/**
  * Returns the named layout for (workspaceId, userId). On miss, seeds
  * `defaultDashboardLayout()` (or pi-terminals seed when `name === 'pi'`),
  * INSERTs the row, and returns it. Subsequent calls hit the row.
@@ -636,32 +664,12 @@ export async function getLayout(
   // Seed. Pi-tab layouts (any `pi:<slug>` name) get an opaque empty body
   // — pi-tab's persistence stores raw dockview JSON and reads back its
   // own writes, so the seed is just a placeholder that won't be parsed.
-  //
-  // Dashboard layouts use the convention `dashboard:<slug>` (Phase 5
-  // mount in HarnessDockShell). Parse the slug out so the seeded panel
-  // params carry the right harnessSlug — otherwise every panel hydrates
-  // with empty slug and fetches fail.
-  const isPi = name === 'pi' || name.startsWith('pi:');
-  const isAdvHarnesses = name === 'adv-harnesses' || name.startsWith('adv-harnesses:');
-  const isAdvGit = name === 'adv-git2' || name.startsWith('adv-git2:');
-  const isAdvCreate = name === 'adv-create' || name.startsWith('adv-create:');
-  let seededSlug = '';
-  if (name.startsWith('dashboard:')) {
-    seededSlug = name.slice('dashboard:'.length);
-  } else if (name.startsWith('adv-harnesses:')) {
-    seededSlug = name.slice('adv-harnesses:'.length);
-  } else if (name.startsWith('adv-git2:')) {
-    seededSlug = name.slice('adv-git2:'.length);
-  }
-  const seed: LayoutDoc = isPi
-    ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
-    : isAdvCreate
-      ? defaultAdvCreateLayout()
-      : isAdvGit
-        ? defaultAdvGitLayout(seededSlug)
-        : isAdvHarnesses
-          ? defaultAdvHarnessesLayout(seededSlug)
-          : defaultDashboardLayout(seededSlug);
+  // Every other dock name routes through seedForDockName (shared with
+  // resetLayout so the seed/reset pair can't drift).
+  const seed: LayoutDoc =
+    name === 'pi' || name.startsWith('pi:')
+      ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
+      : seedForDockName(name);
   return saveLayout(principal, name, seed);
 }
 
@@ -777,18 +785,14 @@ export async function resetLayout(
   principal: LayoutPrincipal,
   name = 'default',
 ): Promise<LayoutRow> {
-  let seededSlug = '';
-  if (name.startsWith('dashboard:')) seededSlug = name.slice('dashboard:'.length);
-  else if (name.startsWith('adv-harnesses:')) seededSlug = name.slice('adv-harnesses:'.length);
-  else if (name.startsWith('adv-git2:')) seededSlug = name.slice('adv-git2:'.length);
+  // Pi reset reseeds the pi-terminals default (unlike getLayout, which seeds
+  // an opaque placeholder); every other name shares seedForDockName so reset
+  // matches the read-miss seed exactly (incl. adv-create, which this path
+  // previously dropped through to the dashboard layout).
   const seed =
     name === 'pi' || name.startsWith('pi:')
       ? defaultPiTerminalsLayout()
-      : name === 'adv-git2' || name.startsWith('adv-git2:')
-        ? defaultAdvGitLayout(seededSlug)
-        : name === 'adv-harnesses' || name.startsWith('adv-harnesses:')
-          ? defaultAdvHarnessesLayout(seededSlug)
-          : defaultDashboardLayout(seededSlug);
+      : seedForDockName(name);
   return saveLayout(principal, name, seed);
 }
 

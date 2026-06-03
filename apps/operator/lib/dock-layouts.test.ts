@@ -14,6 +14,7 @@ import {
   defaultDashboardLayout,
   defaultPiTerminalsLayout,
   isWellFormedLayout,
+  seedForDockName,
   validateLayoutDoc,
   type LayoutDoc,
 } from './dock-layouts';
@@ -313,5 +314,33 @@ describe('default seeds', () => {
     walk(seed.root);
     expect(slugs).toEqual(['papercup', 'papercup', 'papercup']);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+// Regression guard for the seed/reset drift that prompted extracting this
+// helper: adv-create was wired into getLayout's read-miss seed but missing
+// from resetLayout, so a hard reset silently reseeded the Create dock to the
+// dashboard layout. getLayout + resetLayout now both delegate here, so these
+// assertions cover both paths at once. (Pi is handled by each caller, not
+// here — see seedForDockName's doc-comment.)
+describe('seedForDockName (shared seed/reset routing)', () => {
+  it('routes adv-create (exact + prefixed) to the create seed', () => {
+    expect(seedForDockName('adv-create')).toEqual(defaultAdvCreateLayout());
+    expect(seedForDockName('adv-create:papercup')).toEqual(defaultAdvCreateLayout());
+  });
+  it('routes adv-git2 to the git seed, propagating the slug', () => {
+    expect(seedForDockName('adv-git2')).toEqual(defaultAdvGitLayout(''));
+    expect(seedForDockName('adv-git2:papercup')).toEqual(defaultAdvGitLayout('papercup'));
+  });
+  it('routes adv-harnesses to the harnesses seed, propagating the slug', () => {
+    expect(seedForDockName('adv-harnesses')).toEqual(defaultAdvHarnessesLayout(''));
+    expect(seedForDockName('adv-harnesses:papercup')).toEqual(
+      defaultAdvHarnessesLayout('papercup'),
+    );
+  });
+  it('falls back to the dashboard seed for dashboard:/default/unknown names', () => {
+    expect(seedForDockName('dashboard:papercup')).toEqual(defaultDashboardLayout('papercup'));
+    expect(seedForDockName('default')).toEqual(defaultDashboardLayout(''));
+    expect(seedForDockName('something-unknown')).toEqual(defaultDashboardLayout(''));
   });
 });

@@ -3,8 +3,9 @@ import { parseAsStringEnum, useQueryState } from 'nuqs';
 import AdvShell, { ADV_TABS, type AdvTabId } from '../../components/adv/AdvShell';
 import AdvHarnessPanelPage, { ADV_HARNESS_PANEL_LABELS } from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
-import PlansClient from '@/app/admin/plans/PlansClient';
-import AdvPlansTabs from '@/app/adv/plans/AdvPlansTabs';
+import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
+// plans.css is still needed: the Create dock's panels (PlansListPanel,
+// PreviewPanel, …) reuse the `pc-plans__*` classes from PlansClient.
 import '@/app/admin/plans/plans.css';
 
 const ADV_TAB_IDS = ADV_TABS.map((tab) => tab.id) as [AdvTabId, ...AdvTabId[]];
@@ -45,10 +46,9 @@ function renderAdvTab(tab: AdvTabId) {
     case 'testing':
       return <AdvHarnessPanelPage panel={tab} />;
     case 'plans':
-      return (
-        <AdvPlansTabs>
-          <PlansClient />
-        </AdvPlansTabs>
-      );
+      // The "Create" tab is now the dockview dock (inbox / plans / sessions /
+      // preview panels), mirroring the Git tab's AdvGitWorkspace. Was the
+      // <AdvPlansTabs><PlansClient/></AdvPlansTabs> tab-strip.
+      return <AdvCreateDock />;
   }
 }
