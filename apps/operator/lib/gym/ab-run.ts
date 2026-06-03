@@ -56,9 +56,11 @@ const FAKE = process.env.GYM_AB_FAKE === '1';
 const REPEATS = Math.max(1, Number(process.env.GYM_AB_REPEATS ?? 2));
 // All gym PIPELINE agents (scoper/worker/validator/curator/documenter/debugger/director)
 // run on Sonnet 4.6 via a global --model on AGENT_CMD; with no AGENT_MODELS overrides every
-// role inherits it. The JUDGE is unaffected — it's a separate meridian llmCall pinned to
-// opus-4-8 (GYM_JUDGE_RUBRIC_V1). This is gym-scoped only; the standard/prod agents are
-// configured separately via operator_agent_config and untouched here.
+// role inherits it. The JUDGE is a SEPARATE llmCall pinned to opus-4-8 (GYM_JUDGE_RUBRIC_V1)
+// — and it ALSO routes through the claude-code backend (the CLI subscription), because the
+// module top sets `LLM_TEST_BACKEND='claude-code'` (NOT the llm-client default of `meridian`/
+// the Anthropic SDK). So judge + pipeline both use the claude CLI. This is gym-scoped only;
+// the standard/prod agents are configured separately via operator_agent_config and untouched.
 const REAL_AGENT_CMD = process.env.GYM_AB_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
