@@ -203,10 +203,12 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
 
       return runGitSync('test', { repoPath: repo }).then((out) => {
         expect(out.status).toBe('error');
-        if (out.status === 'error') expect(out.errors.map((e) => e.scope)).toContain('libs/sub');
-        // the superproject must NOT be pushed — its gitlink would point at an unpushed
-        // submodule commit a fresh clone can't resolve.
-        expect(out.pushed).not.toContain('superproject');
+        if (out.status === 'error') {
+          expect(out.errors.map((e) => e.scope)).toContain('libs/sub');
+          // the superproject must NOT be pushed — its gitlink would point at an unpushed
+          // submodule commit a fresh clone can't resolve.
+          expect(out.pushed).not.toContain('superproject');
+        }
         expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
       });
     });
