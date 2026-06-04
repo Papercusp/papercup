@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase 1 in flight. Scripts built in papercusp-desktop/scripts/linux-test-vm/ (vmctl, boot-vm.sh, lib/common.sh, cloud-init, README). P-002/P-003 done and verified live: golden image provisions, and up/down/reset/ssh/status work on a pristine overlay. Fresh-install of the real .deb confirmed: declared Depends correct (libwebkit2gtk-4.1-0, libgtk-3-0) and `ldd` on the installed binary fully resolves. One pivot (D-008, supersedes D-001): GNOME failed to start its session on qxl, so the golden image now uses a minimal X stack (openbox via getty-autologin + startx). Re-provisioning the golden image with that change now.
+**State:** Phase 1 essentially complete. The vmctl VM workflow is built and proven (P-002–P-005 done; 7/7 green on a working app). P-006 docs written into build-system/vms.mdx (mirror rebuild pending). The VM caught a real shipping bug (D-009): the Linux .deb had no DB on a clean machine because spawn_embedded_postgres_server/spawn_zero_cache_server used a bare Command::new("node") with no bundled-node PATH. Per user direction, FIXED in src-tauri/src/main.rs (all three node spawns now route through a shared bundled_path_env helper); rebuilding the .deb now (Rust compiled clean; bundling the deb) to VM-verify the fix with no node hack. Holding the desktop-sidecar exclusive lock for the build.
 
-**Next:** After re-provision, an agent runs vmctl up/install/verify to confirm the app boots (PG + operator :3070 + window) under openbox:0, then finishes P-004/P-005/P-006.
+**Next:** When the rebuild finishes: reset the VM to pristine (drops the diagnostic node symlink), fresh-install the new .deb, run verify expecting 7/7 green with no hacks; then rebuild the docs mirror and release the lock. P-006 closes Phase 1.
 
 ## Background
 
@@ -131,7 +131,7 @@ build`, copy the `.deb` out immediately).
 - **P-003** `done` `vmctl` lifecycle: `up`/`down` (idempotent nohup qemu), `reset` (overlay from golden), `ssh`, `status`. blocked-by: P-002 (up/down/reset/ssh/status verified live on a pristine overlay)
 - **P-004** `done` `vmctl install` (scp newest `.deb` + `apt install`) + `launch`/`gui` (SPICE). blocked-by: P-003 (install/launch/gui verified; install pulls webkit from scratch, launch renders app on openbox :0)
 - **P-005** `done` Fresh-install verification: assert dep resolution, embedded-PG boot, operator `:3070`, wizard render; capture install log + app log + screenshot. blocked-by: P-004 (verify works end-to-end: 7/7 green on a working app; correctly red on the real artifact caught the embedded-PG spawn bug)
-- **P-006** `todo` Add a "Linux test VM" row + runbook to `build-system/vms.md`. blocked-by: P-004
+- **P-006** `done` Add a "Linux test VM" row + runbook to `build-system/vms.md`. blocked-by: P-004 (Linux test VM section added to build-system/vms.mdx + docs mirror rebuilt 671 files copied)
 
 ## Phase 2 — VM-based two-instance federation testing
 
