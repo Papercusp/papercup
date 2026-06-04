@@ -28,13 +28,28 @@ export interface IssuesFile { issues: Issue[]; nextId: number }
 const SEVERITIES: readonly IssueSeverity[] = ['critical', 'major', 'minor', 'nit'];
 const STATUSES: readonly IssueStatus[] = ['open', 'acknowledged', 'fixing', 'closed', 'wontfix'];
 
+// Known non-canonical drift → canonical, consistent with migration 130's one-time
+// data normalization (info→nit, resolved→closed). Anything else falls back to a
+// safe generic (minor / open). Keeps a stray validator finding from violating the
+// DB CHECK while preserving its intent.
+const SEVERITY_ALIASES: Record<string, IssueSeverity> = {
+  info: 'nit', informational: 'nit', trivial: 'nit', normal: 'minor', medium: 'minor', low: 'minor', high: 'major',
+};
+const STATUS_ALIASES: Record<string, IssueStatus> = {
+  resolved: 'closed', done: 'closed', fixed: 'closed', reopened: 'open', new: 'open', wont_fix: 'wontfix', wontfix: 'wontfix',
+};
+
 /** Clamp a possibly-non-canonical severity to the DB-CHECK'd enum (migration 130). */
 export function clampSeverity(s: unknown): IssueSeverity {
-  return (SEVERITIES as readonly string[]).includes(s as string) ? (s as IssueSeverity) : 'minor';
+  const v = String(s);
+  if ((SEVERITIES as readonly string[]).includes(v)) return v as IssueSeverity;
+  return SEVERITY_ALIASES[v] ?? 'minor';
 }
 /** Clamp a possibly-non-canonical status to the DB-CHECK'd enum (migration 130). */
 export function clampStatus(s: unknown): IssueStatus {
-  return (STATUSES as readonly string[]).includes(s as string) ? (s as IssueStatus) : 'open';
+  const v = String(s);
+  if ((STATUSES as readonly string[]).includes(v)) return v as IssueStatus;
+  return STATUS_ALIASES[v] ?? 'open';
 }
 
 /**

@@ -1,7 +1,8 @@
 /**
  * plan-start-state.test.ts — the cross-store invariant that a plan can never
- * be operationally `started`/`paused` (PG harness_plan_status) while its
- * git-canonical frontmatter is terminal (shipped/superseded).
+ * be operationally `started`/`paused` (the harness_plans.op_status column,
+ * folded from the retired harness_plan_status table) while its frontmatter is
+ * terminal (shipped/superseded).
  *
  * Pure-function coverage for isTerminalPlanStatus + reconcileStartStatus (the
  * read-time self-heal), plus a mocked-DB check that clearStartedForTerminalPlan
