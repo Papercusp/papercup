@@ -88,7 +88,7 @@ const WRITE_VERBS = new Set([
   // plan-agent-launch P-024: the run-detail Continue form — same
   // `await: false` shape as 'launch'.
   'resume',
-  // plans-central-harness-ux P-003: operational start/pause in harness_plan_status.
+  // plans-central-harness-ux P-003: operational start/pause via harness_plans.op_status.
   'start', 'pause',
   // dbos-system-completion P-045: drag-to-reorder priority for the frontier dispatcher.
   'set-priority',

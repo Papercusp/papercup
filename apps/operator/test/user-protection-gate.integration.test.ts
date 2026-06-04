@@ -46,9 +46,10 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
     // readFrontierFeatures SELECTs / WHEREs: workspace_id, harness_slug,
     // feature_id, status, blocked_by, feature_order, metadata (→source_plan),
     // plus the G1/G2 provenance columns origin + audit_verdict (migrations
-    // 097/098). harness_plan_status is created but left empty — every seeded
-    // feature uses NULL source_plan so the started-plan gate is a pass-through
-    // and the ONLY discriminator under test is the origin/audit_verdict gate.
+    // 097/098). harness_plans is created but left empty — every seeded
+    // feature uses NULL source_plan so the started-plan (op_status) gate is a
+    // pass-through and the ONLY discriminator under test is the
+    // origin/audit_verdict gate.
     await db_init();
 
     async function db_init() {

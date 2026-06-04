@@ -2,8 +2,10 @@
  * plans:set-priority — set the cross-plan dispatch priority for a
  * started plan (dbos-system-completion-2026-06-01 P-045/D-013).
  *
- * Writes `harness_shared.harness_plan_status.priority` (INTEGER, NULLable;
- * lower = dispatched first). The frontier groups the ready feature set by
+ * Writes `harness_shared.harness_plans.op_priority` (INTEGER, NULLable;
+ * lower = dispatched first — the operational column folded in from the retired
+ * harness_plan_status table, plans-pg-canonical-migration-2026-06-03).
+ * The frontier groups the ready feature set by
  * plan and orders the groups by this column, so operators drag-to-reorder
  * started plans to control which plan's features the pipeline tackles next.
  */

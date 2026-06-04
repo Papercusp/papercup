@@ -3,7 +3,9 @@
  *
  * Per plans-central-harness-ux-2026-05-26 Phase 1 P-002.
  *
- * Upserts a row in harness_shared.harness_plan_status with status='started'.
+ * Sets op_status='started' on the plan's harness_shared.harness_plans row
+ * (operational columns folded in from the retired harness_plan_status table —
+ * plans-pg-canonical-migration-2026-06-03).
  * If the plan was previously paused or done it is re-activated.
  * Starting an already-started plan is a no-op (idempotent).
  */

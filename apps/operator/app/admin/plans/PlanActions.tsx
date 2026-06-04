@@ -59,7 +59,7 @@ interface Props {
   /** Plan status drives draft-only affordances (Reject button) so /adv/plans
    *  has parity with the ProposalsPanel UX for drafts. */
   planStatus?: PlanStatus;
-  /** Operational start state from harness_plan_status. null = never started. */
+  /** Operational start state from harness_plans.op_status. null = never started. */
   startStatus?: PlanStartStatus;
   /** Called after a successful start/pause so the caller can refresh the list. */
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;

@@ -13,9 +13,10 @@
  *
  * It takes a `pg` client, so no DBOS is needed to drive it (the SDK is mocked
  * only so the module imports). PREFIX-SCHEMA CAVEAT (D-004): the migration set
- * isn't self-contained, so createOrgTestDb stops ≈ at 056 — harness_plan_status
- * (086) and origin/audit_verdict (097/098) aren't applied. We add them in setup
- * to exercise the query's gate LOGIC; the baseline rebuild will make this
+ * isn't self-contained, so createOrgTestDb stops ≈ at 056 — harness_plans (122,
+ * carrying the op_status columns folded from the retired harness_plan_status/086)
+ * and origin/audit_verdict (097/098) aren't applied. We add them in setup to
+ * exercise the query's gate LOGIC; the baseline rebuild will make this
  * head-faithful for free.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';

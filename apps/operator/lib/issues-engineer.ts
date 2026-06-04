@@ -32,6 +32,9 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { deliverInjectMany, type InjectEvent } from '@/lib/agent-tools/coordination/fanout-delivery';
+import { resolveProject } from '@/lib/harness-core';
+import { mintFixFeatureRow } from '@/lib/promote-issue';
+import type { Issue as PipelineIssue } from '@/app/harness/issues/types';
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'engineer' | 'su';
@@ -339,6 +342,50 @@ export async function linkIssue(id: string, dst: ObjectRef, rel: string, by?: st
 }
 export async function unlinkIssue(id: string, dst: ObjectRef, rel: string): Promise<void> {
   await links.unlink(issueRef(id), dst, rel);
+}
+
+export interface PromoteResult {
+  issue: EngineerIssue;
+  feature: { id: string; title: string };
+}
+
+/**
+ * issues:promote — mint an F-FIX feature from this issue (reusing the pipeline's
+ * mintFixFeatureRow) and link it. Harness-scoped issues mint into their harness;
+ * an operator-scope issue must name a target harness. The issue stays open (it
+ * resolves when the feature lands); the linked feature is recorded + a note added.
+ */
+export async function promoteIssue(
+  id: string,
+  opts: { harness?: string; actor?: string } = {},
+): Promise<PromoteResult | { error: string }> {
+  const issue = await getIssue(id);
+  if (!issue) return { error: 'issue not found' };
+  if (issue.linkedFeatureId) return { error: `already promoted to ${issue.linkedFeatureId}` };
+
+  const harness =
+    opts.harness ?? (issue.scope.startsWith('harness:') ? issue.scope.slice('harness:'.length) : null);
+  if (!harness) return { error: 'operator-scope issue needs a target harness — pass { harness }' };
+  const project = await resolveProject(harness);
+  if (!project) return { error: `unknown harness '${harness}'` };
+
+  const pipelineIssue: PipelineIssue = {
+    id: issue.id,
+    title: issue.title,
+    severity: issue.severity,
+    source: 'system',
+    foundAt: issue.createdAt,
+    foundDuring: issue.foundDuring ?? undefined,
+    status: 'open',
+    evidence: issue.body || undefined,
+    attempts: 0,
+    notes: [],
+  };
+  const feature = await mintFixFeatureRow(project, pipelineIssue, { actor: opts.actor ?? 'issue-promote' });
+
+  const updated = await updateIssue(id, { linkedFeatureId: feature.id, by: opts.actor });
+  await commentIssue(id, `Promoted to ${feature.id} in harness ${harness}.`, opts.actor);
+  return { issue: updated ?? issue, feature: { id: feature.id, title: feature.title } };
 }
 
 export async function searchIssues(query: string, limit = 50): Promise<EngineerIssue[]> {

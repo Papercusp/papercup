@@ -196,9 +196,9 @@ export default defineTool({
         after: args.status,
       });
       // Cross-store invariant: a plan that just went terminal (shipped /
-      // superseded) can no longer be operationally started/paused. Clear
-      // its harness_plan_status row so the "N waiting" badge + Running
-      // bucket stop counting it. Best-effort — plans:list self-heals a
+      // superseded) can no longer be operationally started/paused. Reset its
+      // op_status (on the harness_plans row) so the "N waiting" badge +
+      // Running bucket stop counting it. Best-effort — plans:list self-heals a
       // stale row on read if this misses.
       if (isTerminalPlanStatus(args.status)) {
         try {

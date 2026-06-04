@@ -52,9 +52,31 @@ vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+// promote: resolve a fake harness + mint a fake F-FIX (the feature machinery has
+// its own coverage; here we exercise promoteIssue's mapping + link + error paths).
+vi.mock('@/lib/harness-core', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/harness-core')>('@/lib/harness-core');
+  return { ...actual, resolveProject: async (slug: string) => ({ slug, path: `/tmp/${slug}` }) };
+});
+vi.mock('@/lib/promote-issue', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/promote-issue')>('@/lib/promote-issue');
+  return {
+    ...actual,
+    mintFixFeatureRow: async (_project: unknown, issue: { id: string; title: string }) => ({
+      id: 'F-FIX-001',
+      title: issue.title,
+      claims: [],
+      status: 'todo' as const,
+      attempts: 0 as const,
+      sourceIssueId: issue.id,
+      notes: '',
+    }),
+  };
+});
 
 // Imported AFTER the mock is registered (vi.mock is hoisted).
 const issues = await import('@/lib/issues-engineer');
+const feed = await import('@/lib/topics-feed');
 
 const NOW = '2026-06-04T00:00:00.000Z';
 let db: FreshPgDb;
@@ -75,6 +97,12 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(readMigration('131-engineer-issues.sql')).simple();
+  // Minimal features table so topics:feed can enrich a tagged feature.
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_features_consolidated (
+      harness_slug text NOT NULL, feature_id text NOT NULL, title text,
+      status text NOT NULL DEFAULT 'todo', workspace_id text NOT NULL DEFAULT 'default',
+      PRIMARY KEY (harness_slug, feature_id))`);
   const opts = { getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' };
   subs = new PgEntitySubscriptionStore(opts);
   topicStore = new PgTopicStore(opts);
@@ -91,6 +119,7 @@ beforeEach(async () => {
                        harness_shared.coord_thread_posts,
                        harness_shared.coord_links,
                        harness_shared.coord_topics,
+                       harness_shared.harness_features_consolidated,
                        harness_shared.coord_event_log RESTART IDENTITY`;
 });
 
@@ -153,5 +182,34 @@ describe('engineer issues surface (real PG)', () => {
     expect((await issues.listIssues({ severity: 'critical' })).map((i) => i.title)).toEqual(['alpha bug']);
     expect((await issues.listIssues({ topic: 'nonexistent' }))).toEqual([]);
     expect((await issues.searchIssues('beta')).map((i) => i.title)).toEqual(['beta nit']);
+  });
+
+  it('promote → mints + links an F-FIX feature; issue stays open', async () => {
+    await issues.createIssue({ title: 'broken thing', scope: 'harness:papercup', createdBy: 'agA' });
+    const res = await issues.promoteIssue('EI-1', { actor: 'agA' });
+    if ('error' in res) throw new Error(res.error);
+    expect(res.feature.id).toBe('F-FIX-001');
+    expect(res.issue.linkedFeatureId).toBe('F-FIX-001');
+    expect(res.issue.state).toBe('open');
+  });
+
+  it('promote operator-scope without a harness → error', async () => {
+    await issues.createIssue({ title: 'x', createdBy: 'agA' }); // scope defaults to operator
+    const res = await issues.promoteIssue('EI-1', {});
+    expect('error' in res && res.error).toMatch(/needs a target harness/);
+  });
+
+  it('topics:feed returns cross-object items tagged a topic, enriched (Capstone P1)', async () => {
+    await issues.createIssue({ title: 'an issue', topics: ['area'], createdBy: 'agA' }); // EI-1, tagged area
+    await db.sql`INSERT INTO harness_shared.harness_features_consolidated (harness_slug, feature_id, title, status)
+                 VALUES ('papercup', 'F-7', 'a feature', 'todo')`;
+    await feed.tagObject('feature', 'F-7', 'area', 'agA');
+    const items = await feed.topicFeed('area');
+    const byKind = Object.fromEntries(items.map((i) => [i.kind, i]));
+    expect(byKind.issue?.ref).toBe('EI-1');
+    expect(byKind.issue?.title).toBe('an issue');
+    expect(byKind.feature?.ref).toBe('F-7');
+    expect(byKind.feature?.title).toBe('a feature');
+    expect(byKind.feature?.state).toBe('todo');
   });
 });

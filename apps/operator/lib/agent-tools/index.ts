@@ -195,6 +195,9 @@ import './coordination/tools/topics-create';
 import './coordination/tools/topics-subscribe';
 import './coordination/tools/topics-unsubscribe';
 import './coordination/tools/topics-merge';
+// Cross-object tagging + topic-index feed (integration-adoption Capstone P1).
+import './coordination/tools/topics-tag';
+import './coordination/tools/topics-feed';
 
 // Conversations — questions + discussions on the substrate (the first consumer:
 // coordination-conversations-2026-06-03). coord:ask is knowledge-first.
@@ -220,6 +223,7 @@ import './issues/tag';
 import './issues/subscribe';
 import './issues/search';
 import './issues/link';
+import './issues/promote';
 
 import './coordination/tools/watermark';
 import './coordination/tools/watermark-set';

@@ -11,10 +11,11 @@
  *
  * We create a minimal schema inline (no full migration stack) — just enough
  * for setFeatureStatusPg + readFeaturesPg to work:
- *   harness_shared schema + harness_plan_status table (for the plan-slug filter)
+ *   harness_shared schema + harness_plans table (its op_status drives the
+ *   plan-slug filter — folded from the retired harness_plan_status)
  *   + a harness_features physical table with workspace_id (migration 009).
  * Features inserted with source_plan_slug = NULL take the "always eligible"
- * branch in readFeaturesPg so we don't need harness_plan_status rows.
+ * branch in readFeaturesPg so we don't need started harness_plans rows.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';

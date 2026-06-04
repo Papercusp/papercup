@@ -54,7 +54,7 @@ interface Props {
   /** Reports unsaved-edit state up to PlansClient so navigation away
    *  from a dirty plan can prompt before discarding (Bug-1 guard). */
   onDirtyChange?: (dirty: boolean) => void;
-  /** Operational start state from harness_plan_status. */
+  /** Operational start state from harness_plans.op_status. */
   startStatus?: PlanStartStatus;
   /** Called after a successful start/pause so the rail can refresh. */
   onStartStatusChange?: (newStatus: PlanStartStatus) => void;

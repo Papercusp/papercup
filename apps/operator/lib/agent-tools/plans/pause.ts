@@ -3,7 +3,9 @@
  *
  * Per plans-central-harness-ux-2026-05-26 Phase 1 P-002.
  *
- * Sets status='paused' in harness_shared.harness_plan_status.
+ * Sets op_status='paused' on the plan's harness_shared.harness_plans row
+ * (the operational columns folded in from the retired harness_plan_status
+ * table — plans-pg-canonical-migration-2026-06-03).
  * The plan's in-flight features are NOT cancelled — any running worker
  * turn finishes, but no new features are picked until the plan is
  * re-started via plans:start.
@@ -38,7 +40,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:pause',
   description:
-    "Suspend orchestrator feature-picking for a plan. In-flight worker turns finish; no new features are picked until plans:start is called again. Returns { notStarted: true } if the plan has no row in harness_plan_status.",
+    "Suspend orchestrator feature-picking for a plan. In-flight worker turns finish; no new features are picked until plans:start is called again. Returns { notStarted: true } if the plan was never started (op_status is null).",
   guidance: {
     when: "User pauses work on a plan from the UI, or an agent needs to suspend a plan without marking it done.",
     notWhen:
