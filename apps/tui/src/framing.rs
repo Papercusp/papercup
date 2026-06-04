@@ -82,7 +82,7 @@ pub fn decode_event_bin_payload(payload: &[u8]) -> Result<DecodedEventBin, Frame
     if payload.len() < 12 {
         return Err(FrameError::EventBinTooShort(payload.len()));
     }
-    let mut cursor = &payload[..];
+    let mut cursor = payload;
     let id = cursor.get_u64();
     let name_len = cursor.get_u32();
     if 12 + name_len as usize > payload.len() {

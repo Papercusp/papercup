@@ -438,8 +438,10 @@ snapshot) → `issues:list { slug }` (problems, a separate surface) →
 `harness:escalation` (supervisor notes). Summarize; don't dump JSON.
 
 **Find prior work / project history:** `plans:*` is the entry point —
-plans are markdown at `apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`.
-Read with `plans:list` → `plans:get { slug }` → `plans:items`/`plans:search`;
+plans are **PG-canonical** (`harness_shared.harness_plans`, markdown rendered on
+demand; the old `docs/plans/*.md` files were removed — plans-pg-canonical-migration-2026-06-03).
+Read with `plans:list` → `plans:get { slug }` → `plans:items`/`plans:search`
+(or `plans:export { slug }` for the raw markdown);
 write with `plans:new`/`set-*`/`add-*` (and `set-content-chunk`, not a giant
 `set-content`, for large whole-plan writes). `harness` is a per-call arg
 (*Scope*) — `harness:'all'` for Papercusp's own plans, a slug for a

@@ -15,4 +15,6 @@ export * from './core/index';
 export * from './event-log/index';
 export * from './presence/index';
 export * from './watermark-store/index';
-export * from './subscription-store/index';
+// NOTE: the legacy path-glob subscription-store seam was retired with coord:watch
+// (coordination-substrate-2026-06-03 Phase 3). Entity/topic subscriptions live in
+// the `capabilities` seam now (@papercusp/coordination/capabilities).

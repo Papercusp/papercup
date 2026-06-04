@@ -210,10 +210,17 @@ export function getArchiveDir(opts: PlanSourceOpts = {}): string {
 }
 
 /**
- * The repo root — the directory that contains `apps/operator/docs/plans`.
- * A launched plan agent starts its process here (plan-agent-launch-2026-05-21).
+ * The repo root — where a launched plan agent starts its process
+ * (plan-agent-launch-2026-05-21). Prefer the registry-detected root so it stays
+ * correct after the FS retirement (the `docs/plans/` dir is empty/absent once
+ * plans are PG-canonical); fall back to the legacy dir-walk for tests that pass
+ * an explicit `repoRoot`.
  */
 export function getRepoRoot(opts: PlanSourceOpts = {}): string {
+  if (!opts.repoRoot) {
+    const detected = detectPapercupRoot();
+    if (detected) return detected;
+  }
   return path.resolve(getPlansDir(opts), '..', '..', '..', '..');
 }
 

@@ -1,0 +1,60 @@
+/**
+ * conversations:list — browse open/resolved conversations (questions +
+ * discussions). The "pick them up later" read: an agent subscribed to a topic
+ * gets new ones injected, but anyone can browse here.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { COORD_ROLES } from '../roles';
+import { listConversations } from '../conversations';
+
+export default defineTool({
+  name: 'conversations:list',
+  description:
+    'List conversations (questions + discussions), newest first. Filter by kind, state (open|resolved|closed), and harness. Summary rows; conversations:get for the full thread.',
+  guidance: {
+    when:
+      'Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.',
+    notWhen: 'You already have a conversation_id → conversations:get.',
+    chaining: 'conversations:list → conversations:get → conversations:answer / conversations:join.',
+  },
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    kind: z.enum(['question', 'discussion']).optional(),
+    state: z.enum(['open', 'resolved', 'closed']).optional(),
+    harness: z.string().optional().describe('Restrict to a harness-scoped conversation set.'),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+  async handler(args) {
+    const rows = await listConversations({
+      kind: args.kind,
+      state: args.state,
+      scope: args.harness ? 'harness' : undefined,
+      harness_slug: args.harness,
+      limit: args.limit,
+    });
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: true,
+          count: rows.length,
+          conversations: rows.map((c) => ({
+            id: c.id,
+            kind: c.kind,
+            state: c.state,
+            scope: c.scope,
+            harness_slug: c.harness_slug,
+            title: c.title ?? c.body.slice(0, 100),
+            asker_id: c.asker_id,
+            created_ts: c.created_ts,
+            resolved: c.state === 'resolved',
+          })),
+        }),
+      }],
+    };
+  },
+});

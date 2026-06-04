@@ -22,7 +22,7 @@ import { runMemoryCleanupOnce } from '@/lib/memory/cleanup-worker';
 import { runCompletionRefVerifierOnce } from '@/lib/harness/completion-ref-verifier';
 import { runEmbedBackfillOnce } from '@/lib/search/embed-backfill';
 import { runBackupSchedulerTick } from '@papercusp/backup';
-import { gcOldNotifies } from '@/lib/agent-tools/coordination/subscriptions';
+import { gcOldNotifies } from '@/lib/agent-tools/coordination/notify-gc';
 import { runServiceHealthTick } from '@/lib/service-health';
 import { readRegistry } from '@/lib/workspace-registry';
 import { runHarnessStatusSweepOnce } from '@/lib/harness-status-sweep';

@@ -115,6 +115,8 @@ pub struct App {
     /// Command palette open + its current input buffer.
     pub palette_open: bool,
     pub palette_input: String,
+    /// Always-on presence sidebar visible (P7 — who's online + intent). `p` toggles.
+    pub show_presence: bool,
 }
 
 impl App {
@@ -152,6 +154,7 @@ impl App {
             show_help: false,
             palette_open: false,
             palette_input: String::new(),
+            show_presence: true,
         }
     }
 
@@ -495,6 +498,10 @@ impl App {
             }
             KeyCode::Char('8') => {
                 self.tab = Tab::Config;
+                Action::Render
+            }
+            KeyCode::Char('p') => {
+                self.show_presence = !self.show_presence;
                 Action::Render
             }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
@@ -884,5 +891,15 @@ mod tests {
     fn tick_is_noop() {
         let mut a = App::new();
         assert_eq!(a.update(Event::Tick), Action::None);
+    }
+
+    #[test]
+    fn p_toggles_presence_sidebar() {
+        let mut a = App::new();
+        assert!(a.show_presence); // on by default
+        assert_eq!(a.update(key('p', KeyModifiers::NONE)), Action::Render);
+        assert!(!a.show_presence);
+        a.update(key('p', KeyModifiers::NONE));
+        assert!(a.show_presence);
     }
 }

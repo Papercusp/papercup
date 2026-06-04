@@ -10,18 +10,17 @@
  *    holder — "release when your current use is done; don't start new".
  *  - back-up (P-010): a broadcast that the resource is free again.
  *
- * Both also fireNotifications on the synthetic `resource:<name>` path, so
- * any agent that coord:watch'd the resource is told too (P-011). All
- * best-effort: a broadcast failure must never break the acquire / release.
+ * Locks are CONTROL-plane, not subscribe→inject content (coordination-substrate
+ * D-007): you wait on a lock (the PG state machine + resource_grant_cascade
+ * NOTIFY + the wait loop), you don't "follow" it. So these are plain coord
+ * messages — the path-glob `fireNotifications(resource:<name>)` fan-out was
+ * retired with the rest of coord:watch and is gone. All best-effort: a broadcast
+ * failure must never break the acquire / release.
  */
 
 import { sendMessage } from '../coordination/messages';
-import { fireNotifications } from '../coordination/subscriptions';
 import type { AgentIdentity } from '../coordination/identity';
 import type { ResourceHolder } from './su-lock-store';
-
-/** Synthetic watch path for a named resource (P-011 — coord:watch this). */
-export const resourceWatchPath = (resource: string) => `resource:${resource}`;
 
 export async function broadcastResourceDrainStart(params: {
   source: AgentIdentity;
@@ -42,7 +41,6 @@ export async function broadcastResourceDrainStart(params: {
         }. Finish your current use and call locks:release_resource — do NOT start new work needing it. You'll be notified when it's back up.`,
       });
     }
-    await fireNotifications(params.source, [resourceWatchPath(params.resource)], 'any');
   } catch {
     // best-effort — a broadcast failure must never break the acquire/drain.
   }
@@ -58,7 +56,6 @@ export async function broadcastResourceBackUp(params: {
       summary: `✅ "${params.resource}" is back up (released by ${params.source.ownerLabel})`,
       body: `${params.source.ownerLabel} finished its exclusive hold on "${params.resource}". You can acquire it again with locks:acquire_resource.`,
     });
-    await fireNotifications(params.source, [resourceWatchPath(params.resource)], 'any');
   } catch {
     // best-effort
   }

@@ -420,10 +420,12 @@ documenter — the rules above are yours.
 
 ## 18. Plans and project history
 
-**Plans live at `apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`,
-browsed via `plans:*` tools.** This is the canonical location for any
-non-trivial design document, implementation plan, RFC, or proposal
-that has been reviewed or is awaiting review. Format spec at
+**Plans are PG-canonical (`harness_shared.harness_plans`), browsed +
+written via `plans:*` tools** (markdown rendered on demand; the
+`docs/plans/*.md` files were removed — plans-pg-canonical-migration-2026-06-03).
+This is the canonical home for any non-trivial design document,
+implementation plan, RFC, or proposal that has been reviewed or is
+awaiting review. Format spec at
 `/internal/docs/spec/plan-format`; plan tracking spec at
 [`agent-plan-tracking-2026-05-20.md`](/internal/docs/plans/agent-plan-tracking-2026-05-20).
 
@@ -610,7 +612,7 @@ Before any non-trivial investigation, in cheap-to-expensive order:
 1. **Agent insights** — `docs:outline` and `docs:get` for the
    `agent-insights/` section (§18). Cheap; often answers "is this a
    known gotcha?"
-2. **Plans** — `apps/operator/docs/plans/<slug>-*.md` (§17).
+2. **Plans** — `plans:*` tools over PG (`harness_shared.harness_plans`) (§17).
    Authoritative for "what were we trying to do?" and "what did we
    decide?"
 3. **Search the wikis** — `search:fulltext` for keyword;

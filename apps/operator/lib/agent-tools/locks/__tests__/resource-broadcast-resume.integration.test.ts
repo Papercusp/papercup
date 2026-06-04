@@ -4,20 +4,22 @@
  * Exercises the WHOLE named-resource drain cycle through the real helpers, not
  * the broadcast/wait halves in isolation:
  *
- *   1. Two shared holders hold `dev-server`; a watcher coord:watches it.
+ *   1. Two shared holders hold `dev-server`.
  *   2. A requester takes the exclusive via acquireResourceExclusiveWithWait
  *      (wired exactly like locks:acquire_resource — onDrainStart fires
  *      broadcastResourceDrainStart). It parks in `draining`.
- *   3. The drain-start broadcast lands a `notify` in the watcher's inbox.
+ *   3. The drain-start broadcast lands a targeted "release" MESSAGE in each
+ *      shared holder's inbox.
  *   4. The shared holders release → resource_grant_cascade NOTIFYs the parked
  *      waiter, which RE-ACQUIRES (flips to `held`). This is the "resume".
  *   5. The requester releases its exclusive → broadcastResourceBackUp lands a
- *      SECOND `notify` in the watcher's inbox.
+ *      "back up" broadcast MESSAGE.
  *
- * So both halves P-021 names — "a notify lands in the watcher inbox" and "a
- * parked waiter re-acquires after release" — are asserted in one real cycle.
- * Live PG + real NOTIFY; unique owner ids isolate assertions from the shared
- * coord stream.
+ * (The old path-glob `fireNotifications(resource:<name>)` watcher-notify was
+ * retired with coord:watch — coordination-substrate Phase 3; locks are
+ * control-plane, D-007 — so the cycle is asserted through the kept coord
+ * messages + the real cascade NOTIFY resume.) Live PG + real NOTIFY; unique
+ * owner ids isolate assertions from the shared coord stream.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -36,7 +38,6 @@ import {
   broadcastResourceBackUp,
 } from '../resource-broadcast';
 import { readInbox } from '../../coordination/messages';
-import { addWatch } from '../../coordination/subscriptions';
 import type { AgentIdentity } from '../../coordination/identity';
 
 const RESOURCE = 'dev-server';
@@ -80,24 +81,10 @@ const rel = (ws: string, owner: string, lockId: string) =>
     tryReleaseResource(tx, { coordinationDomain: ws, owner, lockId }),
   );
 
-/** Notifies for RESOURCE from a given source that landed in `watcher`'s inbox. */
-async function resourceNotifies(watcher: string, from: string) {
-  const inbox = await readInbox(watcher, { kinds: ['notify'] });
-  return inbox.filter(
-    (m) =>
-      m.from === from &&
-      m.kind === 'notify' &&
-      m.matched_path === `resource:${RESOURCE}`,
-  );
-}
-
 describe('resource broadcast→resume cycle (P-021)', async () => {
   const live = await dbLive();
 
-  // Prime the org PG handle — the first getOrgPg() in a test process can race
-  // drizzle schema-module load (caches a usable .sql client but throws building
-  // the unused drizzle handle), so the first coord write fails while later ones
-  // succeed. Coord writes need only .sql; tolerate that first-call throw.
+  // Prime the org PG handle (first getOrgPg() can race drizzle load).
   beforeAll(async () => {
     if (live) await readInbox(`warmup-${Date.now()}`).catch(() => {});
   });
@@ -110,7 +97,7 @@ describe('resource broadcast→resume cycle (P-021)', async () => {
   });
 
   it.skipIf(!live)(
-    'drain-start notifies a watcher, the parked waiter resumes on release, and back-up notifies again',
+    'drain-start messages the holders, the parked waiter resumes on release, and back-up broadcasts',
     async () => {
       await ensureBootstrap();
       const ws = `res-bcast-resume-ws-${uniq()}`;
@@ -118,16 +105,9 @@ describe('resource broadcast→resume cycle (P-021)', async () => {
 
       const reqId = `bcr-R-${u}`;
       const srcR = mkIdentity(reqId);
-      const watcher = `bcr-W-${u}`;
+      const reader = `bcr-rdr-${u}`;
       const holderA = `bcr-A-${u}`;
       const holderB = `bcr-B-${u}`;
-
-      // The watcher must opt into notifies (D-002 de-noise): coord:watch the resource.
-      await addWatch(mkIdentity(watcher), {
-        pattern: 'resource:**',
-        trigger: 'any',
-        ttl_sec: 120,
-      });
 
       // Two shared holders occupy dev-server.
       const a = await acqShared(ws, holderA);
@@ -154,12 +134,12 @@ describe('resource broadcast→resume cycle (P-021)', async () => {
           }),
       });
 
-      // Let it acquire (draining) + subscribe + fire the drain-start broadcast.
+      // Let it acquire (draining) + fire the drain-start broadcast.
       await sleep(500);
 
-      // BROADCAST HALF — the drain-start notify landed in the watcher's inbox.
-      const afterDrainStart = await resourceNotifies(watcher, reqId);
-      expect(afterDrainStart.length).toBeGreaterThanOrEqual(1);
+      // BROADCAST HALF — the drain-start targeted "release" message reached the holders.
+      const inboxA = await readInbox(holderA);
+      expect(inboxA.some((m) => m.from === reqId && /draining/i.test(m.summary ?? ''))).toBe(true);
 
       // Drain both shared holders → the grant cascade flips R to held + NOTIFYs it.
       await rel(ws, holderA, a.lock_id);
@@ -179,9 +159,9 @@ describe('resource broadcast→resume cycle (P-021)', async () => {
       expect(released.exclusiveResources).toContain(RESOURCE);
       await broadcastResourceBackUp({ source: srcR, resource: RESOURCE });
 
-      // BACK-UP HALF — a SECOND notify (drain-start + back-up = 2) reached the watcher.
-      const afterBackUp = await resourceNotifies(watcher, reqId);
-      expect(afterBackUp.length).toBeGreaterThan(afterDrainStart.length);
+      // BACK-UP HALF — the "back up" broadcast reached a reader.
+      const inboxReader = await readInbox(reader);
+      expect(inboxReader.some((m) => m.from === reqId && /back up/i.test(m.summary ?? ''))).toBe(true);
     },
   );
 });

@@ -23,8 +23,9 @@ pub enum CallEvent {
     Bin { name: String, bytes: Vec<u8> },
 }
 
-/// Internal: frames routed from the reader loop to a waiting call.
-enum CallFrame {
+/// Frames routed from the reader loop to a waiting call. Public so streaming
+/// callers (e.g. an SSE subscription over `sys:http`) can drain them directly.
+pub enum CallFrame {
     Event(CallEvent),
     Done(Value),
     Error { code: String, message: String },
@@ -90,39 +91,44 @@ impl IpcClient {
         })
     }
 
-    /// Invoke `tool` with `input`; collect events until DONE/ERROR.
-    pub async fn invoke(&self, tool: &str, input: Value) -> Result<CallResult> {
+    /// Open a streaming call: returns a receiver of `CallFrame`s for this call.
+    /// It yields `Event(..)`s as they arrive then a terminal `Done`/`Error`
+    /// (`ConnLost` on socket loss), after which it closes. For a long-lived
+    /// stream (e.g. an SSE route via `sys:http`) there is no Done until the
+    /// upstream stream ends — the caller processes events indefinitely.
+    pub async fn invoke_stream(
+        &self,
+        tool: &str,
+        input: Value,
+    ) -> Result<mpsc::UnboundedReceiver<CallFrame>> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let (tx, mut rx) = mpsc::unbounded_channel::<CallFrame>();
+        let (tx, rx) = mpsc::unbounded_channel::<CallFrame>();
         self.sinks.lock().unwrap().insert(id, tx);
 
         let req = serde_json::json!({ "id": id, "toolName": tool, "input": input });
         let payload = serde_json::to_vec(&req)?;
         let frame = encode_frame(FrameType::Request, &payload).map_err(|e| anyhow!("encode: {e}"))?;
-        {
-            let mut w = self.writer.lock().await;
-            w.write_all(&frame).await.context("write request frame")?;
-            let _ = w.flush().await;
-        }
+        let mut w = self.writer.lock().await;
+        w.write_all(&frame).await.context("write request frame")?;
+        let _ = w.flush().await;
+        Ok(rx)
+    }
 
+    /// Invoke `tool` with `input`; collect events until DONE/ERROR.
+    pub async fn invoke(&self, tool: &str, input: Value) -> Result<CallResult> {
+        let mut rx = self.invoke_stream(tool, input).await?;
         let mut events: Vec<CallEvent> = Vec::new();
-        let outcome = loop {
-            match rx.recv().await {
-                Some(CallFrame::Event(ev)) => events.push(ev),
-                Some(CallFrame::Done(result)) => break Ok(result),
-                Some(CallFrame::Error { code, message }) => {
-                    break Err(anyhow!("ipc {tool} error [{code}]: {message}"))
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                CallFrame::Event(ev) => events.push(ev),
+                CallFrame::Done(result) => return Ok(CallResult { events, result }),
+                CallFrame::Error { code, message } => {
+                    return Err(anyhow!("ipc {tool} error [{code}]: {message}"))
                 }
-                Some(CallFrame::ConnLost) | None => {
-                    break Err(anyhow!("ipc {tool}: connection lost"))
-                }
+                CallFrame::ConnLost => return Err(anyhow!("ipc {tool}: connection lost")),
             }
-        };
-        self.sinks.lock().unwrap().remove(&id);
-        Ok(CallResult {
-            events,
-            result: outcome?,
-        })
+        }
+        Err(anyhow!("ipc {tool}: stream closed without terminal"))
     }
 
     /// Invoke `sys:http` for an `/api/*` route; reassemble the `body` EVENT_BIN
@@ -200,7 +206,17 @@ fn route_frame(sinks: &Sinks, frame: Frame) {
         // Client→server frame types never arrive here.
         FrameType::Request | FrameType::Cancel => return,
     };
-    if let Some(tx) = sinks.lock().unwrap().get(&id) {
+    // Terminal frames free the sink (so streaming receivers close cleanly).
+    let is_terminal = matches!(cf, CallFrame::Done(_) | CallFrame::Error { .. });
+    let tx = {
+        let mut g = sinks.lock().unwrap();
+        if is_terminal {
+            g.remove(&id)
+        } else {
+            g.get(&id).cloned()
+        }
+    };
+    if let Some(tx) = tx {
         let _ = tx.send(cf);
     }
 }
@@ -266,6 +282,65 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
+    /// Fake operator that streams several EVENT_JSON frames before DONE — the
+    /// shape `invoke_stream` consumes for the SSE-over-IPC subscription.
+    async fn spawn_fake_stream(socket: PathBuf, chunks: Vec<&'static str>) {
+        let listener = UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut r, mut w) = stream.into_split();
+            let mut hdr = [0u8; 5];
+            if r.read_exact(&mut hdr).await.is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+            let mut payload = vec![0u8; len];
+            let _ = r.read_exact(&mut payload).await;
+            let req: Value = serde_json::from_slice(&payload).unwrap();
+            let id = req["id"].as_u64().unwrap();
+            for c in chunks {
+                let f = serde_json::json!({"id":id,"name":"sse-chunk","data":c}).to_string();
+                let _ = w
+                    .write_all(&encode_frame(FrameType::EventJson, f.as_bytes()).unwrap())
+                    .await;
+            }
+            let done = serde_json::json!({"id":id,"result":Value::Null}).to_string();
+            let _ = w
+                .write_all(&encode_frame(FrameType::Done, done.as_bytes()).unwrap())
+                .await;
+            let _ = w.flush().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    #[tokio::test]
+    async fn invoke_stream_yields_events_then_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("op.sock");
+        spawn_fake_stream(sock.clone(), vec!["event: a\ndata: 1\n\n", "event: b\ndata: 2\n\n"]).await;
+        let client = IpcClient::connect(&sock).await.unwrap();
+        let mut rx = client
+            .invoke_stream("sys:http", serde_json::json!({"method":"GET","path":"/api/sse"}))
+            .await
+            .unwrap();
+        let mut chunks = 0;
+        let mut saw_done = false;
+        while let Some(f) = rx.recv().await {
+            match f {
+                CallFrame::Event(CallEvent::Json { name, .. }) if name == "sse-chunk" => chunks += 1,
+                CallFrame::Done(_) => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(chunks, 2);
+        assert!(saw_done);
+        // After the terminal frame the sink is freed, so the channel is closed.
+        assert!(rx.recv().await.is_none());
+    }
+
     #[tokio::test]
     async fn sys_http_reassembles_body() {
         let dir = tempfile::tempdir().unwrap();
@@ -291,6 +366,46 @@ mod tests {
         eprintln!("live IPC sys:http → plans count = {n}");
         assert!(v.get("plans").is_some(), "expected a plans array");
         assert!(n > 0, "operator should have plans");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_sse_subscription_smoke() {
+        let client = IpcClient::connect_discovered()
+            .await
+            .expect("connect via discovery");
+        let mut rx = client
+            .invoke_stream(
+                "sys:http",
+                serde_json::json!({"method":"GET","path":"/api/zero-harness/sse"}),
+            )
+            .await
+            .expect("open sse stream");
+        // The route sends an initial heartbeat — we should see a sse-chunk frame
+        // carrying SSE wire text within a few seconds.
+        let got = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(f) = rx.recv().await {
+                if let CallFrame::Event(CallEvent::Json { name, data }) = f {
+                    if name == "sse-chunk" {
+                        return data.as_str().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .await
+        .expect("timed out waiting for first sse-chunk");
+        let text = got.expect("first sse-chunk had string data");
+        eprintln!("live SSE first chunk: {text:?}");
+        let (frames, _rest) = crate::sse::parse_sse_frames(&text);
+        // At least one parseable frame, and it should be a known sync event.
+        assert!(
+            frames.iter().any(|fr| matches!(
+                fr.event.as_str(),
+                "heartbeat" | "invalidate" | "update" | "message"
+            )),
+            "expected a recognisable SSE event, got {frames:?}"
+        );
     }
 
     #[tokio::test]

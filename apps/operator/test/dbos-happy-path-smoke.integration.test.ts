@@ -72,11 +72,14 @@ describe('DBOS happy-path smoke — real-PG reads do not throw (D-008/D-014 regr
         updated_ts BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY (workspace_id, feature_id)
       );
-      CREATE TABLE harness_shared.harness_plan_status (
+      -- PG-canonical plans: dispatch gate reads harness_plans.op_status.
+      CREATE TABLE harness_shared.harness_plans (
         workspace_id TEXT NOT NULL,
         harness_slug TEXT NOT NULL,
         plan_slug TEXT NOT NULL,
-        status TEXT NOT NULL,
+        op_status TEXT,
+        op_priority INT,
+        op_started_at TIMESTAMPTZ,
         PRIMARY KEY (workspace_id, harness_slug, plan_slug)
       );
       -- G2 auditor-admission gate: readFeaturesPg LEFT JOINs this for origin +
@@ -107,8 +110,8 @@ describe('DBOS happy-path smoke — real-PG reads do not throw (D-008/D-014 regr
     `);
 
     // smoke-plan is started; other-plan is NOT — gating must keep its feature out.
-    await db.sql`INSERT INTO harness_shared.harness_plan_status
-      (workspace_id, harness_slug, plan_slug, status)
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, op_status)
       VALUES (${WS}, ${SLUG}, 'smoke-plan', 'started')`;
 
     const ins = (

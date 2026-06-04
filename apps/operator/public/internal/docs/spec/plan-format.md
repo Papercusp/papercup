@@ -7,10 +7,19 @@ import { Aside } from '@astrojs/starlight/components';
 
 The **plan format** is a small markdown convention that lets SU agents
 browse, status-track, and cold-resume work-in-flight plans without a
-human re-briefing them. Plans live as files at
-`apps/operator/docs/plans/<slug>-<YYYY-MM-DD>.md`; the `plans:*` tool
-surface is a view over them. Filesystem is canonical — there is no
-PG mirror.
+human re-briefing them.
+
+**Storage: PG-canonical** (plans-pg-canonical-migration-2026-06-03).
+Plans live in `harness_shared.harness_plans` — one row per plan, keyed by
+`(workspace_id, harness_slug, plan_slug)`; the canonical markdown is the
+`content` TEXT column. Reads parse that blob; the frontmatter + op\_\* status +
+the structured `items`/`decisions`/`now_*` columns are a **derived index**
+maintained on write (D-006: the prose body stays canonical in `content`). The
+markdown is rendered on demand by `plans:get` / `plans:export` / the admin UI —
+the `apps/operator/docs/plans/<slug>.md` files were **removed from git** once PG
+became the source of truth. Plans federate cross-machine over the peer-log
+(`plans-by-slug` projection) as `papercup`-harness content (D-004). This format
+spec is the shape of the markdown the `plans:*` tools read and write.
 
 This is the format spec. For the rationale, design tradeoffs, and
 roll-out plan, see
@@ -397,11 +406,11 @@ owner: pandawamble@gmail.com
 Date: 2026-05-20
 SU plans are standalone…
 
-### D-002 — Filesystem-canonical
-Date: 2026-05-20
-Plans are documents (hand-edited, git-versioned, PR-reviewed) and
-inherit the filesystem-canonical model of the sibling `docs:*`
-system.
+### D-002 — PG-canonical
+Date: 2026-06-03
+Plans are PG-canonical (harness_shared.harness_plans); the markdown
+`content` blob is the source of truth, rendered on demand. (Superseded
+the original filesystem-canonical model — plans-pg-canonical-migration.)
 ```
 
 ## Validation assertions (VAL-\*)
@@ -571,12 +580,11 @@ frontmatter) are exempt entirely.
 
 ## Concurrency
 
-Same-plan concurrent writes serialize through `locks:*`. The lock
-key is the workspace-canonical path
-`apps/operator/docs/plans/<slug>.md`, so callers with different
-absolute `repoRoot` paths still hash to the same lock. ID
-allocation (D-NNN, P-NNN) happens *inside* the lock; concurrent
-`plans:add-decision` calls produce sequential non-colliding IDs.
-
-The lock system itself is documented at
-[`/internal/docs/agent-spawning/su-agent-coordination-v3`](/internal/docs/agent-spawning/su-agent-coordination-v3).
+Same-plan concurrent writes serialize through a **PG advisory xact lock** on
+`(workspace_id, harness_slug, plan_slug)` held across the read-modify-write
+(plans-pg-canonical-migration-2026-06-03 D-005), replacing the old filesystem
+`O_EXCL` lock. ID allocation (D-NNN, P-NNN) happens *inside* the advisory lock,
+so concurrent `plans:add-decision` calls produce sequential non-colliding IDs.
+Editor concurrency is additionally guarded by an optimistic `version`-column
+compare-and-swap: a write based on a stale `version` is rejected rather than
+clobbering a concurrent change.

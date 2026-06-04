@@ -66,11 +66,13 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
           audit_verdict  TEXT,
           PRIMARY KEY (harness_slug, feature_id)
         );
-        CREATE TABLE harness_shared.harness_plan_status (
+        CREATE TABLE harness_shared.harness_plans (
           workspace_id TEXT NOT NULL,
           harness_slug TEXT NOT NULL,
           plan_slug    TEXT NOT NULL,
-          status       TEXT NOT NULL,
+          op_status    TEXT,
+          op_priority  INT,
+          op_started_at TIMESTAMPTZ,
           PRIMARY KEY (workspace_id, harness_slug, plan_slug)
         );
       `);
@@ -149,8 +151,8 @@ describe('User-protection gate — live readFrontierFeatures G2 gate (real PG, P
          AND (
            (metadata->>'source_plan') IS NULL
            OR (metadata->>'source_plan') IN (
-             SELECT plan_slug FROM harness_shared.harness_plan_status
-              WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND status = 'started'
+             SELECT plan_slug FROM harness_shared.harness_plans
+              WHERE workspace_id = ${WS} AND harness_slug = ${SLUG} AND op_status = 'started'
            )
          )
     `;

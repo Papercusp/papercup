@@ -60,9 +60,11 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS feature_order INT,
       ADD COLUMN IF NOT EXISTS origin        TEXT,
       ADD COLUMN IF NOT EXISTS audit_verdict TEXT;
-    CREATE TABLE IF NOT EXISTS harness_shared.harness_plan_status (
+    -- Plans are PG-canonical: the started-plan dispatch gate reads
+    -- harness_plans.op_status (folded from the retired harness_plan_status).
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
       workspace_id TEXT NOT NULL, harness_slug TEXT NOT NULL, plan_slug TEXT NOT NULL,
-      status TEXT NOT NULL, started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      op_status TEXT, op_priority INT, op_started_at TIMESTAMPTZ,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
   `);
@@ -94,7 +96,7 @@ beforeAll(async () => {
   await f('F-PLAN-OFF', 'local', null, 'p-off', 6); // plan not started → excluded
 
   await db.adminSql`
-    INSERT INTO harness_shared.harness_plan_status (workspace_id, harness_slug, plan_slug, status)
+    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, op_status)
     VALUES (${WS}, ${SLUG}, 'p-on', 'started'), (${WS}, ${SLUG}, 'p-off', 'paused')`;
 }, 90_000);
 

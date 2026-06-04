@@ -33,12 +33,13 @@ import {
 const SHARED_SCHEMA_DDL = `
   CREATE SCHEMA IF NOT EXISTS harness_shared;
 
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_plan_status (
+  CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
     workspace_id   TEXT        NOT NULL,
     harness_slug   TEXT        NOT NULL,
     plan_slug      TEXT        NOT NULL,
-    status         TEXT        NOT NULL,
-    started_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    op_status      TEXT,
+    op_priority    INT,
+    op_started_at  TIMESTAMPTZ,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );

@@ -177,9 +177,14 @@ beforeAll(async () => {
       audit_verdict TEXT,
       PRIMARY KEY (workspace_id, harness_slug, feature_id)
     );
-    CREATE TABLE harness_shared.harness_plan_status (
+    -- Plans are PG-canonical (plans-pg-canonical-migration-2026-06-03): the
+    -- orchestrator reads the started-plan dispatch gate + priority from
+    -- harness_plans.op_status / op_priority / op_started_at (folded from the
+    -- retired harness_plan_status). Seeded empty here — the test features use
+    -- source_plan=null so they're pickable without a started-plan gate.
+    CREATE TABLE harness_shared.harness_plans (
       workspace_id TEXT NOT NULL, harness_slug TEXT NOT NULL, plan_slug TEXT NOT NULL,
-      status TEXT NOT NULL, priority INT, started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      op_status TEXT, op_priority INT, op_started_at TIMESTAMPTZ,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
     );
   `);

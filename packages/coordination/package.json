@@ -47,16 +47,6 @@
       "import": "./src/watermark-store/conformance.ts",
       "default": "./src/watermark-store/conformance.ts"
     },
-    "./subscription-store": {
-      "types": "./src/subscription-store/index.ts",
-      "import": "./src/subscription-store/index.ts",
-      "default": "./src/subscription-store/index.ts"
-    },
-    "./subscription-store/conformance": {
-      "types": "./src/subscription-store/conformance.ts",
-      "import": "./src/subscription-store/conformance.ts",
-      "default": "./src/subscription-store/conformance.ts"
-    },
     "./capabilities": {
       "types": "./src/capabilities/index.ts",
       "import": "./src/capabilities/index.ts",

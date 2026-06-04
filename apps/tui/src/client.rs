@@ -30,6 +30,11 @@ impl OperatorClient {
         Self { ipc }
     }
 
+    /// The underlying IPC client (for streaming subscriptions, e.g. SSE).
+    pub fn ipc(&self) -> Arc<IpcClient> {
+        self.ipc.clone()
+    }
+
     async fn get_json(&self, path: &str) -> Result<serde_json::Value> {
         let bytes = self.ipc.sys_http("GET", path, None).await?;
         serde_json::from_slice(&bytes).with_context(|| format!("parse JSON from {path}"))

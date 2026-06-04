@@ -21,15 +21,31 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     draw_tabs(f, app, root[0]);
+
+    // P7: an always-visible presence sidebar (who's online + intent), toggled
+    // with `p`. Suppressed on narrow terminals so it never crowds the body.
+    let (body, presence) = if app.show_presence && root[1].width >= 80 {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(48), Constraint::Length(30)])
+            .split(root[1]);
+        (cols[0], Some(cols[1]))
+    } else {
+        (root[1], None)
+    };
+
     match app.tab {
-        Tab::Plans => draw_plans(f, app, root[1]),
-        Tab::Inbox => draw_inbox(f, app, root[1]),
-        Tab::Sessions => draw_sessions(f, app, root[1]),
-        Tab::Harnesses => draw_harnesses(f, app, root[1]),
-        Tab::Docs => draw_docs(f, app, root[1]),
-        Tab::Activity => draw_activity(f, app, root[1]),
-        Tab::Testing => draw_testing(f, app, root[1]),
-        Tab::Config => draw_config(f, app, root[1]),
+        Tab::Plans => draw_plans(f, app, body),
+        Tab::Inbox => draw_inbox(f, app, body),
+        Tab::Sessions => draw_sessions(f, app, body),
+        Tab::Harnesses => draw_harnesses(f, app, body),
+        Tab::Docs => draw_docs(f, app, body),
+        Tab::Activity => draw_activity(f, app, body),
+        Tab::Testing => draw_testing(f, app, body),
+        Tab::Config => draw_config(f, app, body),
+    }
+    if let Some(area) = presence {
+        draw_presence(f, app, area);
     }
     draw_status(f, app, root[2]);
 
@@ -174,6 +190,53 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
         .wrap(Wrap { trim: false })
         .block(Block::default().borders(Borders::ALL).title(" Dossier "));
     f.render_widget(para, cols[1]);
+}
+
+/// P7 presence sidebar: a glanceable, always-visible list of who's online and
+/// what they're doing, rendered from the coord_presence-primary roster. No
+/// selection — it's a HUD, not a navigable list; the Sessions tab is the detail.
+fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
+    let online = app.roster.iter().filter(|r| !r.stale).count();
+    let items: Vec<ListItem> = app
+        .roster
+        .iter()
+        .map(|r| {
+            let dot = if r.stale {
+                "○"
+            } else if r.liveness == "live" {
+                "●"
+            } else {
+                "◐"
+            };
+            let who = r.agent.clone().unwrap_or_else(|| r.label.clone());
+            // Prefer live intent; fall back to feature, then role.
+            let detail = r
+                .intent
+                .clone()
+                .filter(|s| !s.is_empty())
+                .or_else(|| r.feature.clone().filter(|s| !s.is_empty()))
+                .or_else(|| r.role.clone().filter(|s| !s.is_empty()))
+                .unwrap_or_default();
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{dot} {:<10} ", trunc(&who, 10))),
+                Span::styled(trunc(&detail, 14), Theme::dim()),
+            ]))
+        })
+        .collect();
+    let body = if app.roster.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(nobody online)",
+            Theme::dim(),
+        )))]
+    } else {
+        items
+    };
+    let list = List::new(body).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(" Presence {}/{} ", online, app.roster.len()))),
+    );
+    f.render_widget(list, area);
 }
 
 fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
@@ -475,8 +538,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_help(f: &mut Frame) {
-    let area = centered_rect(62, 60, f.area());
-    let text = "pui — keys\n\n  1 / 2 / 3   Plans / Inbox / Sessions\n  j / k  ↑/↓  move selection\n  n           launch agent pane (Sessions)\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let area = centered_rect(64, 84, f.area());
+    let text = "pui — keys\n\n  1..8        switch tab\n  j / k  ↑/↓  move selection\n  [ / ]       cycle harness\n  Tab         switch column (Harnesses)\n  PgUp/PgDn   scroll (Docs)\n  n           launch agent pane (Sessions)\n  g           launch git (lazygit)\n  p           toggle presence sidebar\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -621,6 +684,42 @@ mod tests {
         assert!(text.contains("Details of the escalation")); // body in preview
     }
 
+    fn presence_entry(agent: &str, intent: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: "su-1".into(),
+            label: "su · su-1".into(),
+            intent: if intent.is_empty() { None } else { Some(intent.into()) },
+            current_files: vec![],
+            liveness: "live".into(),
+            stale: false,
+            agent: Some(agent.into()),
+            role: Some("worker".into()),
+            feature: None,
+            current_plan_slug: None,
+            heartbeat_at: None,
+        }
+    }
+
+    #[test]
+    fn presence_sidebar_renders_when_wide() {
+        let mut app = App::new(); // Plans tab — so the only roster render is the sidebar
+        app.set_roster(vec![presence_entry("claude", "porting tui")]);
+        let text = render(&app, 100, 12);
+        assert!(text.contains("Presence 1/1"));
+        assert!(text.contains("claude"));
+        assert!(text.contains("porting tui")); // intent shown in the sidebar
+    }
+
+    #[test]
+    fn presence_sidebar_hidden_when_toggled_off() {
+        let mut app = App::new();
+        app.show_presence = false;
+        app.set_roster(vec![presence_entry("ghostxyz", "secret")]);
+        let text = render(&app, 100, 12); // Plans tab doesn't render the roster itself
+        assert!(!text.contains("Presence "));
+        assert!(!text.contains("ghostxyz"));
+    }
+
     #[test]
     fn tab_strip_shows_all_tabs() {
         let app = App::new();
@@ -659,13 +758,14 @@ mod tests {
             linked_feature_id: Some("F-FIX-1".into()),
             attempts: 0,
         }]);
-        let text = render(&app, 110, 14);
+        let text = render(&app, 110, 18);
         assert!(text.contains("papercup"));
         assert!(text.contains("features (1)"));
         assert!(text.contains("F-001"));
         assert!(text.contains("Build X"));
         assert!(text.contains("issues (1)"));
         assert!(text.contains("Crash"));
+        assert!(text.contains("attempts")); // feature detail pane renders
     }
 
     #[test]
@@ -728,10 +828,26 @@ mod tests {
     fn help_overlay_renders_when_shown() {
         let mut app = App::new();
         app.show_help = true;
-        let text = render(&app, 80, 20);
+        let text = render(&app, 84, 28);
         assert!(text.contains("Help"));
         assert!(text.contains("command palette"));
         assert!(text.contains("launch agent pane"));
+        assert!(text.contains("toggle presence sidebar"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_presence_sidebar_render() {
+        let client = crate::client::OperatorClient::from_discovery()
+            .await
+            .expect("connect via discovery");
+        let roster = client.roster_typed().await.expect("roster over IPC");
+        let n = roster.len();
+        let mut app = App::new();
+        app.set_roster(roster);
+        let text = render(&app, 120, 30);
+        eprintln!("--- live presence sidebar render ({n} roster entries) ---\n{text}");
+        assert!(text.contains("Presence"), "sidebar title should render");
     }
 
     #[test]

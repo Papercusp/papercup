@@ -1,17 +1,23 @@
 /**
- * resource-broadcast — Phase 3 coord broadcasts (P-009 / P-010 / P-011).
+ * resource-broadcast — named-resource drain coord broadcasts (P-009 / P-010).
  *
- * Drain-start sends a targeted coord message to each shared holder ("release
- * please"); back-up broadcasts + fires a watcher notify. Both also fire
- * fireNotifications on the synthetic `resource:<name>` path so agents that
- * coord:watch a resource are told (P-011). Live PG coord log; unique owner
- * ids per test isolate assertions from the shared coord stream.
+ * Drain-start sends a targeted coord MESSAGE to each shared holder ("release
+ * please"); back-up broadcasts a "resource is free again" MESSAGE to all. Locks
+ * are control-plane (coordination-substrate D-007): the old path-glob
+ * `fireNotifications(resource:<name>)` watcher-notify was retired with coord:watch
+ * (Phase 3), so these are plain messages now. Live PG coord log; unique owner ids
+ * per test isolate assertions from the shared coord stream.
+ *
+ * Also covers gcOldNotifies (relocated to coordination/notify-gc): it prunes the
+ * subscribe→inject fan-out's `notify` rows from coord_event_log past retention.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { getTxPool } from '../su-lock-store';
 import { readInbox } from '../../coordination/messages';
-import { addWatch, gcOldNotifies } from '../../coordination/subscriptions';
+import { coordLog } from '../../coordination/log';
+import { gcOldNotifies } from '../../coordination/notify-gc';
+import { newMsgId, type CoordEnvelope } from '@papercusp/coordination/core';
 import type { AgentIdentity } from '../../coordination/identity';
 import type { ResourceHolder } from '../su-lock-store';
 import {
@@ -50,14 +56,10 @@ const sharedHolder = (owner: string): ResourceHolder => ({
   expires_ts: new Date(Date.now() + 60_000),
 });
 
-describe('resource broadcasts (Phase 3)', async () => {
+describe('resource broadcasts (named-resource drain)', async () => {
   const live = await dbLive();
 
-  // Prime the org PG handle. The very first getOrgPg() in a test process can
-  // race drizzle schema-module load — it caches a usable .sql client but
-  // throws building the (here-unused) drizzle handle, so the first coord
-  // write fails while later ones succeed. Coord writes need only .sql; prime
-  // it here and tolerate that first-call throw so test order can't flake us.
+  // Prime the org PG handle (see note: first getOrgPg() can race drizzle load).
   beforeAll(async () => {
     if (live) await readInbox(`warmup-${Date.now()}`).catch(() => {});
   });
@@ -81,38 +83,36 @@ describe('resource broadcasts (Phase 3)', async () => {
     expect(inboxB.some((m) => m.from === src.ownerId && /draining/i.test(m.summary ?? ''))).toBe(true);
   });
 
-  it.skipIf(!live)('back-up fires a notify to a resource watcher (P-011)', async () => {
+  it.skipIf(!live)('back-up broadcasts a "resource is back up" message to all', async () => {
     const u = uniq();
-    const watcher = mkIdentity(`watch-W-${u}`);
-    await addWatch(watcher, { pattern: 'resource:**', trigger: 'any', ttl_sec: 120 });
-
+    const reader = `up-reader-${u}`;
     const src = mkIdentity(`up-R-${u}`);
     await broadcastResourceBackUp({ source: src, resource: 'dev-server' });
 
-    // notify is opt-in now (D-002 de-noise): a resource watcher must request it.
-    const inbox = await readInbox(watcher.ownerId, { kinds: ['notify'] });
-    expect(
-      inbox.some(
-        (m) =>
-          m.from === src.ownerId &&
-          m.kind === 'notify' &&
-          m.matched_path === 'resource:dev-server',
-      ),
-    ).toBe(true);
+    // The back-up is a broadcast (to ['*']) — any reader's inbox surfaces it.
+    const inbox = await readInbox(reader);
+    expect(inbox.some((m) => m.from === src.ownerId && /back up/i.test(m.summary ?? ''))).toBe(true);
   });
 
-  it.skipIf(!live)('gcOldNotifies removes notify rows past the retention window (P-003)', async () => {
+  it.skipIf(!live)('gcOldNotifies prunes notify rows past the retention window', async () => {
     const u = uniq();
-    const watcher = mkIdentity(`gcwatch-${u}`);
-    await addWatch(watcher, { pattern: 'resource:**', trigger: 'any', ttl_sec: 120 });
-    const src = mkIdentity(`gc-src-${u}`);
-    await broadcastResourceBackUp({ source: src, resource: 'dev-server' });
+    const recipient = `gc-rcpt-${u}`;
+    const env: CoordEnvelope = {
+      ts: new Date().toISOString(),
+      msg_id: newMsgId(),
+      from: `gc-src-${u}`,
+      to: [recipient],
+      kind: 'notify',
+      notify_kind: 'feature_updated',
+      summary: 'fan-out notice',
+    };
+    await coordLog.appendLine('messages', recipient, env);
 
-    const before = await readInbox(watcher.ownerId, { kinds: ['notify'] });
-    expect(before.some((m) => m.from === src.ownerId)).toBe(true);
+    const before = await readInbox(recipient, { kinds: ['notify'] });
+    expect(before.some((m) => m.msg_id === env.msg_id)).toBe(true);
 
     await gcOldNotifies(0); // retentionDays=0 → drop everything older than now
-    const after = await readInbox(watcher.ownerId, { kinds: ['notify'] });
-    expect(after.some((m) => m.from === src.ownerId)).toBe(false);
+    const after = await readInbox(recipient, { kinds: ['notify'] });
+    expect(after.some((m) => m.msg_id === env.msg_id)).toBe(false);
   });
 });
