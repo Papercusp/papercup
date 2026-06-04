@@ -252,3 +252,16 @@ Result on a pristine VM: the window now renders the operator's real preflight/on
 
 REMAINING (separate, not the blank-window bug; the app's designed prereq gate): the preflight does not auto-advance to the harness UI because some checks are MISSING — `claude` + `gh` not on PATH (user-installed onboarding asks), `meridian` 127.0.0.1:3456 ECONNREFUSED (a service), and notably `harness` "orchestrator bin not found at /usr/lib/Papercusp/sidecar/harness/../orchestrator/bin/run.ts" — which looks like a packaging/path gap worth a separate look (the orchestrator may not be bundled at the expected path). These gate reaching the full harness UI but are distinct from bug #2.
 Related: P-005
+
+### D-013 — Remaining preflight blockers are incomplete desktop-migration wiring, not quick bugs
+Date: 2026-06-04
+FIXED: vmctl status probed a fixed :3070; now parses the dynamic operator port from the app log (reports "operator: up (port N)").
+
+The two REQUIRED preflight checks still failing on a fresh install are incomplete desktop wiring from the in-progress orchestrator/meridian migration (Phase F2 commit f5c2bbe explicitly deferred "src-tauri/src/main.rs sidecar entry"):
+
+- meridian (preflight required): the daemon (@rynfar/meridian, bundled at sidecar/meridian-host/node_modules/.bin/meridian → dist/cli.js) is NEVER spawned by main.rs, so 127.0.0.1:3456 is dead. meridian only routes omp/claude through the user's Claude Max subscription — omp/claude work with API keys without it — so it's arguably a convenience that should be OPTIONAL in the preflight, not a hard boot blocker. Full fix = spawn the daemon on boot in main.rs (using bundled node, kill-on-exit), like the other sidecars.
+
+- harness (preflight required): checkHarnessDir() probes `${PAPERCUSP_HARNESS_DIR}/../orchestrator/bin/run.ts` = sidecar/orchestrator/bin/run.ts — the LEGACY CLI entry (the opt-in PAPERCUSP_USE_TS_ORCHESTRATOR path). The shipping runtime is the in-process DBOS orchestrator (apps/operator/lib/dbos/orchestrator-runner.ts, spawns an `invoke-once` bin) — bundled into host.mjs, not as a sibling dir. So the check is stale for the packaged layout. Fix = update the check to verify the real packaged artifact (or mark it appropriately), after confirming the DBOS orchestrator actually runs in-package.
+
+claude/gh are correctly optional (user-installed onboarding asks), not bugs. Both required-blockers need a product call (required vs optional) and/or non-trivial main.rs/build wiring + rebuilds + functional verification — beyond the quick clean-machine bug fixes already landed (D-009/D-011/D-012).
+Related: P-005
