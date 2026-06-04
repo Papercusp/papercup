@@ -223,3 +223,10 @@ SECONDARY OBSERVATION (not fully root-caused): even on that green path, the WebV
 
 Both only reproduce on a clean machine — exactly what this VM exists to catch.
 Related: P-005
+
+### D-010 — Primary bug fix VM-verified; secondary bug (blank window on clean machine) confirmed
+Date: 2026-06-04
+PRIMARY (D-009) FIXED + PROVEN: rebuilt the .deb with all three node spawns routed through bundled_path_env (main.rs), reset the VM to a truly pristine overlay (confirmed no `node` on PATH), fresh-installed the rebuilt .deb, and `vmctl verify` went 7/7 green with NO hacks — embedded Postgres `ready on localhost:21332 db=papercusp`, operator `sidecar ready on :23428`. The DB-spawn bug is resolved on a clean machine.
+
+SECONDARY (newly CONFIRMED, was the D-009 observation): even on the fixed build with operator fully up, the Tauri window stays on a WebKit native error page "Could not connect to 127.0.0.1: Connection refused" — so a clean-machine user still sees a blank app. Characterized: the bundled bootstrap web/index.html DOES reach /api/desktop/preflight and retries correctly, then runs `location.replace(appBase + '/harness')` where appBase = window.__papercuspAppBase (custom protocol `papercusp://localhost` when enabled) || base (`http://localhost:<port>`). That navigation lands on the WebKit connection-refused page. From inside the VM both `127.0.0.1:<port>` and `localhost:<port>` curl 200, but `localhost` resolves to `::1` there and the operator binds 127.0.0.1 (IPv4) — a likely contributor (WebKit fetch to localhost→::1 with no IPv4 fallback), alongside the possibility the custom-protocol (papercusp://) handler doesn't serve on clean Linux. Pinning it needs the WebView console. Net: the Linux .deb's DATABASE now works on a clean machine, but the UI still doesn't render — a separate fix.
+Related: P-005
