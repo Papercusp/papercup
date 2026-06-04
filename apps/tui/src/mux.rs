@@ -29,18 +29,53 @@ impl PaneSpec {
     }
 }
 
+/// A workbench control action (D-001: pui drives the multiplexer via
+/// `zellij action ...` from a pinned HUD pane — it is NOT a zellij plugin,
+/// because the WASM plugin sandbox can't reach our Unix-socket IPC). This is the
+/// vocabulary pui issues to arrange the workbench; the live spawn is deferred.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MuxAction {
+    /// Open a command in a new pane.
+    NewPane(PaneSpec),
+    /// Open a new tab (optionally named, optionally from a layout file).
+    NewTab {
+        name: Option<String>,
+        layout: Option<String>,
+    },
+    /// Close the focused pane.
+    ClosePane,
+    /// Move focus to the next pane.
+    FocusNextPane,
+    /// Jump to a tab by 1-based index.
+    GoToTab(u32),
+    /// Rename the focused tab.
+    RenameTab(String),
+}
+
 pub trait Multiplexer {
     /// Build the argv that opens a new pane running `spec` (pure; no spawn).
     fn new_pane_argv(&self, spec: &PaneSpec) -> Vec<String>;
 
-    /// Spawn it via the OS. Default impl runs `new_pane_argv`.
+    /// Build the argv for an arbitrary control action (pure; no spawn).
+    fn action_argv(&self, action: &MuxAction) -> Vec<String>;
+
+    /// Spawn a new pane via the OS. Default impl runs `new_pane_argv`.
     fn open_pane(&self, spec: &PaneSpec) -> std::io::Result<()> {
-        let argv = self.new_pane_argv(spec);
-        let (prog, rest) = argv
-            .split_first()
-            .expect("multiplexer argv is never empty");
-        Command::new(prog).args(rest).status().map(|_| ())
+        spawn(self.new_pane_argv(spec))
     }
+
+    /// Run an arbitrary control action via the OS.
+    fn run_action(&self, action: &MuxAction) -> std::io::Result<()> {
+        spawn(self.action_argv(action))
+    }
+}
+
+/// Spawn an argv, returning the process status as `()`.
+fn spawn(argv: Vec<String>) -> std::io::Result<()> {
+    let (prog, rest) = argv
+        .split_first()
+        .expect("multiplexer argv is never empty");
+    Command::new(prog).args(rest).status().map(|_| ())
 }
 
 /// zellij driver: `zellij action new-pane [--name <title>] -- <argv...>`.
@@ -60,6 +95,35 @@ impl Multiplexer for Zellij {
         v.push("--".to_string());
         v.extend(spec.argv.iter().cloned());
         v
+    }
+
+    fn action_argv(&self, action: &MuxAction) -> Vec<String> {
+        let s = |x: &str| x.to_string();
+        match action {
+            MuxAction::NewPane(spec) => self.new_pane_argv(spec),
+            MuxAction::NewTab { name, layout } => {
+                let mut v = vec![s("zellij"), s("action"), s("new-tab")];
+                if let Some(n) = name {
+                    v.push(s("--name"));
+                    v.push(n.clone());
+                }
+                if let Some(l) = layout {
+                    v.push(s("--layout"));
+                    v.push(l.clone());
+                }
+                v
+            }
+            MuxAction::ClosePane => vec![s("zellij"), s("action"), s("close-pane")],
+            MuxAction::FocusNextPane => {
+                vec![s("zellij"), s("action"), s("focus-next-pane")]
+            }
+            MuxAction::GoToTab(i) => {
+                vec![s("zellij"), s("action"), s("go-to-tab"), i.to_string()]
+            }
+            MuxAction::RenameTab(name) => {
+                vec![s("zellij"), s("action"), s("rename-tab"), name.clone()]
+            }
+        }
     }
 }
 
@@ -94,5 +158,54 @@ mod tests {
         assert_eq!(argv[dd - 2], "--name");
         assert_eq!(argv[dd - 1], "codex · F-12");
         assert_eq!(&argv[dd + 1..], &["psu", "--agent=codex"]);
+    }
+
+    #[test]
+    fn action_new_pane_matches_new_pane_argv() {
+        let spec = PaneSpec::new(["psu", "--agent=claude"]);
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::NewPane(spec.clone())),
+            Zellij.new_pane_argv(&spec)
+        );
+    }
+
+    #[test]
+    fn action_new_tab_with_name_and_layout() {
+        let argv = Zellij.action_argv(&MuxAction::NewTab {
+            name: Some("papercup".into()),
+            layout: Some("/tmp/wb.kdl".into()),
+        });
+        assert_eq!(
+            argv,
+            vec![
+                "zellij",
+                "action",
+                "new-tab",
+                "--name",
+                "papercup",
+                "--layout",
+                "/tmp/wb.kdl"
+            ]
+        );
+    }
+
+    #[test]
+    fn action_simple_controls() {
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::ClosePane),
+            vec!["zellij", "action", "close-pane"]
+        );
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::FocusNextPane),
+            vec!["zellij", "action", "focus-next-pane"]
+        );
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::GoToTab(3)),
+            vec!["zellij", "action", "go-to-tab", "3"]
+        );
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::RenameTab("docs".into())),
+            vec!["zellij", "action", "rename-tab", "docs"]
+        );
     }
 }

@@ -903,6 +903,18 @@ mod tests {
     }
 
     #[test]
+    fn tutorial_overlay_renders_and_outranks_help() {
+        let mut app = App::new();
+        app.show_tutorial = true;
+        app.show_help = true; // tutorial should win
+        let text = render(&app, 90, 26);
+        assert!(text.contains("Getting started"));
+        assert!(text.contains("Welcome to pui"));
+        assert!(text.contains("Press any key to begin"));
+        assert!(!text.contains("pui — keys")); // help overlay suppressed
+    }
+
+    #[test]
     fn palette_renders_input() {
         let mut app = App::new();
         app.palette_open = true;

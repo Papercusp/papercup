@@ -1003,6 +1003,19 @@ mod tests {
     }
 
     #[test]
+    fn tutorial_any_key_dismisses_and_swallows_the_key() {
+        let mut a = App::new();
+        a.show_tutorial = true;
+        // A key that would normally switch tabs only dismisses the tutorial.
+        assert_eq!(a.update(key('2', KeyModifiers::NONE)), Action::Render);
+        assert!(!a.show_tutorial);
+        assert_eq!(a.tab, Tab::Plans); // tab unchanged — key was swallowed
+        // Subsequent keys behave normally again.
+        a.update(key('2', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Inbox);
+    }
+
+    #[test]
     fn p_toggles_presence_sidebar() {
         let mut a = App::new();
         assert!(a.show_presence); // on by default

@@ -84,6 +84,11 @@ export interface PlanRow {
   archived: boolean;
   isLegacy: boolean;
   updatedAt: string;
+  // Stage-3 structured derived index (may be empty for un-normalized rows).
+  items: PlanIndexItem[];
+  decisions: PlanIndexDecision[];
+  nowState: string | null;
+  nowNext: string | null;
 }
 
 interface PlanDbRow {
@@ -108,6 +113,10 @@ interface PlanDbRow {
   archived: boolean;
   is_legacy: boolean;
   updated_at: string;
+  items: unknown;
+  decisions: unknown;
+  now_state: string | null;
+  now_next: string | null;
 }
 
 function rowFromDb(r: PlanDbRow): PlanRow {
@@ -133,6 +142,10 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     archived: r.archived,
     isLegacy: r.is_legacy,
     updatedAt: r.updated_at,
+    items: Array.isArray(r.items) ? (r.items as PlanIndexItem[]) : [],
+    decisions: Array.isArray(r.decisions) ? (r.decisions as PlanIndexDecision[]) : [],
+    nowState: r.now_state,
+    nowNext: r.now_next,
   };
 }
 
@@ -330,7 +343,7 @@ export async function getPlanRow(
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -349,7 +362,7 @@ export async function listPlanRows(
       SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
              title, status, created, updated, owner, supersedes, superseded_by,
              op_status, op_started_at, op_updated_at, current_wave, op_priority,
-             archived, is_legacy, updated_at
+             archived, is_legacy, updated_at, items, decisions, now_state, now_next
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
        ORDER BY plan_slug ASC

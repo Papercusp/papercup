@@ -13,6 +13,7 @@ mod client;
 mod event;
 mod framing;
 mod ipc;
+mod layout;
 mod models;
 mod mux;
 mod notify;
@@ -40,6 +41,12 @@ use mux::{Multiplexer, Zellij};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // `pui workbench` materialises the zellij layout (D-001) and starts the
+    // session; the bare `pui` runs the HUD (the usual case, e.g. inside a pane).
+    if std::env::args().nth(1).as_deref() == Some("workbench") {
+        return run_workbench();
+    }
+
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
@@ -52,6 +59,16 @@ async fn main() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     terminal.show_cursor().ok();
     result
+}
+
+/// Materialise the workbench layout and hand off to zellij. Replaces this
+/// process's foreground with the zellij session; on exit we mirror its code.
+fn run_workbench() -> Result<()> {
+    let path = layout::materialize()?;
+    let argv = layout::launch_argv(&path.to_string_lossy());
+    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
+    let status = std::process::Command::new(prog).args(rest).status()?;
+    std::process::exit(status.code().unwrap_or(0));
 }
 
 async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {

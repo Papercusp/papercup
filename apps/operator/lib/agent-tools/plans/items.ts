@@ -16,11 +16,42 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { readAllPlans, readPlanBySlug } from './source';
+import { listPlanRows, getPlanRow, type PlanRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-import { resolveEffectiveStatus, type ResolvedItem } from './effective-status';
-import { ITEM_STATUSES, IMPORTANCE_LEVELS } from './parser';
+import { resolveEffectiveStatusForItems, type ResolvedItem } from './effective-status';
+import {
+  ITEM_STATUSES,
+  IMPORTANCE_LEVELS,
+  parsePlan,
+  type PlanItem,
+  type ItemStatus,
+  type Importance,
+} from './parser';
+
+/**
+ * Resolve a plan row's items from the PG-canonical structured `items` index
+ * (plans-pg-canonical-migration Stage 3) — no content-blob parse. Falls back to
+ * parsing `content` only when the structured index is empty/absent (a federated
+ * remote row whose projection didn't fill the derived columns, or a genuinely
+ * itemless plan — the parse is cheap either way).
+ */
+function planItemsForRow(row: PlanRow): PlanItem[] {
+  if (row.items.length > 0) {
+    return row.items.map((i) => ({
+      id: i.id,
+      text: i.text,
+      storedStatus: i.status as ItemStatus,
+      importance: i.importance as Importance,
+      blockedBy: i.blockedBy,
+      decisionRefs: i.decisionRefs,
+      phase: i.phase,
+      lineNumber: 0,
+      rawLine: '',
+    }));
+  }
+  return parsePlan(row.content).items;
+}
 
 const ALL_ROLES = [
   'scoper',
@@ -87,10 +118,13 @@ export default defineTool({
     const opts = await ctxToPlanSourceOpts(sctx);
     const includeArchived = args.includeArchived === true;
 
-    let parsedPlans: Array<{ parsed: import('./parser').ParsedPlan; archived: boolean }> = [];
+    // PG-canonical: read the structured rows (no content-blob parse for plans that
+    // carry the derived `items` index — Stage 3); planItemsForRow falls back to a
+    // parse only when the index is absent.
+    let planRows: PlanRow[] = [];
 
     if (args.slug) {
-      const one = await readPlanBySlug(args.slug, opts);
+      const one = await getPlanRow(args.slug, opts);
       if (!one) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
@@ -98,24 +132,24 @@ export default defineTool({
         };
       }
       if (!one.archived || includeArchived) {
-        parsedPlans = [one];
+        planRows = [one];
       }
     } else {
-      parsedPlans = await readAllPlans({ includeArchived, ...opts });
+      planRows = await listPlanRows({ includeArchived, ...opts });
     }
 
     const rows: ItemRow[] = [];
 
-    for (const { parsed, archived } of parsedPlans) {
-      if (parsed.isLegacy) continue;
-      const resolved = resolveEffectiveStatus(parsed);
+    for (const row of planRows) {
+      if (row.isLegacy) continue;
+      const resolved = resolveEffectiveStatusForItems(planItemsForRow(row));
       for (const item of resolved.items) {
         if (args.actionable && item.effectiveStatus !== 'todo') continue;
         if (args.needsHuman && item.storedStatus !== 'needs-human') continue;
         if (args.status && item.effectiveStatus !== args.status) continue;
         rows.push({
-          plan: parsed.frontmatter.slug ?? parsed.slug,
-          archived,
+          plan: row.planSlug,
+          archived: row.archived,
           item,
         });
       }

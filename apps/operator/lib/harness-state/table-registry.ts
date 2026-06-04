@@ -139,6 +139,7 @@ const WORKSPACE_OWNED_EXPLICIT = [
   'harness_registry',          // per-workspace harness membership list (one JSONB row/workspace) — NOT slug-shared
   'autoloop_state', 'harness_dock_layouts', 'saved_prompts',
   'harness_brainstorm', 'harness_plan_review', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped
+  'engineer_issues', // engineer-issues-2026-06-03: per-workspace agent issue surface; v1 local (federation deferred, D-009)
 ];
 
 /**
