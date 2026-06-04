@@ -1,0 +1,124 @@
+//! Typed models for the operator API responses the panels consume.
+//!
+//! Field sets match the live-probed shapes (SP-TUI plan, iteration 4). Unknown
+//! fields are ignored (serde default) and nullable/absent fields are
+//! Option/defaulted so a shape drift never hard-fails a deserialize.
+
+use serde::Deserialize;
+
+/// One row of `/api/admin/plans/list` → `{ plans: [...] }`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanSummary {
+    pub slug: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub updated: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub harness: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub next_action: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlansResponse {
+    #[serde(default)]
+    pub plans: Vec<PlanSummary>,
+}
+
+/// One row of `/api/adv/roster` → `{ active: [...] }`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RosterEntry {
+    pub owner_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub current_files: Vec<String>,
+    #[serde(default)]
+    pub liveness: String,
+    #[serde(default)]
+    pub stale: bool,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub feature: Option<String>,
+    #[serde(default)]
+    pub current_plan_slug: Option<String>,
+    #[serde(default)]
+    pub heartbeat_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RosterResponse {
+    #[serde(default)]
+    pub active: Vec<RosterEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plans_list_shape() {
+        // Trimmed from the live /api/admin/plans/list probe.
+        let j = r#"{"plans":[
+            {"slug":"a-2026-05-14","title":"Plan A","status":"shipped","updated":"2026-05-30",
+             "owner":"x@y.z","archived":false,"isLegacy":false,"itemCounts":{},
+             "nextAction":"review state","harness":"papercup","startStatus":null}
+        ]}"#;
+        let r: PlansResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.plans.len(), 1);
+        let p = &r.plans[0];
+        assert_eq!(p.slug, "a-2026-05-14");
+        assert_eq!(p.status, "shipped");
+        assert_eq!(p.harness.as_deref(), Some("papercup"));
+        assert_eq!(p.next_action.as_deref(), Some("review state"));
+        assert!(!p.archived);
+    }
+
+    #[test]
+    fn parses_roster_shape_with_nulls() {
+        // Trimmed from the live /api/adv/roster probe (nulls + extra fields).
+        let j = r#"{"active":[
+            {"ownerId":"su-c8859","label":"su · su-c8859","source":"omp-hook-session",
+             "intent":"work","currentFiles":[],"host":"","pid":null,
+             "startedAt":"2026-06-03 21:06:01-04","heartbeatAt":"2026-06-04 02:01:56-04",
+             "liveness":"live","stale":false,"workspaceId":"*","userId":null,"revoked":false,
+             "pidAlive":null,"hasLaunchRecord":true,"advSessionId":341,"currentPlanSlug":null,
+             "role":null,"feature":null,"agent":"claude","mode":"console"}
+        ]}"#;
+        let r: RosterResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.active.len(), 1);
+        let e = &r.active[0];
+        assert_eq!(e.owner_id, "su-c8859");
+        assert_eq!(e.liveness, "live");
+        assert_eq!(e.agent.as_deref(), Some("claude"));
+        assert_eq!(e.role, None);
+        assert!(e.current_files.is_empty());
+        assert!(!e.stale);
+    }
+
+    #[test]
+    fn empty_and_missing_arrays_default() {
+        assert_eq!(
+            serde_json::from_str::<PlansResponse>("{}").unwrap().plans.len(),
+            0
+        );
+        assert_eq!(
+            serde_json::from_str::<RosterResponse>("{}").unwrap().active.len(),
+            0
+        );
+    }
+}

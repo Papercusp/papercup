@@ -1,10 +1,12 @@
 //! Event sources that feed the single update loop through one mpsc channel.
 //!
 //! Architecture (SP-TUI A2): all inputs — terminal keys, periodic ticks, and
-//! (later) async backend deltas — are normalised into `Event` and drained by
-//! one `App::update`. crossterm's `event::read` is blocking, so it lives on a
-//! dedicated OS thread that forwards into the async channel.
+//! async backend deltas — are normalised into `Event` and drained by one
+//! `App::update`. crossterm's `event::read` is blocking, so it lives on a
+//! dedicated OS thread that forwards into the async channel; the backend poller
+//! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
+use crate::models::{PlanSummary, RosterEntry};
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -16,12 +18,17 @@ pub enum Event {
     Key(KeyEvent),
     /// Idle tick (emitted when no input arrives within the poll window).
     Tick,
-    // Backend(BackendDelta) — added with the client module (P0 step 3).
+    /// Fresh plans list from the backend poller.
+    Plans(Vec<PlanSummary>),
+    /// Fresh agent roster from the backend poller.
+    Roster(Vec<RosterEntry>),
+    /// A backend fetch failed (shown in the status bar).
+    Error(String),
 }
 
 /// Spawn the blocking input reader. Emits `Key` on input and `Tick` otherwise,
-/// so the loop stays responsive (and can later refresh on a cadence) without a
-/// busy-wait. Returns when the channel receiver is dropped.
+/// so the loop stays responsive without a busy-wait. Returns when the channel
+/// receiver is dropped.
 pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
     std::thread::spawn(move || loop {
         match event::poll(Duration::from_millis(250)) {

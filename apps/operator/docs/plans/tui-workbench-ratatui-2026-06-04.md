@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Approved 2026-06-04; framework/architecture decisions locked (ratatui, zellij, binary `pui`). BLOCKED ON SP1: per human direction, fully decoupling the UI from the backend (`operator-core-headless-serve-2026-06-04`) is step 1 and must land before TUI implementation begins — this supersedes the earlier "develop against the currently-running backend in parallel" stance. Nothing is decoupled yet; SP1 is still a draft spec with no code written.
+**State:** Autonomous loop, iteration 4. Unblocked (SP1 active batch done+tested). **P0 mostly complete + tested.** Standalone `apps/tui` crate (binary `pui`) — NO Cargo workspace under papercup/ (desktop crate is the sibling papercusp-desktop/), so it can't break peers' builds. Stack: ratatui 0.29 + crossterm 0.28 + tokio + reqwest (no-TLS, operator is local http) + serde + dirs. Built: P0-2 state/event/update/draw loop (`app.rs` reducer + `Action`, `event.rs` mpsc input thread + ticks, `ui.rs` pure draw, `main.rs` terminal setup/teardown); P0-3 backend client (`client.rs`: `OperatorEndpoint::resolve` from operator.json→superuser-token→PAPERCUSP_OPERATOR_URL/default; `OperatorClient` over `/api/adv/roster` + `/api/admin/plans/list` with bearer); P0-5 render-test harness (TestBackend). **`cargo test` GREEN: 8/8** (app reducer x4, client discovery x2 + fetch-against-fake-server x1, ui snapshot x1). **Live-probed the real operator** (:3070 running): roster=`{active:[{ownerId,label,source,intent,currentFiles,liveness,stale,agent,role,feature,advSessionId,currentPlanSlug,heartbeatAt,startedAt,mode,...}]}`; plans=`{plans:[{slug,title,status,updated,owner,harness,archived,isLegacy,itemCounts,nextAction,startStatus,...}]}` — confirms the client + the field names for P1.
 
-**Next:** Get SP1 spec reviewed/approved, implement SP1 (headless `papercusp serve`, UI fully decoupled), THEN start this plan's P0 against the headless backend.
+**Next:** P0-4 UX kit (theme module, key-binding/help overlay, command palette, reusable left-list+right-detail split primitive), then P1 Create tab: typed roster/plan structs from the probed shapes; plans list+detail + inbox + sessions-roster table; launch-into-zellij-pane DRIVER CODE (live zellij deferred). Keep `cargo test` green each step.
 
 ## Background — what this is and how it reshapes the roadmap
 
