@@ -11,15 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Design drafted from a codebase investigation — the existing two-instance
-federation smokes (`papercusp-desktop/bin/two-instance-*-smoke.sh`), the federation
-transport (gist control plane + Hyperswarm data plane), and the box's VM conventions
-(`build-system/vms.md`). No code written yet. Two deliverables: (1) a disposable
-Ubuntu 24.04 clean-room VM for fresh-install testing the real `.deb`, and (2) a
-VM-backed driver for the existing federation smokes so the two peers run as
-genuinely separate machines (closing the one-box NAT-hairpinning / "Mode B" gap).
+**State:** Phase 1 in flight. Scripts built in papercusp-desktop/scripts/linux-test-vm/ (vmctl, boot-vm.sh, lib/common.sh, cloud-init, README). P-002/P-003 done and verified live: golden image provisions, and up/down/reset/ssh/status work on a pristine overlay. Fresh-install of the real .deb confirmed: declared Depends correct (libwebkit2gtk-4.1-0, libgtk-3-0) and `ldd` on the installed binary fully resolves. One pivot (D-008, supersedes D-001): GNOME failed to start its session on qxl, so the golden image now uses a minimal X stack (openbox via getty-autologin + startx). Re-provisioning the golden image with that change now.
 
-**Next:** human reviews this plan and marks **P-001** done to unblock Phase 1.
+**Next:** After re-provision, an agent runs vmctl up/install/verify to confirm the app boots (PG + operator :3070 + window) under openbox:0, then finishes P-004/P-005/P-006.
 
 ## Background
 
@@ -207,3 +201,12 @@ Date: 2026-06-04
 Per the requester: single-instance boot smoke testing is done on the host and is out of
 scope here. This VM exists for fresh-install testing and cross-machine (separate-machine)
 shared-harness/federation testing only.
+
+### D-008 — Minimal X (openbox) instead of a GNOME desktop — reverses D-001
+Date: 2026-06-04
+Live provisioning surfaced that GNOME Shell fails to register its session on the qxl GPU under autologin (gdm: "Session never registered, failing" → "maximum number of X display failures reached"), so the app panicked with "Failed to initialize GTK" (no usable :0). Xorg itself starts fine on qxl — only the GNOME session registration fails.
+
+Decision: drop `ubuntu-desktop-minimal`/gdm for a minimal X stack — `xserver-xorg` + `xserver-xorg-video-qxl` + `openbox`, started via getty autologin on tty1 + `startx` (no display manager). This bypasses the gdm session-registration failure entirely, is lighter/faster to provision, keeps the app on the qxl framebuffer (so host-side qemu `screendump` and interactive SPICE both still work), and gives a deterministic `XAUTHORITY` (`~/.Xauthority` from startx) so `vmctl launch` needs no session probing.
+
+Bonus: it makes the fresh-install dep test STRONGER. Under GNOME, libwebkit2gtk was already present so `apt install ./Papercusp.deb` pulled 0 deps; on the minimal base the .deb pulls the WebKitGTK runtime from scratch — a truer fresh install. (The .deb's declared Depends — libwebkit2gtk-4.1-0, libgtk-3-0 — and clean `ldd` resolution were both already confirmed.) Supersedes D-001.
+Related: P-002, P-004, P-005
