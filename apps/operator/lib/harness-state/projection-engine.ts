@@ -31,6 +31,7 @@ export const PEER_LOG_TAG_TO_TABLE: Readonly<Record<string, string>> = {
   queue: 'feature_queue',
   'working-set': 'feature_working_set',
   'features-by-id': 'harness_features_consolidated',
+  'plans-by-slug': 'harness_plans',
   issues: 'harness_issues_consolidated',
   presence: 'shared_presence',
   prs: 'harness_feature_prs',

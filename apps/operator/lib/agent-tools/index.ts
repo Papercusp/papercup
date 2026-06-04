@@ -217,6 +217,7 @@ import './plans/items';
 import './plans/attention';
 import './plans/search';
 import './plans/lint';
+import './plans/export';
 import './plans/new';
 import './plans/set-status';
 import './plans/set-importance';

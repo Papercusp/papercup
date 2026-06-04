@@ -1,7 +1,7 @@
 //! Rendering — a pure function of `&App`. No state mutation, so every view is
 //! snapshot-testable against a ratatui `TestBackend`.
 
-use crate::app::{App, Tab};
+use crate::app::{App, HarnessFocus, Tab};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -236,12 +236,19 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(8)])
+        .split(area);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(area);
+        .split(rows[0]);
 
-    // Features (left, selectable).
+    let feat_focused = app.harness_focus == HarnessFocus::Features;
+    let focus_hl = |on: bool| if on { Theme::selected() } else { Theme::dim() };
+
+    // Features (left).
     let fitems: Vec<ListItem> = app
         .features
         .iter()
@@ -250,33 +257,37 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
                 "{:<10} {:<8} {}",
                 trunc(&ft.id, 10),
                 trunc(&ft.status, 8),
-                trunc(&ft.title, 40),
+                trunc(&ft.title, 28),
             )))
         })
         .collect();
-    let mut state = ListState::default();
+    let mut fstate = ListState::default();
     if !app.features.is_empty() {
-        state.select(Some(app.feat_sel));
+        fstate.select(Some(app.feat_sel));
     }
     let flist = List::new(fitems)
         .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} ({}/{}) [/] · features ({}) ",
+            " {}{} ({}/{}) [/] · features ({}) ",
+            if feat_focused { "▸ " } else { "" },
             app.harness,
             app.harness_sel + 1,
             app.harnesses.len().max(1),
             app.features.len()
         ))))
-        .highlight_style(Theme::selected())
+        .highlight_style(focus_hl(feat_focused))
         .highlight_symbol("> ");
-    f.render_stateful_widget(flist, cols[0], &mut state);
+    f.render_stateful_widget(flist, cols[0], &mut fstate);
 
-    // Issues (right, display-only for v1).
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(format!(" issues ({}) ", app.issues.len())));
+    // Issues (right) — selectable when focused (Tab toggles focus).
+    let ititle = Line::from(format!(
+        " {}issues ({}) ",
+        if !feat_focused { "▸ " } else { "" },
+        app.issues.len()
+    ));
     if app.issues.is_empty() {
         f.render_widget(
-            Paragraph::new("(no open issues)").block(block),
+            Paragraph::new("(no open issues)")
+                .block(Block::default().borders(Borders::ALL).title(ititle)),
             cols[1],
         );
     } else {
@@ -289,13 +300,57 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
                     "{:<8} {:<11} {} {}",
                     trunc(&is.severity, 8),
                     trunc(&is.status, 11),
-                    trunc(&is.title, 28),
+                    trunc(&is.title, 22),
                     if fix.is_empty() { String::new() } else { format!("→{fix}") },
                 )))
             })
             .collect();
-        f.render_widget(List::new(iitems).block(block), cols[1]);
+        let mut istate = ListState::default();
+        istate.select(Some(app.issue_sel));
+        let ilist = List::new(iitems)
+            .block(Block::default().borders(Borders::ALL).title(ititle))
+            .highlight_style(focus_hl(!feat_focused))
+            .highlight_symbol("> ");
+        f.render_stateful_widget(ilist, cols[1], &mut istate);
     }
+
+    // Detail (bottom) — follows the focused column.
+    let (dtitle, detail) = if feat_focused {
+        (
+            " feature ",
+            match app.selected_feature() {
+                Some(ft) => format!(
+                    "{}\n\nid: {}    status: {}    attempts: {}",
+                    ft.title, ft.id, ft.status, ft.attempts
+                ),
+                None => "No features.".to_string(),
+            },
+        )
+    } else {
+        (
+            " issue ",
+            match app.selected_issue() {
+                Some(is) => format!(
+                    "{}\n\nid: {}    severity: {}    status: {}\nsource: {}    foundDuring: {}    →fix: {}    attempts: {}",
+                    is.title,
+                    is.id,
+                    is.severity,
+                    is.status,
+                    is.source,
+                    is.found_during.clone().unwrap_or_default(),
+                    is.linked_feature_id.clone().unwrap_or_default(),
+                    is.attempts,
+                ),
+                None => "No issues.".to_string(),
+            },
+        )
+    };
+    f.render_widget(
+        Paragraph::new(detail)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(dtitle)),
+        rows[1],
+    );
 }
 
 fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
@@ -336,6 +391,7 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     };
     let para = Paragraph::new(body)
         .wrap(Wrap { trim: false })
+        .scroll((app.doc_scroll, 0))
         .block(Block::default().borders(Borders::ALL).title(Line::from(reader_title)));
     f.render_widget(para, cols[1]);
 }

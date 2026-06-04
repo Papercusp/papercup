@@ -65,6 +65,24 @@ export function computeNextId(issues: readonly Issue[]): number {
   return max + 1;
 }
 
+/**
+ * Robustly coerce a jsonb `notes` value to the note array. postgres-js may hand
+ * back a parsed array OR the raw JSON string depending on how it infers the
+ * column type through the per-harness VIEW — handle both.
+ */
+function parseNotes(v: unknown): Issue['notes'] {
+  if (Array.isArray(v)) return v as Issue['notes'];
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? (p as Issue['notes']) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 /** Load the curated issue set for a harness from PG (the store-of-record). */
 export async function loadIssuesFromPg(project: ProjectEntry): Promise<Issue[]> {
   const { sql } = getHarnessPg(project.slug);
@@ -95,7 +113,7 @@ export async function loadIssuesFromPg(project: ProjectEntry): Promise<Issue[]> 
     codePointer: r.code_pointer ?? undefined,
     linkedFeatureId: r.linked_feature_id ?? undefined,
     attempts: Number(r.attempts) || 0,
-    notes: Array.isArray(r.notes) ? (r.notes as Issue['notes']) : [],
+    notes: parseNotes(r.notes),
   }));
 }
 

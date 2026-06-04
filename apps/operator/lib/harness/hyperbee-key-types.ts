@@ -37,6 +37,7 @@
 export const HYPERBEE_TABLE_TAGS = [
   'features-by-id',
   'features-by-status',
+  'plans-by-slug',
   'queue',
   'working-set',
   'contributors',
@@ -66,6 +67,7 @@ export const APPEND_ONLY_TAGS: ReadonlySet<HyperbeeTableTag> = new Set([
 export const HYPERBEE_TAG_TO_PREFIX: Record<HyperbeeTableTag, string> = {
   'features-by-id': 'features/by-id/',
   'features-by-status': 'features/by-status/',
+  'plans-by-slug': 'plans/by-slug/',
   queue: 'queue/',
   'working-set': 'working-set/',
   contributors: 'contributors/',
@@ -87,6 +89,7 @@ export const HYPERBEE_TAG_TO_PREFIX: Record<HyperbeeTableTag, string> = {
 export const HYPERBEE_PREFIX_TO_TAG: Record<string, HyperbeeTableTag> = {
   'features/by-id/': 'features-by-id',
   'features/by-status/': 'features-by-status',
+  'plans/by-slug/': 'plans-by-slug',
   'queue/': 'queue',
   'working-set/': 'working-set',
   'contributors/': 'contributors',

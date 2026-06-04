@@ -21,11 +21,13 @@ import {
 } from './hyperbee-key-types';
 
 describe('table tags', () => {
-  it('HYPERBEE_TABLE_TAGS has all 10 v5 tables', () => {
-    expect(HYPERBEE_TABLE_TAGS.length).toBe(10);
+  it('HYPERBEE_TABLE_TAGS has all federated tables', () => {
+    // 10 v5 tables + plans-by-slug (plans-pg-canonical-migration-2026-06-03).
+    expect(HYPERBEE_TABLE_TAGS.length).toBe(11);
     for (const t of [
       'features-by-id',
       'features-by-status',
+      'plans-by-slug',
       'queue',
       'working-set',
       'contributors',

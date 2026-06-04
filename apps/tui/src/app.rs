@@ -63,6 +63,13 @@ impl Tab {
     }
 }
 
+/// Which column the Harnesses tab has keyboard focus on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HarnessFocus {
+    Features,
+    Issues,
+}
+
 /// Root application state. Grows as more panels are ported.
 pub struct App {
     pub should_quit: bool,
@@ -84,10 +91,14 @@ pub struct App {
     pub features: Vec<HarnessFeature>,
     pub feat_sel: usize,
     pub issues: Vec<HarnessIssue>,
-    /// Docs tab: file list + selection + the active doc's content.
+    pub issue_sel: usize,
+    /// Which Harnesses column has focus (j/k + detail follow it).
+    pub harness_focus: HarnessFocus,
+    /// Docs tab: file list + selection + the active doc's content + scroll.
     pub docs_files: Vec<String>,
     pub doc_sel: usize,
     pub doc_content: String,
+    pub doc_scroll: u16,
     /// Shared selected-doc path the poller fetches (None → endpoint's default).
     pub active_doc: Arc<Mutex<Option<String>>>,
     /// Activity tab: cross-harness recent activity.
@@ -125,9 +136,12 @@ impl App {
             features: Vec::new(),
             feat_sel: 0,
             issues: Vec::new(),
+            issue_sel: 0,
+            harness_focus: HarnessFocus::Features,
             docs_files: Vec::new(),
             doc_sel: 0,
             doc_content: String::new(),
+            doc_scroll: 0,
             active_doc: Arc::new(Mutex::new(None)),
             activity: Vec::new(),
             activity_sel: 0,
@@ -163,6 +177,9 @@ impl App {
 
     pub fn set_issues(&mut self, issues: Vec<HarnessIssue>) {
         self.issues = issues;
+        if self.issue_sel >= self.issues.len() {
+            self.issue_sel = self.issues.len().saturating_sub(1);
+        }
     }
 
     pub fn set_harnesses(&mut self, harnesses: Vec<HarnessRef>) {
@@ -204,9 +221,12 @@ impl App {
         self.features.clear();
         self.issues.clear();
         self.feat_sel = 0;
+        self.issue_sel = 0;
+        self.harness_focus = HarnessFocus::Features;
         self.docs_files.clear();
         self.doc_content.clear();
         self.doc_sel = 0;
+        self.doc_scroll = 0;
         self.testing.clear();
         self.testing_sel = 0;
         self.config.clear();
@@ -294,6 +314,14 @@ impl App {
         self.roster.get(self.roster_sel)
     }
 
+    pub fn selected_feature(&self) -> Option<&HarnessFeature> {
+        self.features.get(self.feat_sel)
+    }
+
+    pub fn selected_issue(&self) -> Option<&HarnessIssue> {
+        self.issues.get(self.issue_sel)
+    }
+
     /// Build the launch command for a new agent pane. Reuses the selected
     /// session's agent if any, else defaults to claude. (Harness/plan wiring
     /// follows once those are selectable in the TUI.)
@@ -322,6 +350,9 @@ impl App {
         }
         if self.feat_sel >= self.features.len() {
             self.feat_sel = self.features.len().saturating_sub(1);
+        }
+        if self.issue_sel >= self.issues.len() {
+            self.issue_sel = self.issues.len().saturating_sub(1);
         }
     }
 
@@ -476,9 +507,25 @@ impl App {
                 self.cycle_harness(-1);
                 Action::Render
             }
+            KeyCode::Tab if self.tab == Tab::Harnesses => {
+                self.harness_focus = match self.harness_focus {
+                    HarnessFocus::Features => HarnessFocus::Issues,
+                    HarnessFocus::Issues => HarnessFocus::Features,
+                };
+                Action::Render
+            }
+            KeyCode::PageDown if self.tab == Tab::Docs => {
+                self.doc_scroll = self.doc_scroll.saturating_add(10);
+                Action::Render
+            }
+            KeyCode::PageUp if self.tab == Tab::Docs => {
+                self.doc_scroll = self.doc_scroll.saturating_sub(10);
+                Action::Render
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_sel(1);
                 if self.tab == Tab::Docs {
+                    self.doc_scroll = 0; // reset scroll when the selected doc changes
                     self.publish_active_doc();
                 }
                 Action::Render
@@ -486,6 +533,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.move_sel(-1);
                 if self.tab == Tab::Docs {
+                    self.doc_scroll = 0;
                     self.publish_active_doc();
                 }
                 Action::Render
@@ -495,29 +543,22 @@ impl App {
     }
 
     fn move_sel(&mut self, delta: isize) {
-        let len = match self.tab {
-            Tab::Plans => self.plans.len(),
-            Tab::Inbox => self.inbox.len(),
-            Tab::Sessions => self.roster.len(),
-            Tab::Harnesses => self.features.len(),
-            Tab::Docs => self.docs_files.len(),
-            Tab::Activity => self.activity.len(),
-            Tab::Testing => self.testing.len(),
-            Tab::Config => 0,
+        let (len, slot): (usize, &mut usize) = match self.tab {
+            Tab::Plans => (self.plans.len(), &mut self.plan_sel),
+            Tab::Inbox => (self.inbox.len(), &mut self.inbox_sel),
+            Tab::Sessions => (self.roster.len(), &mut self.roster_sel),
+            Tab::Harnesses => match self.harness_focus {
+                HarnessFocus::Features => (self.features.len(), &mut self.feat_sel),
+                HarnessFocus::Issues => (self.issues.len(), &mut self.issue_sel),
+            },
+            Tab::Docs => (self.docs_files.len(), &mut self.doc_sel),
+            Tab::Activity => (self.activity.len(), &mut self.activity_sel),
+            Tab::Testing => (self.testing.len(), &mut self.testing_sel),
+            Tab::Config => return, // no list to navigate
         };
         if len == 0 {
             return;
         }
-        let slot = match self.tab {
-            Tab::Plans => &mut self.plan_sel,
-            Tab::Inbox => &mut self.inbox_sel,
-            Tab::Sessions => &mut self.roster_sel,
-            Tab::Harnesses => &mut self.feat_sel,
-            Tab::Docs => &mut self.doc_sel,
-            Tab::Activity => &mut self.activity_sel,
-            Tab::Testing => &mut self.testing_sel,
-            Tab::Config => return, // no list to navigate
-        };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
     }
@@ -781,6 +822,62 @@ mod tests {
             Action::Launch(spec) => assert_eq!(spec.argv[0], "lazygit"),
             other => panic!("expected Launch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn harness_focus_toggles_and_navigates_issues() {
+        use crate::models::{HarnessFeature, HarnessIssue};
+        let issue = |id: &str| HarnessIssue {
+            id: id.into(),
+            title: id.into(),
+            severity: "minor".into(),
+            status: "open".into(),
+            source: "x".into(),
+            found_during: None,
+            linked_feature_id: None,
+            attempts: 0,
+        };
+        let mut a = App::new();
+        a.update(key('4', KeyModifiers::NONE)); // Harnesses
+        a.set_features(vec![HarnessFeature {
+            id: "F-1".into(),
+            title: "f".into(),
+            status: "todo".into(),
+            attempts: 0,
+        }]);
+        a.set_issues(vec![issue("I-1"), issue("I-2")]);
+        assert_eq!(a.harness_focus, HarnessFocus::Features);
+        // Tab switches focus to issues; j then moves the issue list.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.harness_focus, HarnessFocus::Issues);
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.issue_sel, 1);
+        assert_eq!(a.selected_issue().unwrap().id, "I-2");
+        // Tab back to features.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.harness_focus, HarnessFocus::Features);
+    }
+
+    #[test]
+    fn doc_scroll_pgupdn_and_reset_on_change() {
+        use crate::models::DocsResponse;
+        let mut a = App::new();
+        a.update(key('5', KeyModifiers::NONE)); // Docs
+        a.set_docs(DocsResponse {
+            files: vec!["a.md".into(), "b.md".into()],
+            active_path: Some("a.md".into()),
+            content: Some("x".into()),
+        });
+        assert_eq!(a.doc_scroll, 0);
+        a.update(Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)));
+        a.update(Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)));
+        assert_eq!(a.doc_scroll, 20);
+        a.update(Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)));
+        assert_eq!(a.doc_scroll, 10);
+        // Selecting a different doc resets scroll to top.
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.doc_sel, 1);
+        assert_eq!(a.doc_scroll, 0);
     }
 
     #[test]
