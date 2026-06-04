@@ -1,0 +1,337 @@
+/**
+ * `papercusp serve` — headless operator boot (SP1 C1 + C3).
+ *
+ * Plan: operator-core-headless-serve-2026-06-04.
+ *
+ * This is the standalone, UI-less entry point for the operator core. Unlike
+ * `hono-host.ts` (which assumes Postgres is already up and always serves the
+ * SPA), `serve.ts` OWNS the whole headless lifecycle:
+ *
+ *   1. Start embedded Postgres in-process (`startEmbeddedPostgresServer`),
+ *      applying migrations via the package's own runner (pass `dbSqlDir`).
+ *   2. Resolve the admin URL into `HARNESS_ADMIN_DATABASE_URL` *before* any
+ *      operator module reads it (getHarnessAdminUrl caches first-call).
+ *   3. Write `~/.papercusp/embedded-pg.json` (the latent-bug fix: nothing
+ *      wrote it before — see the plan's "Latent bug" note).
+ *   4. `runBootstrap()` (background services) then `serve()` the Hono host
+ *      with `PAPERCUSP_SERVE_UI=0` so NO SPA is mounted (Decision E).
+ *   5. Write `~/.papercusp/operator.json` ({httpUrl,port,token,pid,...}) —
+ *      the discovery file the SP3 plugin's headersHelper will read.
+ *
+ * Singleton (Decision C): `serve --ensure` reuses a healthy running operator
+ * (pid alive + http reachable) and exits 0; otherwise an O_EXCL pidfile lock
+ * (`~/.papercusp/operator.lock`) guards the cold-start race. The DB-backed
+ * named resource locks can't guard cold start (they need the DB up), hence an
+ * OS-level lock here.
+ *
+ * Run:  tsx apps/operator/bin/serve.ts [--ensure] [--ui]
+ *
+ * Env knobs (all optional):
+ *   PAPERCUSP_HONO_PORT / PORT    HTTP port (default 3070)
+ *   PAPERCUSP_BIND_HOST / HOSTNAME bind host (default 127.0.0.1)
+ *   PAPERCUSP_PG_PORT             embedded-pg port (default 5532)
+ *   PAPERCUSP_PG_DATA_DIR         embedded-pg data dir (default ~/.papercusp/embedded-pg-data)
+ *   PAPERCUSP_PG_SQL_DIR          migrations dir (default: repo libs/papercusp/libs/db/sql)
+ *   PAPERCUSP_USE_EMBEDDED_PG=0   attach external PG via HARNESS_*_DATABASE_URL instead
+ *   PAPERCUSP_SERVE_UI=1          force the SPA on even under serve (default off here)
+ */
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
+
+const PAPERCUSP_DIR = join(homedir(), '.papercusp');
+const OPERATOR_JSON = join(PAPERCUSP_DIR, 'operator.json');
+const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, 'embedded-pg.json');
+const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, 'superuser-token');
+const LOCK_PATH = join(PAPERCUSP_DIR, 'operator.lock');
+const VERSION = process.env.npm_package_version ?? '0.1.0-dev';
+
+export interface OperatorDiscovery {
+  /** Base HTTP origin of the operator API, e.g. http://127.0.0.1:3070 */
+  httpUrl: string;
+  port: number;
+  /** Superuser bearer token (from ~/.papercusp/superuser-token), or null. */
+  token: string | null;
+  pid: number;
+  startedAt: number;
+  version: string;
+}
+
+function log(msg: string): void {
+  console.log(`[serve] ${msg}`);
+}
+
+/** True if a process with `pid` exists (signal 0 probe). */
+export function pidAlive(pid: number): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // ESRCH = no such process; EPERM = exists but not ours.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Read the current operator.json discovery, or null. */
+export function readOperatorDiscovery(): OperatorDiscovery | null {
+  try {
+    const j = JSON.parse(readFileSync(OPERATOR_JSON, 'utf8')) as Partial<OperatorDiscovery>;
+    if (typeof j?.httpUrl === 'string' && j.httpUrl && typeof j.pid === 'number') {
+      return {
+        httpUrl: j.httpUrl,
+        port: Number(j.port) || 0,
+        token: typeof j.token === 'string' ? j.token : null,
+        pid: j.pid,
+        startedAt: Number(j.startedAt) || 0,
+        version: typeof j.version === 'string' ? j.version : 'unknown',
+      };
+    }
+  } catch {
+    /* missing / corrupt */
+  }
+  return null;
+}
+
+/** Best-effort HTTP liveness probe — any response (even 404) means "up". */
+async function httpAlive(httpUrl: string, timeoutMs = 1500): Promise<boolean> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    await fetch(httpUrl + '/api/', { signal: ctrl.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/** Read the superuser bearer token if present. */
+export function readToken(): string | null {
+  try {
+    const t = readFileSync(SUPERUSER_TOKEN, 'utf8').trim();
+    return t || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cold-start singleton guard. Atomically create the lockfile (O_EXCL) with our
+ * pid. Returns true if acquired. If a *live* owner holds it, returns false.
+ * A stale lock (owner dead) is reclaimed and re-attempted once.
+ */
+export function acquireColdStartLock(retried = false): boolean {
+  try {
+    writeFileSync(LOCK_PATH, String(process.pid), { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    const ownerPid = Number((() => {
+      try {
+        return readFileSync(LOCK_PATH, 'utf8').trim();
+      } catch {
+        return '';
+      }
+    })()) || 0;
+    if (pidAlive(ownerPid)) return false;
+    if (retried) return false;
+    try {
+      unlinkSync(LOCK_PATH);
+    } catch {
+      /* someone else reclaimed */
+    }
+    return acquireColdStartLock(true);
+  }
+}
+
+export function releaseColdStartLock(): void {
+  try {
+    const owner = Number(readFileSync(LOCK_PATH, 'utf8').trim()) || 0;
+    if (owner === process.pid) unlinkSync(LOCK_PATH);
+  } catch {
+    /* already gone */
+  }
+}
+
+/** Default migrations dir: repo `libs/papercusp/libs/db/sql` relative to this file. */
+function defaultSqlDir(): string {
+  return fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql', import.meta.url));
+}
+
+export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  // ~/.papercusp holds credentials — operator.json carries the superuser bearer
+  // token, embedded-pg.json carries a DSN with the PG password (the `url` field
+  // can't be redacted; external clients connect with it). Keep the dir + files
+  // owner-only (0700/0600) so the secrets aren't world/group-readable.
+  await mkdir(PAPERCUSP_DIR, { recursive: true, mode: 0o700 });
+  await chmod(PAPERCUSP_DIR, 0o700).catch(() => {}); // tighten even if it pre-existed
+  const tmp = `${path}.tmp.${process.pid}`;
+  await writeFile(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  await chmod(tmp, 0o600).catch(() => {}); // deterministic even if tmp pre-existed
+  // rename is atomic on the same filesystem and preserves the 0600 mode.
+  await rename(tmp, path);
+}
+
+interface PgHandle {
+  port: number;
+  urls: { admin: string; app: string; zero: string };
+  stop: () => Promise<void>;
+}
+
+/** Start (or attach to) Postgres and ensure HARNESS_ADMIN_DATABASE_URL is set. */
+async function ensurePostgres(): Promise<PgHandle | null> {
+  if (process.env.PAPERCUSP_USE_EMBEDDED_PG === '0') {
+    const admin = process.env.HARNESS_ADMIN_DATABASE_URL;
+    if (!admin) {
+      throw new Error(
+        'PAPERCUSP_USE_EMBEDDED_PG=0 requires HARNESS_ADMIN_DATABASE_URL (and HARNESS_DATABASE_URL) to be set.',
+      );
+    }
+    log(`attaching to external Postgres via HARNESS_ADMIN_DATABASE_URL`);
+    return null; // external PG; nothing for us to manage/stop
+  }
+
+  const { startEmbeddedPostgresServer } = await import(
+    '@papercusp/embedded-postgres-server'
+  );
+  const port = Number(process.env.PAPERCUSP_PG_PORT ?? 5532);
+  const dataDir =
+    process.env.PAPERCUSP_PG_DATA_DIR ?? join(PAPERCUSP_DIR, 'embedded-pg-data');
+  const dbSqlDir = process.env.PAPERCUSP_PG_SQL_DIR ?? defaultSqlDir();
+
+  log(`starting embedded Postgres on :${port} (data=${dataDir})`);
+  if (!existsSync(dbSqlDir)) log(`warning: migrations dir not found at ${dbSqlDir}`);
+
+  const pg = (await startEmbeddedPostgresServer({
+    port,
+    dataDir,
+    dbSqlDir: existsSync(dbSqlDir) ? dbSqlDir : undefined,
+    onLog: (m: string) => log(`pg: ${m}`),
+  })) as PgHandle;
+
+  // Make the admin URL the #1 resolution source BEFORE any operator module
+  // calls getHarnessAdminUrl() (it caches the first result).
+  process.env.HARNESS_ADMIN_DATABASE_URL = pg.urls.admin;
+  if (!process.env.HARNESS_DATABASE_URL) {
+    process.env.HARNESS_DATABASE_URL = pg.urls.app;
+  }
+
+  // Write the embedded-pg discovery file (the latent-bug fix). The generic
+  // resolver reads the `url` field; extra fields are diagnostics.
+  await writeJsonAtomic(EMBEDDED_PG_JSON, {
+    url: pg.urls.admin,
+    port: pg.port,
+    pid: process.pid,
+    startedAt: Date.now(),
+  });
+  log(`wrote ${EMBEDDED_PG_JSON}`);
+  return pg;
+}
+
+async function main(): Promise<void> {
+  const args = new Set(process.argv.slice(2));
+  const ensure = args.has('--ensure');
+  // Headless by default; --ui (or a pre-set PAPERCUSP_SERVE_UI) keeps the SPA.
+  if (!args.has('--ui') && process.env.PAPERCUSP_SERVE_UI == null) {
+    process.env.PAPERCUSP_SERVE_UI = '0';
+  }
+
+  const port = Number(process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070);
+  const hostname =
+    process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? '127.0.0.1';
+  const httpUrl = `http://${hostname}:${port}`;
+
+  // --ensure: reuse a healthy running operator and exit 0.
+  if (ensure) {
+    const existing = readOperatorDiscovery();
+    if (existing && pidAlive(existing.pid) && (await httpAlive(existing.httpUrl))) {
+      log(`already running (pid ${existing.pid}) at ${existing.httpUrl} — reusing`);
+      process.stdout.write(JSON.stringify(existing) + '\n');
+      return;
+    }
+  }
+
+  // Cold-start race guard.
+  if (!acquireColdStartLock()) {
+    if (ensure) {
+      // Another serve is starting — poll briefly for its operator.json.
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        const d = readOperatorDiscovery();
+        if (d && pidAlive(d.pid) && (await httpAlive(d.httpUrl))) {
+          log(`another serve won the race (pid ${d.pid}) — reusing`);
+          process.stdout.write(JSON.stringify(d) + '\n');
+          return;
+        }
+      }
+    }
+    throw new Error('another `serve` holds the cold-start lock; aborting');
+  }
+
+  let pg: PgHandle | null = null;
+  let server: { close?: () => void } | null = null;
+  let shuttingDown = false;
+
+  const shutdown = async (sig: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`${sig} — shutting down`);
+    try {
+      server?.close?.();
+    } catch {
+      /* ignore */
+    }
+    await rm(OPERATOR_JSON, { force: true }).catch(() => {});
+    if (pg) await pg.stop().catch(() => {});
+    releaseColdStartLock();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+
+  try {
+    pg = await ensurePostgres();
+
+    // Import AFTER env is set: host-handler builds the Hono app at module load
+    // (reading PAPERCUSP_SERVE_UI), and bootstrap/handler resolve the admin URL.
+    const { runBootstrap } = await import('./host-bootstrap');
+    const { handler } = await import('./host-handler');
+    const { serve } = await import('@hono/node-server');
+
+    process.env.PORT = String(port); // selfUrl() origin (mirrors hono-host.ts)
+    runBootstrap();
+
+    server = serve({ fetch: handler, port, hostname }, async (info) => {
+      log(`listening on http://${hostname}:${info.port} (UI ${process.env.PAPERCUSP_SERVE_UI === '0' ? 'OFF' : 'ON'})`);
+      const discovery: OperatorDiscovery = {
+        httpUrl,
+        port: info.port,
+        token: readToken(),
+        pid: process.pid,
+        startedAt: Date.now(),
+        version: VERSION,
+      };
+      await writeJsonAtomic(OPERATOR_JSON, discovery);
+      log(`wrote ${OPERATOR_JSON}`);
+    }) as unknown as { close?: () => void };
+  } catch (e) {
+    releaseColdStartLock();
+    if (pg) await pg.stop().catch(() => {});
+    throw e;
+  }
+}
+
+// Only auto-run when executed directly (so tests / other modules can import
+// the helpers without booting a server).
+const invokedDirectly =
+  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch((e) => {
+    console.error('[serve] fatal:', e);
+    process.exit(1);
+  });
+}

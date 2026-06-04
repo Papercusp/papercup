@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Autonomous build loop in progress (started 2026-06-04; user asleep, delegated full judgment). Spec **corrected after a source-level audit** (see "Audit 2026-06-04" decision): fixed the PG port default (**5532**, not 15432), the overstated "code-level already decoupled" claim (there are ~19 `lib/`→`app/` back-edges + `.tsx` files under `lib/` + shared types parked in `app/`), and a previously-missed collision with the in-flight `finish-next-removal-2026-06-01` refactor. Implementation **resequenced**: C1–C3 (functional headless serve — additive, safe) proceed first; **C4 (physical package carve) deferred until `finish-next-removal-2026-06-01` lands**; C5 (desktop embedder) after C4.
+**State:** Autonomous loop, iteration 2 done. **C1+C3 written**: `apps/operator/bin/serve.ts` (additive headless orchestrator — in-process `startEmbeddedPostgresServer({dbSqlDir})`, sets `HARNESS_ADMIN_DATABASE_URL` before importing bootstrap/handler, writes `embedded-pg.json` {url,...} + `operator.json` {httpUrl,port,token,pid,...}, `runBootstrap()`+`serve()` with `PAPERCUSP_SERVE_UI=0`, O_EXCL pidfile cold-start lock + `--ensure` reuse-or-start + SIGINT/SIGTERM cleanup; helpers exported + entry-guarded for tests). **C2 written**: `host-handler.ts:78` SPA mount gated behind `PAPERCUSP_SERVE_UI` (default `'1'`/on → desktop untouched). Added `serve` npm script. All transpile-clean (esbuild). NOT yet runtime-tested. NOTE: a full boot must NOT run against the live native PG (`runBootstrap` starts background tickers that mutate the shared DB) — C6 will isolate via embedded-pg on a temp HOME + alt ports, or fall back to unit tests of the exported helpers if embedded-pg binaries are absent on this box.
 
-**Next:** Implement C1 (`apps/operator/bin/serve.ts`, additive headless orchestrator), then C2 (SPA opt-in, **default-on** to preserve the desktop) and C3 (`operator.json` + flock + `--ensure`), with C6 tests. C4/C5 await a supervised window.
+**Next:** C6 — write + run tests: Vitest unit tests of serve.ts exported helpers (pidAlive, readOperatorDiscovery/writeJsonAtomic round-trip, acquire/releaseColdStartLock, readToken) on a temp HOME; integration boot gated on embedded-pg availability. Then move to the SP-TUI `apps/tui` crate.
 
 ## Background — the roadmap this belongs to
 

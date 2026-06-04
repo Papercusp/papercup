@@ -6,6 +6,7 @@
     "dev": "npm --workspace @papercusp/operator-vite run dev",
     "build": "npm --workspace @papercupai/operator-docs run build && npm --workspace @papercusp/operator-vite run build",
     "start": "tsx bin/hono-host.ts",
+    "serve": "tsx bin/serve.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",

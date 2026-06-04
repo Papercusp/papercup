@@ -75,7 +75,15 @@ host.all('/api/*', (c) => app.fetch(c.req.raw));
 // 8. SPA fallback (Phase G3) — the built Vite app for everything the API,
 //    docs, page-namespace, and cross-app routes above did not claim.
 //    Registered last so it only catches client routes + static assets.
-host.route('/', spaRoutes);
+//
+//    Gated by PAPERCUSP_SERVE_UI (default '1'/on). The headless
+//    `papercusp serve` entry (SP1, operator-core-headless-serve-2026-06-04 C2)
+//    sets it to '0' to drop the UI entirely; the desktop's webview consumes
+//    spaRoutes as its content source, so default-on leaves the desktop/dev
+//    box unchanged.
+if (process.env.PAPERCUSP_SERVE_UI !== '0') {
+  host.route('/', spaRoutes);
+}
 
 export async function handler(req: Request): Promise<Response> {
   return host.fetch(req);

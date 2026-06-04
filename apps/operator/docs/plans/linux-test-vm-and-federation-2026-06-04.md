@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase 1 (VM clean-room workflow) COMPLETE + the VM caught and we fixed THREE real clean-machine bugs in the Linux .deb, each VM-verified: (1) embedded-PG/zero spawns missing bundled-node PATH → no DB (D-009, main.rs bundled_path_env); (2) frontendDist hardcoded to :3070 → blank window (D-011, tauri.conf → ../web); (3) window port-handoff race + localhost/IPv6 → bootstrap stuck (D-012, main.rs re-eval timer + 127.0.0.1). The packaged app now installs and RENDERS its onboarding UI on a pristine Ubuntu (DB OK, operator OK, window OK). Remaining (separate, app's prereq gate, not blank-window): preflight lists claude/gh not on PATH (user-installed), meridian service down, and harness "orchestrator bin not found" (likely a bundling gap) — these gate reaching the full harness UI. Phase 2 federation (P-007–P-013) DEFERRED per user.
+**State:** DONE for this scope. The Linux clean-room VM workflow (Phase 1) is built + documented, and using it we found and fixed SIX clean-machine bugs in the packaged .deb, all VM-verified: bundled-node spawn / no-DB (D-009), frontendDist :3070 regression / blank window (D-011), window port-handoff race (D-012), vmctl status wrong port, meridian forced-required (D-014→optional), and the orchestrator not bundled / harness check failing (D-015, esbuild-bundled invoke-once.mjs + spawn rewire). The packaged app now installs on a pristine Ubuntu and renders the FULL harness UI (preflight ok:true → OPS console + operator chat + Harness tabs). Phase 2 federation (P-007–P-013) deferred per user.
 
-**Next:** Human decision: whether to chase the preflight prereq gaps (esp. the harness-orchestrator bundling path) so the app reaches the full harness UI, and when to pick up the deferred Phase 2 federation testing. The 3 fixes (main.rs ×2, tauri.conf) land via git-sync; the rpm was not rebuilt with the fixes (deb-only test builds).
+**Next:** Optional follow-ups (all deferred): a real harness FEATURE run can't be verified in the VM (needs claude/omp agent auth); the full meridian daemon/first-launch-install is a separate feature; the rpm wasn't rebuilt with the fixes (deb-only test builds); Phase 2 federation testing when requested. The code fixes (main.rs, tauri.conf, build-desktop-sidecar.sh, preflight.ts, harness-paths.ts, harness-invoke-once.ts, vmctl) land via git-sync.
 
 ## Background
 
@@ -275,4 +275,19 @@ MERIDIAN: `@rynfar/meridian` dist/cli.js imports `@anthropic-ai/claude-agent-sdk
 ORCHESTRATOR (harness): genuinely not bundled — no @papercusp/orchestrator under sidecar/node_modules, no invoke-once bin on disk. orchestrator-runner.ts (DBOS) builds + spawns an invoke-once command (buildInvokeOnce from @/lib/harness-invoke-once); the in-process parts ride host.mjs but the spawned invoke-once needs the orchestrator package present. This IS a real, fixable packaging gap (bundle @papercusp/orchestrator + fix checkHarnessDir to verify the real artifact). Full end-to-end (a feature actually executing) needs agent auth (claude/omp creds) to verify, which the VM lacks.
 
 Recommendation: bundle the orchestrator + fix the harness check (real fix, partially VM-verifiable); make meridian OPTIONAL in the preflight (unbuilt + VM-unverifiable + a Claude-Max convenience), and treat the full meridian first-launch-install+daemon flow as a separate dedicated feature. Awaiting user re-decision given the new scope.
+Related: P-005
+
+### D-015 — DONE — orchestrator bundled + meridian optional; full harness UI renders on a clean machine
+Date: 2026-06-04
+Both remaining preflight blockers fixed and VM-verified — the packaged app now reaches the full harness UI on a pristine Ubuntu.
+
+ORCHESTRATOR (harness check, now ok): the DBOS orchestrator-runner spawns invoke-once as a separate `node` process. Fixed by esbuild-bundling the orchestrator entry bins to self-contained .mjs (no tsx, no dep tree — mirrors host.mjs), shipped at sidecar/orchestrator/bin/{invoke-once,run,assemble-prompt,get-plan-context}.mjs + a package.json. Changes: build-desktop-sidecar.sh (new bundle step), apps/operator/lib/harness-paths.ts (invokeOnceBin() prefers the .mjs when present), apps/operator/lib/harness-invoke-once.ts (spawn `node <mjs>` with no tsx when bundled), preflight.ts checkHarnessDir (accept invoke-once.mjs). Feasibility proven first: invoke-once.ts esbuilds to a 259KB self-contained .mjs that node runs to its arg-validation.
+
+MERIDIAN (now optional): preflight.ts marks the meridian check optional (it only routes omp/claude through Claude Max; API keys work without it), so a down daemon no longer gates boot. The full first-launch-install + daemon spawn remains a separate feature (D-014).
+
+vmctl status: fixed to parse the dynamic operator port.
+
+RESULT (VM-verified): preflight `ok: true` (node/postgres/pi/bash/harness all ok; meridian+claude+gh optional), and the window navigates into the live harness UI (OPS console + operator chat + Harness/Create tabs). The packaged Linux .deb now installs and works end-to-end on a clean machine.
+
+NOT verifiable in the VM (needs agent auth): actually EXECUTING a harness feature end-to-end (claude/omp creds). The orchestrator is present + the check passes + invoke-once.mjs module-resolves, but a real agent run wasn't exercised.
 Related: P-005
