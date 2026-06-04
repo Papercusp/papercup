@@ -88,6 +88,30 @@ describe('evaluateSetContent — CAS', () => {
     const r = await evaluateSetContent(VALID, VALID, SLUG, undefined);
     expect(r.value.ok).toBe(true);
   });
+
+  // plans-pg-canonical-migration D-005: optimistic version CAS (preferred over hash).
+  it('rejects stale when expectedVersion does not match the live row version', async () => {
+    const r = await evaluateSetContent(VALID, VALID, SLUG, undefined, {
+      expectedVersion: 999,
+      meta: { version: 1, contentHash: hashPlanContent(VALID) },
+    });
+    expect(r.newBody).toBeNull();
+    expect(r.value.ok).toBe(false);
+    if (r.value.ok === false && r.value.code === 'stale') {
+      expect(r.value.currentVersion).toBe(1);
+    } else {
+      throw new Error('expected a stale rejection');
+    }
+  });
+
+  it('proceeds when expectedVersion matches the live row version', async () => {
+    const r = await evaluateSetContent(VALID, VALID, SLUG, undefined, {
+      expectedVersion: 1,
+      meta: { version: 1, contentHash: hashPlanContent(VALID) },
+    });
+    expect(r.value.ok).toBe(true);
+    expect(r.newBody).toBe(VALID);
+  });
 });
 
 describe('evaluateSetContent — legacy-boundary guard', () => {

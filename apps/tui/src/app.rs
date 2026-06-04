@@ -120,10 +120,12 @@ pub struct App {
     pub palette_input: String,
     /// Always-on presence sidebar visible (P7 — who's online + intent). `p` toggles.
     pub show_presence: bool,
-    /// First-run tutorial overlay visible (P9). Set true at startup when the
-    /// device hasn't seen it; any key dismisses it. Default false so tests and
+    /// First-run tutorial overlay (P9). `show_tutorial` is set true at startup
+    /// when the device hasn't completed it (and re-openable via F1);
+    /// `tutorial_step` is the current 0-based step. Default hidden so tests and
     /// the reducer aren't perturbed — `main` decides the initial value.
     pub show_tutorial: bool,
+    pub tutorial_step: usize,
     /// Notifications (P8). `notifs` is the history (newest-first, seeded from
     /// `/api/toast-log` + appended live `attention.notify` events); `toast` is
     /// the current transient overlay; `show_notifs` opens the history overlay;
@@ -174,6 +176,7 @@ impl App {
             palette_input: String::new(),
             show_presence: true,
             show_tutorial: false,
+            tutorial_step: 0,
             notifs: Vec::new(),
             toast: None,
             show_notifs: false,
@@ -474,9 +477,17 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
-        // First-run tutorial: any key dismisses it (and does nothing else).
+        // First-run tutorial (P9): Esc skips; any other key advances a step and
+        // closes after the last. Swallows the key (nothing else reacts).
         if self.show_tutorial {
-            self.show_tutorial = false;
+            if code == KeyCode::Esc {
+                self.show_tutorial = false;
+            } else {
+                self.tutorial_step += 1;
+                if self.tutorial_step >= crate::tutorial::STEPS {
+                    self.show_tutorial = false;
+                }
+            }
             return Action::Render;
         }
         // Notifications history overlay: any key closes it.
@@ -523,6 +534,12 @@ impl App {
         match code {
             KeyCode::Char('?') => {
                 self.show_help = true;
+                Action::Render
+            }
+            KeyCode::F(1) => {
+                // Re-open the guided tutorial from the start (P9).
+                self.show_tutorial = true;
+                self.tutorial_step = 0;
                 Action::Render
             }
             KeyCode::Char(':') => {
@@ -1047,16 +1064,39 @@ mod tests {
     }
 
     #[test]
-    fn tutorial_any_key_dismisses_and_swallows_the_key() {
+    fn tutorial_steps_through_and_dismisses() {
         let mut a = App::new();
         a.show_tutorial = true;
-        // A key that would normally switch tabs only dismisses the tutorial.
-        assert_eq!(a.update(key('2', KeyModifiers::NONE)), Action::Render);
+        // Each key advances a step; the key is swallowed (no tab switch).
+        a.update(key('2', KeyModifiers::NONE));
+        assert!(a.show_tutorial);
+        assert_eq!(a.tutorial_step, 1);
+        assert_eq!(a.tab, Tab::Plans); // swallowed
+        a.update(key(' ', KeyModifiers::NONE));
+        assert_eq!(a.tutorial_step, 2);
+        assert!(a.show_tutorial);
+        a.update(key('x', KeyModifiers::NONE)); // advance past last → close
         assert!(!a.show_tutorial);
-        assert_eq!(a.tab, Tab::Plans); // tab unchanged — key was swallowed
-        // Subsequent keys behave normally again.
+        // Keys behave normally again.
         a.update(key('2', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Inbox);
+    }
+
+    #[test]
+    fn tutorial_esc_skips_immediately() {
+        let mut a = App::new();
+        a.show_tutorial = true;
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.show_tutorial);
+    }
+
+    #[test]
+    fn tutorial_f1_reopens_from_start() {
+        let mut a = App::new();
+        a.tutorial_step = 2;
+        a.update(Event::Key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)));
+        assert!(a.show_tutorial);
+        assert_eq!(a.tutorial_step, 0);
     }
 
     #[test]

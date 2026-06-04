@@ -29771,7 +29771,6 @@ All write verbs acquire a `locks:*` lock on the plan file before the read-modify
 * `stored_blocked_with_blocked_by` — an item is stored `blocked` *and* carries `blocked-by`. The `blocked` token is for external blockers only; internal dependencies are computed, so the stored token should be `todo`.
 * `blocker_dropped` — an item’s `blocked-by` points at a `dropped` item. The dependent un-gates (a dropped blocker never completes), but the dependency should be re-evaluated.
 * `unphased_item` — an item is not under a `## Phase` heading.
-* `updated_lags_mtime` — frontmatter `updated:` lags file’s git mtime by more than 7 days.
 
 ## Concurrency
 

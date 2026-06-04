@@ -60,7 +60,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // Overlays render on top of the body (tutorial wins on first run).
     if app.show_tutorial {
-        draw_tutorial(f);
+        draw_tutorial(f, app.tutorial_step);
     } else if app.show_notifs {
         draw_notifs(f, app);
     } else if app.show_help {
@@ -627,23 +627,53 @@ fn draw_notifs(f: &mut Frame, app: &App) {
     );
 }
 
-fn draw_tutorial(f: &mut Frame) {
+/// The guided multi-step tutorial (P9). `step` is clamped to the last page.
+fn draw_tutorial(f: &mut Frame, step: usize) {
+    const STEPS: [(&str, &str); 3] = [
+        (
+            "Welcome to pui — the Papercusp workbench",
+            "pui is your terminal HUD over the operator. Everything here is live —\n\
+             it reads + reacts to the same backend the desktop app uses.\n\n\
+             Tabs (press 1‑8):\n\
+             \x20 Plans · Inbox · Sessions · Harnesses · Docs · Activity · Testing · Config\n\n\
+             Pick the harness you're working in with  [  /  ] .",
+        ),
+        (
+            "Moving around & launching agents",
+            "Move:    j / k   (or ↑ / ↓)        Scroll docs:  PgUp / PgDn\n\
+             Switch a split's focus (Harnesses):  Tab\n\n\
+             Launch a native agent into a pane:   n   (on the Sessions tab)\n\
+             Open git for the active harness:     g   (lazygit)\n\n\
+             Agents run at full fidelity in their own zellij panes — pui never\n\
+             wraps or reimplements them.",
+        ),
+        (
+            "Staying in the loop",
+            "Presence:      p   toggles the who's‑online sidebar (right)\n\
+             Notifications: a toast pops when something needs you; Esc dismisses,\n\
+             \x20              N opens the history.\n\
+             Command bar:   :        Full keymap:  ?        Quit:  q\n\n\
+             You can re‑open this guide any time with  F1 .\n\n\
+             That's it — press any key to start.",
+        ),
+    ];
+    let i = step.min(STEPS.len() - 1);
+    let (title, body) = STEPS[i];
     let area = centered_rect(72, 70, f.area());
-    let text = "Welcome to pui — the Papercusp workbench\n\n\
-        pui is your terminal HUD over the operator. Everything here is live —\n\
-        it reads + reacts to the same backend the desktop app uses.\n\n\
-        Tabs (press 1‑8):\n\
-        \x20 Plans · Inbox · Sessions · Harnesses · Docs · Activity · Testing · Config\n\n\
-        Move:      j / k  (or ↑/↓)        Cycle harness:  [  /  ]\n\
-        Launch:    n  agent pane (Sessions)     g  git (lazygit)\n\
-        Presence:  p  toggles the who's‑online sidebar (right)\n\
-        More:      :  command palette      ?  full keymap      q  quit\n\n\
-        Press any key to begin.";
+    let footer = format!(
+        "\n\n— step {}/{} · any key ▸  ·  Esc skips —",
+        i + 1,
+        STEPS.len()
+    );
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(text)
+        Paragraph::new(format!("{body}{footer}"))
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(" Getting started ")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {title} ")),
+            ),
         area,
     );
 }
@@ -972,6 +1002,17 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_toast_log_fetch() {
+        let client = crate::client::OperatorClient::from_discovery()
+            .await
+            .expect("connect via discovery");
+        let toasts = client.recent_toasts(10).await.expect("toast-log over IPC");
+        eprintln!("live toast-log: {} entries", toasts.len());
+        // Shape parsed; an empty log is valid, so just assert the call succeeded.
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
     async fn live_presence_sidebar_render() {
         let client = crate::client::OperatorClient::from_discovery()
             .await
@@ -991,10 +1032,19 @@ mod tests {
         app.show_tutorial = true;
         app.show_help = true; // tutorial should win
         let text = render(&app, 90, 26);
-        assert!(text.contains("Getting started"));
         assert!(text.contains("Welcome to pui"));
-        assert!(text.contains("Press any key to begin"));
+        assert!(text.contains("step 1/3"));
         assert!(!text.contains("pui — keys")); // help overlay suppressed
+    }
+
+    #[test]
+    fn tutorial_last_step_renders() {
+        let mut app = App::new();
+        app.show_tutorial = true;
+        app.tutorial_step = 2;
+        let text = render(&app, 90, 26);
+        assert!(text.contains("Staying in the loop"));
+        assert!(text.contains("step 3/3"));
     }
 
     #[test]

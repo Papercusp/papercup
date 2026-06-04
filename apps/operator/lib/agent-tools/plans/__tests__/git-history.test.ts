@@ -1,12 +1,16 @@
 /**
- * Unit + integration coverage for the shared git-history helper that
- * backs both the `/api/admin/plans/git/:op` route handler and the
- * `plans:history` / `plans:diff` agent tools.
+ * Unit + integration coverage for the shared git-history helper. Its sole
+ * remaining consumer is the `revisions-backfill` — plans are PG-canonical
+ * (plans-pg-canonical-migration-2026-06-03) and the `docs/plans/*.md` files
+ * were git-rm'd, so the helper reconstructs each plan's pre-removal history
+ * from git (`log --follow` + `show <hash>:<path>`). The old `plans:history`
+ * / `plans:diff` tools and the `/api/admin/plans/git/:op` route were deleted
+ * in that migration.
  *
  * Pure pieces (`parseHistory`, slug/hash validation) get isolated unit
- * tests; the git invocation itself is exercised through the real
- * `agent-plan-tracking-2026-05-20.md` file, which is committed and has
- * real history. Falls back to a clean skip if `git` isn't on PATH.
+ * tests; the git invocation itself is exercised through the real (now
+ * removed-at-HEAD but fully historied) `agent-plan-tracking-2026-05-20.md`
+ * plan. Falls back to a clean skip if `git` isn't on PATH.
  */
 
 import { execFile } from 'node:child_process';
@@ -14,7 +18,6 @@ import { describe, expect, it } from 'vitest';
 import {
   parseHistory,
   readPlanHistory,
-  readPlanDiff,
   readPlanFileAtCommit,
   PLAN_GIT_SLUG_RE,
   PLAN_GIT_HASH_RE,
@@ -58,18 +61,25 @@ describe('parseHistory', () => {
 });
 
 describe('slug + hash validation regexes', () => {
-  it('accepts canonical kebab-case slugs', () => {
+  it('accepts kebab-case, uppercase (BRIEF-/HANDOFF-), and dotted slugs', () => {
     expect(PLAN_GIT_SLUG_RE.test('plans-admin-ui-2026-05-20')).toBe(true);
     expect(PLAN_GIT_SLUG_RE.test('a-b')).toBe(true);
+    // The regex was widened to the canonical VALID_PLAN_SLUG char set so
+    // non-kebab plan slugs (uppercase BRIEF-*/HANDOFF-*, dotted) backfill too.
+    expect(PLAN_GIT_SLUG_RE.test('BRIEF-pg-canonical-migration')).toBe(true);
+    expect(PLAN_GIT_SLUG_RE.test('HANDOFF-2026-06-04')).toBe(true);
+    expect(PLAN_GIT_SLUG_RE.test('dot.path')).toBe(true);
   });
 
-  it('rejects underscores, uppercase, leading/trailing hyphens, dots', () => {
-    expect(PLAN_GIT_SLUG_RE.test('__test__')).toBe(false);
-    expect(PLAN_GIT_SLUG_RE.test('Plans-Admin')).toBe(false);
+  it('rejects leading/trailing punctuation, spaces, slashes, traversal', () => {
+    // Anchored ends (first+last must be alphanumeric) block a leading `-`
+    // (git flag injection) and pure-dot/`..` traversal; `/` is never allowed.
+    expect(PLAN_GIT_SLUG_RE.test('__test__')).toBe(false); // leading underscore
     expect(PLAN_GIT_SLUG_RE.test('-leading')).toBe(false);
     expect(PLAN_GIT_SLUG_RE.test('trailing-')).toBe(false);
-    expect(PLAN_GIT_SLUG_RE.test('dot.path')).toBe(false);
+    expect(PLAN_GIT_SLUG_RE.test('a/b')).toBe(false);
     expect(PLAN_GIT_SLUG_RE.test('../etc/passwd')).toBe(false);
+    expect(PLAN_GIT_SLUG_RE.test('Bad Slug!')).toBe(false);
   });
 
   it('accepts 4–40 hex chars (any case) as a hash', () => {
@@ -98,26 +108,6 @@ describe('readPlanHistory — input validation', () => {
     const r = await readPlanHistory('never-existed-plan-9999-12-31');
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.commits).toEqual([]);
-  });
-});
-
-describe('readPlanDiff — input validation', () => {
-  it('rejects an invalid slug', async () => {
-    const r = await readPlanDiff('Bad', 'abc1234');
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('invalid_slug');
-  });
-
-  it('rejects a non-hex hash', async () => {
-    const r = await readPlanDiff('plans-admin-ui-2026-05-20', 'not-hex-at-all');
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('invalid_hash');
-  });
-
-  it('rejects an attempted shell injection via the hash', async () => {
-    const r = await readPlanDiff('plans-admin-ui-2026-05-20', 'abc1; rm -rf /');
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('invalid_hash');
   });
 });
 
@@ -163,19 +153,25 @@ describe('readPlanFileAtCommit — input validation', () => {
 });
 
 describe('readPlanFileAtCommit — real content (when git is available)', () => {
-  it('reconstructs a plan snapshot from its latest commit', async () => {
+  it('reconstructs a plan snapshot from a historical commit', async () => {
     if (!(await gitAvailable())) return;
-    const hist = await readPlanHistory('agent-plan-tracking-2026-05-20', { limit: 1 });
+    // The plan file was git-rm'd at HEAD (PG-canonical migration), so the
+    // newest commit touching the path is the deletion (empty blob). Walk
+    // history and reconstruct the first commit that still has content —
+    // exactly what the revisions-backfill does.
+    const hist = await readPlanHistory('agent-plan-tracking-2026-05-20', { limit: 20 });
     if (!hist.ok || hist.commits.length === 0) return;
-    const r = await readPlanFileAtCommit(
-      'agent-plan-tracking-2026-05-20',
-      hist.commits[0]!.hash,
-    );
-    expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.content.length).toBeGreaterThan(0);
-      expect(r.content).toContain('slug: agent-plan-tracking-2026-05-20');
+    let reconstructed = '';
+    for (const commit of hist.commits) {
+      const r = await readPlanFileAtCommit('agent-plan-tracking-2026-05-20', commit.hash);
+      expect(r.ok).toBe(true); // never errors — absent blob → empty content
+      if (r.ok && r.content.length > 0) {
+        reconstructed = r.content;
+        break;
+      }
     }
+    expect(reconstructed.length).toBeGreaterThan(0);
+    expect(reconstructed).toContain('slug: agent-plan-tracking-2026-05-20');
   });
 
   it('returns empty content (not an error) for a path absent at a commit', async () => {

@@ -24,13 +24,14 @@ import {
   PgThreadStore,
   PgEntitySubscriptionStore,
   PgLinkStore,
+  PgTopicStore,
+  resolveObjectSubscribers,
   type ObjectRef,
   type DeliveryMode,
   type ThreadPostRow,
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { fanoutForObject } from '@/lib/sync/hyperbee/fanout-projection';
-import type { InjectEvent } from '@/lib/agent-tools/coordination/fanout-delivery';
+import { deliverInjectMany, type InjectEvent } from '@/lib/agent-tools/coordination/fanout-delivery';
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'engineer' | 'su';
@@ -72,6 +73,7 @@ const tags = new PgTaggableStore(coordOpts);
 const threads = new PgThreadStore(coordOpts);
 const subs = new PgEntitySubscriptionStore(coordOpts);
 const links = new PgLinkStore(coordOpts);
+const topics = new PgTopicStore(coordOpts);
 
 export function issueRef(id: string): ObjectRef {
   return { kind: ISSUE_KIND, ref: id };
@@ -132,15 +134,22 @@ async function nextIssueId(): Promise<string> {
   return `EI-${(Number(rows[0]?.n) || 0) + 1}`;
 }
 
-function deliver(issue: EngineerIssue, op: 'created' | 'updated' | 'commented' | 'resolved', summary: string, from = 'substrate'): Promise<number> {
+async function deliver(issue: EngineerIssue, op: 'created' | 'updated' | 'commented' | 'resolved', summary: string, actor = 'substrate'): Promise<number> {
+  // Resolve the issue's subscribers (direct ∪ topic) and exclude the actor, so an
+  // agent is never notified of its own action (matches the conversations fan-out).
+  const subscribers = (
+    await resolveObjectSubscribers(issueRef(issue.id), { subscriptions: subs, tags, topics })
+  ).filter((s) => s.subscriber_id !== actor);
+  if (subscribers.length === 0) return 0;
   const ev: InjectEvent = {
-    from,
+    from: actor,
     subject: `${ISSUE_KIND}:${issue.id}`,
     summary,
-    notify_kind: op === 'resolved' ? 'issue_resolved' : op === 'commented' ? 'issue_commented' : 'issue_updated',
+    notify_kind:
+      op === 'resolved' ? 'issue_resolved' : op === 'commented' ? 'issue_commented' : op === 'created' ? 'issue_created' : 'issue_updated',
     isResolution: op === 'resolved',
   };
-  return fanoutForObject(issueRef(issue.id), ev);
+  return deliverInjectMany(subscribers, ev);
 }
 
 export interface CreateIssueInput {
@@ -171,10 +180,12 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   for (const topic of input.topics ?? []) {
     await tags.addTag(issueRef(id), topic, { created_by: input.createdBy, created_ts: created });
   }
+  // Deliver to topic subscribers BEFORE the author subscribes, so the author is
+  // not notified of their own filing (but is subscribed for future updates).
+  await deliver(issue, 'created', `issue ${id} filed (${issue.severity}): ${issue.title}`, input.createdBy ?? 'substrate');
   if (input.createdBy) {
     await subs.subscribe({ subscriber_id: input.createdBy, target_kind: 'object', target_ref: `${ISSUE_KIND}:${id}`, delivery_mode: 'full', created_ts: created });
   }
-  await deliver(issue, 'created', `issue ${id} filed (${issue.severity}): ${issue.title}`, input.createdBy ?? 'substrate');
   return issue;
 }
 

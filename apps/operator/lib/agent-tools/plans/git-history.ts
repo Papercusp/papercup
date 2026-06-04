@@ -1,18 +1,18 @@
 /**
- * Git history + diff for plan files. The shared helper behind:
- *   - `GET /api/admin/plans/git/:op` (the UI route handler at
- *     `lib/endpoint-route/routes/admin/plan-git.ts`, which the Plans
- *     admin tab's GitHistoryStrip consumes — P-303).
- *   - `plans:history` / `plans:diff` tools (Q3 of
- *     plans-admin-ui-2026-05-20: promoting the surface so agents get
- *     plan history too).
+ * Git history reconstruction for (now-removed) plan files. The sole
+ * remaining consumer is the one-shot `revisions-backfill` — plans are
+ * PG-canonical (plans-pg-canonical-migration-2026-06-03) and the
+ * `docs/plans/*.md` files were git-rm'd, but `git log --follow` + `git
+ * show <hash>:<path>` still reconstruct each plan's full pre-removal
+ * history, which the backfill replays into `plan_revisions`. (The old
+ * `plans:history` / `plans:diff` tools and the `/api/admin/plans/git/:op`
+ * route that also used this helper were deleted in that migration.)
  *
- * One source of truth for the git argv + validation + parse, so the
- * route and the tools cannot drift.
- *
- * Security: slug is regex-validated (kebab-case alphanum); archived
- * flag picks docs/plans/ vs docs/plans/archive/; nothing else is
- * passed to git's argv. execFile is shell-less.
+ * Security: slug is regex-validated (the canonical VALID_PLAN_SLUG char
+ * set, anchored so first/last char is alphanumeric — no leading `-` git
+ * would read as a flag, no pure-dot traversal); archived flag picks
+ * docs/plans/ vs docs/plans/archive/; nothing else reaches git's argv.
+ * execFile is shell-less.
  */
 
 import { execFile } from 'node:child_process';
@@ -52,10 +52,6 @@ export type PlanHistoryResult =
   | { ok: true; commits: GitCommit[] }
   | { ok: false; code: PlanGitErrorCode; message?: string };
 
-export type PlanDiffResult =
-  | { ok: true; diff: string }
-  | { ok: false; code: PlanGitErrorCode; message?: string };
-
 export type PlanFileAtCommitResult =
   | { ok: true; content: string }
   | { ok: false; code: PlanGitErrorCode; message?: string };
@@ -88,7 +84,7 @@ export async function readPlanHistory(
   opts: { archived?: boolean; limit?: number } = {},
 ): Promise<PlanHistoryResult> {
   if (!PLAN_GIT_SLUG_RE.test(slug)) {
-    return { ok: false, code: 'invalid_slug', message: 'slug must be kebab-case alphanumerics' };
+    return { ok: false, code: 'invalid_slug', message: 'slug must be alphanumerics/._- with alphanumeric ends' };
   }
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_HISTORY_LIMIT), MAX_HISTORY_LIMIT);
   const repoRoot = resolveRepoRoot();
@@ -138,7 +134,7 @@ export async function readPlanFileAtCommit(
   opts: { archived?: boolean } = {},
 ): Promise<PlanFileAtCommitResult> {
   if (!PLAN_GIT_SLUG_RE.test(slug)) {
-    return { ok: false, code: 'invalid_slug', message: 'slug must be kebab-case alphanumerics' };
+    return { ok: false, code: 'invalid_slug', message: 'slug must be alphanumerics/._- with alphanumeric ends' };
   }
   if (!PLAN_GIT_HASH_RE.test(hash)) {
     return { ok: false, code: 'invalid_hash', message: 'hash must be 4-40 hex chars' };
@@ -161,35 +157,6 @@ export async function readPlanFileAtCommit(
       maxBuffer: 4 * 1024 * 1024,
     });
     return { ok: true, content: stdout };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, code: 'git_error', message: message.slice(0, 400) };
-  }
-}
-
-export async function readPlanDiff(
-  slug: string,
-  hash: string,
-  opts: { archived?: boolean } = {},
-): Promise<PlanDiffResult> {
-  if (!PLAN_GIT_SLUG_RE.test(slug)) {
-    return { ok: false, code: 'invalid_slug', message: 'slug must be kebab-case alphanumerics' };
-  }
-  if (!PLAN_GIT_HASH_RE.test(hash)) {
-    return { ok: false, code: 'invalid_hash', message: 'hash must be 4-40 hex chars' };
-  }
-  const repoRoot = resolveRepoRoot();
-  const relPath = planFileRel(slug, opts.archived === true);
-  if (!existsSync(path.join(repoRoot, relPath))) {
-    return { ok: true, diff: '' };
-  }
-  try {
-    const { stdout } = await exec(
-      'git',
-      ['diff', `${hash}^!`, '--', relPath],
-      { cwd: repoRoot, timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
-    );
-    return { ok: true, diff: stdout };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, code: 'git_error', message: message.slice(0, 400) };
