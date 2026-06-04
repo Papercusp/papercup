@@ -38,7 +38,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { mkdir, writeFile, readFile, rm, rename, chmod } from 'node:fs/promises';
 
 const PAPERCUSP_DIR = join(homedir(), '.papercusp');
@@ -126,6 +126,9 @@ export function readToken(): string | null {
  */
 export function acquireColdStartLock(retried = false): boolean {
   try {
+    // ~/.papercusp may not exist yet on a fresh machine, and this runs before
+    // any other writer mkdir's it — create it owner-only first.
+    mkdirSync(PAPERCUSP_DIR, { recursive: true, mode: 0o700 });
     writeFileSync(LOCK_PATH, String(process.pid), { flag: 'wx' });
     return true;
   } catch (e) {
