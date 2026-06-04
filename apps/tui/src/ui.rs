@@ -256,8 +256,10 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     }
     let flist = List::new(fitems)
         .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} · features ({}) ",
+            " {} ({}/{}) [/] · features ({}) ",
             app.harness,
+            app.harness_sel + 1,
+            app.harnesses.len().max(1),
             app.features.len()
         ))))
         .highlight_style(Theme::selected())
@@ -486,7 +488,8 @@ mod tests {
             attempts: 0,
         }]);
         let text = render(&app, 110, 14);
-        assert!(text.contains("papercup · features (1)"));
+        assert!(text.contains("papercup"));
+        assert!(text.contains("features (1)"));
         assert!(text.contains("F-001"));
         assert!(text.contains("Build X"));
         assert!(text.contains("issues (1)"));

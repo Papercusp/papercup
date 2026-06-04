@@ -45,10 +45,10 @@ async fn main() -> Result<()> {
 
 async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
-    spawn_input_listener(tx.clone());
-    spawn_backend_poller(tx.clone());
-
     let mut app = App::new();
+    spawn_input_listener(tx.clone());
+    spawn_backend_poller(tx.clone(), app.active_harness.clone());
+
     terminal.draw(|f| ui::draw(f, &app))?;
 
     while let Some(ev) = rx.recv().await {
@@ -73,7 +73,10 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 /// Poll the operator for plans + roster every few seconds, forwarding deltas
 /// (or errors) as `Event`s. Targets the currently-running operator via the
 /// discovery resolution in `client`.
-fn spawn_backend_poller(tx: UnboundedSender<Event>) {
+fn spawn_backend_poller(
+    tx: UnboundedSender<Event>,
+    active_harness: std::sync::Arc<std::sync::Mutex<String>>,
+) {
     tokio::spawn(async move {
         let client = match client::OperatorClient::from_discovery() {
             Ok(c) => c,
@@ -107,9 +110,22 @@ fn spawn_backend_poller(tx: UnboundedSender<Event>) {
                     let _ = tx.send(Event::Error(format!("inbox: {e}")));
                 }
             }
-            // Harnesses tab data. v1 fixes the harness to "papercup" (matches the
-            // App default); a harness selector + per-selection fetch is a follow-up.
-            match client.features_for("papercup").await {
+            // Harness list (for the selector).
+            match client.harnesses().await {
+                Ok(hs) => {
+                    let _ = tx.send(Event::Harnesses(hs));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("harnesses: {e}")));
+                }
+            }
+            // Features + issues for whichever harness is active (shared cell,
+            // updated by the reducer when the user cycles with [ / ]).
+            let slug = active_harness
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| "papercup".to_string());
+            match client.features_for(&slug).await {
                 Ok(fs) => {
                     let _ = tx.send(Event::Features(fs));
                 }
@@ -117,7 +133,7 @@ fn spawn_backend_poller(tx: UnboundedSender<Event>) {
                     let _ = tx.send(Event::Error(format!("features: {e}")));
                 }
             }
-            match client.issues_for("papercup").await {
+            match client.issues_for(&slug).await {
                 Ok(is) => {
                     let _ = tx.send(Event::Issues(is));
                 }

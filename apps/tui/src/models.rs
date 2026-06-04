@@ -160,6 +160,20 @@ pub struct IssuesResponse {
     pub issues: Vec<HarnessIssue>,
 }
 
+/// One harness from `/api/harness/projects/lite`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HarnessRef {
+    pub slug: String,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectsResponse {
+    #[serde(default)]
+    pub projects: Vec<HarnessRef>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +266,17 @@ mod tests {
         assert_eq!(i.severity, "major");
         assert_eq!(i.found_during.as_deref(), Some("F-3"));
         assert_eq!(i.linked_feature_id.as_deref(), Some("F-FIX-1"));
+    }
+
+    #[test]
+    fn parses_projects_shape() {
+        let j = r#"{"projects":[
+            {"slug":"papercup","path":"/repo/papercup","harness_kind":null,"is_shared":true},
+            {"slug":"restart","path":"/repo/restart"}]}"#;
+        let r: ProjectsResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.projects.len(), 2);
+        assert_eq!(r.projects[0].slug, "papercup");
+        assert_eq!(r.projects[0].path.as_deref(), Some("/repo/papercup"));
     }
 
     #[test]

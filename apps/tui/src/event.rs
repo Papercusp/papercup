@@ -6,7 +6,9 @@
 //! dedicated OS thread that forwards into the async channel; the backend poller
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
-use crate::models::{AttentionItem, HarnessFeature, HarnessIssue, PlanSummary, RosterEntry};
+use crate::models::{
+    AttentionItem, HarnessFeature, HarnessIssue, HarnessRef, PlanSummary, RosterEntry,
+};
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -28,6 +30,8 @@ pub enum Event {
     Features(Vec<HarnessFeature>),
     /// Fresh issues for the active harness.
     Issues(Vec<HarnessIssue>),
+    /// The harness list (for the selector).
+    Harnesses(Vec<HarnessRef>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
 }

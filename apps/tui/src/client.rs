@@ -6,8 +6,8 @@
 #![allow(dead_code)] // surfaces are consumed by the P1 panels; keep check quiet until then.
 
 use crate::models::{
-    AttentionItem, AttentionResponse, FeaturesPayload, HarnessFeature, HarnessIssue, IssuesResponse,
-    PlanSummary, PlansResponse, RosterEntry, RosterResponse,
+    AttentionItem, AttentionResponse, FeaturesPayload, HarnessFeature, HarnessIssue, HarnessRef,
+    IssuesResponse, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -184,6 +184,14 @@ impl OperatorClient {
         Ok(serde_json::from_value::<IssuesResponse>(v)
             .context("decode issues")?
             .issues)
+    }
+
+    /// The harness list: `GET /api/harness/projects/lite`.
+    pub async fn harnesses(&self) -> Result<Vec<HarnessRef>> {
+        let v = self.get_json("/api/harness/projects/lite").await?;
+        Ok(serde_json::from_value::<ProjectsResponse>(v)
+            .context("decode projects")?
+            .projects)
     }
 }
 

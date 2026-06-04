@@ -4,9 +4,12 @@
 //! pure function of `&App` (see `ui.rs`), so views are snapshot-testable.
 
 use crate::event::Event;
-use crate::models::{AttentionItem, HarnessFeature, HarnessIssue, PlanSummary, RosterEntry};
+use crate::models::{
+    AttentionItem, HarnessFeature, HarnessIssue, HarnessRef, PlanSummary, RosterEntry,
+};
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::sync::{Arc, Mutex};
 
 /// What the run-loop should do after handling one event.
 #[derive(Debug, PartialEq, Eq)]
@@ -53,8 +56,13 @@ pub struct App {
     pub roster_sel: usize,
     pub inbox: Vec<AttentionItem>,
     pub inbox_sel: usize,
-    /// Harnesses tab: the active harness (fixed to "papercup" for v1) + its data.
+    /// Harnesses tab: the harness list + selection + the active harness's data.
+    pub harnesses: Vec<HarnessRef>,
+    pub harness_sel: usize,
+    /// Active harness slug (display copy of `active_harness`).
     pub harness: String,
+    /// Shared active-harness slug the backend poller reads each loop.
+    pub active_harness: Arc<Mutex<String>>,
     pub features: Vec<HarnessFeature>,
     pub feat_sel: usize,
     pub issues: Vec<HarnessIssue>,
@@ -78,7 +86,10 @@ impl App {
             roster_sel: 0,
             inbox: Vec::new(),
             inbox_sel: 0,
+            harnesses: Vec::new(),
+            harness_sel: 0,
             harness: "papercup".to_string(),
+            active_harness: Arc::new(Mutex::new("papercup".to_string())),
             features: Vec::new(),
             feat_sel: 0,
             issues: Vec::new(),
@@ -111,6 +122,72 @@ impl App {
 
     pub fn set_issues(&mut self, issues: Vec<HarnessIssue>) {
         self.issues = issues;
+    }
+
+    pub fn set_harnesses(&mut self, harnesses: Vec<HarnessRef>) {
+        self.harnesses = harnesses;
+        if self.harness_sel >= self.harnesses.len() {
+            self.harness_sel = self.harnesses.len().saturating_sub(1);
+        }
+        // Keep the active slug pointing at a real harness if the current one
+        // isn't in the (freshly fetched) list.
+        if !self.harnesses.iter().any(|h| h.slug == self.harness) {
+            if let Some(h) = self.harnesses.get(self.harness_sel) {
+                self.harness = h.slug.clone();
+                self.harness_sel =
+                    self.harnesses.iter().position(|x| x.slug == self.harness).unwrap_or(0);
+                self.publish_active();
+            }
+        } else {
+            self.harness_sel = self
+                .harnesses
+                .iter()
+                .position(|x| x.slug == self.harness)
+                .unwrap_or(self.harness_sel);
+        }
+    }
+
+    /// Cycle the active harness by `delta` (wrapping). Returns true if it changed.
+    pub fn cycle_harness(&mut self, delta: isize) -> bool {
+        let n = self.harnesses.len();
+        if n == 0 {
+            return false;
+        }
+        let cur = self.harness_sel as isize;
+        let next = ((cur + delta).rem_euclid(n as isize)) as usize;
+        if next == self.harness_sel {
+            return false;
+        }
+        self.harness_sel = next;
+        self.harness = self.harnesses[next].slug.clone();
+        self.features.clear();
+        self.issues.clear();
+        self.feat_sel = 0;
+        self.publish_active();
+        true
+    }
+
+    fn publish_active(&self) {
+        if let Ok(mut g) = self.active_harness.lock() {
+            *g = self.harness.clone();
+        }
+    }
+
+    /// Filesystem path of the active harness repo (for git launch), if known.
+    pub fn active_repo_path(&self) -> Option<String> {
+        self.harnesses
+            .get(self.harness_sel)
+            .and_then(|h| h.path.clone())
+    }
+
+    /// Launch `lazygit` scoped to the active harness repo.
+    pub fn git_spec(&self) -> PaneSpec {
+        let mut argv = vec!["lazygit".to_string()];
+        if let Some(p) = self.active_repo_path() {
+            argv.push("-p".to_string());
+            argv.push(p);
+        }
+        PaneSpec::new(argv).titled(format!("git · {}", self.harness))
     }
 
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
@@ -186,6 +263,11 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Harnesses(hs) => {
+                self.set_harnesses(hs);
+                self.last_error = None;
+                Action::Render
+            }
             Event::Error(e) => {
                 self.last_error = Some(e);
                 Action::Render
@@ -257,6 +339,15 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
+            KeyCode::Char('g') => Action::Launch(self.git_spec()),
+            KeyCode::Char(']') => {
+                self.cycle_harness(1);
+                Action::Render
+            }
+            KeyCode::Char('[') => {
+                self.cycle_harness(-1);
+                Action::Render
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_sel(1);
                 Action::Render
@@ -482,6 +573,33 @@ mod tests {
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.feat_sel, 1);
         assert_eq!(a.features[a.feat_sel].id, "F-2");
+    }
+
+    #[test]
+    fn harness_cycle_and_git_spec() {
+        use crate::models::HarnessRef;
+        let mut a = App::new();
+        assert!(!a.cycle_harness(1)); // empty → no-op
+        a.set_harnesses(vec![
+            HarnessRef { slug: "papercup".into(), path: Some("/r/papercup".into()) },
+            HarnessRef { slug: "restart".into(), path: Some("/r/restart".into()) },
+        ]);
+        assert_eq!(a.harness, "papercup");
+        assert!(a.cycle_harness(1));
+        assert_eq!(a.harness, "restart");
+        assert_eq!(*a.active_harness.lock().unwrap(), "restart"); // shared cell follows
+        assert_eq!(a.git_spec().argv, vec!["lazygit", "-p", "/r/restart"]);
+        assert!(a.cycle_harness(1)); // wraps
+        assert_eq!(a.harness, "papercup");
+    }
+
+    #[test]
+    fn g_launches_git() {
+        let mut a = App::new();
+        match a.update(key('g', KeyModifiers::NONE)) {
+            Action::Launch(spec) => assert_eq!(spec.argv[0], "lazygit"),
+            other => panic!("expected Launch, got {other:?}"),
+        }
     }
 
     #[test]
