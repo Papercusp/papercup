@@ -255,8 +255,15 @@ const get = defineTool({
     const claudeOptional: Check = { ...claude, optional: true, hint: claude.status === 'ok'
       ? undefined
       : 'Optional unless AGENT_BACKEND=claude-code. Install: https://docs.anthropic.com/en/docs/claude-code/setup' };
+    // meridian is optional — it only routes omp/claude through the user's Claude
+    // Max subscription; omp/claude work with API keys without it, so a down
+    // daemon must not block boot. (Full first-launch-install + daemon spawn is a
+    // separate feature; see plan linux-test-vm-and-federation-2026-06-04 D-014.)
+    const meridianOptional: Check = { ...meridian, optional: true, hint: meridian.status === 'ok'
+      ? undefined
+      : 'Optional — only needed to route omp/claude through your Claude Max subscription (API keys work without it). Set up in Settings → Meridian.' };
     const harness = checkHarnessDir();
-    const checks = [node, postgres, pi, meridian, bash, harness, claudeOptional, ...softs];
+    const checks = [node, postgres, pi, meridianOptional, bash, harness, claudeOptional, ...softs];
     const required = checks.filter((c) => !c.optional);
     const allOk = required.every((c) => c.status === 'ok');
     return Response.json({ ok: allOk, checks }, { headers: CORS_HEADERS });

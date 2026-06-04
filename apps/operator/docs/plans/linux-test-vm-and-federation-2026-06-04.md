@@ -265,3 +265,14 @@ The two REQUIRED preflight checks still failing on a fresh install are incomplet
 
 claude/gh are correctly optional (user-installed onboarding asks), not bugs. Both required-blockers need a product call (required vs optional) and/or non-trivial main.rs/build wiring + rebuilds + functional verification — beyond the quick clean-machine bug fixes already landed (D-009/D-011/D-012).
 Related: P-005
+
+### D-014 — Deeper finding: meridian is unbuilt+VM-unverifiable; orchestrator is genuinely unbundled
+Date: 2026-06-04
+Investigating "fully wire meridian + harness" revealed both are unfinished migration features, not bug fixes — and meridian can't be verified in the clean VM:
+
+MERIDIAN: `@rynfar/meridian` dist/cli.js imports `@anthropic-ai/claude-agent-sdk`, which build-desktop-sidecar.sh deliberately strips ("deferred to first launch"). But NO first-launch-install code exists — grep across apps/operator + src-tauri found only the preflight reader (meridian-state.json) + detectMeridianInstalled + a settings page that tells the user to "Start it with `meridian` in a terminal". So fully wiring meridian = build the deferred claude-sdk install + meridian-state machine + daemon spawn/lifecycle in main.rs. AND meridian only functions with Claude Max auth (it bridges the user's Claude Code session) — a fresh VM has none, so it is FUNCTIONALLY UNVERIFIABLE here. It's a Claude-Max convenience (omp/claude work on API keys without it).
+
+ORCHESTRATOR (harness): genuinely not bundled — no @papercusp/orchestrator under sidecar/node_modules, no invoke-once bin on disk. orchestrator-runner.ts (DBOS) builds + spawns an invoke-once command (buildInvokeOnce from @/lib/harness-invoke-once); the in-process parts ride host.mjs but the spawned invoke-once needs the orchestrator package present. This IS a real, fixable packaging gap (bundle @papercusp/orchestrator + fix checkHarnessDir to verify the real artifact). Full end-to-end (a feature actually executing) needs agent auth (claude/omp creds) to verify, which the VM lacks.
+
+Recommendation: bundle the orchestrator + fix the harness check (real fix, partially VM-verifiable); make meridian OPTIONAL in the preflight (unbuilt + VM-unverifiable + a Claude-Max convenience), and treat the full meridian first-launch-install+daemon flow as a separate dedicated feature. Awaiting user re-decision given the new scope.
+Related: P-005
