@@ -47,7 +47,11 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
     spawn_input_listener(tx.clone());
-    spawn_backend_poller(tx.clone(), app.active_harness.clone());
+    spawn_backend_poller(
+        tx.clone(),
+        app.active_harness.clone(),
+        app.active_doc.clone(),
+    );
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
@@ -76,6 +80,7 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 fn spawn_backend_poller(
     tx: UnboundedSender<Event>,
     active_harness: std::sync::Arc<std::sync::Mutex<String>>,
+    active_doc: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) {
     tokio::spawn(async move {
         let client = match client::OperatorClient::from_discovery() {
@@ -139,6 +144,16 @@ fn spawn_backend_poller(
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("issues: {e}")));
+                }
+            }
+            // Docs for the active harness + selected doc (None → server default).
+            let doc = active_doc.lock().ok().and_then(|g| g.clone());
+            match client.docs_for(&slug, doc.as_deref()).await {
+                Ok(d) => {
+                    let _ = tx.send(Event::Docs(d));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("docs: {e}")));
                 }
             }
             if tx.is_closed() {

@@ -26,6 +26,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Inbox => draw_inbox(f, app, root[1]),
         Tab::Sessions => draw_sessions(f, app, root[1]),
         Tab::Harnesses => draw_harnesses(f, app, root[1]),
+        Tab::Docs => draw_docs(f, app, root[1]),
     }
     draw_status(f, app, root[2]);
 
@@ -294,6 +295,48 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
+        .split(area);
+
+    let items: Vec<ListItem> = app
+        .docs_files
+        .iter()
+        .map(|p| ListItem::new(Line::from(trunc(p, 34))))
+        .collect();
+    let mut state = ListState::default();
+    if !app.docs_files.is_empty() {
+        state.select(Some(app.doc_sel));
+    }
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " {} · docs ({}) ",
+            app.harness,
+            app.docs_files.len()
+        ))))
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, cols[0], &mut state);
+
+    let title = app.docs_files.get(app.doc_sel).cloned().unwrap_or_default();
+    let body = if app.doc_content.is_empty() {
+        "(no docs — select a file)".to_string()
+    } else {
+        app.doc_content.clone()
+    };
+    let reader_title = if title.is_empty() {
+        " reader ".to_string()
+    } else {
+        format!(" {} ", trunc(&title, 60))
+    };
+    let para = Paragraph::new(body)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(Line::from(reader_title)));
+    f.render_widget(para, cols[1]);
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
@@ -494,6 +537,22 @@ mod tests {
         assert!(text.contains("Build X"));
         assert!(text.contains("issues (1)"));
         assert!(text.contains("Crash"));
+    }
+
+    #[test]
+    fn docs_view_renders_files_and_content() {
+        use crate::models::DocsResponse;
+        let mut app = App::new();
+        app.tab = Tab::Docs;
+        app.set_docs(DocsResponse {
+            files: vec!["readme.md".into(), "spec/x.md".into()],
+            active_path: Some("readme.md".into()),
+            content: Some("# Hello docs".into()),
+        });
+        let text = render(&app, 100, 12);
+        assert!(text.contains("docs (2)"));
+        assert!(text.contains("readme.md"));
+        assert!(text.contains("Hello docs"));
     }
 
     #[test]

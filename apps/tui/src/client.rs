@@ -6,8 +6,9 @@
 #![allow(dead_code)] // surfaces are consumed by the P1 panels; keep check quiet until then.
 
 use crate::models::{
-    AttentionItem, AttentionResponse, FeaturesPayload, HarnessFeature, HarnessIssue, HarnessRef,
-    IssuesResponse, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
+    AttentionItem, AttentionResponse, DocsResponse, FeaturesPayload, HarnessFeature, HarnessIssue,
+    HarnessRef, IssuesResponse, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry,
+    RosterResponse,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -193,6 +194,34 @@ impl OperatorClient {
             .context("decode projects")?
             .projects)
     }
+
+    /// Project docs for a harness: `GET /api/harness/:slug/project-docs[?path=]`.
+    pub async fn docs_for(&self, slug: &str, path: Option<&str>) -> Result<DocsResponse> {
+        let p = match path {
+            Some(rel) => format!(
+                "/api/harness/{slug}/project-docs?path={}",
+                urlencode(rel)
+            ),
+            None => format!("/api/harness/{slug}/project-docs"),
+        };
+        let v = self.get_json(&p).await?;
+        serde_json::from_value::<DocsResponse>(v).context("decode docs")
+    }
+}
+
+/// Minimal percent-encoding for a docs relative path (covers `/` ` ` and the
+/// usual unsafe chars; the paths are repo-relative `*.md` so this is sufficient).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -253,6 +282,13 @@ mod tests {
         let v = client.roster().await.unwrap();
         assert_eq!(v["ok"], serde_json::json!(true));
         assert!(v["rows"].is_array());
+    }
+
+    #[test]
+    fn urlencode_keeps_path_chars_escapes_spaces() {
+        assert_eq!(urlencode("decisions/routine-durability.md"), "decisions/routine-durability.md");
+        assert_eq!(urlencode("a b.md"), "a%20b.md");
+        assert_eq!(urlencode("x?y&z"), "x%3Fy%26z");
     }
 
     #[tokio::test]

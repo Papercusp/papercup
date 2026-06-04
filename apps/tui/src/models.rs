@@ -174,6 +174,18 @@ pub struct ProjectsResponse {
     pub projects: Vec<HarnessRef>,
 }
 
+/// `/api/harness/:slug/project-docs[?path=]` → docs file list + the active doc.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocsResponse {
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub active_path: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +289,22 @@ mod tests {
         assert_eq!(r.projects.len(), 2);
         assert_eq!(r.projects[0].slug, "papercup");
         assert_eq!(r.projects[0].path.as_deref(), Some("/repo/papercup"));
+    }
+
+    #[test]
+    fn parses_docs_shape() {
+        let j = r##"{"ok":true,"projectPath":"/r","files":["a.md","sub/b.md"],
+            "activePath":"a.md","content":"# A\nbody"}"##;
+        let r: DocsResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.files.len(), 2);
+        assert_eq!(r.active_path.as_deref(), Some("a.md"));
+        assert!(r.content.unwrap().contains("# A"));
+        // no_docs case (nulls)
+        let e: DocsResponse =
+            serde_json::from_str(r#"{"ok":true,"files":[],"activePath":null,"content":null}"#)
+                .unwrap();
+        assert!(e.files.is_empty());
+        assert!(e.content.is_none());
     }
 
     #[test]

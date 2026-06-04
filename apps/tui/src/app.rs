@@ -5,7 +5,7 @@
 
 use crate::event::Event;
 use crate::models::{
-    AttentionItem, HarnessFeature, HarnessIssue, HarnessRef, PlanSummary, RosterEntry,
+    AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef, PlanSummary, RosterEntry,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -28,16 +28,24 @@ pub enum Tab {
     Inbox,
     Sessions,
     Harnesses,
+    Docs,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Plans, Tab::Inbox, Tab::Sessions, Tab::Harnesses];
+    pub const ALL: [Tab; 5] = [
+        Tab::Plans,
+        Tab::Inbox,
+        Tab::Sessions,
+        Tab::Harnesses,
+        Tab::Docs,
+    ];
     pub fn title(self) -> &'static str {
         match self {
             Tab::Plans => "Plans",
             Tab::Inbox => "Inbox",
             Tab::Sessions => "Sessions",
             Tab::Harnesses => "Harnesses",
+            Tab::Docs => "Docs",
         }
     }
     pub fn index(self) -> usize {
@@ -66,6 +74,12 @@ pub struct App {
     pub features: Vec<HarnessFeature>,
     pub feat_sel: usize,
     pub issues: Vec<HarnessIssue>,
+    /// Docs tab: file list + selection + the active doc's content.
+    pub docs_files: Vec<String>,
+    pub doc_sel: usize,
+    pub doc_content: String,
+    /// Shared selected-doc path the poller fetches (None → endpoint's default).
+    pub active_doc: Arc<Mutex<Option<String>>>,
     pub last_error: Option<String>,
     /// Help overlay visible.
     pub show_help: bool,
@@ -93,6 +107,10 @@ impl App {
             features: Vec::new(),
             feat_sel: 0,
             issues: Vec::new(),
+            docs_files: Vec::new(),
+            doc_sel: 0,
+            doc_content: String::new(),
+            active_doc: Arc::new(Mutex::new(None)),
             last_error: None,
             show_help: false,
             palette_open: false,
@@ -163,6 +181,12 @@ impl App {
         self.features.clear();
         self.issues.clear();
         self.feat_sel = 0;
+        self.docs_files.clear();
+        self.doc_content.clear();
+        self.doc_sel = 0;
+        if let Ok(mut g) = self.active_doc.lock() {
+            *g = None;
+        }
         self.publish_active();
         true
     }
@@ -188,6 +212,30 @@ impl App {
             argv.push(p);
         }
         PaneSpec::new(argv).titled(format!("git · {}", self.harness))
+    }
+
+    pub fn set_docs(&mut self, docs: DocsResponse) {
+        self.docs_files = docs.files;
+        self.doc_content = docs.content.unwrap_or_default();
+        // Until the user picks a doc, follow the server's chosen active path.
+        let no_selection = self.active_doc.lock().map(|g| g.is_none()).unwrap_or(true);
+        if no_selection {
+            if let Some(ap) = docs.active_path {
+                if let Some(i) = self.docs_files.iter().position(|f| *f == ap) {
+                    self.doc_sel = i;
+                }
+            }
+        }
+        if self.doc_sel >= self.docs_files.len() {
+            self.doc_sel = self.docs_files.len().saturating_sub(1);
+        }
+    }
+
+    /// Publish the selected doc path so the poller fetches its content.
+    pub fn publish_active_doc(&self) {
+        if let Ok(mut g) = self.active_doc.lock() {
+            *g = self.docs_files.get(self.doc_sel).cloned();
+        }
     }
 
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
@@ -268,6 +316,11 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Docs(d) => {
+                self.set_docs(d);
+                self.last_error = None;
+                Action::Render
+            }
             Event::Error(e) => {
                 self.last_error = Some(e);
                 Action::Render
@@ -338,6 +391,10 @@ impl App {
                 self.tab = Tab::Harnesses;
                 Action::Render
             }
+            KeyCode::Char('5') => {
+                self.tab = Tab::Docs;
+                Action::Render
+            }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
             KeyCode::Char('g') => Action::Launch(self.git_spec()),
             KeyCode::Char(']') => {
@@ -350,10 +407,16 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_sel(1);
+                if self.tab == Tab::Docs {
+                    self.publish_active_doc();
+                }
                 Action::Render
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.move_sel(-1);
+                if self.tab == Tab::Docs {
+                    self.publish_active_doc();
+                }
                 Action::Render
             }
             _ => Action::None,
@@ -366,6 +429,7 @@ impl App {
             Tab::Inbox => self.inbox.len(),
             Tab::Sessions => self.roster.len(),
             Tab::Harnesses => self.features.len(),
+            Tab::Docs => self.docs_files.len(),
         };
         if len == 0 {
             return;
@@ -375,6 +439,7 @@ impl App {
             Tab::Inbox => &mut self.inbox_sel,
             Tab::Sessions => &mut self.roster_sel,
             Tab::Harnesses => &mut self.feat_sel,
+            Tab::Docs => &mut self.doc_sel,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -591,6 +656,24 @@ mod tests {
         assert_eq!(a.git_spec().argv, vec!["lazygit", "-p", "/r/restart"]);
         assert!(a.cycle_harness(1)); // wraps
         assert_eq!(a.harness, "papercup");
+    }
+
+    #[test]
+    fn docs_tab_navigates_and_publishes_selection() {
+        use crate::models::DocsResponse;
+        let mut a = App::new();
+        a.update(key('5', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Docs);
+        a.set_docs(DocsResponse {
+            files: vec!["a.md".into(), "sub/b.md".into()],
+            active_path: Some("a.md".into()),
+            content: Some("# A".into()),
+        });
+        assert_eq!(a.doc_sel, 0); // followed the server's active path
+        assert_eq!(a.doc_content, "# A");
+        a.update(key('j', KeyModifiers::NONE)); // select sub/b.md + publish
+        assert_eq!(a.doc_sel, 1);
+        assert_eq!(*a.active_doc.lock().unwrap(), Some("sub/b.md".to_string()));
     }
 
     #[test]
