@@ -25,6 +25,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Plans => draw_plans(f, app, root[1]),
         Tab::Inbox => draw_inbox(f, app, root[1]),
         Tab::Sessions => draw_sessions(f, app, root[1]),
+        Tab::Harnesses => draw_harnesses(f, app, root[1]),
     }
     draw_status(f, app, root[2]);
 
@@ -230,6 +231,67 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, cols[1]);
 }
 
+fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(area);
+
+    // Features (left, selectable).
+    let fitems: Vec<ListItem> = app
+        .features
+        .iter()
+        .map(|ft| {
+            ListItem::new(Line::from(format!(
+                "{:<10} {:<8} {}",
+                trunc(&ft.id, 10),
+                trunc(&ft.status, 8),
+                trunc(&ft.title, 40),
+            )))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !app.features.is_empty() {
+        state.select(Some(app.feat_sel));
+    }
+    let flist = List::new(fitems)
+        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " {} · features ({}) ",
+            app.harness,
+            app.features.len()
+        ))))
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(flist, cols[0], &mut state);
+
+    // Issues (right, display-only for v1).
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(format!(" issues ({}) ", app.issues.len())));
+    if app.issues.is_empty() {
+        f.render_widget(
+            Paragraph::new("(no open issues)").block(block),
+            cols[1],
+        );
+    } else {
+        let iitems: Vec<ListItem> = app
+            .issues
+            .iter()
+            .map(|is| {
+                let fix = is.linked_feature_id.clone().unwrap_or_default();
+                ListItem::new(Line::from(format!(
+                    "{:<8} {:<11} {} {}",
+                    trunc(&is.severity, 8),
+                    trunc(&is.status, 11),
+                    trunc(&is.title, 28),
+                    if fix.is_empty() { String::new() } else { format!("→{fix}") },
+                )))
+            })
+            .collect();
+        f.render_widget(List::new(iitems).block(block), cols[1]);
+    }
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
@@ -400,6 +462,35 @@ mod tests {
         app.last_error = Some("backend down".into());
         let text = render(&app, 60, 8);
         assert!(text.contains("backend down"));
+    }
+
+    #[test]
+    fn harnesses_view_renders_features_and_issues() {
+        use crate::models::{HarnessFeature, HarnessIssue};
+        let mut app = App::new();
+        app.tab = Tab::Harnesses;
+        app.set_features(vec![HarnessFeature {
+            id: "F-001".into(),
+            title: "Build X".into(),
+            status: "todo".into(),
+            attempts: 0,
+        }]);
+        app.set_issues(vec![HarnessIssue {
+            id: "I-1".into(),
+            title: "Crash".into(),
+            severity: "major".into(),
+            status: "open".into(),
+            source: "validator".into(),
+            found_during: None,
+            linked_feature_id: Some("F-FIX-1".into()),
+            attempts: 0,
+        }]);
+        let text = render(&app, 110, 14);
+        assert!(text.contains("papercup · features (1)"));
+        assert!(text.contains("F-001"));
+        assert!(text.contains("Build X"));
+        assert!(text.contains("issues (1)"));
+        assert!(text.contains("Crash"));
     }
 
     #[test]

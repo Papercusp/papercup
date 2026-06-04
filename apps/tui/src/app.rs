@@ -4,7 +4,7 @@
 //! pure function of `&App` (see `ui.rs`), so views are snapshot-testable.
 
 use crate::event::Event;
-use crate::models::{AttentionItem, PlanSummary, RosterEntry};
+use crate::models::{AttentionItem, HarnessFeature, HarnessIssue, PlanSummary, RosterEntry};
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -24,15 +24,17 @@ pub enum Tab {
     Plans,
     Inbox,
     Sessions,
+    Harnesses,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Plans, Tab::Inbox, Tab::Sessions];
+    pub const ALL: [Tab; 4] = [Tab::Plans, Tab::Inbox, Tab::Sessions, Tab::Harnesses];
     pub fn title(self) -> &'static str {
         match self {
             Tab::Plans => "Plans",
             Tab::Inbox => "Inbox",
             Tab::Sessions => "Sessions",
+            Tab::Harnesses => "Harnesses",
         }
     }
     pub fn index(self) -> usize {
@@ -51,6 +53,11 @@ pub struct App {
     pub roster_sel: usize,
     pub inbox: Vec<AttentionItem>,
     pub inbox_sel: usize,
+    /// Harnesses tab: the active harness (fixed to "papercup" for v1) + its data.
+    pub harness: String,
+    pub features: Vec<HarnessFeature>,
+    pub feat_sel: usize,
+    pub issues: Vec<HarnessIssue>,
     pub last_error: Option<String>,
     /// Help overlay visible.
     pub show_help: bool,
@@ -71,6 +78,10 @@ impl App {
             roster_sel: 0,
             inbox: Vec::new(),
             inbox_sel: 0,
+            harness: "papercup".to_string(),
+            features: Vec::new(),
+            feat_sel: 0,
+            issues: Vec::new(),
             last_error: None,
             show_help: false,
             palette_open: false,
@@ -91,6 +102,15 @@ impl App {
     pub fn set_inbox(&mut self, inbox: Vec<AttentionItem>) {
         self.inbox = inbox;
         self.clamp_sel();
+    }
+
+    pub fn set_features(&mut self, features: Vec<HarnessFeature>) {
+        self.features = features;
+        self.clamp_sel();
+    }
+
+    pub fn set_issues(&mut self, issues: Vec<HarnessIssue>) {
+        self.issues = issues;
     }
 
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
@@ -131,6 +151,9 @@ impl App {
         if self.inbox_sel >= self.inbox.len() {
             self.inbox_sel = self.inbox.len().saturating_sub(1);
         }
+        if self.feat_sel >= self.features.len() {
+            self.feat_sel = self.features.len().saturating_sub(1);
+        }
     }
 
     /// The single reducer. Pure w.r.t. I/O, so it is unit-testable.
@@ -150,6 +173,16 @@ impl App {
             }
             Event::Inbox(i) => {
                 self.set_inbox(i);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::Features(fs) => {
+                self.set_features(fs);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::Issues(is) => {
+                self.set_issues(is);
                 self.last_error = None;
                 Action::Render
             }
@@ -219,6 +252,10 @@ impl App {
                 self.tab = Tab::Sessions;
                 Action::Render
             }
+            KeyCode::Char('4') => {
+                self.tab = Tab::Harnesses;
+                Action::Render
+            }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_sel(1);
@@ -237,6 +274,7 @@ impl App {
             Tab::Plans => self.plans.len(),
             Tab::Inbox => self.inbox.len(),
             Tab::Sessions => self.roster.len(),
+            Tab::Harnesses => self.features.len(),
         };
         if len == 0 {
             return;
@@ -245,6 +283,7 @@ impl App {
             Tab::Plans => &mut self.plan_sel,
             Tab::Inbox => &mut self.inbox_sel,
             Tab::Sessions => &mut self.roster_sel,
+            Tab::Harnesses => &mut self.feat_sel,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -425,6 +464,24 @@ mod tests {
         assert_eq!(a.palette_input, "");
         a.update(key('2', KeyModifiers::NONE)); // tab keys work again
         assert_eq!(a.tab, Tab::Inbox);
+    }
+
+    #[test]
+    fn harnesses_tab_navigates_features() {
+        use crate::models::HarnessFeature;
+        let f = |id: &str| HarnessFeature {
+            id: id.into(),
+            title: id.into(),
+            status: "todo".into(),
+            attempts: 0,
+        };
+        let mut a = App::new();
+        assert_eq!(a.update(key('4', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.tab, Tab::Harnesses);
+        a.set_features(vec![f("F-1"), f("F-2")]);
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.feat_sel, 1);
+        assert_eq!(a.features[a.feat_sel].id, "F-2");
     }
 
     #[test]

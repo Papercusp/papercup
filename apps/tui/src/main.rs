@@ -107,6 +107,24 @@ fn spawn_backend_poller(tx: UnboundedSender<Event>) {
                     let _ = tx.send(Event::Error(format!("inbox: {e}")));
                 }
             }
+            // Harnesses tab data. v1 fixes the harness to "papercup" (matches the
+            // App default); a harness selector + per-selection fetch is a follow-up.
+            match client.features_for("papercup").await {
+                Ok(fs) => {
+                    let _ = tx.send(Event::Features(fs));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("features: {e}")));
+                }
+            }
+            match client.issues_for("papercup").await {
+                Ok(is) => {
+                    let _ = tx.send(Event::Issues(is));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("issues: {e}")));
+                }
+            }
             if tx.is_closed() {
                 break;
             }

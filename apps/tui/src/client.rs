@@ -6,7 +6,8 @@
 #![allow(dead_code)] // surfaces are consumed by the P1 panels; keep check quiet until then.
 
 use crate::models::{
-    AttentionItem, AttentionResponse, PlanSummary, PlansResponse, RosterEntry, RosterResponse,
+    AttentionItem, AttentionResponse, FeaturesPayload, HarnessFeature, HarnessIssue, IssuesResponse,
+    PlanSummary, PlansResponse, RosterEntry, RosterResponse,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -140,6 +141,50 @@ impl OperatorClient {
             .groups;
         Ok(groups.into_iter().flat_map(|g| g.items).collect())
     }
+
+    async fn post_json(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+        let url = format!("{}{}", self.endpoint.base_url.trim_end_matches('/'), path);
+        let mut req = self.http.post(&url).json(&body);
+        if let Some(ref t) = self.endpoint.token {
+            req = req.bearer_auth(t);
+        }
+        let resp = req.send().await.with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("POST {url} -> {status}: {txt}");
+        }
+        serde_json::from_str(&txt).with_context(|| format!("parse JSON from {url}"))
+    }
+
+    /// Features for a harness via the `list_features` agent-tool. The response is
+    /// an MCP envelope `{content:[{type:"text",text:"<json>"}]}`; we unwrap +
+    /// parse the inner payload.
+    pub async fn features_for(&self, slug: &str) -> Result<Vec<HarnessFeature>> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/harness/list_features",
+                serde_json::json!({ "slug": slug }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("list_features: missing content[0].text")?;
+        Ok(serde_json::from_str::<FeaturesPayload>(text)
+            .context("parse features payload")?
+            .features)
+    }
+
+    /// Issues for a harness: `GET /api/harness/:slug/issues`.
+    pub async fn issues_for(&self, slug: &str) -> Result<Vec<HarnessIssue>> {
+        let v = self.get_json(&format!("/api/harness/{slug}/issues")).await?;
+        Ok(serde_json::from_value::<IssuesResponse>(v)
+            .context("decode issues")?
+            .issues)
+    }
 }
 
 #[cfg(test)]
@@ -200,5 +245,22 @@ mod tests {
         let v = client.roster().await.unwrap();
         assert_eq!(v["ok"], serde_json::json!(true));
         assert!(v["rows"].is_array());
+    }
+
+    #[tokio::test]
+    async fn features_for_unwraps_mcp_envelope() {
+        let inner = serde_json::json!({
+            "slug":"x","count":1,
+            "features":[{"id":"F-1","title":"t","status":"todo","attempts":0}]
+        })
+        .to_string();
+        let env = serde_json::json!({ "content": [{ "type":"text", "text": inner }] }).to_string();
+        let body: &'static str = Box::leak(env.into_boxed_str());
+        let base = fake_server(body).await;
+        let client =
+            OperatorClient::new(OperatorEndpoint { base_url: base, token: None }).unwrap();
+        let feats = client.features_for("x").await.unwrap();
+        assert_eq!(feats.len(), 1);
+        assert_eq!(feats[0].id, "F-1");
     }
 }

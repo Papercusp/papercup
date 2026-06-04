@@ -114,6 +114,52 @@ pub struct AttentionResponse {
     pub groups: Vec<AttentionGroup>,
 }
 
+/// One feature from the `list_features` agent-tool payload.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HarnessFeature {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+/// Inner JSON of the `list_features` MCP envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeaturesPayload {
+    #[serde(default)]
+    pub features: Vec<HarnessFeature>,
+}
+
+/// One issue from `/api/harness/:slug/issues` (mirrors `app/harness/issues/types` Issue).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessIssue {
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub found_during: Option<String>,
+    #[serde(default)]
+    pub linked_feature_id: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssuesResponse {
+    #[serde(default)]
+    pub issues: Vec<HarnessIssue>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +228,30 @@ mod tests {
         let esc = &r.groups[0].items[1];
         assert_eq!(esc.kind, "coord-escalation");
         assert!(esc.needs_human);
+    }
+
+    #[test]
+    fn parses_features_payload() {
+        let j = r#"{"slug":"papercup","count":2,"features":[
+            {"id":"F-001","title":"A","status":"todo","attempts":0},
+            {"id":"F-002","title":"B","status":"passed","attempts":3}]}"#;
+        let r: FeaturesPayload = serde_json::from_str(j).unwrap();
+        assert_eq!(r.features.len(), 2);
+        assert_eq!(r.features[1].status, "passed");
+        assert_eq!(r.features[1].attempts, 3);
+    }
+
+    #[test]
+    fn parses_issues_shape() {
+        let j = r#"{"issues":[{"id":"I-1","title":"Bug","severity":"major","source":"validator",
+            "foundAt":"t","foundDuring":"F-3","status":"open","linkedFeatureId":"F-FIX-1",
+            "attempts":1,"notes":[]}],"nextId":2}"#;
+        let r: IssuesResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.issues.len(), 1);
+        let i = &r.issues[0];
+        assert_eq!(i.severity, "major");
+        assert_eq!(i.found_during.as_deref(), Some("F-3"));
+        assert_eq!(i.linked_feature_id.as_deref(), Some("F-FIX-1"));
     }
 
     #[test]
