@@ -29,7 +29,7 @@ import type {
   TurnResult,
   CardEvent,
   ControlTag,
-} from '../types';
+} from '@papercusp/testing-shell/llm';
 
 const BEHAVIORS = [
   // Borrows the operator catalog where it applies; oracle-specific

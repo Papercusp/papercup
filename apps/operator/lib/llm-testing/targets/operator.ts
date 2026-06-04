@@ -15,7 +15,7 @@
  * the production dispatcher.
  */
 
-import { registerOverride, clearOverride } from '../dispatch-override';
+import { registerOverride, clearOverride } from '@papercusp/testing-shell/llm';
 import type {
   ChatSession,
   ChatTarget,
@@ -26,7 +26,7 @@ import type {
   TurnResult,
   CardEvent,
   ControlTag,
-} from '../types';
+} from '@papercusp/testing-shell/llm';
 
 const BEHAVIORS = [
   'B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B9', 'B10',

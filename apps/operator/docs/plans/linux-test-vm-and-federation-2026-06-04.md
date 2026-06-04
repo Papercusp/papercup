@@ -132,8 +132,8 @@ build`, copy the `.deb` out immediately).
 
 ## Phase 1 — Clean-room VM infrastructure
 
-- **P-001** `needs-human` Design sign-off before implementation — review this plan; approve scope (Phases 1 & 2, the deferred list, the networking approach); mark done to unblock the build. importance: high
-- **P-002** `todo` cloud-init templates + `vmctl provision` → build golden Ubuntu 24.04 image (GNOME/Xorg + spice-vdagent + openssh; NO webkit/Node/build tools); snapshot golden.qcow2. blocked-by: P-001
+- **P-001** `done` Design sign-off before implementation — review this plan; approve scope (Phases 1 & 2, the deferred list, the networking approach); mark done to unblock the build. importance: high (signed off by user "start phase 1" 2026-06-04)
+- **P-002** `wip` cloud-init templates + `vmctl provision` → build golden Ubuntu 24.04 image (GNOME/Xorg + spice-vdagent + openssh; NO webkit/Node/build tools); snapshot golden.qcow2. blocked-by: P-001
 - **P-003** `todo` `vmctl` lifecycle: `up`/`down` (idempotent nohup qemu), `reset` (overlay from golden), `ssh`, `status`. blocked-by: P-002
 - **P-004** `todo` `vmctl install` (scp newest `.deb` + `apt install`) + `launch`/`gui` (SPICE). blocked-by: P-003
 - **P-005** `todo` Fresh-install verification: assert dep resolution, embedded-PG boot, operator `:3070`, wizard render; capture install log + app log + screenshot. blocked-by: P-004

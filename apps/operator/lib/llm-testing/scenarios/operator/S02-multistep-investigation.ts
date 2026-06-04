@@ -15,9 +15,9 @@
  * (search:* recall), B16 (harness tools), B28 (premature termination).
  */
 
-import { PATIENT_ADMIN } from '../../personas/blends';
+import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S02_MULTISTEP_INVESTIGATION: Scenario = {
   id: 'op-S02-multistep-investigation',

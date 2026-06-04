@@ -17,9 +17,9 @@
  * so the runner fires it before sim-user gets a say.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S09_GENERATE_IDEAS: Scenario = {
   id: 'op-S09-generate-ideas',

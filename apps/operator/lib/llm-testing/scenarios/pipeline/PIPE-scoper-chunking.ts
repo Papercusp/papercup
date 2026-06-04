@@ -6,7 +6,7 @@
  * invoke-once (model credentials required). The deterministic guards only
  * assert the role ran and emitted a chunking decision.
  */
-import type { PipelineScenario } from '../../pipeline';
+import type { PipelineScenario } from '@papercusp/testing-shell/llm';
 
 export const PIPE_SCOPER_CHUNKING: PipelineScenario = {
   id: 'PIPE-scoper-chunking',

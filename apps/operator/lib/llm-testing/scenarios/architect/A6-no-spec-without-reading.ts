@@ -11,9 +11,9 @@
  * but NO tool was called before it (i.e. the architect proposed blind).
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { ARCHITECT_RUBRIC } from '../../rubrics/architect';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const A6_NO_SPEC_WITHOUT_READING: Scenario = {
   id: 'architect-A6-no-spec-without-reading',

@@ -10,9 +10,9 @@
  * Covers: B9 (silence-nudge card), B13 (voiceAnswerable card).
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S08_SILENCE_NUDGE_READY: Scenario = {
   id: 'op-S08-silence-nudge-ready',

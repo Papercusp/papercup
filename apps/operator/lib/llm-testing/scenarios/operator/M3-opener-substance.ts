@@ -12,10 +12,10 @@
  * production canvas-open path.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC_HIGH_CRITICALITY } from '../../rubrics/operator';
 import { noBareWhatCanIHelp } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M3_OPENER_SUBSTANCE: Scenario = {
   id: 'op-M3-opener-substance',

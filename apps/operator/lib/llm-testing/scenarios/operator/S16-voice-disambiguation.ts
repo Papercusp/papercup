@@ -9,10 +9,10 @@
  *
  * P-019 of plan voice-production-test-coverage-2026-06-01.
  */
-import { VOICE_USER } from '../../personas/blends';
+import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { formatLength220, noJargonInSay } from '../../asserts/operator-format';
-import type { Scenario, RunSummary, Violation } from '../../types';
+import type { Scenario, RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
 const cardsAreVoiceAnswerable = (run: RunSummary): Violation[] => {
   const offenders: number[] = [];

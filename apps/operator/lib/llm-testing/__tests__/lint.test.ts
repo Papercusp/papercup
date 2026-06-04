@@ -11,10 +11,10 @@ import { resolve } from 'node:path';
 
 import { describe, it, expect } from 'vitest';
 
-import { lintScenario, lintScenarios, formatViolations, type LintViolation } from '../lint';
+import { lintScenario, lintScenarios, formatViolations, type LintViolation } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../rubrics/operator';
 import { SCENARIOS } from '../scenarios';
-import type { Scenario } from '../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 // Minimal valid baseline; tests mutate copies of this.
 function baseScenario(over: Partial<Scenario> = {}): Scenario {

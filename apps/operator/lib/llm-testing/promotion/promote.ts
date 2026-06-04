@@ -125,8 +125,8 @@ ${findingComments}
  * to 'custom' so the change is reversible.
  */
 
-import { registerEvaluator } from './index';
-import type { Violation } from '../types';
+import { registerEvaluator } from '@papercusp/testing-shell/llm';
+import type { Violation } from '@papercusp/testing-shell/llm';
 
 const ASSERT_ID = ${JSON.stringify(input.assertId)};
 
@@ -143,7 +143,7 @@ const ORIGINATING_FINDING_IDS: readonly string[] = ${JSON.stringify(input.findin
 //
 // Or promote to a kind in types.ts and re-register here.
 
-export function evaluate(_run: import('../types').RunSummary): Violation[] {
+export function evaluate(_run: import('@papercusp/testing-shell/llm').RunSummary): Violation[] {
   // TODO: implement the deterministic predicate. Each Violation you
   // return should set originatingFindingIds: [...ORIGINATING_FINDING_IDS]
   // so the lineage reaches storage.

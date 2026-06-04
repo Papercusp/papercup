@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
 import type { VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
-import { LlmCallError } from '../../llm-testing/llm-error';
+import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
 
 const rateLimited = (resetAt?: number): LlmCallError =>

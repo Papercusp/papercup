@@ -7,7 +7,7 @@
  * far-off reset (past `maxPauseMs`) or a non-rate error is rethrown for the caller to record +
  * skip and continue. Pure: clock + sleep are injected for the fake-clock test.
  */
-import { rateLimitInfo } from '../llm-testing/llm-error';
+import { rateLimitInfo } from '@papercusp/testing-shell/llm';
 
 export const GYM_MAX_RATE_PAUSE_MS = Number(process.env.GYM_MAX_RATE_PAUSE_MS ?? 30 * 60_000);
 export const GYM_RATE_PAUSE_RETRIES = Number(process.env.GYM_RATE_PAUSE_RETRIES ?? 3);

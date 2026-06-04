@@ -8,7 +8,7 @@
  * their reference. Changing an anchor bumps + identity_hash changes.
  */
 
-import type { JudgeRubric } from '../types';
+import type { JudgeRubric } from '@papercusp/testing-shell/llm';
 
 // 1.1.0 — added `ideasOwnership` axis (operator-behavior-tests-2026-05-14.md §4.4).
 // Identity hash for any scenario using this rubric will change on the next run;

@@ -26,7 +26,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 
-import { getOverride } from './llm-testing/dispatch-override';
+import { getOverride } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
 
 async function readQuotaStateImpl(

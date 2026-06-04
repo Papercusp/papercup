@@ -13,7 +13,7 @@ import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
-import type { RunReport, SingleRunReport } from './runner';
+import type { RunReport, SingleRunReport } from '@papercusp/testing-shell/llm';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {

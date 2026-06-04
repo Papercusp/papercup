@@ -32,7 +32,7 @@ import type {
   TurnResult,
   CardEvent,
   ControlTag,
-} from '../types';
+} from '@papercusp/testing-shell/llm';
 
 export interface ArchitectTargetOpts {
   baseUrl?: string;

@@ -9,7 +9,7 @@
  */
 
 import { ARCHITECT_RUBRIC } from '../../rubrics/architect';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const A2_SCOPE_PUSHBACK: Scenario = {
   id: 'architect-A2-scope-pushback',

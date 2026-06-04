@@ -10,10 +10,10 @@
  * behaves; alarms only on regression. Inexpensive to run.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { noContinueWithAskChoice } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M2_MUTEX_CARD_VS_CONTINUE: Scenario = {
   id: 'op-M2-mutex-card-vs-continue',

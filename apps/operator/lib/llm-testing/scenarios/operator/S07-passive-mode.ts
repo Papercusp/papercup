@@ -15,9 +15,9 @@
  *     the admin has flipped the toggle. Marked as such, with a note.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S07_PASSIVE_MODE: Scenario = {
   id: 'op-S07-passive-mode',

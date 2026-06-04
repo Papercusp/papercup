@@ -15,10 +15,10 @@
  * from two angles: natural error path + deterministic injection.
  */
 
-import { makeStaticOverride } from '../../dispatch-override';
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { makeStaticOverride } from '@papercusp/testing-shell/llm';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S12B_TOOL_ERROR_INJECTED: Scenario = {
   id: 'op-S12b-tool-error-injected',

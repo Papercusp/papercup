@@ -10,10 +10,10 @@
  * sim-user). SUT receives empty messages + trigger='user_says_ready'.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC_HIGH_CRITICALITY } from '../../rubrics/operator';
 import { optionsCountWithinBounds } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M7_AFTER_SAYS_READY_OPTIONS: Scenario = {
   id: 'op-M7-after-says-ready-options',

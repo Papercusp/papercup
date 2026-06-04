@@ -19,9 +19,9 @@
  * Covers: B4 (time cap as observed via ledger), B3 (chain emission).
  */
 
-import { ADVERSARIAL } from '../../personas/blends';
+import { ADVERSARIAL } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S04_CONTINUE_CAP_TIME: Scenario = {
   id: 'op-S04-continue-cap-time',

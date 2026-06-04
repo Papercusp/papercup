@@ -9,9 +9,9 @@
  * speculation tells.
  */
 
-import { PEDANTIC_DEV } from '../../personas/blends';
+import { PEDANTIC_DEV } from '@papercusp/testing-shell/llm';
 import { ORACLE_RUBRIC } from '../../rubrics/oracle';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const O2_REFUSE_SPECULATION: Scenario = {
   id: 'oracle-O2-refuse-speculation',

@@ -13,7 +13,7 @@
  *                     waits on brain-subprocess override plumbing.
  */
 
-import type { Scenario } from '../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 import { S01_STATUS_QUICK } from './operator/S01-status-quick';
 import { S02_MULTISTEP_INVESTIGATION } from './operator/S02-multistep-investigation';
 import { S03_CONTINUE_CAP_COUNT } from './operator/S03-continue-cap-count';

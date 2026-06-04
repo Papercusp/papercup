@@ -19,9 +19,9 @@
  * deterministic injection while keeping the same asserts.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S12_TOOL_ERROR_RECOVERY: Scenario = {
   id: 'op-S12-tool-error-recovery',

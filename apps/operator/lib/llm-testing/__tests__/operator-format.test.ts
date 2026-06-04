@@ -18,7 +18,7 @@ import {
   noJargonInSay,
   groundedCountBeforeTool,
 } from '../asserts/operator-format';
-import type { RunSummary, TurnResult } from '../types';
+import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
 function turn(text: string, overrides: Partial<TurnResult> = {}): TurnResult {
   return {

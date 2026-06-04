@@ -14,9 +14,9 @@
  *   - no speculation
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { ORACLE_RUBRIC } from '../../rubrics/oracle';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const O6_GRACEFUL_NOT_FOUND: Scenario = {
   id: 'oracle-O6-graceful-not-found',

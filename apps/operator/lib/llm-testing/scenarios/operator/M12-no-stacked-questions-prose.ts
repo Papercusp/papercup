@@ -8,9 +8,9 @@
  * ("...do you mean X — also, what about Y...").
  */
 
-import { PATIENT_ADMIN } from '../../personas/blends';
+import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M12_NO_STACKED_QUESTIONS_PROSE: Scenario = {
   id: 'op-M12-no-stacked-questions-prose',

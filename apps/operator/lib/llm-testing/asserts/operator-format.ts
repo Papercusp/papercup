@@ -12,7 +12,7 @@
  * tested against synthetic transcripts without PG/LLM.
  */
 
-import type { RunSummary, Violation, TurnResult } from '../types';
+import type { RunSummary, Violation, TurnResult } from '@papercusp/testing-shell/llm';
 
 // =============================================================================
 // 1. <continue/> paired with non-empty <say>

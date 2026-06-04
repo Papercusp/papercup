@@ -8,10 +8,10 @@
  *
  * P-019 of plan voice-production-test-coverage-2026-06-01.
  */
-import { VOICE_USER } from '../../personas/blends';
+import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { formatLength220, noMarkdownInSay, oneQuestionMarkPerTurn, noJargonInSay, groundedCountBeforeTool } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S13_VOICE_TERSE_COMPLEX: Scenario = {
   id: 'op-S13-voice-terse-complex',

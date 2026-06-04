@@ -6,7 +6,7 @@
  * The positive counterpart to PIPE-reviewer-gates-on-tests: given a feature that
  * passed validation AND carries tests, the reviewer should ship.
  */
-import type { PipelineScenario } from '../../pipeline';
+import type { PipelineScenario } from '@papercusp/testing-shell/llm';
 
 export const PIPE_REVIEWER_SHIP_RETURN: PipelineScenario = {
   id: 'PIPE-reviewer-ship-return',

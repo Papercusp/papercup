@@ -13,7 +13,7 @@
  */
 
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S10_ASK_CHOICE: Scenario = {
   id: 'op-S10-ask-choice',

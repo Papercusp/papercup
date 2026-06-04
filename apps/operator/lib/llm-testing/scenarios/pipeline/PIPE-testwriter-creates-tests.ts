@@ -8,7 +8,7 @@
  * *.test.ts / *.spec.ts file appears. Behavioral half (judge): the tests are
  * real and exercise the acceptance criteria.
  */
-import type { PipelineScenario } from '../../pipeline';
+import type { PipelineScenario } from '@papercusp/testing-shell/llm';
 
 export const PIPE_TESTWRITER_CREATES_TESTS: PipelineScenario = {
   id: 'PIPE-testwriter-creates-tests',

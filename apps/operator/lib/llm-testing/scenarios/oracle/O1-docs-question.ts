@@ -12,9 +12,9 @@
  *   - no <continue/> / <sleep/> / <spawn/> (oracle doesn't use them)
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { ORACLE_RUBRIC } from '../../rubrics/oracle';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const O1_DOCS_QUESTION: Scenario = {
   id: 'oracle-O1-docs-question',

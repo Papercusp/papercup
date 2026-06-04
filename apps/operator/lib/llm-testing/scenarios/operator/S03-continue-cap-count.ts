@@ -15,9 +15,9 @@
  *   - cost stays under $3 (worst-case big chain)
  */
 
-import { ADVERSARIAL } from '../../personas/blends';
+import { ADVERSARIAL } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S03_CONTINUE_CAP_COUNT: Scenario = {
   id: 'op-S03-continue-cap-count',

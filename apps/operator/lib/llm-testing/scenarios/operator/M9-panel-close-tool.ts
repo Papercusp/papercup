@@ -11,9 +11,9 @@
  * tool actually executing against a (test-fixture) panel.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario, ToolDispatchOverride } from '../../types';
+import type { Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 const STUB_PANEL_TOOLS: ToolDispatchOverride = {
   override: (name) => {

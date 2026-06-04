@@ -7,10 +7,10 @@
  *
  * P-019 of plan voice-production-test-coverage-2026-06-01.
  */
-import { VOICE_USER } from '../../personas/blends';
+import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { noMarkdownInSay, formatLength220, noJargonInSay } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S14_VOICE_NO_CODE: Scenario = {
   id: 'op-S14-voice-no-code',

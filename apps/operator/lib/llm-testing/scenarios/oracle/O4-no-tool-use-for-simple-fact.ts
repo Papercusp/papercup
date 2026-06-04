@@ -13,9 +13,9 @@
  *   - no <continue/> / <sleep/>
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { ORACLE_RUBRIC } from '../../rubrics/oracle';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const O4_NO_TOOL_USE_FOR_SIMPLE_FACT: Scenario = {
   id: 'oracle-O4-no-tool-use-for-simple-fact',

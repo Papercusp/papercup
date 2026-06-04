@@ -20,12 +20,12 @@ import postgres from 'postgres';
 
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
-import { evaluateAsserts } from './asserts/index';
-import { loadFixtureTelemetry, loadFixtureTurn, resolveFixturePath } from './fixtures/loader';
-import { computeIdentityHash } from './identity';
-import { judgeRun } from './judge';
-import { lookupBlend } from './personas/blends';
-import { resolvePersona } from './personas/traits';
+import { evaluateAsserts } from '@papercusp/testing-shell/llm';
+import { loadFixtureTelemetry, loadFixtureTurn, resolveFixturePath } from '@papercusp/testing-shell/llm';
+import { computeIdentityHash } from '@papercusp/testing-shell/llm';
+import { judgeRun } from '@papercusp/testing-shell/llm';
+import { lookupBlend } from '@papercusp/testing-shell/llm';
+import { resolvePersona } from '@papercusp/testing-shell/llm';
 import { pullToolInvocations, pullContinueChainRows } from './telemetry';
 import type {
   JudgeResult,
@@ -34,7 +34,7 @@ import type {
   Scenario,
   TurnResult,
   Violation,
-} from './types';
+} from '@papercusp/testing-shell/llm';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {

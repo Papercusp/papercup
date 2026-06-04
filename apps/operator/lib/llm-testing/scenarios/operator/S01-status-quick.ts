@@ -16,9 +16,9 @@
  * Judge axes: all (helpfulness, groundedness, terminationFit, ...).
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S01_STATUS_QUICK: Scenario = {
   id: 'op-S01-status-quick',

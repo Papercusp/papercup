@@ -8,10 +8,10 @@
  * emit <continue/> silently — the user must see progress."
  */
 
-import { PATIENT_ADMIN } from '../../personas/blends';
+import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { continueAlwaysPairedWithSay } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M1_CONTINUE_PAIRED_WITH_SAY: Scenario = {
   id: 'op-M1-continue-paired-with-say',

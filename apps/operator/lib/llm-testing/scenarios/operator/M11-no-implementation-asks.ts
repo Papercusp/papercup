@@ -6,9 +6,9 @@
  * Tech choices belong to the harness."
  */
 
-import { ADVERSARIAL } from '../../personas/blends';
+import { ADVERSARIAL } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M11_NO_IMPLEMENTATION_ASKS: Scenario = {
   id: 'op-M11-no-implementation-asks',

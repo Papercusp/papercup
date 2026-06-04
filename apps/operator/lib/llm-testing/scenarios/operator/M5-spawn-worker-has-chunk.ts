@@ -11,10 +11,10 @@
  * on the regression of emitting worker without chunk.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { spawnWorkerHasChunk } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M5_SPAWN_WORKER_HAS_CHUNK: Scenario = {
   id: 'op-M5-spawn-worker-has-chunk',

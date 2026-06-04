@@ -10,10 +10,10 @@
  * inside backtick code blocks, and URL-encoded %3F.
  */
 
-import { PEDANTIC_DEV } from '../../personas/blends';
+import { PEDANTIC_DEV } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { oneQuestionMarkPerTurn } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M4_ONE_QUESTION_PER_TURN: Scenario = {
   id: 'op-M4-one-question-per-turn',

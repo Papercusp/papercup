@@ -9,10 +9,10 @@
  *
  * P-019 of plan voice-production-test-coverage-2026-06-01.
  */
-import { VOICE_USER } from '../../personas/blends';
+import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { noMarkdownInSay, groundedCountBeforeTool } from '../../asserts/operator-format';
-import type { Scenario, RunSummary, Violation } from '../../types';
+import type { Scenario, RunSummary, Violation } from '@papercusp/testing-shell/llm';
 
 function extractSay(text: string): string {
   return [...text.matchAll(/<say[^>]*>([\s\S]*?)<\/say>/gi)].map((m) => m[1]).join(' ').trim();

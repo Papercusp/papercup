@@ -7,7 +7,7 @@
  * deterministic half (the reviewer prompt instructs gating) is P-029; this is
  * the "does it actually do it" half.
  */
-import type { PipelineScenario } from '../../pipeline';
+import type { PipelineScenario } from '@papercusp/testing-shell/llm';
 
 export const PIPE_REVIEWER_GATES_ON_TESTS: PipelineScenario = {
   id: 'PIPE-reviewer-gates-on-tests',

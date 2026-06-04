@@ -7,7 +7,7 @@
  * empty-query handling — is missing). A correct validator must FAIL it and cite
  * the missing criterion.
  */
-import type { PipelineScenario } from '../../pipeline';
+import type { PipelineScenario } from '@papercusp/testing-shell/llm';
 
 export const PIPE_VALIDATOR_ACCEPTANCE: PipelineScenario = {
   id: 'PIPE-validator-acceptance',

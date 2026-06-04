@@ -16,9 +16,9 @@
  *     this qualitatively — see rubric §6.1)
  */
 
-import { VOICE_USER } from '../../personas/blends';
+import { VOICE_USER } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const S11_VOICE_CARD_ANSWER: Scenario = {
   id: 'op-S11-voice-card-answer',

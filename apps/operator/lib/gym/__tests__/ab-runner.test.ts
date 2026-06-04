@@ -4,7 +4,7 @@ import { runWithRatePause } from '../rate-pause';
 import { GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
 import type { GymScore } from '../judge';
 import type { VariantComparisonRow } from '../store';
-import { LlmCallError } from '../../llm-testing/llm-error';
+import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { TurnError } from '../../agent-chat-stream';
 
 const rateLimited = (resetAt?: number): LlmCallError =>

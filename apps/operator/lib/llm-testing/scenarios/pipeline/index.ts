@@ -10,7 +10,7 @@
  * coverage is the deterministic capture-mechanics + registry-validity test in
  * ../../__tests__/pipeline-target.test.ts.
  */
-import type { PipelineScenario } from '../../pipeline';
+import type { PipelineScenario } from '@papercusp/testing-shell/llm';
 import { PIPE_SCOPER_CHUNKING } from './PIPE-scoper-chunking';
 import { PIPE_VALIDATOR_ACCEPTANCE } from './PIPE-validator-acceptance';
 import { PIPE_REVIEWER_SHIP_RETURN } from './PIPE-reviewer-ship-return';

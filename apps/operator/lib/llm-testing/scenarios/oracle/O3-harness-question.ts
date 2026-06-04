@@ -7,9 +7,9 @@
  * question is about workspace state rather than docs.
  */
 
-import { PATIENT_ADMIN } from '../../personas/blends';
+import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import { ORACLE_RUBRIC } from '../../rubrics/oracle';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const O3_HARNESS_QUESTION: Scenario = {
   id: 'oracle-O3-harness-question',

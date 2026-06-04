@@ -9,7 +9,7 @@
  *   - structural output (proposes concrete patches, not vibes)
  */
 
-import type { JudgeRubric } from '../types';
+import type { JudgeRubric } from '@papercusp/testing-shell/llm';
 
 export const ARCHITECT_RUBRIC_VERSION = '1.0.0';
 

@@ -3,7 +3,7 @@
  * factories. Add a target by exporting it here.
  */
 
-import type { ChatTarget } from '../types';
+import type { ChatTarget } from '@papercusp/testing-shell/llm';
 import { ArchitectTarget } from './architect';
 import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';

@@ -6,10 +6,10 @@
  * TTS-safe. From operator.converse.md §"Format for every turn".
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { formatLength220, noMarkdownInSay } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M8_FORMAT_UTTERANCE: Scenario = {
   id: 'op-M8-format-utterance',

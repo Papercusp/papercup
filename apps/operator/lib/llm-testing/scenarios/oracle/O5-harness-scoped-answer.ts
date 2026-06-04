@@ -13,9 +13,9 @@
  *   - no <continue/>
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { ORACLE_RUBRIC } from '../../rubrics/oracle';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const O5_HARNESS_SCOPED_ANSWER: Scenario = {
   id: 'oracle-O5-harness-scoped-answer',

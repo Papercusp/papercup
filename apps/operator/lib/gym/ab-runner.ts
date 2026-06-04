@@ -21,7 +21,7 @@ import { judgeGymRun, type GymScore, type JudgeLlmCall } from './judge';
 import { rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantComparisonRow } from './store';
-import { rateLimitInfo } from '../llm-testing/llm-error';
+import { rateLimitInfo } from '@papercusp/testing-shell/llm';
 import { runWithRatePause } from './rate-pause';
 
 export interface AbVariant {

@@ -12,10 +12,10 @@
  * duration_minutes="..."/> tag and NO accompanying say.
  */
 
-import { HOSTILE } from '../../personas/blends';
+import { HOSTILE } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../../rubrics/operator';
 import { sleepNeverWithSay } from '../../asserts/operator-format';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M6_SLEEP_NO_SAY: Scenario = {
   id: 'op-M6-sleep-no-say',

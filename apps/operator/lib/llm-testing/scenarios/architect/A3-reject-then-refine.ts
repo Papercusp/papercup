@@ -9,9 +9,9 @@
  * appear — not a capitulation or a re-ask of clarifying questions already answered.
  */
 
-import { PEDANTIC_DEV } from '../../personas/blends';
+import { PEDANTIC_DEV } from '@papercusp/testing-shell/llm';
 import { ARCHITECT_RUBRIC } from '../../rubrics/architect';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const A3_REJECT_THEN_REFINE: Scenario = {
   id: 'architect-A3-reject-then-refine',

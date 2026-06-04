@@ -13,7 +13,7 @@ import postgres from 'postgres';
 
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
-import type { ContinueChainRow, ToolInvocationRow } from './types';
+import type { ContinueChainRow, ToolInvocationRow } from '@papercusp/testing-shell/llm';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {

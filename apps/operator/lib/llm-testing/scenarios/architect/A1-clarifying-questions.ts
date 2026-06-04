@@ -13,7 +13,7 @@
  */
 
 import { ARCHITECT_RUBRIC } from '../../rubrics/architect';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const A1_CLARIFYING_QUESTIONS: Scenario = {
   id: 'architect-A1-clarifying-questions',

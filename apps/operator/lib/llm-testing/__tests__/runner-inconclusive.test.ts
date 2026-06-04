@@ -14,10 +14,10 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { buildInconclusiveJudge } from '../judge';
+import { buildInconclusiveJudge } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../rubrics/operator';
-import { inconclusiveReason } from '../runner';
-import type { TurnResult } from '../types';
+import { inconclusiveReason } from '@papercusp/testing-shell/llm';
+import type { TurnResult } from '@papercusp/testing-shell/llm';
 
 const turn = (over: Partial<TurnResult> = {}): TurnResult => ({
   assistantText: 'hello there',

@@ -16,15 +16,15 @@
  * Plan §9.1, §12.
  */
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { runScenario } from '@papercusp/testing-shell/llm';
+
 import { isLlmAvailable } from '../lib/llm-testing/llm-client';
-import { runScenario } from '../lib/llm-testing/runner';
+import { operatorRunnerDeps } from '../lib/llm-testing/deps';
 import { SCENARIOS, getScenario, listScenarioIds } from '../lib/llm-testing/scenarios';
 import { listTargets } from '../lib/llm-testing/targets';
-import { persistRunReport } from '../lib/llm-testing/storage';
 import { findPromotionCandidates, formatCandidatesReport } from '../lib/llm-testing/promotion/candidates';
 import { promoteShape } from '../lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '../lib/llm-testing/replay';
@@ -167,7 +167,7 @@ async function main(): Promise<void> {
   if (args.help) { usage(); return; }
 
   if (args.verb === 'lint') {
-    const { lintScenarios, formatViolations } = await import('../lib/llm-testing/lint');
+    const { lintScenarios, formatViolations } = await import('@papercusp/testing-shell/llm');
     const { existsSync } = await import('node:fs');
     const { resolve } = await import('node:path');
     const scope = args.scenarioId
@@ -178,6 +178,10 @@ async function main(): Promise<void> {
     const violations = lintScenarios(scope, {
       fileExists: (p) => existsSync(p),
       fixtureRoot: resolve(__dirname, '../lib/llm-testing'),
+      // The lib lint skips the target-registration check when this is absent;
+      // pass the operator's registry so unknown-target scenarios still error
+      // (matches the pre-P-073 behavior, which imported listTargets directly).
+      registeredTargets: listTargets(),
     });
     console.log(formatViolations(violations));
     process.exit(violations.some((v) => v.severity === 'error') ? 1 : 0);
@@ -288,6 +292,12 @@ async function main(): Promise<void> {
     console.log(`[llm-test] --parallel ${concurrency} — scenarios run in batches of ${concurrency}.`);
   }
 
+  // Operator seams for the generic runner. `--no-persist` omits the store seam
+  // so the runner skips PG persistence; otherwise the runner persists each run
+  // report once at end-of-run (it computes the scenario hash internally from
+  // `scenarioFilePath`).
+  const deps = operatorRunnerDeps({ persist: !args.noPersist });
+
   const runOne = async (scenario: typeof scenarios[number]): Promise<boolean> => {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
@@ -297,7 +307,7 @@ async function main(): Promise<void> {
         forceRepeat: args.noMatrix ? 1 : undefined,
         scenarioFilePath,
         ...(args.seed !== undefined && { seed: args.seed }),
-      });
+      }, deps);
     } catch (err) {
       const msg = (err as Error).message ?? '';
       if (msg.startsWith('claim_busy')) {
@@ -308,24 +318,6 @@ async function main(): Promise<void> {
       return true;
     }
     printReport(report);
-    if (!args.noPersist) {
-      try {
-        const { createHash } = await import('node:crypto');
-        let scenarioHash = 'unknown';
-        if (scenarioFilePath) {
-          try {
-            scenarioHash = createHash('sha256')
-              .update(readFileSync(scenarioFilePath, 'utf8'))
-              .digest('hex');
-          } catch {
-            scenarioHash = 'file-read-failed';
-          }
-        }
-        await persistRunReport(report, scenario.rubric.version, scenarioHash);
-      } catch (err) {
-        console.warn(`  ! persistence failed [${scenario.id}]: ${(err as Error).message}`);
-      }
-    }
     // Verdict for the UI/PG ('preview' for single-run per plan §2.4);
     // exit-code from the per-run status so CI still flags single-run
     // failures.

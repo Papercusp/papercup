@@ -12,9 +12,9 @@
  * The rubric's `groundedness` axis handles subtler hallucination.
  */
 
-import { BRIEF_ADMIN } from '../../personas/blends';
+import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import { ARCHITECT_RUBRIC } from '../../rubrics/architect';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const A4_NO_HALLUCINATED_PLAN_ITEMS: Scenario = {
   id: 'architect-A4-no-hallucinated-plan-items',

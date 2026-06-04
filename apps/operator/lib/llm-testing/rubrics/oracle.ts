@@ -11,7 +11,7 @@
  * generalize.
  */
 
-import type { JudgeRubric } from '../types';
+import type { JudgeRubric } from '@papercusp/testing-shell/llm';
 
 export const ORACLE_RUBRIC_VERSION = '1.0.0';
 

@@ -12,9 +12,9 @@
  * language appears. The rubric's helpfulness + tone axes are the judge signal.
  */
 
-import { PATIENT_ADMIN } from '../../personas/blends';
+import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import { ARCHITECT_RUBRIC } from '../../rubrics/architect';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const A5_TRADEOFF_EXPLANATION: Scenario = {
   id: 'architect-A5-tradeoff-explanation',

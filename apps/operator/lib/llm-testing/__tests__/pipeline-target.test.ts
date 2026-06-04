@@ -15,7 +15,7 @@ import {
   type RoleRunResult,
   type RoleSpawner,
   type PipelineJudge,
-} from '../pipeline';
+} from '@papercusp/testing-shell/llm';
 import { PIPELINE_SCENARIOS } from '../scenarios/pipeline';
 import { AGENT_ROLES } from '@papercusp/agent-mcp';
 

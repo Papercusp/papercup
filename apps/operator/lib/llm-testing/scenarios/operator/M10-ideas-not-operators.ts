@@ -10,9 +10,9 @@
  * Scored on the new `ideasOwnership` axis (rubric 1.1.0).
  */
 
-import { PATIENT_ADMIN } from '../../personas/blends';
+import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC_HIGH_CRITICALITY } from '../../rubrics/operator';
-import type { Scenario } from '../../types';
+import type { Scenario } from '@papercusp/testing-shell/llm';
 
 export const M10_IDEAS_NOT_OPERATORS: Scenario = {
   id: 'op-M10-ideas-not-operators',
