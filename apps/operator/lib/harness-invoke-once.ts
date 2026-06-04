@@ -155,7 +155,11 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
   for (const [k, v] of Object.entries(spec.extraEnv ?? {})) {
     if (v !== undefined) env[k] = v;
   }
-  // `node <tsx-cli> <invoke-once.ts>` — same launcher harness-launch.ts
-  // uses for the main-loop bin (avoids npx's CWD-walk in user project dirs).
-  return { command: 'node', args: [tsxBin(), invokeOnceBin()], env };
+  // Packaged desktop: invoke-once is a self-contained esbuild bundle
+  // (invoke-once.mjs) → run with plain `node`, no tsx, no dep tree. Dev: run
+  // the `.ts` via `node <tsx-cli> <invoke-once.ts>` (avoids npx's CWD-walk in
+  // user project dirs). invokeOnceBin() returns the .mjs when it's bundled.
+  const bin = invokeOnceBin();
+  const args = bin.endsWith('.mjs') ? [bin] : [tsxBin(), bin];
+  return { command: 'node', args, env };
 }

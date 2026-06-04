@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -67,7 +67,13 @@ export function invokeOnceBin(): string {
   } catch {
     real = base;
   }
-  return join(real, '..', 'orchestrator', 'bin', 'invoke-once.ts');
+  const dir = join(real, '..', 'orchestrator', 'bin');
+  // The packaged desktop ships a self-contained esbuild bundle
+  // (invoke-once.mjs) so the spawn runs under plain `node` with no tsx and no
+  // node_modules dep tree (build-desktop-sidecar.sh). Dev uses the .ts via tsx.
+  const mjs = join(dir, 'invoke-once.mjs');
+  if (existsSync(mjs)) return mjs;
+  return join(dir, 'invoke-once.ts');
 }
 
 /**

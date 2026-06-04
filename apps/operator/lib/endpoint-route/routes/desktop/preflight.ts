@@ -194,12 +194,15 @@ async function checkMeridian(): Promise<Check> {
 
 function checkHarnessDir(): Check {
   const harnessRootPath = harnessRoot();
-  const orchBin = `${harnessRootPath}/../orchestrator/bin/run.ts`;
-  if (!existsSync(orchBin)) {
+  const orchBinDir = `${harnessRootPath}/../orchestrator/bin`;
+  // Packaged desktop ships self-contained esbuild bundles (invoke-once.mjs);
+  // dev has the .ts entries (run via tsx). Either satisfies "orchestrator present".
+  const candidates = [`${orchBinDir}/invoke-once.mjs`, `${orchBinDir}/run.ts`, `${orchBinDir}/invoke-once.ts`];
+  if (!candidates.some((p) => existsSync(p))) {
     return {
       name: 'harness',
       status: 'missing',
-      detail: `orchestrator bin not found at ${orchBin}`,
+      detail: `orchestrator bin not found in ${orchBinDir}`,
       hint: 'Reinstall workspace deps (npm install) so @papercusp/orchestrator + @papercusp/harness resolve; PAPERCUSP_HARNESS_DIR overrides if set.',
     };
   }
