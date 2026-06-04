@@ -20,21 +20,25 @@ import postgres from 'postgres';
 
 import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
-import { evaluateAsserts } from '@papercusp/testing-shell/llm';
-import { loadFixtureTelemetry, loadFixtureTurn, resolveFixturePath } from '@papercusp/testing-shell/llm';
-import { computeIdentityHash } from '@papercusp/testing-shell/llm';
-import { judgeRun } from '@papercusp/testing-shell/llm';
-import { lookupBlend } from '@papercusp/testing-shell/llm';
-import { resolvePersona } from '@papercusp/testing-shell/llm';
-import { pullToolInvocations, pullContinueChainRows } from './telemetry';
-import type {
-  JudgeResult,
-  Persona,
-  RunSummary,
-  Scenario,
-  TurnResult,
-  Violation,
+import {
+  evaluateAsserts,
+  loadFixtureTelemetry,
+  loadFixtureTurn,
+  resolveFixturePath,
+  computeIdentityHash,
+  judgeRun,
+  lookupBlend,
+  resolvePersona,
+  type JudgeResult,
+  type Persona,
+  type RunSummary,
+  type Scenario,
+  type TurnResult,
+  type Violation,
 } from '@papercusp/testing-shell/llm';
+
+import { llmCall } from './llm-client';
+import { pullToolInvocations, pullContinueChainRows } from './telemetry';
 
 let pool: ReturnType<typeof postgres> | null = null;
 function db() {
@@ -301,6 +305,7 @@ async function evaluateRun(
     },
     summary,
     violations,
+    llmCall,
   );
 
   // Replay's summary started with the original turn cost only;

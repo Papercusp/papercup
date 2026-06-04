@@ -5,7 +5,6 @@ import { buildUniversalTesting, type TestingShellTab } from '@papercusp/testing-
 import LiveMetricsTab from './_components/LiveMetricsTab';
 import RoutesTab from './_components/RoutesTab';
 import PackagedBuildTab from './_components/PackagedBuildTab';
-import LlmTab from './_components/LlmTab';
 import TestRunsTab from './_components/TestRunsTab';
 import MemoryTab from './_components/MemoryTab';
 
@@ -16,9 +15,10 @@ import MemoryTab from './_components/MemoryTab';
 const OPERATOR_SPA_URL = 'http://127.0.0.1:3070/';
 
 /**
- * The universal test panels (Live / Chaos-web / AI Explore / Chaos-desktop),
- * wired ONCE here via `buildUniversalTesting` (universal-testing-domains-generic
- * Phase 6) — the same "config not code" surface Restart's /tests uses. The lib
+ * The universal test panels (Live / Chaos-web / AI Explore / Chaos-desktop /
+ * LLM), wired ONCE here via `buildUniversalTesting` (universal-testing-domains-
+ * generic Phase 6 + Phase 7 P-073) — the same "config not code" surface
+ * Restart's /tests uses. The lib
  * owns the panels + their spawn/stream substance; the operator just supplies its
  * endpoints + base URL.
  *
@@ -40,6 +40,17 @@ const universal = buildUniversalTesting({
     defaultGoal: 'Open the harnesses page, click into the first harness, switch to the Issues tab.',
   },
   chaosDesktop: { defaultRoute: '/' }, // recorderUrl defaults to the current origin
+  // LLM scenario-driven evaluation (sim-user → SUT → judge). The lib's
+  // LlmTestPanel (Runs / Scenarios / Targets / Findings) drives the operator's
+  // existing /api/admin/llm-tests/* routes + /api/credentials — every path is a
+  // prop, nothing hardcoded in the lib (Phase 7 P-073).
+  llm: {
+    scenariosEndpoint: '/api/admin/llm-tests/scenarios',
+    runsEndpoint: '/api/admin/llm-tests/runs',
+    runDetailEndpoint: '/api/admin/llm-tests/runs',
+    findingsEndpoint: '/api/admin/llm-tests/findings',
+    credentialsEndpoint: '/api/credentials',
+  },
 });
 
 /** The universal tabs' metadata (Live / Chaos-web / AI Explore / Chaos-desktop), for the host tab lists. */
@@ -51,9 +62,9 @@ export const UNIVERSAL_TESTING_TABS: TestingShellTab[] = universal.tabs;
  * SHARED between `/admin/testing` (operator-vite `TestingClient`) and the
  * `/adv` harness Tests tab (`HarnessTestsView`) so both render the IDENTICAL
  * panels. The universal panels come from `buildUniversalTesting` (single
- * source); the rest are operator-specific (Test Runs / Live metrics (vitals) /
- * Memory / Routes / Packaged / LLM). Tabs not in this map render via the shared
- * `<DomainTestPanel>`.
+ * source — incl. the LLM panel as of Phase 7 P-073); the rest are
+ * operator-specific (Test Runs / Live metrics (vitals) / Memory / Routes /
+ * Packaged). Tabs not in this map render via the shared `<DomainTestPanel>`.
  *
  * Lives under `app/admin/testing/` (alongside `_components/`) so it is
  * importable from both operator-vite (`@/app/...`) and the `/adv` view.
@@ -65,5 +76,5 @@ export const TESTING_CUSTOM_TABS: Record<string, () => ReactElement> = {
   memory: MemoryTab,
   routes: RoutesTab,
   packaged: PackagedBuildTab,
-  llm: LlmTab,
+  // `llm` is supplied by `...universal.customTabs` (the lib's LlmTestPanel).
 };

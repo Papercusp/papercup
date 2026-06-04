@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import { lintScenario, lintScenarios, formatViolations, type LintViolation } from '@papercusp/testing-shell/llm';
 import { OPERATOR_RUBRIC } from '../rubrics/operator';
 import { SCENARIOS } from '../scenarios';
+import { listTargets } from '../targets';
 import type { Scenario } from '@papercusp/testing-shell/llm';
 
 // Minimal valid baseline; tests mutate copies of this.
@@ -50,7 +51,12 @@ describe('lintScenario — schema basics', () => {
   });
 
   it('flags an unregistered target', () => {
-    const v = lintScenario(baseScenario({ target: 'not-a-real-target' }));
+    // The lib's lint only checks target registration when the host injects its
+    // registry (P-073). The operator's real lint path (bin/llm-test) passes
+    // listTargets(); mirror that here so the check is exercised.
+    const v = lintScenario(baseScenario({ target: 'not-a-real-target' }), {
+      registeredTargets: listTargets(),
+    });
     expect(errors(v).some((e) => e.field === 'target')).toBe(true);
   });
 
