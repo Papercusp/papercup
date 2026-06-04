@@ -28,6 +28,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Harnesses => draw_harnesses(f, app, root[1]),
         Tab::Docs => draw_docs(f, app, root[1]),
         Tab::Activity => draw_activity(f, app, root[1]),
+        Tab::Testing => draw_testing(f, app, root[1]),
+        Tab::Config => draw_config(f, app, root[1]),
     }
     draw_status(f, app, root[2]);
 
@@ -366,6 +368,48 @@ fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
+fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .testing
+        .iter()
+        .map(|d| {
+            ListItem::new(Line::from(format!(
+                "{:<10} {:<22} {}",
+                trunc(&d.tier, 10),
+                trunc(&d.label, 22),
+                trunc(&d.description, 50),
+            )))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !app.testing.is_empty() {
+        state.select(Some(app.testing_sel));
+    }
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " {} · test domains ({}) ",
+            app.harness,
+            app.testing.len()
+        ))))
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, area, &mut state);
+}
+
+fn draw_config(f: &mut Frame, app: &App, area: Rect) {
+    let body = if app.config.is_empty() {
+        "(no claude-settings for this harness)".to_string()
+    } else {
+        app.config.clone()
+    };
+    let para = Paragraph::new(body).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(" {} · claude-settings (read-only) ", app.harness))),
+    );
+    f.render_widget(para, area);
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
@@ -599,6 +643,29 @@ mod tests {
         assert!(text.contains("Recent activity (1)"));
         assert!(text.contains("accept_failed"));
         assert!(text.contains("commit-plan-updates"));
+    }
+
+    #[test]
+    fn testing_and_config_views_render() {
+        use crate::models::TestingDomain;
+        let mut app = App::new();
+        app.tab = Tab::Testing;
+        app.set_testing(vec![TestingDomain {
+            id: "unit".into(),
+            label: "Unit tests".into(),
+            description: "fast vitest".into(),
+            tier: "universal".into(),
+        }]);
+        let t = render(&app, 100, 8);
+        assert!(t.contains("test domains (1)"));
+        assert!(t.contains("Unit tests"));
+        assert!(t.contains("universal"));
+
+        app.tab = Tab::Config;
+        app.set_config("permissions: allow".into());
+        let c = render(&app, 100, 8);
+        assert!(c.contains("claude-settings"));
+        assert!(c.contains("permissions: allow"));
     }
 
     #[test]

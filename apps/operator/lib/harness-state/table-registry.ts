@@ -114,6 +114,19 @@ const PEER_LOG_LIVE = [
 ];
 
 /**
+ * PEER-LOG sync authority BUT workspace-owned key — the one combination the
+ * slug-shared PEER_LOG_LIVE set above can't express. Plans are keyed by
+ * (workspace_id, harness_slug, plan_slug) — per-workspace, not one-set-across-
+ * workspaces — yet they federate cross-machine over the same peer-log machinery
+ * as papercup-harness content (plans-pg-canonical-migration-2026-06-03 D-004/D-008).
+ * Federation rides the harness swarm; the shared workspace_id is consistent
+ * across the Model-B peers that share that workspace+harness.
+ */
+const PEER_LOG_WORKSPACE_OWNED = [
+  'harness_plans',
+];
+
+/**
  * Workspace-owned config/settings that DON'T match a prefix rule below.
  * (across-workspaces D-1: "config becomes fully workspace-owned".)
  */
@@ -162,12 +175,15 @@ const LEGACY_DEAD = [
 
 const GIT_SET = new Set(GIT_DOCS);
 const PEER_SET = new Set(PEER_LOG_LIVE);
+const PEER_WS_SET = new Set(PEER_LOG_WORKSPACE_OWNED);
 const WS_EXPLICIT_SET = new Set(WORKSPACE_OWNED_EXPLICIT);
 const SECURITY_SET = new Set(SECURITY);
 const LEGACY_SET = new Set(LEGACY_DEAD);
 
-/** The registry's sync-authority sets, exported for the projection engine (P-003). */
-export const PEER_LOG_TABLES: readonly string[] = PEER_LOG_LIVE;
+/** The registry's sync-authority sets, exported for the projection engine (P-003).
+ *  PEER_LOG_TABLES is the full federated set regardless of key axis — both the
+ *  slug-shared live tables and the workspace-owned plans table. */
+export const PEER_LOG_TABLES: readonly string[] = [...PEER_LOG_LIVE, ...PEER_LOG_WORKSPACE_OWNED];
 export const GIT_TABLES: readonly string[] = GIT_DOCS;
 
 /**
@@ -186,6 +202,7 @@ export function resolveTableSpec(table: string): TableSpec {
   if (SECURITY_SET.has(t)) return { key: 'workspace-owned', sync: 'none', security: true, note: '§7.5 SECURITY' };
   if (GIT_SET.has(t)) return { key: 'slug-shared', sync: 'git', note: '§7.2 GIT document' };
   if (PEER_SET.has(t)) return { key: 'slug-shared', sync: 'peer-log', note: '§7.1 live shared' };
+  if (PEER_WS_SET.has(t)) return { key: 'workspace-owned', sync: 'peer-log', note: 'plans: workspace-owned + federated (D-004)' };
   if (WS_EXPLICIT_SET.has(t)) return { key: 'workspace-owned', sync: 'none', note: 'config/settings (D-1)' };
   if (LEGACY_SET.has(t)) return { ...DEFAULT_SPEC, legacy: true, note: 'legacy/dead — D-008 papercup-org' };
   for (const p of WORKSPACE_OWNED_PREFIXES) {
@@ -226,7 +243,7 @@ export function classifyInventory(tables: string[]): InventoryClassification {
     const bucket = `${spec.key}/${spec.sync}${spec.security ? '/sec' : ''}${spec.legacy ? '/legacy' : ''}`;
     byBucket[bucket] = (byBucket[bucket] ?? 0) + 1;
     const isExplicit =
-      SECURITY_SET.has(t) || GIT_SET.has(t) || PEER_SET.has(t) ||
+      SECURITY_SET.has(t) || GIT_SET.has(t) || PEER_SET.has(t) || PEER_WS_SET.has(t) ||
       WS_EXPLICIT_SET.has(t) || LEGACY_SET.has(t) ||
       WORKSPACE_OWNED_PREFIXES.some((p) => t === p || t.startsWith(p));
     if (!isExplicit) defaulted.push(t);

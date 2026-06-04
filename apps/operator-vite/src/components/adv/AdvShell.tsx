@@ -128,16 +128,22 @@ export default function AdvShell({
   // and is agent-controllable; only meaningful when a slug is active.
   const [shareOpen, setShareOpen] = useQueryState('share', parseAsBoolean.withDefault(false));
   const [refreshNonce, setRefreshNonce] = useState(0);
+  // The persisted-selection restore runs at most once per mount. Setting the
+  // slug below re-triggers this effect (activeSlug is a dep); the ref keeps
+  // the re-run from re-restoring (or fighting a user's later pick).
+  const restoredSelectionRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     fetch('/api/harness/projects/lite', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => {
+      .then(async (d) => {
         if (cancelled) return;
         const nextProjects = Array.isArray(d?.projects) ? d.projects : [];
         setProjects(nextProjects);
         setProjectLoadError(null);
+        if (restoredSelectionRef.current || !nextProjects.length) return;
+        restoredSelectionRef.current = true;
         // Restore the persisted harness selection so the selector + tab strip
         // inherit the last harness the user picked (persisted to localStorage
         // on every selector change). resolveAdvHarnessSelection encodes the
@@ -152,8 +158,17 @@ export default function AdvShell({
           urlSlug: activeSlug,
           persisted,
         });
-        if (decision.setSlug) void setActiveSlug(decision.setSlug);
-        if (decision.setScope) void setScopeMode(decision.setScope);
+        // Apply the two writes SEQUENTIALLY (await between them). The custom
+        // nuqs adapter merges each write over the live `window.location.search`,
+        // so two same-tick writes both snapshot the pre-write URL and the later
+        // flush clobbers the earlier — a concurrent slug+scope restore kept only
+        // the slug and left a stale `scope=all`, so the strip stayed collapsed.
+        // Awaiting serializes them; scope is written last so it's authoritative
+        // for allMode. (No `cancelled` guard between them: the slug write
+        // re-triggers this effect and cancels THIS closure, but the restore is
+        // one logical unit that must finish.)
+        if (decision.setSlug) await setActiveSlug(decision.setSlug);
+        if (decision.setScope) await setScopeMode(decision.setScope);
       })
       .catch((e) => {
         if (!cancelled) setProjectLoadError(String(e?.message ?? e));
@@ -198,7 +213,7 @@ export default function AdvShell({
             <span className="pc-advshell__selector-label">Harness</span>
             <Select
               value={allMode ? ALL_HARNESSES_OPTION : (activeSlug ?? '')}
-              onChange={(next) => {
+              onChange={async (next) => {
                 if (next === '__loading') return;
                 if (next === ALL_HARNESSES_OPTION) {
                   // Route "all" to the scope axis — leave ?slug= holding the
@@ -216,8 +231,12 @@ export default function AdvShell({
                 }
                 // Picking a concrete harness exits "all" mode, back to the
                 // sub-harness-union default so the choice actually scopes views.
-                if (allMode) void setScopeMode('expanded');
-                void setActiveSlug(next);
+                // SEQUENTIAL (await): the custom nuqs adapter merges each write
+                // over the live search, so a same-tick scope+slug pair collides
+                // and the scope write is lost — the pick would stay stranded in
+                // all-mode. Exit all-mode first, then set the slug.
+                if (allMode) await setScopeMode('expanded');
+                await setActiveSlug(next);
                 if (next && typeof window !== 'undefined') {
                   window.localStorage.setItem(wsLocalKey('harness.activeProject'), next);
                 }

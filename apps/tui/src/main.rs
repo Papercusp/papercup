@@ -9,9 +9,9 @@ mod app;
 mod client;
 mod event;
 mod framing;
+mod ipc;
 mod models;
 mod mux;
-mod sse;
 mod theme;
 mod ui;
 
@@ -85,7 +85,7 @@ fn spawn_backend_poller(
     active_doc: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 ) {
     tokio::spawn(async move {
-        let client = match client::OperatorClient::from_discovery() {
+        let client = match client::OperatorClient::from_discovery().await {
             Ok(c) => c,
             Err(e) => {
                 let _ = tx.send(Event::Error(format!("client init: {e}")));
@@ -164,6 +164,22 @@ fn spawn_backend_poller(
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("activity: {e}")));
+                }
+            }
+            match client.testing_domains(&slug).await {
+                Ok(t) => {
+                    let _ = tx.send(Event::Testing(t));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("testing: {e}")));
+                }
+            }
+            match client.claude_settings(&slug).await {
+                Ok(c) => {
+                    let _ = tx.send(Event::Config(c));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("config: {e}")));
                 }
             }
             if tx.is_closed() {

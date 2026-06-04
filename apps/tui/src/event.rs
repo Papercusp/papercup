@@ -8,7 +8,7 @@
 
 use crate::models::{
     ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef,
-    PlanSummary, RosterEntry,
+    PlanSummary, RosterEntry, TestingDomain,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use std::time::Duration;
@@ -37,6 +37,10 @@ pub enum Event {
     Docs(DocsResponse),
     /// Cross-harness recent activity.
     Activity(Vec<ActivityEvent>),
+    /// Testing domains for the active harness.
+    Testing(Vec<TestingDomain>),
+    /// Claude-settings file content for the active harness (read-only).
+    Config(String),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
 }

@@ -6,7 +6,7 @@
 use crate::event::Event;
 use crate::models::{
     ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef,
-    PlanSummary, RosterEntry,
+    PlanSummary, RosterEntry, TestingDomain,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -31,16 +31,20 @@ pub enum Tab {
     Harnesses,
     Docs,
     Activity,
+    Testing,
+    Config,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Plans,
         Tab::Inbox,
         Tab::Sessions,
         Tab::Harnesses,
         Tab::Docs,
         Tab::Activity,
+        Tab::Testing,
+        Tab::Config,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -50,6 +54,8 @@ impl Tab {
             Tab::Harnesses => "Harnesses",
             Tab::Docs => "Docs",
             Tab::Activity => "Activity",
+            Tab::Testing => "Testing",
+            Tab::Config => "Config",
         }
     }
     pub fn index(self) -> usize {
@@ -87,6 +93,11 @@ pub struct App {
     /// Activity tab: cross-harness recent activity.
     pub activity: Vec<ActivityEvent>,
     pub activity_sel: usize,
+    /// Testing tab: testing domains for the active harness.
+    pub testing: Vec<TestingDomain>,
+    pub testing_sel: usize,
+    /// Config tab: the active harness's claude-settings content (read-only).
+    pub config: String,
     pub last_error: Option<String>,
     /// Help overlay visible.
     pub show_help: bool,
@@ -120,6 +131,9 @@ impl App {
             active_doc: Arc::new(Mutex::new(None)),
             activity: Vec::new(),
             activity_sel: 0,
+            testing: Vec::new(),
+            testing_sel: 0,
+            config: String::new(),
             last_error: None,
             show_help: false,
             palette_open: false,
@@ -193,6 +207,9 @@ impl App {
         self.docs_files.clear();
         self.doc_content.clear();
         self.doc_sel = 0;
+        self.testing.clear();
+        self.testing_sel = 0;
+        self.config.clear();
         if let Ok(mut g) = self.active_doc.lock() {
             *g = None;
         }
@@ -252,6 +269,17 @@ impl App {
         if self.activity_sel >= self.activity.len() {
             self.activity_sel = self.activity.len().saturating_sub(1);
         }
+    }
+
+    pub fn set_testing(&mut self, testing: Vec<TestingDomain>) {
+        self.testing = testing;
+        if self.testing_sel >= self.testing.len() {
+            self.testing_sel = self.testing.len().saturating_sub(1);
+        }
+    }
+
+    pub fn set_config(&mut self, content: String) {
+        self.config = content;
     }
 
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
@@ -342,6 +370,16 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Testing(t) => {
+                self.set_testing(t);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::Config(c) => {
+                self.set_config(c);
+                self.last_error = None;
+                Action::Render
+            }
             Event::Error(e) => {
                 self.last_error = Some(e);
                 Action::Render
@@ -420,6 +458,14 @@ impl App {
                 self.tab = Tab::Activity;
                 Action::Render
             }
+            KeyCode::Char('7') => {
+                self.tab = Tab::Testing;
+                Action::Render
+            }
+            KeyCode::Char('8') => {
+                self.tab = Tab::Config;
+                Action::Render
+            }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
             KeyCode::Char('g') => Action::Launch(self.git_spec()),
             KeyCode::Char(']') => {
@@ -456,6 +502,8 @@ impl App {
             Tab::Harnesses => self.features.len(),
             Tab::Docs => self.docs_files.len(),
             Tab::Activity => self.activity.len(),
+            Tab::Testing => self.testing.len(),
+            Tab::Config => 0,
         };
         if len == 0 {
             return;
@@ -467,6 +515,8 @@ impl App {
             Tab::Harnesses => &mut self.feat_sel,
             Tab::Docs => &mut self.doc_sel,
             Tab::Activity => &mut self.activity_sel,
+            Tab::Testing => &mut self.testing_sel,
+            Tab::Config => return, // no list to navigate
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -701,6 +751,27 @@ mod tests {
         a.update(key('j', KeyModifiers::NONE)); // select sub/b.md + publish
         assert_eq!(a.doc_sel, 1);
         assert_eq!(*a.active_doc.lock().unwrap(), Some("sub/b.md".to_string()));
+    }
+
+    #[test]
+    fn testing_and_config_tabs_switch_and_nav() {
+        use crate::models::TestingDomain;
+        let mut a = App::new();
+        assert_eq!(a.update(key('7', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.tab, Tab::Testing);
+        a.set_testing(vec![
+            TestingDomain { id: "unit".into(), label: "Unit".into(), description: "d".into(), tier: "universal".into() },
+            TestingDomain { id: "e2e".into(), label: "E2E".into(), description: "d".into(), tier: "project".into() },
+        ]);
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.testing_sel, 1);
+        assert_eq!(a.update(key('8', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.tab, Tab::Config);
+        a.set_config("xterm=1".into());
+        assert_eq!(a.config, "xterm=1");
+        // Config has no list; j/k is a no-op there.
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Config);
     }
 
     #[test]

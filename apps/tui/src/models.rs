@@ -193,6 +193,31 @@ pub struct ActivityResponse {
     pub events: Vec<ActivityEvent>,
 }
 
+/// One testing domain from `/api/harness/:slug/testing/domains`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestingDomain {
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tier: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestingResponse {
+    #[serde(default)]
+    pub domains: Vec<TestingDomain>,
+}
+
+/// `/api/harness/:slug/claude-settings` → `{content}` (read-only file body).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClaudeSettings {
+    #[serde(default)]
+    pub content: String,
+}
+
 /// `/api/harness/:slug/project-docs[?path=]` → docs file list + the active doc.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -318,6 +343,25 @@ mod tests {
         assert_eq!(r.events.len(), 1);
         assert_eq!(r.events[0].action, "operator.accept_failed");
         assert_eq!(r.events[0].actor, "system:operator");
+    }
+
+    #[test]
+    fn parses_testing_domains_shape() {
+        let j = r#"{"domains":[{"id":"unit","label":"Unit","description":"fast","tier":"universal","sections":[]},
+            {"id":"e2e","label":"E2E","description":"browser","tier":"project"}],
+            "tierLabels":{"universal":"Universal"}}"#;
+        let r: TestingResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.domains.len(), 2);
+        assert_eq!(r.domains[0].id, "unit");
+        assert_eq!(r.domains[1].tier, "project");
+    }
+
+    #[test]
+    fn parses_claude_settings_shape() {
+        let r: ClaudeSettings = serde_json::from_str(r#"{"content":"x=1"}"#).unwrap();
+        assert_eq!(r.content, "x=1");
+        let empty: ClaudeSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.content, "");
     }
 
     #[test]

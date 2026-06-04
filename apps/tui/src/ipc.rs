@@ -3,6 +3,7 @@
 //! Leaner mirror of `papercusp-desktop/src-tauri/src/endpoint_ipc.rs`
 //! (mpsc + std Mutex map instead of Tauri Channels). No auth token: the Unix
 //! socket is the trust boundary.
+#![allow(dead_code)] // some surface (CallResult.result, generic invoke) is consumed as panels grow.
 
 use crate::framing::{decode_event_bin_payload, encode_frame, Frame, FrameDecoder, FrameType};
 use anyhow::{anyhow, Context, Result};
@@ -275,6 +276,21 @@ mod tests {
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["ok"], serde_json::json!(true));
         assert_eq!(v["n"], serde_json::json!(7));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running operator (endpoint-ipc socket present)"]
+    async fn live_ipc_smoke() {
+        let client = IpcClient::connect_discovered().await.expect("connect via discovery");
+        let bytes = client
+            .sys_http("GET", "/api/admin/plans/list", None)
+            .await
+            .expect("sys_http GET");
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let n = v["plans"].as_array().map(|a| a.len()).unwrap_or(0);
+        eprintln!("live IPC sys:http → plans count = {n}");
+        assert!(v.get("plans").is_some(), "expected a plans array");
+        assert!(n > 0, "operator should have plans");
     }
 
     #[tokio::test]
