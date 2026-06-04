@@ -27,6 +27,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Sessions => draw_sessions(f, app, root[1]),
         Tab::Harnesses => draw_harnesses(f, app, root[1]),
         Tab::Docs => draw_docs(f, app, root[1]),
+        Tab::Activity => draw_activity(f, app, root[1]),
     }
     draw_status(f, app, root[2]);
 
@@ -337,6 +338,34 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, cols[1]);
 }
 
+fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .activity
+        .iter()
+        .map(|e| {
+            ListItem::new(Line::from(format!(
+                "{:<20} {:<28} {:<26} {}",
+                trunc(&e.ts, 20),
+                trunc(&e.action, 28),
+                trunc(&e.subject, 26),
+                trunc(&e.actor, 18),
+            )))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !app.activity.is_empty() {
+        state.select(Some(app.activity_sel));
+    }
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " Recent activity ({}) ",
+            app.activity.len()
+        ))))
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, area, &mut state);
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
@@ -553,6 +582,23 @@ mod tests {
         assert!(text.contains("docs (2)"));
         assert!(text.contains("readme.md"));
         assert!(text.contains("Hello docs"));
+    }
+
+    #[test]
+    fn activity_view_renders_events() {
+        use crate::models::ActivityEvent;
+        let mut app = App::new();
+        app.tab = Tab::Activity;
+        app.set_activity(vec![ActivityEvent {
+            ts: "2026-06-03T05:38:30Z".into(),
+            action: "operator.accept_failed".into(),
+            subject: "commit-plan-updates".into(),
+            actor: "system:operator".into(),
+        }]);
+        let text = render(&app, 110, 8);
+        assert!(text.contains("Recent activity (1)"));
+        assert!(text.contains("accept_failed"));
+        assert!(text.contains("commit-plan-updates"));
     }
 
     #[test]

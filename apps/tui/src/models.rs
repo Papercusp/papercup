@@ -174,6 +174,25 @@ pub struct ProjectsResponse {
     pub projects: Vec<HarnessRef>,
 }
 
+/// One row of `/api/harness/all/recent-activity` → `{events:[...]}`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityEvent {
+    #[serde(default)]
+    pub ts: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub actor: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityResponse {
+    #[serde(default)]
+    pub events: Vec<ActivityEvent>,
+}
+
 /// `/api/harness/:slug/project-docs[?path=]` → docs file list + the active doc.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -289,6 +308,16 @@ mod tests {
         assert_eq!(r.projects.len(), 2);
         assert_eq!(r.projects[0].slug, "papercup");
         assert_eq!(r.projects[0].path.as_deref(), Some("/repo/papercup"));
+    }
+
+    #[test]
+    fn parses_activity_shape() {
+        let j = r#"{"events":[{"ts":"2026-06-03T05:38:30Z","action":"operator.accept_failed",
+            "subject":"commit-plan-updates","actor":"system:operator"}]}"#;
+        let r: ActivityResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.events.len(), 1);
+        assert_eq!(r.events[0].action, "operator.accept_failed");
+        assert_eq!(r.events[0].actor, "system:operator");
     }
 
     #[test]

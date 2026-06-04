@@ -5,7 +5,8 @@
 
 use crate::event::Event;
 use crate::models::{
-    AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef, PlanSummary, RosterEntry,
+    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef,
+    PlanSummary, RosterEntry,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -29,15 +30,17 @@ pub enum Tab {
     Sessions,
     Harnesses,
     Docs,
+    Activity,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Plans,
         Tab::Inbox,
         Tab::Sessions,
         Tab::Harnesses,
         Tab::Docs,
+        Tab::Activity,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -46,6 +49,7 @@ impl Tab {
             Tab::Sessions => "Sessions",
             Tab::Harnesses => "Harnesses",
             Tab::Docs => "Docs",
+            Tab::Activity => "Activity",
         }
     }
     pub fn index(self) -> usize {
@@ -80,6 +84,9 @@ pub struct App {
     pub doc_content: String,
     /// Shared selected-doc path the poller fetches (None → endpoint's default).
     pub active_doc: Arc<Mutex<Option<String>>>,
+    /// Activity tab: cross-harness recent activity.
+    pub activity: Vec<ActivityEvent>,
+    pub activity_sel: usize,
     pub last_error: Option<String>,
     /// Help overlay visible.
     pub show_help: bool,
@@ -111,6 +118,8 @@ impl App {
             doc_sel: 0,
             doc_content: String::new(),
             active_doc: Arc::new(Mutex::new(None)),
+            activity: Vec::new(),
+            activity_sel: 0,
             last_error: None,
             show_help: false,
             palette_open: false,
@@ -238,6 +247,13 @@ impl App {
         }
     }
 
+    pub fn set_activity(&mut self, activity: Vec<ActivityEvent>) {
+        self.activity = activity;
+        if self.activity_sel >= self.activity.len() {
+            self.activity_sel = self.activity.len().saturating_sub(1);
+        }
+    }
+
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
         self.plans.get(self.plan_sel)
     }
@@ -321,6 +337,11 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Activity(a) => {
+                self.set_activity(a);
+                self.last_error = None;
+                Action::Render
+            }
             Event::Error(e) => {
                 self.last_error = Some(e);
                 Action::Render
@@ -395,6 +416,10 @@ impl App {
                 self.tab = Tab::Docs;
                 Action::Render
             }
+            KeyCode::Char('6') => {
+                self.tab = Tab::Activity;
+                Action::Render
+            }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
             KeyCode::Char('g') => Action::Launch(self.git_spec()),
             KeyCode::Char(']') => {
@@ -430,6 +455,7 @@ impl App {
             Tab::Sessions => self.roster.len(),
             Tab::Harnesses => self.features.len(),
             Tab::Docs => self.docs_files.len(),
+            Tab::Activity => self.activity.len(),
         };
         if len == 0 {
             return;
@@ -440,6 +466,7 @@ impl App {
             Tab::Sessions => &mut self.roster_sel,
             Tab::Harnesses => &mut self.feat_sel,
             Tab::Docs => &mut self.doc_sel,
+            Tab::Activity => &mut self.activity_sel,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;

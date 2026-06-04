@@ -7,7 +7,8 @@
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
 use crate::models::{
-    AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef, PlanSummary, RosterEntry,
+    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef,
+    PlanSummary, RosterEntry,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use std::time::Duration;
@@ -34,6 +35,8 @@ pub enum Event {
     Harnesses(Vec<HarnessRef>),
     /// Project docs (file list + active doc content) for the active harness.
     Docs(DocsResponse),
+    /// Cross-harness recent activity.
+    Activity(Vec<ActivityEvent>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
 }

@@ -10,6 +10,7 @@ mod client;
 mod event;
 mod models;
 mod mux;
+mod sse;
 mod theme;
 mod ui;
 
@@ -154,6 +155,14 @@ fn spawn_backend_poller(
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("docs: {e}")));
+                }
+            }
+            match client.recent_activity().await {
+                Ok(a) => {
+                    let _ = tx.send(Event::Activity(a));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("activity: {e}")));
                 }
             }
             if tx.is_closed() {

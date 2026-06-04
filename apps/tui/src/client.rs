@@ -6,9 +6,9 @@
 #![allow(dead_code)] // surfaces are consumed by the P1 panels; keep check quiet until then.
 
 use crate::models::{
-    AttentionItem, AttentionResponse, DocsResponse, FeaturesPayload, HarnessFeature, HarnessIssue,
-    HarnessRef, IssuesResponse, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry,
-    RosterResponse,
+    ActivityEvent, ActivityResponse, AttentionItem, AttentionResponse, DocsResponse,
+    FeaturesPayload, HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, PlanSummary,
+    PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -206,6 +206,14 @@ impl OperatorClient {
         };
         let v = self.get_json(&p).await?;
         serde_json::from_value::<DocsResponse>(v).context("decode docs")
+    }
+
+    /// Cross-harness recent activity: `GET /api/harness/all/recent-activity`.
+    pub async fn recent_activity(&self) -> Result<Vec<ActivityEvent>> {
+        let v = self.get_json("/api/harness/all/recent-activity").await?;
+        Ok(serde_json::from_value::<ActivityResponse>(v)
+            .context("decode activity")?
+            .events)
     }
 }
 
