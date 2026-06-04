@@ -67,7 +67,7 @@ export default defineTool({
       };
     }
 
-    const { parsed, archived } = result;
+    const { parsed, archived, row } = result;
     ctxAny.metadata?.({ slug: args.slug, archived, legacy: parsed.isLegacy });
 
     if (parsed.isLegacy) {
@@ -82,6 +82,9 @@ export default defineTool({
               prose: parsed.prose,
               raw: parsed.raw,
               contentHash: hashPlanContent(parsed.raw),
+              // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
+              // contentHash kept for callers that still pass expectedHash.
+              version: row.version,
               filename: parsed.filename,
             }),
           },
@@ -161,6 +164,7 @@ export default defineTool({
             prose: parsed.prose,
             raw: parsed.raw,
             contentHash: hashPlanContent(parsed.raw),
+            version: row.version,
             linkedFeatures,
             planItemTests,
           }),

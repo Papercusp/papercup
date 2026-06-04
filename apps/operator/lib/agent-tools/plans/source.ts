@@ -1,17 +1,27 @@
 /**
- * Filesystem source for plans.
+ * PG-canonical source for plans.
  *
- * Canonical directory: <repoRoot>/apps/operator/docs/plans/
- * Archive subdirectory: <repoRoot>/apps/operator/docs/plans/archive/
+ * Plans live in `harness_shared.harness_plans` — one row per plan, keyed by
+ * (workspace_id, harness_slug, plan_slug). The `content` column holds the
+ * canonical markdown blob; reads parse it into a `ParsedPlan` exactly as the
+ * old filesystem reader did, so every downstream consumer (items/list/search/
+ * effective-status) is unchanged. The frontmatter + op_* columns are a derived
+ * index maintained on write.
  *
- * Pure FS read + parse. No PG, no caching above what node's fs gives us.
- * Cheap enough at ~50 files; per D-002 of the plan, parse cost is not
- * the substrate justification.
+ * Plan: plans-pg-canonical-migration-2026-06-03 (Stage 1 — reads/writes flip
+ * FS→PG). The filesystem at apps/operator/docs/plans/ is retired in Stage 2.
+ *
+ * The dir-resolution helpers (getRepoRoot / resolveHarnessPlansDir) survive as
+ * SLUG/HARNESS VALIDATORS + repo-root resolvers (a launched plan agent still
+ * `cd`s into the repo root); they no longer read plan bytes.
  */
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { parsePlan, type ParsedPlan } from './parser';
+import { parsePlan, type ParsedPlan, type PlanStatus } from './parser';
+import { hashPlanContent } from './content-hash';
+import { withWorkspace } from '@papercusp/db-org';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { resolveProject } from '@/lib/harness-core';
 import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '@/lib/harness/register-papercup';
@@ -19,27 +29,9 @@ import { detectPapercupRoot, PAPERCUP_HARNESS_SLUG } from '@/lib/harness/registe
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
 
-/**
- * Per-harness plans directory convention. The papercup harness is the
- * legacy case: its plans live at `apps/operator/docs/plans/` (inside
- * the operator app). All other harnesses use `docs/plans/` at their
- * harness root — that's the convention going forward (D-002R of
- * per-harness-plans-and-docs-2026-05-23).
- *
- * TODO(per-harness-plans-and-docs-2026-05-23): extract to a registry
- * `plans_dir` field when a third config is needed. For now, two paths
- * = one if-clause.
- */
 const PAPERCUP_PLANS_REL = 'apps/operator/docs/plans';
 const DEFAULT_HARNESS_PLANS_REL = 'docs/plans';
 
-/**
- * Pick the plans-dir relative path for a harness. Path-based detection
- * — not slug-based — so the legacy `apps/operator/docs/plans/` location
- * is used whenever the harness lives at the detected papercup repo
- * root, regardless of what slug it's registered under (dogfood Phase 4
- * may rename `papercup` to `papercup-org` etc.).
- */
 function plansRelFor(harnessPath: string): string {
   const detected = detectPapercupRoot();
   if (detected && path.resolve(harnessPath) === path.resolve(detected)) {
@@ -49,126 +41,140 @@ function plansRelFor(harnessPath: string): string {
 }
 
 /**
- * Resolve the per-harness plans directory + its archive subdir.
- *
- * D-002R: per-harness plans live at `<harness.path>/<plansRelFor(slug)>/`.
- * D-004R: no harness in context → fall through to the workspace's primary
- * harness (today: `papercup`, the harness whose path == REPO_ROOT).
- *
- * Throws if the resolved harness isn't registered.
- *
- * NOTE: this is the *async* per-harness resolver. The legacy sync
- * `getPlansDir`/`getArchiveDir` still exist for callers that haven't
- * yet been migrated to per-harness resolution — they default to the
- * papercup location via cwd-walk, preserving today's behavior. New
- * code should call this resolver instead. (Migration scheduled as
- * P-012 of per-harness-plans-and-docs-2026-05-23.)
+ * Options threading the (workspace, harness) PG key through the read API.
+ * `harnessSlug` is the only field consumers need; `workspaceId` is resolved
+ * from the registry when omitted. The legacy filesystem override fields
+ * (`plansDir` / `archiveDir` / `repoRoot`) are accepted-but-ignored so the
+ * ~handful of historical call sites that still pass them keep compiling
+ * through the Stage-2 cleanup.
  */
-export async function resolveHarnessPlansDir(
-  harnessSlug?: string,
-  opts: { workspaceId?: string } = {},
-): Promise<{ harnessSlug: string; plans: string; archive: string }> {
-  // SU mode passes harnessSlug='*' as a wildcard sentinel meaning "no
-  // specific harness in scope". Treat it (and any empty/whitespace
-  // value) as a no-harness ctx and fall back per D-004R to the
-  // workspace's primary harness — identified by `path === REPO_ROOT`,
-  // not by slug. The primary slug used to be `papercup` but the
-  // papercusp-dogfood Phase 4 restructure can rename it (e.g. to
-  // `papercup-org`), so path-match is the resilient resolver.
-  const raw = harnessSlug?.trim();
-  const reg = await loadHarnessRegistry(opts.workspaceId);
-
-  let project: typeof reg.projects[number] | undefined;
-  let resolved: string;
-
-  if (!raw || raw === '*') {
-    // No harness in ctx: find the project whose path is the detected repo root.
-    const detected = detectPapercupRoot();
-    if (detected) {
-      project = reg.projects.find((p) => path.resolve(p.path) === path.resolve(detected));
-    }
-    // Fallback chain: path-matched → legacy hardcoded papercup slug → first project.
-    project = project ?? reg.projects.find((p) => p.slug === PAPERCUP_HARNESS_SLUG);
-    if (!project) {
-      throw new Error(
-        `resolveHarnessPlansDir: no harness in ctx and no primary harness ` +
-          `findable (no path-match for repo root '${detected}', no '${PAPERCUP_HARNESS_SLUG}' slug). ` +
-          `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
-      );
-    }
-    resolved = project.slug;
-  } else {
-    resolved = raw;
-    // Cross-workspace fallback (mirrors every other harness route): a harness
-    // is registered in ONE workspace, but the active workspace flaps (multiple
-    // SU agents + the desktop switch it). resolveProject scans the other
-    // workspaces by slug when not pinned — so cross_harness:plans_* can reach a
-    // harness in any workspace instead of hard-failing on whichever happens to
-    // be active. A pinned workspace (opts.workspaceId) stays in it.
-    project = (await resolveProject(resolved, opts.workspaceId)) ?? undefined;
-    if (!project) {
-      // 'papercusp' (the product/umbrella name) is the classic typo for the
-      // 'papercup' harness — a recurring agent error in the failed-tool-call
-      // data worth a targeted hint.
-      const didYouMean = resolved === 'papercusp' ? ` Did you mean '${PAPERCUP_HARNESS_SLUG}'?` : '';
-      throw new Error(
-        `resolveHarnessPlansDir: harness '${resolved}' not registered in any workspace.${didYouMean} ` +
-          `Active-workspace harnesses: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
-      );
-    }
-  }
-  // P-014: runtime guard. For papercup, verify the registered path
-  // still matches the detected repo root. Catches a registry-corruption
-  // case where papercup was re-registered against a stale path; without
-  // this, every plans:* call would silently read from the wrong dir.
-  // Skip when detection returns null (packaged install — papercup repo
-  // not on disk, the whole code path is a no-op anyway).
-  if (resolved === PAPERCUP_HARNESS_SLUG) {
-    const detected = detectPapercupRoot();
-    if (detected && path.resolve(project.path) !== path.resolve(detected)) {
-      throw new Error(
-        `P-014 runtime guard: papercup harness path '${project.path}' ` +
-          `does not match detected repo root '${detected}'. ` +
-          `The registry is out of sync — re-run registerPapercupHarness() ` +
-          `with pathOverride to fix.`,
-      );
-    }
-  }
-  const plans = path.join(project.path, plansRelFor(project.path));
-  return { harnessSlug: resolved, plans, archive: path.join(plans, 'archive') };
+export interface PlanSourceOpts {
+  /** Harness whose plans to read. Omitted / '*' / 'all' → papercup primary. */
+  harnessSlug?: string;
+  /** Workspace the plans live in. Omitted → resolved from the registry / DEFAULT. */
+  workspaceId?: string;
+  /** @deprecated filesystem override — ignored under PG-canonical storage. */
+  plansDir?: string;
+  /** @deprecated filesystem override — ignored under PG-canonical storage. */
+  archiveDir?: string;
+  /** @deprecated filesystem override — ignored under PG-canonical storage. */
+  repoRoot?: string;
 }
 
-export interface PlanSourceOpts {
-  repoRoot?: string;
-  /**
-   * Direct override of the plans directory. When provided, bypasses
-   * the cwd-walk that locates the papercup-default location. Used by
-   * cross_harness:plans_* to target a specific harness's plans dir
-   * (resolved via resolveHarnessPlansDir).
-   */
-  plansDir?: string;
-  /** Direct override of the archive directory. Paired with `plansDir`. */
-  archiveDir?: string;
+/** A raw harness_plans row (camelCased), for callers needing version / op_* state. */
+export interface PlanRow {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  content: string;
+  contentHash: string;
+  version: number;
+  title: string | null;
+  status: string | null;
+  created: string | null;
+  updated: string | null;
+  owner: string | null;
+  supersedes: string[];
+  supersededBy: string | null;
+  opStatus: 'started' | 'paused' | 'done' | null;
+  opStartedAt: string | null;
+  opUpdatedAt: string | null;
+  currentWave: string | null;
+  opPriority: number | null;
+  archived: boolean;
+  isLegacy: boolean;
+  updatedAt: string;
+}
+
+interface PlanDbRow {
+  workspace_id: string;
+  harness_slug: string;
+  plan_slug: string;
+  content: string;
+  content_hash: string;
+  version: string | number;
+  title: string | null;
+  status: string | null;
+  created: string | null;
+  updated: string | null;
+  owner: string | null;
+  supersedes: string[] | null;
+  superseded_by: string | null;
+  op_status: string | null;
+  op_started_at: string | null;
+  op_updated_at: string | null;
+  current_wave: string | null;
+  op_priority: number | null;
+  archived: boolean;
+  is_legacy: boolean;
+  updated_at: string;
+}
+
+function rowFromDb(r: PlanDbRow): PlanRow {
+  return {
+    workspaceId: r.workspace_id,
+    harnessSlug: r.harness_slug,
+    planSlug: r.plan_slug,
+    content: r.content,
+    contentHash: r.content_hash,
+    version: Number(r.version),
+    title: r.title,
+    status: r.status,
+    created: r.created,
+    updated: r.updated,
+    owner: r.owner,
+    supersedes: r.supersedes ?? [],
+    supersededBy: r.superseded_by,
+    opStatus: (r.op_status as PlanRow['opStatus']) ?? null,
+    opStartedAt: r.op_started_at,
+    opUpdatedAt: r.op_updated_at,
+    currentWave: r.current_wave,
+    opPriority: r.op_priority,
+    archived: r.archived,
+    isLegacy: r.is_legacy,
+    updatedAt: r.updated_at,
+  };
 }
 
 /**
- * Resolve plans directory robustly. Tools may run from either the repo
- * root (tests with explicit repoRoot, CLI) or from apps/operator/ (Next
- * dev server). We try both layouts and pick whichever exists.
- *
- * If neither matches, fall back to <cwd>/apps/operator/docs/plans for
- * symmetry with the previous behavior — the caller will get an ENOENT
- * on first read with a clear path.
+ * Resolve a `PlanSourceOpts` to the concrete (workspaceId, harnessSlug) PG key.
+ * No harness / the SU wildcard `'*'` / `'all'` / the papercup slug → the
+ * papercup primary harness in its workspace. A concrete other slug → that
+ * harness, whose workspace is looked up via the registry (cross-workspace
+ * fallback, mirroring the old FS resolver) and defaulted to DEFAULT_WORKSPACE_ID.
  */
-function resolveCanonicalRoots(opts: PlanSourceOpts): { plans: string; archive: string } {
-  // Direct override wins — no cwd-walk needed. Used by
-  // cross_harness:plans_* and by tests that pass an explicit dir.
-  if (opts.plansDir) {
+export async function resolvePlanScope(
+  opts: PlanSourceOpts = {},
+): Promise<{ workspaceId: string; harnessSlug: string }> {
+  const raw = opts.harnessSlug?.trim();
+  if (!raw || raw === '*' || raw === 'all' || raw === PAPERCUP_HARNESS_SLUG) {
     return {
-      plans: opts.plansDir,
-      archive: opts.archiveDir ?? path.join(opts.plansDir, 'archive'),
+      workspaceId: opts.workspaceId ?? DEFAULT_WORKSPACE_ID,
+      harnessSlug: PAPERCUP_HARNESS_SLUG,
     };
   }
+  if (opts.workspaceId) return { workspaceId: opts.workspaceId, harnessSlug: raw };
+  let workspaceId = DEFAULT_WORKSPACE_ID;
+  try {
+    const project = await resolveProject(raw);
+    const ws = (project as { workspaceId?: string } | null | undefined)?.workspaceId;
+    if (ws) workspaceId = ws;
+  } catch {
+    // Unknown harness — default workspace; the SELECT simply returns no rows.
+  }
+  return { workspaceId, harnessSlug: raw };
+}
+
+/** Synthetic stable locator for a plan (the old `.md` path) — display + lock key. */
+export function syntheticPlanPath(harnessSlug: string, slug: string): string {
+  return harnessSlug === PAPERCUP_HARNESS_SLUG
+    ? `${PLANS_DIR_REL}/${slug}.md`
+    : `${harnessSlug}/${DEFAULT_HARNESS_PLANS_REL}/${slug}.md`;
+}
+
+// ── Filesystem dir helpers (repo-root / cwd resolution only — NOT plan bytes) ──
+
+function resolveCanonicalRoots(opts: PlanSourceOpts): { plans: string; archive: string } {
   const candidates: string[] = [];
   if (opts.repoRoot) {
     candidates.push(opts.repoRoot);
@@ -181,139 +187,225 @@ function resolveCanonicalRoots(opts: PlanSourceOpts): { plans: string; archive: 
       candidates.push(path.resolve(cwd, '..', '..'));
     }
   }
-
   for (const root of candidates) {
     const direct = path.join(root, PLANS_DIR_REL);
     try {
-      // statSync would be cleaner but this module is async; existsSync is
-      // fine here as it's bootstrap-only on the first call.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const exists = require('node:fs').existsSync(direct);
-      if (exists) return { plans: direct, archive: path.join(root, ARCHIVE_DIR_REL) };
+      if (require('node:fs').existsSync(direct)) {
+        return { plans: direct, archive: path.join(root, ARCHIVE_DIR_REL) };
+      }
     } catch {
-      // fall through
+      /* fall through */
     }
   }
-
   const root = candidates[0] ?? process.cwd();
-  return {
-    plans: path.join(root, PLANS_DIR_REL),
-    archive: path.join(root, ARCHIVE_DIR_REL),
-  };
+  return { plans: path.join(root, PLANS_DIR_REL), archive: path.join(root, ARCHIVE_DIR_REL) };
 }
 
 export function getPlansDir(opts: PlanSourceOpts = {}): string {
   return resolveCanonicalRoots(opts).plans;
 }
-
 export function getArchiveDir(opts: PlanSourceOpts = {}): string {
   return resolveCanonicalRoots(opts).archive;
 }
 
 /**
  * The repo root — the directory that contains `apps/operator/docs/plans`.
- * `getPlansDir()` is `<root>/apps/operator/docs/plans` (PLANS_DIR_REL,
- * four path segments); strip them back off. A launched plan agent
- * (plan-agent-launch-2026-05-21, P-012) starts its process here.
+ * A launched plan agent starts its process here (plan-agent-launch-2026-05-21).
  */
 export function getRepoRoot(opts: PlanSourceOpts = {}): string {
   return path.resolve(getPlansDir(opts), '..', '..', '..', '..');
 }
 
+/**
+ * Resolve a harness slug to its canonical slug + workspace + repo-root dirs.
+ * Now a VALIDATOR + repo-dir resolver (the `plans`/`archive` paths are the
+ * harness's docs/plans location, used for cwd/launch and synthetic locators —
+ * not for reading plan bytes, which come from PG). Throws if the harness isn't
+ * registered (preserved behavior).
+ */
+export async function resolveHarnessPlansDir(
+  harnessSlug?: string,
+  opts: { workspaceId?: string } = {},
+): Promise<{ harnessSlug: string; workspaceId: string; plans: string; archive: string }> {
+  const reg = await loadHarnessRegistry(opts.workspaceId);
+  const raw = harnessSlug?.trim();
+
+  let project: (typeof reg.projects)[number] | undefined;
+  let resolved: string;
+
+  if (!raw || raw === '*') {
+    const detected = detectPapercupRoot();
+    if (detected) {
+      project = reg.projects.find((p) => path.resolve(p.path) === path.resolve(detected));
+    }
+    project = project ?? reg.projects.find((p) => p.slug === PAPERCUP_HARNESS_SLUG);
+    if (!project) {
+      throw new Error(
+        `resolveHarnessPlansDir: no harness in ctx and no primary harness findable ` +
+          `(no path-match for repo root '${detected}', no '${PAPERCUP_HARNESS_SLUG}' slug). ` +
+          `Available: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
+      );
+    }
+    resolved = project.slug;
+  } else {
+    resolved = raw;
+    project = (await resolveProject(resolved, opts.workspaceId)) ?? undefined;
+    if (!project) {
+      const didYouMean = resolved === 'papercusp' ? ` Did you mean '${PAPERCUP_HARNESS_SLUG}'?` : '';
+      throw new Error(
+        `resolveHarnessPlansDir: harness '${resolved}' not registered in any workspace.${didYouMean} ` +
+          `Active-workspace harnesses: ${reg.projects.map((p) => p.slug).join(', ') || '(none)'}`,
+      );
+    }
+  }
+  if (resolved === PAPERCUP_HARNESS_SLUG) {
+    const detected = detectPapercupRoot();
+    if (detected && path.resolve(project.path) !== path.resolve(detected)) {
+      throw new Error(
+        `P-014 runtime guard: papercup harness path '${project.path}' does not match ` +
+          `detected repo root '${detected}'. The registry is out of sync.`,
+      );
+    }
+  }
+  const plans = path.join(project.path, plansRelFor(project.path));
+  const workspaceId =
+    (project as { workspaceId?: string }).workspaceId ?? opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
+  return { harnessSlug: resolved, workspaceId, plans, archive: path.join(plans, 'archive') };
+}
+
+/**
+ * Whitelist of characters legal in a plan slug. Rejecting `/` is what stops a
+ * `../../../etc/passwd`-style traversal in the synthetic lock path; the read
+ * path no longer touches the filesystem, but the slug is still the PG key and
+ * the lock key, so the guard stays.
+ */
+export const VALID_PLAN_SLUG = /^[A-Za-z0-9._-]+$/;
+
 export interface ListEntry {
   slug: string;
+  /** Synthetic stable locator (the old `.md` path) — no file exists under PG storage. */
   filePath: string;
   archived: boolean;
 }
 
-export async function listPlanFiles(opts: PlanSourceOpts = {}): Promise<ListEntry[]> {
-  const plansDir = getPlansDir(opts);
-  const archiveDir = getArchiveDir(opts);
-
-  const entries: ListEntry[] = [];
-
-  await collect(plansDir, false, entries);
-  await collect(archiveDir, true, entries);
-
-  return entries.sort((a, b) => a.slug.localeCompare(b.slug));
+/** List plan slugs for a harness (PG). Sorted by slug for a stable directory. */
+export async function listPlanFiles(
+  opts: PlanSourceOpts & { includeArchived?: boolean } = {},
+): Promise<ListEntry[]> {
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<{ plan_slug: string; archived: boolean }[]>`
+      SELECT plan_slug, archived
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       ORDER BY plan_slug ASC
+    `;
+  });
+  return rows
+    .filter((r) => opts.includeArchived || !r.archived)
+    .map((r) => ({
+      slug: r.plan_slug,
+      filePath: syntheticPlanPath(harnessSlug, r.plan_slug),
+      archived: r.archived,
+    }));
 }
 
-async function collect(dir: string, archived: boolean, out: ListEntry[]): Promise<void> {
-  let names: string[];
-  try {
-    names = await fs.readdir(dir);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw e;
-  }
-  for (const name of names) {
-    if (!name.endsWith('.md') && !name.endsWith('.mdx')) continue;
-    if (name.startsWith('.')) continue;
-    const filePath = path.join(dir, name);
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile()) continue;
-    out.push({
-      slug: name.replace(/\.mdx?$/, ''),
-      filePath,
-      archived,
-    });
-  }
+/** Fetch one plan's raw row (PG), or null when it doesn't exist. */
+export async function getPlanRow(
+  slug: string,
+  opts: PlanSourceOpts = {},
+): Promise<PlanRow | null> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<PlanDbRow[]>`
+      SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+             title, status, created, updated, owner, supersedes, superseded_by,
+             op_status, op_started_at, op_updated_at, current_wave, op_priority,
+             archived, is_legacy, updated_at
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${slug}
+    `;
+  });
+  return rows[0] ? rowFromDb(rows[0]) : null;
+}
+
+/** All plan rows for a harness (PG), live + optionally archived. */
+export async function listPlanRows(
+  opts: PlanSourceOpts & { includeArchived?: boolean } = {},
+): Promise<PlanRow[]> {
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<PlanDbRow[]>`
+      SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
+             title, status, created, updated, owner, supersedes, superseded_by,
+             op_status, op_started_at, op_updated_at, current_wave, op_priority,
+             archived, is_legacy, updated_at
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       ORDER BY plan_slug ASC
+    `;
+  });
+  return rows.filter((r) => opts.includeArchived || !r.archived).map(rowFromDb);
 }
 
 /**
- * Whitelist of characters legal in a plan slug. Anything outside this
- * set — `/`, URL-decoded escapes, NULs, whitespace — is rejected
- * before the slug is joined with the plans dir. Closes A-1 from the
- * agent-coordination-architecture-v2 audit: without this check,
- * `readPlanBySlug` would happily read `../../../etc/passwd.md` via
- * `path.join`'s `..` normalisation. Rejecting `/` is what stops
- * traversal — a `..` segment cannot escape a directory without a `/`.
- *
- * The read path guards here; the write path guards in
- * `withPlanLock` (with-plan-lock.ts), which imports this same regex —
- * so every caller, read or write, inherits one slug definition.
+ * Read one plan by slug, parsing its canonical content blob into a ParsedPlan.
+ * Shape preserved from the FS reader (`{ parsed, archived }`) + the raw `row`
+ * for callers needing version / op_* state. Returns null on an invalid slug or
+ * a missing plan.
  */
-export const VALID_PLAN_SLUG = /^[A-Za-z0-9._-]+$/;
-
 export async function readPlanBySlug(
   slug: string,
   opts: PlanSourceOpts = {},
-): Promise<{ parsed: ParsedPlan; archived: boolean } | null> {
-  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
-  const plansDir = getPlansDir(opts);
-  const archiveDir = getArchiveDir(opts);
-
-  // perf:allow A1 — find-first over ≤4 bounded candidate paths (dir×ext) with
-  // early return on the first hit; parallelizing would read all candidates.
-  for (const [dir, archived] of [
-    [plansDir, false],
-    [archiveDir, true],
-  ] as const) {
-    for (const ext of ['.md', '.mdx']) {
-      const fp = path.join(dir, slug + ext);
-      try {
-        const buf = await fs.readFile(fp, 'utf8');
-        return { parsed: parsePlan(buf, { filePath: fp }), archived };
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-      }
-    }
-  }
-  return null;
+): Promise<{ parsed: ParsedPlan; archived: boolean; row: PlanRow } | null> {
+  const row = await getPlanRow(slug, opts);
+  if (!row) return null;
+  return {
+    parsed: parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    archived: row.archived,
+    row,
+  };
 }
 
+/** All plans for a harness, parsed. Mirrors the old FS `readAllPlans`. */
 export async function readAllPlans(
   opts: PlanSourceOpts & { includeArchived?: boolean } = {},
-): Promise<Array<{ parsed: ParsedPlan; archived: boolean }>> {
-  const entries = await listPlanFiles(opts);
-  const filtered = opts.includeArchived ? entries : entries.filter((e) => !e.archived);
-  const out: Array<{ parsed: ParsedPlan; archived: boolean }> = [];
-  for (const e of filtered) {
-    const buf = await fs.readFile(e.filePath, 'utf8');
-    out.push({
-      parsed: parsePlan(buf, { filePath: e.filePath }),
-      archived: e.archived,
-    });
-  }
-  return out;
+): Promise<Array<{ parsed: ParsedPlan; archived: boolean; row: PlanRow }>> {
+  const rows = await listPlanRows(opts);
+  return rows.map((row) => ({
+    parsed: parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    archived: row.archived,
+    row,
+  }));
+}
+
+/** Frontmatter-index fields derived from a plan's markdown — maintained on write. */
+export interface PlanIndex {
+  title: string | null;
+  status: PlanStatus | null;
+  created: string | null;
+  updated: string | null;
+  owner: string | null;
+  supersedes: string[];
+  supersededBy: string | null;
+  isLegacy: boolean;
+}
+
+/** Parse a plan body into its derived frontmatter index (used on every write + backfill). */
+export function deriveIndexFromContent(content: string): PlanIndex {
+  const p = parsePlan(content);
+  const fm = p.frontmatter;
+  return {
+    title: fm.title ?? null,
+    status: fm.status ?? null,
+    created: fm.created ?? null,
+    updated: fm.updated ?? null,
+    owner: fm.owner ?? null,
+    supersedes: fm.supersedes ?? [],
+    supersededBy: fm.supersededBy ?? null,
+    isLegacy: p.isLegacy,
+  };
 }

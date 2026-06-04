@@ -1,13 +1,12 @@
 /**
- * Cross-store invariant: a plan that is operationally `started`/`paused`
- * in PG (`harness_shared.harness_plan_status`) must NEVER also be at a
- * terminal lifecycle status (`shipped` / `superseded`) in its git-canonical
- * frontmatter.
+ * Cross-field invariant: a plan that is operationally `started`/`paused`
+ * (`harness_shared.harness_plans.op_status`) must NEVER also be at a terminal
+ * lifecycle status (`shipped` / `superseded`) in its frontmatter.
  *
- * Those two pieces of state live in different stores — operational status
- * is a PG row, lifecycle status is plan-file frontmatter — so a column
- * `CHECK` constraint cannot express the rule (the lifecycle status isn't a
- * Postgres column). We enforce it at the write boundary + on read instead:
+ * Both now live in the same `harness_plans` row (op_status column + the
+ * frontmatter `status` index derived from `content`), but a column `CHECK`
+ * still can't express the rule cheaply across the parsed-vs-stored boundary,
+ * so we enforce it at the write boundary + on read:
  *
  *   1. Every lifecycle transition to a terminal status clears the PG
  *      started/paused row (→ 'done') — {@link clearStartedForTerminalPlan},
@@ -67,12 +66,12 @@ export async function clearStartedForTerminalPlan(
   const now = new Date().toISOString();
   const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
     return tx<{ plan_slug: string }[]>`
-      UPDATE harness_shared.harness_plan_status
-         SET status = 'done', updated_at = ${now}
+      UPDATE harness_shared.harness_plans
+         SET op_status = 'done', op_updated_at = ${now}
        WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
          AND harness_slug  = ${harnessSlug}
          AND plan_slug     = ${planSlug}
-         AND status IN ('started', 'paused')
+         AND op_status IN ('started', 'paused')
       RETURNING plan_slug
     `;
   });

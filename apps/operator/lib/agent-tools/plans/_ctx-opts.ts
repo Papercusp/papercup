@@ -21,7 +21,7 @@
  * this in becomes async (most read tool handlers already are).
  */
 
-import { resolveHarnessPlansDir, type PlanSourceOpts } from './source';
+import { type PlanSourceOpts } from './source';
 import { PAPERCUP_HARNESS_SLUG } from '@/lib/harness/register-papercup';
 
 export interface CtxHarnessOpts extends PlanSourceOpts {
@@ -52,14 +52,11 @@ export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts>
   // '*' is the SU-mode wildcard set by http-projection.ts when an admin
   // request arrives with `?superuser=1` and no `?harness=`. Treat it
   // exactly like an empty ctx (no harness in scope) so /adv/plans —
-  // which always operates on the operator's own plans dir — keeps
-  // working after papercusp-dogfood Phase 4 renamed the registered
-  // harness from 'papercup' → 'papercup-org'. The cwd-walk in
-  // source.ts always lands at apps/operator/docs/plans regardless of
-  // registry state.
+  // which always operates on the operator's own plans — keeps working.
+  // Under PG-canonical storage the readers resolve (workspace, harness)
+  // themselves (source.ts resolvePlanScope), so this just threads the slug.
   if (!raw || raw === '*' || raw === PAPERCUP_HARNESS_SLUG) {
     return { harnessSlug: PAPERCUP_HARNESS_SLUG };
   }
-  const { plans, archive } = await resolveHarnessPlansDir(raw);
-  return { harnessSlug: raw, plansDir: plans, archiveDir: archive };
+  return { harnessSlug: raw };
 }

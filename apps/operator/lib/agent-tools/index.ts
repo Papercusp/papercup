@@ -222,9 +222,9 @@ import './plans/set-content-chunk';
 import './plans/set-frontmatter';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
-// Q3 — git history surface promoted to plans:* tools so agents read it too.
-import './plans/history';
-import './plans/diff';
+// Plan history/audit is the PG plan_revisions spine (plans:revisions /
+// plans:revision-diff) — the git-history surface was removed when plans went
+// PG-canonical (plans-pg-canonical-migration-2026-06-03 D-003).
 import './plans/revisions-list';
 import './plans/revisions-backfill';
 import './plans/revision-transcript';

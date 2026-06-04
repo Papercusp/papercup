@@ -1,62 +1,58 @@
 /**
- * withPlanLock — acquire-mutate-release shape for plans:* write verbs.
+ * withPlanLock — acquire-mutate-release shape for plans:* write verbs, now
+ * PG-canonical (plans-pg-canonical-migration-2026-06-03, Stage 1 / D-005).
  *
- * Per agent-plan-tracking-2026-05-20.md §4.4: every assisted-write verb
- * must serialize its read-modify-write through the SU lock system. The
- * OMP `tool_call` auto-lock hook only fires for `edit`/`write`/
- * `multi_edit`, so MCP tool calls don't get auto-locked — each write
- * verb owns its acquire/release.
+ * The plan body lives in `harness_shared.harness_plans.content`. A write is a
+ * read-modify-write: read the current blob, run the mutator, upsert the result
+ * with `version = version + 1`. Concurrency (D-005):
  *
- * Critical invariant: ID allocation (D-NNN, P-NNN, slug uniqueness)
- * MUST happen *inside* the lock's mutator callback. The lock is held
- * across the entire read → allocate → write sequence; otherwise two
- * concurrent calls can both observe the same "max D-NNN" and collide.
+ *   - A **PG advisory xact lock** on (workspace, harness, slug) serializes
+ *     concurrent writers for the SAME plan, so ID allocation (D-NNN / P-NNN /
+ *     slug uniqueness) inside the mutator — and the `afterWrite` plan_revisions
+ *     `seq` allocation — is race-free. The lock auto-releases when the wrapping
+ *     transaction commits. Held across the whole RMW + afterWrite.
+ *   - Optimistic **version CAS** is the editor-concurrency guard: a caller that
+ *     based its edit on `expectedVersion` is rejected (stale) when the live row
+ *     has moved on. A UI edit session holds no lock during the minutes of
+ *     editing — version CAS, not the lock, catches the concurrent change.
+ *
+ * Replaces the old filesystem O_EXCL lock + the SU file-claim coordinator.
  */
 
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import type { BusyEntry } from '@papercusp/file-claim';
+import { withWorkspace } from '@papercusp/db-org';
+import { hashPlanContent } from './content-hash';
+import type { AcquireBusy } from '@/lib/agent-tools/locks/su-lock-store';
 import {
-  ensureBootstrap,
-  normalizePaths,
-  type AcquireBusy,
-} from '@/lib/agent-tools/locks/su-lock-store';
-import { SuLocksCoordinator } from '@/lib/agent-tools/locks/coordinator';
-import { readIdentity, type IdentityCtx } from '@/lib/agent-tools/locks/identity';
-import {
-  getPlansDir,
-  PLANS_DIR_REL,
-  resolveHarnessPlansDir,
+  resolvePlanScope,
+  syntheticPlanPath,
+  deriveIndexFromContent,
   VALID_PLAN_SLUG,
-  type PlanSourceOpts,
 } from './source';
-import { PAPERCUP_HARNESS_SLUG } from '@/lib/harness/register-papercup';
 
-export interface WithPlanLockOpts extends PlanSourceOpts {
-  /** Plan slug (filename stem). Resolves to `<plansDir>/<slug>.md`. */
+/** Current state handed to the mutator alongside the body — for version CAS. */
+export interface PlanWriteMeta {
+  version: number;
+  contentHash: string;
+}
+
+export interface WithPlanLockOpts {
+  /** Plan slug (the PG key + the advisory lock key). */
   slug: string;
   /** One-line description of the mutation, surfaced to busy callers. */
   intent: string;
-  /**
-   * Harness scope for this write. Omit → defaults to `papercup`
-   * (preserves today's behavior — every existing SU caller is on
-   * papercup). When provided + != 'papercup', the plans dir resolves
-   * via the harness registry AND the lock key gets harness-prefixed
-   * so per-harness writes never collide on the same plan slug.
-   */
+  /** Harness scope. Omit → papercup primary. */
   harnessSlug?: string;
-  /** Lock TTL — short by default since write verbs do a fast RMW. */
+  /** Workspace. Omit → resolved from the registry / DEFAULT. */
+  workspaceId?: string;
+  /** Advisory-lock acquisition budget before reporting busy. Default ~5s. */
   ttlSec?: number;
   /**
-   * Optional hook run *after* the file is written, while the lock is
-   * still held. The `plans:*` write verbs use it to append a
-   * `plan_revisions` row (P-002): holding the lock keeps the row's
-   * `seq` allocation (max+1 per plan) race-free. Only invoked when the
-   * mutator produced a write (`newBody !== null`). It must be
-   * best-effort — a throw here propagates, and the file is already
-   * written.
+   * Optional hook run *after* the upsert, while the advisory lock is still
+   * held — the `plans:*` verbs append a `plan_revisions` row here so `seq`
+   * allocation is race-free. Best-effort; a throw propagates (the row is
+   * already written).
    */
-  afterWrite?: (writtenBody: string, filePath: string) => Promise<void>;
+  afterWrite?: (writtenBody: string) => Promise<void>;
 }
 
 export interface BusyError {
@@ -67,141 +63,163 @@ export interface BusyError {
 export interface AppliedResult<T> {
   kind: 'applied';
   value: T;
-  /** Resolved file path on disk. */
+  /** Synthetic stable locator (the old `.md` path) — no file exists under PG storage. */
   filePath: string;
+  /** The row's version after this write (unchanged when the mutator wrote nothing). */
+  version: number;
 }
 
 export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
 
+/** PG error raised when a query is canceled by lock_timeout. */
+const LOCK_TIMEOUT_CODE = '55P03';
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 /**
- * Acquire a lock on `<plansDir>/<slug>.md`, read the file (if it
- * exists), run the mutator, write the result back, release.
+ * Acquire a PG advisory lock on the plan, read its current body, run the
+ * mutator, upsert the result with a bumped version, release (on commit).
  *
  * Mutator contract:
- *   - Receives the current file body (or null when creating).
- *   - Returns the new file body, or `null` to leave the file untouched
- *     (e.g. uniqueness check failed).
- *   - May allocate IDs by reading the body — the lock guarantees no
- *     concurrent allocator can observe the same state.
+ *   - `current` is the live content blob, or null when the plan doesn't exist.
+ *   - `meta` carries the live `version` + `contentHash` (null when absent).
+ *   - Returns the new body, or `null` to leave the plan untouched.
+ *
+ * The first parameter (`_ctx`) is retained for call-site compatibility — the
+ * old SU lock used it for the owner identity; the PG advisory lock needs none.
+ * Revision attribution is wired by the caller through `afterWrite`.
  */
 export async function withPlanLock<T>(
-  ctx: IdentityCtx,
+  _ctx: unknown,
   opts: WithPlanLockOpts,
-  mutator: (current: string | null) => Promise<{ newBody: string | null; value: T }>,
+  mutator: (
+    current: string | null,
+    meta: PlanWriteMeta | null,
+  ) => Promise<{ newBody: string | null; value: T }>,
 ): Promise<WithPlanLockResult<T>> {
-  // Slug guard — the write-path counterpart of `readPlanBySlug`'s
-  // check. Without it a `slug` containing `/` + `..` escapes
-  // `docs/plans/`: `path.join` normalises the `..` away *before*
-  // the lock store's `validatePath` can see it, so a verb called with
-  // `slug: '../../../CLAUDE'` would write `<repo>/apps/CLAUDE.md`.
-  // Rejecting `/` (VALID_PLAN_SLUG) closes that — a `..` cannot
-  // traverse without a slash. Throw rather than return: an unsafe
-  // slug reaching here is caller abuse/bug, not a normal outcome.
   if (typeof opts.slug !== 'string' || !VALID_PLAN_SLUG.test(opts.slug)) {
     throw new Error(`withPlanLock: invalid plan slug ${JSON.stringify(opts.slug)}`);
   }
-  // Resolve the plans dir per opts.harnessSlug (D-002R / D-004R of
-  // per-harness-plans-and-docs-2026-05-23). Default = papercup → preserves
-  // legacy sync cwd-walk for back-compat with every existing caller.
-  const harnessSlug = opts.harnessSlug?.trim() || PAPERCUP_HARNESS_SLUG;
-  let plansDir: string;
-  if (opts.plansDir) {
-    // Direct override (cross_harness:* or tests). Trust caller's path.
-    plansDir = opts.plansDir;
-  } else if (harnessSlug === PAPERCUP_HARNESS_SLUG) {
-    // Papercup — keep legacy sync resolver for back-compat.
-    plansDir = getPlansDir(opts);
-  } else {
-    // Per-harness — registry-backed resolver.
-    const resolved = await resolveHarnessPlansDir(harnessSlug);
-    plansDir = resolved.plans;
-  }
-  const filePath = path.join(plansDir, opts.slug + '.md');
-  // P-011: harness-discriminated lock key. Papercup retains its legacy
-  // key (`apps/operator/docs/plans/<slug>.md`) so any in-flight lock
-  // acquired by an older caller still matches; other harnesses use a
-  // synthetic `harnesses/<slug>/...` path so the same plan slug in
-  // different harnesses never collides. Both are workspace-canonical
-  // relative paths so the same plan-in-harness always hashes to the
-  // same lock regardless of repoRoot.
-  const lockKey =
-    harnessSlug === PAPERCUP_HARNESS_SLUG
-      ? path.posix.join(PLANS_DIR_REL, opts.slug + '.md')
-      : path.posix.join('harnesses', harnessSlug, 'docs', 'plans', opts.slug + '.md');
-  const paths = normalizePaths([lockKey]);
-
-  await ensureBootstrap();
-  const identity = readIdentity(ctx);
-  const ttl = opts.ttlSec ?? 60;
-
-  // file-locking #11 dogfood: drive the SU-locks backend through the
-  // shared FileClaimCoordinator interface rather than the underlying
-  // tryAcquire / tryRelease primitives. Proves the alignment at a
-  // real consumer site; the BusyError shape on the WAY OUT (snake_
-  // case AcquireBusy) is preserved by translating BusyEntry at the
-  // API boundary so MCP-tool callers' wire schema is unchanged.
-  const coordinator = new SuLocksCoordinator({
-    coordinationDomain: identity.coordinationDomain,
+  const { workspaceId, harnessSlug } = await resolvePlanScope({
+    harnessSlug: opts.harnessSlug,
+    workspaceId: opts.workspaceId,
   });
+  const slug = opts.slug;
+  const filePath = syntheticPlanPath(harnessSlug, slug);
+  const lockKey = `${workspaceId}:${harnessSlug}:${slug}`;
+  const budgetMs = (opts.ttlSec ?? 5) * 1000;
 
-  const acquireResult = await coordinator.acquire(identity.ownerId, paths, {
-    ownerLabel: identity.ownerLabel,
-    intent: opts.intent,
-    ttlMs: ttl * 1000,
-  });
-
-  if (!acquireResult.ok) {
-    return { kind: 'busy', busy: acquireResult.busy.map(toAcquireBusy) };
-  }
-
-  const claim = acquireResult.claim;
-
-  try {
-    let current: string | null = null;
-    try {
-      current = await fs.readFile(filePath, 'utf8');
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  return withWorkspace(workspaceId, async (tx) => {
+    // Serialize same-plan writers via a transaction-scoped advisory lock,
+    // acquired non-blocking with a bounded retry so genuine contention reports
+    // busy instead of hanging. The two-int4 form keys on a fixed namespace +
+    // the plan key hash.
+    let acquired = false;
+    const deadline = Date.now() + budgetMs;
+    for (;;) {
+      const r = await tx<{ ok: boolean }[]>`
+        SELECT pg_try_advisory_xact_lock(hashtext('harness_plans'), hashtext(${lockKey})) AS ok
+      `;
+      if (r[0]?.ok) {
+        acquired = true;
+        break;
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(50);
+    }
+    if (!acquired) {
+      return {
+        kind: 'busy',
+        busy: [
+          {
+            path: filePath,
+            owner: 'unknown',
+            owner_label: null,
+            intent: 'another plans write is in progress',
+            expires_ts: new Date(deadline),
+          },
+        ],
+      } satisfies BusyError;
     }
 
-    const { newBody, value } = await mutator(current);
+    const rows = await tx<
+      { content: string; version: string | number; content_hash: string }[]
+    >`
+      SELECT content, version, content_hash
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${slug}
+    `;
+    const cur = rows[0] ?? null;
+    const curVersion = cur ? Number(cur.version) : 0;
+    const meta: PlanWriteMeta | null = cur
+      ? { version: curVersion, contentHash: cur.content_hash }
+      : null;
 
+    const { newBody, value } = await mutator(cur?.content ?? null, meta);
+
+    let newVersion = curVersion;
     if (newBody !== null) {
-      await fs.mkdir(plansDir, { recursive: true });
-      await fs.writeFile(filePath, newBody, 'utf8');
+      newVersion = curVersion + 1;
+      const idx = deriveIndexFromContent(newBody);
+      const hash = hashPlanContent(newBody);
+      await tx`
+        INSERT INTO harness_shared.harness_plans (
+          workspace_id, harness_slug, plan_slug, content, content_hash, version,
+          title, status, created, updated, owner, supersedes, superseded_by,
+          is_legacy, origin
+        ) VALUES (
+          ${workspaceId}, ${harnessSlug}, ${slug}, ${newBody}, ${hash}, ${newVersion},
+          ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner},
+          ${idx.supersedes}, ${idx.supersededBy}, ${idx.isLegacy}, 'local'
+        )
+        ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
+          content       = EXCLUDED.content,
+          content_hash  = EXCLUDED.content_hash,
+          version       = ${newVersion},
+          title         = EXCLUDED.title,
+          status        = EXCLUDED.status,
+          created       = EXCLUDED.created,
+          updated       = EXCLUDED.updated,
+          owner         = EXCLUDED.owner,
+          supersedes    = EXCLUDED.supersedes,
+          superseded_by = EXCLUDED.superseded_by,
+          is_legacy     = EXCLUDED.is_legacy
+      `;
       if (opts.afterWrite) {
-        await opts.afterWrite(newBody, filePath);
+        await opts.afterWrite(newBody);
       }
     }
 
-    return { kind: 'applied', value, filePath };
-  } finally {
-    await coordinator.release(claim);
-  }
-}
-
-/** Translate the cross-backend BusyEntry shape back to the snake_
- *  case AcquireBusy that MCP-tool callers serialize over the wire.
- *  Keeps the boundary honest in both directions: in-process code uses
- *  the unified interface, JSON consumers see the stable JSON schema. */
-function toAcquireBusy(b: BusyEntry): AcquireBusy {
-  return {
-    path: b.path,
-    owner: b.owner,
-    owner_label: b.ownerLabel ?? null,
-    intent: b.intent ?? '',
-    expires_ts: b.expiresAt ?? new Date(0),
-  };
+    return { kind: 'applied', value, filePath, version: newVersion } satisfies AppliedResult<T>;
+  }).catch((err: unknown) => {
+    // A lock_timeout (if a future caller sets one) surfaces as busy rather
+    // than a hard error; everything else propagates.
+    if ((err as { code?: string })?.code === LOCK_TIMEOUT_CODE) {
+      return {
+        kind: 'busy',
+        busy: [
+          {
+            path: filePath,
+            owner: 'unknown',
+            owner_label: null,
+            intent: 'another plans write is in progress',
+            expires_ts: new Date(),
+          },
+        ],
+      } satisfies BusyError;
+    }
+    throw err;
+  });
 }
 
 /**
- * Mutate the frontmatter's `updated:` field in place to today's
- * ISO-8601 date. If frontmatter is missing/invalid, returns the body
- * unchanged (legacy plans aren't assisted-write targets).
+ * Mutate the frontmatter's `updated:` field in place to today's ISO-8601 date.
+ * If frontmatter is missing/invalid, returns the body unchanged (legacy plans
+ * aren't assisted-write targets).
  */
 export function bumpUpdatedDate(body: string, today = new Date()): string {
   const iso = today.toISOString().slice(0, 10);
-  // Match top-of-file frontmatter only.
   if (!body.startsWith('---')) return body;
   const close = body.indexOf('\n---', 3);
   if (close === -1) return body;
@@ -211,6 +229,5 @@ export function bumpUpdatedDate(body: string, today = new Date()): string {
   if (updatedRe.test(fm)) {
     return fm.replace(updatedRe, `$1${iso}`) + rest;
   }
-  // Insert before the closing --- if absent.
   return fm + `\nupdated: ${iso}` + rest;
 }

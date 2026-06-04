@@ -78,8 +78,6 @@ const PLAN_TOOL_NAMES = [
   'plans:search',
   'plans:lint',
   'plans:revisions',
-  'plans:history',
-  'plans:diff',
   'plans:new',
   'plans:set-content',
   'plans:set-now',

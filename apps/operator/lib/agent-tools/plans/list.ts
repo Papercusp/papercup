@@ -12,13 +12,11 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { listPlanFiles, readPlanBySlug, resolveHarnessPlansDir } from './source';
+import { readAllPlans, resolveHarnessPlansDir } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveStatus } from './effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from './parser';
-import { withWorkspace } from '@papercusp/db-org';
-import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { reconcileStartStatus } from './plan-start-state';
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
@@ -113,13 +111,12 @@ export default defineTool({
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
 
-    // P-029: build the list of per-harness source-opts to walk.
-    // When `harness_slugs` is supplied, fan out across each (resolving
-    // its on-disk plans dir via resolveHarnessPlansDir); otherwise
-    // fall through to the ctx-resolver's single harness. Unknown
-    // slugs produce a warning entry instead of throwing — caller may
-    // pass a stale registry snapshot from the client.
-    const perHarnessOpts: Array<{ harnessSlug: string; plansDir: string; archiveDir: string }> = [];
+    // P-029: build the list of harness slugs to read.
+    // When `harness_slugs` is supplied, fan out across each (validated via
+    // resolveHarnessPlansDir); otherwise fall through to the ctx-resolver's
+    // single harness. Unknown slugs produce a warning entry instead of
+    // throwing — caller may pass a stale registry snapshot from the client.
+    const perHarness: string[] = [];
     const unknownHarnesses: string[] = [];
     if (args.harness_slugs && args.harness_slugs.length > 0) {
       const seen = new Set<string>();
@@ -129,37 +126,28 @@ export default defineTool({
         seen.add(trimmed);
         try {
           const r = await resolveHarnessPlansDir(trimmed);
-          perHarnessOpts.push({
-            harnessSlug: r.harnessSlug,
-            plansDir: r.plans,
-            archiveDir: r.archive,
-          });
+          if (!perHarness.includes(r.harnessSlug)) perHarness.push(r.harnessSlug);
         } catch {
           unknownHarnesses.push(trimmed);
         }
       }
     } else {
       const one = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
-      perHarnessOpts.push({
-        harnessSlug: one.harnessSlug,
-        plansDir: one.plansDir ?? '',
-        archiveDir: one.archiveDir ?? '',
-      });
+      perHarness.push(one.harnessSlug);
     }
 
-    const rows: ListRow[] = [];
+    type AugmentedRow = ListRow & {
+      startStatus: 'started' | 'paused' | 'done' | null;
+      priority: number | null;
+    };
+    const augmentedRows: AugmentedRow[] = [];
     const seenRowKeys = new Set<string>();
-    for (const ho of perHarnessOpts) {
-      const sourceOpts = ho.plansDir
-        ? { plansDir: ho.plansDir, archiveDir: ho.archiveDir }
-        : {};
-      const entries = await listPlanFiles(sourceOpts);
-      const filtered = includeArchived ? entries : entries.filter((e) => !e.archived);
-      for (const entry of filtered) {
-        const result = await readPlanBySlug(entry.slug, sourceOpts);
-        if (!result) continue;
-        const { parsed, archived } = result;
-
+    for (const harnessSlug of perHarness) {
+      // One SQL read per harness: the canonical blob + op_* status + frontmatter
+      // index all arrive in the same harness_plans row (op_status replaces the
+      // old separate harness_plan_status join).
+      const plans = await readAllPlans({ harnessSlug, includeArchived });
+      for (const { parsed, archived, row } of plans) {
         if (parsed.isLegacy && !includeLegacy) continue;
 
         let itemCounts: ListRow['itemCounts'] = null;
@@ -173,18 +161,15 @@ export default defineTool({
         }
 
         // No frontmatter status (incl. legacy/unparseable plans) → 'draft'.
-        // 'unknown' was retired as a status; the isLegacy flag still marks
-        // frontmatter-less plans for callers that care.
         const status = parsed.frontmatter.status ?? 'draft';
-
         if (args.status && status !== args.status) continue;
 
         const slug = parsed.frontmatter.slug ?? parsed.slug;
-        const dedupKey = `${ho.harnessSlug}:${slug}`;
+        const dedupKey = `${harnessSlug}:${slug}`;
         if (seenRowKeys.has(dedupKey)) continue;
         seenRowKeys.add(dedupKey);
 
-        rows.push({
+        augmentedRows.push({
           slug,
           title: parsed.frontmatter.title ?? null,
           status,
@@ -194,58 +179,22 @@ export default defineTool({
           isLegacy: parsed.isLegacy,
           itemCounts,
           nextAction: parsed.now?.next ?? null,
-          harness: ho.harnessSlug,
+          harness: harnessSlug,
+          // Self-heal the started/terminal invariant on read: a terminal plan
+          // (shipped/superseded) can never be operationally started/paused.
+          startStatus: reconcileStartStatus(row.opStatus, status),
+          priority: row.opPriority,
         });
       }
     }
 
     ctxAny.metadata?.({
-      count: rows.length,
+      count: augmentedRows.length,
       includeArchived,
       includeLegacy,
-      harnessCount: perHarnessOpts.length,
+      harnessCount: perHarness.length,
       ...(unknownHarnesses.length > 0 && { unknownHarnesses }),
     });
-
-    // Batch-load harness_plan_status for all slugs so Start/Pause UI
-    // can derive button state without a separate fetch per plan.
-    let startStatusMap: Map<string, string> = new Map();
-    let priorityMap: Map<string, number | null> = new Map();
-    try {
-      const slugSet = rows.map((r) => r.slug);
-      if (slugSet.length > 0) {
-        const harnessSlug = perHarnessOpts[0]?.harnessSlug ?? 'papercup';
-        const statusRows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-          return tx<{ plan_slug: string; status: string; priority: number | null }[]>`
-            SELECT plan_slug, status, priority
-              FROM harness_shared.harness_plan_status
-             WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
-               AND harness_slug  = ${harnessSlug}
-               AND plan_slug = ANY(${slugSet})
-          `;
-        });
-        for (const sr of statusRows) {
-          startStatusMap.set(sr.plan_slug, sr.status);
-          priorityMap.set(sr.plan_slug, sr.priority ?? null);
-        }
-      }
-    } catch {
-      // harness_plan_status may not exist yet on older installs — degrade gracefully
-    }
-
-    const augmentedRows = rows.map((r) => ({
-      ...r,
-      // Self-heal the cross-store invariant on read: a terminal plan
-      // (shipped/superseded frontmatter) can never be operationally
-      // started/paused, so a stale PG row from a raw .md edit that bypassed
-      // the write verbs is reported as 'done'. Keeps the "N waiting" badge,
-      // the Running bucket, and the rail from ever counting a terminal plan.
-      startStatus: reconcileStartStatus(
-        (startStatusMap.get(r.slug) ?? null) as 'started' | 'paused' | 'done' | null,
-        r.status,
-      ),
-      priority: priorityMap.get(r.slug) ?? null,
-    }));
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ plans: augmentedRows }) }],
