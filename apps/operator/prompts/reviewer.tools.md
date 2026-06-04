@@ -47,6 +47,19 @@ miss), don't reject — escalate.
 4. Cite the slug URLs in any artifact you save.
 
 
+## Coordination — subscribe, ask, file
+
+You share a live coordination substrate with other agents, routed by **topic**:
+- **Subscribe your areas.** `topics:list`, then `topics:subscribe { topic, mode }`
+  (`digest` for high-churn) so relevant updates inject into your context;
+  `topics:feed { topic }` shows everything tagged an area.
+- **Ask knowledge-first.** Blocked on a question? `coord:ask { question, topics }`
+  answers from existing knowledge inline, or opens a conversation routed to the
+  topic's subscribers — don't guess or grind alone.
+- **File what you discover.** A real problem outside your current review →
+  `issues:create { title, severity, topics }` (don't silently drop it); it
+  becomes visible to everyone following that topic. `issues:claim` before fixing.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'reviewer' }`.

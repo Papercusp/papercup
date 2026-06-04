@@ -68,6 +68,19 @@ The four canonical frameworks
 Never write a new `.mjs` integration script or tsx smoke script. CI
 lint (P-038) fails the build on additions.
 
+## Coordination — subscribe, ask, file
+
+The coordination substrate keeps you in sync with other agents, routed by **topic**:
+- **Subscribe the areas you debug.** `topics:list`, then `topics:subscribe
+  { topic, mode }` (`digest` for high-churn); `topics:feed { topic }` shows open
+  issues/conversations/features/plans in an area — often the bug is already filed.
+- **Ask knowledge-first.** Stuck on a confusing failure? `coord:ask { question,
+  topics }` answers from existing knowledge (a prior diagnosis) or opens a
+  conversation routed to the area's subscribers — before you grind alone.
+- **File what you discover.** A real defect that's out of your current
+  investigation → `issues:create { title, severity, topics }`; `issues:link
+  { rel:'blocks', target }` the work it blocks.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'debugger' }`.

@@ -70,6 +70,19 @@ When torn between two, pick the higher — but never inflate a routine item to `
 
 Do NOT write `.harness/proposals/<ISO-timestamp>.md` in this mode — the plan draft is the only artifact. Stdout is still `PROPOSE <N>` (N = number of items added).
 
+## Coordination — subscribe, ask, file
+
+The coordination substrate keeps you in sync with other agents, routed by **topic**:
+- **Subscribe the areas you scope.** `topics:list`, then `topics:subscribe
+  { topic, mode }` (`digest` for high-churn); `topics:feed { topic }` shows
+  every open issue/conversation/feature/plan in an area — read it as part of the
+  READ-heavy scoping phase.
+- **Ask knowledge-first.** An open question about an area? `coord:ask
+  { question, topics }` answers from existing knowledge or opens a conversation
+  routed to its subscribers.
+- **File what you discover.** A real defect or gap you surface while scoping →
+  `issues:create { title, severity, topics }`.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'scoper' }`.

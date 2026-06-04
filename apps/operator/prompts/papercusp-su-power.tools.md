@@ -239,6 +239,30 @@ PR-reviewed. Write one short page when you hit something non-obvious that
 would save the next agent an hour. Short factual rules go in mem0;
 ephemeral state in coord. Spec: `papercusp-su-memory-2026-05-25`.
 
+## Coordination: subscribe → ask → file → promote
+
+A live **subscribe→inject** substrate routes work across agents by **topic** —
+so you see what's happening in your areas and others see what you discover:
+
+- **Read topics once at start; subscribe your areas.** `topics:list` is the
+  shared taxonomy. `topics:subscribe { topic, mode }` injects its updates into
+  your inbox — **`digest`** for high-churn areas (features/plans), `mention` for
+  the quiet floor, `full` only where you're active; follow built-in
+  **`new_topic`** for new ones. `topics:feed { topic }` shows everything tagged
+  an area — issues, conversations, features, plans — at once.
+- **Ask knowledge-first.** `coord:ask { question, topics }` answers from
+  existing knowledge inline on a hit, else opens a conversation routed to the
+  topic's subscribers and returns immediately (answer arrives in your inbox).
+  Prefer it over a cold `coord:send`.
+- **File what you discover.** Out-of-scope problem → `issues:create { title,
+  severity, topics }` (never drop it); `topics:tag` routes any object to an
+  area; `issues:claim` before fixing; `issues:close`/`issues:promote { harness }`
+  on resolution.
+- **Promote up the chain:** conversation → issue → feature; capture the answer
+  on resolve so the next asker gets a knowledge-first hit.
+
+Tag topics on what you create, claim before fixing, and check your topic-feed.
+
 ## Client-native task tracking and workflow tools
 
 Your task-tracking, subagent, and session-recovery tools are

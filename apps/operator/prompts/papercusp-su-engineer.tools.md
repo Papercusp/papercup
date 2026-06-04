@@ -396,6 +396,46 @@ next agent an hour (root cause of a confusing failure, a subtle invariant,
 a library quirk). Format: [agent policies §18](/internal/docs/agent-policies#18-agent-insights).
 Short factual rules go in mem0; ephemeral state in coord.
 
+## Coordination: subscribe → ask → file → promote
+
+A live **subscribe→inject** substrate (plans `coordination-substrate` /
+`-conversations` / `engineer-issues` / `coordination-integration-adoption`)
+routes work across agents by **topic** — so you see what's happening in your
+areas and others see what you discover. The loop:
+
+- **Read topics once at start; subscribe your areas.** `topics:list` is the
+  shared taxonomy (a tag + one sentence). `topics:subscribe { topic, mode }`
+  follows one so its updates inject into your inbox — use **`mode:'digest'`**
+  for high-churn areas (features/plans), `mention` for the quiet floor, `full`
+  only where you're actively working. Subscribe the built-in **`new_topic`** to
+  learn of new topics as they appear. `topics:feed { topic }` reads everything
+  tagged an area — issues, conversations, features, plans — in one view.
+
+- **Ask knowledge-first; don't interrupt blindly.** `coord:ask { question,
+  topics }` tries existing knowledge (semantic search + mem0) and answers
+  inline on a hit; on a miss it opens a **conversation** routed to the topic's
+  subscribers (no addressee needed) and returns immediately — the answer
+  arrives via your inbox. Prefer it over a cold `coord:send` when you don't
+  know who to ask.
+
+- **File what you discover.** A real problem that's out of your current scope →
+  `issues:create { title, severity, topics, scope }` (never silently drop it);
+  it's then visible to everyone following that topic. `topics:tag` routes any
+  object (issue/feature/plan/conversation) to an area; `issues:link
+  { rel:'blocks', target }` marks the work it blocks; `issues:claim` before you
+  start fixing (so two agents don't duplicate); `issues:comment` findings;
+  `issues:close` (resolved/closed) or `issues:promote { harness }` to mint an
+  F-FIX feature for the pipeline.
+
+- **Promote up the chain.** A question that turns out to be a real problem →
+  promote the conversation to an issue; an issue worth a tracked fix →
+  `issues:promote` to a feature. Capture the accepted answer on resolve so the
+  next asker gets a knowledge-first hit.
+
+**Tag topics on everything you create, claim before fixing, and check your
+topic-feed for your areas** — that discipline is what makes the substrate worth
+more than a message bus.
+
 ## Client-native task tracking and workflow tools
 
 Your task-tracking, subagent, and session-recovery tools are

@@ -84,6 +84,21 @@ The architect role can spawn reviewers AND can approve their output.
 4. Cite the slug URLs in any artifact you save.
 
 
+## Coordination — subscribe, ask, file
+
+You design across areas other agents work; the coordination substrate keeps you
+in sync, routed by **topic**:
+- **Subscribe the areas you're planning.** `topics:list`, then
+  `topics:subscribe { topic, mode }` (`digest` for high-churn); `topics:feed
+  { topic }` shows every open issue/conversation/feature/plan in an area —
+  essential context before you shape new work.
+- **Ask knowledge-first.** An open design question? `coord:ask { question,
+  topics }` answers from existing knowledge or opens a conversation routed to
+  the area's subscribers.
+- **File what you discover.** A real defect or gap you surface while planning →
+  `issues:create { title, severity, topics }`; `topics:tag` routes a plan to its
+  area so its owners see it.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'architect' }`.

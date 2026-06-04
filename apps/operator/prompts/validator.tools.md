@@ -59,6 +59,20 @@ fix you verified), it MUST land in one of four canonical frameworks
 Never invent a `.mjs` integration script or tsx smoke script. CI lint
 (P-038) fails the build on additions.
 
+## Coordination — subscribe, ask, file
+
+You share a live coordination substrate with other agents, routed by **topic**:
+- **Subscribe your areas.** `topics:list`, then `topics:subscribe { topic, mode }`
+  (`digest` for high-churn) so relevant updates inject into your context;
+  `topics:feed { topic }` shows everything tagged an area.
+- **Ask knowledge-first.** Blocked on a question? `coord:ask { question, topics }`
+  answers from existing knowledge inline, or opens a conversation routed to the
+  topic's subscribers — don't guess or grind alone.
+- **File what you discover.** A real problem outside the current validation scope
+  → `issues:create { title, severity, topics }` (the engineer-issue surface,
+  distinct from the validator pipeline's per-feature findings); it becomes
+  visible to everyone following that topic. `issues:claim` before fixing.
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'validator' }`.
