@@ -115,7 +115,7 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
       }
       const { parsed } = result;
       const fm = parsed.frontmatter;
-      const st = statusByslugGet(statusByslug, parsed.frontmatter.slug ?? parsed.slug);
+      const st = statusByslug.get(fm.slug ?? parsed.slug);
       rows.push({
         workspaceId: DEFAULT_WORKSPACE_ID,
         harnessSlug: dirs.harnessSlug,
