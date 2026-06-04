@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase 1 (VM clean-room workflow) COMPLETE — P-001–P-006 done, 7/7 green on a pristine machine. Primary DB bug (D-009) fixed in main.rs (bundled_path_env) + VM-verified on the rebuilt .deb. Per user (2026-06-04): Phase 2 federation testing (P-007–P-013) is DEFERRED; focus stays on the VM + desktop-app install. The remaining blocker to a usable Linux install is bug #2 (D-010): the app UI doesn't render on a clean machine (WebKit "connection refused" after the bootstrap navigates to appBase/harness). Now investigating bug #2 to make the installed app actually render.
+**State:** Phase 1 (VM clean-room workflow) COMPLETE + the VM caught and we fixed THREE real clean-machine bugs in the Linux .deb, each VM-verified: (1) embedded-PG/zero spawns missing bundled-node PATH → no DB (D-009, main.rs bundled_path_env); (2) frontendDist hardcoded to :3070 → blank window (D-011, tauri.conf → ../web); (3) window port-handoff race + localhost/IPv6 → bootstrap stuck (D-012, main.rs re-eval timer + 127.0.0.1). The packaged app now installs and RENDERS its onboarding UI on a pristine Ubuntu (DB OK, operator OK, window OK). Remaining (separate, app's prereq gate, not blank-window): preflight lists claude/gh not on PATH (user-installed), meridian service down, and harness "orchestrator bin not found" (likely a bundling gap) — these gate reaching the full harness UI. Phase 2 federation (P-007–P-013) DEFERRED per user.
 
-**Next:** Root-cause bug #2 (D-010): determine appBase / custom-protocol vs localhost-IPv6 behavior (instrument the bootstrap if editable in-VM, else rebuild once), fix in source, re-verify the UI renders in the VM. Phase 2 federation deferred until requested.
+**Next:** Human decision: whether to chase the preflight prereq gaps (esp. the harness-orchestrator bundling path) so the app reaches the full harness UI, and when to pick up the deferred Phase 2 federation testing. The 3 fixes (main.rs ×2, tauri.conf) land via git-sync; the rpm was not rebuilt with the fixes (deb-only test builds).
 
 ## Background
 
@@ -240,4 +240,15 @@ The packaged window has no per-window `url`, so it loads `frontendDist` directly
 The original design (still fully present): frontendDist `../web` loads the bootstrap (web/index.html) → it polls `${__papercuspBase}/api/desktop/preflight` (the dynamic port main.rs evals in) with retry/"starting harness sidecar…" UX → then `location.replace(__papercuspAppBase + '/harness')` where __papercuspAppBase = `papercusp://localhost`. The custom protocol (registered main.rs:1127, custom_protocol.rs) forwards papercusp://localhost/* to the sidecar's dynamic port (SidecarState.port). All that machinery is intact; only frontendDist points the wrong way.
 
 Fix: revert frontendDist to `"../web"`. Only affects packaged builds (dev uses devUrl :3055). Rebuilding + VM-verifying the UI renders.
+Related: P-005
+
+### D-012 — Bug #2 FIXED — window renders on a clean machine; preflight prereqs remain (separate)
+Date: 2026-06-04
+Bug #2 (blank "connection refused" window) is fixed with two changes, both VM-verified on rebuilt .debs:
+1. tauri.conf.json frontendDist `http://127.0.0.1:3070` → `../web` (revert the Phase F2 regression D-011) — the window loads the bootstrap page instead of a fixed dead port.
+2. main.rs window-handoff: setup() ran the `__papercuspBase` eval before the bootstrap page finished loading, so the port was lost and the bootstrap polled forever (preflight served 0×). Fix: re-eval the port into the window on a 300ms×30 timer (so a late page-load still receives it), and use 127.0.0.1 instead of localhost (WebKitGTK may resolve localhost→::1 while the sidecar binds IPv4).
+
+Result on a pristine VM: the window now renders the operator's real preflight/onboarding UI with live checks — node OK, embedded-postgres OK (127.0.0.1:19319), pi/bash/git/tar/curl OK. The two showstoppers (no DB, blank window) are gone.
+
+REMAINING (separate, not the blank-window bug; the app's designed prereq gate): the preflight does not auto-advance to the harness UI because some checks are MISSING — `claude` + `gh` not on PATH (user-installed onboarding asks), `meridian` 127.0.0.1:3456 ECONNREFUSED (a service), and notably `harness` "orchestrator bin not found at /usr/lib/Papercusp/sidecar/harness/../orchestrator/bin/run.ts" — which looks like a packaging/path gap worth a separate look (the orchestrator may not be bundled at the expected path). These gate reaching the full harness UI but are distinct from bug #2.
 Related: P-005
