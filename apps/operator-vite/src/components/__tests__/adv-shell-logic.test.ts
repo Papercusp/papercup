@@ -42,27 +42,16 @@ describe('ADV_TABS', () => {
     expect(ADV_TABS.every((t) => (t.id as string) !== 'prs')).toBe(true);
   });
 
-  it('plans and harnesses support workspace-wide (all-mode); sessions moved into the Plans shell', () => {
-    const supportAll = ADV_TABS.filter((t) => t.supportsAll).map((t) => t.id);
-    expect(supportAll).toContain('plans');
-    expect(supportAll).toContain('harnesses');
-    // Sessions is no longer a standalone AdvShell tab — it became the 3rd
-    // ?view= in the combined Plans/Inbox shell (adv-sessions-live-roster P-005).
-    expect(supportAll).not.toContain('sessions');
-  });
-
-  it('per-harness tabs do not support all-mode', () => {
-    const perHarness = ADV_TABS.filter((t) => !t.supportsAll).map((t) => t.id);
-    // brainstorm, git, testing, docs, insights, config, settings are per-harness.
-    expect(perHarness).toContain('brainstorm');
-    expect(perHarness).toContain('git');
-    expect(perHarness.length).toBeGreaterThan(0);
-  });
-
-  it('all-mode visible tabs are a strict subset of all tabs', () => {
-    const allModeTabs = ADV_TABS.filter((t) => t.supportsAll);
-    expect(allModeTabs.length).toBeLessThan(ADV_TABS.length);
-    expect(allModeTabs.every((t) => ADV_TABS.some((full) => full.id === t.id))).toBe(true);
+  it('the full tab strip is scope-independent — no tab is hidden under all-mode', () => {
+    // Regression guard: the strip used to filter down to `supportsAll` tabs
+    // under scope=all, which made switching to Create (or landing in all-mode)
+    // look like every other tab had disappeared. Scope now decides each tab's
+    // CONTENT (per-harness tabs degrade to a "needs a single harness" state),
+    // never which tabs exist. There is intentionally no per-tab scope flag.
+    expect(ADV_TABS.some((t) => 'supportsAll' in t)).toBe(false);
+    expect(ADV_TABS.map((t) => t.id)).toEqual([
+      'brainstorm', 'plans', 'harnesses', 'git', 'testing', 'docs', 'insights', 'config', 'settings',
+    ]);
   });
 });
 

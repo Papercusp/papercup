@@ -40,18 +40,10 @@ export const ADV_TABS: ReadonlyArray<{
   icon: ComponentType<{ size?: number; 'aria-hidden'?: boolean }>;
   accent: string;
   accentRgb: string;
-  /**
-   * Tab renders something meaningful under scope=all (workspace-wide):
-   * Plans aggregates across every harness (and now carries the live
-   * Sessions roster as its 3rd view), and the Harness grid is itself a
-   * workspace overview. Every other tab is per-harness and is hidden
-   * from the strip when "All harnesses" is selected.
-   */
-  supportsAll?: boolean;
 }> = [
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
-  { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11', supportsAll: true },
-  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250', supportsAll: true },
+  { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
+  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
@@ -188,16 +180,16 @@ export default function AdvShell({
   // the header's Share button to a "Shared" badge.
   const activeIsShared = !!(singleSlug && projects.find((p) => p.slug === singleSlug)?.is_shared);
 
-  // Under "all", only the workspace-wide tabs are shown. If a per-harness
-  // tab was active when "all" was picked (or someone deep-links
-  // ?tab=insights&scope=all), bounce to Plans so the strip selection
-  // stays valid and the body doesn't render a dead per-harness panel.
-  const visibleTabs = allMode ? ADV_TABS.filter((t) => t.supportsAll) : ADV_TABS;
-  useEffect(() => {
-    if (!allMode) return;
-    if (visibleTabs.some((t) => t.id === activeTab)) return;
-    void setActiveTab('plans');
-  }, [allMode, activeTab, visibleTabs, setActiveTab]);
+  // The full tab strip is ALWAYS shown — switching tabs (incl. Create) must
+  // never make the other tabs vanish. Scope ("all" vs a single harness) is an
+  // orthogonal axis that decides each tab's CONTENT, not which tabs exist: the
+  // workspace-wide tabs (Create/Sessions) aggregate across harnesses under
+  // "all", while a per-harness tab (Docs/Config/…) under "all" renders its own
+  // graceful "needs a single harness" state (AdvHarnessPanelPage). Previously
+  // "all" filtered the strip down to just the two workspace-wide tabs
+  // (Create/Harness), so landing in all-mode looked like every other tab had
+  // disappeared — which is the bug this removal fixes.
+  const visibleTabs = ADV_TABS;
 
   return (
     <div className="pc-advshell">
