@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Approved 2026-06-04; decisions locked — **zellij** multiplexer, binary **`pui`**, develop against the **currently-running** backend. Ready to execute.
+**State:** Approved 2026-06-04; framework/architecture decisions locked (ratatui, zellij, binary `pui`). BLOCKED ON SP1: per human direction, fully decoupling the UI from the backend (`operator-core-headless-serve-2026-06-04`) is step 1 and must land before TUI implementation begins — this supersedes the earlier "develop against the currently-running backend in parallel" stance. Nothing is decoupled yet; SP1 is still a draft spec with no code written.
 
-**Next:** Convert Phase 0 + Phase 1 into tracked items (`plans:add-item`), then start P0 (zellij spike + `apps/tui` crate scaffold). One remaining open decision: GUI sunset (Phase 5).
+**Next:** Get SP1 spec reviewed/approved, implement SP1 (headless `papercusp serve`, UI fully decoupled), THEN start this plan's P0 against the headless backend.
 
 ## Background — what this is and how it reshapes the roadmap
 
