@@ -129,8 +129,8 @@ build`, copy the `.deb` out immediately).
 - **P-001** `done` Design sign-off before implementation — review this plan; approve scope (Phases 1 & 2, the deferred list, the networking approach); mark done to unblock the build. importance: high (signed off by user "start phase 1" 2026-06-04)
 - **P-002** `done` cloud-init templates + `vmctl provision` → build golden Ubuntu 24.04 image (GNOME/Xorg + spice-vdagent + openssh; NO webkit/Node/build tools); snapshot golden.qcow2. blocked-by: P-001 (golden built + cloud-init done + powered off clean; golden.qcow2 6.1G)
 - **P-003** `done` `vmctl` lifecycle: `up`/`down` (idempotent nohup qemu), `reset` (overlay from golden), `ssh`, `status`. blocked-by: P-002 (up/down/reset/ssh/status verified live on a pristine overlay)
-- **P-004** `todo` `vmctl install` (scp newest `.deb` + `apt install`) + `launch`/`gui` (SPICE). blocked-by: P-003
-- **P-005** `todo` Fresh-install verification: assert dep resolution, embedded-PG boot, operator `:3070`, wizard render; capture install log + app log + screenshot. blocked-by: P-004
+- **P-004** `done` `vmctl install` (scp newest `.deb` + `apt install`) + `launch`/`gui` (SPICE). blocked-by: P-003 (install/launch/gui verified; install pulls webkit from scratch, launch renders app on openbox :0)
+- **P-005** `done` Fresh-install verification: assert dep resolution, embedded-PG boot, operator `:3070`, wizard render; capture install log + app log + screenshot. blocked-by: P-004 (verify works end-to-end: 7/7 green on a working app; correctly red on the real artifact caught the embedded-PG spawn bug)
 - **P-006** `todo` Add a "Linux test VM" row + runbook to `build-system/vms.md`. blocked-by: P-004
 
 ## Phase 2 — VM-based two-instance federation testing
@@ -210,3 +210,16 @@ Decision: drop `ubuntu-desktop-minimal`/gdm for a minimal X stack — `xserver-x
 
 Bonus: it makes the fresh-install dep test STRONGER. Under GNOME, libwebkit2gtk was already present so `apt install ./Papercusp.deb` pulled 0 deps; on the minimal base the .deb pulls the WebKitGTK runtime from scratch — a truer fresh install. (The .deb's declared Depends — libwebkit2gtk-4.1-0, libgtk-3-0 — and clean `ldd` resolution were both already confirmed.) Supersedes D-001.
 Related: P-002, P-004, P-005
+
+### D-009 — VM caught a shipping bug — packaged Linux .deb has no database on a clean machine
+Date: 2026-06-04
+The fresh-install test on the clean VM found that the shipped Linux `.deb` is non-functional on a machine without `node` on PATH (i.e. every real end-user machine; the dev box hides it because node is already on PATH).
+
+PRIMARY BUG (root-caused, fix known): `spawn_embedded_postgres_server` (src-tauri/src/main.rs:167) and `spawn_zero_cache_server` (:203) spawn via `Command::new("node")` WITHOUT wiring the bundled-node dir onto PATH. `spawn_sidecar` (:634) does set `cmd.env("PATH", "<sidecar/bin>:…")`, so its `Command::new("node")` resolves the bundled node (sidecar/bin/node) — which is why the operator/hono-host comes up but embedded-PG does not. On the clean VM: `failed to spawn embedded-postgres-server: No such file or directory (os error 2)` → no database → sidecar then crashes on `ECONNREFUSED 127.0.0.1:5432`. The .deb's own files are intact (initdb/postgres present, not the 0-byte clobber) and the binary `ldd`-resolves cleanly. Fix: spawn these via the bundled node (sidecar/bin/node) like spawn_sidecar. This is the macOS bundled_node() lesson (build-system/vms) not applied to the Linux PG/zero spawns.
+
+Proof: symlinking the app's own bundled node onto PATH in the VM makes `vmctl verify` go 7/7 green (PG up, operator up on its dynamic port, window renders) — confirming the spawn is the sole DB blocker.
+
+SECONDARY OBSERVATION (not fully root-caused): even on that green path, the WebView shows "Could not connect to 127.0.0.1: Connection refused" and does not navigate to the live operator — a window navigate/retry timing issue (main.rs ~1438 "navigate when ready") worth a separate look.
+
+Both only reproduce on a clean machine — exactly what this VM exists to catch.
+Related: P-005
