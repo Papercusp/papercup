@@ -77,6 +77,7 @@ vi.mock('@/lib/promote-issue', async () => {
 // Imported AFTER the mock is registered (vi.mock is hoisted).
 const issues = await import('@/lib/issues-engineer');
 const feed = await import('@/lib/topics-feed');
+const blocks = await import('@/lib/issue-blocks-merge');
 
 const NOW = '2026-06-04T00:00:00.000Z';
 let db: FreshPgDb;
@@ -211,5 +212,18 @@ describe('engineer issues surface (real PG)', () => {
     expect(byKind.feature?.ref).toBe('F-7');
     expect(byKind.feature?.title).toBe('a feature');
     expect(byKind.feature?.state).toBe('todo');
+  });
+
+  it('issue_blocks: an open blocking issue marks a plan item; closing it clears (Phase 2)', async () => {
+    await issues.createIssue({ title: 'blocker', createdBy: 'agA' }); // EI-1, open
+    await issues.linkIssue('EI-1', { kind: blocks.PLAN_ITEM_KIND, ref: blocks.planItemRef('myplan', 'P-003') }, 'blocks', 'agA');
+    let info = await blocks.getBlockingIssuesForPlan('myplan');
+    expect(info.blockedItems.get('P-003')).toEqual(['EI-1']);
+    // a different plan is unaffected
+    expect((await blocks.getBlockingIssuesForPlan('otherplan')).blockedItems.size).toBe(0);
+    // closing the issue clears the block atomically
+    await issues.setIssueState('EI-1', 'closed', 'agA');
+    info = await blocks.getBlockingIssuesForPlan('myplan');
+    expect(info.blockedItems.has('P-003')).toBe(false);
   });
 });
