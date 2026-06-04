@@ -5,6 +5,9 @@
 //! local http://127.0.0.1, so no TLS.
 #![allow(dead_code)] // surfaces are consumed by the P1 panels; keep check quiet until then.
 
+use crate::models::{
+    AttentionItem, AttentionResponse, PlanSummary, PlansResponse, RosterEntry, RosterResponse,
+};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -111,6 +114,31 @@ impl OperatorClient {
     /// GET /api/admin/plans/list — the plans list (Plans panel).
     pub async fn plans_list(&self) -> Result<serde_json::Value> {
         self.get_json("/api/admin/plans/list").await
+    }
+
+    /// Typed roster (`{active:[...]}` → `Vec<RosterEntry>`).
+    pub async fn roster_typed(&self) -> Result<Vec<RosterEntry>> {
+        let v = self.roster().await?;
+        Ok(serde_json::from_value::<RosterResponse>(v)
+            .context("decode roster")?
+            .active)
+    }
+
+    /// Typed plans list (`{plans:[...]}` → `Vec<PlanSummary>`).
+    pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {
+        let v = self.plans_list().await?;
+        Ok(serde_json::from_value::<PlansResponse>(v)
+            .context("decode plans")?
+            .plans)
+    }
+
+    /// Typed inbox: `/api/admin/plans/attention` groups flattened to items.
+    pub async fn attention_typed(&self) -> Result<Vec<AttentionItem>> {
+        let v = self.get_json("/api/admin/plans/attention").await?;
+        let groups = serde_json::from_value::<AttentionResponse>(v)
+            .context("decode attention")?
+            .groups;
+        Ok(groups.into_iter().flat_map(|g| g.items).collect())
     }
 }
 

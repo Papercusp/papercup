@@ -23,7 +23,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, root[0]);
     match app.tab {
         Tab::Plans => draw_plans(f, app, root[1]),
-        Tab::Inbox => draw_inbox(f, root[1]),
+        Tab::Inbox => draw_inbox(f, app, root[1]),
         Tab::Sessions => draw_sessions(f, app, root[1]),
     }
     draw_status(f, app, root[2]);
@@ -104,14 +104,16 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
             let agent = r.agent.clone().unwrap_or_else(|| "-".into());
             let role = r.role.clone().unwrap_or_default();
             let feat = r.feature.clone().unwrap_or_default();
+            let hb = r.heartbeat_at.clone().unwrap_or_default();
             ListItem::new(Line::from(format!(
-                "{} {:<7} {:<26} {:<10} {:<8} ({} files)",
+                "{} {:<7} {:<26} {:<10} {:<8} {:>2} files  {}",
                 dot,
                 trunc(&agent, 7),
                 trunc(&r.label, 26),
                 trunc(&role, 10),
                 trunc(&feat, 8),
-                r.current_files.len()
+                r.current_files.len(),
+                trunc(&hb, 19),
             )))
         })
         .collect();
@@ -130,14 +132,63 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_inbox(f: &mut Frame, area: Rect) {
-    let para = Paragraph::new(
-        "Inbox — needs the plan-items + coord endpoints (not yet wired).\n\
-         Planned filters: Needs-Human / ToDos / Blocked / Escalations / Messages / Reviews.",
-    )
-    .wrap(Wrap { trim: false })
-    .block(Block::default().borders(Borders::ALL).title(" Inbox "));
-    f.render_widget(para, area);
+fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+        .split(area);
+
+    let items: Vec<ListItem> = app
+        .inbox
+        .iter()
+        .map(|it| {
+            let loc = it
+                .plan_slug
+                .clone()
+                .or_else(|| it.harness_slug.clone())
+                .unwrap_or_default();
+            let r = it.item_ref.clone().unwrap_or_default();
+            let flag = if it.needs_human { "!" } else { " " };
+            ListItem::new(Line::from(format!(
+                "{}{:<11} {:<26} {}",
+                flag,
+                trunc(&it.status, 11),
+                trunc(&format!("{loc}/{r}"), 26),
+                trunc(&it.title, 38),
+            )))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !app.inbox.is_empty() {
+        state.select(Some(app.inbox_sel));
+    }
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(format!(" Inbox ({}) ", app.inbox.len()))),
+        )
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, cols[0], &mut state);
+
+    let preview = match app.selected_inbox() {
+        Some(it) => format!(
+            "{}\n\nkind:   {}\nstatus: {}\nplan:   {}\nref:    {}\nneedsHuman: {}\n\n{}",
+            it.title,
+            it.kind,
+            it.status,
+            it.plan_slug.clone().unwrap_or_default(),
+            it.item_ref.clone().unwrap_or_default(),
+            it.needs_human,
+            it.body.clone().unwrap_or_default(),
+        ),
+        None => "Inbox empty — nothing needs attention.".to_string(),
+    };
+    let para = Paragraph::new(preview)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(" Preview "));
+    f.render_widget(para, cols[1]);
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -223,6 +274,32 @@ mod tests {
         assert!(text.contains("claude"));
         assert!(text.contains("worker"));
         assert!(text.contains("1 files"));
+    }
+
+    #[test]
+    fn inbox_view_renders_items_and_preview() {
+        use crate::models::AttentionItem;
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.set_inbox(vec![AttentionItem {
+            id: "coord:esc:9".into(),
+            kind: "coord-escalation".into(),
+            source: "coord".into(),
+            harness_slug: None,
+            plan_slug: Some("my-plan".into()),
+            item_ref: Some("P-002".into()),
+            title: "Needs a human decision".into(),
+            body: Some("Details of the escalation.".into()),
+            status: "needs-human".into(),
+            importance: Some(9.0),
+            needs_human: true,
+        }]);
+        let text = render(&app, 100, 14);
+        assert!(text.contains("Inbox (1)"));
+        assert!(text.contains("needs-human"));
+        assert!(text.contains("my-plan/P-002"));
+        assert!(text.contains("coord-escalation")); // preview
+        assert!(text.contains("Details of the escalation")); // body in preview
     }
 
     #[test]

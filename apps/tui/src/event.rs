@@ -6,7 +6,7 @@
 //! dedicated OS thread that forwards into the async channel; the backend poller
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
-use crate::models::{PlanSummary, RosterEntry};
+use crate::models::{AttentionItem, PlanSummary, RosterEntry};
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -22,6 +22,8 @@ pub enum Event {
     Plans(Vec<PlanSummary>),
     /// Fresh agent roster from the backend poller.
     Roster(Vec<RosterEntry>),
+    /// Fresh inbox (attention) items from the backend poller.
+    Inbox(Vec<AttentionItem>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
 }

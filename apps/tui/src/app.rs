@@ -4,7 +4,7 @@
 //! pure function of `&App` (see `ui.rs`), so views are snapshot-testable.
 
 use crate::event::Event;
-use crate::models::{PlanSummary, RosterEntry};
+use crate::models::{AttentionItem, PlanSummary, RosterEntry};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// What the run-loop should do after handling one event.
@@ -46,6 +46,8 @@ pub struct App {
     pub plan_sel: usize,
     pub roster: Vec<RosterEntry>,
     pub roster_sel: usize,
+    pub inbox: Vec<AttentionItem>,
+    pub inbox_sel: usize,
     pub last_error: Option<String>,
 }
 
@@ -59,6 +61,8 @@ impl App {
             plan_sel: 0,
             roster: Vec::new(),
             roster_sel: 0,
+            inbox: Vec::new(),
+            inbox_sel: 0,
             last_error: None,
         }
     }
@@ -73,8 +77,17 @@ impl App {
         self.clamp_sel();
     }
 
+    pub fn set_inbox(&mut self, inbox: Vec<AttentionItem>) {
+        self.inbox = inbox;
+        self.clamp_sel();
+    }
+
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
         self.plans.get(self.plan_sel)
+    }
+
+    pub fn selected_inbox(&self) -> Option<&AttentionItem> {
+        self.inbox.get(self.inbox_sel)
     }
 
     fn clamp_sel(&mut self) {
@@ -83,6 +96,9 @@ impl App {
         }
         if self.roster_sel >= self.roster.len() {
             self.roster_sel = self.roster.len().saturating_sub(1);
+        }
+        if self.inbox_sel >= self.inbox.len() {
+            self.inbox_sel = self.inbox.len().saturating_sub(1);
         }
     }
 
@@ -98,6 +114,11 @@ impl App {
             }
             Event::Roster(r) => {
                 self.set_roster(r);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::Inbox(i) => {
+                self.set_inbox(i);
                 self.last_error = None;
                 Action::Render
             }
@@ -142,16 +163,16 @@ impl App {
     fn move_sel(&mut self, delta: isize) {
         let len = match self.tab {
             Tab::Plans => self.plans.len(),
+            Tab::Inbox => self.inbox.len(),
             Tab::Sessions => self.roster.len(),
-            Tab::Inbox => return,
         };
         if len == 0 {
             return;
         }
         let slot = match self.tab {
             Tab::Plans => &mut self.plan_sel,
+            Tab::Inbox => &mut self.inbox_sel,
             Tab::Sessions => &mut self.roster_sel,
-            Tab::Inbox => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -244,6 +265,34 @@ mod tests {
         let mut a = App::new();
         assert_eq!(a.update(Event::Error("boom".into())), Action::Render);
         assert_eq!(a.last_error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn inbox_tab_navigates_its_own_list() {
+        use crate::models::AttentionItem;
+        let item = |id: &str| AttentionItem {
+            id: id.into(),
+            kind: "plan-item".into(),
+            source: "plan".into(),
+            harness_slug: None,
+            plan_slug: Some("p".into()),
+            item_ref: Some("P-001".into()),
+            title: id.into(),
+            body: None,
+            status: "todo".into(),
+            importance: None,
+            needs_human: false,
+        };
+        let mut a = App::new();
+        a.update(key('2', KeyModifiers::NONE)); // Inbox tab
+        assert_eq!(a.tab, Tab::Inbox);
+        a.set_inbox(vec![item("x"), item("y")]);
+        assert_eq!(a.inbox_sel, 0);
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.inbox_sel, 1);
+        assert_eq!(a.selected_inbox().unwrap().id, "y");
+        a.update(key('j', KeyModifiers::NONE)); // clamp at bottom
+        assert_eq!(a.inbox_sel, 1);
     }
 
     #[test]

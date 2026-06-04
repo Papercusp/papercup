@@ -3,6 +3,7 @@
 //! Field sets match the live-probed shapes (SP-TUI plan, iteration 4). Unknown
 //! fields are ignored (serde default) and nullable/absent fields are
 //! Option/defaulted so a shape drift never hard-fails a deserialize.
+#![allow(dead_code)] // DTOs mirror the full API shape; not every field is displayed yet.
 
 use serde::Deserialize;
 
@@ -66,6 +67,53 @@ pub struct RosterResponse {
     pub active: Vec<RosterEntry>,
 }
 
+/// One attention item from `/api/admin/plans/attention` (Inbox). Covers all
+/// three kinds (plan-item / coord-escalation / coord-message).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionItem {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    #[serde(default)]
+    pub plan_slug: Option<String>,
+    #[serde(default)]
+    pub item_ref: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub importance: Option<f64>,
+    #[serde(default)]
+    pub needs_human: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionGroup {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub plan_slug: Option<String>,
+    #[serde(default)]
+    pub items: Vec<AttentionItem>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttentionResponse {
+    #[serde(default)]
+    pub groups: Vec<AttentionGroup>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +156,32 @@ mod tests {
         assert_eq!(e.role, None);
         assert!(e.current_files.is_empty());
         assert!(!e.stale);
+    }
+
+    #[test]
+    fn parses_attention_shape() {
+        // Trimmed from the live /api/admin/plans/attention probe.
+        let j = r#"{"groups":[
+            {"key":"p-1","kind":"plan","planSlug":"p-1","harnessSlug":null,"title":"P 1","maxImportance":5,
+             "items":[
+               {"id":"plan-item:p-1:P-001","kind":"plan-item","source":"plan","harnessSlug":null,
+                "planSlug":"p-1","itemRef":"P-001","title":"Do X","body":"Body of X","status":"todo",
+                "importance":3,"needsHuman":false,"actions":[],"ref":"x"},
+               {"id":"coord:esc:9","kind":"coord-escalation","source":"coord","harnessSlug":null,
+                "planSlug":null,"itemRef":null,"title":"Escalation!","body":null,"status":"needs-human",
+                "importance":9,"needsHuman":true}
+             ]}
+        ]}"#;
+        let r: AttentionResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.groups.len(), 1);
+        assert_eq!(r.groups[0].items.len(), 2);
+        let first = &r.groups[0].items[0];
+        assert_eq!(first.item_ref.as_deref(), Some("P-001"));
+        assert_eq!(first.status, "todo");
+        assert!(!first.needs_human);
+        let esc = &r.groups[0].items[1];
+        assert_eq!(esc.kind, "coord-escalation");
+        assert!(esc.needs_human);
     }
 
     #[test]

@@ -1,13 +1,16 @@
 //! `pui` — Papercusp terminal workbench (SP-TUI, tui-workbench-ratatui-2026-06-04).
 //!
-//! P0 skeleton: the state/event/update/draw loop on ratatui + crossterm + tokio.
-//! `App` holds state, `event` normalises inputs onto one mpsc channel,
-//! `App::update` is the single reducer, and `ui::draw` is a pure renderer.
-//! Backend client, UX kit, and the Create-tab panels land in subsequent steps.
+//! Architecture: `App` holds state, `event` normalises inputs onto one mpsc
+//! channel, `App::update` is the single reducer, `ui::draw` is a pure renderer.
+//! A background poller fetches plans + roster from the operator and forwards
+//! them as `Event`s. P1 = the Create tab (Plans / Inbox / Sessions).
 
 mod app;
 mod client;
 mod event;
+mod models;
+mod mux;
+mod theme;
 mod ui;
 
 use anyhow::Result;
@@ -17,7 +20,8 @@ use crossterm::{
 };
 use ratatui::{backend::Backend, backend::CrosstermBackend, Terminal};
 use std::io::stdout;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::sync::mpsc::{self, UnboundedSender};
 
 use app::{Action, App};
 use event::{spawn_input_listener, Event};
@@ -41,6 +45,7 @@ async fn main() -> Result<()> {
 async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     spawn_input_listener(tx.clone());
+    spawn_backend_poller(tx.clone());
 
     let mut app = App::new();
     terminal.draw(|f| ui::draw(f, &app))?;
@@ -55,4 +60,49 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Poll the operator for plans + roster every few seconds, forwarding deltas
+/// (or errors) as `Event`s. Targets the currently-running operator via the
+/// discovery resolution in `client`.
+fn spawn_backend_poller(tx: UnboundedSender<Event>) {
+    tokio::spawn(async move {
+        let client = match client::OperatorClient::from_discovery() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("client init: {e}")));
+                return;
+            }
+        };
+        loop {
+            match client.plans_typed().await {
+                Ok(p) => {
+                    let _ = tx.send(Event::Plans(p));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("plans: {e}")));
+                }
+            }
+            match client.roster_typed().await {
+                Ok(r) => {
+                    let _ = tx.send(Event::Roster(r));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("roster: {e}")));
+                }
+            }
+            match client.attention_typed().await {
+                Ok(i) => {
+                    let _ = tx.send(Event::Inbox(i));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("inbox: {e}")));
+                }
+            }
+            if tx.is_closed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    });
 }
