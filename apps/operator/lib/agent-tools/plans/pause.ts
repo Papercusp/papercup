@@ -97,7 +97,7 @@ export default defineTool({
             slug: args.slug,
             harnessSlug,
             status: 'paused',
-            updatedAt: rows[0].updated_at,
+            updatedAt: rows[0].op_updated_at,
           }),
         },
       ],

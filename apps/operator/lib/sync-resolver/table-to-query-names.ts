@@ -54,6 +54,18 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly string[]>> =
   'harness_shared.harness_phases': ['harnessPhases.byHarness'],
   'harness_shared.harness_smoke_test': ['harnessSmokeTest.byHarness'],
   'harness_shared.harness_plan_review': ['harnessPlanReview.byHarness'],
+  // Plans went PG-canonical (plans-pg-canonical-migration-2026-06-03): a write to
+  // harness_plans invalidates the plan directory + per-plan reads. plan_revisions
+  // / plan_runs feed the audit + run panels.
+  'harness_shared.harness_plans': [
+    'plans.list',
+    'plans.get',
+    'plans.items',
+    'plans.attention',
+    'plans.search',
+  ],
+  'harness_shared.plan_revisions': ['plans.revisions'],
+  'harness_shared.plan_runs': ['plans.runs'],
   'harness_shared.harness_brainstorm': ['harnessBrainstorm.byHarness'],
   'harness_shared.pending_reviews': ['pendingReviews.byHarness'],
   'harness_shared.harness_pending_issues': ['harnessPendingIssues.byHarness'],

@@ -56,6 +56,16 @@
       "types": "./src/subscription-store/conformance.ts",
       "import": "./src/subscription-store/conformance.ts",
       "default": "./src/subscription-store/conformance.ts"
+    },
+    "./capabilities": {
+      "types": "./src/capabilities/index.ts",
+      "import": "./src/capabilities/index.ts",
+      "default": "./src/capabilities/index.ts"
+    },
+    "./capabilities/conformance": {
+      "types": "./src/capabilities/conformance.ts",
+      "import": "./src/capabilities/conformance.ts",
+      "default": "./src/capabilities/conformance.ts"
     }
   },
   "scripts": {

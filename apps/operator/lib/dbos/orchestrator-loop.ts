@@ -501,10 +501,10 @@ export async function readFrontierFeatures(
          (metadata->>'source_plan') IS NULL
          OR (metadata->>'source_plan') IN (
            SELECT plan_slug
-             FROM harness_shared.harness_plan_status
+             FROM harness_shared.harness_plans
             WHERE workspace_id = ${workspaceId}
               AND harness_slug = ${slug}
-              AND status = 'started'
+              AND op_status = 'started'
          )
        )
        -- Auditor gate (G2 / P-008): a remote-authored feature is NOT pickable
@@ -538,13 +538,13 @@ async function readPlanPriority(
   const rows = await pg<Array<{ plan_slug: string; eff_priority: number | bigint }>>`
     SELECT plan_slug,
            COALESCE(
-             priority,
-             1000000 + (ROW_NUMBER() OVER (ORDER BY started_at ASC NULLS LAST, plan_slug))::int
+             op_priority,
+             1000000 + (ROW_NUMBER() OVER (ORDER BY op_started_at ASC NULLS LAST, plan_slug))::int
            ) AS eff_priority
-      FROM harness_shared.harness_plan_status
+      FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${slug}
-       AND status = 'started'
+       AND op_status = 'started'
   `;
   return new Map(rows.map((r) => [r.plan_slug, Number(r.eff_priority)]));
 }

@@ -86,7 +86,8 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const { plans, archive } = await resolveHarnessPlansDir(args.harnessSlug, {
+    // Validate the harness is registered (throws if not) + resolve its workspace.
+    const dirs = await resolveHarnessPlansDir(args.harnessSlug, {
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
     });
     const scopes: Scope[] = (args.scope as Scope[] | undefined) ?? [...SCOPES];
@@ -100,7 +101,11 @@ export default defineTool({
       };
     }
 
-    const parsedPlans = await readAllPlans({ includeArchived, plansDir: plans, archiveDir: archive });
+    const parsedPlans = await readAllPlans({
+      includeArchived,
+      harnessSlug: dirs.harnessSlug,
+      workspaceId: dirs.workspaceId,
+    });
     const hits: Hit[] = [];
 
     for (const { parsed } of parsedPlans) {

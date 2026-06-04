@@ -127,7 +127,7 @@ export default defineTool({
       /* best effort — the plan is started regardless of the status flip */
     }
 
-    ctxAny.metadata?.({ slug: args.slug, harnessSlug, status: row?.status, autoApproved });
+    ctxAny.metadata?.({ slug: args.slug, harnessSlug, status: row?.op_status, autoApproved });
     return {
       content: [
         {
@@ -136,7 +136,7 @@ export default defineTool({
             slug: args.slug,
             harnessSlug,
             status: 'started',
-            updatedAt: row?.updated_at,
+            updatedAt: row?.op_updated_at,
             autoApproved,
           }),
         },
