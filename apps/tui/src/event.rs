@@ -7,7 +7,7 @@
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
 use crate::models::{
-    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef,
+    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif,
     PlanSummary, RosterEntry, TestingDomain,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
@@ -41,6 +41,10 @@ pub enum Event {
     Testing(Vec<TestingDomain>),
     /// Claude-settings file content for the active harness (read-only).
     Config(String),
+    /// A live `attention.notify` event (P8) — raise a toast + OS notification.
+    Notify(Notif),
+    /// Backfilled notification history from `/api/toast-log` (P8).
+    ToastHistory(Vec<Notif>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
 }

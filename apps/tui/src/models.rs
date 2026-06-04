@@ -230,9 +230,56 @@ pub struct DocsResponse {
     pub content: Option<String>,
 }
 
+/// One row of `/api/toast-log` → `{ toasts: [...] }` (notification history, P8).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToastRow {
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToastsResponse {
+    #[serde(default)]
+    pub toasts: Vec<ToastRow>,
+}
+
+/// An in-app notification (P8), built from either a live `attention.notify` SSE
+/// event or a `/api/toast-log` history row. Not deserialized directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notif {
+    /// Severity/importance ("urgent"/"high"/… or a toast level like "error").
+    pub level: String,
+    pub message: String,
+    pub harness: Option<String>,
+    /// Source timestamp for history rows; `None` for a live ("now") event.
+    pub ts: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_toast_log_shape() {
+        let j = r#"{"toasts":[
+            {"id":7,"level":"error","message":"build failed","description":null,
+             "harnessSlug":"papercup","createdAt":1780560000000},
+            {"id":6,"level":"default","message":"ok","harnessSlug":null,"createdAt":1780559000000}
+        ]}"#;
+        let r: ToastsResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.toasts.len(), 2);
+        assert_eq!(r.toasts[0].level, "error");
+        assert_eq!(r.toasts[0].message, "build failed");
+        assert_eq!(r.toasts[0].harness_slug.as_deref(), Some("papercup"));
+        assert_eq!(r.toasts[1].harness_slug, None);
+    }
 
     #[test]
     fn parses_plans_list_shape() {

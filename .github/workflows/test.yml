@@ -57,6 +57,12 @@ jobs:
         working-directory: apps/operator
         run: npm run lint:plans
 
+      # Plans are PG-canonical (plans-pg-canonical-migration-2026-06-03): fail on any
+      # filesystem read of plan markdown outside source.ts / the backfill script.
+      - name: Lint plans PG-canonical (no FS reads of plan markdown)
+        working-directory: apps/operator
+        run: npm run lint:plans-pg
+
       # Four-framework guard (admin-testing-tab-restructure P-038): fails on a new
       # .mjs under __tests__/integration/, a *-smoke.ts under scripts/, OR a
       # canonical test that matches no registry glob (invisible in the /adv tab).

@@ -22,7 +22,10 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 
-export const PLAN_GIT_SLUG_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+// Matches the canonical VALID_PLAN_SLUG char set (source.ts) so non-kebab plan
+// slugs (e.g. BRIEF-*/HANDOFF-* with uppercase) backfill too. No `/` → a `..`
+// segment can't traverse out of docs/plans/ when joined into git's argv.
+export const PLAN_GIT_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$/;
 export const PLAN_GIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
 const PLANS_DIR_REL = 'apps/operator/docs/plans';
 const DEFAULT_HISTORY_LIMIT = 50;
@@ -90,11 +93,11 @@ export async function readPlanHistory(
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_HISTORY_LIMIT), MAX_HISTORY_LIMIT);
   const repoRoot = resolveRepoRoot();
   const relPath = planFileRel(slug, opts.archived === true);
-  // A plan file with no git history (untracked / brand-new) is a
-  // normal empty case, not an error.
-  if (!existsSync(path.join(repoRoot, relPath))) {
-    return { ok: true, commits: [] };
-  }
+  // No existsSync guard: plans are PG-canonical and the `docs/plans/*.md` files
+  // were removed (plans-pg-canonical-migration-2026-06-03), but `git log --follow`
+  // still returns a removed file's full history — which is exactly what the
+  // revisions-backfill (the sole remaining caller) reconstructs. An untracked /
+  // never-committed slug simply yields an empty log.
   try {
     const { stdout } = await exec(
       'git',

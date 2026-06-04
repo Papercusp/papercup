@@ -90,11 +90,11 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     while let Some(ev) = rx.recv().await {
         let action = app.update(ev);
 
-        // Best-effort OS notification on each new needs-human event (P8).
+        // Best-effort OS notification on each new attention event (P8).
         if app.notif_seq != last_notif_seq {
             last_notif_seq = app.notif_seq;
-            if let Some(msg) = app.notif_flash.clone() {
-                notify::os_notify("Papercusp", &msg);
+            if let Some(t) = app.toast.clone() {
+                notify::os_notify("Papercusp", &t.message);
             }
         }
 
@@ -157,6 +157,16 @@ async fn refetch_loop(
 
     // Initial load.
     refetch_all(&client, &tx, &active_harness, &active_doc).await;
+    // Seed notification history once from the toast-log (P8); live
+    // `attention.notify` events prepend to it as they arrive.
+    match client.recent_toasts(50).await {
+        Ok(h) => {
+            let _ = tx.send(Event::ToastHistory(h));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("toast-log: {e}")));
+        }
+    }
 
     // Safety net only — a slow fallback in case we ever miss an SSE invalidate.
     // This is NOT a poll: it fires once a minute, not on a tight loop.
@@ -227,10 +237,27 @@ async fn invalidation_loop(tx: UnboundedSender<Event>, sig_tx: UnboundedSender<(
                     }
                     let (frames, rest) = sse::parse_sse_frames(&buf);
                     buf = rest;
-                    let changed = frames
-                        .iter()
-                        .any(|f| f.event == "invalidate" || f.event == "update");
-                    if changed && sig_tx.send(()).is_err() {
+                    let mut want_refetch = false;
+                    for fr in &frames {
+                        if fr.event != "invalidate" && fr.event != "update" {
+                            continue; // heartbeat etc.
+                        }
+                        // Payload is {name, args?, data?}. The `attention.notify`
+                        // event (P8) carries a ping-the-human payload in `data`.
+                        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(&fr.data) {
+                            if payload.get("name").and_then(|v| v.as_str())
+                                == Some("attention.notify")
+                            {
+                                if let Some(n) = parse_attention_notify(payload.get("data")) {
+                                    if tx.send(Event::Notify(n)).is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                        want_refetch = true;
+                    }
+                    if want_refetch && sig_tx.send(()).is_err() {
                         return; // refetch loop gone.
                     }
                 }
@@ -244,6 +271,35 @@ async fn invalidation_loop(tx: UnboundedSender<Event>, sig_tx: UnboundedSender<(
         // Stream ended (upstream closed or socket lost) → resubscribe shortly.
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// Map an `attention.notify` payload (`{kind,title,body,harnessSlug,importance,…}`)
+/// into a `Notif`. Returns None if the payload is absent/unusable.
+fn parse_attention_notify(data: Option<&serde_json::Value>) -> Option<models::Notif> {
+    let d = data?;
+    let title = d.get("title").and_then(|v| v.as_str()).unwrap_or("(attention)");
+    let body = d.get("body").and_then(|v| v.as_str()).unwrap_or("");
+    let level = d
+        .get("importance")
+        .and_then(|v| v.as_str())
+        .or_else(|| d.get("kind").and_then(|v| v.as_str()))
+        .unwrap_or("attention")
+        .to_string();
+    let harness = d
+        .get("harnessSlug")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let message = if body.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} — {body}")
+    };
+    Some(models::Notif {
+        level,
+        message,
+        harness,
+        ts: None,
+    })
 }
 
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become

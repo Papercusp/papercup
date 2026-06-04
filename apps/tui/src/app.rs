@@ -5,13 +5,15 @@
 
 use crate::event::Event;
 use crate::models::{
-    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef,
+    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif,
     PlanSummary, RosterEntry, TestingDomain,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
-use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+
+/// Cap on retained notification history (P8).
+const NOTIF_HISTORY_CAP: usize = 50;
 
 /// What the run-loop should do after handling one event.
 #[derive(Debug, PartialEq, Eq)]
@@ -122,15 +124,17 @@ pub struct App {
     /// device hasn't seen it; any key dismisses it. Default false so tests and
     /// the reducer aren't perturbed — `main` decides the initial value.
     pub show_tutorial: bool,
-    /// Notifications (P8). `notif_flash` is the latest one-line message shown in
-    /// the status bar; `unseen_notifs` is the Inbox-tab badge count (cleared on
-    /// visit); `notif_seq` advances on each new notification so the run-loop can
-    /// fire one OS notification per new event. `inbox_loaded` suppresses the
-    /// first-load storm (don't notify for items already present at startup).
-    pub notif_flash: Option<String>,
+    /// Notifications (P8). `notifs` is the history (newest-first, seeded from
+    /// `/api/toast-log` + appended live `attention.notify` events); `toast` is
+    /// the current transient overlay; `show_notifs` opens the history overlay;
+    /// `unseen_notifs` is the Inbox-tab badge (cleared on visit / on opening
+    /// history); `notif_seq` advances per live event so the run-loop fires one
+    /// OS notification each.
+    pub notifs: Vec<Notif>,
+    pub toast: Option<Notif>,
+    pub show_notifs: bool,
     pub unseen_notifs: usize,
     pub notif_seq: u64,
-    inbox_loaded: bool,
 }
 
 impl App {
@@ -170,10 +174,11 @@ impl App {
             palette_input: String::new(),
             show_presence: true,
             show_tutorial: false,
-            notif_flash: None,
+            notifs: Vec::new(),
+            toast: None,
+            show_notifs: false,
             unseen_notifs: 0,
             notif_seq: 0,
-            inbox_loaded: false,
         }
     }
 
@@ -188,29 +193,27 @@ impl App {
     }
 
     pub fn set_inbox(&mut self, inbox: Vec<AttentionItem>) {
-        // Notify on newly-arrived needs-human items (P8) — but never on the very
-        // first load (those items predate the session; flagging them all would
-        // be a startup storm). Diff by id against the currently-held inbox.
-        if self.inbox_loaded {
-            let old_ids: HashSet<&str> = self.inbox.iter().map(|i| i.id.as_str()).collect();
-            let fresh: Vec<&AttentionItem> = inbox
-                .iter()
-                .filter(|i| i.needs_human && !old_ids.contains(i.id.as_str()))
-                .collect();
-            if let Some(first) = fresh.first() {
-                let n = fresh.len();
-                self.notif_flash = Some(if n == 1 {
-                    format!("needs you: {}", first.title)
-                } else {
-                    format!("{n} items need you — {}", first.title)
-                });
-                self.unseen_notifs += n;
-                self.notif_seq += 1;
-            }
-        }
         self.inbox = inbox;
-        self.inbox_loaded = true;
         self.clamp_sel();
+    }
+
+    /// Record a live notification (P8): raise the toast, prepend to history,
+    /// bump the badge + the OS-notify sequence. The proper "ping the human"
+    /// channel — driven by `attention.notify` SSE events, which are already
+    /// importance-gated at the source.
+    pub fn push_notif(&mut self, n: Notif) {
+        self.toast = Some(n.clone());
+        self.notifs.insert(0, n);
+        self.notifs.truncate(NOTIF_HISTORY_CAP);
+        self.unseen_notifs += 1;
+        self.notif_seq += 1;
+    }
+
+    /// Backfill notification history from `/api/toast-log` (no toast/badge bump).
+    /// Any live events collected first stay ahead of the older backfill.
+    pub fn set_notif_history(&mut self, history: Vec<Notif>) {
+        self.notifs.extend(history);
+        self.notifs.truncate(NOTIF_HISTORY_CAP);
     }
 
     pub fn set_features(&mut self, features: Vec<HarnessFeature>) {
@@ -454,6 +457,15 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Notify(n) => {
+                self.push_notif(n);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::ToastHistory(h) => {
+                self.set_notif_history(h);
+                Action::Render
+            }
             Event::Error(e) => {
                 self.last_error = Some(e);
                 Action::Render
@@ -465,6 +477,11 @@ impl App {
         // First-run tutorial: any key dismisses it (and does nothing else).
         if self.show_tutorial {
             self.show_tutorial = false;
+            return Action::Render;
+        }
+        // Notifications history overlay: any key closes it.
+        if self.show_notifs {
+            self.show_notifs = false;
             return Action::Render;
         }
         // Command palette captures all input while open.
@@ -521,7 +538,7 @@ impl App {
                 self.tab = Tab::Inbox;
                 // Visiting the inbox acknowledges pending notifications.
                 self.unseen_notifs = 0;
-                self.notif_flash = None;
+                self.toast = None;
                 Action::Render
             }
             KeyCode::Char('3') => {
@@ -550,6 +567,18 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.show_presence = !self.show_presence;
+                Action::Render
+            }
+            KeyCode::Char('N') => {
+                // Open the notifications history; acknowledge pending ones.
+                self.show_notifs = true;
+                self.toast = None;
+                self.unseen_notifs = 0;
+                Action::Render
+            }
+            KeyCode::Esc => {
+                // Dismiss the transient toast (no-op if none).
+                self.toast = None;
                 Action::Render
             }
             KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
@@ -941,65 +970,80 @@ mod tests {
         assert_eq!(a.update(Event::Tick), Action::None);
     }
 
-    fn attn(id: &str, needs_human: bool) -> AttentionItem {
-        AttentionItem {
-            id: id.into(),
-            kind: "coord-escalation".into(),
-            source: "coord".into(),
-            harness_slug: None,
-            plan_slug: Some("p".into()),
-            item_ref: Some("P-001".into()),
-            title: format!("Title {id}"),
-            body: None,
-            status: "needs-human".into(),
-            importance: None,
-            needs_human,
+    fn notif(level: &str, msg: &str) -> Notif {
+        Notif {
+            level: level.into(),
+            message: msg.into(),
+            harness: None,
+            ts: None,
         }
     }
 
     #[test]
-    fn inbox_first_load_does_not_notify() {
+    fn push_notif_raises_toast_badge_and_seq() {
         let mut a = App::new();
-        a.set_inbox(vec![attn("e1", true), attn("e2", true)]);
+        assert_eq!(a.notif_seq, 0);
+        a.update(Event::Notify(notif("high", "Decide P-002")));
+        assert_eq!(a.notif_seq, 1);
+        assert_eq!(a.unseen_notifs, 1);
+        assert_eq!(a.toast.as_ref().unwrap().message, "Decide P-002");
+        assert_eq!(a.notifs.len(), 1);
+    }
+
+    #[test]
+    fn notif_history_backfill_does_not_toast() {
+        let mut a = App::new();
+        a.update(Event::ToastHistory(vec![
+            notif("error", "old1"),
+            notif("default", "old2"),
+        ]));
+        assert_eq!(a.notifs.len(), 2);
+        assert!(a.toast.is_none());
         assert_eq!(a.notif_seq, 0);
         assert_eq!(a.unseen_notifs, 0);
-        assert!(a.notif_flash.is_none());
+        // A live event prepends ahead of the backfill.
+        a.update(Event::Notify(notif("urgent", "live")));
+        assert_eq!(a.notifs[0].message, "live");
+        assert_eq!(a.notifs.len(), 3);
     }
 
     #[test]
-    fn new_needs_human_item_notifies() {
+    fn opening_notifs_history_clears_toast_and_badge() {
         let mut a = App::new();
-        a.set_inbox(vec![attn("e1", true)]); // first load — no notify
-        a.set_inbox(vec![attn("e1", true), attn("e2", true)]); // e2 is new
-        assert_eq!(a.notif_seq, 1);
+        a.update(Event::Notify(notif("high", "x")));
         assert_eq!(a.unseen_notifs, 1);
-        assert_eq!(a.notif_flash.as_deref(), Some("needs you: Title e2"));
-        // A new non-needs-human item does NOT notify.
-        a.set_inbox(vec![attn("e1", true), attn("e2", true), attn("e3", false)]);
-        assert_eq!(a.notif_seq, 1);
-        assert_eq!(a.unseen_notifs, 1);
-    }
-
-    #[test]
-    fn multiple_new_items_count_and_summarize() {
-        let mut a = App::new();
-        a.set_inbox(vec![attn("e1", true)]);
-        a.set_inbox(vec![attn("e1", true), attn("e2", true), attn("e3", true)]);
-        assert_eq!(a.unseen_notifs, 2);
-        assert_eq!(a.notif_seq, 1);
-        assert!(a.notif_flash.as_deref().unwrap().starts_with("2 items need you"));
-    }
-
-    #[test]
-    fn visiting_inbox_clears_notifications() {
-        let mut a = App::new();
-        a.set_inbox(vec![attn("e1", true)]);
-        a.set_inbox(vec![attn("e1", true), attn("e2", true)]);
-        assert_eq!(a.unseen_notifs, 1);
-        a.update(key('2', KeyModifiers::NONE)); // visit Inbox
-        assert_eq!(a.tab, Tab::Inbox);
+        assert!(a.toast.is_some());
+        a.update(key('N', KeyModifiers::SHIFT)); // open history
+        assert!(a.show_notifs);
+        assert!(a.toast.is_none());
         assert_eq!(a.unseen_notifs, 0);
-        assert!(a.notif_flash.is_none());
+        a.update(key('j', KeyModifiers::NONE)); // any key closes it
+        assert!(!a.show_notifs);
+    }
+
+    #[test]
+    fn esc_dismisses_toast_and_inbox_visit_clears() {
+        let mut a = App::new();
+        a.update(Event::Notify(notif("high", "x")));
+        assert!(a.toast.is_some());
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(a.toast.is_none());
+        // Visiting the inbox clears the badge + any toast.
+        a.update(Event::Notify(notif("high", "y")));
+        a.update(key('2', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Inbox);
+        assert!(a.toast.is_none());
+        assert_eq!(a.unseen_notifs, 0);
+    }
+
+    #[test]
+    fn notif_history_is_capped_newest_first() {
+        let mut a = App::new();
+        for i in 0..60 {
+            a.update(Event::Notify(notif("n", &format!("m{i}"))));
+        }
+        assert_eq!(a.notifs.len(), 50); // NOTIF_HISTORY_CAP
+        assert_eq!(a.notifs[0].message, "m59"); // newest first
     }
 
     #[test]

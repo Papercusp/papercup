@@ -6,8 +6,9 @@
 use crate::ipc::IpcClient;
 use crate::models::{
     ActivityEvent, ActivityResponse, AttentionItem, AttentionResponse, ClaudeSettings, DocsResponse,
-    FeaturesPayload, HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, PlanSummary,
+    FeaturesPayload, HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, Notif, PlanSummary,
     PlansResponse, ProjectsResponse, RosterEntry, RosterResponse, TestingDomain, TestingResponse,
+    ToastsResponse,
 };
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -144,6 +145,23 @@ impl OperatorClient {
         Ok(serde_json::from_value::<ClaudeSettings>(v)
             .context("decode claude-settings")?
             .content)
+    }
+
+    /// Recent toast-log entries → notification history (P8).
+    pub async fn recent_toasts(&self, limit: u32) -> Result<Vec<Notif>> {
+        let v = self.get_json(&format!("/api/toast-log?limit={limit}")).await?;
+        let toasts = serde_json::from_value::<ToastsResponse>(v)
+            .context("decode toast-log")?
+            .toasts;
+        Ok(toasts
+            .into_iter()
+            .map(|t| Notif {
+                level: t.level,
+                message: t.message,
+                harness: t.harness_slug,
+                ts: Some(t.created_at.to_string()),
+            })
+            .collect())
     }
 }
 

@@ -62,11 +62,18 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .describe('The full new markdown document body — replaces the file wholesale.'),
+  expectedVersion: z
+    .number()
+    .int()
+    .optional()
+    .describe(
+      'The `version` from the plans:get that loaded the editor — the optimistic compare-and-swap baseline (plans-pg-canonical-migration D-005). When the live row has moved past it the write is rejected as stale. Preferred over expectedHash.',
+    ),
   expectedHash: z
     .string()
     .optional()
     .describe(
-      'The `contentHash` from the plans:get that loaded the editor — the compare-and-swap baseline. When it no longer matches the file on disk the write is rejected as stale. Omit only for a non-interactive caller that has just read the file.',
+      'Legacy CAS baseline — the `contentHash` from plans:get. Equivalent to expectedVersion (both detect a concurrent change); kept for callers that still send a hash. When it no longer matches the stored content the write is rejected as stale.',
     ),
   rationale: z
     .string()
@@ -79,7 +86,7 @@ const argsSchema = z.object({
 export type SetContentValue =
   | { ok: true; slug: string; contentHash: string }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'stale'; currentContent: string; currentHash: string }
+  | { ok: false; code: 'stale'; currentContent: string; currentHash: string; currentVersion?: number }
   | { ok: false; code: 'would_orphan_frontmatter' }
   | { ok: false; code: 'lint_failed'; errors: LintFinding[] };
 
@@ -96,18 +103,27 @@ export async function evaluateSetContent(
   content: string,
   slug: string,
   expectedHash: string | undefined,
+  opts: { expectedVersion?: number; meta?: { version: number; contentHash: string } | null } = {},
 ): Promise<{ newBody: string | null; value: SetContentValue }> {
   if (current === null) {
     return { newBody: null, value: { ok: false, code: 'not_found' } };
   }
 
-  // 1. Compare-and-swap — reject a write against a file that changed
-  //    since the editor loaded it.
+  // 1. Compare-and-swap — reject a write against a plan that changed since the
+  //    editor loaded it. Prefer the optimistic version CAS (D-005); fall back to
+  //    the equivalent content-hash CAS for callers that still send expectedHash.
   const currentHash = hashPlanContent(current);
+  const currentVersion = opts.meta?.version;
+  if (opts.expectedVersion != null && currentVersion != null && opts.expectedVersion !== currentVersion) {
+    return {
+      newBody: null,
+      value: { ok: false, code: 'stale', currentContent: current, currentHash, currentVersion },
+    };
+  }
   if (expectedHash && expectedHash !== currentHash) {
     return {
       newBody: null,
-      value: { ok: false, code: 'stale', currentContent: current, currentHash },
+      value: { ok: false, code: 'stale', currentContent: current, currentHash, currentVersion },
     };
   }
 
@@ -170,7 +186,11 @@ export default defineTool({
         ...(harnessSlug ? { harnessSlug } : {}),
         afterWrite: rev.afterWrite,
       },
-      (current) => evaluateSetContent(current, args.content, args.slug, args.expectedHash),
+      (current, meta) =>
+        evaluateSetContent(current, args.content, args.slug, args.expectedHash, {
+          expectedVersion: args.expectedVersion,
+          meta,
+        }),
     );
 
     if (result.kind === 'busy') {
@@ -201,6 +221,7 @@ export default defineTool({
       if (v.code === 'stale') {
         payload.currentContent = v.currentContent;
         payload.currentHash = v.currentHash;
+        if (v.currentVersion != null) payload.currentVersion = v.currentVersion;
       } else if (v.code === 'lint_failed') {
         payload.errors = v.errors;
       }
@@ -230,6 +251,7 @@ export default defineTool({
             ok: true,
             slug: v.slug,
             contentHash: v.contentHash,
+            version: result.version,
             filePath: result.filePath,
             // The revision row appended for this write (D-003). `null`
             // when the best-effort append failed — the file write still

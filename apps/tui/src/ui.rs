@@ -2,6 +2,7 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{App, HarnessFocus, Tab};
+use crate::models::Notif;
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -49,9 +50,19 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     draw_status(f, app, root[2]);
 
+    // A transient toast for the latest notification sits above the body but
+    // below the modal overlays (it shouldn't fight the help/palette/tutorial).
+    if let Some(t) = &app.toast {
+        if !app.show_tutorial && !app.show_help && !app.palette_open && !app.show_notifs {
+            draw_toast(f, t);
+        }
+    }
+
     // Overlays render on top of the body (tutorial wins on first run).
     if app.show_tutorial {
         draw_tutorial(f);
+    } else if app.show_notifs {
+        draw_notifs(f, app);
     } else if app.show_help {
         draw_help(f);
     } else if app.palette_open {
@@ -536,23 +547,82 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    // Priority: error > notification flash > idle status line.
-    let (text, style) = if let Some(e) = &app.last_error {
-        (format!("⚠ {e}"), Theme::warn())
-    } else if let Some(n) = &app.notif_flash {
-        (format!("🔔 {n}"), Theme::notify())
-    } else {
-        (app.status.clone(), Theme::dim())
+    let (text, style) = match &app.last_error {
+        Some(e) => (format!("⚠ {e}"), Theme::warn()),
+        None => (app.status.clone(), Theme::dim()),
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
 }
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..8        switch tab\n  j / k  ↑/↓  move selection\n  [ / ]       cycle harness\n  Tab         switch column (Harnesses)\n  PgUp/PgDn   scroll (Docs)\n  n           launch agent pane (Sessions)\n  g           launch git (lazygit)\n  p           toggle presence sidebar\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..8        switch tab\n  j / k  ↑/↓  move selection\n  [ / ]       cycle harness\n  Tab         switch column (Harnesses)\n  PgUp/PgDn   scroll (Docs)\n  n           launch agent pane (Sessions)\n  g           launch git (lazygit)\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
+        area,
+    );
+}
+
+/// A transient toast for the latest notification, bottom-right above the status
+/// bar (P8).
+fn draw_toast(f: &mut Frame, n: &Notif) {
+    let full = f.area();
+    let w = 50.min(full.width.saturating_sub(2));
+    let h = 4u16;
+    let area = Rect {
+        x: full.width.saturating_sub(w + 1),
+        y: full.height.saturating_sub(h + 1),
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(n.message.clone())
+            .wrap(Wrap { trim: false })
+            .style(Theme::notify())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" 🔔 {} · Esc ", trunc(&n.level, 12))),
+            ),
+        area,
+    );
+}
+
+/// The notifications history overlay (P8) — newest first.
+fn draw_notifs(f: &mut Frame, app: &App) {
+    let area = centered_rect(72, 70, f.area());
+    let items: Vec<ListItem> = if app.notifs.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "(no notifications)",
+            Theme::dim(),
+        )))]
+    } else {
+        app.notifs
+            .iter()
+            .map(|n| {
+                let h = n
+                    .harness
+                    .clone()
+                    .map(|s| format!(" [{s}]"))
+                    .unwrap_or_default();
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{:<8} ", trunc(&n.level, 8)), Theme::warn()),
+                    Span::raw(trunc(&n.message, 56)),
+                    Span::styled(h, Theme::dim()),
+                ]))
+            })
+            .collect()
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        List::new(items).block(
+            Block::default().borders(Borders::ALL).title(Line::from(format!(
+                " Notifications ({}) · any key to close ",
+                app.notifs.len()
+            ))),
+        ),
         area,
     );
 }
@@ -625,7 +695,7 @@ fn trunc(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{PlanSummary, RosterEntry};
+    use crate::models::{Notif, PlanSummary, RosterEntry};
     use ratatui::{backend::TestBackend, Terminal};
 
     fn render(app: &App, w: u16, h: u16) -> String {
@@ -760,25 +830,38 @@ mod tests {
         assert!(text.contains("Sessions"));
     }
 
-    #[test]
-    fn inbox_badge_and_notification_flash_render() {
-        let mut app = App::new();
-        app.unseen_notifs = 2;
-        app.notif_flash = Some("needs you: Decide P-002".into());
-        let text = render(&app, 90, 10);
-        assert!(text.contains("Inbox (2)")); // badge on the tab strip
-        assert!(text.contains("🔔")); // flash icon in the status bar
-        assert!(text.contains("needs you: Decide P-002"));
+    fn ui_notif(level: &str, msg: &str, harness: Option<&str>) -> Notif {
+        Notif {
+            level: level.into(),
+            message: msg.into(),
+            harness: harness.map(|s| s.into()),
+            ts: None,
+        }
     }
 
     #[test]
-    fn error_outranks_notification_flash() {
+    fn inbox_badge_and_toast_render() {
         let mut app = App::new();
-        app.notif_flash = Some("needs you: X".into());
-        app.last_error = Some("backend down".into());
-        let text = render(&app, 90, 10);
-        assert!(text.contains("backend down"));
-        assert!(!text.contains("needs you: X"));
+        app.unseen_notifs = 2;
+        app.toast = Some(ui_notif("high", "Decide P-002", None));
+        let text = render(&app, 90, 12);
+        assert!(text.contains("Inbox (2)")); // badge on the tab strip
+        assert!(text.contains("🔔")); // toast box title
+        assert!(text.contains("Decide P-002")); // toast message
+    }
+
+    #[test]
+    fn notifs_history_overlay_renders() {
+        let mut app = App::new();
+        app.show_notifs = true;
+        app.notifs = vec![
+            ui_notif("error", "build failed", Some("papercup")),
+            ui_notif("high", "needs you", None),
+        ];
+        let text = render(&app, 90, 16);
+        assert!(text.contains("Notifications (2)"));
+        assert!(text.contains("build failed"));
+        assert!(text.contains("[papercup]"));
     }
 
     #[test]

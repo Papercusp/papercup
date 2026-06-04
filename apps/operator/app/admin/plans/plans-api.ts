@@ -186,11 +186,12 @@ export interface PlanGetResult {
   prose?: string;
   /** Full canonical markdown source — fed straight to PlanEditor. */
   raw?: string;
-  /** Server-computed hash of `raw`. The baseline `expectedHash` for a
-   *  `plans:set-content` compare-and-swap (D-011). Optional: the field
-   *  ships with agent-plan-tracking Phase 5 — until then the UI saves
-   *  without CAS protection and the verb itself is absent anyway. */
+  /** Server-computed hash of `raw`. Legacy CAS baseline (equivalent to
+   *  `version`); kept for callers that still send expectedHash. */
   contentHash?: string;
+  /** Optimistic-CAS baseline — the plan row's `version` (plans-pg-canonical
+   *  D-005). Echoed back as `expectedVersion` on a set-content write. */
+  version?: number;
   filename?: string;
   error?: string;
   /** P-006: Map of plan-item-id → { featureId, status }. Present when the
