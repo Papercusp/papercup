@@ -25,6 +25,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use app::{Action, App};
 use event::{spawn_input_listener, Event};
+use mux::{Multiplexer, Zellij};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -53,6 +54,13 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     while let Some(ev) = rx.recv().await {
         match app.update(ev) {
             Action::Render => {
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::Launch(spec) => {
+                // Best-effort: only succeeds inside a running zellij session.
+                if let Err(e) = Zellij.open_pane(&spec) {
+                    app.update(Event::Error(format!("launch: {e}")));
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::Quit => break,

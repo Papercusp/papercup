@@ -8,7 +8,7 @@
 use std::process::Command;
 
 /// A request to open a command in a new pane.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneSpec {
     /// Argv of the command to run in the pane (e.g. ["psu","--no-picker","--agent=claude"]).
     pub argv: Vec<String>,

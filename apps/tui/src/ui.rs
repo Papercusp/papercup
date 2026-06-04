@@ -6,7 +6,7 @@ use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
 
@@ -27,6 +27,13 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Sessions => draw_sessions(f, app, root[1]),
     }
     draw_status(f, app, root[2]);
+
+    // Overlays render on top of the body.
+    if app.show_help {
+        draw_help(f);
+    } else if app.palette_open {
+        draw_palette(f, app);
+    }
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
@@ -90,6 +97,11 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+        .split(area);
+
     let items: Vec<ListItem> = app
         .roster
         .iter()
@@ -104,16 +116,14 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
             let agent = r.agent.clone().unwrap_or_else(|| "-".into());
             let role = r.role.clone().unwrap_or_default();
             let feat = r.feature.clone().unwrap_or_default();
-            let hb = r.heartbeat_at.clone().unwrap_or_default();
             ListItem::new(Line::from(format!(
-                "{} {:<7} {:<26} {:<10} {:<8} {:>2} files  {}",
+                "{} {:<7} {:<24} {:<10} {:<8} {:>2}f",
                 dot,
                 trunc(&agent, 7),
-                trunc(&r.label, 26),
+                trunc(&r.label, 24),
                 trunc(&role, 10),
                 trunc(&feat, 8),
                 r.current_files.len(),
-                trunc(&hb, 19),
             )))
         })
         .collect();
@@ -123,13 +133,42 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
     }
     let list = List::new(items)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Line::from(format!(" Sessions ({}) ", app.roster.len()))),
+            Block::default().borders(Borders::ALL).title(Line::from(format!(
+                " Sessions ({}) · n: launch ",
+                app.roster.len()
+            ))),
         )
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, cols[0], &mut state);
+
+    let dossier = match app.selected_session() {
+        Some(r) => {
+            let files = if r.current_files.is_empty() {
+                "(none)".to_string()
+            } else {
+                r.current_files.join("\n  ")
+            };
+            format!(
+                "{}\n\nagent:    {}\nrole:     {}\nfeature:  {}\nliveness: {}{}\nplan:     {}\nbeat:     {}\n\nintent: {}\n\nfiles:\n  {}",
+                r.label,
+                r.agent.clone().unwrap_or_default(),
+                r.role.clone().unwrap_or_default(),
+                r.feature.clone().unwrap_or_default(),
+                r.liveness,
+                if r.stale { " (stale)" } else { "" },
+                r.current_plan_slug.clone().unwrap_or_default(),
+                r.heartbeat_at.clone().unwrap_or_default(),
+                r.intent.clone().unwrap_or_default(),
+                files,
+            )
+        }
+        None => "No active sessions.".to_string(),
+    };
+    let para = Paragraph::new(dossier)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(" Dossier "));
+    f.render_widget(para, cols[1]);
 }
 
 fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
@@ -197,6 +236,49 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         None => (app.status.clone(), Theme::dim()),
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
+}
+
+fn draw_help(f: &mut Frame) {
+    let area = centered_rect(62, 60, f.area());
+    let text = "pui — keys\n\n  1 / 2 / 3   Plans / Inbox / Sessions\n  j / k  ↑/↓  move selection\n  n           launch agent pane (Sessions)\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
+        area,
+    );
+}
+
+fn draw_palette(f: &mut Frame, app: &App) {
+    let area = centered_rect(60, 18, f.area());
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(format!("> {}", app.palette_input)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Command (Esc to close) "),
+        ),
+        area,
+    );
+}
+
+/// A centered rect `pct_w` × `pct_h` percent of `area`.
+fn centered_rect(pct_w: u16, pct_h: u16, area: Rect) -> Rect {
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - pct_h) / 2),
+            Constraint::Percentage(pct_h),
+            Constraint::Percentage((100 - pct_h) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - pct_w) / 2),
+            Constraint::Percentage(pct_w),
+            Constraint::Percentage((100 - pct_w) / 2),
+        ])
+        .split(v[1])[1]
 }
 
 /// Truncate to `n` chars (cheap; ASCII-oriented labels).
@@ -269,11 +351,12 @@ mod tests {
             current_plan_slug: None,
             heartbeat_at: None,
         }]);
-        let text = render(&app, 90, 12);
+        let text = render(&app, 100, 18);
         assert!(text.contains("Sessions (1)"));
         assert!(text.contains("claude"));
         assert!(text.contains("worker"));
-        assert!(text.contains("1 files"));
+        assert!(text.contains("Dossier"));
+        assert!(text.contains("a.rs")); // file listed in the dossier
     }
 
     #[test]
@@ -317,5 +400,25 @@ mod tests {
         app.last_error = Some("backend down".into());
         let text = render(&app, 60, 8);
         assert!(text.contains("backend down"));
+    }
+
+    #[test]
+    fn help_overlay_renders_when_shown() {
+        let mut app = App::new();
+        app.show_help = true;
+        let text = render(&app, 80, 20);
+        assert!(text.contains("Help"));
+        assert!(text.contains("command palette"));
+        assert!(text.contains("launch agent pane"));
+    }
+
+    #[test]
+    fn palette_renders_input() {
+        let mut app = App::new();
+        app.palette_open = true;
+        app.palette_input = "deploy".into();
+        let text = render(&app, 80, 20);
+        assert!(text.contains("Command"));
+        assert!(text.contains("> deploy"));
     }
 }

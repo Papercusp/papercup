@@ -5,6 +5,7 @@
 
 use crate::event::Event;
 use crate::models::{AttentionItem, PlanSummary, RosterEntry};
+use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// What the run-loop should do after handling one event.
@@ -13,6 +14,8 @@ pub enum Action {
     None,
     Render,
     Quit,
+    /// Open a native agent session in a new multiplexer pane.
+    Launch(PaneSpec),
 }
 
 /// The Create-tab views (the first ported tab).
@@ -49,6 +52,11 @@ pub struct App {
     pub inbox: Vec<AttentionItem>,
     pub inbox_sel: usize,
     pub last_error: Option<String>,
+    /// Help overlay visible.
+    pub show_help: bool,
+    /// Command palette open + its current input buffer.
+    pub palette_open: bool,
+    pub palette_input: String,
 }
 
 impl App {
@@ -64,6 +72,9 @@ impl App {
             inbox: Vec::new(),
             inbox_sel: 0,
             last_error: None,
+            show_help: false,
+            palette_open: false,
+            palette_input: String::new(),
         }
     }
 
@@ -88,6 +99,26 @@ impl App {
 
     pub fn selected_inbox(&self) -> Option<&AttentionItem> {
         self.inbox.get(self.inbox_sel)
+    }
+
+    pub fn selected_session(&self) -> Option<&RosterEntry> {
+        self.roster.get(self.roster_sel)
+    }
+
+    /// Build the launch command for a new agent pane. Reuses the selected
+    /// session's agent if any, else defaults to claude. (Harness/plan wiring
+    /// follows once those are selectable in the TUI.)
+    pub fn launch_spec(&self) -> PaneSpec {
+        let agent = self
+            .selected_session()
+            .and_then(|r| r.agent.clone())
+            .unwrap_or_else(|| "claude".to_string());
+        let argv = vec![
+            "psu".to_string(),
+            "--no-picker".to_string(),
+            format!("--agent={agent}"),
+        ];
+        PaneSpec::new(argv).titled(format!("pui · {agent}"))
     }
 
     fn clamp_sel(&mut self) {
@@ -130,12 +161,52 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        // Command palette captures all input while open.
+        if self.palette_open {
+            return match code {
+                KeyCode::Esc => {
+                    self.palette_open = false;
+                    self.palette_input.clear();
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    // No commands wired yet; close on submit.
+                    self.palette_open = false;
+                    self.palette_input.clear();
+                    Action::Render
+                }
+                KeyCode::Backspace => {
+                    self.palette_input.pop();
+                    Action::Render
+                }
+                KeyCode::Char(c) => {
+                    self.palette_input.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
+        // Help overlay: any key dismisses it.
+        if self.show_help {
+            self.show_help = false;
+            return Action::Render;
+        }
+
         let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
         if code == KeyCode::Char('q') || ctrl_c {
             self.should_quit = true;
             return Action::Quit;
         }
         match code {
+            KeyCode::Char('?') => {
+                self.show_help = true;
+                Action::Render
+            }
+            KeyCode::Char(':') => {
+                self.palette_open = true;
+                self.palette_input.clear();
+                Action::Render
+            }
             KeyCode::Char('1') => {
                 self.tab = Tab::Plans;
                 Action::Render
@@ -148,6 +219,7 @@ impl App {
                 self.tab = Tab::Sessions;
                 Action::Render
             }
+            KeyCode::Char('n') if self.tab == Tab::Sessions => Action::Launch(self.launch_spec()),
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_sel(1);
                 Action::Render
@@ -293,6 +365,66 @@ mod tests {
         assert_eq!(a.selected_inbox().unwrap().id, "y");
         a.update(key('j', KeyModifiers::NONE)); // clamp at bottom
         assert_eq!(a.inbox_sel, 1);
+    }
+
+    fn roster_entry(agent: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: "su-1".into(),
+            label: "su · su-1".into(),
+            intent: None,
+            current_files: vec![],
+            liveness: "live".into(),
+            stale: false,
+            agent: Some(agent.into()),
+            role: None,
+            feature: None,
+            current_plan_slug: None,
+            heartbeat_at: None,
+        }
+    }
+
+    #[test]
+    fn launch_spec_uses_selected_agent_else_default() {
+        let a = App::new(); // empty roster → default
+        assert!(a.launch_spec().argv.contains(&"--agent=claude".to_string()));
+        let mut b = App::new();
+        b.set_roster(vec![roster_entry("codex")]);
+        assert!(b.launch_spec().argv.contains(&"--agent=codex".to_string()));
+    }
+
+    #[test]
+    fn n_launches_in_sessions_only() {
+        let mut a = App::new();
+        assert_eq!(a.update(key('n', KeyModifiers::NONE)), Action::None); // Plans tab
+        a.update(key('3', KeyModifiers::NONE)); // Sessions
+        match a.update(key('n', KeyModifiers::NONE)) {
+            Action::Launch(spec) => assert_eq!(spec.argv[0], "psu"),
+            other => panic!("expected Launch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn help_toggles_and_any_key_dismisses() {
+        let mut a = App::new();
+        assert_eq!(a.update(key('?', KeyModifiers::NONE)), Action::Render);
+        assert!(a.show_help);
+        a.update(key('j', KeyModifiers::NONE)); // any key closes help
+        assert!(!a.show_help);
+    }
+
+    #[test]
+    fn palette_captures_input_until_esc() {
+        let mut a = App::new();
+        a.update(key(':', KeyModifiers::NONE));
+        assert!(a.palette_open);
+        a.update(key('h', KeyModifiers::NONE));
+        a.update(key('i', KeyModifiers::NONE));
+        assert_eq!(a.palette_input, "hi");
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.palette_open);
+        assert_eq!(a.palette_input, "");
+        a.update(key('2', KeyModifiers::NONE)); // tab keys work again
+        assert_eq!(a.tab, Tab::Inbox);
     }
 
     #[test]
