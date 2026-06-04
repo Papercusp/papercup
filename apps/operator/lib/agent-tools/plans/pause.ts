@@ -56,14 +56,18 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
     const now = new Date().toISOString();
 
+    // op_status is null until a plan has been started — so a pause that matches
+    // no started/paused/done op_status means "never started" (the row exists as
+    // the plan itself, but it was never operationally started).
     const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-      return tx<{ status: string; updated_at: string }[]>`
-        UPDATE harness_shared.harness_plan_status
-           SET status = 'paused', updated_at = ${now}
+      return tx<{ op_status: string; op_updated_at: string }[]>`
+        UPDATE harness_shared.harness_plans
+           SET op_status = 'paused', op_updated_at = ${now}
          WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
            AND harness_slug  = ${harnessSlug}
            AND plan_slug     = ${args.slug}
-        RETURNING status, updated_at
+           AND op_status IS NOT NULL
+        RETURNING op_status, op_updated_at
       `;
     });
 

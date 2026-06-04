@@ -49,9 +49,9 @@ export default defineTool({
 
     await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
       return tx`
-        UPDATE harness_shared.harness_plan_status
-           SET priority   = ${args.priority},
-               updated_at = ${now}
+        UPDATE harness_shared.harness_plans
+           SET op_priority  = ${args.priority},
+               op_updated_at = ${now}
          WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
            AND harness_slug = ${harnessSlug}
            AND plan_slug    = ${args.slug}

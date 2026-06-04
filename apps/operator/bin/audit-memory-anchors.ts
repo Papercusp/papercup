@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import {
   runAnchorAudit,
   fileChecker,
-  planChecker,
+  planCheckerPg,
   migrationChecker,
   featureChecker,
   type AuditCheckers,
@@ -148,13 +148,21 @@ async function writeAuditResults(
   }
 }
 
-async function buildCheckers(opts: CliOptions): Promise<AuditCheckers> {
+async function buildCheckers(
+  opts: CliOptions,
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
+): Promise<AuditCheckers> {
   return {
     file: fileChecker(opts.repoRoot),
-    plan: planChecker(
-      path.join(opts.repoRoot, 'apps', 'operator', 'docs', 'plans'),
-      path.join(opts.repoRoot, 'apps', 'operator', 'docs', 'plans', 'archive'),
-    ),
+    // Plans went PG-canonical (plans-pg-canonical-migration-2026-06-03): a
+    // 'plan' anchor is valid iff a harness_plans row exists for the slug.
+    plan: planCheckerPg(async (planSlug) => {
+      const r = await client.query(
+        'SELECT 1 FROM harness_shared.harness_plans WHERE plan_slug = $1 LIMIT 1',
+        [planSlug],
+      );
+      return r.rows.length > 0;
+    }),
     migration: migrationChecker(
       path.join(opts.repoRoot, 'libs', 'papercusp', 'libs', 'db', 'sql'),
     ),
@@ -191,7 +199,7 @@ export async function audit(opts: CliOptions): Promise<{
       return { skipped: false, ok: true, summary: 'empty' };
     }
 
-    const checkers = await buildCheckers(opts);
+    const checkers = await buildCheckers(opts, client as { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> });
     const report = await runAnchorAudit({ memories: state.memories, checkers });
     await writeAuditResults(client as { query: typeof client.query }, report, state.states, opts.dryRun);
 

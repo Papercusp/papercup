@@ -16,7 +16,6 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { parsePlan, maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { readPlanBySlug } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
@@ -247,11 +246,6 @@ export default defineTool({
       detail: decisionId,
       after: args.title,
     });
-    await fireNotificationsForCaller(
-      ctx,
-      [`apps/operator/docs/plans/${args.slug}.md`],
-      'plan_referenced',
-    );
 
     // Cross-plan propagation (agent-coordination-architecture-v2 §6.4 #7).
     // For each OTHER plan this decision affects: emit a cross-reference
@@ -275,11 +269,6 @@ export default defineTool({
         detail: `${decisionId} (cross-ref from ${args.slug})`,
         after: args.title,
       });
-      await fireNotificationsForCaller(
-        ctx,
-        [`apps/operator/docs/plans/${affectedSlug}.md`],
-        'plan_referenced',
-      );
       propagatedTo.push(affectedSlug);
     }
 

@@ -20,7 +20,6 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { IMPORTANCE_LEVELS, maskFences, type Importance } from './parser';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
@@ -178,12 +177,6 @@ export default defineTool({
         isError: true,
       };
     }
-
-    await fireNotificationsForCaller(
-      ctx,
-      [`apps/operator/docs/plans/${args.slug}.md`],
-      'plan_referenced',
-    );
 
     return {
       content: [

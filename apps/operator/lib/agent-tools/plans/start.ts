@@ -84,17 +84,19 @@ export default defineTool({
       };
     }
 
+    // op_status lives on the plan's own harness_plans row (folded from the
+    // retired harness_plan_status table). Preserve the first-ever start time via
+    // COALESCE so re-starting a paused/done plan keeps its original op_started_at.
     const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-      return tx<{ status: string; updated_at: string }[]>`
-        INSERT INTO harness_shared.harness_plan_status
-          (workspace_id, harness_slug, plan_slug, status, started_at, updated_at)
-        VALUES
-          (${DEFAULT_WORKSPACE_ID}, ${harnessSlug}, ${args.slug}, 'started', ${now}, ${now})
-        ON CONFLICT (workspace_id, harness_slug, plan_slug)
-        DO UPDATE SET
-          status     = 'started',
-          updated_at = ${now}
-        RETURNING status, updated_at
+      return tx<{ op_status: string; op_updated_at: string }[]>`
+        UPDATE harness_shared.harness_plans
+           SET op_status     = 'started',
+               op_started_at = COALESCE(op_started_at, ${now}),
+               op_updated_at = ${now}
+         WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+           AND harness_slug = ${harnessSlug}
+           AND plan_slug    = ${args.slug}
+        RETURNING op_status, op_updated_at
       `;
     });
 

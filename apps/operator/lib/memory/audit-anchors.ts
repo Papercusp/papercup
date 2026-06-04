@@ -6,8 +6,9 @@
  * For each memory anchor extracted at write time (P-014/P-015), check
  * cheaply that the anchor still resolves:
  *   - 'file'      — fs.stat resolves under the configured repoRoot
- *   - 'plan'      — fs.stat resolves under apps/operator/docs/plans (or
- *                   archive/)
+ *   - 'plan'      — a harness_plans row exists for the slug (PG; plans went
+ *                   PG-canonical — plans-pg-canonical-migration-2026-06-03).
+ *                   Injected lookup, like 'feature'.
  *   - 'migration' — fs.stat resolves under libs/papercusp/libs/db/sql
  *                   with prefix matching
  *   - 'feature'   — PG row exists in any harness_<slug>.harness_features
@@ -180,16 +181,23 @@ export function fileChecker(repoRoot: string): AnchorChecker {
   };
 }
 
-export function planChecker(plansDir: string, archiveDir: string): AnchorChecker {
+/**
+ * PG-backed plan anchor checker (plans-pg-canonical-migration-2026-06-03):
+ * plans live in `harness_shared.harness_plans`, not on disk, so a `plan` anchor
+ * is valid iff a row exists for the slug. The caller injects the existence
+ * lookup (so this module stays free of `@papercusp/db-org`), exactly like
+ * {@link featureChecker}.
+ */
+export function planCheckerPg(
+  lookup: (planSlug: string) => Promise<boolean>,
+): AnchorChecker {
   return async (anchor) => {
-    for (const dir of [plansDir, archiveDir]) {
-      const p = path.join(dir, `${anchor.value}.md`);
-      try {
-        await fs.promises.stat(p);
-        return { ok: true };
-      } catch { /* try the next dir */ }
+    try {
+      const exists = await lookup(anchor.value);
+      return exists ? { ok: true } : { ok: false, reason: 'plan_not_found' };
+    } catch (err) {
+      return { ok: false, reason: `plan_lookup_failed:${(err as Error).message}` };
     }
-    return { ok: false, reason: 'plan_not_found' };
   };
 }
 

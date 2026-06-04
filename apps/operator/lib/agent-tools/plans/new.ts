@@ -20,7 +20,6 @@ import * as fs from 'node:fs/promises';
 import { withPlanLock } from './with-plan-lock';
 import { PLAN_STATUSES } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitPlanAuthored } from '../../harness/usage-emitters';
 
@@ -213,11 +212,6 @@ export default defineTool({
     // on a managed harness. Operator-level plans (harness:'all') have no harness
     // slug and the ledger is per-harness, so skip those.
     if (harnessSlug) void emitPlanAuthored(harnessSlug, value.slug);
-    await fireNotificationsForCaller(
-      ctx,
-      [`apps/operator/docs/plans/${value.slug}.md`],
-      'plan_referenced',
-    );
 
     return {
       content: [

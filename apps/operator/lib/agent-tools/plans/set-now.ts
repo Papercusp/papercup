@@ -20,7 +20,6 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { maskFences } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
@@ -171,11 +170,6 @@ export default defineTool({
       after: args.next,
       detail: args.state.slice(0, 200),
     });
-    await fireNotificationsForCaller(
-      ctx,
-      [`apps/operator/docs/plans/${args.slug}.md`],
-      'plan_referenced',
-    );
 
     return {
       content: [

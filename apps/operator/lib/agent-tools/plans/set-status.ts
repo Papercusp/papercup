@@ -17,7 +17,6 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { ITEM_STATUSES, maskFences, type Importance } from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 const SU_ROLES = [
@@ -218,11 +217,6 @@ export default defineTool({
       after: args.status,
       detail: args.itemId,
     });
-    await fireNotificationsForCaller(
-      ctx,
-      [`apps/operator/docs/plans/${args.slug}.md`],
-      'plan_referenced',
-    );
 
     // P-020 (planning-attention-importance): push a notification when an
     // item transitions INTO needs-human at importance >= high — the

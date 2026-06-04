@@ -977,49 +977,10 @@ export function usePlanLock(
   return { data, loading, error, refresh };
 }
 
-/* ── Git history (P-303) ───────────────────────────────────────────── */
-
-export interface GitCommit {
-  hash: string;
-  author: string;
-  date: string; // ISO
-  subject: string;
-}
-
-async function fetchPlanHistory(slug: string, archived: boolean): Promise<{ commits: GitCommit[] }> {
-  const url = new URL('/api/admin/plans/git/history', window.location.origin);
-  url.searchParams.set('slug', slug);
-  if (archived) url.searchParams.set('archived', 'true');
-  const r = await fetch(url.toString());
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`git/history → ${r.status}: ${text.slice(0, 200)}`);
-  }
-  return (await r.json()) as { commits: GitCommit[] };
-}
-
-export async function fetchPlanDiff(slug: string, archived: boolean, hash: string): Promise<string> {
-  const url = new URL('/api/admin/plans/git/diff', window.location.origin);
-  url.searchParams.set('slug', slug);
-  if (archived) url.searchParams.set('archived', 'true');
-  url.searchParams.set('hash', hash);
-  const r = await fetch(url.toString());
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`git/diff → ${r.status}: ${text.slice(0, 200)}`);
-  }
-  const { diff } = (await r.json()) as { diff: string };
-  return diff;
-}
-
-export function usePlanHistory(slug: string | null, archived: boolean): AsyncResult<GitCommit[]> {
-  return useAsyncJson<GitCommit[]>(
-    () => (slug ? fetchPlanHistory(slug, archived).then((r) => r.commits) : Promise.resolve([])),
-    [slug, archived],
-  );
-}
-
 /* ── plan_revisions (plan-agent-launch P-004 / P-017) ──────────────── */
+/* The git-history surface (P-303) was removed when plans went PG-canonical
+ * (plans-pg-canonical-migration-2026-06-03 D-003); plan_revisions below is the
+ * audit trail, surfaced by RevisionsPanel. */
 
 export type PlanRevisionAuthorKind = 'agent' | 'human';
 export type PlanRevisionSessionKind =

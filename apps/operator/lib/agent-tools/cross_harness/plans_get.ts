@@ -45,11 +45,15 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const { plans, archive } = await resolveHarnessPlansDir(args.harnessSlug, {
+    // Validate the harness is registered (throws if not) + resolve its workspace.
+    const resolved = await resolveHarnessPlansDir(args.harnessSlug, {
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
     });
 
-    const result = await readPlanBySlug(args.slug, { plansDir: plans, archiveDir: archive });
+    const result = await readPlanBySlug(args.slug, {
+      harnessSlug: resolved.harnessSlug,
+      workspaceId: resolved.workspaceId,
+    });
     if (!result) {
       return {
         content: [

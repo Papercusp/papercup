@@ -16,7 +16,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { listPlanFiles, readPlanBySlug, resolveHarnessPlansDir } from '../plans/source';
+import { readAllPlans, resolveHarnessPlansDir } from '../plans/source';
 import { resolveEffectiveStatus } from '../plans/effective-status';
 import { ITEM_STATUSES, PLAN_STATUSES } from '../plans/parser';
 
@@ -70,22 +70,16 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
-    const { plans, archive } = await resolveHarnessPlansDir(args.harnessSlug, {
+    // Validate the harness is registered (throws if not) + resolve its workspace.
+    const resolved = await resolveHarnessPlansDir(args.harnessSlug, {
       ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
     });
-    const opts = { plansDir: plans, archiveDir: archive };
+    const opts = { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId };
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
 
-    const entries = await listPlanFiles(opts);
-    const filtered = includeArchived ? entries : entries.filter((e) => !e.archived);
-
     const rows: ListRow[] = [];
-    for (const entry of filtered) {
-      const result = await readPlanBySlug(entry.slug, opts);
-      if (!result) continue;
-      const { parsed, archived } = result;
-
+    for (const { parsed, archived } of await readAllPlans({ ...opts, includeArchived })) {
       if (parsed.isLegacy && !includeLegacy) continue;
 
       let itemCounts: ListRow['itemCounts'] = null;

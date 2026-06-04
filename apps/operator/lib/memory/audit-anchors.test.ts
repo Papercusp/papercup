@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import {
   runAnchorAudit,
   fileChecker,
-  planChecker,
+  planCheckerPg,
   migrationChecker,
   featureChecker,
   type AuditCheckers,
@@ -152,35 +152,25 @@ describe('fileChecker', () => {
   });
 });
 
-describe('planChecker', () => {
-  it('finds plan in plansDir', async () => {
-    const plansDir = path.join(tmpRoot, 'plans');
-    const archiveDir = path.join(tmpRoot, 'plans/archive');
-    fs.mkdirSync(plansDir, { recursive: true });
-    fs.writeFileSync(path.join(plansDir, 'my-plan-2026-05-25.md'), '');
-    const c = planChecker(plansDir, archiveDir);
+describe('planCheckerPg', () => {
+  it('passes when the injected lookup finds the plan', async () => {
+    const c = planCheckerPg(async () => true);
     const r = await c({ kind: 'plan', value: 'my-plan-2026-05-25' });
     expect(r.ok).toBe(true);
   });
 
-  it('falls through to archiveDir', async () => {
-    const plansDir = path.join(tmpRoot, 'plans');
-    const archiveDir = path.join(tmpRoot, 'plans/archive');
-    fs.mkdirSync(archiveDir, { recursive: true });
-    fs.writeFileSync(path.join(archiveDir, 'old-plan-2026-01-01.md'), '');
-    const c = planChecker(plansDir, archiveDir);
-    const r = await c({ kind: 'plan', value: 'old-plan-2026-01-01' });
-    expect(r.ok).toBe(true);
-  });
-
-  it('fails when plan missing in both', async () => {
-    const plansDir = path.join(tmpRoot, 'plans');
-    const archiveDir = path.join(tmpRoot, 'plans/archive');
-    fs.mkdirSync(plansDir, { recursive: true });
-    fs.mkdirSync(archiveDir, { recursive: true });
-    const c = planChecker(plansDir, archiveDir);
+  it('fails when the plan slug is not found', async () => {
+    const c = planCheckerPg(async () => false);
     const r = await c({ kind: 'plan', value: 'ghost-2026-01-01' });
     expect(r).toEqual({ ok: false, reason: 'plan_not_found' });
+  });
+
+  it('reports a lookup failure as the reason', async () => {
+    const c = planCheckerPg(async () => {
+      throw new Error('db down');
+    });
+    const r = await c({ kind: 'plan', value: 'x-2026-01-01' });
+    expect(r).toEqual({ ok: false, reason: 'plan_lookup_failed:db down' });
   });
 });
 

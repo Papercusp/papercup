@@ -171,8 +171,8 @@ const optionsGet = defineTool({
     if (harness) {
       try {
         const { resolveHarnessPlansDir, listPlanFiles } = await import('@/lib/agent-tools/plans/source');
-        const { plans, archive } = await resolveHarnessPlansDir(harness, { workspaceId: workspace });
-        const entries = await listPlanFiles({ plansDir: plans, archiveDir: archive });
+        const resolved = await resolveHarnessPlansDir(harness, { workspaceId: workspace });
+        const entries = await listPlanFiles({ harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
         return jsonRes({
           status: 'ok',
           workspace,
@@ -279,8 +279,8 @@ const post = defineTool({
     if (planSlug && harnessSlug) {
       try {
         const { resolveHarnessPlansDir, readPlanBySlug } = await import('@/lib/agent-tools/plans/source');
-        const { plans, archive } = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
-        const found = await readPlanBySlug(planSlug, { plansDir: plans, archiveDir: archive });
+        const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
+        const found = await readPlanBySlug(planSlug, { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
         if (found) {
           planNow = found.parsed.now;
           planTitle = found.parsed.frontmatter?.title ?? null;

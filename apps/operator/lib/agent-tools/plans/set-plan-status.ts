@@ -24,7 +24,6 @@ import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { fireNotificationsForCaller } from '../coordination/subscriptions';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 
@@ -196,11 +195,6 @@ export default defineTool({
         before: result.value.oldStatus,
         after: args.status,
       });
-      await fireNotificationsForCaller(
-        ctx,
-        [`apps/operator/docs/plans/${args.slug}.md`],
-        'plan_referenced',
-      );
       // Cross-store invariant: a plan that just went terminal (shipped /
       // superseded) can no longer be operationally started/paused. Clear
       // its harness_plan_status row so the "N waiting" badge + Running
