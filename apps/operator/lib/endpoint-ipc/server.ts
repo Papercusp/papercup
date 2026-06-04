@@ -31,6 +31,7 @@ import {
   dispatchProjectedToolStream,
 } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { readSuperuserToken } from '@/lib/superuser-token';
 
 /** The Papercusp-operator host binding for the generic IPC server. */
 const operatorHost: IpcEndpointHost = {
@@ -82,5 +83,23 @@ export function startEndpointIpcServer(
       options.upstreamBaseUrl ??
       process.env.PAPERCUSP_OPERATOR_BASE ??
       `http://127.0.0.1:${process.env.PORT ?? 3055}`,
+    // In-boundary credential for the sys:http bridge. The webview rides IPC
+    // for same-origin /api/* fetches, but its HttpOnly `papercusp_session`
+    // cookie can't ride the bridge (JS can't forward it nor honor Set-Cookie),
+    // so cookie-gated admin routes (`auth: { trust: ['verified','trusted'] }`,
+    // per the D3 posture) would see only `unverified-loopback` and 403. The
+    // webview is the trusted in-boundary shell — the same boundary that lets
+    // endpoint_invoke synthesize an `operator` principal (see server.ts) — so
+    // we present the operator's own loopback superuser bearer on the bridge's
+    // upstream hop. `principalFromSuperuserToken` resolves it to
+    // `trust: 'trusted'` (loopback-gated; NOT the `?superuser=1` gate-bypass),
+    // which clears the gate while role/quota/capability checks still run.
+    // Read per request so a rotated token is picked up without a restart.
+    sysHttpInjectHeaders:
+      options.sysHttpInjectHeaders ??
+      (() => {
+        const token = readSuperuserToken();
+        return token ? { authorization: `Bearer ${token}` } : undefined;
+      }),
   });
 }

@@ -1,0 +1,289 @@
+//! IPC client (SSE→IPC pivot). Connects to the operator's endpoint-ipc Unix
+//! socket and invokes tools — including `sys:http` for `/api/*` routes.
+//! Leaner mirror of `papercusp-desktop/src-tauri/src/endpoint_ipc.rs`
+//! (mpsc + std Mutex map instead of Tauri Channels). No auth token: the Unix
+//! socket is the trust boundary.
+
+use crate::framing::{decode_event_bin_payload, encode_frame, Frame, FrameDecoder, FrameType};
+use anyhow::{anyhow, Context, Result};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::OwnedWriteHalf;
+use tokio::net::UnixStream;
+use tokio::sync::mpsc;
+
+/// A non-terminal event frame for a call.
+pub enum CallEvent {
+    Json { name: String, data: Value },
+    Bin { name: String, bytes: Vec<u8> },
+}
+
+/// Internal: frames routed from the reader loop to a waiting call.
+enum CallFrame {
+    Event(CallEvent),
+    Done(Value),
+    Error { code: String, message: String },
+    ConnLost,
+}
+
+/// Result of a completed call: the events seen + the DONE `result`.
+pub struct CallResult {
+    pub events: Vec<CallEvent>,
+    pub result: Value,
+}
+
+type Sinks = Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<CallFrame>>>>;
+
+pub struct IpcClient {
+    writer: tokio::sync::Mutex<OwnedWriteHalf>,
+    next_id: AtomicU64,
+    sinks: Sinks,
+}
+
+impl IpcClient {
+    /// Resolve the socket from `~/.papercusp/endpoint-ipc.json` and connect.
+    pub async fn connect_discovered() -> Result<Self> {
+        let path = discover_socket().context("resolve endpoint-ipc socket")?;
+        Self::connect(&path).await
+    }
+
+    pub async fn connect(socket_path: &Path) -> Result<Self> {
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .with_context(|| format!("connect ipc socket {}", socket_path.display()))?;
+        let (mut read_half, write_half) = stream.into_split();
+        let sinks: Sinks = Arc::new(Mutex::new(HashMap::new()));
+        let reader_sinks = sinks.clone();
+
+        tokio::spawn(async move {
+            let mut dec = FrameDecoder::new();
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                match read_half.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if dec.push(&buf[..n]).is_err() {
+                            break;
+                        }
+                        for frame in dec.drain() {
+                            route_frame(&reader_sinks, frame);
+                        }
+                    }
+                }
+            }
+            // Socket closed → fail every in-flight call.
+            let mut g = reader_sinks.lock().unwrap();
+            for (_, tx) in g.drain() {
+                let _ = tx.send(CallFrame::ConnLost);
+            }
+        });
+
+        Ok(Self {
+            writer: tokio::sync::Mutex::new(write_half),
+            next_id: AtomicU64::new(1),
+            sinks,
+        })
+    }
+
+    /// Invoke `tool` with `input`; collect events until DONE/ERROR.
+    pub async fn invoke(&self, tool: &str, input: Value) -> Result<CallResult> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let (tx, mut rx) = mpsc::unbounded_channel::<CallFrame>();
+        self.sinks.lock().unwrap().insert(id, tx);
+
+        let req = serde_json::json!({ "id": id, "toolName": tool, "input": input });
+        let payload = serde_json::to_vec(&req)?;
+        let frame = encode_frame(FrameType::Request, &payload).map_err(|e| anyhow!("encode: {e}"))?;
+        {
+            let mut w = self.writer.lock().await;
+            w.write_all(&frame).await.context("write request frame")?;
+            let _ = w.flush().await;
+        }
+
+        let mut events: Vec<CallEvent> = Vec::new();
+        let outcome = loop {
+            match rx.recv().await {
+                Some(CallFrame::Event(ev)) => events.push(ev),
+                Some(CallFrame::Done(result)) => break Ok(result),
+                Some(CallFrame::Error { code, message }) => {
+                    break Err(anyhow!("ipc {tool} error [{code}]: {message}"))
+                }
+                Some(CallFrame::ConnLost) | None => {
+                    break Err(anyhow!("ipc {tool}: connection lost"))
+                }
+            }
+        };
+        self.sinks.lock().unwrap().remove(&id);
+        Ok(CallResult {
+            events,
+            result: outcome?,
+        })
+    }
+
+    /// Invoke `sys:http` for an `/api/*` route; reassemble the `body` EVENT_BIN
+    /// chunks into the response bytes. Errors on a non-2xx/3xx status.
+    pub async fn sys_http(&self, method: &str, path: &str, body: Option<String>) -> Result<Vec<u8>> {
+        let mut input = serde_json::json!({ "method": method, "path": path });
+        if let Some(b) = body {
+            input["headers"] = serde_json::json!({ "content-type": "application/json" });
+            input["body"] = Value::String(b);
+        }
+        let res = self.invoke("sys:http", input).await?;
+
+        let mut status: i64 = 200;
+        let mut body_bytes: Vec<u8> = Vec::new();
+        for ev in &res.events {
+            match ev {
+                CallEvent::Json { name, data } if name == "head" => {
+                    status = data.get("status").and_then(|s| s.as_i64()).unwrap_or(200);
+                }
+                CallEvent::Bin { name, bytes } if name == "body" => {
+                    body_bytes.extend_from_slice(bytes)
+                }
+                _ => {}
+            }
+        }
+        if !(200..400).contains(&status) {
+            let txt: String = String::from_utf8_lossy(&body_bytes).chars().take(200).collect();
+            return Err(anyhow!("{method} {path} -> {status}: {txt}"));
+        }
+        Ok(body_bytes)
+    }
+}
+
+fn route_frame(sinks: &Sinks, frame: Frame) {
+    let (id, cf): (u64, CallFrame) = match frame.frame_type {
+        FrameType::EventJson => {
+            let v: Value = match serde_json::from_slice(&frame.payload) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let data = v.get("data").cloned().unwrap_or(Value::Null);
+            (id, CallFrame::Event(CallEvent::Json { name, data }))
+        }
+        FrameType::EventBin => match decode_event_bin_payload(&frame.payload) {
+            Ok(d) => (
+                d.id,
+                CallFrame::Event(CallEvent::Bin {
+                    name: d.name,
+                    bytes: d.binary,
+                }),
+            ),
+            Err(_) => return,
+        },
+        FrameType::Done => {
+            let v: Value = match serde_json::from_slice(&frame.payload) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+            (id, CallFrame::Done(v.get("result").cloned().unwrap_or(Value::Null)))
+        }
+        FrameType::Error => {
+            let v: Value = match serde_json::from_slice(&frame.payload) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+            let err = v.get("error").cloned().unwrap_or(Value::Null);
+            let code = err.get("code").and_then(|x| x.as_str()).unwrap_or("error").to_string();
+            let message = err.get("message").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            (id, CallFrame::Error { code, message })
+        }
+        // Client→server frame types never arrive here.
+        FrameType::Request | FrameType::Cancel => return,
+    };
+    if let Some(tx) = sinks.lock().unwrap().get(&id) {
+        let _ = tx.send(cf);
+    }
+}
+
+fn discover_socket() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("no home dir")?;
+    let disc = home.join(".papercusp").join("endpoint-ipc.json");
+    let txt =
+        std::fs::read_to_string(&disc).with_context(|| format!("read {}", disc.display()))?;
+    let v: Value = serde_json::from_str(&txt).context("parse endpoint-ipc.json")?;
+    let sp = v
+        .get("socketPath")
+        .and_then(|x| x.as_str())
+        .context("endpoint-ipc.json missing socketPath")?;
+    Ok(PathBuf::from(sp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UnixListener;
+
+    fn event_bin_frame(id: u64, name: &str, bin: &[u8]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&id.to_be_bytes());
+        p.extend_from_slice(&(name.len() as u32).to_be_bytes());
+        p.extend_from_slice(name.as_bytes());
+        p.extend_from_slice(bin);
+        encode_frame(FrameType::EventBin, &p).unwrap()
+    }
+
+    /// Fake operator: accept one connection, read a REQUEST, reply with the
+    /// sys:http frame sequence (head EVENT_JSON + body EVENT_BIN + DONE).
+    async fn spawn_fake(socket: PathBuf, status: i64, body: &'static [u8]) {
+        let listener = UnixListener::bind(&socket).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut r, mut w) = stream.into_split();
+            // Read exactly one REQUEST frame.
+            let mut hdr = [0u8; 5];
+            if r.read_exact(&mut hdr).await.is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
+            let mut payload = vec![0u8; len];
+            let _ = r.read_exact(&mut payload).await;
+            let req: Value = serde_json::from_slice(&payload).unwrap();
+            let id = req["id"].as_u64().unwrap();
+
+            let head = serde_json::json!({"id":id,"name":"head","data":{"status":status,"headers":{}}})
+                .to_string();
+            let _ = w
+                .write_all(&encode_frame(FrameType::EventJson, head.as_bytes()).unwrap())
+                .await;
+            let _ = w.write_all(&event_bin_frame(id, "body", body)).await;
+            let done = serde_json::json!({"id":id,"result":{"content":[]}}).to_string();
+            let _ = w
+                .write_all(&encode_frame(FrameType::Done, done.as_bytes()).unwrap())
+                .await;
+            let _ = w.flush().await;
+        });
+        // Give bind a beat before the client connects.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    #[tokio::test]
+    async fn sys_http_reassembles_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("op.sock");
+        spawn_fake(sock.clone(), 200, br#"{"ok":true,"n":7}"#).await;
+        let client = IpcClient::connect(&sock).await.unwrap();
+        let bytes = client.sys_http("GET", "/api/x", None).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true));
+        assert_eq!(v["n"], serde_json::json!(7));
+    }
+
+    #[tokio::test]
+    async fn sys_http_errors_on_non_2xx() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("op.sock");
+        spawn_fake(sock.clone(), 404, b"not found").await;
+        let client = IpcClient::connect(&sock).await.unwrap();
+        let err = client.sys_http("GET", "/api/missing", None).await.unwrap_err();
+        assert!(err.to_string().contains("404"));
+    }
+}

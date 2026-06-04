@@ -8,6 +8,7 @@
 mod app;
 mod client;
 mod event;
+mod framing;
 mod models;
 mod mux;
 mod sse;

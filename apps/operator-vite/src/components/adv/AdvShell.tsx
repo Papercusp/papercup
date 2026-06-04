@@ -22,6 +22,7 @@ import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
+import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 
 const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -72,15 +73,6 @@ type HarnessProjectLite = {
   // Drives the header's Share button → Shared badge swap.
   is_shared?: boolean;
 };
-
-/**
- * Select display token for the "All harnesses" row. Widget-only: picking
- * it sets `?scope=all`; it is NEVER written to `?slug=` (which always
- * holds a real harness slug or null). Keeping the sentinel out of
- * `?slug=` means every `?slug=` consumer stays sentinel-unaware — the
- * "all" intent lives entirely on the orthogonal `?scope=` axis.
- */
-const ALL_HARNESSES_OPTION = '__all__';
 
 export default function AdvShell({
   title = 'Advanced',
@@ -146,15 +138,22 @@ export default function AdvShell({
         const nextProjects = Array.isArray(d?.projects) ? d.projects : [];
         setProjects(nextProjects);
         setProjectLoadError(null);
-        if (!nextProjects.length) return;
-        if (activeSlug && nextProjects.some((p: HarnessProjectLite) => p.slug === activeSlug)) return;
-        // #2: with no explicit harness in the URL, default to "All harnesses"
-        // (scope=all) rather than arbitrarily auto-selecting the first (or a
-        // localStorage-saved) project. A user's explicit pick still round-trips
-        // via ?slug= across refresh (the early-return above), so only a truly
-        // fresh load lands on All — which then bounces to a workspace-wide tab
-        // (Plans/Sessions) via the allMode tab-guard below.
-        void setScopeMode('all');
+        // Restore the persisted harness selection so the selector + tab strip
+        // inherit the last harness the user picked (persisted to localStorage
+        // on every selector change). resolveAdvHarnessSelection encodes the
+        // precedence: explicit ?slug= wins, else a persisted concrete harness
+        // (→ scope=expanded, full tab strip), else All-harnesses.
+        const persisted =
+          typeof window !== 'undefined'
+            ? window.localStorage.getItem(wsLocalKey('harness.activeProject'))
+            : null;
+        const decision = resolveAdvHarnessSelection({
+          projectSlugs: nextProjects.map((p: HarnessProjectLite) => p.slug),
+          urlSlug: activeSlug,
+          persisted,
+        });
+        if (decision.setSlug) void setActiveSlug(decision.setSlug);
+        if (decision.setScope) void setScopeMode(decision.setScope);
       })
       .catch((e) => {
         if (!cancelled) setProjectLoadError(String(e?.message ?? e));
@@ -162,7 +161,7 @@ export default function AdvShell({
     return () => {
       cancelled = true;
     };
-  }, [activeSlug, setScopeMode, refreshNonce]);
+  }, [activeSlug, setActiveSlug, setScopeMode, refreshNonce]);
 
   // "All harnesses" mode: list views (Plans, Sessions) span the whole
   // workspace. The single-harness widgets (Share, now-running, Discord)
@@ -203,8 +202,16 @@ export default function AdvShell({
                 if (next === '__loading') return;
                 if (next === ALL_HARNESSES_OPTION) {
                   // Route "all" to the scope axis — leave ?slug= holding the
-                  // last real harness so switching back is one click.
+                  // last real harness so switching back is one click. Persist
+                  // the ALL choice too so a fresh load restores it (the
+                  // projects/lite effect replays this on load).
                   void setScopeMode('all');
+                  if (typeof window !== 'undefined') {
+                    window.localStorage.setItem(
+                      wsLocalKey('harness.activeProject'),
+                      ALL_HARNESSES_OPTION,
+                    );
+                  }
                   return;
                 }
                 // Picking a concrete harness exits "all" mode, back to the
