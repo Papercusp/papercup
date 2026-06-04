@@ -163,15 +163,21 @@ export async function withPlanLock<T>(
       newVersion = curVersion + 1;
       const idx = deriveIndexFromContent(newBody);
       const hash = hashPlanContent(newBody);
+      // jsonb columns bound as `${JSON.stringify(x)}::jsonb` — the operator's
+      // postgres-js client throws on sql.json / bare-object jsonb params
+      // (agent-insights/postgres-js-jsonb-binding).
+      const itemsJson = JSON.stringify(idx.items);
+      const decisionsJson = JSON.stringify(idx.decisions);
       await tx`
         INSERT INTO harness_shared.harness_plans (
           workspace_id, harness_slug, plan_slug, content, content_hash, version,
           title, status, created, updated, owner, supersedes, superseded_by,
-          is_legacy, origin
+          is_legacy, items, decisions, now_state, now_next, origin
         ) VALUES (
           ${workspaceId}, ${harnessSlug}, ${slug}, ${newBody}, ${hash}, ${newVersion},
           ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner},
-          ${idx.supersedes}, ${idx.supersededBy}, ${idx.isLegacy}, 'local'
+          ${idx.supersedes}, ${idx.supersededBy}, ${idx.isLegacy},
+          ${itemsJson}::jsonb, ${decisionsJson}::jsonb, ${idx.nowState}, ${idx.nowNext}, 'local'
         )
         ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
           content       = EXCLUDED.content,
@@ -184,7 +190,11 @@ export async function withPlanLock<T>(
           owner         = EXCLUDED.owner,
           supersedes    = EXCLUDED.supersedes,
           superseded_by = EXCLUDED.superseded_by,
-          is_legacy     = EXCLUDED.is_legacy
+          is_legacy     = EXCLUDED.is_legacy,
+          items         = EXCLUDED.items,
+          decisions     = EXCLUDED.decisions,
+          now_state     = EXCLUDED.now_state,
+          now_next      = EXCLUDED.now_next
       `;
       if (opts.afterWrite) {
         await opts.afterWrite(newBody);

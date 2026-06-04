@@ -382,7 +382,31 @@ export async function readAllPlans(
   }));
 }
 
-/** Frontmatter-index fields derived from a plan's markdown — maintained on write. */
+/** A plan item as stored in the derived `items` jsonb column (Stage 3 normalize). */
+export interface PlanIndexItem {
+  id: string;
+  status: string;
+  text: string;
+  importance: string;
+  blockedBy: string[];
+  decisionRefs: string[];
+  phase: string | null;
+}
+
+/** A decision as stored in the derived `decisions` jsonb column (Stage 3 normalize). */
+export interface PlanIndexDecision {
+  id: string;
+  title: string;
+  body: string;
+  date: string | null;
+  itemRefs: string[];
+}
+
+/**
+ * Frontmatter + structured derived index for a plan, recomputed from the
+ * canonical markdown on every write + backfill (D-006 — content is canonical;
+ * these are a queryable derived index).
+ */
 export interface PlanIndex {
   title: string | null;
   status: PlanStatus | null;
@@ -392,9 +416,14 @@ export interface PlanIndex {
   supersedes: string[];
   supersededBy: string | null;
   isLegacy: boolean;
+  // Stage-3 structured index (normalize).
+  items: PlanIndexItem[];
+  decisions: PlanIndexDecision[];
+  nowState: string | null;
+  nowNext: string | null;
 }
 
-/** Parse a plan body into its derived frontmatter index (used on every write + backfill). */
+/** Parse a plan body into its derived index (frontmatter + structured sections). */
 export function deriveIndexFromContent(content: string): PlanIndex {
   const p = parsePlan(content);
   const fm = p.frontmatter;
@@ -407,5 +436,23 @@ export function deriveIndexFromContent(content: string): PlanIndex {
     supersedes: fm.supersedes ?? [],
     supersededBy: fm.supersededBy ?? null,
     isLegacy: p.isLegacy,
+    items: p.items.map((i) => ({
+      id: i.id,
+      status: i.storedStatus,
+      text: i.text,
+      importance: i.importance,
+      blockedBy: i.blockedBy,
+      decisionRefs: i.decisionRefs,
+      phase: i.phase,
+    })),
+    decisions: p.decisions.map((d) => ({
+      id: d.id,
+      title: d.title,
+      body: d.body,
+      date: d.date,
+      itemRefs: d.itemRefs,
+    })),
+    nowState: p.now?.state ?? null,
+    nowNext: p.now?.next ?? null,
   };
 }

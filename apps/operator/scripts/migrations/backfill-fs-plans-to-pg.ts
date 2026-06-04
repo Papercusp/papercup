@@ -97,6 +97,11 @@ interface BackfillRow {
   opPriority: number | null;
   archived: boolean;
   isLegacy: boolean;
+  // Stage-3 structured derived index.
+  items: unknown[];
+  decisions: unknown[];
+  nowState: string | null;
+  nowNext: string | null;
 }
 
 async function main(): Promise<void> {
@@ -163,6 +168,24 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
         opPriority: st?.priority ?? null,
         archived: fp.archived,
         isLegacy: parsed.isLegacy,
+        items: parsed.items.map((i) => ({
+          id: i.id,
+          status: i.storedStatus,
+          text: i.text,
+          importance: i.importance,
+          blockedBy: i.blockedBy,
+          decisionRefs: i.decisionRefs,
+          phase: i.phase,
+        })),
+        decisions: parsed.decisions.map((d) => ({
+          id: d.id,
+          title: d.title,
+          body: d.body,
+          date: d.date,
+          itemRefs: d.itemRefs,
+        })),
+        nowState: parsed.now?.state ?? null,
+        nowNext: parsed.now?.next ?? null,
       });
     }
   }
@@ -183,13 +206,14 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
         (workspace_id, harness_slug, plan_slug, title, status, created, updated, owner,
          supersedes, superseded_by, content, content_hash, version,
          op_status, op_started_at, op_updated_at, current_wave, op_priority,
-         archived, is_legacy, origin)
+         archived, is_legacy, items, decisions, now_state, now_next, origin)
       VALUES
         (${r.workspaceId}, ${r.harnessSlug}, ${r.planSlug}, ${r.title}, ${r.status},
          ${r.created}, ${r.updated}, ${r.owner}, ${r.supersedes}, ${r.supersededBy},
          ${r.content}, ${r.contentHash}, 0,
          ${r.opStatus}, ${r.opStartedAt}, ${r.opUpdatedAt}, ${r.currentWave}, ${r.opPriority},
-         ${r.archived}, ${r.isLegacy}, 'local')
+         ${r.archived}, ${r.isLegacy},
+         ${JSON.stringify(r.items)}::jsonb, ${JSON.stringify(r.decisions)}::jsonb, ${r.nowState}, ${r.nowNext}, 'local')
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
         title         = EXCLUDED.title,
         status        = EXCLUDED.status,
@@ -207,12 +231,17 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
         current_wave  = EXCLUDED.current_wave,
         op_priority   = EXCLUDED.op_priority,
         archived      = EXCLUDED.archived,
-        is_legacy     = EXCLUDED.is_legacy
+        is_legacy     = EXCLUDED.is_legacy,
+        items         = EXCLUDED.items,
+        decisions     = EXCLUDED.decisions,
+        now_state     = EXCLUDED.now_state,
+        now_next      = EXCLUDED.now_next
       WHERE harness_shared.harness_plans.content_hash IS DISTINCT FROM EXCLUDED.content_hash
          OR harness_shared.harness_plans.op_status     IS DISTINCT FROM EXCLUDED.op_status
          OR harness_shared.harness_plans.op_priority   IS DISTINCT FROM EXCLUDED.op_priority
          OR harness_shared.harness_plans.current_wave  IS DISTINCT FROM EXCLUDED.current_wave
          OR harness_shared.harness_plans.archived      IS DISTINCT FROM EXCLUDED.archived
+         OR harness_shared.harness_plans.items         IS NULL
       RETURNING plan_slug
     `;
     if (res.length > 0) upserted++;

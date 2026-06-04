@@ -128,43 +128,38 @@ export async function saveIssues(project: ProjectEntry, file: IssuesFile): Promi
     await sql`DELETE FROM harness_issues WHERE harness_slug = ${project.slug}`;
     return;
   }
-  const rows = file.issues.map((i) => ({
-    harness_slug: project.slug,
-    issue_id: i.id,
-    title: i.title,
-    severity: clampSeverity(i.severity),
-    source: i.source,
-    status: clampStatus(i.status),
-    found_at: i.foundAt,
-    found_during: i.foundDuring ?? null,
-    repro: i.repro ?? null,
-    evidence: i.evidence ?? null,
-    suggested_fix: i.suggestedFix ?? null,
-    code_pointer: i.codePointer ?? null,
-    linked_feature_id: i.linkedFeatureId ?? null,
-    attempts: i.attempts ?? 0,
-    notes: JSON.stringify(i.notes ?? []),
-    created_ts: now,
-    updated_ts: now,
-  }));
-  await sql`
-    INSERT INTO harness_issues ${sql(rows, 'harness_slug', 'issue_id', 'title', 'severity', 'source', 'status', 'found_at', 'found_during', 'repro', 'evidence', 'suggested_fix', 'code_pointer', 'linked_feature_id', 'attempts', 'notes', 'created_ts', 'updated_ts')}
-    ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
-      title             = EXCLUDED.title,
-      severity          = EXCLUDED.severity,
-      source            = EXCLUDED.source,
-      status            = EXCLUDED.status,
-      found_at          = EXCLUDED.found_at,
-      found_during      = EXCLUDED.found_during,
-      repro             = EXCLUDED.repro,
-      evidence          = EXCLUDED.evidence,
-      suggested_fix     = EXCLUDED.suggested_fix,
-      code_pointer      = EXCLUDED.code_pointer,
-      linked_feature_id = EXCLUDED.linked_feature_id,
-      attempts          = EXCLUDED.attempts,
-      notes             = EXCLUDED.notes,
-      updated_ts        = EXCLUDED.updated_ts
-  `;
+  // Per-row upsert with an explicit ${…}::jsonb cast for `notes` — the bulk
+  // `sql(rows, …)` helper can't bind a jsonb column reliably through the
+  // per-harness VIEW (postgres-js jsonb-binding insight). Counts are O(100s) and
+  // saves are infrequent, so the N round-trips are fine.
+  for (const i of file.issues) {
+    await sql`
+      INSERT INTO harness_issues
+        (harness_slug, issue_id, title, severity, source, status, found_at, found_during,
+         repro, evidence, suggested_fix, code_pointer, linked_feature_id, attempts, notes,
+         created_ts, updated_ts)
+      VALUES (${project.slug}, ${i.id}, ${i.title}, ${clampSeverity(i.severity)}, ${i.source},
+              ${clampStatus(i.status)}, ${i.foundAt}, ${i.foundDuring ?? null}, ${i.repro ?? null},
+              ${i.evidence ?? null}, ${i.suggestedFix ?? null}, ${i.codePointer ?? null},
+              ${i.linkedFeatureId ?? null}, ${i.attempts ?? 0}, ${JSON.stringify(i.notes ?? [])}::jsonb,
+              ${now}, ${now})
+      ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
+        title             = EXCLUDED.title,
+        severity          = EXCLUDED.severity,
+        source            = EXCLUDED.source,
+        status            = EXCLUDED.status,
+        found_at          = EXCLUDED.found_at,
+        found_during      = EXCLUDED.found_during,
+        repro             = EXCLUDED.repro,
+        evidence          = EXCLUDED.evidence,
+        suggested_fix     = EXCLUDED.suggested_fix,
+        code_pointer      = EXCLUDED.code_pointer,
+        linked_feature_id = EXCLUDED.linked_feature_id,
+        attempts          = EXCLUDED.attempts,
+        notes             = EXCLUDED.notes,
+        updated_ts        = EXCLUDED.updated_ts
+    `;
+  }
   await sql`
     DELETE FROM harness_issues
     WHERE harness_slug = ${project.slug}

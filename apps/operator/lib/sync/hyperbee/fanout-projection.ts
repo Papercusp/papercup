@@ -27,7 +27,6 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import {
-  DEFAULT_COORD_WORKSPACE,
   PgEntitySubscriptionStore,
   PgTaggableStore,
   PgTopicStore,
@@ -35,6 +34,7 @@ import {
   type ObjectRef,
   type ResolvedSubscriber,
 } from '@papercusp/coordination/capabilities';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { buildInjectEnvelope, shouldDeliver, type InjectEvent } from '../../agent-tools/coordination/fanout-delivery';
 
 type OutboxOp = 'put' | 'del';
@@ -170,7 +170,7 @@ export async function insertFanoutNotify(
   const env = buildInjectEnvelope(sub, ev, msgId);
   const rows = await pg<{ id: string }[]>`
     INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
-    VALUES (${coordWs}, 'messages', ${sub.subscriber_id}, ${msgId}, ${JSON.stringify(env)}::jsonb)
+    VALUES (${coordWs}, 'messages', ${sub.subscriber_id}, ${msgId}, ${pg.json(env as Record<string, unknown>)})
     ON CONFLICT (workspace_id, msg_id) WHERE (surface = 'messages' AND (body ->> 'notify_kind') IS NOT NULL)
     DO NOTHING
     RETURNING id`;
