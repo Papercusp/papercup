@@ -19,8 +19,9 @@
  *   - **`workspace_id` is set explicitly.** `readFeaturesPg` filters
  *     `WHERE workspace_id = $active`; a NULL workspace_id makes the minted
  *     feature invisible to dispatch.
- *   - **Canonical writes.** `issues.json` is authoritative (PG is a mirror), so
- *     every issue mutation goes through `loadIssuesOrSeed` + `saveIssues`.
+ *   - **PG-canonical writes.** PG is the store-of-record (Phase 3 killed
+ *     `issues.json`), so every issue mutation goes through `loadIssuesOrSeed`
+ *     (async) + `saveIssues`.
  *
  * Idempotency (D-016.3): the sweep runs from BOTH the 30s orchestrator tick and
  * the on-settle refill within the SAME operator process, so a per-harness
@@ -221,7 +222,7 @@ export async function promoteIssueToFeature(
   opts: PromoteOpts = {},
 ): Promise<PromoteIssueResult> {
   const actor = opts.actor ?? 'human';
-  const file = loadIssuesOrSeed(project);
+  const file = await loadIssuesOrSeed(project);
   const issue = file.issues.find((i) => i.id === issueId);
   if (!issue) return { ok: false, error: 'issue not found', status: 404 };
   if (issue.linkedFeatureId) {
@@ -255,7 +256,7 @@ export async function convertOpenIssuesToFeatures(
   const actor = opts.actor ?? 'orchestrator';
   const key = `${workspaceId}:${project.slug}`;
   const res = await withHarnessSweepLock(key, async (): Promise<ConvertResult> => {
-    const file = loadIssuesOrSeed(project);
+    const file = await loadIssuesOrSeed(project);
     const candidates = selectConvertCandidates(file.issues);
     if (candidates.length === 0) return { promoted: [] };
 

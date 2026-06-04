@@ -5,8 +5,9 @@
  * git-canonical frontmatter is already shipped/superseded would create the
  * exact started+terminal state the system works to make impossible. The
  * handler reads the frontmatter first and refuses before ever writing the
- * harness_plan_status row. We mock the file read + the PG/lock side-effects
- * so the branch is exercised without a database or a real plan file.
+ * op_status onto the plan's harness_plans row. We mock the plan read + the
+ * PG/lock side-effects so the branch is exercised without a database or a
+ * real plan row.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +18,7 @@ const H = vi.hoisted(() => {
   } = { txCalls: [], frontmatterStatus: 'ready' };
   const tx = (strings: readonly string[], ...values: unknown[]) => {
     state.txCalls.push({ strings, values });
-    return Promise.resolve([{ status: 'started', updated_at: '2026-06-02T00:00:00.000Z' }]);
+    return Promise.resolve([{ op_status: 'started', op_updated_at: '2026-06-02T00:00:00.000Z' }]);
   };
   const withWorkspace = async (_wsId: string, fn: (t: unknown) => Promise<unknown>) => fn(tx);
   return { state, withWorkspace };
@@ -35,6 +36,7 @@ vi.mock('@/lib/agent-tools/plans/source', async (orig) => {
     readPlanBySlug: vi.fn(async () => ({
       parsed: { frontmatter: { status: H.state.frontmatterStatus } },
       archived: false,
+      row: { planSlug: 'mock', version: 1, opStatus: null },
     })),
   };
 });
@@ -84,7 +86,7 @@ describe('plans:start terminal guard', () => {
     expect(H.state.txCalls).toHaveLength(0);
   });
 
-  it('starts a non-terminal (ready) plan — the INSERT runs', async () => {
+  it('starts a non-terminal (ready) plan — the op_status UPDATE runs', async () => {
     H.state.frontmatterStatus = 'ready';
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
@@ -92,7 +94,10 @@ describe('plans:start terminal guard', () => {
     const data = JSON.parse(res.content[0].text);
     expect(data).toMatchObject({ status: 'started' });
     expect(H.state.txCalls).toHaveLength(1);
-    expect(H.state.txCalls[0].strings.join('§')).toContain('INSERT INTO harness_shared.harness_plan_status');
+    // PG-canonical: op_status is folded onto the plan's own harness_plans row.
+    const sql = H.state.txCalls[0].strings.join('§');
+    expect(sql).toContain('UPDATE harness_shared.harness_plans');
+    expect(sql).toContain("op_status     = 'started'");
   });
 
   it('starts a legacy/no-frontmatter plan (status null → not terminal)', async () => {

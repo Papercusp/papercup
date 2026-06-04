@@ -353,7 +353,7 @@ const OPEN_STATUSES = new Set(['open', 'acknowledged', 'fixing']);
 async function raiseOrClearStuckSignal(slug: string, workspaceId: string, stuck: boolean): Promise<void> {
   const project = await resolveProject(slug, workspaceId);
   if (!project) return;
-  const file = loadIssuesOrSeed(project);
+  const file = await loadIssuesOrSeed(project);
   const existing = file.issues.find((i) => i.id === STUCK_ISSUE_ID);
   const isOpen = !!existing && OPEN_STATUSES.has(existing.status);
   const now = new Date().toISOString();

@@ -1,45 +1,35 @@
 /**
- * cross_harness:plans_* tool wrapper tests (P-013 of
- * per-harness-plans-and-docs-2026-05-23).
+ * cross_harness:plans_* tool wrapper tests — PG-backed (P-013 of
+ * per-harness-plans-and-docs-2026-05-23, migrated for plans-pg-canonical-
+ * migration-2026-06-03).
  *
- * Covers the operator-side glue: per-harness plans-dir resolution,
- * unknown-slug error envelope, workspaceId passthrough, and the
- * format pass-through. The parsing/search engine is exercised by
- * plans/__tests__/*.test.ts; these tests verify the routing.
+ * Covers the operator-side glue: per-harness resolution (registry validation),
+ * unknown-slug error envelope, workspaceId passthrough, and format pass-through.
+ * The parsing/search engine is exercised by plans/__tests__/*; these tests
+ * verify the routing.
+ *
+ * Plans now live in `harness_shared.harness_plans`, not on disk — so the harness
+ * is still resolved via the (mocked) registry, but the plan CONTENT is seeded
+ * into PG and the tools read it back through the real PG source. Runs against
+ * the integration-tier baseline schema DB via the shared plans fixture and
+ * cleans up its throwaway rows.
  */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import {
+  setupPlanPgFixture,
+  cleanupPlans,
+  seedPlan,
+  type PlanPgFixture,
+} from '../../plans/__tests__/_pg-tool-fixture';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promises as fs } from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
+// A throwaway harness slug, registered via the mock + seeded in PG.
+const HARNESS = `zzz-xh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const PLAN_SLUG = 'zzz-sheets-feature-x-2026-05-24';
 
-let tmpDir: string;
-
-const MAKE_CTX = (over: Record<string, unknown> = {}) =>
-  ({
-    log: vi.fn(),
-    signal: new AbortController().signal,
-    metadata: vi.fn(),
-    workspaceId: 'default',
-    role: 'operator' as const,
-    runId: 'run_T',
-    spawnId: 'spw_T',
-    ...over,
-  } as never);
-
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
-}
-
-beforeEach(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cross-harness-plans-test-'));
-  // Non-papercup harness convention: <harness.path>/docs/plans/
-  await fs.mkdir(path.join(tmpDir, 'docs', 'plans'), { recursive: true });
-  await fs.writeFile(
-    path.join(tmpDir, 'docs', 'plans', 'sheets-feature-x-2026-05-24.md'),
-    `---
+const PLAN_BODY = `---
 title: Sheets feature X
-slug: sheets-feature-x-2026-05-24
+slug: ${PLAN_SLUG}
 status: active
 created: 2026-05-24
 updated: 2026-05-24
@@ -54,17 +44,27 @@ owner: someone@example.com
 ## Phase 1 — kickoff
 
 - **P-001** \`todo\` Build the thing.
-`,
-    'utf-8',
-  );
-  vi.resetModules();
-});
+`;
 
-afterEach(async () => {
-  vi.doUnmock('@/lib/harness-registry');
-  vi.doUnmock('@/lib/harness/register-papercup');
-  await fs.rm(tmpDir, { recursive: true, force: true });
-});
+let fx: PlanPgFixture;
+let admin: postgres.Sql;
+let wsId: string;
+
+const MAKE_CTX = (over: Record<string, unknown> = {}) =>
+  ({
+    log: vi.fn(),
+    signal: new AbortController().signal,
+    metadata: vi.fn(),
+    workspaceId: 'default',
+    role: 'operator' as const,
+    runId: 'run_T',
+    spawnId: 'spw_T',
+    ...over,
+  }) as never;
+
+function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
+  return JSON.parse(result.content[0].text);
+}
 
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
   vi.doMock('@/lib/harness-registry', () => ({
@@ -79,6 +79,28 @@ function mockPapercupDetection(detected: string | null) {
   }));
 }
 
+beforeAll(async () => {
+  fx = await setupPlanPgFixture();
+  admin = fx.admin;
+  wsId = fx.workspaceId;
+}, 60_000);
+
+beforeEach(async () => {
+  // The harness lives only in the mocked registry; its plan content lives in PG.
+  await seedPlan(admin, wsId, HARNESS, PLAN_SLUG, PLAN_BODY);
+  vi.resetModules();
+});
+
+afterEach(async () => {
+  vi.doUnmock('@/lib/harness-registry');
+  vi.doUnmock('@/lib/harness/register-papercup');
+  await cleanupPlans(admin, wsId, HARNESS);
+});
+
+afterAll(async () => {
+  await fx?.dispose();
+});
+
 describe('cross_harness:plans_list', () => {
   it('throws when the harness is not registered', async () => {
     mockRegistry([]);
@@ -89,54 +111,54 @@ describe('cross_harness:plans_list', () => {
     );
   });
 
-  it('lists plans for a registered harness', async () => {
-    mockRegistry([{ slug: 'sheets', path: tmpDir }]);
+  it('lists plans for a registered harness (read from PG)', async () => {
+    mockRegistry([{ slug: HARNESS, path: '/tmp/whatever' }]);
     mockPapercupDetection(null);
     const tool = (await import('../plans_list')).default;
-    const result = await tool.handler({ harnessSlug: 'sheets' }, MAKE_CTX());
+    const result = await tool.handler({ harnessSlug: HARNESS }, MAKE_CTX());
     const payload = parsePayload(result);
-    expect(payload.harnessSlug).toBe('sheets');
+    expect(payload.harnessSlug).toBe(HARNESS);
     const plans = payload.plans as Array<{ slug: string; title: string }>;
     expect(plans).toHaveLength(1);
-    expect(plans[0].slug).toBe('sheets-feature-x-2026-05-24');
+    expect(plans[0].slug).toBe(PLAN_SLUG);
     expect(plans[0].title).toBe('Sheets feature X');
   });
 
   it('forwards workspaceId to loadHarnessRegistry', async () => {
-    const reg = vi.fn(async () => ({ projects: [{ slug: 'sheets', path: tmpDir }] }));
+    const reg = vi.fn(async () => ({ projects: [{ slug: HARNESS, path: '/tmp/whatever' }] }));
     vi.doMock('@/lib/harness-registry', () => ({ loadHarnessRegistry: reg }));
     mockPapercupDetection(null);
     const tool = (await import('../plans_list')).default;
-    await tool.handler({ harnessSlug: 'sheets', workspaceId: 'other-ws' }, MAKE_CTX());
-    expect(reg).toHaveBeenCalledWith('other-ws');
+    await tool.handler({ harnessSlug: HARNESS, workspaceId: 'default' }, MAKE_CTX());
+    expect(reg).toHaveBeenCalledWith('default');
   });
 });
 
 describe('cross_harness:plans_get', () => {
   it('returns not_found when the plan slug is unknown', async () => {
-    mockRegistry([{ slug: 'sheets', path: tmpDir }]);
+    mockRegistry([{ slug: HARNESS, path: '/tmp/whatever' }]);
     mockPapercupDetection(null);
     const tool = (await import('../plans_get')).default;
     const result = await tool.handler(
-      { harnessSlug: 'sheets', slug: 'does-not-exist' },
+      { harnessSlug: HARNESS, slug: 'does-not-exist' },
       MAKE_CTX(),
     );
     expect(result.isError).toBe(true);
     const payload = parsePayload(result);
     expect(payload.error).toBe('not_found');
-    expect(payload.harnessSlug).toBe('sheets');
+    expect(payload.harnessSlug).toBe(HARNESS);
   });
 
-  it('returns the parsed plan when slug is known', async () => {
-    mockRegistry([{ slug: 'sheets', path: tmpDir }]);
+  it('returns the parsed plan when slug is known (read from PG)', async () => {
+    mockRegistry([{ slug: HARNESS, path: '/tmp/whatever' }]);
     mockPapercupDetection(null);
     const tool = (await import('../plans_get')).default;
     const result = await tool.handler(
-      { harnessSlug: 'sheets', slug: 'sheets-feature-x-2026-05-24' },
+      { harnessSlug: HARNESS, slug: PLAN_SLUG },
       MAKE_CTX(),
     );
     const payload = parsePayload(result);
-    expect(payload.harnessSlug).toBe('sheets');
+    expect(payload.harnessSlug).toBe(HARNESS);
     expect(payload.legacy).toBe(false);
     const frontmatter = payload.frontmatter as { title: string };
     expect(frontmatter.title).toBe('Sheets feature X');
@@ -148,26 +170,23 @@ describe('cross_harness:plans_get', () => {
 
 describe('cross_harness:plans_search', () => {
   it('finds the plan by title keyword', async () => {
-    mockRegistry([{ slug: 'sheets', path: tmpDir }]);
+    mockRegistry([{ slug: HARNESS, path: '/tmp/whatever' }]);
     mockPapercupDetection(null);
     const tool = (await import('../plans_search')).default;
-    const result = await tool.handler(
-      { harnessSlug: 'sheets', query: 'sheets' },
-      MAKE_CTX(),
-    );
+    const result = await tool.handler({ harnessSlug: HARNESS, query: 'sheets' }, MAKE_CTX());
     const payload = parsePayload(result);
-    expect(payload.harnessSlug).toBe('sheets');
+    expect(payload.harnessSlug).toBe(HARNESS);
     const hits = payload.hits as Array<{ plan: string; score: number }>;
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits[0].plan).toBe('sheets-feature-x-2026-05-24');
+    expect(hits[0].plan).toBe(PLAN_SLUG);
   });
 
   it('finds by item-text keyword', async () => {
-    mockRegistry([{ slug: 'sheets', path: tmpDir }]);
+    mockRegistry([{ slug: HARNESS, path: '/tmp/whatever' }]);
     mockPapercupDetection(null);
     const tool = (await import('../plans_search')).default;
     const result = await tool.handler(
-      { harnessSlug: 'sheets', query: 'thing', scope: ['items'] },
+      { harnessSlug: HARNESS, query: 'thing', scope: ['items'] },
       MAKE_CTX(),
     );
     const payload = parsePayload(result);
@@ -177,13 +196,10 @@ describe('cross_harness:plans_search', () => {
   });
 
   it('empty query → empty hits', async () => {
-    mockRegistry([{ slug: 'sheets', path: tmpDir }]);
+    mockRegistry([{ slug: HARNESS, path: '/tmp/whatever' }]);
     mockPapercupDetection(null);
     const tool = (await import('../plans_search')).default;
-    const result = await tool.handler(
-      { harnessSlug: 'sheets', query: '   ' },
-      MAKE_CTX(),
-    );
+    const result = await tool.handler({ harnessSlug: HARNESS, query: '   ' }, MAKE_CTX());
     const payload = parsePayload(result);
     expect(payload.hits).toEqual([]);
   });

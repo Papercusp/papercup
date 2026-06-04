@@ -43,12 +43,29 @@ export const DEFAULT_POLL_MS = 5000;
 /** The NOTIFY channel the Stage-1 capture trigger fires on. */
 const NOTIFY_CHANNEL = 'substrate_outbox';
 
+/** A captured outbox row, as the local fan-out consumer reads it. */
+export interface OutboxFanoutRow {
+  id: string | number;
+  table_name: string;
+  op: 'put' | 'del';
+  key: string;
+  row: Record<string, unknown> | null;
+}
+
+/** The local subscribe→inject fan-out consumer (coordination-substrate Phase 2).
+ *  Runs per row on the SAME drain as federation (not a second consumer). */
+export type OutboxFanoutFn = (row: OutboxFanoutRow) => Promise<unknown>;
+
 export interface DrainOptions {
   /** Max rows to drain this pass. Default `DEFAULT_DRAIN_BATCH`. */
   batch?: number;
   /** Clock override (epoch ms) — for the drained_at stamp + GC cutoff. Tests
    *  inject a fixed value; production omits it (Date.now). */
   now?: number;
+  /** Local subscribe→inject fan-out, run per row AFTER the federation append and
+   *  BEFORE drained_at (at-least-once: a failure re-runs; the insert is
+   *  idempotent). Omitted → no fan-out (federation-only, the pre-Phase-2 behavior). */
+  fanout?: OutboxFanoutFn;
 }
 
 interface OutboxDbRow {
@@ -111,7 +128,26 @@ export async function drainOutboxOnce(
     // row + all later rows undrained for the next pass to re-attempt.
     await handle.append(op);
 
-    // Mark drained only after the append resolved.
+    // Local subscribe→inject fan-out on the SAME row (Phase 2). BEST-EFFORT and
+    // federation-safe: a fan-out failure is logged but must NOT stall federation
+    // (the critical at-least-once path) or block this row's drained_at — so it is
+    // caught here. The genuine double-process case (fan-out succeeds, then the
+    // drained_at write fails → row reprocessed) is deduped by the idempotent
+    // insert (deterministic msg_id + ON CONFLICT, mig 126). Non-subscribable
+    // tables are a no-op inside the fan-out.
+    if (opts.fanout) {
+      try {
+        await opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[outbox-drain] fan-out failed for ${r.table_name} key=${r.key} (federation unaffected):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+
+    // Mark drained only after the append + fan-out resolved.
     await pg`
       UPDATE harness_shared.substrate_outbox
          SET drained_at = ${now}
@@ -128,6 +164,8 @@ export interface StartDrainOptions {
   pollMs?: number;
   /** Drain batch size per pass. Default `DEFAULT_DRAIN_BATCH`. */
   batch?: number;
+  /** Local subscribe→inject fan-out consumer, run per row (Phase 2). */
+  fanout?: OutboxFanoutFn;
 }
 
 export interface OutboxDrainHandle {
@@ -156,6 +194,7 @@ export function startOutboxDrain(
 ): OutboxDrainHandle {
   const pollMs = Number.isFinite(opts.pollMs as number) ? (opts.pollMs as number) : DEFAULT_POLL_MS;
   const batch = opts.batch;
+  const fanout = opts.fanout;
   const wantPayload = `${handle.workspaceId}::${handle.harnessSlug}`;
 
   let stopped = false;
@@ -174,7 +213,10 @@ export function startOutboxDrain(
     try {
       do {
         runAgain = false;
-        await drainOutboxOnce(handle, pg, batch !== undefined ? { batch } : {});
+        const drainOpts: DrainOptions = {};
+        if (batch !== undefined) drainOpts.batch = batch;
+        if (fanout !== undefined) drainOpts.fanout = fanout;
+        await drainOutboxOnce(handle, pg, drainOpts);
       } while (runAgain && !stopped);
     } catch (e) {
       // eslint-disable-next-line no-console

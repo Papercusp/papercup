@@ -3,7 +3,8 @@
  * (dbos-system-completion P-045/D-013).
  *
  * The verb resolves a harness slug then issues one UPDATE against
- * harness_shared.harness_plan_status.priority inside withWorkspace. We mock
+ * harness_shared.harness_plans.op_priority inside withWorkspace (op_priority
+ * was folded onto the plan's own row under PG-canonical storage). We mock
  * withWorkspace to capture the tagged-template call so the SQL shape, the
  * threaded params (incl. a null priority = clear), the harness resolution
  * precedence, and the return shape are verified without a real database.
@@ -48,15 +49,15 @@ beforeEach(() => {
 });
 
 describe('plans:set-priority', () => {
-  it('issues one UPDATE on harness_plan_status and returns the resolved fields', async () => {
+  it('issues one UPDATE on harness_plans.op_priority and returns the resolved fields', async () => {
     const res = await run({ slug: 'my-plan-2026-06-01', priority: 3, harness: 'myharn' });
 
     expect(H.state.txCalls).toHaveLength(1);
     const { strings, values } = H.state.txCalls[0];
     const sqlText = strings.join('§');
-    expect(sqlText).toContain('UPDATE harness_shared.harness_plan_status');
-    expect(sqlText).toContain('priority');
-    // Params: [priority, updated_at, workspace_id, harness_slug, plan_slug].
+    expect(sqlText).toContain('UPDATE harness_shared.harness_plans');
+    expect(sqlText).toContain('op_priority');
+    // Params: [priority, op_updated_at, workspace_id, harness_slug, plan_slug].
     expect(values[0]).toBe(3);
     expect(values[2]).toBe(DEFAULT_WORKSPACE_ID);
     expect(values[3]).toBe('myharn');

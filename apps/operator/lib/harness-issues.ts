@@ -1,116 +1,168 @@
 /**
- * Harness issues store — `.harness/issues.json` (JSON canonical) with
- * read-only synthesis from issues.md, plus a PG mirror for Zero/Dashboard
- * reads, and a separate pending-issues queue for the validator's
- * structured findings.
+ * Harness issues store — **PG-canonical** (engineer-issues-2026-06-03 D-004, Phase 3).
  *
- * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
- * A4 batch 25a). The 6 issues routes still live in harness.ts and import
- * the helpers here; `brainstorm/promote` (target='issue') imports
- * `loadIssuesOrSeed` + `saveIssues` from here too. The route migration
- * itself ships in batch 25b.
+ * The curated issue set is stored in `harness_shared.harness_issues_consolidated`,
+ * read/written through the per-harness `harness_<slug>.harness_issues` VIEW. The
+ * validator's structured findings live in `harness_pending_issues`; `/triage`
+ * merges them into the curated set.
+ *
+ * Phase 3 removed the old `.harness/issues.json` FS-canonical file + the
+ * best-effort PG mirror ("JSON authoritative, PG via Zero" — Zero is retired and
+ * the file always drifted). PG is now the store-of-record: `loadIssuesOrSeed`
+ * reads from PG (async), `saveIssues` writes to PG only and a failure PROPAGATES
+ * (no silent swallow). `issues.md` remains a read-only seed source for harnesses
+ * that have a validator issues.md but no persisted rows yet.
+ *
+ * Severity/status are clamped to the canonical enums (`app/harness/issues/types`)
+ * before write, so a non-canonical validator finding can't violate the DB CHECK
+ * (migration 130) and silently drop a row.
  */
-import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getHarnessPg } from '@papercusp/db-org';
 import { safeRead, harnessDir } from '@/lib/harness-core';
-import type { Issue, IssueSeverity } from '@/app/harness/issues/types';
+import type { Issue, IssueSeverity, IssueStatus } from '@/app/harness/issues/types';
 import type { ProjectEntry } from '@/lib/harness-registry';
 
 export interface IssuesFile { issues: Issue[]; nextId: number }
 
-export function issuesJsonPath(project: ProjectEntry): string {
-  return join(harnessDir(project), 'issues.json');
-}
+const SEVERITIES: readonly IssueSeverity[] = ['critical', 'major', 'minor', 'nit'];
+const STATUSES: readonly IssueStatus[] = ['open', 'acknowledged', 'fixing', 'closed', 'wontfix'];
 
-export function loadIssuesRaw(project: ProjectEntry): IssuesFile | null {
-  const raw = safeRead(issuesJsonPath(project));
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as IssuesFile;
-    if (!parsed.issues) parsed.issues = [];
-    if (!parsed.nextId) parsed.nextId = parsed.issues.length + 1;
-    return parsed;
-  } catch {
-    return null;
-  }
+/** Clamp a possibly-non-canonical severity to the DB-CHECK'd enum (migration 130). */
+export function clampSeverity(s: unknown): IssueSeverity {
+  return (SEVERITIES as readonly string[]).includes(s as string) ? (s as IssueSeverity) : 'minor';
 }
-
-export async function saveIssues(project: ProjectEntry, file: IssuesFile): Promise<void> {
-  await writeFile(issuesJsonPath(project), JSON.stringify(file, null, 2), 'utf8');
-  await syncIssuesToPg(project, file).catch((err) => {
-    // PG is the read-side replica via Zero; JSON remains authoritative.
-    // Don't fail the request if the Zero replication target is unavailable.
-    console.warn(`[issues] PG sync failed for ${project.slug}:`, err?.message ?? err);
-  });
+/** Clamp a possibly-non-canonical status to the DB-CHECK'd enum (migration 130). */
+export function clampStatus(s: unknown): IssueStatus {
+  return (STATUSES as readonly string[]).includes(s as string) ? (s as IssueStatus) : 'open';
 }
 
 /**
- * Bulk-mirror the JSON state to `harness_<slug>.harness_issues`. The whole
- * issue set is upserted; rows in PG that no longer exist in JSON are
- * deleted. Cheap because issue counts are O(100s).
+ * Next `I-NNNN` id (the curated allocator). Scans only numeric-suffixed ids;
+ * hashed (`I-<hash>`), `PENDING-*`, and named (`I-STUCK`) ids don't participate.
  */
-export async function syncIssuesToPg(project: ProjectEntry, file: IssuesFile): Promise<void> {
+export function computeNextId(issues: readonly Issue[]): number {
+  let max = 0;
+  for (const i of issues) {
+    const m = /^I-(\d+)$/.exec(i.id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max + 1;
+}
+
+/** Load the curated issue set for a harness from PG (the store-of-record). */
+export async function loadIssuesFromPg(project: ProjectEntry): Promise<Issue[]> {
+  const { sql } = getHarnessPg(project.slug);
+  const rows = (await sql`
+    SELECT issue_id, title, severity, source, status, found_at, found_during, repro,
+           evidence, suggested_fix, code_pointer, linked_feature_id, attempts, notes,
+           created_ts
+      FROM harness_issues
+     WHERE harness_slug = ${project.slug}
+     ORDER BY created_ts DESC, issue_id DESC
+  `) as Array<{
+    issue_id: string; title: string; severity: string; source: string; status: string;
+    found_at: string | Date; found_during: string | null; repro: string | null;
+    evidence: string | null; suggested_fix: string | null; code_pointer: string | null;
+    linked_feature_id: string | null; attempts: number | string; notes: unknown;
+  }>;
+  return rows.map((r): Issue => ({
+    id: r.issue_id,
+    title: r.title,
+    severity: clampSeverity(r.severity),
+    source: r.source as Issue['source'],
+    foundAt: r.found_at instanceof Date ? r.found_at.toISOString() : String(r.found_at),
+    foundDuring: r.found_during ?? undefined,
+    status: clampStatus(r.status),
+    repro: r.repro ?? undefined,
+    evidence: r.evidence ?? undefined,
+    suggestedFix: r.suggested_fix ?? undefined,
+    codePointer: r.code_pointer ?? undefined,
+    linkedFeatureId: r.linked_feature_id ?? undefined,
+    attempts: Number(r.attempts) || 0,
+    notes: Array.isArray(r.notes) ? (r.notes as Issue['notes']) : [],
+  }));
+}
+
+/**
+ * Load the curated issue set; store-of-record = PG. When PG has no rows for the
+ * harness AND a validator `issues.md` exists, synthesize a read-only seed from it
+ * (the migration aid for un-triaged harnesses — not persisted until a mutation).
+ */
+export async function loadIssuesOrSeed(project: ProjectEntry): Promise<IssuesFile> {
+  const issues = await loadIssuesFromPg(project);
+  if (issues.length > 0) return { issues, nextId: computeNextId(issues) };
+  const md = safeRead(join(harnessDir(project), 'issues.md')) ?? '';
+  const seeded = parseIssuesMdLocal(md);
+  return { issues: seeded, nextId: computeNextId(seeded) };
+}
+
+/**
+ * Persist the curated issue set to PG (store-of-record). The whole set is
+ * upserted through the per-harness `harness_<slug>.harness_issues` VIEW into the
+ * `harness_issues_consolidated` base; rows absent from `file` are deleted (cheap
+ * — issue counts are O(100s)). Severity/status are clamped to the canonical enums
+ * first (migration 130 CHECK). Unlike the old best-effort mirror, a PG failure
+ * PROPAGATES — PG is the source of truth, so a failed write must surface.
+ */
+export async function saveIssues(project: ProjectEntry, file: IssuesFile): Promise<void> {
   const { sql } = getHarnessPg(project.slug);
   const now = Date.now();
   const ids = file.issues.map((i) => i.id);
-  if (ids.length > 0) {
-    const rows = file.issues.map((i) => ({
-      harness_slug: project.slug,
-      issue_id: i.id,
-      title: i.title,
-      severity: i.severity,
-      source: i.source,
-      status: i.status,
-      found_at: i.foundAt,
-      found_during: i.foundDuring ?? null,
-      repro: i.repro ?? null,
-      evidence: i.evidence ?? null,
-      suggested_fix: i.suggestedFix ?? null,
-      code_pointer: i.codePointer ?? null,
-      linked_feature_id: i.linkedFeatureId ?? null,
-      attempts: i.attempts ?? 0,
-      notes: JSON.stringify(i.notes ?? []),
-      created_ts: now,
-      updated_ts: now,
-    }));
-    await sql`
-      INSERT INTO harness_issues ${sql(rows, 'harness_slug', 'issue_id', 'title', 'severity', 'source', 'status', 'found_at', 'found_during', 'repro', 'evidence', 'suggested_fix', 'code_pointer', 'linked_feature_id', 'attempts', 'notes', 'created_ts', 'updated_ts')}
-      ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
-        title             = EXCLUDED.title,
-        severity          = EXCLUDED.severity,
-        source            = EXCLUDED.source,
-        status            = EXCLUDED.status,
-        found_at          = EXCLUDED.found_at,
-        found_during      = EXCLUDED.found_during,
-        repro             = EXCLUDED.repro,
-        evidence          = EXCLUDED.evidence,
-        suggested_fix     = EXCLUDED.suggested_fix,
-        code_pointer      = EXCLUDED.code_pointer,
-        linked_feature_id = EXCLUDED.linked_feature_id,
-        attempts          = EXCLUDED.attempts,
-        notes             = EXCLUDED.notes,
-        updated_ts        = EXCLUDED.updated_ts
-    `;
-    await sql`
-      DELETE FROM harness_issues
-      WHERE harness_slug = ${project.slug}
-        AND issue_id <> ALL(${ids})
-    `;
-  } else {
-    await sql`
-      DELETE FROM harness_issues
-      WHERE harness_slug = ${project.slug}
-    `;
+  if (ids.length === 0) {
+    await sql`DELETE FROM harness_issues WHERE harness_slug = ${project.slug}`;
+    return;
   }
+  const rows = file.issues.map((i) => ({
+    harness_slug: project.slug,
+    issue_id: i.id,
+    title: i.title,
+    severity: clampSeverity(i.severity),
+    source: i.source,
+    status: clampStatus(i.status),
+    found_at: i.foundAt,
+    found_during: i.foundDuring ?? null,
+    repro: i.repro ?? null,
+    evidence: i.evidence ?? null,
+    suggested_fix: i.suggestedFix ?? null,
+    code_pointer: i.codePointer ?? null,
+    linked_feature_id: i.linkedFeatureId ?? null,
+    attempts: i.attempts ?? 0,
+    notes: JSON.stringify(i.notes ?? []),
+    created_ts: now,
+    updated_ts: now,
+  }));
+  await sql`
+    INSERT INTO harness_issues ${sql(rows, 'harness_slug', 'issue_id', 'title', 'severity', 'source', 'status', 'found_at', 'found_during', 'repro', 'evidence', 'suggested_fix', 'code_pointer', 'linked_feature_id', 'attempts', 'notes', 'created_ts', 'updated_ts')}
+    ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
+      title             = EXCLUDED.title,
+      severity          = EXCLUDED.severity,
+      source            = EXCLUDED.source,
+      status            = EXCLUDED.status,
+      found_at          = EXCLUDED.found_at,
+      found_during      = EXCLUDED.found_during,
+      repro             = EXCLUDED.repro,
+      evidence          = EXCLUDED.evidence,
+      suggested_fix     = EXCLUDED.suggested_fix,
+      code_pointer      = EXCLUDED.code_pointer,
+      linked_feature_id = EXCLUDED.linked_feature_id,
+      attempts          = EXCLUDED.attempts,
+      notes             = EXCLUDED.notes,
+      updated_ts        = EXCLUDED.updated_ts
+  `;
+  await sql`
+    DELETE FROM harness_issues
+    WHERE harness_slug = ${project.slug}
+      AND issue_id <> ALL(${ids})
+  `;
 }
 
 /**
  * Inline re-implementation of the harness UI's `parse-md.ts` parser —
  * extracts structured Issues from `issues.md`. Keep in sync with
  * `apps/web/app/harness/issues/parse-md.ts`. Synthesizes Issue rows
- * when issues.json doesn't yet exist on a harness (read-only migration —
- * the file isn't persisted until a mutation happens).
+ * when PG has no curated rows yet on a harness (read-only seed — not
+ * persisted until a mutation happens).
  */
 export function parseIssuesMdLocal(md: string): Issue[] {
   if (!md || !md.trim()) return [];
@@ -191,14 +243,6 @@ export function parseIssuesMdLocal(md: string): Issue[] {
   return out;
 }
 
-export function loadIssuesOrSeed(project: ProjectEntry): IssuesFile {
-  const existing = loadIssuesRaw(project);
-  if (existing) return existing;
-  const md = safeRead(join(harnessDir(project), 'issues.md')) ?? '';
-  const parsed = parseIssuesMdLocal(md);
-  return { issues: parsed, nextId: parsed.length + 1 };
-}
-
 /**
  * Read the validator's un-merged structured findings from PG (mirror of
  * `.harness/pending-issues.jsonl`, populated by the harness-fs-watcher).
@@ -223,7 +267,7 @@ export async function readPendingIssues(project: ProjectEntry): Promise<Issue[]>
     out.push({
       id: r.issue_id,
       title: String(p.title),
-      severity: p.severity as Issue['severity'],
+      severity: clampSeverity(p.severity),
       source: 'validator',
       foundAt: (p.foundAt as string) ?? new Date(Number(r.ts) || 0).toISOString(),
       foundDuring: p.foundDuring as string | undefined,

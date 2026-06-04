@@ -32,6 +32,7 @@ import { buildFeatureClaimsProjection } from './feature-claims';
 import { buildFeatureQueueProjection } from './feature-queue';
 import { buildFeatureWorkingSetProjection } from './feature-working-set';
 import { buildHarnessFeaturesProjection } from './harness-features';
+import { buildHarnessPlansProjection } from './harness-plans';
 import { buildIssuesProjection } from './issues';
 import { buildPresenceProjection } from './presence';
 import { buildPrsProjection } from './prs';
@@ -62,6 +63,7 @@ export const REGISTERED_PROJECTION_TAGS = [
   'queue',
   'working-set',
   'features-by-id',
+  'plans-by-slug',
   'issues',
   'presence',
   'prs',
@@ -83,6 +85,7 @@ function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<unknown
     buildFeatureQueueProjection(opts),
     buildFeatureWorkingSetProjection(opts),
     buildHarnessFeaturesProjection(opts),
+    buildHarnessPlansProjection(opts),
     buildIssuesProjection(opts),
     buildPresenceProjection(opts),
     buildPrsProjection(opts),

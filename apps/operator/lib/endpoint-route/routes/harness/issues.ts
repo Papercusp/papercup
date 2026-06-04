@@ -11,9 +11,10 @@
  * on the `auditFeatureChange` helper still living there. It migrates
  * with the features-mutation cluster (later batch).
  *
- * Issues data is JSON-canonical on disk (`.harness/issues.json`) with a
- * PG mirror in `harness_issues`; the validator's structured findings live
- * in `harness_pending_issues`. Helpers in `@/lib/harness-issues`.
+ * Issues are PG-canonical (engineer-issues-2026-06-03 Phase 3): stored in
+ * `harness_issues_consolidated` via the per-harness `harness_issues` VIEW; the
+ * validator's structured findings live in `harness_pending_issues`. Helpers in
+ * `@/lib/harness-issues`.
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 25b — paired with 25a which carved out the helpers).
@@ -46,7 +47,7 @@ const issuesList = defineTool({
   async handler(req, ctx) {
     const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
-    const file = loadIssuesOrSeed(project);
+    const file = await loadIssuesOrSeed(project);
     const pending = await readPendingIssues(project);
     return Response.json({ ...file, pending });
   },
@@ -63,7 +64,7 @@ const createIssue = defineTool({
     if (!body.title || typeof body.title !== 'string') {
       return Response.json({ error: 'title required' }, { status: 400 });
     }
-    const file = loadIssuesOrSeed(project);
+    const file = await loadIssuesOrSeed(project);
     const id = `I-${String(file.nextId).padStart(4, '0')}`;
     const issue: Issue = {
       id,
@@ -164,7 +165,7 @@ const updateIssue = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const id = ctx.params.id as string;
     const body = await req.json().catch(() => ({} as any));
-    const file = loadIssuesOrSeed(project);
+    const file = await loadIssuesOrSeed(project);
     const issue = file.issues.find((i) => i.id === id);
     if (!issue) return Response.json({ error: 'issue not found' }, { status: 404 });
 
@@ -199,7 +200,7 @@ const triage = defineTool({
     const pending = await readPendingIssues(project);
     if (pending.length === 0) return Response.json({ ok: true, merged: 0, deduped: 0 });
 
-    const file = loadIssuesOrSeed(project);
+    const file = await loadIssuesOrSeed(project);
 
     const tokenize = (s: string): Set<string> =>
       new Set(s.toLowerCase().split(/[^a-z0-9]+/i).filter((w) => w.length > 2));

@@ -11,6 +11,7 @@ import { join } from 'node:path';
 
 import {
   callMcpTool,
+  collapseDigestNotifies,
   detectSymlinkedPaths,
   extractPathsFromToolInput,
   formatBusyRefusal,
@@ -1318,5 +1319,69 @@ describe('pollInboxDelta (mid-turn coord delivery)', () => {
     }) as unknown as typeof fetch;
     const { reminder } = await pollInboxDelta();
     expect(reminder).toBe('');
+  });
+});
+
+describe('collapseDigestNotifies (coordination-substrate Phase 2, D-006)', () => {
+  const notify = (over: Partial<InboxEntry>): InboxEntry => ({
+    ts: '2026-06-04T00:00:00.000Z',
+    msg_id: 'm',
+    from: 'substrate',
+    kind: 'notify',
+    ...over,
+  });
+
+  it('passes full-mode notifies through untouched', () => {
+    const entries = [notify({ summary: 'a', subject: 'feature:F-1' }), notify({ summary: 'b', subject: 'issue:I-1' })];
+    const out = collapseDigestNotifies(entries);
+    expect(out).toHaveLength(2);
+    expect(out.map((e) => e.summary)).toEqual(['a', 'b']);
+  });
+
+  it('coalesces same-subject digest notifies into one line with a count + latest summary', () => {
+    const entries = [
+      notify({ subject: 'feature:F-1', digest: true, summary: 'F-1 → validating', ts: '2026-06-04T00:00:01.000Z' }),
+      notify({ subject: 'feature:F-1', digest: true, summary: 'F-1 → passed', ts: '2026-06-04T00:00:03.000Z' }),
+      notify({ subject: 'feature:F-1', digest: true, summary: 'F-1 → reviewing', ts: '2026-06-04T00:00:02.000Z' }),
+    ];
+    const out = collapseDigestNotifies(entries);
+    expect(out).toHaveLength(1);
+    expect(out[0].summary).toContain('×3');
+    expect(out[0].summary).toContain('latest: F-1 → passed'); // newest ts wins
+  });
+
+  it('keeps distinct subjects separate and leaves a lone digest as a plain line', () => {
+    const entries = [
+      notify({ subject: 'feature:F-1', digest: true, summary: 'one' }),
+      notify({ subject: 'plan:p', digest: true, summary: 'two' }),
+    ];
+    const out = collapseDigestNotifies(entries);
+    expect(out).toHaveLength(2);
+    expect(out.every((e) => !(e.summary ?? '').includes('×'))).toBe(true);
+  });
+
+  it('does not collapse full notifies even with the same subject', () => {
+    const entries = [
+      notify({ subject: 'feature:F-1', summary: 'x' }),
+      notify({ subject: 'feature:F-1', summary: 'y' }),
+    ];
+    expect(collapseDigestNotifies(entries)).toHaveLength(2);
+  });
+});
+
+describe('formatTurnStartReminder — digest notify coalescing', () => {
+  it('renders coalesced digest notifies as a single ×N line', () => {
+    const out = formatTurnStartReminder({
+      ownerId: 'me',
+      heldLocks: [],
+      changedPlans: [],
+      inbox: [
+        { ts: '2026-06-04T00:00:01.000Z', msg_id: '1', from: 'substrate', kind: 'notify', subject: 'feature:F-1', digest: true, summary: 'F-1 a' },
+        { ts: '2026-06-04T00:00:02.000Z', msg_id: '2', from: 'substrate', kind: 'notify', subject: 'feature:F-1', digest: true, summary: 'F-1 b' },
+      ],
+    });
+    expect(out).toContain('×2');
+    // one coalesced notify line, not two
+    expect(out.match(/\[notify\]/g) ?? []).toHaveLength(1);
   });
 });

@@ -28,6 +28,7 @@
 import type { LocalWriteOp } from './boot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import type { HarnessFeatureRow } from './projections/harness-features';
+import type { HarnessPlanRow } from './projections/harness-plans';
 import type { HarnessIssueRow } from './projections/issues';
 import type { ContributorUsageEventRow } from './projections/usage';
 
@@ -43,6 +44,10 @@ const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
   // P-070: the append-only contributor activity ledger. Its projection is
   // registered under tableTag 'usage' (projections/usage.ts buildUsageProjection).
   contributor_usage_events: 'usage',
+  // plans-pg-canonical-migration-2026-06-03 (Stage 2): PG-canonical plans federate
+  // as papercup-harness content. Projection registered under 'plans-by-slug'
+  // (projections/harness-plans.ts buildHarnessPlansProjection); key == plan_slug.
+  harness_plans: 'plans-by-slug',
 };
 
 /**
@@ -69,6 +74,12 @@ export function composeFeatureKey(featureId: string): string {
  *  projection's `composeKey`, which returns `row.issue_id`). */
 export function composeIssueKey(issueId: string): string {
   return issueId;
+}
+
+/** Per-harness Hyperbee key for a plan == its plan_slug (mirrors the
+ *  projection's `composeKey`, which returns `row.plan_slug`). */
+export function composePlanKey(planSlug: string): string {
+  return planSlug;
 }
 
 /**
@@ -163,6 +174,31 @@ function toIssueValue(row: Record<string, unknown>): HarnessIssueRow {
   };
 }
 
+/** Map an outbox `row` jsonb to the `HarnessPlanRow` value the plans projection
+ *  INSERT consumes — the federated subset of harness_plans. No TIMESTAMPTZ
+ *  conversion (the op_ columns + created_at/updated_at are machine-local, not
+ *  federated) and no jsonb (content is TEXT, supersedes is text[] → a JSON array
+ *  under to_jsonb). */
+function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    plan_slug: String(row.plan_slug ?? ''),
+    content: typeof row.content === 'string' ? row.content : '',
+    content_hash: typeof row.content_hash === 'string' ? row.content_hash : '',
+    title: strOrNull(row.title),
+    status: strOrNull(row.status),
+    created: strOrNull(row.created),
+    updated: strOrNull(row.updated),
+    owner: strOrNull(row.owner),
+    supersedes: Array.isArray(row.supersedes)
+      ? row.supersedes.filter((s): s is string => typeof s === 'string')
+      : [],
+    superseded_by: strOrNull(row.superseded_by),
+    archived: typeof row.archived === 'boolean' ? row.archived : false,
+    is_legacy: typeof row.is_legacy === 'boolean' ? row.is_legacy : false,
+  };
+}
+
 /** Map an outbox `row` jsonb to the `ContributorUsageEventRow` value the usage
  *  projection INSERT consumes. `ts` is TIMESTAMPTZ → ISO string under `to_jsonb`;
  *  the projection validator requires epoch-ms NUMBER, so convert it. github_user_id
@@ -208,10 +244,13 @@ export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
   }
 
   const row = outboxRow.row ?? {};
-  let value: HarnessFeatureRow | HarnessIssueRow | ContributorUsageEventRow;
+  let value: HarnessFeatureRow | HarnessIssueRow | ContributorUsageEventRow | HarnessPlanRow;
   switch (outboxRow.table_name) {
     case 'harness_features_consolidated':
       value = toFeatureValue(row);
+      break;
+    case 'harness_plans':
+      value = toPlanValue(row);
       break;
     case 'contributor_usage_events':
       value = toUsageValue(row);

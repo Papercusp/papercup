@@ -59,19 +59,19 @@ export function shouldDeliver(mode: DeliveryMode, ev: InjectEvent, subscriberId:
 }
 
 /**
- * Deliver one inject event to one resolved subscriber, honoring delivery mode.
- * Returns true if a row was written, false if gated-out or the write failed
- * (best-effort — one failure must not drop the rest of a fan-out).
+ * Build the notify envelope for one subscriber + event. Shared by the
+ * best-effort sink delivery (deliverInject) and the idempotent at-least-once
+ * fan-out insert (fanout-projection.ts), so an injected notice renders the same
+ * however it was delivered. Pass a deterministic `msgId` for idempotent paths.
  */
-export async function deliverInject(
+export function buildInjectEnvelope(
   sub: ResolvedSubscriber,
   ev: InjectEvent,
-  sink: InjectSink = coordLog,
-): Promise<boolean> {
-  if (!shouldDeliver(sub.delivery_mode, ev, sub.subscriber_id)) return false;
-  const env: CoordEnvelope = {
+  msgId: string = newMsgId(),
+): CoordEnvelope {
+  return {
     ts: new Date().toISOString(),
-    msg_id: newMsgId(),
+    msg_id: msgId,
     from: ev.from,
     to: [sub.subscriber_id],
     kind: 'notify',
@@ -84,8 +84,22 @@ export async function deliverInject(
     via: sub.via,
     ...ev.extra,
   };
+}
+
+/**
+ * Deliver one inject event to one resolved subscriber, honoring delivery mode.
+ * Returns true if a row was written, false if gated-out or the write failed
+ * (best-effort — one failure must not drop the rest of a fan-out). Used by the
+ * synchronous, exactly-once paths (new_topic emission, thread-post fan-out).
+ */
+export async function deliverInject(
+  sub: ResolvedSubscriber,
+  ev: InjectEvent,
+  sink: InjectSink = coordLog,
+): Promise<boolean> {
+  if (!shouldDeliver(sub.delivery_mode, ev, sub.subscriber_id)) return false;
   try {
-    await sink.appendLine('messages', sub.subscriber_id, env);
+    await sink.appendLine('messages', sub.subscriber_id, buildInjectEnvelope(sub, ev));
     return true;
   } catch {
     return false;

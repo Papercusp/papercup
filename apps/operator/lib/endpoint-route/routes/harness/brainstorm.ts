@@ -238,7 +238,7 @@ const promote = defineTool({
 
 
     if (target === 'issue') {
-      const file = loadIssuesOrSeed(project);
+      const file = await loadIssuesOrSeed(project);
       const id = `I-${String(file.nextId).padStart(4, '0')}`;
       const [firstLine, ...rest] = content.trim().split('\n');
       file.issues.unshift({

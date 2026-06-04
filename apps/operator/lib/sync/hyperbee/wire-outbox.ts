@@ -31,6 +31,7 @@ import {
   startOutboxDrain as realStartOutboxDrain,
   type OutboxDrainHandle,
 } from './outbox-drain';
+import { fanoutOutboxRow } from './fanout-projection';
 
 export interface WireOutboxDeps {
   backfillLocalState?: (
@@ -50,7 +51,11 @@ export async function wireOutboxForHarness(
   deps: WireOutboxDeps = {},
 ): Promise<OutboxDrainHandle> {
   const backfill = deps.backfillLocalState ?? realBackfillLocalState;
-  const start = deps.startOutboxDrain ?? realStartOutboxDrain;
+  // Default drain wires the local subscribe→inject fan-out as a per-row consumer
+  // on the SAME drain (coordination-substrate Phase 2). Tests override
+  // startOutboxDrain to opt out of the fan-out.
+  const start =
+    deps.startOutboxDrain ?? ((h: BootedHarnessHandle, p: postgres.Sql) => realStartOutboxDrain(h, p, { fanout: fanoutOutboxRow }));
 
   // (1) Best-effort one-time backfill. A failure here must not stop the drain —
   // the backfill catches up rows that PRE-DATE federation; the drain handles

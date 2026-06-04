@@ -64,6 +64,12 @@ export interface InboxEntry {
   severity?: string;
   /** Present on plan_event entries — created / promoted / etc. */
   event?: string;
+  /** Subscribe→inject fan-out fields (coordination-substrate Phase 2). `subject`
+   *  groups digest coalescing (e.g. 'feature:F-1'); `digest` flags a digest-mode
+   *  notice the inbox coalesces; `notify_kind` is the change sub-type. */
+  subject?: string;
+  notify_kind?: string;
+  digest?: boolean;
 }
 
 export interface HeldLock {
@@ -91,6 +97,43 @@ export interface ReminderInput {
  * which is also what a detached (operator-unreachable) turn produces,
  * since coord state is all PG-backed now with no filesystem fallback.
  */
+/**
+ * Coalesce digest-mode subscribe→inject notifies by `subject` (D-006 — the noise
+ * control). Full-mode notifies pass through untouched; same-subject digest
+ * notifies collapse into ONE line carrying the count + the latest summary. Other
+ * kinds pass through unchanged, preserving input order. Pure + unit-tested.
+ */
+export function collapseDigestNotifies(entries: InboxEntry[]): InboxEntry[] {
+  const out: InboxEntry[] = [];
+  const groups = new Map<string, InboxEntry & { _count: number }>();
+  for (const e of entries) {
+    if (e.kind === 'notify' && e.digest) {
+      const key = e.subject ?? e.summary ?? '?';
+      const g = groups.get(key);
+      if (!g) {
+        const ne: InboxEntry & { _count: number } = { ...e, _count: 1 };
+        groups.set(key, ne);
+        out.push(ne);
+      } else {
+        g._count += 1;
+        if (e.ts > g.ts) {
+          g.ts = e.ts;
+          g.summary = e.summary;
+        }
+      }
+    } else {
+      out.push(e);
+    }
+  }
+  for (const g of groups.values()) {
+    if (g._count > 1) {
+      const subj = g.subject ?? '';
+      g.summary = `${subj ? `${subj} ` : ''}×${g._count} — latest: ${g.summary ?? ''}`;
+    }
+  }
+  return out;
+}
+
 export function formatTurnStartReminder(input: ReminderInput): string {
   const out: string[] = [];
 
@@ -107,7 +150,7 @@ export function formatTurnStartReminder(input: ReminderInput): string {
   // Escalations first within the inbox — they earn the right to interrupt.
   const escalations = input.inbox.filter((e) => e.kind === 'escalation');
   const messages = input.inbox.filter((e) => e.kind === 'message' || e.kind === 'ack');
-  const notifies = input.inbox.filter((e) => e.kind === 'notify');
+  const notifies = collapseDigestNotifies(input.inbox.filter((e) => e.kind === 'notify'));
   const handoffs = input.inbox.filter((e) => e.kind === 'handoff' || e.kind === 'handoff_accepted');
 
   if (input.inbox.length > 0) {
@@ -148,7 +191,9 @@ export function formatTurnStartReminder(input: ReminderInput): string {
 export function formatInboxDelta(entries: InboxEntry[]): string {
   if (entries.length === 0) return '';
   const MAX = 8;
-  const sorted = [...entries].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+  // Coalesce digest-mode notifies by subject before capping (D-006).
+  const collapsed = collapseDigestNotifies(entries);
+  const sorted = [...collapsed].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   const overflow = sorted.length - MAX;
   const shown = overflow > 0 ? sorted.slice(-MAX) : sorted;
   const n = sorted.length;

@@ -89,7 +89,7 @@ vi.mock('@/lib/promote-issue', async () => {
 });
 vi.mock('@/lib/harness-issues', async () => {
   const actual = await vi.importActual<typeof import('@/lib/harness-issues')>('@/lib/harness-issues');
-  return { ...actual, loadIssuesOrSeed: () => ({ issues: [] }), saveIssues: async () => {} };
+  return { ...actual, loadIssuesOrSeed: async () => ({ issues: [], nextId: 1 }), saveIssues: async () => {} };
 });
 // refillHarnessOnSettle dispatches via the DEFAULT adminUrl → point it at the test DB.
 vi.mock('@/lib/embedded-pg-discovery', async () => {

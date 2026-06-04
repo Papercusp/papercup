@@ -88,11 +88,13 @@ describe('clearStartedForTerminalPlan', () => {
     expect(H.state.txCalls).toHaveLength(1);
     const { strings, values } = H.state.txCalls[0];
     const sql = strings.join('§');
-    expect(sql).toContain('UPDATE harness_shared.harness_plan_status');
-    expect(sql).toContain("SET status = 'done'");
+    // PG-canonical: op_status now lives on the harness_plans row itself, not a
+    // separate harness_plan_status table.
+    expect(sql).toContain('UPDATE harness_shared.harness_plans');
+    expect(sql).toContain("SET op_status = 'done'");
     // Only an active row is touched — a done/missing row is never resurrected.
-    expect(sql).toContain("status IN ('started', 'paused')");
-    // Params: [updated_at, workspace_id, harness_slug, plan_slug].
+    expect(sql).toContain("op_status IN ('started', 'paused')");
+    // Params: [op_updated_at, workspace_id, harness_slug, plan_slug].
     expect(values[1]).toBe(DEFAULT_WORKSPACE_ID);
     expect(values[2]).toBe('myharn');
     expect(values[3]).toBe('my-plan-2026-06-02');

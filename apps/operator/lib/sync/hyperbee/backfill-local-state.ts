@@ -44,6 +44,14 @@ import { DEFAULT_MAX_OPS_PER_AUTHOR } from './read-merge';
 const BACKFILL_TARGETS: ReadonlyArray<readonly [table: string, keyCol: string]> = [
   ['harness_features_consolidated', 'feature_id'],
   ['harness_issues_consolidated', 'issue_id'],
+  // plans-pg-canonical-migration-2026-06-03 (Stage 2): PG-canonical plans federate
+  // as papercup-harness content (key == plan_slug). NB: the one-time `backfill_done`
+  // marker is per-(workspace,harness), so on an install that ALREADY federated
+  // features/issues the marker short-circuits and pre-existing plans are not
+  // re-enqueued — only ongoing plan writes federate (via the capture trigger,
+  // migration 125). Fresh installs backfill plans here. (Clearing the marker forces
+  // a one-time re-backfill of all targets; idempotent but re-enqueues everything.)
+  ['harness_plans', 'plan_slug'],
 ];
 
 /** substrate_meta key for the one-time-done marker. */
