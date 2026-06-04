@@ -15,8 +15,10 @@ mod framing;
 mod ipc;
 mod models;
 mod mux;
+mod notify;
 mod sse;
 mod theme;
+mod tutorial;
 mod ui;
 
 use anyhow::Result;
@@ -55,13 +57,37 @@ async fn main() -> Result<()> {
 async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    // Show the first-run tutorial until this device has dismissed it once (P9).
+    app.show_tutorial = !tutorial::seen();
     spawn_input_listener(tx.clone());
     spawn_sync(tx.clone(), app.active_harness.clone(), app.active_doc.clone());
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
+    // Tracks the last notification we surfaced to the OS so we fire exactly one
+    // system notification per new event (the reducer bumps notif_seq).
+    let mut last_notif_seq = app.notif_seq;
+    // Persist the tutorial dismissal exactly once, the first time it closes.
+    let mut tutorial_persisted = !app.show_tutorial;
+
     while let Some(ev) = rx.recv().await {
-        match app.update(ev) {
+        let action = app.update(ev);
+
+        // Best-effort OS notification on each new needs-human event (P8).
+        if app.notif_seq != last_notif_seq {
+            last_notif_seq = app.notif_seq;
+            if let Some(msg) = app.notif_flash.clone() {
+                notify::os_notify("Papercusp", &msg);
+            }
+        }
+
+        // Record the first-run tutorial as seen the moment it's dismissed (P9).
+        if !tutorial_persisted && !app.show_tutorial {
+            tutorial_persisted = true;
+            tutorial::mark_seen();
+        }
+
+        match action {
             Action::Render => {
                 terminal.draw(|f| ui::draw(f, &app))?;
             }

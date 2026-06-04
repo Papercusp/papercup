@@ -19,4 +19,10 @@ impl Theme {
     pub fn warn() -> Style {
         Style::default().fg(Color::Yellow)
     }
+    /// Notification flash in the status bar (accent, not an error).
+    pub fn notify() -> Style {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    }
 }

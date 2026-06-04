@@ -19,6 +19,9 @@ dirs = "5"
 # IPC transport (Unix-socket; replaces HTTP/SSE).
 bytes = "1"
 thiserror = "2"
+# OS desktop notifications (P8) — best-effort; fails silently when no D-Bus
+# session (headless / remote). z-bus backend on Linux.
+notify-rust = "4"
 
 [dev-dependencies]
 tempfile = "3"

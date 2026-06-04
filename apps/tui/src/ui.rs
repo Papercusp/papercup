@@ -49,8 +49,10 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     draw_status(f, app, root[2]);
 
-    // Overlays render on top of the body.
-    if app.show_help {
+    // Overlays render on top of the body (tutorial wins on first run).
+    if app.show_tutorial {
+        draw_tutorial(f);
+    } else if app.show_help {
         draw_help(f);
     } else if app.palette_open {
         draw_palette(f, app);
@@ -61,7 +63,14 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::ALL
         .iter()
         .enumerate()
-        .map(|(i, t)| Line::from(format!(" {}:{} ", i + 1, t.title())))
+        .map(|(i, t)| {
+            // Inbox carries a notification badge when items need attention (P8).
+            if *t == Tab::Inbox && app.unseen_notifs > 0 {
+                Line::from(format!(" {}:{} ({}) ", i + 1, t.title(), app.unseen_notifs))
+            } else {
+                Line::from(format!(" {}:{} ", i + 1, t.title()))
+            }
+        })
         .collect();
     let tabs = Tabs::new(titles)
         .select(app.tab.index())
@@ -196,18 +205,15 @@ fn draw_sessions(f: &mut Frame, app: &App, area: Rect) {
 /// what they're doing, rendered from the coord_presence-primary roster. No
 /// selection — it's a HUD, not a navigable list; the Sessions tab is the detail.
 fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
-    let online = app.roster.iter().filter(|r| !r.stale).count();
-    let items: Vec<ListItem> = app
-        .roster
+    // "Who's online" — only non-stale presence (the roster carries the whole
+    // fleet incl. long-dead heartbeats; those would drown the live ones). The
+    // title still shows online/total so the offline tail is visible at a glance.
+    let online: Vec<&crate::models::RosterEntry> =
+        app.roster.iter().filter(|r| !r.stale).collect();
+    let items: Vec<ListItem> = online
         .iter()
         .map(|r| {
-            let dot = if r.stale {
-                "○"
-            } else if r.liveness == "live" {
-                "●"
-            } else {
-                "◐"
-            };
+            let dot = if r.liveness == "live" { "●" } else { "◐" };
             let who = r.agent.clone().unwrap_or_else(|| r.label.clone());
             // Prefer live intent; fall back to feature, then role.
             let detail = r
@@ -223,7 +229,7 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let body = if app.roster.is_empty() {
+    let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
             "(nobody online)",
             Theme::dim(),
@@ -234,7 +240,7 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
     let list = List::new(body).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(Line::from(format!(" Presence {}/{} ", online, app.roster.len()))),
+            .title(Line::from(format!(" Presence {}/{} ", online.len(), app.roster.len()))),
     );
     f.render_widget(list, area);
 }
@@ -530,9 +536,13 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = match &app.last_error {
-        Some(e) => (format!("⚠ {e}"), Theme::warn()),
-        None => (app.status.clone(), Theme::dim()),
+    // Priority: error > notification flash > idle status line.
+    let (text, style) = if let Some(e) = &app.last_error {
+        (format!("⚠ {e}"), Theme::warn())
+    } else if let Some(n) = &app.notif_flash {
+        (format!("🔔 {n}"), Theme::notify())
+    } else {
+        (app.status.clone(), Theme::dim())
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
 }
@@ -543,6 +553,27 @@ fn draw_help(f: &mut Frame) {
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
+        area,
+    );
+}
+
+fn draw_tutorial(f: &mut Frame) {
+    let area = centered_rect(72, 70, f.area());
+    let text = "Welcome to pui — the Papercusp workbench\n\n\
+        pui is your terminal HUD over the operator. Everything here is live —\n\
+        it reads + reacts to the same backend the desktop app uses.\n\n\
+        Tabs (press 1‑8):\n\
+        \x20 Plans · Inbox · Sessions · Harnesses · Docs · Activity · Testing · Config\n\n\
+        Move:      j / k  (or ↑/↓)        Cycle harness:  [  /  ]\n\
+        Launch:    n  agent pane (Sessions)     g  git (lazygit)\n\
+        Presence:  p  toggles the who's‑online sidebar (right)\n\
+        More:      :  command palette      ?  full keymap      q  quit\n\n\
+        Press any key to begin.";
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Getting started ")),
         area,
     );
 }
@@ -727,6 +758,27 @@ mod tests {
         assert!(text.contains("Plans"));
         assert!(text.contains("Inbox"));
         assert!(text.contains("Sessions"));
+    }
+
+    #[test]
+    fn inbox_badge_and_notification_flash_render() {
+        let mut app = App::new();
+        app.unseen_notifs = 2;
+        app.notif_flash = Some("needs you: Decide P-002".into());
+        let text = render(&app, 90, 10);
+        assert!(text.contains("Inbox (2)")); // badge on the tab strip
+        assert!(text.contains("🔔")); // flash icon in the status bar
+        assert!(text.contains("needs you: Decide P-002"));
+    }
+
+    #[test]
+    fn error_outranks_notification_flash() {
+        let mut app = App::new();
+        app.notif_flash = Some("needs you: X".into());
+        app.last_error = Some("backend down".into());
+        let text = render(&app, 90, 10);
+        assert!(text.contains("backend down"));
+        assert!(!text.contains("needs you: X"));
     }
 
     #[test]

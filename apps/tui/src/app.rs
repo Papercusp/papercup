@@ -10,6 +10,7 @@ use crate::models::{
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 /// What the run-loop should do after handling one event.
@@ -117,6 +118,19 @@ pub struct App {
     pub palette_input: String,
     /// Always-on presence sidebar visible (P7 — who's online + intent). `p` toggles.
     pub show_presence: bool,
+    /// First-run tutorial overlay visible (P9). Set true at startup when the
+    /// device hasn't seen it; any key dismisses it. Default false so tests and
+    /// the reducer aren't perturbed — `main` decides the initial value.
+    pub show_tutorial: bool,
+    /// Notifications (P8). `notif_flash` is the latest one-line message shown in
+    /// the status bar; `unseen_notifs` is the Inbox-tab badge count (cleared on
+    /// visit); `notif_seq` advances on each new notification so the run-loop can
+    /// fire one OS notification per new event. `inbox_loaded` suppresses the
+    /// first-load storm (don't notify for items already present at startup).
+    pub notif_flash: Option<String>,
+    pub unseen_notifs: usize,
+    pub notif_seq: u64,
+    inbox_loaded: bool,
 }
 
 impl App {
@@ -155,6 +169,11 @@ impl App {
             palette_open: false,
             palette_input: String::new(),
             show_presence: true,
+            show_tutorial: false,
+            notif_flash: None,
+            unseen_notifs: 0,
+            notif_seq: 0,
+            inbox_loaded: false,
         }
     }
 
@@ -169,7 +188,28 @@ impl App {
     }
 
     pub fn set_inbox(&mut self, inbox: Vec<AttentionItem>) {
+        // Notify on newly-arrived needs-human items (P8) — but never on the very
+        // first load (those items predate the session; flagging them all would
+        // be a startup storm). Diff by id against the currently-held inbox.
+        if self.inbox_loaded {
+            let old_ids: HashSet<&str> = self.inbox.iter().map(|i| i.id.as_str()).collect();
+            let fresh: Vec<&AttentionItem> = inbox
+                .iter()
+                .filter(|i| i.needs_human && !old_ids.contains(i.id.as_str()))
+                .collect();
+            if let Some(first) = fresh.first() {
+                let n = fresh.len();
+                self.notif_flash = Some(if n == 1 {
+                    format!("needs you: {}", first.title)
+                } else {
+                    format!("{n} items need you — {}", first.title)
+                });
+                self.unseen_notifs += n;
+                self.notif_seq += 1;
+            }
+        }
         self.inbox = inbox;
+        self.inbox_loaded = true;
         self.clamp_sel();
     }
 
@@ -422,6 +462,11 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        // First-run tutorial: any key dismisses it (and does nothing else).
+        if self.show_tutorial {
+            self.show_tutorial = false;
+            return Action::Render;
+        }
         // Command palette captures all input while open.
         if self.palette_open {
             return match code {
@@ -474,6 +519,9 @@ impl App {
             }
             KeyCode::Char('2') => {
                 self.tab = Tab::Inbox;
+                // Visiting the inbox acknowledges pending notifications.
+                self.unseen_notifs = 0;
+                self.notif_flash = None;
                 Action::Render
             }
             KeyCode::Char('3') => {
@@ -891,6 +939,67 @@ mod tests {
     fn tick_is_noop() {
         let mut a = App::new();
         assert_eq!(a.update(Event::Tick), Action::None);
+    }
+
+    fn attn(id: &str, needs_human: bool) -> AttentionItem {
+        AttentionItem {
+            id: id.into(),
+            kind: "coord-escalation".into(),
+            source: "coord".into(),
+            harness_slug: None,
+            plan_slug: Some("p".into()),
+            item_ref: Some("P-001".into()),
+            title: format!("Title {id}"),
+            body: None,
+            status: "needs-human".into(),
+            importance: None,
+            needs_human,
+        }
+    }
+
+    #[test]
+    fn inbox_first_load_does_not_notify() {
+        let mut a = App::new();
+        a.set_inbox(vec![attn("e1", true), attn("e2", true)]);
+        assert_eq!(a.notif_seq, 0);
+        assert_eq!(a.unseen_notifs, 0);
+        assert!(a.notif_flash.is_none());
+    }
+
+    #[test]
+    fn new_needs_human_item_notifies() {
+        let mut a = App::new();
+        a.set_inbox(vec![attn("e1", true)]); // first load — no notify
+        a.set_inbox(vec![attn("e1", true), attn("e2", true)]); // e2 is new
+        assert_eq!(a.notif_seq, 1);
+        assert_eq!(a.unseen_notifs, 1);
+        assert_eq!(a.notif_flash.as_deref(), Some("needs you: Title e2"));
+        // A new non-needs-human item does NOT notify.
+        a.set_inbox(vec![attn("e1", true), attn("e2", true), attn("e3", false)]);
+        assert_eq!(a.notif_seq, 1);
+        assert_eq!(a.unseen_notifs, 1);
+    }
+
+    #[test]
+    fn multiple_new_items_count_and_summarize() {
+        let mut a = App::new();
+        a.set_inbox(vec![attn("e1", true)]);
+        a.set_inbox(vec![attn("e1", true), attn("e2", true), attn("e3", true)]);
+        assert_eq!(a.unseen_notifs, 2);
+        assert_eq!(a.notif_seq, 1);
+        assert!(a.notif_flash.as_deref().unwrap().starts_with("2 items need you"));
+    }
+
+    #[test]
+    fn visiting_inbox_clears_notifications() {
+        let mut a = App::new();
+        a.set_inbox(vec![attn("e1", true)]);
+        a.set_inbox(vec![attn("e1", true), attn("e2", true)]);
+        assert_eq!(a.unseen_notifs, 1);
+        a.update(key('2', KeyModifiers::NONE)); // visit Inbox
+        assert_eq!(a.tab, Tab::Inbox);
+        assert_eq!(a.unseen_notifs, 0);
+        assert!(a.notif_flash.is_none());
     }
 
     #[test]
