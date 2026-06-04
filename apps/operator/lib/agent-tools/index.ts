@@ -194,6 +194,13 @@ import './coordination/tools/watch';
 import './coordination/tools/unwatch';
 import './coordination/tools/watches';
 
+// Coordination substrate — topics (subscribe→inject taxonomy, D-004)
+import './coordination/tools/topics-list';
+import './coordination/tools/topics-create';
+import './coordination/tools/topics-subscribe';
+import './coordination/tools/topics-unsubscribe';
+import './coordination/tools/topics-merge';
+
 import './coordination/tools/watermark';
 import './coordination/tools/watermark-set';
 import './coordination/tools/plan-events';

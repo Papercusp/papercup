@@ -21,15 +21,50 @@
  *   npx tsx scripts/migrations/backfill-fs-plans-to-pg.ts
  */
 
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import { hashPlanContent } from '@papercusp/plan-parser';
-import {
-  resolveHarnessPlansDir,
-  listPlanFiles,
-  readPlanBySlug,
-} from '../../lib/agent-tools/plans/source';
+import { hashPlanContent, parsePlan } from '@papercusp/plan-parser';
+import { resolveHarnessPlansDir } from '../../lib/agent-tools/plans/source';
 import { loadHarnessRegistry } from '../../lib/harness-registry';
 import { DEFAULT_WORKSPACE_ID } from '../../lib/workspace-registry';
+
+/**
+ * Read plan `.md` files straight off disk (live + archive). The backfill is
+ * the ONE place that must read the filesystem — the source.ts helpers now read
+ * PG (Stage 1), so we cannot route through them here.
+ */
+async function collectFsPlans(
+  plansDir: string,
+  archiveDir: string,
+): Promise<Array<{ slug: string; filePath: string; archived: boolean; content: string }>> {
+  const out: Array<{ slug: string; filePath: string; archived: boolean; content: string }> = [];
+  for (const [dir, archived] of [
+    [plansDir, false],
+    [archiveDir, true],
+  ] as const) {
+    let names: string[];
+    try {
+      names = await fs.readdir(dir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw e;
+    }
+    for (const name of names) {
+      if ((!name.endsWith('.md') && !name.endsWith('.mdx')) || name.startsWith('.')) continue;
+      const filePath = path.join(dir, name);
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) continue;
+      out.push({
+        slug: name.replace(/\.mdx?$/, ''),
+        filePath,
+        archived,
+        content: await fs.readFile(filePath, 'utf8'),
+      });
+    }
+  }
+  return out;
+}
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
@@ -92,8 +127,8 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
       continue;
     }
 
-    const entries = await listPlanFiles({ plansDir: dirs.plans, archiveDir: dirs.archive });
-    if (entries.length === 0) continue;
+    const fsPlans = await collectFsPlans(dirs.plans, dirs.archive);
+    if (fsPlans.length === 0) continue;
 
     // Fold existing operational status for this harness (one query).
     const statusRows = await sql<PlanStatusRow[]>`
@@ -104,16 +139,8 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
     `;
     const statusByslug = new Map(statusRows.map((r) => [r.plan_slug, r]));
 
-    for (const entry of entries) {
-      const result = await readPlanBySlug(entry.slug, {
-        plansDir: dirs.plans,
-        archiveDir: dirs.archive,
-      });
-      if (!result) {
-        console.warn(`[backfill-plans]  SKIP ${slug}/${entry.slug} — unreadable`);
-        continue;
-      }
-      const { parsed } = result;
+    for (const fp of fsPlans) {
+      const parsed = parsePlan(fp.content, { filePath: fp.filePath });
       const fm = parsed.frontmatter;
       const st = statusByslug.get(fm.slug ?? parsed.slug);
       rows.push({
@@ -134,7 +161,7 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
         opUpdatedAt: st?.updated_at ?? null,
         currentWave: st?.current_wave ?? null,
         opPriority: st?.priority ?? null,
-        archived: entry.archived,
+        archived: fp.archived,
         isLegacy: parsed.isLegacy,
       });
     }
