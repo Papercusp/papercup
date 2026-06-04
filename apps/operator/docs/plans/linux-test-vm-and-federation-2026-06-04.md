@@ -11,9 +11,9 @@ owner: aviynw3@gmail.com
 
 ## Now
 
-**State:** Phase 1 essentially complete. The vmctl VM workflow is built and proven (P-002–P-005 done; 7/7 green on a working app). P-006 docs written into build-system/vms.mdx (mirror rebuild pending). The VM caught a real shipping bug (D-009): the Linux .deb had no DB on a clean machine because spawn_embedded_postgres_server/spawn_zero_cache_server used a bare Command::new("node") with no bundled-node PATH. Per user direction, FIXED in src-tauri/src/main.rs (all three node spawns now route through a shared bundled_path_env helper); rebuilding the .deb now (Rust compiled clean; bundling the deb) to VM-verify the fix with no node hack. Holding the desktop-sidecar exclusive lock for the build.
+**State:** Phase 1 (VM clean-room workflow) COMPLETE — P-001–P-006 done, 7/7 green on a pristine machine. Primary DB bug (D-009) fixed in main.rs (bundled_path_env) + VM-verified on the rebuilt .deb. Per user (2026-06-04): Phase 2 federation testing (P-007–P-013) is DEFERRED; focus stays on the VM + desktop-app install. The remaining blocker to a usable Linux install is bug #2 (D-010): the app UI doesn't render on a clean machine (WebKit "connection refused" after the bootstrap navigates to appBase/harness). Now investigating bug #2 to make the installed app actually render.
 
-**Next:** When the rebuild finishes: reset the VM to pristine (drops the diagnostic node symlink), fresh-install the new .deb, run verify expecting 7/7 green with no hacks; then rebuild the docs mirror and release the lock. P-006 closes Phase 1.
+**Next:** Root-cause bug #2 (D-010): determine appBase / custom-protocol vs localhost-IPv6 behavior (instrument the bootstrap if editable in-VM, else rebuild once), fix in source, re-verify the UI renders in the VM. Phase 2 federation deferred until requested.
 
 ## Background
 
@@ -229,4 +229,15 @@ Date: 2026-06-04
 PRIMARY (D-009) FIXED + PROVEN: rebuilt the .deb with all three node spawns routed through bundled_path_env (main.rs), reset the VM to a truly pristine overlay (confirmed no `node` on PATH), fresh-installed the rebuilt .deb, and `vmctl verify` went 7/7 green with NO hacks — embedded Postgres `ready on localhost:21332 db=papercusp`, operator `sidecar ready on :23428`. The DB-spawn bug is resolved on a clean machine.
 
 SECONDARY (newly CONFIRMED, was the D-009 observation): even on the fixed build with operator fully up, the Tauri window stays on a WebKit native error page "Could not connect to 127.0.0.1: Connection refused" — so a clean-machine user still sees a blank app. Characterized: the bundled bootstrap web/index.html DOES reach /api/desktop/preflight and retries correctly, then runs `location.replace(appBase + '/harness')` where appBase = window.__papercuspAppBase (custom protocol `papercusp://localhost` when enabled) || base (`http://localhost:<port>`). That navigation lands on the WebKit connection-refused page. From inside the VM both `127.0.0.1:<port>` and `localhost:<port>` curl 200, but `localhost` resolves to `::1` there and the operator binds 127.0.0.1 (IPv4) — a likely contributor (WebKit fetch to localhost→::1 with no IPv4 fallback), alongside the possibility the custom-protocol (papercusp://) handler doesn't serve on clean Linux. Pinning it needs the WebView console. Net: the Linux .deb's DATABASE now works on a clean machine, but the UI still doesn't render — a separate fix.
+Related: P-005
+
+### D-011 — Bug #2 root cause: frontendDist hardcoded to :3070 (Phase F2 regression)
+Date: 2026-06-04
+The blank-window bug (D-010) is a regression from commit f5c2bbe "Phase F2 — frontendDist → http://127.0.0.1:3070", which changed tauri.conf.json `frontendDist` from `"../web"` to the fixed URL `http://127.0.0.1:3070`.
+
+The packaged window has no per-window `url`, so it loads `frontendDist` directly = `http://127.0.0.1:3070`. But the packaged operator/hono-host runs on a DYNAMIC port (portpicker; 23428 in the VM), so nothing is on 3070 → WebKit "Could not connect to 127.0.0.1: Connection refused". It only works on the dev box because the standing operator is on :3070 there.
+
+The original design (still fully present): frontendDist `../web` loads the bootstrap (web/index.html) → it polls `${__papercuspBase}/api/desktop/preflight` (the dynamic port main.rs evals in) with retry/"starting harness sidecar…" UX → then `location.replace(__papercuspAppBase + '/harness')` where __papercuspAppBase = `papercusp://localhost`. The custom protocol (registered main.rs:1127, custom_protocol.rs) forwards papercusp://localhost/* to the sidecar's dynamic port (SidecarState.port). All that machinery is intact; only frontendDist points the wrong way.
+
+Fix: revert frontendDist to `"../web"`. Only affects packaged builds (dev uses devUrl :3055). Rebuilding + VM-verifying the UI renders.
 Related: P-005
