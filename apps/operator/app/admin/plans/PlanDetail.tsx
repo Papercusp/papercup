@@ -271,6 +271,9 @@ export default function PlanDetail({ slug, onClose, showBack = true, onDirtyChan
       const res = await setPlanContent({
         slug: data.slug,
         content: draft,
+        // Optimistic version CAS (plans-pg-canonical D-005); expectedHash kept
+        // as an equivalent fallback for an older server.
+        expectedVersion: data.version,
         expectedHash: data.contentHash,
         rationale: rationale.trim() || undefined,
       });

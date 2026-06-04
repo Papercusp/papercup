@@ -638,9 +638,11 @@ export const PROMOTABLE_PLAN_STATUSES: PromotablePlanStatus[] = [
 export interface SetContentArgs {
   slug: string;
   content: string;
-  /** Baseline `contentHash` from the `plans:get` that loaded the
-   *  editor — the compare-and-swap guard. Omitted only if the server
-   *  build predates the `contentHash` field. */
+  /** Optimistic-CAS baseline — the plan row's `version` from the plans:get that
+   *  loaded the editor (plans-pg-canonical D-005). Preferred over expectedHash. */
+  expectedVersion?: number;
+  /** Legacy CAS baseline (the `contentHash` from plans:get) — equivalent to
+   *  expectedVersion; kept for back-compat. */
   expectedHash?: string;
   /** plan-agent-launch P-025 (D-009): the "what changed & why" the
    *  editor's Save flow collects. Carried through to the new
@@ -684,13 +686,14 @@ const PROMOTE_VERB = 'set-frontmatter';
  * Phase 5 ships, `staleConflictOf` / `writeErrorOf` handle it.
  */
 export type SetContentResult =
-  | { ok: true; slug?: string; filePath?: string; contentHash?: string }
+  | { ok: true; slug?: string; filePath?: string; contentHash?: string; version?: number }
   | {
       ok?: false;
       code?: string;
       error?: string;
       currentContent?: string;
       currentHash?: string;
+      currentVersion?: number;
       errors?: LintFinding[];
       [k: string]: unknown;
     };
@@ -789,7 +792,6 @@ export async function rejectDraftPlan(
   const plan = await fetchPlan(slug);
   if ('error' in plan && plan.error) return { ok: false, error: plan.error };
   const raw = plan.raw;
-  const contentHash = plan.contentHash;
   if (!raw) return { ok: false, error: 'no_content' };
   // Reject = supersede. Works on any non-terminal plan (draft / ready /
   // active / blocked), not just drafts — so the "Reject Plan" button can
@@ -799,8 +801,10 @@ export async function rejectDraftPlan(
   if (updated === raw) return { ok: false, error: 'status_not_rejectable' };
   const res = await setPlanContent({
     slug,
+    // version CAS (D-005); expectedHash kept as a fallback for an older server.
+    expectedVersion: plan.version,
+    expectedHash: plan.contentHash,
     content: updated,
-    expectedHash: contentHash,
     ...(harnessSlug && { harness_slug: harnessSlug }),
   } as SetContentArgs & { harness_slug?: string });
   if ('ok' in res && res.ok) return { ok: true };

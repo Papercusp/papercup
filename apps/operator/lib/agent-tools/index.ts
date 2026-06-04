@@ -206,6 +206,21 @@ import './coordination/tools/conversations-join';
 import './coordination/tools/conversations-list';
 import './coordination/tools/conversations-get';
 
+// Engineer issues — the agent-facing issue surface on the coordination substrate
+// (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.
+import './issues/create';
+import './issues/list';
+import './issues/get';
+import './issues/update';
+import './issues/comment';
+import './issues/claim';
+import './issues/release';
+import './issues/close';
+import './issues/tag';
+import './issues/subscribe';
+import './issues/search';
+import './issues/link';
+
 import './coordination/tools/watermark';
 import './coordination/tools/watermark-set';
 import './coordination/tools/plan-events';

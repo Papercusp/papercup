@@ -41,7 +41,6 @@ import '../../../packages/agent-mcp/src/tools/features/search';
 import '../../../packages/agent-mcp/src/tools/features/history';
 import '../../../packages/agent-mcp/src/tools/features/list_related';
 import '../../../packages/agent-mcp/src/tools/features/tag_vocabulary';
-import '../../../packages/agent-mcp/src/tools/issues/list';
 import '../../../packages/agent-mcp/src/tools/harness/list';
 import '../../../packages/agent-mcp/src/tools/harness/get';
 import '../../../packages/agent-mcp/src/tools/harness/status';

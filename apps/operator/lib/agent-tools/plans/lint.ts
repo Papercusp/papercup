@@ -16,7 +16,6 @@
  *   - decision refs resolve to known decision IDs
  *   - status tokens in vocabulary
  *   - ASCII-only IDs
- *   - updated: not >7d behind file's git mtime (warn)
  *
  * Returns { errors, warnings } per plan + overall pass/fail.
  */
@@ -30,7 +29,6 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
-import * as fs from 'node:fs/promises';
 
 const ALL_ROLES = [
   'scoper',
@@ -107,10 +105,8 @@ export async function lintPlan(
 /**
  * Apply the lint rules to an already-parsed plan. Split out of
  * `lintPlan` so `plans:set-content` can lint a *proposed* document
- * body in-memory — before writing it — without a disk round-trip.
- * Behaviour is identical to the on-disk path; the only best-effort
- * difference is the `updated_lags_mtime` check, which silently skips
- * when `parsed.filePath` is not a real file (an inline parse).
+ * body in-memory — before writing it. Pure now (plans are PG-canonical;
+ * no filesystem round-trip).
  */
 export async function lintParsed(
   parsed: ParsedPlan,
@@ -305,25 +301,10 @@ export async function lintParsed(
     }
   }
 
-  if (parsed.frontmatter.updated) {
-    try {
-      const stat = await fs.stat(parsed.filePath);
-      const updatedDate = new Date(parsed.frontmatter.updated + 'T00:00:00Z');
-      if (!isNaN(updatedDate.getTime())) {
-        const mtime = stat.mtime;
-        const diffDays = (mtime.getTime() - updatedDate.getTime()) / 86_400_000;
-        if (diffDays > 7) {
-          report.warnings.push({
-            level: 'warning',
-            code: 'updated_lags_mtime',
-            message: `frontmatter updated: lags file mtime by ${diffDays.toFixed(1)} days.`,
-          });
-        }
-      }
-    } catch {
-      // mtime check is best-effort
-    }
-  }
+  // (The former `updated_lags_mtime` warning compared frontmatter `updated:`
+  // against the plan FILE's git mtime. Plans are PG-canonical now — there is no
+  // file, and the row's `updated_at` is auto-bumped on every write, so there's
+  // no faithful equivalent. Dropped with plans-pg-canonical-migration-2026-06-03.)
 
   return report;
 }
