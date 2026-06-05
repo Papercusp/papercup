@@ -36,7 +36,7 @@ import {
   buildHarnessJoinLink,
   LISTING_ACTION_LABEL,
 } from '@papercusp/operator-core/lib/cupboard/types';
-import { COLORS, FONTS, RADIUS, SIZES } from '../../harness/theme';
+import { COLORS, FONTS, RADIUS, SIZES } from '../cupboard-theme';
 import { toast } from 'sonner';
 
 function ActionIcon({ kind, size = 14 }: { kind: ListingKind; size?: number }) {

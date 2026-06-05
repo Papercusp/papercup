@@ -146,7 +146,6 @@ pub struct VoiceStream {
     writer: Arc<Mutex<UnixStream>>,
     mic_level_bits: Arc<AtomicU32>,
     mic_acc: Mutex<Vec<f32>>,
-    alive: Arc<AtomicBool>,
 }
 
 impl VoiceStream {
@@ -162,18 +161,15 @@ impl VoiceStream {
         let writer = Arc::new(Mutex::new(stream));
         let (ev_tx, ev_rx) = channel::<VoiceEvent>();
         let (mix_tx, mix_rx) = channel::<Vec<i16>>();
-        let alive = Arc::new(AtomicBool::new(true));
-        let alive_r = alive.clone();
         std::thread::Builder::new()
             .name("pui-voice-stream-read".into())
-            .spawn(move || read_loop(reader, ev_tx, mix_tx, alive_r))
+            .spawn(move || read_loop(reader, ev_tx, mix_tx))
             .context("spawn voice reader")?;
         Ok((
             Self {
                 writer,
                 mic_level_bits: Arc::new(AtomicU32::new(0)),
                 mic_acc: Mutex::new(Vec::new()),
-                alive,
             },
             ev_rx,
             mix_rx,
@@ -210,10 +206,6 @@ impl VoiceStream {
         f32::from_bits(self.mic_level_bits.load(Ordering::Relaxed))
     }
 
-    pub fn is_alive(&self) -> bool {
-        self.alive.load(Ordering::Relaxed)
-    }
-
     /// The testable mic seam: push interleaved f32 PCM at any rate/channels.
     /// Mixes to mono, resamples to 48k, accumulates exact 20ms frames, and
     /// ships each as one MIC frame. `start_mic()` feeds this from cpal.
@@ -244,12 +236,7 @@ impl VoiceStream {
     }
 }
 
-fn read_loop(
-    mut sock: UnixStream,
-    ev_tx: Sender<VoiceEvent>,
-    mix_tx: Sender<Vec<i16>>,
-    alive: Arc<AtomicBool>,
-) {
+fn read_loop(mut sock: UnixStream, ev_tx: Sender<VoiceEvent>, mix_tx: Sender<Vec<i16>>) {
     let mut parser = FrameParser::default();
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -294,7 +281,6 @@ fn read_loop(
             }
         }
     }
-    alive.store(false, Ordering::Relaxed);
     let _ = ev_tx.send(VoiceEvent::Disconnected);
 }
 

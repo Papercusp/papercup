@@ -17,7 +17,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Wrench, Plug, Box, AlertTriangle, RefreshCw } from 'lucide-react';
-import { COLORS, FONTS, RADIUS, SIZES } from '../harness/theme';
+import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 
 export interface ToolDiscoveryEntry {
   tool: string;

@@ -101,7 +101,6 @@ pub enum VoiceUiEvent {
     Connected(bool),
     Stream(VoiceEvent),
     Channels(Vec<VoiceChannelRow>),
-    MicLevel(f32),
     MicState(bool),
     Prefs(VoicePrefsView),
     Error(String),
@@ -133,7 +132,6 @@ pub fn apply_event(s: &mut VoiceUiState, ev: VoiceUiEvent) {
                 s.sel = s.channels.len().saturating_sub(1);
             }
         }
-        VoiceUiEvent::MicLevel(l) => s.mic_level = l,
         VoiceUiEvent::MicState(on) => s.mic_on = on,
         VoiceUiEvent::Prefs(p) => s.prefs = Some(p),
         VoiceUiEvent::Error(e) => s.error = Some(e),

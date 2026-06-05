@@ -41,7 +41,7 @@ import {
   buildHarnessJoinLink,
   LISTING_ACTION_LABEL,
 } from '@papercusp/operator-core/lib/cupboard/types';
-import { COLORS, FONTS, RADIUS, SIZES } from '../harness/theme';
+import { COLORS, FONTS, RADIUS, SIZES } from './cupboard-theme';
 import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
 import { ToolsSection } from './ToolsSection';
 
@@ -84,8 +84,8 @@ function ActionIcon({ kind, size = 13 }: { kind: ListingKind; size?: number }) {
 
 const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }> = {
   harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
-  blueprint: { fg: '#a7f3d0', bg: 'rgba(16,185,129,0.14)', border: 'rgba(167,243,208,0.24)' },
-  snapshot: { fg: '#fcd34d', bg: 'rgba(245,158,11,0.14)', border: 'rgba(252,211,77,0.24)' },
+  blueprint: { fg: 'var(--success)', bg: 'color-mix(in srgb, var(--success), transparent 86%)', border: 'color-mix(in srgb, var(--success), transparent 74%)' },
+  snapshot: { fg: 'var(--warn)', bg: 'var(--warn-bg)', border: 'var(--warn-border)' },
   plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   pack: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
 };
@@ -390,21 +390,8 @@ export default function CupboardClient() {
             value={q}
             onChange={(e) => void setQ(e.target.value || null)}
             placeholder="Search the Cupboard…"
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              paddingLeft: 32,
-              paddingRight: 10,
-              paddingTop: 7,
-              paddingBottom: 7,
-              background: COLORS.bg,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 999,
-              color: COLORS.text,
-              fontFamily: FONTS.ui,
-              fontSize: 12,
-              outline: 'none',
-            }}
+            className="pc-input"
+            style={{ paddingLeft: 32, fontFamily: FONTS.ui }}
           />
         </div>
 
