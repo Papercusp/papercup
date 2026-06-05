@@ -157,9 +157,12 @@ impl Companion {
     }
 
     /// Open a pane for `spec` via the plugin's real host command (vs the
-    /// fire-and-forget `zellij action new-pane` fallback).
+    /// fire-and-forget `zellij action new-pane` fallback). Agent launches are a
+    /// DOCKVIEW launch (`stack: true`): the plugin stacks the new pane into the
+    /// work-area group so agents pile up tab-like instead of tiling thinner
+    /// (dockview-workbench D-008).
     pub fn open_pane(&self, spec: &PaneSpec) {
-        self.send(spec_to_open_command(spec));
+        self.send(spec_to_open_command(spec, true));
     }
 
     /// Focus a terminal pane by id.
@@ -175,6 +178,32 @@ impl Companion {
     /// Ask for a fresh topology snapshot now.
     pub fn snapshot(&self) {
         self.send(Command::Snapshot);
+    }
+
+    /// `:stack` — gather these terminal panes into one stacked group (D-008).
+    pub fn stack_panes(&self, pane_ids: Vec<u32>) {
+        self.send(Command::StackPanes { pane_ids });
+    }
+
+    /// `:float` — float a tiled pane / embed a floating one (D-008).
+    pub fn toggle_float(&self, pane_id: u32) {
+        self.send(Command::TogglePaneFloat { pane_id });
+    }
+
+    /// `:dock <side>` / `:layout <name>` — switch to a named swap-layout preset
+    /// (the plugin cycles until the active preset matches, D-008).
+    pub fn select_swap_layout(&self, name: String) {
+        self.send(Command::SelectSwapLayout { name });
+    }
+
+    /// `:layout next` — cycle to the next swap-layout preset.
+    pub fn next_swap_layout(&self) {
+        self.send(Command::NextSwapLayout);
+    }
+
+    /// `:layout prev` — cycle to the previous swap-layout preset.
+    pub fn prev_swap_layout(&self) {
+        self.send(Command::PrevSwapLayout);
     }
 }
 
@@ -219,8 +248,9 @@ fn pipe_argv(plugin_url: &str) -> Vec<String> {
 
 /// Turn a [`PaneSpec`] into the open-command-pane command. `argv[0]` is the
 /// program; the rest are args. cwd is left to zellij's default (the workbench
-/// cwd); the title rides along for traceability.
-fn spec_to_open_command(spec: &PaneSpec) -> Command {
+/// cwd); the title rides along for traceability. `stack` requests the dockview
+/// stack-on-open behavior (D-008).
+fn spec_to_open_command(spec: &PaneSpec, stack: bool) -> Command {
     let (command, args) = spec
         .argv
         .split_first()
@@ -231,6 +261,7 @@ fn spec_to_open_command(spec: &PaneSpec) -> Command {
         args,
         cwd: None,
         title: spec.title.clone(),
+        stack,
     }
 }
 
@@ -273,18 +304,25 @@ mod tests {
     #[test]
     fn spec_becomes_open_command_pane() {
         let spec = PaneSpec::new(["psu", "--no-picker", "--agent=claude"]).titled("pui · claude");
-        match spec_to_open_command(&spec) {
+        match spec_to_open_command(&spec, true) {
             Command::OpenCommandPane {
                 command,
                 args,
                 cwd,
                 title,
+                stack,
             } => {
                 assert_eq!(command, "psu");
                 assert_eq!(args, vec!["--no-picker", "--agent=claude"]);
                 assert_eq!(cwd, None);
                 assert_eq!(title.as_deref(), Some("pui · claude"));
+                assert!(stack, "agent launches request stack-on-open (dockview D-008)");
             }
+            other => panic!("expected OpenCommandPane, got {other:?}"),
+        }
+        // A non-stacking open (e.g. a plain shell) carries stack:false.
+        match spec_to_open_command(&PaneSpec::new(["bash"]), false) {
+            Command::OpenCommandPane { stack, .. } => assert!(!stack),
             other => panic!("expected OpenCommandPane, got {other:?}"),
         }
     }

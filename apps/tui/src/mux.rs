@@ -59,6 +59,15 @@ pub enum MuxAction {
     GoToTab(u32),
     /// Rename the focused tab.
     RenameTab(String),
+    /// Cycle to the next swap-layout preset (the `:layout next` fallback when no
+    /// companion is linked — `Alt+]`'s action; dockview-workbench D-008).
+    NextSwapLayout,
+    /// Cycle to the previous swap-layout preset (`:layout prev` fallback).
+    PrevSwapLayout,
+    /// Float the focused pane / embed it if floating (the bare `:float` fallback;
+    /// when typed in the palette the focused pane IS the pui HUD, so this floats
+    /// the HUD — matching the companion path's bare-verb semantics, D-002).
+    ToggleFloat,
 }
 
 pub trait Multiplexer {
@@ -133,6 +142,19 @@ impl Multiplexer for Zellij {
             }
             MuxAction::RenameTab(name) => {
                 vec![s("zellij"), s("action"), s("rename-tab"), name.clone()]
+            }
+            MuxAction::NextSwapLayout => {
+                vec![s("zellij"), s("action"), s("next-swap-layout")]
+            }
+            MuxAction::PrevSwapLayout => {
+                vec![s("zellij"), s("action"), s("previous-swap-layout")]
+            }
+            MuxAction::ToggleFloat => {
+                vec![
+                    s("zellij"),
+                    s("action"),
+                    s("toggle-pane-embed-or-floating"),
+                ]
             }
         }
     }
@@ -234,6 +256,23 @@ mod tests {
         assert_eq!(
             Zellij.action_argv(&MuxAction::RenameTab("docs".into())),
             vec!["zellij", "action", "rename-tab", "docs"]
+        );
+    }
+
+    #[test]
+    fn action_dock_verb_fallbacks() {
+        // The no-companion CLI fallbacks for the dock-verbs (D-008).
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::NextSwapLayout),
+            vec!["zellij", "action", "next-swap-layout"]
+        );
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::PrevSwapLayout),
+            vec!["zellij", "action", "previous-swap-layout"]
+        );
+        assert_eq!(
+            Zellij.action_argv(&MuxAction::ToggleFloat),
+            vec!["zellij", "action", "toggle-pane-embed-or-floating"]
         );
     }
 }

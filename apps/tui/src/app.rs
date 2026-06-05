@@ -54,6 +54,11 @@ pub enum Action {
     /// A command-palette workbench command (P12b) — the run loop dispatches it to
     /// the workbench-command task (list/save/restore layouts + crews).
     Workbench(PaletteCommand),
+    /// A dockview dock-verb (Brief 50 / dockview-workbench D-008) — the run loop
+    /// drives the companion plugin (or a CLI fallback). Carried separately from
+    /// `Workbench` because these need the live companion handle + topology, which
+    /// live in the run loop, not the workbench-command task.
+    Dock(DockCmd),
     /// Send a user message to the operator (tui-operator-surface P1) — the run
     /// loop persists the user turn, opens the converse SSE stream, and feeds
     /// `ChatDelta`/`ChatToolCall`/`ChatDone`/`ChatError` events back. The string
@@ -175,6 +180,24 @@ pub enum VoiceCmd {
     Cancel,
 }
 
+/// A resolved dockview dock-verb (Brief 50 / dockview-workbench D-008). The
+/// reducer resolves the pure [`PaletteCommand`] dock-verbs against the live
+/// topology into one of these (concrete pane ids / preset names); the run loop
+/// turns it into companion commands or CLI fallbacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DockCmd {
+    /// `:stack` — gather these work-area terminal panes into one stacked group.
+    Stack { pane_ids: Vec<u32> },
+    /// `:float [target]` — float a tiled pane / embed a floating one. `None`
+    /// targets the HUD (run loop uses `hud_pane_id`, else a focused-pane CLI
+    /// fallback); `Some(id)` is a resolved work pane.
+    Float { pane_id: Option<u32> },
+    /// `:dock <side>` / `:layout <name>` — switch to a named swap-layout preset.
+    SelectLayout { name: String },
+    /// `:layout next|prev` — cycle the swap-layout preset.
+    CycleLayout { next: bool },
+}
+
 /// A command-palette workbench command (P12b / D-002). Parsed from the palette
 /// input; the run loop executes it asynchronously.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +274,22 @@ pub enum PaletteCommand {
         item_ref: Option<String>,
         title: String,
         body: String,
+    },
+    /// `:stack` — gather the work area into one stacked group (dockview D-008).
+    /// Resolved to `DockCmd::Stack` against the live topology at Enter.
+    Stack,
+    /// `:float [target]` — float/embed the HUD (bare) or a named work pane.
+    /// `target` is a pane id or a title/command substring; resolved at Enter.
+    Float {
+        target: Option<String>,
+    },
+    /// `:dock <left|right>` — dock the HUD to that side via a mirrored swap preset.
+    Dock {
+        side: String,
+    },
+    /// `:layout <next|prev|name>` — cycle or select a swap-layout preset.
+    Layout {
+        which: String,
     },
 }
 
@@ -379,6 +418,17 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             title: String::new(),
             body: arg,
         }),
+        // ── dockview dock-verbs (Brief 50 / D-008) ──
+        // `:stack` — gather the work area into one stacked group.
+        "stack" => Some(PaletteCommand::Stack),
+        // `:float [target]` — bare floats the HUD; an arg targets a work pane.
+        "float" => Some(PaletteCommand::Float {
+            target: if arg.is_empty() { None } else { Some(arg) },
+        }),
+        // `:dock <left|right>` — dock the HUD to a side (mirrored preset).
+        "dock" if !arg.is_empty() => Some(PaletteCommand::Dock { side: arg }),
+        // `:layout <next|prev|name>` — cycle or select a swap preset.
+        "layout" if !arg.is_empty() => Some(PaletteCommand::Layout { which: arg }),
         _ => None,
     }
 }
@@ -777,6 +827,11 @@ pub struct App {
     /// which agent is in which pane + tab. `None` until the companion links;
     /// replaced wholesale on each snapshot (idempotent — no diff bookkeeping).
     pub topology: Option<Topology>,
+    /// pui's OWN zellij pane id (= the HUD pane), read from `$ZELLIJ_PANE_ID` at
+    /// startup (dockview-workbench D-008). The bare `:float`/`:dock` dock-verbs
+    /// target this pane. `None` when not running inside zellij (tests, plain
+    /// terminal) — the run loop then falls back to focused-pane CLI verbs.
+    pub hud_pane_id: Option<u32>,
     /// The companion plugin's version once it links (the liveness indicator).
     /// `None` when `pui` runs outside zellij / without the plugin installed.
     pub companion_version: Option<String>,
@@ -992,6 +1047,7 @@ impl App {
             unseen_notifs: 0,
             notif_seq: 0,
             topology: None,
+            hud_pane_id: None,
             companion_version: None,
             relaunch_command: None,
             fleet: FleetState::default(),
@@ -1982,6 +2038,64 @@ impl App {
             format!("--agent={agent}"),
         ];
         PaneSpec::new(argv).titled(format!("pui · {agent}"))
+    }
+
+    /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
+    /// first (`hud_pane_id`, read from `$ZELLIJ_PANE_ID`), then the command
+    /// (`pui hud`), then the title (`pui`) as a fallback.
+    fn is_hud_node(&self, p: &pui_companion_proto::PaneNode) -> bool {
+        if self.hud_pane_id == Some(p.id) {
+            return true;
+        }
+        if let Some(cmd) = &p.command {
+            if cmd.contains("pui hud") {
+                return true;
+            }
+        }
+        p.title == "pui"
+    }
+
+    /// The active tab's WORK-area terminal pane ids from the live companion
+    /// topology: non-plugin panes minus the HUD (D-004). Empty without a
+    /// companion link (no topology) — the `:stack` verb then errors helpfully.
+    pub fn work_pane_ids(&self) -> Vec<u32> {
+        let Some(topo) = &self.topology else {
+            return Vec::new();
+        };
+        let active = topo
+            .tabs
+            .iter()
+            .find(|t| t.active)
+            .map(|t| t.pos)
+            .unwrap_or(0);
+        topo.panes
+            .iter()
+            .filter(|p| p.tab == active && !p.is_plugin && !self.is_hud_node(p))
+            .map(|p| p.id)
+            .collect()
+    }
+
+    /// Resolve a `:float <target>` token to a pane id: a bare integer that names
+    /// a live pane, else the first pane whose title or command contains the token
+    /// (case-insensitive). `None` when there's no topology / no match.
+    pub fn resolve_pane_target(&self, target: &str) -> Option<u32> {
+        let topo = self.topology.as_ref()?;
+        if let Ok(id) = target.parse::<u32>() {
+            if topo.panes.iter().any(|p| p.id == id) {
+                return Some(id);
+            }
+        }
+        let needle = target.to_lowercase();
+        topo.panes
+            .iter()
+            .find(|p| {
+                p.title.to_lowercase().contains(&needle)
+                    || p.command
+                        .as_deref()
+                        .map(|c| c.to_lowercase().contains(&needle))
+                        .unwrap_or(false)
+            })
+            .map(|p| p.id)
     }
 
     /// Record that a workbench pane's command exited (P-004): raise a
