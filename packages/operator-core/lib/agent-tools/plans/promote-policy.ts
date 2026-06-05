@@ -90,6 +90,39 @@ export const GenerateRuleSchema = z.object({
 });
 export type GenerateRule = z.infer<typeof GenerateRuleSchema>;
 
+/** Kebab-case slug: lower alnum + hyphens, no leading/trailing hyphen. Same
+ *  shape as `plans:new`'s topic slug + `scaffold_harness`'s harness slug. */
+const KEBAB_SLUG = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+
+/**
+ * P-001 (promote-spawn-child-harness): a wave may declare `spawn_child` to route
+ * its features into a **newly-created child harness** (parented to the current
+ * one) instead of a pre-existing `target_harness`. Per D-001, a child is only
+ * justified at a repo/worktree boundary or for work needing its own lifecycle —
+ * `plans:lint` warns on every spawn_child wave to prompt that confirmation.
+ *
+ * ADDITIVE + fail-safe: the field is optional and inert — no existing promote
+ * path reads it, so a wave without `spawn_child` parses and behaves identically.
+ * The promote-time spawn branch (scaffold → seed-plan → import → start) is
+ * P-003, held for the owner D-002/D-003/D-004 calls. `.strict()` so a typo'd key
+ * (e.g. `tempate:`) surfaces as a parse warning rather than being silently dropped.
+ */
+export const SpawnChildSchema = z
+  .object({
+    /** Child harness slug (kebab). Unique across waves AND differs from
+     *  `target_harness` — enforced in `PromotePolicySchema.superRefine`. */
+    slug: z.string().regex(KEBAB_SLUG, 'kebab-case slug (a-z0-9, hyphen-separated)'),
+    /** Spawnable template the child is initialized from (D-003 own-repo path —
+     *  `scaffold_harness --from <template>`). */
+    template: z.string().min(1).optional(),
+    /** Optional git URL overriding the template's repo. */
+    repo: z.string().url().optional(),
+    /** One-line goal seeding the child's plan (≤280). */
+    goal: z.string().max(280).optional(),
+  })
+  .strict();
+export type SpawnChild = z.infer<typeof SpawnChildSchema>;
+
 export const WaveSchema = z
   .object({
     id: z.string().min(1),
@@ -97,6 +130,10 @@ export const WaveSchema = z
     blocked_by: z.string().optional(),
     features: z.array(StaticFeatureSchema).optional(),
     generate: GenerateRuleSchema.optional(),
+    /** P-001: route this wave's features into a new child harness (see above).
+     *  A spawn_child wave STILL requires features[]/generate (the .refine below) —
+     *  those populate the child. */
+    spawn_child: SpawnChildSchema.optional(),
   })
   .refine((w) => (w.features?.length ?? 0) > 0 || !!w.generate, {
     message: 'a wave must declare features[] and/or generate',
