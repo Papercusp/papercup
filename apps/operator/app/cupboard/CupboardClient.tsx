@@ -427,13 +427,13 @@ export default function CupboardClient() {
       {error && !loading && (
         <div
           style={{
-            color: '#fca5a5',
+            color: 'var(--danger)',
             fontSize: 12,
             marginBottom: SIZES.md,
             padding: 12,
-            border: '1px solid rgba(239,68,68,0.24)',
+            border: '1px solid color-mix(in srgb, var(--danger), transparent 70%)',
             borderRadius: RADIUS.lg,
-            background: 'rgba(127,29,29,0.16)',
+            background: 'var(--error-bg)',
           }}
         >
           {error === 'HTTP 503' || error.includes('fetch')
@@ -542,19 +542,15 @@ export function ListingCard({
   const tone = KIND_TONES[kind];
   return (
     <div
+      className="pc-card"
       style={{
-        position: 'relative',
-        overflow: 'hidden',
-        background: 'linear-gradient(180deg, var(--bg-popover), color-mix(in srgb, var(--bg-1), transparent 8%))',
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 14,
-        padding: 15,
+        padding: 16,
+        borderRadius: 16,
         display: 'flex',
         flexDirection: 'column',
         gap: 12,
         cursor: 'default',
         minHeight: 208,
-        boxShadow: '0 18px 42px rgba(0,0,0,0.22)',
       }}
     >
       <div
@@ -660,19 +656,8 @@ export function ListingCard({
           onClick={onAction}
           data-testid="cupboard-action"
           data-action={listingAction(kind)}
-          style={{
-            flex: 1,
-            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            background: 'linear-gradient(135deg, var(--accent), var(--accent-strong))',
-            color: 'var(--accent-ink)',
-            border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)',
-            borderRadius: 999,
-            padding: '8px 0',
-            cursor: 'pointer',
-            fontFamily: FONTS.ui,
-            fontSize: 12,
-            boxShadow: '0 12px 24px color-mix(in srgb, var(--accent), transparent 78%)',
-          }}
+          className="pc-button"
+          style={{ flex: 1, background: 'var(--accent)', color: 'var(--accent-ink)', borderColor: 'var(--accent-strong)' }}
         >
           <ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[listingAction(kind)]}
         </button>
@@ -681,16 +666,7 @@ export function ListingCard({
             href={`https://github.com/${repoSlug}`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '8px 11px',
-              background: 'var(--bg-2)',
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 999,
-              color: COLORS.textMuted,
-            }}
+            className="pc-button"
             title={`github.com/${repoSlug}`}
           >
             <ExternalLink size={13} />
@@ -708,16 +684,12 @@ function KindBadge({ kind }: { kind: ListingKind }) {
     <span
       data-testid="cupboard-kind-badge"
       data-kind={kind}
+      className="pc-badge"
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 3,
         background: tone.bg,
         border: `1px solid ${tone.border}`,
-        borderRadius: 999,
-        padding: '3px 8px',
-        fontSize: 10,
-        fontFamily: FONTS.ui,
         color: tone.fg,
-        textTransform: 'capitalize',
       }}
     >
       <KindIcon kind={kind} size={10} /> {kind}
@@ -736,7 +708,7 @@ function Stat({ icon, label }: { icon: React.ReactNode; label: string }) {
         fontSize: 11,
         fontFamily: FONTS.ui,
         border: `1px solid ${COLORS.border}`,
-        background: 'rgba(11,14,20,0.34)',
+        background: 'var(--bg-1)',
         borderRadius: 999,
         padding: '3px 7px',
       }}
@@ -755,7 +727,7 @@ function MetricTile({ label, value }: { label: string; value: string }) {
         border: `1px solid ${COLORS.border}`,
         borderRadius: RADIUS.lg,
         padding: '11px 12px',
-        background: 'rgba(11,14,20,0.52)',
+        background: 'var(--bg-1)',
       }}
     >
       <div style={{ fontFamily: FONTS.ui, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: COLORS.textDim }}>
@@ -799,9 +771,9 @@ function PublisherSignal({ permission }: { permission?: string | null }) {
         alignSelf: 'flex-start',
         fontSize: 11,
         fontFamily: FONTS.ui,
-        color: isCollaborator ? COLORS.successText : '#fbbf24',
-        border: `1px solid ${isCollaborator ? 'rgba(16,185,129,0.22)' : 'rgba(245,158,11,0.24)'}`,
-        background: isCollaborator ? 'rgba(16,185,129,0.10)' : 'rgba(245,158,11,0.10)',
+        color: isCollaborator ? 'var(--success)' : 'var(--warn)',
+        border: `1px solid ${isCollaborator ? 'color-mix(in srgb, var(--success), transparent 76%)' : 'var(--warn-border)'}`,
+        background: isCollaborator ? 'color-mix(in srgb, var(--success), transparent 88%)' : 'var(--warn-bg)',
         borderRadius: 999,
         padding: '3px 8px',
       }}

@@ -120,7 +120,7 @@ export function ToolsSection({
           {!payload.cupboardReachable && (
             <span
               data-testid="cupboard-tools-degraded"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#fbbf24' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--warn)' }}
             >
               <AlertTriangle size={12} /> Cupboard unreachable — showing local tools only
             </span>
@@ -137,7 +137,7 @@ export function ToolsSection({
       )}
 
       {error && !loading && (
-        <div style={{ color: '#fca5a5', fontSize: 12, marginBottom: SIZES.md, padding: 12, border: '1px solid rgba(239,68,68,0.24)', borderRadius: RADIUS.lg, background: 'rgba(127,29,29,0.16)' }}>{error}</div>
+        <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: SIZES.md, padding: 12, border: '1px solid color-mix(in srgb, var(--danger), transparent 70%)', borderRadius: RADIUS.lg, background: 'var(--error-bg)' }}>{error}</div>
       )}
 
       {!loading && !error && payload && payload.tools.length === 0 && (
@@ -169,7 +169,7 @@ export function ToolsSection({
                 borderTop: i === 0 ? 'none' : `1px solid ${COLORS.border}`,
               }}
             >
-              <code style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.text, background: 'rgba(11,14,20,0.42)', border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: '3px 8px' }}>{t.tool}</code>
+              <code style={{ fontFamily: FONTS.mono, fontSize: 12, color: COLORS.text, background: 'var(--bg-1)', border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: '3px 8px' }}>{t.tool}</code>
 
               {/* Provider attribution */}
               {t.provider.kind === 'builtin' ? (
@@ -178,7 +178,7 @@ export function ToolsSection({
                   style={{
                     fontSize: 11, fontFamily: FONTS.ui, color: COLORS.textMuted,
                     border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: '3px 8px',
-                    background: 'rgba(11,14,20,0.28)',
+                    background: 'var(--bg-1)',
                   }}
                 >
                   Built-in
@@ -190,7 +190,7 @@ export function ToolsSection({
                     display: 'inline-flex', alignItems: 'center', gap: 4,
                     fontSize: 11, fontFamily: FONTS.ui, color: COLORS.textMuted,
                     border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: '3px 8px',
-                    background: 'rgba(11,14,20,0.28)',
+                    background: 'var(--bg-1)',
                   }}
                   title={t.unit?.description ?? undefined}
                 >
@@ -205,7 +205,7 @@ export function ToolsSection({
                 {t.status === 'available' ? (
                   <span
                     data-testid="cupboard-tool-available"
-                    style={{ fontSize: 11, fontFamily: FONTS.ui, color: COLORS.successText, border: '1px solid rgba(16,185,129,0.22)', background: 'rgba(16,185,129,0.10)', borderRadius: 999, padding: '3px 8px' }}
+                    style={{ fontSize: 11, fontFamily: FONTS.ui, color: 'var(--success)', border: '1px solid color-mix(in srgb, var(--success), transparent 76%)', background: 'color-mix(in srgb, var(--success), transparent 88%)', borderRadius: 999, padding: '3px 8px' }}
                   >
                     {t.provider.kind === 'builtin' ? 'Available' : 'Installed'}
                   </span>
@@ -219,15 +219,14 @@ export function ToolsSection({
                     }}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 4,
-                      background: 'linear-gradient(135deg, var(--accent), var(--accent-strong))',
+                      background: 'var(--accent)',
                       color: 'var(--accent-ink)',
-                      border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)',
-                      borderRadius: 999,
+                      border: '1px solid var(--accent-strong)',
+                      borderRadius: 8,
                       padding: '5px 10px',
                       cursor: 'pointer',
                       fontSize: 11,
                       fontFamily: FONTS.ui,
-                      boxShadow: '0 10px 22px color-mix(in srgb, var(--accent), transparent 80%)',
                     }}
                   >
                     <Plug size={11} /> Install {t.provider.name}

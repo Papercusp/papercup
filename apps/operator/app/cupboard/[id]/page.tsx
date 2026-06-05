@@ -167,7 +167,7 @@ export default function CupboardDetailPage() {
         <button onClick={() => router.back()} style={backBtnStyle}>
           <ArrowLeft size={13} /> Back
         </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#f87171', marginTop: SIZES.md }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--danger)', marginTop: SIZES.md }}>
           <AlertTriangle size={14} />
           {error ?? 'Listing not found.'}
         </div>
@@ -205,20 +205,18 @@ export default function CupboardDetailPage() {
             {listing.title || listing.slug || repoSlug || 'Untitled'}
           </h1>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-            <span style={{
+            <span className="pc-badge" style={{
               display: 'inline-flex', alignItems: 'center', gap: 4,
               background: COLORS.surfaceRaised, border: `1px solid ${COLORS.border}`,
-              borderRadius: RADIUS.sm, padding: '3px 9px',
-              fontSize: SIZES.sm, fontFamily: FONTS.ui, color: COLORS.textMuted, textTransform: 'capitalize',
+              color: COLORS.textMuted,
             }} data-testid="cupboard-detail-kind" data-kind={kind}>
               <ActionIcon kind={kind} size={12} /> {kind}
             </span>
             {listing.claim_status === 'claimed' && (
-              <span style={{
+              <span className="pc-badge" style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
-                background: 'rgba(16,185,129,0.12)', color: '#6ee7b7',
-                borderRadius: RADIUS.sm, padding: '3px 9px',
-                fontSize: SIZES.sm, fontFamily: FONTS.ui,
+                background: 'color-mix(in srgb, var(--success), transparent 86%)', color: 'var(--success)',
+                border: '1px solid color-mix(in srgb, var(--success), transparent 76%)',
               }}>
                 <Shield size={12} /> Claimed
               </span>
@@ -302,15 +300,13 @@ export default function CupboardDetailPage() {
             disabled={busy}
             data-testid="cupboard-detail-action"
             data-action={action}
+            className="pc-button"
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 7,
-              background: 'linear-gradient(135deg, var(--accent), var(--accent-strong))',
+              background: 'var(--accent)',
               color: 'var(--accent-ink)',
-              border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)',
-              borderRadius: RADIUS.md, padding: '9px 20px',
+              borderColor: 'var(--accent-strong)',
               cursor: busy ? 'default' : 'pointer',
               opacity: busy ? 0.7 : 1,
-              fontFamily: FONTS.ui, fontSize: SIZES.sm, fontWeight: 600,
             }}
           >
             {busy ? (
@@ -323,12 +319,8 @@ export default function CupboardDetailPage() {
             <a
               href={`https://github.com/${repoSlug}`}
               target="_blank" rel="noopener noreferrer"
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                background: COLORS.surface, border: `1px solid ${COLORS.border}`,
-                borderRadius: RADIUS.md, padding: '9px 14px', color: COLORS.textMuted,
-                fontFamily: FONTS.ui, fontSize: SIZES.sm, textDecoration: 'none',
-              }}
+              className="pc-button"
+              style={{ textDecoration: 'none' }}
             >
               <ExternalLink size={13} /> View on GitHub
             </a>
