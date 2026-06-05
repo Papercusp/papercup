@@ -1937,6 +1937,19 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::CupboardListings { kind, query, listings } => {
+                // Stale-guard (D-011): drop a response whose (kind, query) the
+                // user has since changed — only the latest filter paints.
+                if kind == CUPBOARD_KINDS[self.cupboard_kind] && query == self.cupboard_query {
+                    self.cupboard = listings;
+                    self.cupboard_loading = false;
+                    if self.cupboard_sel >= self.cupboard.len() {
+                        self.cupboard_sel = self.cupboard.len().saturating_sub(1);
+                    }
+                    self.last_error = None;
+                }
+                Action::Render
+            }
             Event::TuiPanes(p) => {
                 self.set_panes(p);
                 self.last_error = None;
@@ -2156,6 +2169,34 @@ impl App {
                 }
                 KeyCode::Char(c) => {
                     self.memory_search_input.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
+        // Cupboard search composer (D-011): captures all input while open,
+        // mirroring the Memory composer. Enter refetches with the query.
+        if self.cupboard_search_open {
+            return match code {
+                KeyCode::Esc => {
+                    self.cupboard_search_open = false;
+                    self.cupboard_search_input.clear();
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    self.cupboard_search_open = false;
+                    self.cupboard_query = self.cupboard_search_input.trim().to_string();
+                    self.cupboard_search_input.clear();
+                    self.cupboard_sel = 0;
+                    self.cupboard_confirm = None;
+                    self.refetch_cupboard()
+                }
+                KeyCode::Backspace => {
+                    self.cupboard_search_input.pop();
+                    Action::Render
+                }
+                KeyCode::Char(c) => {
+                    self.cupboard_search_input.push(c);
                     Action::Render
                 }
                 _ => Action::None,
@@ -2470,6 +2511,34 @@ impl App {
                 self.memory_search_input.clear();
                 Action::Render
             }
+            // ─── Cupboard tab (D-011) ───
+            // `f` cycles the kind filter (all/harness/blueprint/snapshot/plugin)
+            // and refetches; `/` opens the search composer (seeded with the
+            // active query); `r` refetches the current filter; Enter arms the
+            // selected listing's action then confirms it; `y` fires the armed one.
+            KeyCode::Char('f') if self.tab == Tab::Cupboard => {
+                self.cupboard_kind = (self.cupboard_kind + 1) % CUPBOARD_KINDS.len();
+                self.cupboard_sel = 0;
+                self.cupboard_confirm = None;
+                self.refetch_cupboard()
+            }
+            KeyCode::Char('/') if self.tab == Tab::Cupboard => {
+                self.cupboard_search_open = true;
+                self.cupboard_search_input = self.cupboard_query.clone();
+                Action::Render
+            }
+            KeyCode::Char('r') if self.tab == Tab::Cupboard => self.refetch_cupboard(),
+            KeyCode::Enter if self.tab == Tab::Cupboard => self.cupboard_activate(),
+            KeyCode::Char('y') if self.tab == Tab::Cupboard => {
+                // Confirm the armed listing by id (independent of the cursor,
+                // which may have moved since arming).
+                if let Some(id) = self.cupboard_confirm.take() {
+                    if let Some(l) = self.cupboard.iter().find(|l| l.id == id) {
+                        return Action::CupboardAct { listing: l.clone() };
+                    }
+                }
+                Action::Render
+            }
             // Launch a native agent pane from the Brew tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
@@ -2625,6 +2694,11 @@ impl App {
             KeyCode::Char(c) => match Tab::from_switch_key(c) {
                 Some(t) => {
                     self.switch_to(t);
+                    // Lazy-load the Cupboard listings the first time it's opened
+                    // (D-011) — the marketplace isn't part of the startup fetch.
+                    if t == Tab::Cupboard && self.cupboard.is_empty() && !self.cupboard_loading {
+                        return self.refetch_cupboard();
+                    }
                     Action::Render
                 }
                 None => Action::None,
@@ -2668,6 +2742,36 @@ impl App {
         self.switch_to(Tab::ALL[next]);
     }
 
+    // ─── Cupboard tab (D-011) ───
+
+    /// Trigger a Cupboard listings fetch for the active (kind, query) filter.
+    /// Marks the in-flight flag; the run loop emits `Event::CupboardListings`,
+    /// which the stale-guarded reducer arm applies.
+    fn refetch_cupboard(&mut self) -> Action {
+        self.cupboard_loading = true;
+        Action::FetchCupboard {
+            kind: CUPBOARD_KINDS[self.cupboard_kind].to_string(),
+            query: self.cupboard_query.clone(),
+        }
+    }
+
+    /// Enter on the Cupboard tab: a two-step arm→confirm. The first Enter arms
+    /// the selected listing (sets `cupboard_confirm` to its id, surfaced in the
+    /// detail title); a second Enter on the still-selected armed listing fires
+    /// its per-kind action. Nothing selected → no-op.
+    fn cupboard_activate(&mut self) -> Action {
+        let Some(listing) = self.cupboard.get(self.cupboard_sel) else {
+            return Action::None;
+        };
+        if self.cupboard_confirm.as_deref() == Some(listing.id.as_str()) {
+            self.cupboard_confirm = None;
+            Action::CupboardAct { listing: listing.clone() }
+        } else {
+            self.cupboard_confirm = Some(listing.id.clone());
+            Action::Render
+        }
+    }
+
     fn move_sel(&mut self, delta: isize) {
         // Two phases: the visible LENGTH first (scope-filtered lists borrow
         // self immutably, D-003), then the cursor slot.
@@ -2690,6 +2794,7 @@ impl App {
             Tab::Settings => self.flags.len(),
             Tab::Fleet => self.visible_roster().len(),
             Tab::Memory => self.visible_memories().len(),
+            Tab::Cupboard => self.cupboard.len(),
             // No list to navigate — j/k scroll the transcript (Operator) handled
             // in on_key; Config has no list.
             Tab::Config | Tab::Operator => return,
@@ -2716,6 +2821,7 @@ impl App {
             Tab::Settings => &mut self.flag_sel,
             Tab::Fleet => &mut self.fleet.agent_sel,
             Tab::Memory => &mut self.memory_sel,
+            Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Config | Tab::Operator => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);

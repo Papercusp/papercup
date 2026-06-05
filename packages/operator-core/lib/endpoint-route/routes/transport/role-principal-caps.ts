@@ -17,7 +17,7 @@ import type { Sql } from 'postgres';
  *     finding via `improvements:capture` (`coord:write`) into the self-improvement
  *     backlog — so it needs the read caps + coord:write, nothing more.
  */
-const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = {
+export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = {
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],

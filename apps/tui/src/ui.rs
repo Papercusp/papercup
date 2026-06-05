@@ -1359,27 +1359,28 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
-        // The POTS scope indicator (D-003) leads the status line; a standing
-        // help/tutorial hint (D-012) trails it so both stay discoverable.
-        None => (
-            format!("{} · {} · ?:help · F1/:tutorial", app.scope_label(), app.status),
-            Theme::dim(),
-        ),
+        // The POTS scope indicator (D-003) leads the status line.
+        None => (format!("{} · {}", app.scope_label(), app.status), Theme::dim()),
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
-    // Companion workbench indicator (P-004): right-aligned "⚡ N panes" when the
-    // companion zellij plugin is linked. Drawn into a right sub-rect so it never
-    // clobbers the status/error text on the left.
-    if let Some(summary) = app.workbench_summary() {
-        let w = (summary.chars().count() as u16 + 1).min(area.width);
-        let sub = Rect {
-            x: area.x + area.width.saturating_sub(w),
-            y: area.y,
-            width: w,
-            height: area.height,
-        };
-        f.render_widget(Paragraph::new(Line::from(summary)).style(Theme::dim()), sub);
-    }
+    // The right edge carries one of two right-aligned indicators (each in its
+    // own sub-rect so it never clobbers the left status text):
+    //   • the companion workbench indicator (P-004) when the zellij plugin is
+    //     linked ("⚡ N panes"), else
+    //   • a standing discoverability hint (D-012) so the help overlay + the
+    //     re-openable tutorial stay visible regardless of how long the status
+    //     hint-string is (it would otherwise clip off the right edge).
+    let right = app
+        .workbench_summary()
+        .unwrap_or_else(|| "?:help · F1/:tutorial".to_string());
+    let w = (right.chars().count() as u16 + 1).min(area.width);
+    let sub = Rect {
+        x: area.x + area.width.saturating_sub(w),
+        y: area.y,
+        width: w,
+        height: area.height,
+    };
+    f.render_widget(Paragraph::new(Line::from(right)).style(Theme::dim()), sub);
 }
 
 fn draw_help(f: &mut Frame) {

@@ -19,7 +19,16 @@ import {
   loadRoleCapabilities,
   dispatchNeedsTx,
   synthesizeDispatchPrincipal,
+  BLUEPRINT_ROLE_CAPS,
 } from '@papercusp/operator-core/lib/endpoint-route/routes/transport/role-principal-caps';
+
+// loadRoleCapabilities unions a role's workspace-AGNOSTIC blueprint baseline
+// (BLUEPRINT_ROLE_CAPS — autoloop-pot-operator-rebuild P-004 added the pot's
+// `operator` set) on top of its provisioned (per-workspace) caps. Assert against
+// the source of truth so an operator-cap change doesn't drift this test again.
+const OP_BASELINE = BLUEPRINT_ROLE_CAPS.operator ?? [];
+const SEEDED_OPERATOR = ['harness:read', 'audit:read', 'chat:write'];
+const EXPECTED_DEFAULT_OPERATOR = [...new Set([...SEEDED_OPERATOR, ...OP_BASELINE])].sort();
 
 let sql: postgres.Sql;
 let dbName: string;
@@ -60,12 +69,13 @@ afterAll(async () => {
 });
 
 describe('loadRoleCapabilities (least-privilege)', () => {
-  it('returns the provisioned caps for a system-principal role (operator)', async () => {
+  it('returns the provisioned caps UNIONED with the operator blueprint baseline (P-004)', async () => {
     const caps = await loadRoleCapabilities(sql, 'default', 'operator');
-    expect(caps.has('audit:read')).toBe(true);
-    expect(caps.has('harness:read')).toBe(true);
-    expect(caps.has('chat:write')).toBe(true);
-    expect(caps.size).toBe(3);
+    // The 3 provisioned caps…
+    for (const c of SEEDED_OPERATOR) expect(caps.has(c)).toBe(true);
+    // …plus the workspace-agnostic pot/operator blueprint baseline (P-004).
+    for (const c of OP_BASELINE) expect(caps.has(c)).toBe(true);
+    expect([...caps].sort()).toEqual(EXPECTED_DEFAULT_OPERATOR);
   });
 
   it('returns an EMPTY set for a pipeline role with no system principal (worker)', async () => {
@@ -73,12 +83,19 @@ describe('loadRoleCapabilities (least-privilege)', () => {
     expect(caps.size).toBe(0); // capability-gated built-ins correctly stay denied
   });
 
-  it('is workspace-isolated — does not leak another workspace’s caps', async () => {
+  it('is workspace-isolated — the PROVISIONED delta does not leak across workspaces', async () => {
+    // Both workspaces' operators share the workspace-agnostic blueprint baseline;
+    // the isolation point is the PROVISIONED caps. 'default' provisions
+    // audit:read + chat:write; 'other' provisions only harness:read.
     const caps = await loadRoleCapabilities(sql, 'default', 'operator');
-    // 'other' workspace's operator has only harness:read; 'default' has 3.
-    expect(caps.size).toBe(3);
     const otherCaps = await loadRoleCapabilities(sql, 'other', 'operator');
-    expect([...otherCaps]).toEqual(['harness:read']);
+    expect(caps.has('audit:read')).toBe(true);
+    expect(caps.has('chat:write')).toBe(true);
+    // 'other' did NOT provision those, and they are not in the baseline → absent.
+    expect(otherCaps.has('audit:read')).toBe(false);
+    expect(otherCaps.has('chat:write')).toBe(false);
+    // …but 'other' still gets the shared baseline (e.g. work_items:read).
+    for (const c of OP_BASELINE) expect(otherCaps.has(c)).toBe(true);
   });
 });
 
@@ -102,7 +119,8 @@ describe('synthesizeDispatchPrincipal', () => {
     const p = await synthesizeDispatchPrincipal(sql, { workspaceId: 'default', role: 'operator', isSuperuser: false });
     expect(p.slug).toBe('system:operator');
     expect(p.workspaceId).toBe('default');
-    expect([...p.capabilities].sort()).toEqual(['audit:read', 'chat:write', 'harness:read']);
+    // Provisioned caps ∪ the operator blueprint baseline (P-004).
+    expect([...p.capabilities].sort()).toEqual(EXPECTED_DEFAULT_OPERATOR);
   });
 
   it('a pipeline role (no system principal) gets an EMPTY cap-set — capability-gated built-ins stay denied', async () => {

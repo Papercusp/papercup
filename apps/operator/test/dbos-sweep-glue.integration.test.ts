@@ -76,7 +76,11 @@ vi.mock('@papercusp/orchestrator', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/orchestrator')>('@papercusp/orchestrator');
   return {
     ...actual, // keep durableOwnedFeatureIdsPg, parseDecision, dispatchAuditorLane REAL
-    readConfig: () => ({}),
+    // P-006 (dispatch lift): resolveDispatchPolicy only consults parallelMaxWorkers
+    // when config EXPLICITLY sets parallelWorkers.max (else it defers to the
+    // blueprint's dispatch.concurrency, default 1). Declare it so the per-harness
+    // cap comes from the (mocked) parallelMaxWorkers → ctl.cap, the test's intent.
+    readConfig: () => ({ parallelWorkers: { max: ctl.cap } }),
     parallelMaxWorkers: () => ctl.cap,
     maxFeaturesInFlight: () => null,
     evaluateCostCap: () => ({ total: 0, cap: null, overCap: ctl.overCostCap, warned: false, shouldPause: false }),
