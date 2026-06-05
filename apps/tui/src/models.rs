@@ -367,7 +367,7 @@ pub struct CupboardListingsResponse {
 
 // NOTE: the old Activity tab's `/api/harness/all/recent-activity` DTOs
 // (ActivityEvent/ActivityResponse) were removed with the tab (D-004b) — the
-// Brew tab's `ActivityRow` (agent_activity) is the live activity surface.
+// Fleet tab's `ActivityRow` (agent_activity) is the live activity surface.
 
 /// One testing domain from `/api/harness/:slug/testing/domains`.
 #[derive(Debug, Clone, Deserialize)]

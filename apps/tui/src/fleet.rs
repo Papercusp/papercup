@@ -301,7 +301,7 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
     let line = Line::from(vec![
-        // Label is "Fleet" — the Brew rename was reversed by the owner (2026-06-05).
+        // Label is "Fleet" — the cup-theme rename was reverted by the owner (2026-06-05).
         Span::styled(
             format!(" {} Fleet ", glyph::nav::FLEET),
             Theme::title_active(),
@@ -1109,7 +1109,7 @@ mod tests {
         let curated = render(&app);
         let nonblank = curated.chars().filter(|ch| !ch.is_whitespace()).count();
         assert!(nonblank > 0, "fleet curated rendered blank");
-        assert!(curated.contains("Brew"), "headline missing");
+        assert!(curated.contains("Fleet"), "headline missing");
         assert!(curated.contains("online"), "agent rollup missing");
         assert!(curated.contains("[curated]"), "mode indicator missing");
 

@@ -21,6 +21,14 @@
 //! etc.) — the glyph is the shape, the theme is the colour. Call sites pull
 //! the glyph (or the styled `Span`) from here; they never inline a literal.
 
+// This module is the SINGLE SOURCE OF TRUTH for the vocabulary (D-001): it
+// deliberately defines every semantic glyph + mapper even when a given entry
+// has no production call site yet (e.g. `kind_for` / the `kind` glyphs await a
+// per-item kind display; some consts are exercised only by the width-safety
+// tests). Completeness is the point, so dead-code on the forward-looking
+// entries is expected and allowed here rather than pruned.
+#![allow(dead_code)]
+
 /// Agent presence dot. Colour (in `theme`) carries freshness; the fill
 /// carries liveness: empty → stale, half → idle, full → live.
 pub mod liveness {
@@ -82,8 +90,8 @@ pub mod nav {
     pub const CURSOR: &str = "▸";
     pub const EXPANDED: &str = "▾";
     pub const COLLAPSED: &str = "▸";
-    /// The Fleet identity marker (label is "Fleet" — the Brew rename was
-    /// reversed by the owner 2026-06-05; Pot/Cup naming unchanged).
+    /// The Fleet identity marker (label is "Fleet"; the cup-theme rename was
+    /// reverted by the owner 2026-06-05, Pot/Cup naming unchanged).
     pub const FLEET: &str = "⚑";
     /// Workbench / tiled-panes indicator (the companion HUD). Single-width
     /// replacement for the old inline `⚡`, which is double-width and broke
@@ -164,7 +172,11 @@ pub fn signal_for(kind: &str) -> &'static str {
     }
 }
 
-/// Fold a work-item kind token to its glyph.
+/// Fold a work-item kind token to its glyph. Part of the centralized
+/// vocabulary's public API (Brief 27 / P-002, D-001) for the forthcoming
+/// per-item kind display + the `<report>` renderer; no in-tree call site
+/// renders a work-item *kind* glyph yet (fleet only aggregates work-item
+/// counts) — covered by the module-level `allow(dead_code)` above.
 pub fn kind_for(token: &str) -> &'static str {
     match token.trim().to_ascii_lowercase().as_str() {
         "feature" => kind::FEATURE,
