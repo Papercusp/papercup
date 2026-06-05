@@ -121,6 +121,12 @@ pub struct AttentionItem {
     pub triage_state: Option<String>,
     #[serde(default)]
     pub triage_note: Option<String>,
+    /// Structured report payload (kind `operator-report` only) — the operator's
+    /// `<report>` block, rendered natively as a two-tier plan→item list in the
+    /// Inbox detail (report-cards-inbox-reconciliation-2026-06-05; chat is
+    /// conversation-only).
+    #[serde(default)]
+    pub report: Option<crate::chat_tags::Report>,
 }
 
 /// The four inbox tiers (inbox-tiering-and-message-agent D-006), in display
@@ -1153,10 +1159,6 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub tools: Vec<ChatToolCall>,
-    /// Structured `<report>` payload (structured-report-protocol-2026-06-05) —
-    /// per-plan/per-item status rendered as a two-tier list below the say. Set
-    /// from the raw turn on finalize, or from the persisted turn on history load.
-    pub report: Option<crate::chat_tags::Report>,
     pub streaming: bool,
 }
 
@@ -1166,7 +1168,6 @@ impl ChatMessage {
             role: "user".into(),
             content: text.into(),
             tools: Vec::new(),
-            report: None,
             streaming: false,
         }
     }
@@ -1175,7 +1176,6 @@ impl ChatMessage {
             role: "assistant".into(),
             content: text.into(),
             tools: Vec::new(),
-            report: None,
             streaming: false,
         }
     }
@@ -1185,7 +1185,6 @@ impl ChatMessage {
             role: "assistant".into(),
             content: String::new(),
             tools: Vec::new(),
-            report: None,
             streaming: true,
         }
     }
@@ -1221,9 +1220,6 @@ pub struct TurnDto {
     pub text: String,
     #[serde(default)]
     pub tools: Option<Vec<TurnToolDto>>,
-    /// Persisted `<report>` payload (operator_turns.report jsonb, migration 160).
-    #[serde(default)]
-    pub report: Option<crate::chat_tags::Report>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

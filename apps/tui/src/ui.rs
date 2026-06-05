@@ -413,6 +413,65 @@ fn draw_plan_filter(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, body_area, &mut state);
 }
 
+/// Two-tier plan→item lines for a structured `<report>` block — the ONE TUI
+/// renderer for report payloads. Lifted verbatim from the old draw_chat
+/// rendering; its mount point is now the Inbox detail (an operator report is
+/// inbox content, not chat content — report-cards-inbox-reconciliation
+/// D-001/D-002). Width-aware; status glyphs ride the shared
+/// `Theme::status_marker` vocabulary.
+fn report_block_lines(rep: &crate::chat_tags::Report, inner_w: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(t) = &rep.title {
+        lines.push(Line::from(Span::styled(
+            format!("  {} {t}", crate::glyph::nav::EXPANDED),
+            Theme::header(),
+        )));
+    }
+    for p in &rep.plans {
+        let mut head = vec![
+            Span::raw("  "),
+            Theme::status_marker(p.status.as_deref().unwrap_or("")),
+            Span::raw(" "),
+            Span::styled(p.title.clone(), Theme::selected()),
+        ];
+        if let Some(st) = &p.status {
+            head.push(Span::styled(format!("  {st}"), Theme::dim()));
+        }
+        lines.push(Line::from(head));
+        if let Some(sum) = &p.summary {
+            for wl in wrap_text(sum, inner_w.saturating_sub(6).max(8)) {
+                lines.push(Line::from(Span::styled(
+                    format!("      {wl}"),
+                    Theme::dim(),
+                )));
+            }
+        }
+        for it in &p.items {
+            let id_prefix = it
+                .id
+                .as_deref()
+                .map(|i| format!("{i} "))
+                .unwrap_or_default();
+            let wrapped = wrap_text(&it.text, inner_w.saturating_sub(8).max(8));
+            for (li, wl) in wrapped.iter().enumerate() {
+                let mut row = vec![Span::raw("    ")];
+                if li == 0 {
+                    row.push(Theme::status_marker(it.status.as_deref().unwrap_or("")));
+                    row.push(Span::raw(" "));
+                    if !id_prefix.is_empty() {
+                        row.push(Span::styled(id_prefix.clone(), Theme::dim()));
+                    }
+                } else {
+                    row.push(Span::raw("  ")); // align continuation under the text
+                }
+                row.push(Span::raw(wl.clone()));
+                lines.push(Line::from(row));
+            }
+        }
+    }
+    lines
+}
+
 fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -499,7 +558,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         .highlight_symbol("> ");
     f.render_stateful_widget(list, body_area, &mut state);
 
-    let preview = match app.selected_inbox() {
+    let preview: Vec<Line<'static>> = match app.selected_inbox() {
         Some(it) => {
             let owner = it
                 .owner_label
@@ -511,8 +570,16 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
                 (Some(s), None) if s != "untriaged" => format!("\ntriage: {s}"),
                 _ => String::new(),
             };
-            format!(
-                "{}\n\ntier:   {} ({})\nkind:   {}\nstatus: {}\nplan:   {}\nref:    {}\nowner:  {}\nneedsHuman: {}{}\n\n{}\n\n[m] message owner",
+            // An operator-report item renders its payload as the styled
+            // two-tier block (the one report renderer) instead of the plain
+            // body text (which duplicates it for text-only surfaces).
+            let body = if it.report.is_some() {
+                String::new()
+            } else {
+                it.body.clone().unwrap_or_default()
+            };
+            let head = format!(
+                "{}\n\ntier:   {} ({})\nkind:   {}\nstatus: {}\nplan:   {}\nref:    {}\nowner:  {}\nneedsHuman: {}{}\n\n{}",
                 it.title,
                 tier_label(it.tier_str()),
                 it.tier_str(),
@@ -523,10 +590,21 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
                 owner,
                 it.needs_human,
                 triage,
-                it.body.clone().unwrap_or_default(),
-            )
+                body,
+            );
+            let mut lines: Vec<Line<'static>> = head
+                .split('\n')
+                .map(|l| Line::from(l.to_string()))
+                .collect();
+            if let Some(rep) = &it.report {
+                let inner_w = cols[1].width.saturating_sub(2) as usize;
+                lines.extend(report_block_lines(rep, inner_w));
+            }
+            lines.push(Line::from(String::new()));
+            lines.push(Line::from("[m] message owner".to_string()));
+            lines
         }
-        None => "Inbox empty — nothing needs attention.".to_string(),
+        None => vec![Line::from("Inbox empty — nothing needs attention.".to_string())],
     };
     let para = Paragraph::new(preview)
         .wrap(Wrap { trim: false })
@@ -934,7 +1012,7 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .title(Line::from(format!(
                 " {}{} · domains ({}) ",
-                if dom_focused { "▸ " } else { "" },
+                focus_cursor(dom_focused),
                 app.harness,
                 app.testing.len()
             ))),
@@ -948,7 +1026,7 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
     // Files of the selected domain (right).
     let ftitle = Line::from(format!(
         " {}files ({}) — Enter/r: run ",
-        if !dom_focused { "▸ " } else { "" },
+        focus_cursor(!dom_focused),
         app.testing_files.len()
     ));
     if app.testing_files.is_empty() {
@@ -1007,7 +1085,11 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(Line::from(vec![
-                    Span::raw(format!(" ▶ {} · ", trunc(&run.file, 48))),
+                    Span::raw(format!(
+                        " {} {} · ",
+                        crate::glyph::action::RUN,
+                        trunc(&run.file, 48)
+                    )),
                     Span::styled(status_label, style),
                     Span::raw(" "),
                 ])),
@@ -1304,7 +1386,16 @@ fn draw_operator_config(f: &mut Frame, app: &App, area: Rect) {
         let provs = cfg
             .providers
             .iter()
-            .map(|(name, set)| format!("{name} {}", if *set { "✓" } else { "✗" }))
+            .map(|(name, set)| {
+                format!(
+                    "{name} {}",
+                    if *set {
+                        crate::glyph::status::DONE
+                    } else {
+                        crate::glyph::status::FAILED
+                    }
+                )
+            })
             .collect::<Vec<_>>()
             .join("  ");
         lines.push(Line::from(format!("providers: {}", trunc(&provs, 70))));
@@ -1420,59 +1511,6 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 Theme::dim(),
             )));
         }
-        // Structured <report> payload — a two-tiered plan→item list below the say
-        // (structured-report-protocol-2026-06-05). Status glyphs come from the
-        // shared Theme::status_marker so they match the rest of the PUI vocabulary.
-        if let Some(rep) = &m.report {
-            if let Some(t) = &rep.title {
-                lines.push(Line::from(Span::styled(
-                    format!("  ▾ {t}"),
-                    Theme::header(),
-                )));
-            }
-            for p in &rep.plans {
-                let mut head = vec![
-                    Span::raw("  "),
-                    Theme::status_marker(p.status.as_deref().unwrap_or("")),
-                    Span::raw(" "),
-                    Span::styled(p.title.clone(), Theme::selected()),
-                ];
-                if let Some(st) = &p.status {
-                    head.push(Span::styled(format!("  {st}"), Theme::dim()));
-                }
-                lines.push(Line::from(head));
-                if let Some(sum) = &p.summary {
-                    for wl in wrap_text(sum, inner_w.saturating_sub(6).max(8)) {
-                        lines.push(Line::from(Span::styled(
-                            format!("      {wl}"),
-                            Theme::dim(),
-                        )));
-                    }
-                }
-                for it in &p.items {
-                    let id_prefix = it
-                        .id
-                        .as_deref()
-                        .map(|i| format!("{i} "))
-                        .unwrap_or_default();
-                    let wrapped = wrap_text(&it.text, inner_w.saturating_sub(8).max(8));
-                    for (li, wl) in wrapped.iter().enumerate() {
-                        let mut row = vec![Span::raw("    ")];
-                        if li == 0 {
-                            row.push(Theme::status_marker(it.status.as_deref().unwrap_or("")));
-                            row.push(Span::raw(" "));
-                            if !id_prefix.is_empty() {
-                                row.push(Span::styled(id_prefix.clone(), Theme::dim()));
-                            }
-                        } else {
-                            row.push(Span::raw("  ")); // align continuation under the text
-                        }
-                        row.push(Span::raw(wl.clone()));
-                        lines.push(Line::from(row));
-                    }
-                }
-            }
-        }
         lines.push(Line::from("")); // blank separator between turns
     }
 
@@ -1495,12 +1533,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // focus). On the Operator tab this is empty, so existing renders are unchanged.
     let dock_focus = if app.tab != Tab::Operator {
         if app.operator_dock_focused {
-            "● "
+            format!("{} ", crate::glyph::toggle::ON)
         } else {
-            "○ o "
+            format!("{} o ", crate::glyph::toggle::OFF)
         }
     } else {
-        ""
+        String::new()
     };
     let title = format!(
         " {}Operator{}{} ",
@@ -2128,7 +2166,10 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
-        Some(e) => (format!("⚠ {e}"), Theme::warn()),
+        Some(e) => (
+            format!("{} {e}", crate::glyph::severity::WARN),
+            Theme::warn(),
+        ),
         // The POTS scope indicator (D-003) leads the status line.
         None => (
             format!("{} · {}", app.scope_label(), app.status),
@@ -2139,7 +2180,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // The right edge carries one of two right-aligned indicators (each in its
     // own sub-rect so it never clobbers the left status text):
     //   • the companion workbench indicator (P-004) when the zellij plugin is
-    //     linked ("⚡ N panes"), else
+    //     linked ("▦ N panes", glyph::nav::PANES), else
     //   • a standing discoverability hint (D-012) so the help overlay + the
     //     re-openable tutorial stay visible regardless of how long the status
     //     hint-string is (it would otherwise clip off the right edge).
@@ -2192,7 +2233,11 @@ fn draw_toast(f: &mut Frame, n: &Notif) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(format!(" 🔔 {} · Esc ", trunc(&n.level, 12))),
+                    .title(format!(
+                        " {} {} · Esc ",
+                        crate::glyph::header::BELL,
+                        trunc(&n.level, 12)
+                    )),
             ),
         area,
     );
@@ -2272,9 +2317,10 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
     let (title, body) = STEPS[i];
     let area = centered_rect(72, 70, f.area());
     let footer = format!(
-        "\n\n— step {}/{} · any key ▸  ·  Esc skips —",
+        "\n\n— step {}/{} · any key {}  ·  Esc skips —",
         i + 1,
-        STEPS.len()
+        STEPS.len(),
+        crate::glyph::nav::CURSOR
     );
     f.render_widget(Clear, area);
     f.render_widget(
@@ -2294,13 +2340,17 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
 fn draw_pot_picker(f: &mut Frame, app: &App) {
     let area = centered_rect(50, 60, f.area());
     let mut items: Vec<ListItem> = Vec::with_capacity(app.harnesses.len() + 1);
-    let all_marker = if app.all_pots { "●" } else { "○" };
+    let all_marker = if app.all_pots {
+        crate::glyph::toggle::ON
+    } else {
+        crate::glyph::toggle::OFF
+    };
     items.push(ListItem::new(Line::from(format!("{all_marker} All Pots"))));
     for h in &app.harnesses {
         let marker = if !app.all_pots && h.slug == app.harness {
-            "●"
+            crate::glyph::toggle::ON
         } else {
-            "○"
+            crate::glyph::toggle::OFF
         };
         items.push(ListItem::new(Line::from(format!("{marker} {}", h.slug))));
     }
@@ -2488,6 +2538,7 @@ mod tests {
             owner_label: None,
             triage_state: None,
             triage_note: None,
+            report: None,
         }
     }
 
@@ -2723,7 +2774,7 @@ mod tests {
             ],
         });
         let text = render(&app, 90, 12);
-        assert!(text.contains("⚡"));
+        assert!(text.contains(crate::glyph::nav::PANES));
         assert!(text.contains("2 panes"));
     }
 
@@ -2779,6 +2830,7 @@ mod tests {
             owner_label: None,
             triage_state: None,
             triage_note: None,
+            report: None,
         }]);
         let text = render(&app, 100, 28);
         assert!(text.contains("Inbox"));
@@ -2821,6 +2873,7 @@ mod tests {
             } else {
                 None
             },
+            report: None,
         };
         let mut app = App::new();
         app.tab = Tab::Inbox;
@@ -2890,6 +2943,70 @@ mod tests {
         assert!(text.contains("Operator"));
         assert!(text.contains("Inbox"));
         assert!(text.contains("Plans"));
+    }
+
+    /// Brief 27 / P-010: buffer-level width safety for the Plans tab. Renders
+    /// a plan list whose items cover every disposition glyph at 80 and 120
+    /// cols; asserts no double-width symbol leaks into the frame (only
+    /// `glyph::header::SET` may be wide) and the item-id column stays aligned
+    /// across rows (a wide disposition glyph would shift it).
+    #[test]
+    fn plans_render_width_safe_and_aligned_at_80_and_120() {
+        use crate::models::{PlanItemState, PlanItemStates};
+        use unicode_width::UnicodeWidthStr;
+
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.set_plans(vec![plan("my-plan", "wip")]);
+        let item = |id: &str, disp: &str| PlanItemState {
+            item_id: id.into(),
+            disposition: disp.into(),
+            assignee_name: Some("builder-1".into()),
+            ..Default::default()
+        };
+        app.set_plan_item_states(PlanItemStates {
+            harness: "papercup".into(),
+            plan: "my-plan".into(),
+            harness_liveness_mode: "activity".into(),
+            items: vec![
+                item("P-001", "pooled"),
+                item("P-002", "active"),
+                item("P-003", "assigned-idle"),
+                item("P-004", "claimed-pooled"),
+                item("P-005", "claimed-mismatch"),
+            ],
+        });
+
+        for &(w, h) in &[(80u16, 24u16), (120, 24)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &app)).unwrap();
+            let buf = term.backend().buffer().clone();
+            let mut rows: Vec<String> = Vec::with_capacity(h as usize);
+            for y in 0..h {
+                let mut row = String::with_capacity(w as usize);
+                for x in 0..w {
+                    let sym = buf.cell((x, y)).unwrap().symbol();
+                    if UnicodeWidthStr::width(sym) > 1 {
+                        assert!(
+                            crate::glyph::header::SET.contains(&sym),
+                            "width-2 symbol {sym:?} leaked into the Plans frame \
+                             at ({x},{y}) width {w}"
+                        );
+                    }
+                    row.push_str(sym);
+                }
+                rows.push(row);
+            }
+            let cols: Vec<usize> = rows.iter().filter_map(|r| r.find("P-00")).collect();
+            assert!(
+                cols.len() >= 5,
+                "expected 5 item rows at width {w}, got {cols:?}"
+            );
+            assert!(
+                cols.windows(2).all(|p| p[0] == p[1]),
+                "item-id column drifted at width {w}: {cols:?}"
+            );
+        }
     }
 
     #[test]
@@ -3741,9 +3858,12 @@ mod tests {
     }
 
     #[test]
-    fn chat_report_renders_two_tier_plan_item_list() {
-        let mut app = App::new();
-        app.tab = Tab::Operator; // chat view — Overview is the default landing now (Brief 23)
+    fn inbox_detail_renders_two_tier_report_block() {
+        // report-cards-inbox-reconciliation D-002/D-003: an operator <report>
+        // is INBOX content — the detail pane renders the structured two-tier
+        // plan→item block natively (the body text fallback is suppressed so
+        // the payload doesn't double-render).
+        use crate::models::AttentionItem;
         let report = crate::chat_tags::Report {
             title: Some("Fleet status".into()),
             plans: vec![crate::chat_tags::ReportPlan {
@@ -3765,18 +3885,54 @@ mod tests {
                 ],
             }],
         };
-        let mut msg = crate::models::ChatMessage::assistant("Here is where the fleet stands.");
-        msg.report = Some(report);
-        app.set_chat_history("c1".into(), vec![msg], false, None);
-        let text = render(&app, 100, 24);
-        // The say bubble stays clean above the structured report.
-        assert!(text.contains("Here is where the fleet stands."));
-        // The report renders title + plan + items (two tiers).
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.set_inbox(vec![AttentionItem {
+            id: "operator-report:t-1".into(),
+            kind: "operator-report".into(),
+            source: "operator".into(),
+            harness_slug: None,
+            plan_slug: Some("rate-limit-layer-v2".into()),
+            item_ref: None,
+            title: "Fleet status".into(),
+            body: Some("[active] Rate-limit v2 — duplicated text body".into()),
+            status: "report".into(),
+            importance: None,
+            needs_human: false,
+            tier: Some("activity".into()),
+            owner_agent_id: None,
+            owner_label: Some("Operator".into()),
+            triage_state: None,
+            triage_note: None,
+            report: Some(report),
+        }]);
+        let text = render(&app, 110, 30);
+        // The detail pane renders the structured block (two tiers).
         assert!(text.contains("Fleet status"));
         assert!(text.contains("Rate-limit v2"));
         assert!(text.contains("Error classifier"));
         assert!(text.contains("Per-call pacing"));
         assert!(text.contains("P-001"));
+        // The plain-text body fallback is suppressed when the block renders.
+        assert!(!text.contains("duplicated text body"));
+    }
+
+    #[test]
+    fn chat_transcript_carries_no_report_block() {
+        // Chat is conversation-only (D-002): a finalized assistant bubble is
+        // just the say text — ChatMessage no longer carries a report payload.
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.set_chat_history(
+            "c1".into(),
+            vec![crate::models::ChatMessage::assistant(
+                "Three things need you — they're in your Inbox.",
+            )],
+            false,
+            None,
+        );
+        let text = render(&app, 100, 24);
+        assert!(text.contains("they're in your Inbox."));
     }
 
     #[test]

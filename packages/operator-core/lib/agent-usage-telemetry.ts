@@ -13,6 +13,7 @@
  * / API-key paths). The summary returns `usagePct: null` for subscription buckets rather than a
  * fabricated number — the surface shows throughput + $spend there instead.
  */
+import { costFromTokens } from '@papercusp/model-pricing';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -25,6 +26,14 @@ export interface UsageSample {
   outputTokens?: number;
   cacheReadTokens?: number;
   costUsd?: number;
+  /** Per-run model id (migration 170) — enables estimated pricing + attribution. */
+  model?: string;
+  /** 'provider' (reported by the backend) vs 'estimated' (tokens × list price). Derived when omitted. */
+  costSource?: 'provider' | 'estimated';
+  /** Run attribution (migration 170) — set on the subprocess path; null on bare header samples. */
+  harnessSlug?: string;
+  runId?: string;
+  role?: string;
   rlRequestsLimit?: number;
   rlRequestsRemaining?: number;
   rlTokensLimit?: number;
@@ -65,14 +74,28 @@ export async function recordUsageSample(sample: UsageSample): Promise<void> {
   try {
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
+    // Cost honesty (cross-backend-cost-capture D-005): provider-reported cost wins;
+    // a tokens-only sample with a known model is priced at list price and LABELED
+    // estimated; an unpriceable sample persists NULL cost — never a fabricated zero.
+    let costUsd = n(sample.costUsd);
+    let costSource: string | null = sample.costSource ?? (costUsd !== null ? 'provider' : null);
+    if (costUsd === null && sample.model) {
+      const est = costFromTokens(sample.model, sample);
+      if (est.priced) {
+        costUsd = est.usd;
+        costSource = 'estimated';
+      }
+    }
     await sql`
       INSERT INTO ${sql(TABLE)}
         (workspace_id, ts, bucket_key, provider, model_class, source,
          input_tokens, output_tokens, cache_read_tokens, cost_usd,
+         model, cost_source, harness_slug, run_id, role,
          rl_requests_limit, rl_requests_remaining, rl_tokens_limit, rl_tokens_remaining, rl_reset_at)
       VALUES (
         ${ws}, ${Date.now()}, ${sample.bucketKey}, ${sample.provider}, ${sample.modelClass}, ${sample.source},
-        ${n(sample.inputTokens)}, ${n(sample.outputTokens)}, ${n(sample.cacheReadTokens)}, ${n(sample.costUsd)},
+        ${n(sample.inputTokens)}, ${n(sample.outputTokens)}, ${n(sample.cacheReadTokens)}, ${costUsd},
+        ${sample.model ?? null}, ${costSource}, ${sample.harnessSlug ?? null}, ${sample.runId ?? null}, ${sample.role ?? null},
         ${n(sample.rlRequestsLimit)}, ${n(sample.rlRequestsRemaining)}, ${n(sample.rlTokensLimit)}, ${n(sample.rlTokensRemaining)}, ${n(sample.rlResetAt)}
       )
     `;

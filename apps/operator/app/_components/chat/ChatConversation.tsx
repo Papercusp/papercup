@@ -123,12 +123,6 @@ export interface ChatConversationProps {
     msg: ChatMessage,
     toolIndex: number,
   ) => ReactNode | null | undefined;
-  /**
-   * Optional renderer for a message's structured `<report>` payload,
-   * rendered below the content (after any tool cards). When omitted,
-   * `m.report` is ignored. structured-report-protocol-2026-06-05.
-   */
-  renderReport?: (report: ParsedReport, msg: ChatMessage) => ReactNode | null | undefined;
 
   /** Input form (controlled). */
   inputValue: string;
@@ -188,7 +182,6 @@ export function ChatConversation(props: ChatConversationProps) {
     labelForRole,
     renderToolChip,
     renderToolCard,
-    renderReport,
     inputValue,
     onInputChange,
     onSubmit,
@@ -430,9 +423,6 @@ export function ChatConversation(props: ChatConversationProps) {
                           {cardSlots.map(({ index, node }) => (
                             <div key={`tool-card-${index}`}>{node}</div>
                           ))}
-                          {m.report && renderReport ? (
-                            <div className="oracle-msg-report">{renderReport(m.report, m)}</div>
-                          ) : null}
                         </>
                       );
                     })()}

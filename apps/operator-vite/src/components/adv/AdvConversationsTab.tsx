@@ -287,8 +287,9 @@ export default function AdvConversationsTab() {
       </div>
       <style>{`
         .pc-advconv {
-          --advconv-accent: var(--accent, #7dd3fc);
-          --advconv-accent-strong: var(--accent-strong, #7dd3fc);
+          --advconv-accent: #7dd3fc;
+          --advconv-accent-strong: #38bdf8;
+          --advconv-accent-soft: rgba(125, 211, 252, 0.1);
           height: 100%;
           min-height: 0;
         }
@@ -300,13 +301,13 @@ export default function AdvConversationsTab() {
           color: var(--fg-mute, #7f9bb4);
         }
         .pc-advconv .pc-coord__chip:hover:not(:disabled) {
-          border-color: color-mix(in oklab, var(--advconv-accent), transparent 62%);
-          background: color-mix(in oklab, var(--advconv-accent), transparent 88%);
+          border-color: rgba(125, 211, 252, 0.38);
+          background: var(--advconv-accent-soft);
           color: var(--fg, #e7f7ff);
         }
         .pc-advconv .pc-coord__chip.is-active {
-          border-color: color-mix(in oklab, var(--advconv-accent), transparent 54%);
-          background: color-mix(in oklab, var(--advconv-accent), transparent 82%);
+          border-color: rgba(56, 189, 248, 0.48);
+          background: rgba(56, 189, 248, 0.16);
           color: var(--fg, #e7f7ff);
         }
         .pc-advconv__rowtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; grid-column: 1 / -1; }
@@ -317,7 +318,7 @@ export default function AdvConversationsTab() {
         }
         .pc-advconv__linked {
           display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-          font-size: 12px; color: color-mix(in oklab, var(--advconv-accent-strong), white 8%); margin: 4px 0;
+          font-size: 12px; color: #bae6fd; margin: 4px 0;
         }
         .pc-advconv__reply { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
         .pc-advconv__reply textarea {
@@ -327,7 +328,7 @@ export default function AdvConversationsTab() {
           border-radius: 8px; padding: 7px 9px; font: inherit; font-size: 12px;
         }
         .pc-advconv__reply textarea:focus {
-          outline: 2px solid color-mix(in oklab, var(--advconv-accent), transparent 66%);
+          outline: 2px solid rgba(56, 189, 248, 0.34);
           outline-offset: 2px;
         }
       `}</style>

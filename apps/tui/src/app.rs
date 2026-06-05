@@ -1080,9 +1080,9 @@ impl App {
     /// user-visible `<say>` text and clear the streaming flag.
     fn finish_chat_turn(&mut self) {
         if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
-            // Parse the <report> payload from the raw buffer BEFORE finalize
-            // replaces `content` with the say text (structured-report-protocol).
-            m.report = crate::chat_tags::extract_report(&m.content);
+            // finalize strips the <report> span with the other control tags —
+            // a report is not chat content; it persists via append_turn and
+            // surfaces in the Inbox (report-cards-inbox-reconciliation D-002).
             m.content = crate::chat_tags::finalize(&m.content);
             m.streaming = false;
         }
@@ -2024,8 +2024,10 @@ impl App {
     }
 
     /// One-line workbench indicator for the status bar (P-004) — `None` until the
-    /// companion plugin links, else `⚡ N panes` plus `▶ <title>` for the focused
-    /// (terminal) pane so the HUD follows the live focus.
+    /// companion plugin links, else `▦ N panes` plus `▶ <title>` for the focused
+    /// (terminal) pane so the HUD follows the live focus. `▦` (glyph::nav::PANES)
+    /// replaced the old double-width `⚡`, which broke the right-aligned HUD
+    /// sizing (Brief 27 / D-002: row content is single-column only).
     pub fn workbench_summary(&self) -> Option<String> {
         self.companion_version.as_ref()?;
         let topo = self.topology.as_ref();
@@ -2033,9 +2035,13 @@ impl App {
         let focused = topo
             .and_then(|t| t.panes.iter().find(|p| p.focused && !p.is_plugin))
             .map(|p| p.title.clone());
+        let panes = crate::glyph::nav::PANES;
         Some(match focused {
-            Some(title) => format!("⚡ {n} panes · ▶ {title}"),
-            None => format!("⚡ {n} panes"),
+            Some(title) => format!(
+                "{panes} {n} panes · {} {title}",
+                crate::glyph::action::RUN
+            ),
+            None => format!("{panes} {n} panes"),
         })
     }
 
@@ -2096,7 +2102,7 @@ impl App {
                     }
                     U::AgentText(raw) => {
                         // The agent already SPOKE this; render the clean text
-                        // (and any <report>) in the transcript, surface a
+                        // in the transcript, surface a
                         // <set_mode> as a toast (the mode itself is a
                         // desktop-session concept — operator-converse-voice).
                         if let Some(mode) = crate::voice_convai::utterance_set_mode(&raw) {
@@ -2109,9 +2115,7 @@ impl App {
                         }
                         let display = crate::chat_tags::finalize(&raw);
                         if !display.trim().is_empty() {
-                            let mut m = ChatMessage::assistant(&display);
-                            m.report = crate::chat_tags::extract_report(&raw);
-                            self.chat_messages.push(m);
+                            self.chat_messages.push(ChatMessage::assistant(&display));
                             self.chat_scroll = 0;
                         }
                     }
@@ -3737,6 +3741,7 @@ mod tests {
             owner_label: None,
             triage_state: None,
             triage_note: None,
+            report: None,
         };
         let mut a = App::new();
         a.update(key('2', KeyModifiers::NONE)); // Inbox tab
@@ -4258,6 +4263,7 @@ mod tests {
             owner_label: None,
             triage_state: None,
             triage_note: None,
+            report: None,
         };
         let mut a = App::new();
         a.set_inbox(vec![
@@ -4343,7 +4349,14 @@ mod tests {
         // The HUD follows the live focus: the focused terminal pane is shown.
         assert_eq!(
             a.workbench_summary().as_deref(),
-            Some("⚡ 1 panes · ▶ claude · F-1")
+            Some(
+                format!(
+                    "{} 1 panes · {} claude · F-1",
+                    crate::glyph::nav::PANES,
+                    crate::glyph::action::RUN
+                )
+                .as_str()
+            )
         );
 
         // A pane-exit raises a notification naming the pane, marks it exited, and
@@ -4362,7 +4375,10 @@ mod tests {
         // A pane-close drops it from the cached topology.
         a.update(Event::PaneClosed { pane_id: 7 });
         assert!(a.topology.as_ref().unwrap().panes.is_empty());
-        assert_eq!(a.workbench_summary().as_deref(), Some("⚡ 0 panes"));
+        assert_eq!(
+            a.workbench_summary().as_deref(),
+            Some(format!("{} 0 panes", crate::glyph::nav::PANES).as_str())
+        );
     }
 
     #[test]
@@ -5483,7 +5499,10 @@ mod tests {
     }
 
     #[test]
-    fn chat_report_tag_is_parsed_onto_the_finalized_bubble() {
+    fn chat_report_tag_is_stripped_from_the_finalized_bubble() {
+        // report-cards-inbox-reconciliation D-002: the report is NOT chat
+        // content — finalize leaves only the say; the payload persists via
+        // append_turn (main.rs) and surfaces in the Inbox detail instead.
         let mut a = App::new();
         a.begin_user_send("status?");
         a.update(Event::ChatDelta(
@@ -5496,18 +5515,10 @@ mod tests {
             )
             .into(),
         ));
-        // While streaming, the raw buffer holds the tags — report not yet parsed.
-        assert!(a.chat_messages[1].report.is_none());
         a.update(Event::ChatDone);
-        // On finalize: say becomes the content, report parsed from the raw buffer.
+        // On finalize: the say is the whole bubble — no report JSON leaks.
         assert_eq!(a.chat_messages[1].content, "Here is where things stand.");
-        let rep = a.chat_messages[1]
-            .report
-            .as_ref()
-            .expect("report parsed on finalize");
-        assert_eq!(rep.plans.len(), 1);
-        assert_eq!(rep.plans[0].title, "Rate-limit v2");
-        assert_eq!(rep.plans[0].items[0].text, "Error classifier");
+        assert!(!a.chat_messages[1].content.contains("Rate-limit v2"));
     }
 
     #[test]

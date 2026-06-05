@@ -51,6 +51,34 @@ describe('AskChoiceCard', () => {
     expect(onAnswer).toHaveBeenCalledTimes(1);
   });
 
+  it('renders a CardSpec.report body block between question and options', () => {
+    const withReport: AskChoiceArgs = {
+      ...args,
+      report: {
+        title: 'Fleet status',
+        plans: [
+          {
+            title: 'Rate-limit v2',
+            status: 'active',
+            items: [{ id: 'P-001', text: 'Error classifier', status: 'done' }],
+          },
+        ],
+      },
+    };
+    const { container } = render(<AskChoiceCard args={withReport} />);
+    // The shared ReportBlockCard renders inside the ask-choice card body.
+    expect(container.querySelector('.ask-choice-report .report-block-card')).toBeTruthy();
+    expect(screen.getByText('Fleet status')).toBeTruthy();
+    expect(screen.getByText('Error classifier')).toBeTruthy();
+    // Options still render after the block.
+    expect(optButton('Option A')).toBeTruthy();
+  });
+
+  it('renders no report block when args.report is absent', () => {
+    const { container } = render(<AskChoiceCard args={args} />);
+    expect(container.querySelector('.ask-choice-report')).toBeNull();
+  });
+
   it('single-select: Skip link renders when allowDecline (default) and fires decline', () => {
     const onResponse = vi.fn();
     render(<AskChoiceCard args={args} onResponse={onResponse} />);

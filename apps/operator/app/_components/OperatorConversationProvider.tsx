@@ -828,7 +828,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             text: string;
             createdAt?: number;
             tools?: ChatToolCall[] | null;
-            report?: ParsedReport | null;
           }>;
           hasMoreEarlier: boolean;
         };
@@ -851,7 +850,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               id: typeof t.id === 'string' ? t.id : undefined,
               seq: typeof t.seq === 'number' ? t.seq : undefined,
               tools: Array.isArray(t.tools) ? t.tools : undefined,
-              report: t.report ?? undefined,
             })),
             lastTurnAtMs: lastCreated,
           });
@@ -896,7 +894,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           role: 'user' | 'assistant' | 'system';
           text: string;
           tools?: ChatToolCall[] | null;
-          report?: ParsedReport | null;
         }>;
         hasMoreEarlier: boolean;
       };
@@ -914,7 +911,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           id: typeof t.id === 'string' ? t.id : undefined,
           seq: typeof t.seq === 'number' ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
-          report: t.report ?? undefined,
         })),
       });
     } catch {
@@ -1006,7 +1002,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           id: typeof t.id === 'string' ? t.id : undefined,
           seq: typeof t.seq === 'number' ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
-          report: t.report ?? undefined,
         },
       });
       newestLoadedSeqRef.current = t.seq;
@@ -1291,6 +1286,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // appeared because the assistant row was never appended.
         // Now: a non-empty tool array also qualifies.
         const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
+        // The report is PERSISTED (it is the Inbox's durable store — the
+        // operator-report attention source reads operator_turns.report) but
+        // NOT threaded onto the chat message: chat renders conversation
+        // only. report-cards-inbox-reconciliation-2026-06-05 D-002.
         const report = parsed.report ?? undefined;
         const turnHasContent = !!parsed.say || !!collectedTools || !!report;
 
@@ -1298,7 +1297,6 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           const sayContent = parsed.say ?? '';
           const assistantMessage: ChatMessage = { role: 'assistant', content: sayContent };
           if (collectedTools) assistantMessage.tools = collectedTools;
-          if (report) assistantMessage.report = report;
           dispatch({ type: 'append_message', message: assistantMessage });
           // Engagement check tracks USER turns only. Assistant turns
           // (a) probe for the want-active phrase to seed G2's decline

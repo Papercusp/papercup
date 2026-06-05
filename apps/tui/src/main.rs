@@ -1442,7 +1442,6 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
         role: t.role,
         content: t.text,
         tools,
-        report: t.report,
         streaming: false,
     })
 }
