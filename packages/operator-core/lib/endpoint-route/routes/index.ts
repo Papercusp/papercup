@@ -309,6 +309,7 @@ import adminSubstrateRevokeSelfDevice from './admin/substrate-revoke-self-device
 import adminSubstrateRevokeContributor from './admin/substrate-revoke-contributor';
 import advSessions from './adv/sessions';
 import advLaunchSu from './adv/launch-su';
+import advLaunchPui from './adv/launch-pui';
 import adminPruneExecutedActions from './admin/prune-executed-actions';
 import adminRotateToken from './admin/rotate-token';
 import adminRun from './admin/run';
@@ -695,6 +696,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminSubstrateRevokeContributor as AnyRoute[]),
   ...flatten(advSessions as unknown as AnyRoute[]),
   ...flatten(advLaunchSu as unknown as AnyRoute[]),
+  ...flatten(advLaunchPui as unknown as AnyRoute[]),
   ...flatten(adminPruneExecutedActions as AnyRoute),
   ...flatten(adminRotateToken as AnyRoute),
   ...flatten(adminRun as AnyRoute),

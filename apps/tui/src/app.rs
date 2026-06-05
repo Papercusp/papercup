@@ -615,6 +615,20 @@ pub struct App {
     pub chat_oldest_seq: Option<i64>,
     /// True while an older-history page fetch is in flight (dedupes the trigger).
     pub chat_loading_earlier: bool,
+    // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
+    /// Whether the operator chat is docked beside the active tab's content. The
+    /// dock reuses `draw_chat` + the same `chat_*` state as the Operator tab (one
+    /// conversation, two render sites) so the operator is usable on every tab
+    /// without switching to it. Defaults closed; once opened it follows the user
+    /// across tabs and is persisted in view-state. Render is width-gated and
+    /// suppressed on the Operator tab itself (where the whole tab IS the chat).
+    pub operator_dock_open: bool,
+    /// Whether the docked operator pane holds keyboard focus on a non-Operator
+    /// tab. When focused, chat keys (compose/send/scroll/page-back + `v` voice)
+    /// route to the dock instead of the active tab; `o` focuses (opening it),
+    /// Esc blurs back to the tab. Always false on the Operator tab (that tab owns
+    /// the chat directly).
+    pub operator_dock_focused: bool,
     // ─── Voice mode (voice-mode-tui-port-2026-06-05 P2) ───
     /// Current PTT phase (Idle unless a voice turn is in flight). Drives the
     /// Operator status line + gates the `v` keybind.
@@ -754,6 +768,8 @@ impl App {
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
+            operator_dock_open: false,
+            operator_dock_focused: false,
             voice_phase: VoicePhase::Idle,
             voice_level: 0.0,
             voice_error: None,
@@ -879,10 +895,18 @@ impl App {
         }
     }
 
-    /// True when a `v` PTT keypress should be accepted on the Operator tab —
-    /// only there, and never while composing a typed message.
+    /// True when chat input/scroll keys should drive the operator conversation —
+    /// either on the full Operator tab, or in the docked pane when it holds focus
+    /// on another tab (operator-always-visible-2026-06-05). The single predicate
+    /// the chat key arms gate on so the dock is exactly as usable as the tab.
+    pub fn operator_input_active(&self) -> bool {
+        self.tab == Tab::Operator || (self.operator_dock_open && self.operator_dock_focused)
+    }
+
+    /// True when a `v` PTT keypress should be accepted — on the Operator tab or in
+    /// a focused operator dock — and never while composing a typed message.
     pub fn voice_key_active(&self) -> bool {
-        self.tab == Tab::Operator && !self.chat_composing
+        self.operator_input_active() && !self.chat_composing
     }
 
     /// Apply a voice-pipeline state change (`Event::Voice`). The pipeline task
@@ -2334,7 +2358,7 @@ impl App {
         // palette) so digits/letters type into the message instead of switching
         // tabs. Ctrl-C still quits (the universal escape hatch); Esc leaves
         // compose mode; Enter sends (unless a turn is already streaming).
-        if self.tab == Tab::Operator && self.chat_composing {
+        if self.operator_input_active() && self.chat_composing {
             let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
             if ctrl_c {
                 self.should_quit = true;
@@ -2378,6 +2402,52 @@ impl App {
         if code == KeyCode::Char('q') || ctrl_c {
             self.should_quit = true;
             return Action::Quit;
+        }
+        // Operator dock focus (operator-always-visible-2026-06-05, Brief 24): when
+        // the docked operator pane holds focus on a non-Operator tab, route the
+        // chat keys to it BEFORE the active tab's own list-nav sees them — so the
+        // dock is exactly as usable as the full Operator tab. Esc blurs focus back
+        // to the tab. Everything not matched here falls through, so tab-switch
+        // digits/letters, `p`/`v`, and `o` (toggles focus off, below) still work
+        // and navigation is never trapped. Compose-mode typing was already handled
+        // above via `operator_input_active()`.
+        if self.operator_dock_focused && self.tab != Tab::Operator {
+            match code {
+                KeyCode::Esc => {
+                    self.operator_dock_focused = false;
+                    return Action::Render;
+                }
+                KeyCode::Char('i') | KeyCode::Enter => {
+                    self.chat_composing = true;
+                    return Action::Render;
+                }
+                // PageUp doubles as the deliberate "page back into history" gesture
+                // (mirrors the Operator-tab arm): scroll up + kick a load-earlier.
+                KeyCode::PageUp => {
+                    self.chat_scroll = self.chat_scroll.saturating_add(10);
+                    if self.chat_has_more_earlier
+                        && !self.chat_loading_earlier
+                        && self.conversation_id.is_some()
+                    {
+                        self.chat_loading_earlier = true;
+                        return Action::LoadEarlierChat;
+                    }
+                    return Action::Render;
+                }
+                KeyCode::PageDown => {
+                    self.chat_scroll = self.chat_scroll.saturating_sub(10);
+                    return Action::Render;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.chat_scroll = self.chat_scroll.saturating_add(1); // into history
+                    return Action::Render;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.chat_scroll = self.chat_scroll.saturating_sub(1); // toward latest
+                    return Action::Render;
+                }
+                _ => {}
+            }
         }
         // Plans-filter rail capture (D-009): while the rail is open on a tab it
         // narrows, the list keys drive the rail (j/k move, Space/Enter toggle a
@@ -2460,6 +2530,24 @@ impl App {
             },
             KeyCode::Char('p') => {
                 self.show_presence = !self.show_presence;
+                Action::Render
+            }
+            // Operator dock (operator-always-visible-2026-06-05, Brief 24): `o`
+            // focuses the docked operator pane from any non-Operator tab — opening
+            // it if hidden — so you can talk to the operator without leaving the
+            // tab; `o` again (or Esc) returns focus to the tab. `O` toggles the
+            // dock's visibility (hide to reclaim width). On the Operator tab the
+            // whole tab is already the chat, so both are no-ops there.
+            KeyCode::Char('o') if self.tab != Tab::Operator => {
+                self.operator_dock_open = true;
+                self.operator_dock_focused = !self.operator_dock_focused;
+                Action::Render
+            }
+            KeyCode::Char('O') if self.tab != Tab::Operator => {
+                self.operator_dock_open = !self.operator_dock_open;
+                if !self.operator_dock_open {
+                    self.operator_dock_focused = false;
+                }
                 Action::Render
             }
             // Plans-filter rail (D-009): `F` opens it on the tabs it narrows

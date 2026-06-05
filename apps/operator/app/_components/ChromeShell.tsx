@@ -23,6 +23,7 @@ import { RecentActionsCenter } from './RecentActionsCenter';
 import TutorialButton from './TutorialButton';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
+import { PuiLauncherButton } from './PuiLauncherButton';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { isChromeShellNavActive } from './chrome-shell-nav';
@@ -189,6 +190,9 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
+          {/* Terminal-launch CTA: opens the pui workbench (apps/tui) in an OS
+              terminal via a server-side spawn. Sits next to OPS. (Brief 26) */}
+          <PuiLauncherButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {testingFlag ? (

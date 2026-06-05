@@ -10,6 +10,7 @@ import {
   type TurnRole,
   type TurnSource,
 } from '../../../operator-conversations';
+import { parseReportBody } from '../../../operator-converse-tags';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -19,6 +20,8 @@ interface Body {
   source?: TurnSource;
   elConvId?: string | null;
   tools?: Array<{ name: string; input?: unknown; answered?: unknown }>;
+  /** Structured `<report>` payload (structured-report-protocol-2026-06-05). */
+  report?: unknown;
 }
 
 const get = defineTool({
@@ -50,6 +53,10 @@ const post = defineTool({
     if (!body || typeof body.text !== 'string' || !body.role) {
       return Response.json({ error: 'role and text required' }, { status: 400 });
     }
+    // Re-validate the report server-side (defensive — never store junk):
+    // round-trip the client object through parseReportBody.
+    const report =
+      body.report != null ? parseReportBody(JSON.stringify(body.report)) : null;
     const turn = await appendTurn({
       conversationId: id,
       role: body.role,
@@ -57,6 +64,7 @@ const post = defineTool({
       source: body.source,
       elConvId: body.elConvId ?? null,
       tools: Array.isArray(body.tools) && body.tools.length > 0 ? (body.tools as any) : null,
+      report,
     });
     void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: id })
       .catch(() => { /* best-effort */ });

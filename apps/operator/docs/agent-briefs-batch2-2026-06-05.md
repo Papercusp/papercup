@@ -24,8 +24,15 @@ Batch 1 (`agent-briefs-2026-06-05.md`) is ~shipped. This batch is the **new desi
 
 ## Brief 21 — Inbox tiering + message-the-agent 〔UX, HIGH〕
 **Plan:** author `inbox-tiering-and-message-agent`.
-**Decisions:** The feed already merges plan-items + coord-messages + escalations (240 items), but **`needsHuman` is over-applied** — 50 of 62 flagged items are auto-broadcasts ("▶ now working on", "🟥 checkpoint red"), burying the ~12 real decisions. (a) **Fix `needsHuman` at the source** — true ONLY for gates awaiting approval, needs-human plan items, vote escalations, and direct questions to the owner; FALSE for lifecycle/activity/status broadcasts. (b) **Three tiers: Decisions ▸ Alerts ▸ Activity** — only Decisions demands the user. (c) **"Message owner" action** on each item → opens a thread with the owning agent scoped to its work-item (`coord:ask-owner` / a conversation). TUI + desktop.
-**Verify:** needsHuman drops ~62→~12; the three tiers render; "message owner" opens a scoped, context-carrying thread.
+**Decisions (owner-updated 2026-06-05 — SURFACE-FIRST triage model; supersedes the original "tighten needsHuman at the source"):**
+- **Surface-first, no gate.** An agent surfacing need_human → `needs_human` IMMEDIATELY (user-visible). NO `needs_review`/operator-gated intermediate state. Fail toward visibility — a sleeping operator must never hide a real decision (missing one ≫ a false positive).
+- **Loose criteria at the source; operator is the precision filter.** Agents surface generously (they have limited context); do NOT over-engineer static rules to perfectly classify `needsHuman` — rules are a cheap pre-sort, **operator triage is the real filter** (judgment).
+- **Operator triage is a PASS, not a gate**, run at the operator's NEXT wake. Wakes are **USER-DRIVEN** (the user wakes the operator during normal work) — **NO event-wake on inbox pressure** (owner explicitly rejected it; accepts some uncleaned items between wakes). At wake the operator downgrades false positives, **escalates under-flagged** ones (its bigger context catches missed urgency), and confirms/enriches the rest.
+- **Downgrades are VISIBLE + auditable** — resolved-by-operator items move to a **"Handled by operator"** tier carrying *what it did + why*, never a silent vanish.
+- **Tiers: Decisions (untriaged + operator-confirmed) ▸ Handled-by-operator (audit) ▸ Alerts ▸ Activity** — only Decisions demands the user.
+- **"Message owner" action** on each item → opens a thread with the owning agent scoped to its work-item (`coord:ask-owner` / a conversation). TUI + desktop.
+- **Operator prompt (triage side):** "manage the inbox FIRST each wake" (downgrade/resolve/annotate before other work), leave it clean before sleeping, and record the *why* on each downgrade (audit + the operator learns its own triage).
+**Verify:** an agent's need_human is user-visible immediately; the operator downgrades a false positive into the Handled tier *with a rationale* (not a vanish) + escalates an under-flagged one; "message owner" opens a scoped, context-carrying thread.
 
 ## Brief 22 — `<report>` structured-message protocol (cards ⊕ TUI) 〔platform+UX, HIGH〕
 **Plan:** author `structured-report-protocol`.

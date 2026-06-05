@@ -16,6 +16,7 @@
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
+import type { ParsedReport } from './operator-converse-tags';
 
 const oc = generated.operatorConversationsInHarnessShared;
 const ot = generated.operatorTurnsInHarnessShared;
@@ -43,6 +44,11 @@ const turnCols = {
   audio_url: ot.audioUrl,
   created_at: ot.createdAt,
   tools: ot.tools,
+  // `report` (the <report> structured-status payload, migration 160) is
+  // selected as a raw column rather than a drizzle ref so this change is
+  // self-contained — no generated-schema regen needed in the shared tree.
+  // structured-report-protocol-2026-06-05 D-003.
+  report: dsql<ParsedReport | null>`report`.as('report'),
 } as const;
 
 export type TurnRole = 'user' | 'assistant' | 'system';
@@ -91,6 +97,12 @@ export interface TurnRow {
   audioUrl: string | null;
   createdAt: number;
   tools: TurnToolCall[] | null;
+  /**
+   * Structured `<report>` payload (operator_turns.report jsonb, migration
+   * 160) — per-plan/per-item status the operator emitted this turn, or null.
+   * Rendered as a card (desktop) / two-tier list (TUI).
+   */
+  report: ParsedReport | null;
 }
 
 /**
@@ -193,6 +205,11 @@ export async function appendTurn(input: {
    * turn had no tool calls.
    */
   tools?: TurnToolCall[] | null;
+  /**
+   * Structured `<report>` payload (migration 160). Pass null/omit when
+   * the turn had no `<report>` tag. structured-report-protocol-2026-06-05.
+   */
+  report?: ParsedReport | null;
 }): Promise<TurnRow> {
   const { db } = getOrgPg();
 
@@ -215,14 +232,16 @@ export async function appendTurn(input: {
       const toolsJson = input.tools && input.tools.length > 0
         ? JSON.stringify(input.tools)
         : null;
+      // Same drizzle-jsonb workaround as `tools`: pre-stringify + ::jsonb.
+      const reportJson = input.report ? JSON.stringify(input.report) : null;
       const { sql: rawSql } = getOrgPg();
       const inserted = (await rawSql.unsafe(
         `INSERT INTO harness_shared.operator_turns
            (conversation_id, seq, role, text, source, el_conv_id,
-            audio_url, created_at, tools)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            audio_url, created_at, tools, report)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
          RETURNING id, conversation_id, seq, role, text, source,
-                   el_conv_id, audio_url, created_at, tools`,
+                   el_conv_id, audio_url, created_at, tools, report`,
         [
           input.conversationId,
           seq,
@@ -233,6 +252,7 @@ export async function appendTurn(input: {
           input.audioUrl ?? null,
           Date.now(),
           toolsJson,
+          reportJson,
         ],
       )) as Array<Record<string, unknown>>;
       return rowToTurn(inserted[0]);
@@ -296,5 +316,9 @@ function rowToTurn(r: Record<string, unknown>): TurnRow {
     audioUrl: r.audio_url == null ? null : String(r.audio_url),
     createdAt: Number(r.created_at),
     tools: Array.isArray(r.tools) ? (r.tools as TurnToolCall[]) : null,
+    report:
+      r.report && typeof r.report === 'object' && !Array.isArray(r.report)
+        ? (r.report as ParsedReport)
+        : null,
   };
 }

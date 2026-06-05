@@ -57,7 +57,7 @@ import {
 } from '../harness/usage-emitters';
 import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
-import { governorForBackend, classifyTurnError, setGovernorStore } from '@papercusp/papercup-shared/agent';
+import { governorForBackend, classifyTurnError, isAccountWide, setGovernorStore } from '@papercusp/papercup-shared/agent';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
@@ -152,10 +152,11 @@ export async function spawnInvokeOnce(
     }
     try {
       const inner = await runChild(command, args, projectDir, env, role, opts?.signal);
-      // Classify the outcome; on a detected 429/overload, pause the SHARED governor so the
-      // operator's other agent spawns back off too. No retry here — the director owns that.
+      // Classify the outcome; on a detected account-wide stop (429/overload/usage-cap), pause the
+      // SHARED governor so the operator's other agent spawns back off too. No retry here — the
+      // director owns that. A usage_limit carries its reset, so the fleet parks until reset (D-001).
       const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
-      if (te.class === 'rate_limited' || te.class === 'overloaded') gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
+      if (isAccountWide(te.class)) gov.penalize({ retryAfterMs: te.retryAfterMs, resetAt: te.resetAt });
       return inner;
     } finally {
       release();

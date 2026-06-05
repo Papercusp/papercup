@@ -18,8 +18,9 @@ by `apps/operator/next.config.js`; `apps/operator/app/**` is dead code. See the
 
 ```
 ~/papercupai-workspace/
-├── papercup/                 ← the operator (Next.js apps + libs)
-│   └── apps/operator/        ← @papercusp/web — the UI that runs at :3055 dev or bundled in prod
+├── papercup/                 ← the operator (Vite SPA + Hono host + libs)
+│   ├── apps/operator-vite/   ← @papercusp/operator-vite — the TanStack-Router SPA UI (:3055 dev)
+│   └── apps/operator/        ← the Hono host (bin/hono-host.ts, :3070) + lib/bin/app page bodies
 └── papercusp-desktop/        ← the Tauri shell (Rust)
     └── src-tauri/            ← main.rs + tauri.conf.json — produces the .deb/.dmg/.msi
 ```
@@ -56,7 +57,7 @@ After step 3, the webview is at `http://localhost:19210/harness` (or whatever po
 2. **Open devtools automatically** (WebKitGTK doesn't reliably wire Ctrl+Shift+I)
 3. Webview loads `http://127.0.0.1:3055` directly (`devUrl` in `tauri.conf.json`)
 
-So a dev Tauri window IS just a Tauri webview pointed at the live Next dev server on `:3055`. Production is the same UI code but served from the bundled standalone on a private port.
+So a dev Tauri window IS just a Tauri webview pointed at the live Vite dev server on `:3055` (with the Hono host on `:3070`). Production is the same UI code but served from the bundled sidecar on a private port.
 
 ## Where the operator code lives in a prod bundle
 

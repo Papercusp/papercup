@@ -57,6 +57,7 @@ import {
   writeOperatorModeToSession,
   writeSleepUntilMs,
   type OperatorMode,
+  type ParsedReport,
 } from '@papercusp/operator-core/lib/operator-converse-tags';
 import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@papercusp/sync';
@@ -91,6 +92,7 @@ interface OperatorTurnRow {
   text: string;
   createdAt: number;
   tools?: ChatToolCall[] | null;
+  report?: ParsedReport | null;
 }
 
 // ─── State + actions ────────────────────────────────────────────────────
@@ -826,6 +828,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             text: string;
             createdAt?: number;
             tools?: ChatToolCall[] | null;
+            report?: ParsedReport | null;
           }>;
           hasMoreEarlier: boolean;
         };
@@ -848,6 +851,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               id: typeof t.id === 'string' ? t.id : undefined,
               seq: typeof t.seq === 'number' ? t.seq : undefined,
               tools: Array.isArray(t.tools) ? t.tools : undefined,
+              report: t.report ?? undefined,
             })),
             lastTurnAtMs: lastCreated,
           });
@@ -892,6 +896,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           role: 'user' | 'assistant' | 'system';
           text: string;
           tools?: ChatToolCall[] | null;
+          report?: ParsedReport | null;
         }>;
         hasMoreEarlier: boolean;
       };
@@ -909,6 +914,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           id: typeof t.id === 'string' ? t.id : undefined,
           seq: typeof t.seq === 'number' ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
+          report: t.report ?? undefined,
         })),
       });
     } catch {
@@ -1000,6 +1006,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           id: typeof t.id === 'string' ? t.id : undefined,
           seq: typeof t.seq === 'number' ? t.seq : undefined,
           tools: Array.isArray(t.tools) ? t.tools : undefined,
+          report: t.report ?? undefined,
         },
       });
       newestLoadedSeqRef.current = t.seq;
@@ -1034,6 +1041,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed',
       optimisticId?: string,
       tools?: ChatToolCall[],
+      report?: ParsedReport | null,
     ) => {
       const id = conversationIdRef.current;
       if (!id) return;
@@ -1045,6 +1053,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // undefined so the server route can default to NULL.
       const body: Record<string, unknown> = { role, text, source };
       if (tools && tools.length > 0) body.tools = tools;
+      if (report) body.report = report;
       void fetch(`/api/operator/conversations/${id}/turns`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -1282,16 +1291,15 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // appeared because the assistant row was never appended.
         // Now: a non-empty tool array also qualifies.
         const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
-        const turnHasContent = !!parsed.say || !!collectedTools;
+        const report = parsed.report ?? undefined;
+        const turnHasContent = !!parsed.say || !!collectedTools || !!report;
 
         if (turnHasContent) {
           const sayContent = parsed.say ?? '';
-          dispatch({
-            type: 'append_message',
-            message: collectedTools
-              ? { role: 'assistant', content: sayContent, tools: collectedTools }
-              : { role: 'assistant', content: sayContent },
-          });
+          const assistantMessage: ChatMessage = { role: 'assistant', content: sayContent };
+          if (collectedTools) assistantMessage.tools = collectedTools;
+          if (report) assistantMessage.report = report;
+          dispatch({ type: 'append_message', message: assistantMessage });
           // Engagement check tracks USER turns only. Assistant turns
           // (a) probe for the want-active phrase to seed G2's decline
           // window, AND (b) RESET that seed on subsequent non-want-active
@@ -1303,11 +1311,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
             dispatch({ type: 'record_want_active_asked', tsMs: 0 });
           }
           dispatch({ type: 'mark_turn', tsMs: Date.now() });
-          // Persist text + tools. Empty say is fine for tool-only
-          // turns; persistTurn writes whatever we send. The server-side
-          // turns route was extended to accept the tools field
-          // alongside text (POST /api/operator/conversations/:id/turns).
-          persistTurn('assistant', sayContent, 'text_typed', undefined, collectedTools);
+          // Persist text + tools + report. Empty say is fine for
+          // tool/report-only turns; persistTurn writes whatever we send.
+          // The server-side turns route accepts tools + report alongside
+          // text (POST /api/operator/conversations/:id/turns).
+          persistTurn('assistant', sayContent, 'text_typed', undefined, collectedTools, report);
         }
         // Successful turn → clear backoff. G14.
         dispatch({ type: 'reset_error_count' });

@@ -16,6 +16,6 @@
  */
 
 export type { ObjectRef, LinkRow, LinkableStore, TaggableStore } from './types';
-export { TAG_REL } from './types';
+export { TAG_REL, objectKey } from './types';
 export { LinkBackedTaggable } from './taggable';
 export { InMemoryLinkStore, InMemoryTaggableStore } from './memory-store';

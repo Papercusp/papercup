@@ -26,11 +26,33 @@ export type AttentionKind =
 
 export type AttentionSource = 'plan' | 'coord' | 'harness';
 
+/**
+ * The three inbox tiers (inbox-tiering-and-message-agent-2026-06-05 D-002).
+ * Orthogonal to {@link AttentionKind} — every item is exactly one tier:
+ *   - `decision` — demands the human: needs-human plan items, plan-review
+ *     gates, blocker/question escalations, direct non-auto messages to the
+ *     human. The ONLY tier that sets `needsHuman: true`.
+ *   - `alert` — a problem worth surfacing but not a required decision:
+ *     smoke-fails, advisory escalations, blocked plan items.
+ *   - `activity` — lifecycle/status: `auto` coord:emit broadcasts, normal
+ *     todo/wip plan items, non-auto broadcast FYI.
+ */
+export type AttentionTier = 'decision' | 'alert' | 'activity';
+
+export const ATTENTION_TIERS: readonly AttentionTier[] = ['decision', 'alert', 'activity'];
+
+/** The single source of truth for {@link AttentionItem.needsHuman}: an item
+ *  awaits the human iff it is a Decision (D-001/D-002 invariant). */
+export function needsHumanForTier(tier: AttentionTier): boolean {
+  return tier === 'decision';
+}
+
 /** Stable action ids the detail pane renders as buttons. The
  *  (kind, action.id) pair plus the item's `ref` is what the UI
  *  dispatches on (P-017). */
 export type AttentionActionId =
   | 'chat'
+  | 'message-owner'
   | 'resolve'
   | 'mark-done'
   | 'answer'
@@ -72,8 +94,18 @@ export interface AttentionItem {
   /** Display status (e.g. needs-human, open, fail, pending-review). */
   status: string;
   importance: Importance;
-  /** True when this awaits a human (vs agent-actionable work). */
+  /** Which inbox tier this belongs to (D-002). */
+  tier: AttentionTier;
+  /** True when this awaits a human (vs agent-actionable work). Invariant:
+   *  `needsHuman === (tier === 'decision')` — see {@link needsHumanForTier}. */
   needsHuman: boolean;
+  /** The agent that owns this item (the coord record's `from` for
+   *  messages/escalations), or null when there is no single agent owner
+   *  (plan items, smoke-fails, plan-reviews). Drives the "Message owner"
+   *  action's recipient (D-005). */
+  ownerAgentId: string | null;
+  /** Human-friendly label for {@link ownerAgentId}, when known. */
+  ownerLabel: string | null;
   actions: AttentionAction[];
   ref: AttentionRef;
 }
@@ -110,4 +142,29 @@ export function severityToImportance(sev: 'blocker' | 'question' | 'advisory'): 
     default:
       return 'normal';
   }
+}
+
+/** Per-tier buckets, each importance-sorted, plus counts — the shape the
+ *  tiered inbox (Decisions ▸ Alerts ▸ Activity) renders (D-002). PURE. */
+export interface TieredAttention {
+  decision: AttentionItem[];
+  alert: AttentionItem[];
+  activity: AttentionItem[];
+  counts: Record<AttentionTier, number>;
+}
+
+/** Partition items into the three tiers, importance-sorted within each. */
+export function groupByTier(items: readonly AttentionItem[]): TieredAttention {
+  const out: TieredAttention = {
+    decision: [],
+    alert: [],
+    activity: [],
+    counts: { decision: 0, alert: 0, activity: 0 },
+  };
+  for (const it of items) out[it.tier].push(it);
+  for (const tier of ATTENTION_TIERS) {
+    out[tier] = sortByImportance(out[tier]);
+    out.counts[tier] = out[tier].length;
+  }
+  return out;
 }

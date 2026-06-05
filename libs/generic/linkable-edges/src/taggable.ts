@@ -6,7 +6,7 @@
  * ANY LinkableStore, so every backend gets Taggable for free.
  */
 
-import { type LinkableStore, type ObjectRef, type TaggableStore, TAG_REL } from './types';
+import { type LinkableStore, type ObjectRef, type TaggableStore, TAG_REL, objectKey } from './types';
 
 const TOPIC_KIND = 'topic';
 
@@ -32,6 +32,23 @@ export class LinkBackedTaggable implements TaggableStore {
   async listTags(object: ObjectRef): Promise<string[]> {
     const out = await this.links.listOut(object, { rel: TAG_REL });
     return out.filter((l) => l.dst.kind === TOPIC_KIND).map((l) => l.dst.ref);
+  }
+
+  async listTagsForMany(objects: ObjectRef[]): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>();
+    if (objects.length === 0) return out;
+    // One round-trip for all srcs, then group by source object. Preserves the
+    // edge ordering (created_ts, id), so each object's tags come back oldest-first
+    // exactly like listTags.
+    const edges = await this.links.listOutMany(objects, { rel: TAG_REL });
+    for (const l of edges) {
+      if (l.dst.kind !== TOPIC_KIND) continue;
+      const key = objectKey(l.src);
+      const arr = out.get(key);
+      if (arr) arr.push(l.dst.ref);
+      else out.set(key, [l.dst.ref]);
+    }
+    return out;
   }
 
   async listTagged(topicSlug: string): Promise<ObjectRef[]> {

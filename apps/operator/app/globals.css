@@ -25282,6 +25282,15 @@ body:has(.operator-panel) {
     drop-shadow(0 0 1px rgba(255,255,255,0.28));
 }
 
+.pc-header .pc-header-cta-logo--pui {
+  width: 13px;
+  height: 13px;
+  color: #b6f3d0;
+  filter:
+    drop-shadow(0 0 7px rgba(74, 222, 128, 0.30))
+    drop-shadow(0 0 1px rgba(255,255,255,0.40));
+}
+
 .op-chat-sidebar .oracle-empty-state-glyph {
   width: 28px;
   height: 28px;

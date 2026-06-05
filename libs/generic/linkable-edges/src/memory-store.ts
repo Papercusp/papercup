@@ -6,7 +6,7 @@
  * or a process-local graph.
  */
 
-import { type LinkableStore, type LinkRow, type ObjectRef } from './types';
+import { type LinkableStore, type LinkRow, type ObjectRef, objectKey } from './types';
 import { LinkBackedTaggable } from './taggable';
 
 export class InMemoryLinkStore implements LinkableStore {
@@ -40,6 +40,15 @@ export class InMemoryLinkStore implements LinkableStore {
   async listIn(dst: ObjectRef, opts: { rel?: string } = {}): Promise<LinkRow[]> {
     return this.rows
       .filter((r) => sameRef(r.dst, dst) && (opts.rel == null || r.rel === opts.rel))
+      .sort((a, b) => a.created_ts.localeCompare(b.created_ts) || a.id - b.id)
+      .map(cloneLink);
+  }
+
+  async listOutMany(srcs: ObjectRef[], opts: { rel?: string } = {}): Promise<LinkRow[]> {
+    if (srcs.length === 0) return [];
+    const want = new Set(srcs.map(objectKey));
+    return this.rows
+      .filter((r) => want.has(objectKey(r.src)) && (opts.rel == null || r.rel === opts.rel))
       .sort((a, b) => a.created_ts.localeCompare(b.created_ts) || a.id - b.id)
       .map(cloneLink);
   }

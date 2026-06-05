@@ -43,6 +43,7 @@ export default defineConfig({
         section('Implementation', 'implementation'),
         section('Plugins', 'plugins'),
         section('PostHog', 'posthog'),
+        section('Reference (generated)', 'reference'),
         section('Security', 'security'),
         section('Snapshots', 'snapshots'),
         section('Spec', 'spec'),

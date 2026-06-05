@@ -107,3 +107,39 @@ export function OpsTargetMark({ className, ...props }: IconProps) {
     </svg>
   );
 }
+
+export function TerminalMark({ className, ...props }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      focusable="false"
+      {...props}
+    >
+      <rect
+        x="2.8"
+        y="4.4"
+        width="18.4"
+        height="15.2"
+        rx="2.6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      />
+      <path
+        d="M6.6 9.2 L9.9 12 L6.6 14.8"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M11.9 15.2h5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeOpacity="0.85"
+      />
+    </svg>
+  );
+}
