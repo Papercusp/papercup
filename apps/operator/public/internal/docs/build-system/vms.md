@@ -5,11 +5,12 @@ SSH access, sudo credentials, port maps, disk-sizing notes, the Windows-VM survi
 
 ## Inventory
 
-| VM                            | Host process                                                                        | SSH port | Display                                       | Inside-VM repo path                              |
-| ----------------------------- | ----------------------------------------------------------------------------------- | -------- | --------------------------------------------- | ------------------------------------------------ |
-| **macOS Sonoma** (x86\_64)    | `qemu-system-x86_64 ... mac_hdd_ng.img`                                             | `2222`   | SPICE on `127.0.0.1:5930`                     | `~/papercupai/papercusp-desktop`                 |
-| **Windows 10**                | `qemu-system-x86_64 ... win10.img`                                                  | `2223`   | (no SPICE configured; consider RDP if needed) | `C:\Users\User\papercupai\papercusp-desktop`     |
-| **Linux test** (Ubuntu 24.04) | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224`   | SPICE on `127.0.0.1:5932`                     | n/a — installs the packaged `.deb` (no checkout) |
+| VM                                           | Host process                                                                        | SSH port      | Display                                       | Inside-VM repo path                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- | ------------- | --------------------------------------------- | ------------------------------------------------ |
+| **macOS Sonoma** (x86\_64)                   | `qemu-system-x86_64 ... mac_hdd_ng.img`                                             | `2222`        | SPICE on `127.0.0.1:5930`                     | `~/papercupai/papercusp-desktop`                 |
+| **Windows 10**                               | `qemu-system-x86_64 ... win10.img`                                                  | `2223`        | (no SPICE configured; consider RDP if needed) | `C:\Users\User\papercupai\papercusp-desktop`     |
+| **Linux test** `clean` (Ubuntu 24.04)        | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224`        | SPICE on `127.0.0.1:5932`                     | n/a — installs the packaged `.deb` (no checkout) |
+| **Linux fed** `fed-a`/`fed-b` (Ubuntu 24.04) | same golden image, +2nd NIC on `pcusp-fedbr0` (via `bin/vm-federation.sh`)          | `2225`/`2226` | SPICE `127.0.0.1:5933`/`5934`                 | n/a — two-machine federation testing             |
 
 The **Mac** and **Windows** VMs exist only to *produce* their platform's Tauri bundle. The **Linux test** VM is different in kind — it *consumes* the built `.deb`, fresh-installing it on a pristine Ubuntu to validate the shipped artifact (and to act as a separate machine for federation testing). Day-to-day operator dev (`:3055`) and Linux builds still run entirely on the host.
 
@@ -55,6 +56,39 @@ database** on a clean machine: `spawn_embedded_postgres_server` / `spawn_zero_ca
 no `node` — fixed by routing them through the bundled-node PATH like `spawn_sidecar` does. The
 dev box hides this because it always has `node` on PATH, which is exactly why a clean VM is
 necessary. (Plan decision D-009.)
+
+### Two-machine federation (Phase 2)
+
+The same VMs double as **separate machines** for cross-machine federation testing —
+proving the packaged `.deb` federates (a write on one machine lands in the other's PG)
+over a real OS + real network hop, not just loopback. Driven by
+**`papercusp-desktop/bin/vm-federation.sh`**, which reuses the one-box smokes'
+assertion core (`bin/lib/federation-asserts.sh`, D-003) over an SSH driver.
+
+```sh
+cd papercusp-desktop
+bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge   # primary: fed-a ↔ fed-b
+bin/vm-federation.sh --vms=1                               # host instance ↔ fed-a VM
+bin/vm-federation.sh --vms=2 --net=socket                 # rootless (no sudo) fallback
+bin/vm-federation.sh --vms=2 --no-reset --skip-install    # fast iteration (reuse overlays)
+```
+
+* **Network (D-016):** every fed VM keeps its slirp NIC (internet/SSH/SPICE) and gets a
+  **second** NIC on host bridge `pcusp-fedbr0` (`10.77.0.0/24`, host `10.77.0.1`) with a
+  static guest IP — no dnsmasq/NAT. The host runs a `hyperdht/testnet` advertised on the
+  bridge IP; both VMs set `PAPERCUSP_DHT_BOOTSTRAP` to it → deterministic discovery over a
+  real hop. `--net=socket` is a rootless dual-NIC fallback (qemu socket L2, exactly two VMs).
+* **Identities:** `papercupai` / `aviynw` via per-instance `GH_TOKEN` (resolved by
+  `gh-token.ts`); `gh` + `postgresql-client` are apt-installed in each VM as driver prereqs.
+* **Gate:** both boot · `[swarm] peer_connected` both logs (no `join FAILED`) · bidirectional
+  `origin='remote'` merge within \~90 s · teardown by power-off.
+* **Up-front `.deb` gate (P-011):** a static grep of the packaged `host.mjs` asserts it carries
+  `PAPERCUSP_DHT_BOOTSTRAP` support + `[swarm]` logs (landed 2026-06-02), failing fast on an
+  older `.deb` that would silently use the public DHT.
+
+Two non-obvious traps (identical slirp subnets break holepunch; the clean-machine
+embedded-PG boot race) and the full mode matrix are documented in the agent-insight
+[VM federation — separate-machine proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
 
 ## SSH commands
 

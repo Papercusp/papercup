@@ -23,6 +23,10 @@ cargo clippy --release --target wasm32-wasip1    # 0 warnings
 
 # Live duplex smoke (needs zellij installed; spins up its OWN isolated session):
 python3 scripts/live-smoke.py                   # exit 0 = all live checks passed
+
+# Dockview dock-verbs live e2e (Brief 50): drives the FULL proto→plugin→zellij
+# path against the real workbench swap presets in an isolated session.
+python3 scripts/dock-verbs-smoke.py             # exit 0 = all dock-verb checks passed
 ```
 
 ## What's covered
@@ -38,6 +42,13 @@ python3 scripts/live-smoke.py                   # exit 0 = all live checks passe
   a live, fully-isolated zellij session: hello handshake, live topology,
   open-command-pane on command, focus-follow, close → `pane_closed`, and a
   command pane's natural exit → `pane_exited` with the real exit code.
+- **`scripts/dock-verbs-smoke.py`** — the dockview dock-verbs (Brief 50 /
+  `dockview-workbench-2026-06-05`) end-to-end against the real workbench KDL
+  presets in an isolated session: `swap_layout` reported over the wire,
+  stack-on-open (`OpenCommandPane{stack:true}` → the agents land in the work
+  stack, HUD keeps its slot), `select_swap_layout` to each named preset (incl.
+  `:dock left`/`right` mirrors), `next`/`prev` cycling, `stack_panes` by id, and
+  `toggle_pane_float` float→re-embed round-trip.
 
 ## Non-obvious facts (verified against zellij 0.44.3 — don't re-derive)
 

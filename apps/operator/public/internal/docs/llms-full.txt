@@ -4667,6 +4667,43 @@ grep -rn 'JSON.stringify.*}::jsonb' apps/operator/lib
 
 Any hit is a double-encode. `revoked_pubkeys` (a native PG `text[]`, bound directly without `JSON.stringify`) is fine — this only affects `jsonb` columns fed a `JSON.stringify` result.
 
+# pui workbench is a dockview — stacked work area, swap presets, dock-verbs
+
+> The pui (ratatui workbench) work area is a zellij STACKED group by default (tab-like) beside the fixed HUD, with four swap_tiled_layout presets cycled by Alt+[ / Alt+] and palette dock-verbs (:stack / :float / :dock / :layout). The hard-won zellij 0.44.3 facts that shape it: stacking on open must be imperative (a plain open from HUD focus splits the HUD), :dock rides mirrored presets (not move-pane, which stacks swallow), max_panes counts ALL panes.
+
+## What
+
+[Section titled “What”](#what)
+
+The pui workbench (`apps/tui`, run via `pui workbench`) lays its work area out like a **dockview**: agent panes open into a zellij **stacked** group (tab-like — one expanded, the rest collapsed to title rows) beside the fixed HUD, instead of tiling ever-thinner. It ships:
+
+* **A stacked-by-default KDL** (`apps/tui/src/layout.rs`, `WORKBENCH_KDL`) with four `swap_tiled_layout` presets cycled by zellij’s default `Alt+[` / `Alt+]`: `stacked` (default), `stacked-left` (HUD docked left), `split` (work as even rows), `grid` (work auto-tiled 2D).
+* **Palette dock-verbs** (`apps/tui/src/app.rs`): `:stack` (gather the work area into one stack), `:float [pane]` (float/embed the HUD, or a named work pane), `:dock left|right` (dock the HUD to a side via a mirrored preset), `:layout next|prev|<name>` (cycle/select a preset).
+* **The wire path** — pui → the companion zellij plugin (`apps/pui-zellij-plugin`) over `pui-companion-proto`: new `Command`s `StackPanes` / `TogglePaneFloat` / `SelectSwapLayout` / `NextSwapLayout` / `PrevSwapLayout`, plus a `stack` flag on `OpenCommandPane`; `TabNode` carries the active `swap_layout` back so pui labels it in the palette.
+
+Full design + the measured spike: plan `dockview-workbench-2026-06-05` (Brief 50).
+
+## Why it matters
+
+[Section titled “Why it matters”](#why-it-matters)
+
+Four zellij 0.44.3 facts (measured in an isolated session, plan D-007) shape the implementation — get them wrong and the workbench misbehaves:
+
+1. **Stacking on open must be imperative.** With the stacked preset active, a plain `new-pane` joins the stack *only when focus is inside the stack* — but pui launches fire from the HUD pane, and a plain open from HUD focus **splits the HUD 50/50** instead. So the companion opens the pane and then calls `stack_panes([work… , new])` using the PaneId `open_command_pane` returns synchronously (focus-independent). `new-pane --stacked` is also wrong — it stacks onto the *focused* pane (the HUD).
+2. **`:dock` rides mirrored presets, not `move-pane`.** A `move-pane left` from the HUD gets **absorbed into the adjacent stack** (stacks swallow directional moves). So `:dock left/right` selects the `stacked-left`/`stacked` mirror preset instead, via a `SelectSwapLayout` state machine (fire `next_swap_layout`, re-check the active name on each `TabUpdate`, bounded).
+3. **`max_panes` counts ALL panes** — the two plugin bars + the HUD included. For W work panes the tab holds W + 3, so tier a preset on `W + 3`, not `W`.
+4. **`toggle-pane-embed-or-floating` round-trips cleanly** — floating then re-embedding the HUD restores its exact slot, so `:float` is safe.
+
+Also: pui identifies its own HUD pane from `$ZELLIJ_PANE_ID` (set per pane), so the bare `:float`/`:dock` verbs target the HUD without command-matching; the work set is “the active tab’s non-plugin panes minus the HUD”.
+
+## How to apply
+
+[Section titled “How to apply”](#how-to-apply)
+
+* **Editing the presets?** They live in one place — `WORKBENCH_KDL` + `SWAP_PRESETS` in `apps/tui/src/layout.rs`. The cycle order in `SWAP_PRESETS` must match the `swap_tiled_layout` block order (a unit test pins this), and the palette reads `SWAP_PRESETS` to show the cycle. The HUD command pane (`pui hud`) and both bars must be re-declared in **every** preset so a swap re-slots them.
+* **Adding a dock-verb?** It’s a four-touch change kept in lockstep: `pui-companion-proto` (the `Command`), the plugin’s `handle_command` (`apps/pui-zellij-plugin/src/main.rs`), the `Companion` send method + `MuxAction` CLI fallback (`companion.rs` / `mux.rs`), and the palette parse→reducer→`Action::Dock` path (`app.rs`) + the run-loop arm (`main.rs`). **Edit both proto ends in the same batch** — a proto field added without updating `companion.rs`’s `OpenCommandPane` construction reds the whole `apps/tui` build for every peer.
+* **Verifying?** `cargo test` covers the pure layers (KDL contract, parser, reducer dispatch, work-set/HUD resolution, argv). The live wire path — proto → plugin → real zellij — is `apps/pui-zellij-plugin/scripts/dock-verbs-smoke.py` (a sibling of `live-smoke.py`; spins up its OWN isolated zellij session, never the user’s). Run it after `./scripts/build-install.sh` reinstalls the wasm.
+
 # Pull daemon decision logic into pure functions, leave glue in the runtime
 
 > A poll daemon's "what should I do next?" logic is testable in isolation only when it's pure. The runtime becomes a thin shim around `decideX()` calls; every interesting branch lives in a unit-tested types module.
@@ -6722,6 +6759,66 @@ Once the suite runs to completion, two pre-existing conditions become visible. N
 * Don’t “fix” this by pinning Node 22 via PATH — it re-breaks the moment any runner (CI, a new box) resolves a different Node.
 * Don’t quarantine your way out of the crash — it’s infra, not flaky tests.
 * Don’t read the post-fix failure tally as “the pool change broke things” — verify any suspect file against `--pool=threads` in isolation; if it fails there too, it’s pre-existing.
+
+# VM federation — proving the packaged .deb federates between separate machines
+
+> How bin/vm-federation.sh proves cross-MACHINE federation: two pristine Ubuntu VMs over a host bridge, distinct GitHub identities, host-run testnet DHT — reusing the same federation-asserts.sh core as the one-box smokes. The two traps that bite: identical slirp subnets break holepunch, and the clean-machine embedded-PG boot race.
+
+The in-process [p079 live test](/internal/docs/testing/p079-bidirectional-federation) proves the federation *logic* over a testnet DHT; the [packaged two-instance merge](/internal/docs/agent-insights/packaged-two-instance-federation-merge) proves it between two `.deb` processes **on one box**. The last rung of the fidelity ladder is two **separate machines** — real OS × N, a real network hop. `papercusp-desktop/bin/vm-federation.sh` is that proof, running each instance in its own pristine Ubuntu VM. Plan: `linux-test-vm-and-federation-2026-06-04` (Phase 2, P-009..P-013).
+
+## Shape
+
+[Section titled “Shape”](#shape)
+
+```bash
+cd papercusp-desktop
+bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge   # the primary run
+```
+
+Each VM (`fed-a`, `fed-b`) is a `vmctl` overlay off the golden image. The driver: resets each to pristine, boots it with a **second NIC** on the host bridge, installs the newest `.deb` (the fresh-install dep test, for free), launches the packaged app headless under the VM’s own `:0`, then runs the **same** `bin/lib/federation-asserts.sh` assertions the one-box smokes use — only the driver primitives (`drv_exec`/`drv_applog`/`drv_psql`) differ: they `ssh` into the VM instead of running locally (D-003 — one assert core, no drift).
+
+The gate is the local merge proof, now cross-machine: both boot · `[swarm] peer_connected` in both logs (a `join FAILED` line fails fast) · a feature INSERTed on A reaches B’s `harness_features_consolidated` as `origin='remote'` within \~90 s **and** the reverse · teardown by power-off.
+
+## Networking: dual-NIC, no DHCP/NAT
+
+[Section titled “Networking: dual-NIC, no DHCP/NAT”](#networking-dual-nic-no-dhcpnat)
+
+Every fed VM keeps its Phase-1 **slirp** NIC (internet + SSH-hostfwd + SPICE) and gets the federation network as a **second** NIC (D-016, amending D-002):
+
+* **`--net=bridge` (primary, needs sudo):** host bridge `pcusp-fedbr0` (`10.77.0.0/24`, host `10.77.0.1`). Each VM gets a host tap and a **static** guest IP (`10.77.0.2`/`.3`) assigned over SSH by deterministic MAC — no dnsmasq, no DHCP race, no iptables (internet rides the slirp NIC). The host runs `hyperdht/testnet` advertised on `10.77.0.1`, so both VMs reach the DHT, each other, and the host over a real hop.
+* **`--net=socket` (rootless fallback, exactly two VMs):** a qemu `-netdev socket` point-to-point L2 link (static `10.99.0.1/2`); the DHT bootstrap runs *inside* `fed-a` since the host isn’t on that L2.
+
+Trap 1 — identical slirp subnets silently kill discovery
+
+The bug that cost the first green run: with qemu’s **default** user-net, every VM is `10.0.2.15`. Hyperswarm’s holepunch exchanges *local-address candidates*, so a peer dialing the other’s `10.0.2.15` reaches **itself** — the DHT join succeeds (`[swarm] joined topic …` in both logs) but `peer_connected` never fires and the merge times out with zero error. Fix: give each VM a **distinct** slirp subnet (`boot-vm.sh` `SLIRP_NET`; the driver sets `10.31.<idx>.0/24`). The tell is “joined topic” on both sides but no “peer\_connected” — a join success is **not** a discovery success.
+
+Trap 2 — the clean-machine embedded-PG boot race
+
+On a pristine machine the desktop occasionally loses the embedded-Postgres-vs- sidecar startup race: the sidecar comes up first, `readOperatorState` connects to the **default** `127.0.0.1:5432` (no embedded-pg discovery file yet), `ECONNREFUSED`, and the app exits with “sidecar did not start within 30s”. It’s transient (the other VM in the same run boots fine), so `vm-federation.sh` tolerates it with a **bounded relaunch retry** (`ensure_booted`, up to 3 attempts; a fresh relaunch wipes `~/.papercusp` and wins the race) rather than flaking. If you see it deterministically on *both* VMs, that’s a real ordering regression in `src-tauri/src/main.rs` (embedded-PG must be ready before the sidecar spawns), not this harness.
+
+## Modes
+
+[Section titled “Modes”](#modes)
+
+| Flag                            | Meaning                                                                                                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--vms=2` (default)             | `fed-a` VM ↔ `fed-b` VM (P-009)                                                                                                                     |
+| `--vms=1`                       | host-local packaged instance ↔ `fed-a` VM (P-010)                                                                                                   |
+| `--dht=testnet` (default)       | host-run `hyperdht/testnet` on the bridge IP — deterministic                                                                                        |
+| `--dht=public`                  | no bootstrap override → the real public DHT. Best-effort (P-012): same-host VMs share one public IP and may fail to hairpin → expect `INCONCLUSIVE` |
+| `--net=bridge` / `--net=socket` | host bridge (root) vs rootless qemu-socket L2                                                                                                       |
+| `--no-reset` / `--skip-install` | reuse overlays + installed `.deb` (fast iteration; the default is a pristine reset + fresh install — the faithful acceptance run)                   |
+| `--keep-up`                     | leave the VMs running for debugging                                                                                                                 |
+
+## Identities + driver prereqs
+
+[Section titled “Identities + driver prereqs”](#identities--driver-prereqs)
+
+Distinct identities `papercupai` / `aviynw` via per-instance `GH_TOKEN` (the token is written to `~/fed.env` 0600 over SSH stdin, never on `argv`). `gh-token.ts` resolves the token from the `GH_TOKEN` env var — no interactive `gh auth login` needed in the VM. Two driver prereqs are apt-installed in each VM (NOT app deps — the `.deb`’s own dependency resolution is the separate fresh-install test): `gh` and `postgresql-client` (the `.deb` bundles `initdb`/`postgres` but no `psql`, which the merge asserts need).
+
+Tip
+
+Teardown is scoped to the run’s `$WORK` mktemp dir, never a broad `pkill -f papercusp-desktop`; the host-side testnet DHT node carries `$WORK` on its argv so the scoped cleanup catches it (the one-box smokes used to leak it). The `--dht=testnet` host node binds `0.0.0.0` and *advertises* the bridge IP so the VMs can reach it; with a loopback-only `127.0.0.1` testnet a VM would never connect.
 
 # The PAPERCUSP_WORKSPACE_ID pin silently rebinds every workspace
 
@@ -11392,11 +11489,12 @@ When every line is green, the artifact is ship-ready for that platform.
 
 [Section titled “Inventory”](#inventory)
 
-| VM                            | Host process                                                                        | SSH port | Display                                       | Inside-VM repo path                              |
-| ----------------------------- | ----------------------------------------------------------------------------------- | -------- | --------------------------------------------- | ------------------------------------------------ |
-| **macOS Sonoma** (x86\_64)    | `qemu-system-x86_64 ... mac_hdd_ng.img`                                             | `2222`   | SPICE on `127.0.0.1:5930`                     | `~/papercupai/papercusp-desktop`                 |
-| **Windows 10**                | `qemu-system-x86_64 ... win10.img`                                                  | `2223`   | (no SPICE configured; consider RDP if needed) | `C:\Users\User\papercupai\papercusp-desktop`     |
-| **Linux test** (Ubuntu 24.04) | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224`   | SPICE on `127.0.0.1:5932`                     | n/a — installs the packaged `.deb` (no checkout) |
+| VM                                           | Host process                                                                        | SSH port      | Display                                       | Inside-VM repo path                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- | ------------- | --------------------------------------------- | ------------------------------------------------ |
+| **macOS Sonoma** (x86\_64)                   | `qemu-system-x86_64 ... mac_hdd_ng.img`                                             | `2222`        | SPICE on `127.0.0.1:5930`                     | `~/papercupai/papercusp-desktop`                 |
+| **Windows 10**                               | `qemu-system-x86_64 ... win10.img`                                                  | `2223`        | (no SPICE configured; consider RDP if needed) | `C:\Users\User\papercupai\papercusp-desktop`     |
+| **Linux test** `clean` (Ubuntu 24.04)        | `qemu-system-x86_64 … run/<name>/overlay.qcow2` (via `scripts/linux-test-vm/vmctl`) | `2224`        | SPICE on `127.0.0.1:5932`                     | n/a — installs the packaged `.deb` (no checkout) |
+| **Linux fed** `fed-a`/`fed-b` (Ubuntu 24.04) | same golden image, +2nd NIC on `pcusp-fedbr0` (via `bin/vm-federation.sh`)          | `2225`/`2226` | SPICE `127.0.0.1:5933`/`5934`                 | n/a — two-machine federation testing             |
 
 The **Mac** and **Windows** VMs exist only to *produce* their platform’s Tauri bundle. The **Linux test** VM is different in kind — it *consumes* the built `.deb`, fresh-installing it on a pristine Ubuntu to validate the shipped artifact (and to act as a separate machine for federation testing). Day-to-day operator dev (`:3055`) and Linux builds still run entirely on the host.
 
@@ -11424,6 +11522,27 @@ cd papercusp-desktop/scripts/linux-test-vm
 `install` defaults to the newest `src-tauri/target/release/bundle/deb/Papercusp_*_amd64.deb` (pass a path to override). `verify` checks: package installs, binary `ldd`-resolves, app process up, embedded Postgres running, operator responds **on its dynamic port** (parsed from the app log — *not* a fixed `:3070`), and captures a window screenshot via the qemu monitor (`screendump`). Artifacts land in `run/<name>/verify/`. Tunables: `PAPERCUSP_TESTVM_RAM_MB`, `PAPERCUSP_TESTVM_CPUS`, `PAPERCUSP_TESTVM_DISK`, `PAPERCUSP_TESTVM_HOME`.
 
 **It earns its keep.** The first fresh-install run caught that the shipped `.deb` had **no database** on a clean machine: `spawn_embedded_postgres_server` / `spawn_zero_cache_server` (`src-tauri/src/main.rs`) used a bare `Command::new("node")` while the packaged process PATH has no `node` — fixed by routing them through the bundled-node PATH like `spawn_sidecar` does. The dev box hides this because it always has `node` on PATH, which is exactly why a clean VM is necessary. (Plan decision D-009.)
+
+### Two-machine federation (Phase 2)
+
+[Section titled “Two-machine federation (Phase 2)”](#two-machine-federation-phase-2)
+
+The same VMs double as **separate machines** for cross-machine federation testing — proving the packaged `.deb` federates (a write on one machine lands in the other’s PG) over a real OS + real network hop, not just loopback. Driven by **`papercusp-desktop/bin/vm-federation.sh`**, which reuses the one-box smokes’ assertion core (`bin/lib/federation-asserts.sh`, D-003) over an SSH driver.
+
+```sh
+cd papercusp-desktop
+bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge   # primary: fed-a ↔ fed-b
+bin/vm-federation.sh --vms=1                               # host instance ↔ fed-a VM
+bin/vm-federation.sh --vms=2 --net=socket                 # rootless (no sudo) fallback
+bin/vm-federation.sh --vms=2 --no-reset --skip-install    # fast iteration (reuse overlays)
+```
+
+* **Network (D-016):** every fed VM keeps its slirp NIC (internet/SSH/SPICE) and gets a **second** NIC on host bridge `pcusp-fedbr0` (`10.77.0.0/24`, host `10.77.0.1`) with a static guest IP — no dnsmasq/NAT. The host runs a `hyperdht/testnet` advertised on the bridge IP; both VMs set `PAPERCUSP_DHT_BOOTSTRAP` to it → deterministic discovery over a real hop. `--net=socket` is a rootless dual-NIC fallback (qemu socket L2, exactly two VMs).
+* **Identities:** `papercupai` / `aviynw` via per-instance `GH_TOKEN` (resolved by `gh-token.ts`); `gh` + `postgresql-client` are apt-installed in each VM as driver prereqs.
+* **Gate:** both boot · `[swarm] peer_connected` both logs (no `join FAILED`) · bidirectional `origin='remote'` merge within \~90 s · teardown by power-off.
+* **Up-front `.deb` gate (P-011):** a static grep of the packaged `host.mjs` asserts it carries `PAPERCUSP_DHT_BOOTSTRAP` support + `[swarm]` logs (landed 2026-06-02), failing fast on an older `.deb` that would silently use the public DHT.
+
+Two non-obvious traps (identical slirp subnets break holepunch; the clean-machine embedded-PG boot race) and the full mode matrix are documented in the agent-insight [VM federation — separate-machine proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
 
 ## SSH commands
 

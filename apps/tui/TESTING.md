@@ -41,7 +41,14 @@ should run. The `#[ignore]`d live smokes require the operator running (an
   across chunks) + an end-to-end client over a **fake TCP HTTP server**: bearer
   header sent, body parsed, non-2xx errors, and streamed SSE frames.
 - **`mux.rs` / `layout.rs` — zellij control.** `zellij action`/`zellij pipe`
-  command construction (pure argv) + the workbench KDL + `materialize`.
+  command construction (pure argv, incl. the dockview swap-layout/float CLI
+  fallbacks) + the workbench KDL contract (stacked-by-default base + the four
+  `swap_tiled_layout` presets, `SWAP_PRESETS` cycle order) + `materialize`.
+  Dockview dock-verbs (Brief 50): the palette parse (`:stack`/`:float`/`:dock`/
+  `:layout`), the reducer resolving them against the live topology into
+  `Action::Dock` (work-set/HUD computation, target resolution, no-companion error
+  paths), and the palette's preset-label rendering are in the `app.rs`/`ui.rs`
+  tests. The full proto→plugin→zellij path is the plugin's `dock-verbs-smoke.py`.
 - **`tutorial.rs` — first-run state.** `pui-state.json` seen/mark round-trip,
   key-preserving merge, malformed-file → unseen.
 - **`companion.rs` — companion zellij plugin link (P-004 / D-008).** The pure
