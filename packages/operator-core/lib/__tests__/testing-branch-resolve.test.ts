@@ -29,11 +29,10 @@ describe('resolveGitContext', () => {
   it('returns nulls when git is missing, not throws', async () => {
     // We can't easily induce git failure without trickery, but the
     // promise contract is "never throws" — this asserts the surface.
-    await expect(resolveGitContext()).resolves.toEqual(
-      expect.objectContaining({
-        branch: expect.anything(),
-        commit: expect.anything(),
-      }),
-    );
+    // Both keys must be present; either may be null (branch IS null on a
+    // detached-HEAD checkout — e.g. the release-gate checkpoint tree).
+    const ctx = await resolveGitContext();
+    expect(ctx).toHaveProperty('branch');
+    expect(ctx).toHaveProperty('commit');
   });
 });

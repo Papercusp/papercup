@@ -21,6 +21,10 @@ use std::sync::{Arc, Mutex};
 /// Cap on retained notification history (P8).
 const NOTIF_HISTORY_CAP: usize = 50;
 
+/// The Cupboard kind-filter cycle (D-011): `f` steps through these;
+/// `cupboard_kind` indexes this array. "all" sends no `kind` param.
+pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "snapshot", "plugin"];
+
 /// What the run-loop should do after handling one event.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -118,6 +122,11 @@ pub enum PaletteCommand {
         remote: Option<String>,
         public: bool,
     },
+    /// `:set <key.path> <value>` — edit the Config tab's settings file (D-013).
+    /// Routed to `Action::ConfigEdit` in the reducer, not the workbench task.
+    ConfigSet { key: String, value: String },
+    /// `:unset <key.path>` — remove a key from the settings file (D-013).
+    ConfigUnset { key: String },
 }
 
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
@@ -143,8 +152,100 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
                 None => Some(PaletteCommand::PickupPlanItem { harness: None, plan: None, item: first }),
             }
         }
+        // `:create <slug> <path-or-github-url>` — both args required (D-010).
+        "create" => {
+            let mut parts = arg.splitn(2, char::is_whitespace);
+            let slug = parts.next().unwrap_or("").trim().to_string();
+            let source = parts.next().unwrap_or("").trim().to_string();
+            if slug.is_empty() || source.is_empty() {
+                return None;
+            }
+            Some(PaletteCommand::CreatePot { slug, source })
+        }
+        // `:share <slug> [remote] [public]` — slug required; a bare `public`
+        // token flags Cupboard publish; any other extra token is the remote.
+        "share" => {
+            let mut slug = String::new();
+            let mut remote: Option<String> = None;
+            let mut public = false;
+            for tok in arg.split_whitespace() {
+                if slug.is_empty() {
+                    slug = tok.to_string();
+                } else if tok.eq_ignore_ascii_case("public") {
+                    public = true;
+                } else if remote.is_none() {
+                    remote = Some(tok.to_string());
+                } else {
+                    return None; // too many args
+                }
+            }
+            if slug.is_empty() {
+                return None;
+            }
+            Some(PaletteCommand::SharePot { slug, remote, public })
+        }
+        // Config-tab editor (D-013): `:set <key.path> <value>` / `:unset <key.path>`.
+        "set" if !arg.is_empty() => {
+            let mut kv = arg.splitn(2, char::is_whitespace);
+            let key = kv.next().unwrap_or("").to_string();
+            let value = kv.next().unwrap_or("").trim().to_string();
+            if key.is_empty() || value.is_empty() {
+                None
+            } else {
+                Some(PaletteCommand::ConfigSet { key, value })
+            }
+        }
+        "unset" if !arg.is_empty() => Some(PaletteCommand::ConfigUnset { key: arg }),
         _ => None,
     }
+}
+
+/// Parse a `:set` value: JSON when it parses (numbers, booleans, null, arrays,
+/// objects, quoted strings), bare string otherwise — so `:set cleanupPeriodDays
+/// 60` sets a number while `:set model claude-opus-4-8` sets a string. Pure.
+pub fn parse_config_value(raw: &str) -> Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+/// Set (`Some`) or remove (`None`) a dotted path inside a JSON object tree,
+/// creating intermediate objects on set. Errors when a path segment lands on a
+/// non-object (never silently clobbers a scalar with a subtree); `:unset` of a
+/// missing path is a no-op. Pure — unit-tested.
+pub fn edit_json_path(root: &mut Value, path: &str, mut value: Option<Value>) -> Result<(), String> {
+    let segs: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+    if segs.is_empty() {
+        return Err("empty key path".into());
+    }
+    let setting = value.is_some();
+    let mut cur = root;
+    for (i, seg) in segs.iter().enumerate() {
+        let last = i + 1 == segs.len();
+        let obj = cur
+            .as_object_mut()
+            .ok_or_else(|| format!("`{}` is not an object", segs[..i].join(".")))?;
+        if last {
+            match value.take() {
+                Some(v) => {
+                    obj.insert((*seg).to_string(), v);
+                }
+                None => {
+                    obj.remove(*seg);
+                }
+            }
+            return Ok(());
+        }
+        if setting {
+            cur = obj
+                .entry((*seg).to_string())
+                .or_insert_with(|| Value::Object(Default::default()));
+        } else {
+            match obj.get_mut(*seg) {
+                Some(next) => cur = next,
+                None => return Ok(()), // :unset of a missing path — nothing to do
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The workbench tabs. Variant identifiers are stable wire/route keys and are
@@ -174,13 +275,17 @@ pub enum Tab {
     /// Memory browser (D-006 Step 2) — whatever the configured memory backend
     /// holds (mem0 today; the MemoryBackend seam later). Appended; key 'm'.
     Memory,
+    /// Cupboard (D-011) — the marketplace: browse/search the 4 listing kinds
+    /// (harness/blueprint/snapshot/plugin) + per-kind join/fork/install, all
+    /// against the existing `/api/cupboard/*` routes. Appended; key 'c'.
+    Cupboard,
 }
 
 impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Brew tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 12] = [
         Tab::Operator,
         Tab::Inbox,
         Tab::Plans,
@@ -192,6 +297,7 @@ impl Tab {
         Tab::Plugins,
         Tab::Settings,
         Tab::Memory,
+        Tab::Cupboard,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -207,12 +313,13 @@ impl Tab {
             Tab::Plugins => "Plugins",
             Tab::Settings => "Settings",
             Tab::Memory => "Memory",
+            Tab::Cupboard => "Cupboard",
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
     /// dispatch in `on_key` derives from it, g1). Ten lead tabs take the ten
     /// digits (1-9, 0); appended tabs take a mnemonic letter (Memory → 'm',
-    /// freed when the Brew mode toggle moved to Tab).
+    /// Cupboard → 'c').
     pub fn switch_key(self) -> char {
         match self {
             Tab::Operator => '1',
@@ -226,6 +333,7 @@ impl Tab {
             Tab::Plugins => '9',
             Tab::Settings => '0',
             Tab::Memory => 'm',
+            Tab::Cupboard => 'c',
         }
     }
     pub fn index(self) -> usize {
@@ -329,8 +437,11 @@ pub struct App {
     pub testing_focus: TestingFocus,
     pub testing_files_loading: bool,
     pub test_run: Option<TestRunState>,
-    /// Config tab: the active harness's claude-settings content (read-only).
-    pub config: String,
+    /// Config tab (D-013): the active harness's *effective* claude-settings —
+    /// Claude Code defaults overlaid by `.claude/settings.json`, plus the raw
+    /// file body. Editable via the `:set <key.path> <value>` / `:unset
+    /// <key.path>` palette commands (Action::ConfigEdit round-trips the PUT).
+    pub config: EffectiveClaudeSettings,
     /// Plugins tab (D-002): plugin-contributed TUI panes for the active harness +
     /// the selection cursor. Enter launches the selected pane in a mux pane.
     pub panes: Vec<TuiPaneContribution>,
@@ -345,6 +456,19 @@ pub struct App {
     pub memory_available: bool,
     pub memory_search_open: bool,
     pub memory_search_input: String,
+    /// Cupboard tab (D-011): the fetched listings under the active kind filter
+    /// (`cupboard_kind` indexes `CUPBOARD_KINDS`) + search query, the cursor,
+    /// the in-flight flag, the `/`-search composer state, and the armed
+    /// confirm — a per-kind action (join/fork/install) fires only after Enter
+    /// arms a listing id and `y` confirms it.
+    pub cupboard: Vec<crate::models::CupboardListing>,
+    pub cupboard_sel: usize,
+    pub cupboard_kind: usize,
+    pub cupboard_query: String,
+    pub cupboard_search_open: bool,
+    pub cupboard_search_input: String,
+    pub cupboard_loading: bool,
+    pub cupboard_confirm: Option<String>,
     /// Settings tab (P10): operator feature flags (key, enabled), sorted; the
     /// flag-backend source ('defaults'/'posthog'); + the selection cursor.
     /// Read-only v1 — the full per-group settings port lives on the desktop.
@@ -466,7 +590,7 @@ impl App {
             testing_focus: TestingFocus::Domains,
             testing_files_loading: false,
             test_run: None,
-            config: String::new(),
+            config: EffectiveClaudeSettings::default(),
             panes: Vec::new(),
             pane_sel: 0,
             memories: Vec::new(),
@@ -475,6 +599,14 @@ impl App {
             memory_available: false,
             memory_search_open: false,
             memory_search_input: String::new(),
+            cupboard: Vec::new(),
+            cupboard_sel: 0,
+            cupboard_kind: 0,
+            cupboard_query: String::new(),
+            cupboard_search_open: false,
+            cupboard_search_input: String::new(),
+            cupboard_loading: false,
+            cupboard_confirm: None,
             flags: Vec::new(),
             flags_source: String::new(),
             flag_sel: 0,
@@ -984,8 +1116,8 @@ impl App {
         }
     }
 
-    pub fn set_config(&mut self, content: String) {
-        self.config = content;
+    pub fn set_config(&mut self, v: EffectiveClaudeSettings) {
+        self.config = v;
     }
 
     /// Settings tab (P10b): store the read-only operator-config overview.
@@ -1846,6 +1978,18 @@ impl App {
                                 }
                             }
                         }
+                        // Config-tab edits (D-013) go to the read→edit→PUT task,
+                        // not the workbench command executor.
+                        Some(PaletteCommand::ConfigSet { key, value }) => Action::ConfigEdit {
+                            harness: self.harness.clone(),
+                            key,
+                            value: Some(value),
+                        },
+                        Some(PaletteCommand::ConfigUnset { key }) => Action::ConfigEdit {
+                            harness: self.harness.clone(),
+                            key,
+                            value: None,
+                        },
                         Some(c) => Action::Workbench(c),
                         None => Action::Render,
                     }
@@ -2500,8 +2644,14 @@ mod tests {
         assert_eq!(a.testing_sel, 1);
         assert_eq!(a.update(key('8', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Config);
-        a.set_config("xterm=1".into());
-        assert_eq!(a.config, "xterm=1");
+        a.set_config(EffectiveClaudeSettings {
+            content: "{\"model\":\"opus\"}".into(),
+            effective: json!({ "model": "opus" }),
+            file_keys: vec!["model".into()],
+            parse_error: None,
+        });
+        assert_eq!(a.config.content, "{\"model\":\"opus\"}");
+        assert_eq!(a.config.effective["model"], "opus");
         // Config has no list; j/k is a no-op there.
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Config);

@@ -434,10 +434,58 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   return wi;
 }
 
-/** Lifecycle.setState — feature → status; issue → state. */
+/** The issue family's native Lifecycle states (the engineer_issues CHECK). */
+export const ISSUE_FAMILY_STATES: readonly string[] = ['open', 'resolved', 'closed'];
+
+/**
+ * Normalize a requested lifecycle state onto a family's NATIVE vocabulary
+ * (EI-24): the families speak different dialects (feature: todo/validating/
+ * passed/failing/deprecated; issue: open/resolved/closed) while callers + the
+ * coord-lifecycle docs speak the canonical done/dropped/todo. Cross-dialect
+ * aliases translate; an unmappable issue-family state is a typed refusal
+ * LISTING the valid states (never a raw engineer_issues_state_check PG error).
+ * Feature states pass through un-restricted beyond the aliases — the pipeline
+ * owns that vocabulary (hfc.status carries no CHECK).
+ */
+export function normalizeWorkItemState(
+  family: WorkItemFamily,
+  state: string,
+): { ok: true; state: string } | { ok: false; valid: readonly string[] } {
+  if (family === 'feature') {
+    const aliases: Record<string, string> = {
+      done: 'passed',
+      resolved: 'passed',
+      dropped: 'deprecated',
+      closed: 'deprecated',
+      open: 'todo',
+    };
+    return { ok: true, state: aliases[state] ?? state };
+  }
+  const aliases: Record<string, string> = {
+    done: 'resolved',
+    passed: 'resolved',
+    todo: 'open',
+    dropped: 'closed',
+    deprecated: 'closed',
+  };
+  const mapped = aliases[state] ?? state;
+  if (ISSUE_FAMILY_STATES.includes(mapped)) return { ok: true, state: mapped };
+  return { ok: false, valid: [...ISSUE_FAMILY_STATES, 'done', 'dropped', 'todo'] };
+}
+
+/** Lifecycle.setState — feature → status; issue → state. The requested state is
+ *  normalized onto the family's native vocabulary first (EI-24); an unmappable
+ *  state throws a typed error naming the valid set. */
 export async function setWorkItemState(id: string, state: string, opts: { harness?: string; by?: string } = {}): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  const norm = normalizeWorkItemState(wi.family, state);
+  if (!norm.ok) {
+    throw new Error(
+      `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
+    );
+  }
+  state = norm.state;
   if (wi.family === 'issue') {
     const updated = await setIssueState(id, state as IssueState, opts.by);
     return updated ? issueToWorkItem(updated) : null;

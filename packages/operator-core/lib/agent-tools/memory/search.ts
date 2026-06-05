@@ -24,17 +24,23 @@ const ALL_ROLES = [
   'reviewer', 'debugger', 'operator', 'documenter', 'curator',
 ] as const;
 
-/** Map a neutral entry onto the stable wire row the surfaces consume. */
+/** Map a neutral entry onto the stable wire row the surfaces consume.
+ *  `kind` is materialized into `metadata.kind` — the TUI Memory tab reads
+ *  it there, and non-mem0 backends (e.g. claude-file) carry kind only at
+ *  the entry level. For mem0 rows this is a no-op (kind already matches). */
 export function toWireRow(e: MemoryEntry): {
   id: string;
   memory: string;
   metadata?: Record<string, unknown>;
   score?: number;
 } {
+  const metadata = e.kind !== undefined
+    ? { ...(e.metadata ?? {}), kind: e.kind }
+    : e.metadata;
   return {
     id: e.id,
     memory: e.text,
-    ...(e.metadata !== undefined ? { metadata: e.metadata } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
     ...(e.score !== undefined ? { score: e.score } : {}),
   };
 }

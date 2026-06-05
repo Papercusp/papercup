@@ -181,6 +181,24 @@ export function rubricFromBlueprintGym(gym: { rubric?: GymRubricInput } | undefi
   };
 }
 
+// ───────────────────────────── child-blueprint binding ─────────────────────────────
+
+/**
+ * Bind the gym's parameterized recursion child (D-008). The gym blueprint
+ * declares `recursion.childBlueprint: $target`; at spawn time the gym runtime
+ * resolves the actual child by binding `{ target: <blueprint-under-
+ * optimization> }` through the engine's canonical `resolveChildBlueprint` —
+ * the declared replacement for the former undeclared runtime override of
+ * "self". Fail-closed: a gym blueprint whose `$target` can't bind throws
+ * rather than silently running the gym against itself.
+ */
+export function resolveGymChildBlueprint(
+  gymBp: { id: string; recursion?: { childBlueprint?: string } },
+  targetBlueprintId: string,
+): string {
+  return resolveChildBlueprint(gymBp, { target: targetBlueprintId });
+}
+
 // ───────────────────────────── re-exports ─────────────────────────────
 // The gym's primitives, surfaced from one module so the `gym:*` tools + the A/B
 // eval-matrix import from here. Effects stay injected on the heavy ones.

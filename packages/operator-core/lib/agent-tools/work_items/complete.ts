@@ -87,10 +87,21 @@ export default defineTool({
       };
     }
 
-    // Optional explicit terminal transition.
-    const workItem = args.state
-      ? (await setWorkItemState(args.id, args.state, { harness: args.harness, by: ident.ownerId })) ?? existing
-      : existing;
+    // Optional explicit terminal transition. The engine normalizes the state
+    // onto the family's vocabulary (done→resolved for issue-family etc.) and
+    // throws a TYPED error for an unmappable one — and either way a failed
+    // state write must NEVER lose the completion record (EI-24): catch, report
+    // it as `stateError`, and still record + emit the completion.
+    let workItem = existing;
+    let stateError: string | undefined;
+    if (args.state) {
+      try {
+        workItem =
+          (await setWorkItemState(args.id, args.state, { harness: args.harness, by: ident.ownerId })) ?? existing;
+      } catch (e) {
+        stateError = e instanceof Error ? e.message : String(e);
+      }
+    }
 
     // Fill provenance defaults so the rendered notification is complete even
     // when the caller omits them (D-006 information preservation).
@@ -106,7 +117,7 @@ export default defineTool({
         {
           type: 'text' as const,
           // `completion` is what the lifecycle emits-rule renders into coord:emit.
-          text: JSON.stringify({ ok: true, workItem, completion }),
+          text: JSON.stringify({ ok: true, workItem, completion, ...(stateError ? { stateError } : {}) }),
         },
       ],
     };

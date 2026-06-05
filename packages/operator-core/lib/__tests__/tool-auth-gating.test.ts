@@ -74,7 +74,7 @@ describe('auth gating (missing bearer/workspace class)', () => {
       'orchestrator_spawn', 'orchestrator_poll', 'orchestrator_list_active', 'orchestrator_cancel',
     ]);
     const src = readFileSync(join(__dirname, '..', 'operator-mcp-tools.ts'), 'utf8');
-    const names = [...new Set([...src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.]+)/g)].map((m) => m[1]))]
+    const names = [...new Set([...src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.-]+)/g)].map((m) => m[1]))]
       .filter((n) => !PLUGIN_PROVIDED.has(n));
     expect(names.length).toBeGreaterThan(10);
     const missing = names.filter((n) => !isInvokable(n));

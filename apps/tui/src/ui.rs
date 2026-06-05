@@ -206,7 +206,13 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
                 .iter()
                 .map(|it| ListItem::new(Line::from(plan_item_line(it))))
                 .collect();
-            (format!(" Items ({}) · liveness: {mode} ", s.items.len()), rows)
+            // `:pickup` = convert-at-pickup (D-015): the palette command that
+            // converts an item to a claimed work_item — advertised here so the
+            // claim action is discoverable from the pane it acts on.
+            (
+                format!(" Items ({}) · liveness: {mode} · :pickup <item> ", s.items.len()),
+                rows,
+            )
         }
         None => (" Items ".to_string(), Vec::new()),
     };
