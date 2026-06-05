@@ -2095,11 +2095,57 @@ mod tests {
             triage_note: None,
         }]);
         let text = render(&app, 100, 14);
-        assert!(text.contains("Inbox (1)"));
+        assert!(text.contains("Inbox"));
+        assert!(text.contains("◆1")); // tier-count summary: 1 Decision
+        assert!(text.contains("Decisions (1)")); // the Decisions tier section header
         assert!(text.contains("needs-human"));
         assert!(text.contains("my-plan/P-002"));
         assert!(text.contains("coord-escalation")); // preview
         assert!(text.contains("Details of the escalation")); // body in preview
+        assert!(text.contains("tier:")); // preview shows the tier line
+    }
+
+    #[test]
+    fn inbox_renders_four_tier_sections() {
+        // inbox-tiering D-006: items group into Decisions ▸ Handled ▸ Alerts ▸
+        // Activity sections, each with a header + count.
+        use crate::models::AttentionItem;
+        let mk = |id: &str, tier: &str, needs_human: bool| AttentionItem {
+            id: id.into(),
+            kind: "coord-message".into(),
+            source: "coord".into(),
+            harness_slug: Some("papercup".into()),
+            plan_slug: None,
+            item_ref: None,
+            title: format!("item {id}"),
+            body: None,
+            status: "message".into(),
+            importance: None,
+            needs_human,
+            tier: Some(tier.into()),
+            owner_agent_id: Some("su-worker".into()),
+            owner_label: Some("worker".into()),
+            triage_state: if tier == "handled" { Some("downgraded".into()) } else { None },
+            triage_note: if tier == "handled" { Some("auto lifecycle, not a decision".into()) } else { None },
+        };
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.set_inbox(vec![
+            mk("d1", "decision", true),
+            mk("h1", "handled", false),
+            mk("a1", "alert", false),
+            mk("v1", "activity", false),
+            mk("v2", "activity", false),
+        ]);
+        let text = render(&app, 110, 30);
+        // All four tier sections render with their counts.
+        assert!(text.contains("Decisions (1)"));
+        assert!(text.contains("Handled by operator (1)"));
+        assert!(text.contains("Alerts (1)"));
+        assert!(text.contains("Activity (2)"));
+        // The tier-count summary in the title.
+        assert!(text.contains("◆1"));
+        assert!(text.contains("✓1"));
     }
 
     fn presence_entry(agent: &str, intent: &str) -> RosterEntry {

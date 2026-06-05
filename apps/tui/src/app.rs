@@ -905,6 +905,9 @@ impl App {
     /// user-visible `<say>` text and clear the streaming flag.
     fn finish_chat_turn(&mut self) {
         if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
+            // Parse the <report> payload from the raw buffer BEFORE finalize
+            // replaces `content` with the say text (structured-report-protocol).
+            m.report = crate::chat_tags::extract_report(&m.content);
             m.content = crate::chat_tags::finalize(&m.content);
             m.streaming = false;
         }
@@ -4757,6 +4760,29 @@ mod tests {
         assert!(!a.chat_streaming);
         assert!(!a.chat_messages[1].streaming);
         assert_eq!(a.chat_messages[1].content, "hello");
+    }
+
+    #[test]
+    fn chat_report_tag_is_parsed_onto_the_finalized_bubble() {
+        let mut a = App::new();
+        a.begin_user_send("status?");
+        a.update(Event::ChatDelta("<say>Here is where things stand.</say>".into()));
+        a.update(Event::ChatDelta(
+            concat!(
+                r#"<report>{"plans":[{"slug":"rate-limit-layer-v2","title":"Rate-limit v2","#,
+                r#""status":"active","items":[{"id":"P-001","text":"Error classifier","status":"done"}]}]}</report>"#,
+            )
+            .into(),
+        ));
+        // While streaming, the raw buffer holds the tags — report not yet parsed.
+        assert!(a.chat_messages[1].report.is_none());
+        a.update(Event::ChatDone);
+        // On finalize: say becomes the content, report parsed from the raw buffer.
+        assert_eq!(a.chat_messages[1].content, "Here is where things stand.");
+        let rep = a.chat_messages[1].report.as_ref().expect("report parsed on finalize");
+        assert_eq!(rep.plans.len(), 1);
+        assert_eq!(rep.plans[0].title, "Rate-limit v2");
+        assert_eq!(rep.plans[0].items[0].text, "Error classifier");
     }
 
     #[test]
