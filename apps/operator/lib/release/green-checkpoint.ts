@@ -106,6 +106,19 @@ export async function runGreenCheckpoint(
       `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.`,
     )
     .catch(() => {});
+  // await-event-primitive-2026-06-05 P-015: `release:green` is awaitable —
+  // an agent blocked on "the next green ready" sleeps on it (events:await)
+  // instead of polling the checkpoint. Fire-and-forget.
+  void import('@papercusp/operator-core/lib/events/await/engine')
+    .then(({ emitAwaitedEvent }) =>
+      emitAwaitedEvent({
+        key: 'release:green',
+        summary: `ready advanced to ${candidate.slice(0, 8)} (green, deployable)`,
+        payload: { sha: candidate, from: adv.from },
+        source: 'green-checkpoint',
+      }),
+    )
+    .catch(() => {});
   return { advanced: adv.advanced, candidate, from: adv.from, green: true, reason: 'advanced', summary };
 }
 

@@ -254,12 +254,12 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
                 .iter()
                 .map(|it| ListItem::new(Line::from(plan_item_line(it))))
                 .collect();
-            // `:pickup` = convert-at-pickup (D-015): the palette command that
-            // converts an item to a claimed work_item — advertised here so the
-            // claim action is discoverable from the pane it acts on.
+            // `:pickup` = convert-at-pickup (D-015) and `:release` its inverse
+            // (P-005b write surface) — advertised here so both claim actions
+            // are discoverable from the pane they act on.
             (
                 format!(
-                    " Items ({}) · liveness: {mode} · :pickup <item> ",
+                    " Items ({}) · liveness: {mode} · :pickup/:release <item> ",
                     s.items.len()
                 ),
                 rows,

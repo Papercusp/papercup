@@ -38,6 +38,11 @@ cpal = "0.15"
 rodio = "0.20"
 hound = "3.5"
 base64 = "0.22"
+# Realtime operator voice (voice-realtime-tui-2026-06-05 D-001): the raw
+# ElevenLabs Conv-AI WebSocket session. rustls to match reqwest (no OpenSSL);
+# futures-util drives the split ws sink/stream.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -124,6 +124,10 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
       });
     }
   } catch (e) {
-    console.warn(`[work-items-events] settled-event emit failed for ${wi.id}: ${e instanceof Error ? e.message : e}`);
+    const msg = e instanceof Error ? e.message : String(e);
+    // A missing event_awaits relation = pre-migration-163 substrate (or a
+    // partial test schema) — expected fail-soft, not warn-worthy noise.
+    if (/does not exist/.test(msg)) return;
+    console.warn(`[work-items-events] settled-event emit failed for ${wi.id}: ${msg}`);
   }
 }

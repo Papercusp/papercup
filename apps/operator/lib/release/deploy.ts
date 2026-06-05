@@ -254,6 +254,20 @@ export async function executeDeploy(
             `Staged migrations: ${plan.migrations.join(', ') || 'none'}.`,
         ),
       );
+      // await-event-primitive-2026-06-05 P-015: deploy-landed is awaitable —
+      // the standard "my change reaches GREEN :3070 on the next deploy"
+      // deferral can now SLEEP on `release:deployed` instead of being a
+      // hand-tracked re-verify chore. Fire-and-forget.
+      void import('@papercusp/operator-core/lib/events/await/engine')
+        .then(({ emitAwaitedEvent }) =>
+          emitAwaitedEvent({
+            key: 'release:deployed',
+            summary: `deployed ${short(plan.targetSha)} (${plan.commits.length} commit(s), ${migrations!.appliedCount} migration(s))`,
+            payload: { sha: plan.targetSha, commits: plan.commits.length, migrations: plan.migrations },
+            source: 'release-gate',
+          }),
+        )
+        .catch(() => {});
       return { ok: true, plan, steps, snapshot, migrations, rolledBack: false };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -279,6 +293,18 @@ export async function executeDeploy(
           `❌ deploy of ${short(plan.targetSha)} FAILED${
             rolledBack ? ` — rolled back to ${short(prevReleaseSha)}` : ' and ROLLBACK FAILED — operator may need manual recovery'
           }: ${error}`,
+        )
+        .catch(() => {});
+      // P-015: a failure is as awaitable as a success — a deploy-blocked
+      // agent learns the bad news now, not at its timeout.
+      void import('@papercusp/operator-core/lib/events/await/engine')
+        .then(({ emitAwaitedEvent }) =>
+          emitAwaitedEvent({
+            key: 'release:deploy-failed',
+            summary: `deploy of ${short(plan.targetSha)} FAILED${rolledBack ? ' (rolled back)' : ' (rollback failed)'}: ${error}`,
+            payload: { sha: plan.targetSha, rolledBack, error },
+            source: 'release-gate',
+          }),
         )
         .catch(() => {});
       return { ok: false, plan, steps, snapshot, migrations, rolledBack, error };

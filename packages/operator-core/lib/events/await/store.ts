@@ -17,7 +17,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -29,6 +29,18 @@ import type {
 } from './types';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+/**
+ * Events are coordination-plane state: like coord_event_log / coord_links /
+ * coord_entity_subscriptions, ALL rows live in the one coord workspace,
+ * regardless of the caller's scoping. The live bug this fixes: an unscoped SU
+ * shell's identity carries workspaceId '*', so its awaits registered under
+ * '*' while a system source (work-items settle) emitted under the ACTIVE
+ * workspace — the key never matched and the wake never fired. Event keys
+ * embed globally-unique ids (ticket/run/item), so cross-workspace collision
+ * is a non-issue; one namespace is the trap-free choice.
+ */
+const eventsWs = (_caller?: string): string => DEFAULT_COORD_WORKSPACE;
 
 /** jsonb arrives parsed OR as text depending on the postgres-js client config
  *  (the repo's known sql.json quirk) — tolerate both. */
@@ -101,7 +113,7 @@ export async function registerAwait(input: {
   workspaceId?: string;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     INSERT INTO harness_shared.event_awaits
       (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts)
@@ -126,7 +138,7 @@ export async function cancelAwait(input: {
   workspaceId?: string;
 }): Promise<boolean> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET cancelled_at = now()
@@ -141,7 +153,7 @@ export async function cancelAwait(input: {
 /** Active awaits for a subscriber (events:status). */
 export async function listActiveAwaits(subscriberId: string, workspaceId?: string): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
-  const ws = workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(workspaceId);
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND subscriber_id = ${subscriberId}
@@ -156,7 +168,7 @@ export async function listActiveAwaits(subscriberId: string, workspaceId?: strin
  *  (e.g. the lock-grant bridge sweeping `lock:grant:%` against waiter status). */
 export async function listActiveAwaitsByKeyPrefix(prefix: string, workspaceId?: string): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
-  const ws = workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(workspaceId);
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key LIKE ${prefix + '%'}
@@ -171,7 +183,7 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string, workspaceId?: 
  *  this to decide whether anyone is waiting at all). */
 export async function listActiveAwaitsForKey(eventKey: string, workspaceId?: string): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
-  const ws = workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(workspaceId);
   const rows = await sql`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key = ${eventKey}
@@ -191,7 +203,7 @@ export async function fireAwaitsForKey(input: {
   workspaceId?: string;
 }): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = ${input.reason ?? 'event'}
@@ -211,7 +223,7 @@ export async function insertDeliveries(input: {
 }): Promise<number> {
   if (input.awaits.length === 0) return 0;
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const payloadJson = input.payload === undefined ? null : JSON.stringify(input.payload);
   let n = 0;
   for (const a of input.awaits) {
@@ -235,7 +247,7 @@ export async function claimDueDeliveries(input: {
   workspaceId?: string;
 }): Promise<DeliveryWork[]> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     WITH due AS (
       SELECT id FROM harness_shared.event_wake_deliveries
@@ -328,7 +340,7 @@ export async function recoverStuckDeliveries(input: {
   workspaceId?: string;
 }): Promise<number> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'pending'
@@ -342,7 +354,7 @@ export async function recoverStuckDeliveries(input: {
 /** Sweep half 2a: timeout-behavior 'wake' awaits past deadline → fire as timeout. */
 export async function fireTimedOutAwaits(workspaceId?: string): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
-  const ws = workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(workspaceId);
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = 'timeout'
@@ -357,7 +369,7 @@ export async function fireTimedOutAwaits(workspaceId?: string): Promise<AwaitRow
 /** Sweep half 2b: timeout-behavior 'expire' awaits past deadline → lapse (visible, no turn). */
 export async function expireLapsedAwaits(workspaceId?: string): Promise<number> {
   const { sql } = getOrgPg();
-  const ws = workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(workspaceId);
   const rows = await sql`
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = 'expired'
@@ -409,7 +421,7 @@ export async function wakeMeter(input: {
   workspaceId?: string;
 }): Promise<Array<{ subscriberId: string; status: string; channel: string | null; count: number }>> {
   const { sql } = getOrgPg();
-  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ws = eventsWs(input.workspaceId);
   const rows = await sql`
     SELECT subscriber_id, status, channel, count(*)::int AS count
       FROM harness_shared.event_wake_deliveries

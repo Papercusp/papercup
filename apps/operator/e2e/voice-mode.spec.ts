@@ -87,15 +87,21 @@ test.describe('voice settings', () => {
     }
   });
 
+  // The spend widgets render only after the page's spend/prefs fetches
+  // resolve, and those fetches share the shell's HTTP/1.1 socket budget with
+  // its SSE streams — give the data-dependent guard a longer leash than the
+  // 5s default (the assertion itself is unchanged).
   test('STT spend widget renders alongside TTS spend', async ({ page }) => {
     await page.goto('/settings/voice');
-    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible();
+    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('Voicemode (local Whisper) and Web Speech are free')).toBeVisible();
   });
 
   test('settings/voice has no serious or critical a11y violations', async ({ page }) => {
     await page.goto('/settings/voice');
-    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible();
+    // Same data-dependent guard as above — wait for the page to be fully
+    // rendered before the axe sweep so it audits the real surface.
+    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible({ timeout: 20_000 });
     await expectNoA11yViolations(page);
   });
 

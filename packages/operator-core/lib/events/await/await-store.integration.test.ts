@@ -218,9 +218,13 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(delivered).toMatchObject({ channel: 'plan-run-resume', count: 1 });
   });
 
-  it('workspace isolation: another workspace’s awaits do not fire here', async () => {
-    await store.registerAwait({ subscriberId: 'su-13', eventKey: 'ws:k', workspaceId: 'ws-elsewhere' });
-    expect(await store.fireAwaitsForKey({ eventKey: 'ws:k' })).toEqual([]); // default ws
-    expect(await store.fireAwaitsForKey({ eventKey: 'ws:k', workspaceId: 'ws-elsewhere' })).toHaveLength(1);
+  it("workspace scoping NORMALIZES to the coord namespace: a '*'-scoped registration fires on a system emit (the live WI-40 regression)", async () => {
+    // An unscoped SU shell registers with identity.workspaceId '*'; a system
+    // source (work-items settle) emits with the active workspace. Both must
+    // land in the ONE coord-plane namespace or the wake never fires.
+    await store.registerAwait({ subscriberId: 'su-13', eventKey: 'ws:k', workspaceId: '*' });
+    const fired = await store.fireAwaitsForKey({ eventKey: 'ws:k', workspaceId: 'some-active-workspace' });
+    expect(fired).toHaveLength(1);
+    expect(fired[0].subscriberId).toBe('su-13');
   });
 });

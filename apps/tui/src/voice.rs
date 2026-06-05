@@ -365,6 +365,13 @@ pub fn list_devices() -> (Vec<String>, Vec<String>) {
 enum PlayerCmd {
     /// Decode + play these audio bytes (wav/mp3), replacing anything playing.
     Play(Vec<u8>),
+    /// APPEND raw mono PCM16 to the live queue (gap-free streaming TTS — the
+    /// realtime Conv-AI `audio` events, voice-realtime-tui P-004). Starts a
+    /// sink when none is live; never replaces what's already queued.
+    AppendPcm { samples: Vec<i16>, rate: u32 },
+    /// APPEND an encoded chunk (mp3/wav) to the live queue (non-PCM agent
+    /// output formats).
+    AppendEncoded(Vec<u8>),
     /// Stop playback now.
     Stop,
 }
@@ -402,6 +409,17 @@ impl Player {
         let _ = self.tx.send(PlayerCmd::Play(bytes));
     }
 
+    /// Append raw mono PCM16 to the playback queue (streaming TTS chunks —
+    /// the realtime voice session). Chunks play gap-free in arrival order.
+    pub fn append_pcm(&self, samples: Vec<i16>, rate: u32) {
+        let _ = self.tx.send(PlayerCmd::AppendPcm { samples, rate });
+    }
+
+    /// Append an encoded (mp3/wav) chunk to the playback queue.
+    pub fn append_encoded(&self, bytes: Vec<u8>) {
+        let _ = self.tx.send(PlayerCmd::AppendEncoded(bytes));
+    }
+
     /// Stop playback (barge-in / Esc).
     pub fn stop(&self) {
         let _ = self.tx.send(PlayerCmd::Stop);
@@ -414,6 +432,71 @@ impl Player {
     /// The most recent playback error, if any (cleared on a successful play).
     pub fn last_error(&self) -> Option<String> {
         self.last_error.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// Open the output device lazily (PUI_VOICE_OUTPUT override honored).
+/// Records the error + returns false when no device opens.
+fn ensure_output(
+    output: &mut Option<(rodio::OutputStream, rodio::OutputStreamHandle)>,
+    set_err: &dyn Fn(Option<String>),
+) -> bool {
+    if output.is_some() {
+        return true;
+    }
+    let want = std::env::var("PUI_VOICE_OUTPUT").ok();
+    let opened = match want.as_deref().filter(|w| !w.trim().is_empty()) {
+        Some(w) => {
+            let host = cpal::default_host();
+            let dev = host
+                .output_devices()
+                .ok()
+                .and_then(|it| pick_device(it, host.default_output_device(), Some(w)));
+            match dev {
+                Some(d) => rodio::OutputStream::try_from_device(&d),
+                None => rodio::OutputStream::try_default(),
+            }
+        }
+        None => rodio::OutputStream::try_default(),
+    };
+    match opened {
+        Ok(pair) => {
+            *output = Some(pair);
+            true
+        }
+        Err(e) => {
+            set_err(Some(format!("open output device: {e}")));
+            false
+        }
+    }
+}
+
+/// Append a source to the live sink (created on demand) — the queueing path
+/// the streaming-TTS appends share with `Play`.
+fn append_source<S>(
+    sink: &mut Option<rodio::Sink>,
+    handle: &rodio::OutputStreamHandle,
+    playing: &Arc<AtomicBool>,
+    set_err: &dyn Fn(Option<String>),
+    src: S,
+) where
+    S: rodio::Source + Send + 'static,
+    S::Item: rodio::Sample + Send,
+    f32: cpal::FromSample<S::Item>,
+{
+    if sink.is_none() {
+        match rodio::Sink::try_new(handle) {
+            Ok(s) => *sink = Some(s),
+            Err(e) => {
+                set_err(Some(format!("audio sink: {e}")));
+                return;
+            }
+        }
+    }
+    if let Some(s) = sink.as_ref() {
+        s.append(src);
+        playing.store(true, Ordering::Relaxed);
+        set_err(None);
     }
 }
 
@@ -435,44 +518,35 @@ fn player_thread(
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(PlayerCmd::Play(bytes)) => {
+                // Replace semantics: anything queued stops first.
                 if let Some(s) = sink.take() {
                     s.stop();
                 }
-                if output.is_none() {
-                    let want = std::env::var("PUI_VOICE_OUTPUT").ok();
-                    let opened = match want.as_deref().filter(|w| !w.trim().is_empty()) {
-                        Some(w) => {
-                            let host = cpal::default_host();
-                            let dev = host.output_devices().ok().and_then(|it| {
-                                pick_device(it, host.default_output_device(), Some(w))
-                            });
-                            match dev {
-                                Some(d) => rodio::OutputStream::try_from_device(&d),
-                                None => rodio::OutputStream::try_default(),
-                            }
-                        }
-                        None => rodio::OutputStream::try_default(),
-                    };
-                    match opened {
-                        Ok(pair) => output = Some(pair),
-                        Err(e) => {
-                            set_err(Some(format!("open output device: {e}")));
-                            continue;
-                        }
-                    }
+                if !ensure_output(&mut output, &set_err) {
+                    continue;
                 }
-                let handle = &output.as_ref().expect("output opened above").1;
+                let handle = output.as_ref().expect("output opened above").1.clone();
                 match rodio::Decoder::new(std::io::Cursor::new(bytes)) {
-                    Ok(source) => match rodio::Sink::try_new(handle) {
-                        Ok(s) => {
-                            s.append(source);
-                            playing.store(true, Ordering::Relaxed);
-                            set_err(None);
-                            sink = Some(s);
-                        }
-                        Err(e) => set_err(Some(format!("audio sink: {e}"))),
-                    },
+                    Ok(source) => append_source(&mut sink, &handle, &playing, &set_err, source),
                     Err(e) => set_err(Some(format!("decode audio: {e}"))),
+                }
+            }
+            Ok(PlayerCmd::AppendPcm { samples, rate }) => {
+                if !ensure_output(&mut output, &set_err) {
+                    continue;
+                }
+                let handle = output.as_ref().expect("output opened above").1.clone();
+                let src = rodio::buffer::SamplesBuffer::new(1, rate, samples);
+                append_source(&mut sink, &handle, &playing, &set_err, src);
+            }
+            Ok(PlayerCmd::AppendEncoded(bytes)) => {
+                if !ensure_output(&mut output, &set_err) {
+                    continue;
+                }
+                let handle = output.as_ref().expect("output opened above").1.clone();
+                match rodio::Decoder::new(std::io::Cursor::new(bytes)) {
+                    Ok(source) => append_source(&mut sink, &handle, &playing, &set_err, source),
+                    Err(e) => set_err(Some(format!("decode audio chunk: {e}"))),
                 }
             }
             Ok(PlayerCmd::Stop) => {
