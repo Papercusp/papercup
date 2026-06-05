@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**308 MCP tools** across **59 groups**.
+**310 MCP tools** across **60 groups**.
 
 ## Groups
 
@@ -32,7 +32,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `brainstorm` | 1 | `chat` | `harness:write` |
 | `chat` | 1 | `ask_choice` | `chat:write` |
 | `conversations` | 7 | `answer` `get` `join` `list` `post` `promote` `resolve` | `coord:read` `coord:write` |
-| `coord` | 21 | `ack` `ask` `ask-owner` `declare-intent` `deliberate` `emit` `escalate` `escalations` `handoff` `handoffs` `inbox` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `watermark` `watermark-set` `whoami` | `coord:read` `coord:write` |
+| `coord` | 22 | `ack` `ask` `ask-owner` `declare-intent` `deliberate` `emit` `escalate` `escalations` `handoff` `handoffs` `inbox` `message-agent` `plan-events` `presence` `resolve` `send` `thread` `thread-post` `vote` `watermark` `watermark-set` `whoami` | `coord:read` `coord:write` |
 | `cross_harness` | 10 | `docs_get` `docs_outline` `docs_search` `inbox` `outbox` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes` | `cross_harness:read` `harness:read` `plans:read` |
 | `curation` | 1 | `feed` | `curation:read` |
 | `db` | 3 | `check_drift` `migrate` `next-migration` | `locks:read` `locks:write` |
@@ -48,6 +48,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `harness` | 13 | `create` `escalation` `generate-from-repo` `get` `health` `list` `list_features` `markdown_index` `membership` `pending_reviews` `phase_path` `plan_reviews` `status` | `harness:read` `harness:write` |
 | `hooks` | 1 | `known` | `roles:read` |
 | `improvements` | 3 | `capture` `digest` `resolve` | `coord:read` `coord:write` |
+| `inbox` | 1 | `triage` | `coord:write` |
 | `intel` | 2 | `artifacts` `spawn_tree` | `intel:read` |
 | `issues` | 13 | `claim` `close` `comment` `create` `get` `link` `list` `promote` `release` `search` `subscribe` `tag` `update` | `coord:read` `coord:write` |
 | `locks` | 12 | `acquire` `acquire_granular` `acquire_resource` `cancel_wait` `check_command` `heartbeat` `heartbeat_resource` `list` `queue` `release` `release_granular` `release_resource` | `locks:read` `locks:write` |

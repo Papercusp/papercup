@@ -85,3 +85,7 @@ function build(): string {
 }
 
 emitOrCheck('tool-catalog.md', build(), { advisory: true });
+// The agent-tools registry import opens keep-alive handles (pools/timers), so the
+// process never exits naturally — exit explicitly or every caller (the umbrella,
+// CI, a piped shell) hangs until an external timeout kills it.
+process.exit(0);

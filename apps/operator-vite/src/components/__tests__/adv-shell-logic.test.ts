@@ -49,8 +49,12 @@ describe('ADV_TABS', () => {
     // CONTENT (per-harness tabs degrade to a "needs a single harness" state),
     // never which tabs exist. There is intentionally no per-tab scope flag.
     expect(ADV_TABS.some((t) => 'supportsAll' in t)).toBe(false);
+    // Strip order: Overview leads (the default landing surface, Brief 23 /
+    // overview-dashboard-2026-06-05 D-001); Conversations sits with the browse
+    // surfaces (Brief 25).
     expect(ADV_TABS.map((t) => t.id)).toEqual([
-      'brainstorm', 'plans', 'harnesses', 'git', 'testing', 'docs', 'insights', 'config', 'settings',
+      'overview', 'brainstorm', 'plans', 'harnesses', 'git', 'testing', 'docs', 'insights',
+      'conversations', 'config', 'settings',
     ]);
   });
 });

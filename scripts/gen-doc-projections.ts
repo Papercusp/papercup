@@ -21,7 +21,10 @@ const CHECK = process.argv.includes('--check');
 const PROJECTORS: Array<{ name: string; gating: boolean }> = [
   { name: 'blueprint-catalog', gating: true },
   { name: 'role-registry', gating: true },
-  { name: 'insights-index', gating: true },
+  // insights-index is deterministic but its SOURCE churns (the fleet adds
+  // insights continuously — it went stale within ~25 min of first generation),
+  // so it sits in the advisory tier with the other fleet-churned sources.
+  { name: 'insights-index', gating: false },
   { name: 'tool-catalog', gating: false },
   { name: 'plans-index', gating: false },
 ];
@@ -29,10 +32,24 @@ const PROJECTORS: Array<{ name: string; gating: boolean }> = [
 let gatingFailure = false;
 for (const p of PROJECTORS) {
   const script = join(REPO_ROOT, 'scripts', `gen-doc-${p.name}.ts`);
+  // Per-child hard timeout: a projector that wedges (e.g. a keep-alive handle
+  // from a heavy registry import) must never hang the whole umbrella.
   const res = spawnSync('npx', ['tsx', script, ...(CHECK ? ['--check'] : [])], {
     stdio: 'inherit',
     cwd: REPO_ROOT,
+    timeout: 240_000,
+    killSignal: 'SIGKILL',
   });
+  if (res.signal) {
+    const msg = `${p.name} timed out / was killed (${res.signal})`;
+    if (p.gating) {
+      gatingFailure = true;
+      process.stderr.write(`✗ ${msg} (gating)\n`);
+    } else {
+      process.stdout.write(`⚠ ${msg} (advisory — not gating)\n`);
+    }
+    continue;
+  }
   if (res.status !== 0) {
     if (p.gating) {
       gatingFailure = true;

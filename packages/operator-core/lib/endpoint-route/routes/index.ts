@@ -34,6 +34,7 @@ import snapshotsForkFromCupboard from './snapshots/fork-from-cupboard';
 import operatorBudgetTiers from './operator/budget-tiers';
 import operatorStateSnapshot from './operator/state-snapshot';
 import operatorSettingsByKey from './operator/settings-by-key';
+import operatorRateLimitConfig from './operator/rate-limit-config';
 import operatorConversations from './operator/conversations';
 import operatorConversationTurns from './operator/conversation-turns';
 import operatorCardResponse from './operator/card-response';
@@ -476,6 +477,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(operatorBudgetTiers as AnyRoute),
   ...flatten(operatorStateSnapshot as AnyRoute),
   ...flatten(operatorSettingsByKey as AnyRoute),
+  ...flatten(operatorRateLimitConfig as AnyRoute),
   ...flatten(operatorConversations as AnyRoute[]),
   ...flatten(operatorConversationTurns as AnyRoute[]),
   ...flatten(operatorCardResponse as AnyRoute),

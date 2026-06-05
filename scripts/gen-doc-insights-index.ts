@@ -6,7 +6,12 @@
  * every `apps/operator-docs/src/content/docs/agent-insights/*.md(x)`. The insights
  * are the fleet's runbook — written one-per-page but with no landing index. This
  * emits reference/agent-insights-index.md: one row per insight, linking to it.
- * Deterministic fs read → CI-gated; a new insight is a cheap regen-on-add (D-002).
+ *
+ * ADVISORY, not CI-gated (D-002, revised): though the read is deterministic, the
+ * SOURCE churns — the fleet adds insights continuously (measured: the index went
+ * stale within ~25 min of first generation), so a gating check would flap across
+ * ~16 agents exactly like the docs-and-memory D-009 tool-catalog flap. Drift
+ * surfaces in the CI log; any `gen:doc-projections` run refreshes it.
  *
  *   npx tsx scripts/gen-doc-insights-index.ts          # write
  *   npx tsx scripts/gen-doc-insights-index.ts --check  # fail if drifted
@@ -110,4 +115,4 @@ function build(): string {
   return lines.join('\n');
 }
 
-emitOrCheck('agent-insights-index.md', build(), { advisory: false });
+emitOrCheck('agent-insights-index.md', build(), { advisory: true });

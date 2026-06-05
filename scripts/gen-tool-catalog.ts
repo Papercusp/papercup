@@ -107,3 +107,6 @@ if (process.argv.includes('--check')) {
   writeFileSync(OUT, jsonOut);
   process.stdout.write(`✓ wrote ${entries.length} tools to .papercusp/tool-catalog.json\n`);
 }
+// The agent-tools registry import opens keep-alive handles (pools/timers), so the
+// process never exits naturally — exit explicitly or callers hang until killed.
+process.exit(0);

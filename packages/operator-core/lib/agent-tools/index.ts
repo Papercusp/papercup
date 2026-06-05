@@ -99,6 +99,7 @@ import './operator/budget';
 import './operator/paused';
 import './operator/trigger_state';
 import './operator/preferences';
+import './operator/rate_limit_config';
 import './omp/config';
 import './omp/sessions';
 import './operator/multi_workspace';

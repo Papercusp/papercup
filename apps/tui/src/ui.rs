@@ -2211,6 +2211,105 @@ mod tests {
         }
     }
 
+    // --- Overview dashboard (Brief 23, overview-dashboard-2026-06-05) ---
+
+    fn overview_attention(id: &str, tier: &str) -> crate::models::AttentionItem {
+        crate::models::AttentionItem {
+            id: id.into(),
+            kind: "plan-item".into(),
+            source: "plan".into(),
+            harness_slug: Some("papercup".into()),
+            plan_slug: Some("overview-dashboard".into()),
+            item_ref: Some("P-001".into()),
+            title: format!("decide {id}"),
+            body: None,
+            status: "todo".into(),
+            importance: None,
+            needs_human: tier == "decision",
+            tier: Some(tier.into()),
+            owner_agent_id: None,
+            owner_label: None,
+            triage_state: None,
+            triage_note: None,
+        }
+    }
+
+    #[test]
+    fn overview_renders_topbar_tiles_and_operator_strip() {
+        use crate::models::{ActivityRow, ItemCounts};
+        let mut app = App::new();
+        assert_eq!(app.tab, Tab::Overview); // the default landing surface (D-001)
+        let mut p = plan("overview-dashboard", "active");
+        p.item_counts = ItemCounts { todo: 1, wip: 1, done: 2, ..Default::default() };
+        app.set_plans(vec![p, plan("shipped-one", "shipped")]);
+        app.set_inbox(vec![
+            overview_attention("d1", "decision"),
+            overview_attention("a1", "alert"),
+            overview_attention("ac1", "activity"),
+        ]);
+        app.set_roster(vec![presence_entry("claude", "building the overview")]);
+        app.fleet.activity.push(ActivityRow {
+            id: "1".into(),
+            owner_id: "su-1".into(),
+            agent: Some("claude".into()),
+            harness_slug: Some("papercup".into()),
+            kind: "tool".into(),
+            tool_name: None,
+            summary: Some("✎ edited ui.rs".into()),
+            status: None,
+            detail: None,
+            created_at: "2026-06-05".into(),
+        });
+
+        let text = render(&app, 120, 32);
+        // Top bar: the stub rate slots (pending rate-limit-layer-v2, D-004) +
+        // the LIVE alert-tier count.
+        assert!(text.contains("usage"), "topbar usage slot missing");
+        assert!(text.contains("max agents"), "topbar max slot missing");
+        assert!(text.contains("1 alerts"), "alert count missing");
+        // Plans tile: shipped plans excluded; progress off item_counts (2 done
+        // of 4 active — dropped/unknown excluded from the denominator).
+        assert!(text.contains("Plans (1)"), "plans tile header wrong: {text:?}");
+        assert!(text.contains("Title overview-dashboard"));
+        assert!(text.contains("2/4"), "plan progress fraction missing");
+        // Needs-you tile: ONLY the decision tier (alert/activity stay out).
+        assert!(text.contains("Needs you (1)"), "needs-you should count decisions only");
+        assert!(text.contains("decide d1"));
+        assert!(!text.contains("decide ac1"), "activity-tier item leaked into needs-you");
+        // Agents tile: live roster + what each is doing.
+        assert!(text.contains("Agents (1 live)"));
+        assert!(text.contains("building the overview"));
+        // Activity tile: server-enriched summary rows.
+        assert!(text.contains("edited ui.rs"));
+        // Operator strip at the bottom (Brief 24's render-only dock, D-008).
+        assert!(text.contains("press i to talk to the operator"), "operator strip missing");
+    }
+
+    #[test]
+    fn overview_narrow_stack_and_short_terminal_drop_strip() {
+        let mut app = App::new();
+        app.set_plans(vec![plan("p1", "active")]);
+        // Narrow (80 cols): the 1×4 stack still renders every tile.
+        let narrow = render(&app, 80, 30);
+        assert!(narrow.contains("Plans"));
+        assert!(narrow.contains("Needs you"));
+        assert!(narrow.contains("Agents"));
+        assert!(narrow.contains("Activity"));
+        // Short terminal (<24 body rows): the operator strip yields to the
+        // tiles; the operator stays reachable via the tab / `o` dock.
+        let short = render(&app, 120, 18);
+        assert!(short.contains("Plans"));
+        assert!(!short.contains("press i to talk to the operator"));
+    }
+
+    #[test]
+    fn overview_progress_bar_is_pure_and_clamped() {
+        assert_eq!(progress_bar(0, 0, 10), "··········");
+        assert_eq!(progress_bar(1, 2, 10), "█████·····");
+        assert_eq!(progress_bar(2, 2, 10), "██████████");
+        assert_eq!(progress_bar(5, 2, 10), "██████████"); // over-done clamps
+    }
+
     #[test]
     fn mic_meter_scales_and_is_fixed_width() {
         // 12 cells + 2 brackets = 14 chars, always.

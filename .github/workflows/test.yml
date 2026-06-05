@@ -85,22 +85,23 @@ jobs:
 
       # Starlight projection pages (starlight-projection-generators-2026-06-05, Brief 29)
       # are GENERATED from code/registry/PG into apps/operator-docs/.../reference/. The
-      # DETERMINISTIC three (blueprint catalog / role registry / insights index) are
-      # pure fs/code reads of low-churn sources → GATING (fail on drift, like BORROWABLE).
-      - name: Check generated reference pages are in sync (deterministic)
+      # LOW-CHURN two (blueprint catalog / role registry) are pure fs/code reads of
+      # rarely-changing sources → GATING (fail on drift, like BORROWABLE).
+      - name: Check generated reference pages are in sync (low-churn, gating)
         run: |
           npm run gen:doc-blueprint-catalog:check
           npm run gen:doc-role-registry:check
-          npm run gen:doc-insights-index:check
 
-      # The tool catalog (heavy full-registry import, fleet-fragile) + plans index
-      # (PG-dependent, churns constantly) are INFORMATIONAL — does not gate (D-002,
-      # the docs-and-memory D-009 flap lesson). plans-index degrades to a no-op with
-      # no DB. Surfaces drift in the CI log without blocking the merge.
+      # The insights index (the fleet adds insights continuously — measured stale
+      # within ~25 min), the tool catalog (heavy full-registry import, fleet-fragile)
+      # + the plans index (PG-dependent, churns constantly) are INFORMATIONAL — does
+      # not gate (D-002, the docs-and-memory D-009 flap lesson). plans-index degrades
+      # to a no-op with no DB. Surfaces drift in the CI log without blocking the merge.
       - name: Check generated reference pages (informational — does not gate)
         if: always()
         continue-on-error: true
         run: |
+          npm run gen:doc-insights-index:check
           npm run gen:doc-tool-catalog:check
           npm run gen:doc-plans-index:check
 

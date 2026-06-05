@@ -95,7 +95,20 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
   if (input.workspace_id) metadata.workspace_id = input.workspace_id;
 
   try {
-    await backend.remember(content, { scope: scopeKey, kind: 'project', metadata });
+    const res = await backend.remember(content, { scope: scopeKey, kind: 'project', metadata });
+    // A resolved promise is NOT proof of storage: mem0 swallows its LLM
+    // extraction failures internally and resolves with zero events (EI-25).
+    // Report an honest failure so the resolver knows the loop did not close —
+    // a false "captured ok" is worse than a visible miss.
+    const stored = res.storedEvents ?? res.ids.length;
+    if (stored === 0) {
+      return {
+        target: 'mem0_no_store',
+        ok: false,
+        detail:
+          'memory backend resolved but persisted nothing (extraction failed or declined — check the operator log); answer kept on the conversation row only',
+      };
+    }
     return { target: `mem0:${scopeKey}`, ok: true };
   } catch (err) {
     return { target: 'mem0_error', ok: false, detail: (err as Error).message };

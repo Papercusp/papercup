@@ -57,7 +57,8 @@
     "libs/generic/papergrid/kv-persist",
     "libs/generic/papergrid/kv-persist-indexeddb",
     "libs/generic/locks-core",
-    "libs/generic/structured-concurrency"
+    "libs/generic/structured-concurrency",
+    "libs/generic/p2p-voice"
   ],
   "scripts": {
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",

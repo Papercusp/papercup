@@ -57,10 +57,19 @@ import {
 } from '../harness/usage-emitters';
 import { refillHarnessOnSettle } from './orchestrator-loop';
 import { wireAuditorLane } from './auditor-lane-wiring';
-import { governorForBackend, classifyTurnError, isAccountWide, setGovernorStore } from '@papercusp/papercup-shared/agent';
+import {
+  governorForBackend,
+  classifyTurnError,
+  isAccountWide,
+  setGovernorStore,
+  setMeridianUsageSink,
+  modelClassOf,
+} from '@papercusp/papercup-shared/agent';
 import { resolveSpawnBackendModel } from '../harness-invoke-once';
 import { initAgentGovernorObserver } from '../agent-governor-observer';
 import { maybeInstallPgGovernorStore } from '../agent-governor-pg-store';
+import { initRateLimitConfig } from '../rate-limit-config';
+import { recordUsageHeaders } from '../agent-usage-telemetry';
 
 const INVOKE_TIMEOUT_MS = Number(process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS ?? 600_000);
 // How long an orchestrator spawn will wait on a shared rate-limit pause before giving up
@@ -674,6 +683,20 @@ export function wireOrchestratorInvokeRunner(): void {
   // RB-007: when PAPERCUSP_AGENT_GOVERNOR_PG=1, route the governor's rate+pause budget through a
   // PG-backed store so every operator process + the gym share ONE account budget (no co-burst).
   maybeInstallPgGovernorStore(setGovernorStore);
+  // rate-limit-layer-v2 D-004: load the user's live fleet cap (maxSimultaneousAgents) + AIMD
+  // floor from PG into the governor's global gate, and subscribe to live edits (no restart).
+  void initRateLimitConfig().catch((err) => console.error('[rate-limit-config] init failed:', err));
+  // rate-limit-layer-v2 D-002 (capture point 1): the meridian path reports per-call token usage
+  // + any anthropic-ratelimit-* headers; persist each as a usage sample for the fleet read-model.
+  setMeridianUsageSink((ev) => {
+    const modelClass = modelClassOf(ev.model);
+    void recordUsageHeaders(`anthropic:${modelClass}`, 'anthropic', modelClass, ev.headers ?? {}, {
+      inputTokens: ev.inputTokens,
+      outputTokens: ev.outputTokens,
+      cacheReadTokens: ev.cacheReadTokens,
+      costUsd: ev.costUsd,
+    });
+  });
   setPipelineInvokeRunner(realRunner);
   setPipelineFinalizer(realFinalizer);
   // P-012: fire the read-only debugger before a worker when the feature has

@@ -4906,11 +4906,13 @@ mod tests {
         assert_eq!(a.tab, Tab::Plans);
         // Ctrl-C quits even while composing (the universal escape hatch).
         let mut b = App::new();
+        b.tab = Tab::Operator;
         b.update(key('i', KeyModifiers::NONE));
         assert_eq!(b.update(key('c', KeyModifiers::CONTROL)), Action::Quit);
         assert!(b.should_quit);
         // A plain `q` typed while composing is just text, not quit.
         let mut c = App::new();
+        c.tab = Tab::Operator;
         c.update(key('i', KeyModifiers::NONE));
         assert_eq!(c.update(key('q', KeyModifiers::NONE)), Action::Render);
         assert!(!c.should_quit);

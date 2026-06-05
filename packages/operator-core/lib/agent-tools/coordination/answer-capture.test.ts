@@ -123,6 +123,33 @@ describe('captureResolvedAnswer', () => {
     expect(res.detail).toBe('store add failed');
   });
 
+  it('remember resolving with ZERO stored events → mem0_no_store (ok:false) — the EI-25 false-success fix', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [], storedEvents: 0 });
+    getMemoryBackend.mockReturnValue(b);
+    const res = await captureResolvedAnswer(baseInput());
+    expect(res.ok).toBe(false);
+    expect(res.target).toBe('mem0_no_store');
+    expect(res.detail).toContain('persisted nothing');
+  });
+
+  it('remember resolving with a MERGE (no new ids, storedEvents>0) → ok:true (an UPDATE is a real store)', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [], storedEvents: 1 });
+    getMemoryBackend.mockReturnValue(b);
+    const res = await captureResolvedAnswer(baseInput({ workspace_id: 'ws-7' }));
+    expect(res).toEqual({ target: 'mem0:workspace:ws-7', ok: true });
+  });
+
+  it('backend that omits storedEvents falls back to ids.length (empty ids ⇒ no_store)', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [] });
+    getMemoryBackend.mockReturnValue(b);
+    const res = await captureResolvedAnswer(baseInput());
+    expect(res.ok).toBe(false);
+    expect(res.target).toBe('mem0_no_store');
+  });
+
   it('happy path (operator) → writes Q:…\\nA:… under workspace:<id>, returns mem0:<scopeKey>', async () => {
     const b = fakeBackend();
     getMemoryBackend.mockReturnValue(b);

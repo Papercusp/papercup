@@ -38,6 +38,7 @@ import {
   listTurnsRecent,
   type TurnRole,
 } from '../../../operator-conversations';
+import { parseOperatorTurn } from '../../../operator-converse-tags';
 import { notifySyncInvalidate } from '../../../sync-sse';
 
 /** How many recent turns to feed the brain as context for a phone turn. */
@@ -227,14 +228,21 @@ const converse = defineTool({
           }
 
           // Persist the assistant turn into the shared thread so the
-          // desktop + TUI see the phone's exchange too.
-          if (assembled.trim()) {
+          // desktop + TUI see the phone's exchange too. Parse the tag
+          // protocol first — the desktop persists `parsed.say` (clean
+          // prose) + `parsed.report`, never the raw assembled turn, and
+          // every reader of the shared thread renders `text` verbatim.
+          // Persisting `assembled` here leaked literal `<say>…</say>`
+          // markup into the desktop transcript.
+          const parsed = parseOperatorTurn(assembled);
+          if (parsed.say || parsed.report) {
             try {
               await appendTurn({
                 conversationId: conversation.id,
                 role: 'assistant',
-                text: assembled,
+                text: parsed.say ?? '',
                 source: modality === 'voice' ? 'voice_tts' : 'text_typed',
+                report: parsed.report,
               });
               void notifySyncInvalidate('operatorTurns.byConversation', {
                 conversationId: conversation.id,
