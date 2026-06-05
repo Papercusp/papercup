@@ -25,7 +25,12 @@ Plan: `holepunch-voice-channels-2026-06-05` P-001/P-002/P-003 + P-006/P-014 mesh
   ~0.1ms. The operator-as-local-node audio bridge (D-002) is viable — needs a binary unix-socket
   channel, NOT the UTF-8 `sys:http` path.
 - **Mesh (P-006/P-014) = PASS at 4-party:** one Node node held 3 concurrent encrypted peer
-  streams, 900 frames, 0 loss, p50 0.41ms. (10-party result appended below if/when captured.)
+  streams, 900 frames, 0 loss, p50 0.41ms. **10-party did NOT converge in-process** (only 3/9
+  peers in 60s, ~47s setup) — a *harness* limit: 10 Hyperswarm instances + 10 UDP sockets all
+  announcing/looking-up on the public DHT in one event loop. Not a product finding (real
+  10-party = 10 machines). A faithful upper-bound belongs in the cross-NAT/multi-process run, or
+  via a local DHT bootstrap + separate processes. Steady-state per-stream latency is unaffected
+  (proven 2- and 4-party).
 - **Connection setup grows with peers** (~4.9s @ 2-party → ~8.9s @ 4-party via public DHT).
   Acceptable for "join channel" but a known optimization target (cached peer addr / persistent
   swarm / local bootstrap).

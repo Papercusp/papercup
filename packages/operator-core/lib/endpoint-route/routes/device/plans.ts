@@ -28,6 +28,7 @@ import '../../../agent-tools/index';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { listPlanRows, readPlanBySlug, type PlanRow } from '../../../agent-tools/plans/source';
 import { listHarnessesFor } from '../../../device-harnesses';
+import { PAPERCUP_HARNESS_SLUG } from '../../../harness/register-papercup';
 
 /** Compact per-status item tally for a plan card. */
 function itemCounts(row: PlanRow): Record<string, number> {
@@ -71,19 +72,20 @@ const plansList = defineTool({
     if (harness && harness !== 'all' && harness !== '*') {
       slugs = [harness];
     } else {
-      // Fan out across the workspace's pots ("All Pots").
+      // Fan out across the workspace's pots ("All Pots"). Always include the
+      // papercup primary — its plans live under the default workspace
+      // (resolvePlanScope), which the device's paired workspace may not be.
       const harnesses = await listHarnessesFor(principal.workspaceId).catch(() => []);
-      slugs = harnesses.map((h) => h.slug);
+      slugs = [...new Set([PAPERCUP_HARNESS_SLUG, ...harnesses.map((h) => h.slug)])];
     }
 
     const all: PlanRow[] = [];
     for (const slug of slugs) {
       try {
-        const rows = await listPlanRows({
-          harnessSlug: slug,
-          workspaceId: principal.workspaceId,
-          includeArchived,
-        });
+        // No workspaceId override — let resolvePlanScope resolve each pot to
+        // the workspace its plans actually live in (papercup → default), the
+        // SAME resolution the operator's plans:list uses.
+        const rows = await listPlanRows({ harnessSlug: slug, includeArchived });
         all.push(...rows);
       } catch {
         /* best-effort per pot — a missing/empty harness shouldn't fail the list */
@@ -105,12 +107,11 @@ const planGet = defineTool({
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
-    const principal = devicePrincipal(ctx);
     const harness = new URL(req.url).searchParams.get('harness') ?? undefined;
-    const found = await readPlanBySlug(ctx.params.slug, {
-      harnessSlug: harness,
-      workspaceId: principal.workspaceId,
-    });
+    // No workspaceId override — resolvePlanScope resolves the harness to the
+    // workspace its plans live in (papercup → default), matching plans:get.
+    // (Auth is the DEVICE_AUTH gate; no principal field is needed here.)
+    const found = await readPlanBySlug(ctx.params.slug, { harnessSlug: harness });
     if (!found) return Response.json({ error: 'plan_not_found' }, { status: 404 });
     const { parsed, archived, row } = found;
     return Response.json({

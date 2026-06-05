@@ -3930,8 +3930,22 @@ mod tests {
             parse_palette_command("restore-layout y"),
             Some(PaletteCommand::RestoreLayout("y".into()))
         );
+        // `:pickup <item>` resolves plan later (selected plan); `:pickup <plan> <item>` is explicit.
+        assert_eq!(
+            parse_palette_command(":pickup P-012"),
+            Some(PaletteCommand::PickupPlanItem { harness: None, plan: None, item: "P-012".into() })
+        );
+        assert_eq!(
+            parse_palette_command("pickup demo-plan P-012"),
+            Some(PaletteCommand::PickupPlanItem {
+                harness: None,
+                plan: Some("demo-plan".into()),
+                item: "P-012".into(),
+            })
+        );
         // Missing arg / unknown / empty → None.
         assert_eq!(parse_palette_command("save-crew"), None);
+        assert_eq!(parse_palette_command("pickup"), None);
         assert_eq!(parse_palette_command("bogus"), None);
         assert_eq!(parse_palette_command(""), None);
     }
