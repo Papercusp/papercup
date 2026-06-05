@@ -99,7 +99,8 @@ describe('emitAwaitedEvent', () => {
     });
     expect(r.woken).toBe(1);
     expect(h.store.insertDeliveries).toHaveBeenCalledTimes(1);
-    expect((h.store.insertDeliveries.mock.calls[0][0] as { awaits: AwaitRow[] }).awaits.map((a) => a.id)).toEqual([1]);
+    const insertArg = (h.store.insertDeliveries.mock.calls[0] as unknown as [{ awaits: AwaitRow[] }])[0];
+    expect(insertArg.awaits.map((a) => a.id)).toEqual([1]);
     // notify = notify-await subscriber + extra recipients, MINUS the woken one.
     expect(h.sendMessage).toHaveBeenCalledTimes(1);
     const sendArgs = h.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[]; summary: string; extra: Record<string, unknown> }];

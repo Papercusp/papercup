@@ -15,6 +15,18 @@
  * parallel dispatch path (the D-002 invariant). Importing this module registers
  * the rules; the rules fire `coord:emit` through normal, audited dispatch.
  *
+ * THE PROJECTION INVARIANT (state-not-chat-fleet-state-2026-06-05 D-003): every
+ * message these rules emit is a PURE, one-directional PROJECTION of a state
+ * write that already happened (the claim row, the presence upsert, the work-item
+ * insert — `onlyOnSuccess` guarantees the table write preceded the message).
+ * The TABLE is the record; the message is a human-readable nudge. Consumers must
+ * NEVER reconstruct fleet state by replaying these messages — query the
+ * `harness_shared.fleet_assignment` view (`fleet:assignments` / `coord:presence`)
+ * for state, or subscribe the `fleet_assignment` PG NOTIFY change-feed
+ * (`lib/fleet-assignment-bus.ts`) for change-awareness. Combined with Brief 28's
+ * audience scoping, the message channel carries only notification + the
+ * genuinely unpredictable.
+ *
  * Category coverage (D-003 table):
  *   completion (25%) → emits: on work_items:complete (D-004)
  *   claim/start (5%) → THIS file, on work_items:claim

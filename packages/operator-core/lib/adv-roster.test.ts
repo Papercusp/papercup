@@ -139,6 +139,38 @@ describe('mergeRosterEntries', () => {
     );
     expect(got.map((r) => r.ownerId)).toEqual(['x', 'y', 'z']);
   });
+
+  it('attaches canonical claims from the fleet_assignment view by owner id (D-002)', () => {
+    const claims = new Map([
+      [
+        'su-1',
+        [
+          {
+            type: 'plan-item' as const,
+            harnessSlug: 'all',
+            planSlug: 'plan-x',
+            id: 'P-001',
+            itemKind: null,
+            detail: 'building',
+            status: null,
+            acquiredTs: iso(NOW - 60_000),
+            expiresTs: iso(NOW + 60_000),
+            active: true,
+            orphaned: false,
+          },
+        ],
+      ],
+    ]);
+    const [withClaims, without] = mergeRosterEntries(
+      [presence({ ownerId: 'su-1' }), presence({ ownerId: 'su-2' })],
+      new Map(),
+      NOW,
+      claims,
+    );
+    expect(withClaims.claims).toHaveLength(1);
+    expect(withClaims.claims[0].id).toBe('P-001');
+    expect(without.claims).toEqual([]);
+  });
 });
 
 describe('dedupeEndedAgainstActive', () => {

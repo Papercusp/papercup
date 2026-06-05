@@ -44,10 +44,21 @@ import {
   subscribeWorkspace,
   TooManyActiveWorkspacesError,
 } from './workspace-listener';
+import { ensureGrantListener, lockGrantKey } from './lock-grant-bridge';
+import { captureWakeHandleForOwner } from '../../events/await/handle';
+import { registerAwait } from '../../events/await/store';
+import { startAwaitSweeper } from '../../events/await/engine';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 const DEFAULT_TTL_SEC = 1200;
 const MAX_TTL_SEC = 3600;
 const MAX_WAIT_SEC = 300;
+
+/** wake_on_grant queue window (await-event-primitive D-005): how long a
+ *  SLEEPING waiter's ticket stays grant-eligible. Much longer than the 300s
+ *  blocking cap — the agent isn't holding a turn. A grant to an agent that
+ *  never wakes is bounded by the lock TTL (the lease backstop, D-004 #3). */
+const WAKE_QUEUE_WINDOW_SEC = Number(process.env.PAPERCUSP_LOCK_WAKE_QUEUE_SEC ?? 1800);
 
 /** Silent-drop ceiling: every iteration of the await wakes after at
  *  most this many ms so we can re-check waiter status if the LISTEN
@@ -133,12 +144,13 @@ export async function enrichBusy(rows: AcquireBusy[]): Promise<BusyJson[]> {
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim a set of files for exclusive editing. Returns ok+lock_id on success, or busy+contention details on failure. Set wait={max_sec:N} (≤300) to queue server-side until the locks free. Paths MUST be repo-relative POSIX (no leading ./, no //, no trailing /, no .., no backslashes, no absolute paths) — the server canonicalizes equivalent spellings to one lock key but rejects malformed ones; resolve symlinks caller-side before claiming.',
+    'Claim a set of files for exclusive editing. Returns ok+lock_id on success, or busy+contention details on failure. On contention prefer wake_on_grant:true — queue a waiter ticket + a one-shot wake subscription and return immediately; you END YOUR TURN and are re-invoked when the cascade grants you the locks (no polling, no held turn). wait={max_sec:N} (≤300) is the legacy blocking wait for short same-turn needs. Paths MUST be repo-relative POSIX (no leading ./, no //, no trailing /, no .., no backslashes, no absolute paths) — the server canonicalizes equivalent spellings to one lock key but rejects malformed ones; resolve symlinks caller-side before claiming.',
   guidance: {
     when: 'For a DELIBERATE multi-file claim you hold across several edits AND the commit — acquire once for the whole set, release after committing. Per-edit locking is already automatic on every client (the PreToolUse/tool_call hook acquires + releases around each individual Edit/Write/apply_patch), so the gap this fills is the edit→commit window the hook cannot cover.',
     notWhen:
       'Read-only inspection needs no claim. A single incidental edit needs no manual call — the hook covers it. Do NOT wrap every edit in acquire/release; that duplicates the hook and churns the lock.',
-    chaining: 'On ok: make your edits → commit → locks:release { lock_id }. On busy: read holder intent + expires_ts, decide retry/pivot/yield. With wait: blocks server-side; cancel_wait to abort.',
+    chaining:
+      'On ok: make your edits → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake turn carries your lock_id + TTL (already running) — edit, then release. Only block (wait) when you need the lock within THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait to retract a queued wake.',
   },
   capability: 'locks:write',
   // Framework default per-tool timeoutSec is 60s. wait.max_sec can
@@ -157,6 +169,12 @@ export default defineTool({
         max_sec: z.number().int().nonnegative().max(MAX_WAIT_SEC),
       })
       .optional(),
+    wake_on_grant: z
+      .boolean()
+      .optional()
+      .describe(
+        'On contention: queue a waiter ticket + a one-shot wake subscription and return IMMEDIATELY (no held turn). End your turn; when the grant cascade reaches your ticket you are re-invoked with the lock_id (TTL running). Takes precedence over wait.',
+      ),
   }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
@@ -202,6 +220,75 @@ export default defineTool({
       // Notify firehose removed at the source (D-002, fleet-coordination-painpoints):
       // lock_acquired had no push-consumer — an agent learns contention on its own acquire.
       return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held);
+    }
+
+    // ── wake_on_grant: queue + sleep instead of block/poll ──────────────
+    // (await-event-primitive-2026-06-05 D-005/P-008.) Insert a long-window
+    // waiter ticket + a one-shot wake await on its grant key, return NOW.
+    // The grant cascade stays single-grant control-plane; the bridge turns
+    // the grant NOTIFY (or the sweep's waiter-truth read) into the wake.
+    if (args.wake_on_grant) {
+      startAwaitSweeper();
+      const inserted = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+        tryInsertWaiter(tx, {
+          coordinationDomain,
+          owner: ownerId,
+          ownerLabel,
+          paths,
+          intent: args.intent,
+          ttlSec,
+          maxWaitSec: WAKE_QUEUE_WINDOW_SEC,
+        }),
+      );
+      if (!inserted.ok) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ ok: false, reason: inserted.reason, busy: await enrichBusy(first.busy) }),
+            },
+          ],
+        };
+      }
+      if ('self_granted' in inserted) {
+        return ok(ownerId, ownerLabel, inserted.lock_id, inserted.expires_ts, inserted.held);
+      }
+
+      const identity = resolveAgentIdentity(ctx);
+      const { handle, note: handleNote } = await captureWakeHandleForOwner(ownerId);
+      const awaitRow = await registerAwait({
+        subscriberId: ownerId,
+        eventKey: lockGrantKey(inserted.ticket_id),
+        policy: 'wake',
+        note: `lock wait: ${paths.join(', ')} — ${args.intent}`,
+        wakeHandle: handle,
+        // The bridge fires the key on ANY terminal ticket state, so the await
+        // timeout is only the backstop behind the backstop.
+        timeoutBehavior: 'wake',
+        timeoutSec: WAKE_QUEUE_WINDOW_SEC + 120,
+        workspaceId: identity.workspaceId ?? undefined,
+      });
+      // NOTIFY fast path (best-effort; the sweep reconciler is load-bearing).
+      await ensureGrantListener(coordinationDomain, identity.workspaceId ?? undefined);
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              queued_for_wake: true,
+              ticket_id: inserted.ticket_id,
+              await_id: awaitRow.id,
+              queue_window_sec: WAKE_QUEUE_WINDOW_SEC,
+              wake_handle: handleNote,
+              busy: await enrichBusy(first.busy),
+              advice:
+                'Queued. END YOUR TURN — you will be re-invoked when the grant cascade reaches your ticket (the wake carries lock_id + TTL, already running: edit, then locks:release). If the window lapses without a grant you are woken with granted:false. Retract with locks:cancel_wait + events:cancel.',
+            }),
+          },
+        ],
+      };
     }
 
     if (maxWaitSec === 0) {

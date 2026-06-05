@@ -17,6 +17,7 @@ import {
   groupByAgent,
   listFleetAssignments,
   orphanedClaims,
+  summarizeOrphan,
 } from '../../fleet/assignments';
 
 export default defineTool({
@@ -80,17 +81,7 @@ export default defineTool({
               declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
             },
             // Abandoned work first — the reason this view is claim-primary.
-            orphaned: orphans.map((r) => ({
-              source: r.source,
-              agent: r.agentId,
-              harness: r.harnessSlug,
-              plan: r.planSlug,
-              id: r.itemId ?? r.workItemId,
-              detail: r.detail,
-              expires: r.claimExpiresTs,
-              holder_present: r.holderPresent,
-              holder_heartbeat_at: r.holderHeartbeatAt,
-            })),
+            orphaned: orphans.map(summarizeOrphan),
             agents,
           }),
         },

@@ -46,7 +46,7 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: '#818cf8', accentRgb: '129, 140, 248' },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
-  { id: 'harnesses', label: 'Pots', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  { id: 'harnesses', label: 'Harnesses', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
@@ -55,6 +55,25 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'config', label: 'Config', icon: SlidersHorizontal, accent: '#e879f9', accentRgb: '232, 121, 249' },
   { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
 ] as const;
+
+/**
+ * Workspace-level tabs — they aggregate across every pot, so they stay
+ * visible when the selector is on "All Pots". Every other tab is a per-pot
+ * view (one brainstorm canvas, one git repo, one docs tree, …) and is hidden
+ * from the strip until a single pot is picked (AdvHarnessPanelPage keeps a
+ * pick-one fallback for deep links that land before the snap-back effect).
+ */
+export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
+  'overview',
+  'plans',
+  'harnesses',
+  'conversations',
+]);
+
+/** The tab strip for a scope: full strip for a single pot, workspace-level subset under "All Pots". */
+export function visibleAdvTabs(allMode: boolean): typeof ADV_TABS {
+  return allMode ? ADV_TABS.filter((t) => WORKSPACE_TAB_IDS.has(t.id)) : ADV_TABS;
+}
 
 type HarnessProjectLite = {
   slug: string;
@@ -187,16 +206,19 @@ export default function AdvShell({
   // the header's Share button to a "Shared" badge.
   const activeIsShared = !!(singleSlug && projects.find((p) => p.slug === singleSlug)?.is_shared);
 
-  // The full tab strip is ALWAYS shown — switching tabs (incl. Create) must
-  // never make the other tabs vanish. Scope ("all" vs a single harness) is an
-  // orthogonal axis that decides each tab's CONTENT, not which tabs exist: the
-  // workspace-wide tabs (Create/Sessions) aggregate across harnesses under
-  // "all", while a per-harness tab (Docs/Config/…) under "all" renders its own
-  // graceful "needs a single harness" state (AdvHarnessPanelPage). Previously
-  // "all" filtered the strip down to just the two workspace-wide tabs
-  // (Create/Harness), so landing in all-mode looked like every other tab had
-  // disappeared — which is the bug this removal fixes.
-  const visibleTabs = ADV_TABS;
+  // Tab visibility follows scope: under "All Pots" only the workspace-level
+  // tabs (Overview/Create/Harnesses/Conversations) make sense, so the per-pot
+  // tabs (Docs/Config/Insights/…) are hidden rather than rendering a
+  // pick-a-pot placeholder (owner directive 2026-06-05). An earlier version
+  // collapsed the all-mode strip to just TWO tabs, which read as "the strip
+  // broke" — the workspace-level subset plus the snap-back below avoids that.
+  const visibleTabs = visibleAdvTabs(allMode);
+  // If the active tab just went invisible (scope flipped to "All Pots", or a
+  // per-pot deep link landed in all-mode), snap to Overview so the strip and
+  // the content pane stay consistent.
+  useEffect(() => {
+    if (allMode && !WORKSPACE_TAB_IDS.has(activeTab)) void setActiveTab('overview');
+  }, [allMode, activeTab, setActiveTab]);
 
   return (
     <div className="pc-advshell">
@@ -241,8 +263,8 @@ export default function AdvShell({
                 }
               }}
               disabled={projects.length === 0}
-              ariaLabel="Select harness"
-              placeholder={projectLoadError ? 'Failed to load harnesses' : 'Select harness'}
+              ariaLabel="Select Pot"
+              placeholder={projectLoadError ? 'Failed to load Pots' : 'Select Pot'}
               options={buildHarnessSelectOptions(projects, projectLoadError)}
               triggerClassName="pc-advshell__select-trigger"
             />

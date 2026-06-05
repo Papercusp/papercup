@@ -112,15 +112,16 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
     parseAsStringEnum<HarnessScopeMode>([...HARNESS_SCOPE_MODES]).withDefault('expanded'),
   );
 
-  // "All harnesses" has no single target, and these panels are inherently
-  // per-harness (one brainstorm canvas, one PR list, one git repo, one
-  // docs tree). Show a pick-one state instead of fetching /harness/all/….
-  // "All" is honored by the list views (Plans, Sessions), not here.
+  // "All Pots" has no single target, and these panels are inherently
+  // per-pot (one brainstorm canvas, one PR list, one git repo, one docs
+  // tree). AdvShell hides the per-pot tabs and snaps to Overview under
+  // all-mode, so this state only renders transiently / on a deep link —
+  // keep it as the graceful fallback instead of fetching /harness/all/….
   if (scopeMode === 'all') {
     return (
       <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
         <div className="pc-adv-harness-panel__empty">
-          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-harness view — pick a single harness above. “All harnesses” applies to Plans and Sessions.
+          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-pot view — pick a single Pot above.
         </div>
         <style>{PANEL_FILL_CSS}</style>
       </section>
@@ -139,7 +140,7 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
   if (direct) {
     return (
       <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
-        {activeSlug ? direct(activeSlug) : <div className="pc-adv-harness-panel__empty">Select a harness.</div>}
+        {activeSlug ? direct(activeSlug) : <div className="pc-adv-harness-panel__empty">Select a Pot.</div>}
         <style>{PANEL_FILL_CSS}</style>
       </section>
     );

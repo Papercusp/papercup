@@ -40,11 +40,12 @@ import './operator/voice_debug';
 import './operator/voice_prefs';
 import './operator/conv_voice';
 import './operator/voice_spend_summary';
-// P2P voice channels (holepunch-voice-channels-2026-06-05 P-006/P-007):
+// P2P voice channels (holepunch-voice-channels-2026-06-05 P-006/P-007/P-011):
 import './voice/channels';
 import './voice/join';
 import './voice/leave';
 import './voice/status';
+import './voice/agent';
 import './roles/list';
 import './roles/get';
 import './roles/firing_on';

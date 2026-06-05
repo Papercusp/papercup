@@ -248,6 +248,18 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
   }
 }
 
+// ── source reconcilers ────────────────────────────────────────────────────────
+
+/** A source-side reconciliation hook run each sweep tick (D-004's durable
+ *  backstop for missed NOTIFYs): e.g. the lock-grant bridge re-derives
+ *  `lock:grant:<ticket>` fires from waiter-table truth. Must be cheap and
+ *  self-catching; registered once at import (Set-deduped by identity). */
+const reconcilers = new Set<(workspaceId: string) => Promise<void>>();
+
+export function registerAwaitReconciler(fn: (workspaceId: string) => Promise<void>): void {
+  reconcilers.add(fn);
+}
+
 // ── the sweeper ───────────────────────────────────────────────────────────────
 
 const SWEEP_INTERVAL_MS = 30_000;
@@ -271,6 +283,15 @@ export function startAwaitSweeper(): void {
 
 export async function sweepOnce(workspaceId?: string): Promise<void> {
   const ws = workspaceId ?? activeWorkspaceId();
+
+  // Source reconcilers first — they may fire awaits this very sweep delivers.
+  for (const fn of reconcilers) {
+    try {
+      await fn(ws);
+    } catch (e) {
+      log(`reconciler failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
 
   const recovered = await recoverStuckDeliveries({ olderThanMs: STUCK_DELIVERING_MS, workspaceId: ws });
   if (recovered > 0) log(`recovered ${recovered} stuck deliveries`);

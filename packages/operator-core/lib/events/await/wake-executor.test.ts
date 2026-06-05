@@ -150,7 +150,8 @@ describe('executeWake — the liveness ladder', () => {
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'plan-run-resume' });
     expect(resumePlanRun).toHaveBeenCalledWith(expect.objectContaining({ runId: 12 }));
-    expect((resumePlanRun.mock.calls[0][0] as { wakeText: string }).wakeText).toContain('lock:grant:t-1');
+    const planArg = (resumePlanRun.mock.calls[0] as unknown as [{ wakeText: string }])[0];
+    expect(planArg.wakeText).toContain('lock:grant:t-1');
   });
 
   it('alive + managed pty pid-match → inject the wake turn', async () => {
@@ -179,7 +180,7 @@ describe('executeWake — the liveness ladder', () => {
       deps({ alive: vi.fn(() => false), spawnManagedPty: spawnManagedPty as never }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
-    const opts = spawnManagedPty.mock.calls[0][0] as { command: string; args: string[]; cwd: string; env: Record<string, string> };
+    const opts = (spawnManagedPty.mock.calls[0] as unknown as [{ command: string; args: string[]; cwd: string; env: Record<string, string> }])[0];
     expect(opts.command).toBe('claude');
     expect(opts.args).toContain('--resume');
     expect(opts.cwd).toBe('/repo');

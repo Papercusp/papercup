@@ -380,7 +380,9 @@ for b in busy[:5]:
     )
 if len(busy) > 5:
     lines.append(f"  …and {len(busy) - 5} more")
-lines.append('Options: wait and retry, pivot to other work, or call '
-             'locks:acquire with wait={max_sec:300} to queue.')
+lines.append('Options: locks:acquire {paths, intent, wake_on_grant:true} to queue '
+             'and SLEEP — end your turn and you are re-invoked when the lock is '
+             'granted (no polling). Or pivot to other work meanwhile; the wake '
+             'arrives either way.')
 deny('\n'.join(lines))
 PYEOF

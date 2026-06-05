@@ -46,6 +46,10 @@ export default defineTool({
   // structured record as a coord notification. The desugar registers this as an
   // event-reaction rule (`emits:work_items:complete#completion`); the render
   // stays PURE — the engine owns dispatch/durability/loop-protection.
+  // Projection invariant (state-not-chat-fleet-state D-003): the work_items row
+  // update IS the record; this message is a one-directional human-readable
+  // projection of it — never the source. State readers query fleet_assignment /
+  // work_items; change-awareness rides the fleet_assignment NOTIFY feed.
   emits: [
     {
       fire: 'coord:emit',

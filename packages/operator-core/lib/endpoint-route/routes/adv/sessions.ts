@@ -22,7 +22,7 @@ import {
   setAdvSessionOmpThreadId,
   setAdvSessionWindowId,
 } from '../../../adv-sessions';
-import { mergeRoster, dedupeEndedAgainstActive } from '../../../adv-roster';
+import { mergeRosterWithAssignments, dedupeEndedAgainstActive } from '../../../adv-roster';
 import { readOmpConfig } from '../../../omp-config';
 import {
   findOmpSessionNear,
@@ -373,13 +373,16 @@ const roster = defineTool({
     const endedLimitRaw = Number(url.searchParams.get('endedLimit') ?? 50);
     const endedLimit = Number.isFinite(endedLimitRaw) && endedLimitRaw > 0 ? endedLimitRaw : 50;
 
-    const [active, endedAll] = await Promise.all([
-      mergeRoster({ workspaceId }),
+    const [{ active, orphanedClaims }, endedAll] = await Promise.all([
+      mergeRosterWithAssignments({ workspaceId }),
       listEndedAdvSessions({ workspaceId, limit: endedLimit }),
     ]);
     const ended = dedupeEndedAgainstActive(endedAll, active);
 
-    return new Response(JSON.stringify({ active, ended }), {
+    // Each active entry carries `claims` from the canonical fleet_assignment
+    // view; `orphanedClaims` is the claim-keyed remainder — active claims whose
+    // holder is absent/stale from the roster (state-not-chat-fleet-state D-002).
+    return new Response(JSON.stringify({ active, ended, orphanedClaims }), {
       status: 200,
       headers: JSON_HEADERS,
     });

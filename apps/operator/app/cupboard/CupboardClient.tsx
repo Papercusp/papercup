@@ -27,7 +27,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Camera, Package, ArrowLeft, Box, Wrench } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Camera, Package, ArrowLeft, Box, Wrench, Sparkles } from 'lucide-react';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   isPubliclyVisible,
@@ -53,7 +53,7 @@ type ViewFilter = KindFilter | 'tools';
 const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'snapshot', 'plugin', 'pack', 'tools'];
 const VIEW_FILTER_LABEL: Record<ViewFilter, string> = {
   all: 'All',
-  harness: 'Pots',
+  harness: 'Harnesses',
   blueprint: 'Blueprints',
   snapshot: 'Snapshots',
   plugin: 'Plugins',
@@ -81,6 +81,47 @@ function ActionIcon({ kind, size = 13 }: { kind: ListingKind; size?: number }) {
     case 'install': return <Plug size={size} />;
   }
 }
+
+const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }> = {
+  harness: { fg: '#93c5fd', bg: 'rgba(59,130,246,0.14)', border: 'rgba(147,197,253,0.26)' },
+  blueprint: { fg: '#a7f3d0', bg: 'rgba(16,185,129,0.14)', border: 'rgba(167,243,208,0.24)' },
+  snapshot: { fg: '#fcd34d', bg: 'rgba(245,158,11,0.14)', border: 'rgba(252,211,77,0.24)' },
+  plugin: { fg: '#c4b5fd', bg: 'rgba(139,92,246,0.14)', border: 'rgba(196,181,253,0.24)' },
+  pack: { fg: '#67e8f9', bg: 'rgba(6,182,212,0.13)', border: 'rgba(103,232,249,0.24)' },
+};
+
+const filterButtonStyle = (active: boolean): React.CSSProperties => ({
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  background: active
+    ? `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accentHover})`
+    : 'rgba(15,20,32,0.72)',
+  color: active ? '#fff' : COLORS.textMuted,
+  border: `1px solid ${active ? 'rgba(255,255,255,0.18)' : COLORS.border}`,
+  borderRadius: 999,
+  padding: '7px 13px',
+  cursor: 'pointer',
+  fontSize: 12,
+  fontFamily: FONTS.ui,
+  boxShadow: active ? '0 12px 26px rgba(94,106,210,0.24)' : 'none',
+});
+
+const ghostButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  background: 'rgba(15,20,32,0.72)',
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 999,
+  padding: '7px 12px',
+  cursor: 'pointer',
+  color: COLORS.textMuted,
+  fontSize: 12,
+  fontFamily: FONTS.ui,
+};
 
 export default function CupboardClient() {
   const router = useRouter();
@@ -153,11 +194,20 @@ export default function CupboardClient() {
   // correct regardless) + group by kind. Empty unless `pot` is set.
   const potListings = pot ? listings.filter((l) => listingPotRef(l) === pot) : [];
   const potGroups = pot ? groupListingsByKind(potListings) : [];
+  const groupedListings = groupListingsByKind(listings);
+  const facetCount = groupedListings.length;
+  const activeViewLabel = toolsView && !pot
+    ? 'Tool discovery'
+    : pot
+      ? 'Pot rollup'
+      : kindFilter === 'all'
+        ? 'All facets'
+        : VIEW_FILTER_LABEL[kindFilter];
 
   const gridStyle: React.CSSProperties = {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-    gap: SIZES.md,
+    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+    gap: 14,
   };
 
   // Per-kind primary action. harness joins inline (the working join flow);
@@ -179,39 +229,98 @@ export default function CupboardClient() {
   );
 
   return (
-    <div style={{ padding: SIZES.lg, maxWidth: 1100, margin: '0 auto' }}>
+    <div
+      style={{
+        minHeight: '100%',
+        padding: 24,
+        background: `
+          radial-gradient(circle at 12% 0%, rgba(94,106,210,0.20), transparent 32%),
+          radial-gradient(circle at 92% 8%, rgba(14,165,233,0.12), transparent 28%),
+          linear-gradient(180deg, #0b0e14 0%, #0d121d 46%, #0b0e14 100%)
+        `,
+      }}
+    >
+      <div style={{ maxWidth: 1180, margin: '0 auto' }}>
       {/* Header */}
-      <div style={{ marginBottom: SIZES.lg }}>
-        <h1 style={{ fontFamily: FONTS.ui, fontWeight: 700, fontSize: 22, color: COLORS.text, margin: 0 }}>
-          <Globe size={18} style={{ verticalAlign: 'middle', marginRight: 8 }} />
-          Cupboard
-        </h1>
-        <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
-          Discover and install shared harnesses, blueprints, snapshots, plugins, packs, and tools.
-        </p>
+      <div
+        style={{
+          position: 'relative',
+          overflow: 'hidden',
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 18,
+          padding: 24,
+          marginBottom: 16,
+          background: 'linear-gradient(135deg, rgba(17,24,39,0.96), rgba(15,20,32,0.84))',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.34)',
+        }}
+      >
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'linear-gradient(120deg, transparent 0%, rgba(255,255,255,0.045) 42%, transparent 68%)',
+            pointerEvents: 'none',
+          }}
+        />
+        <div style={{ position: 'relative', display: 'flex', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap' }}>
+          <div style={{ maxWidth: 680 }}>
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
+                color: '#bfdbfe',
+                border: '1px solid rgba(147,197,253,0.22)',
+                background: 'rgba(59,130,246,0.10)',
+                borderRadius: 999,
+                padding: '5px 10px',
+                fontFamily: FONTS.ui,
+                fontSize: 11,
+                marginBottom: 12,
+              }}
+            >
+              <Sparkles size={12} /> Distribution shelf
+            </div>
+            <h1 style={{ fontFamily: FONTS.ui, fontWeight: 760, fontSize: 30, lineHeight: 1.05, color: COLORS.text, margin: 0 }}>
+              Cupboard
+            </h1>
+            <p style={{ fontFamily: FONTS.ui, fontSize: 13, lineHeight: 1.6, color: COLORS.textMuted, margin: '10px 0 0' }}>
+              Discover installable harnesses, blueprints, snapshots, plugins, packs, and tools from the shared Papercusp registry.
+            </p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(92px, 1fr))', gap: 10, minWidth: 300, flex: '0 1 360px' }}>
+            <MetricTile label={toolsView && !pot ? 'Mode' : 'Listings'} value={toolsView && !pot ? 'Tools' : String(pot ? potListings.length : listings.length)} />
+            <MetricTile label="Facets" value={toolsView && !pot ? '1' : String(pot ? potGroups.length : facetCount)} />
+            <MetricTile label="View" value={activeViewLabel} />
+          </div>
+        </div>
       </div>
 
       {/* Kind filter tabs (+ the Tools discovery view) — hidden in Pot rollup
           mode (the rollup shows all kinds, grouped) */}
       {!pot && (
-        <div style={{ display: 'flex', gap: 4, marginBottom: SIZES.md, flexWrap: 'wrap' }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: 6,
+            marginBottom: 12,
+            flexWrap: 'wrap',
+            padding: 6,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 999,
+            background: 'rgba(15,20,32,0.72)',
+            width: 'fit-content',
+            maxWidth: '100%',
+          }}
+        >
           {VIEW_FILTERS.map((k) => (
             <button
               key={k}
               onClick={() => void setKindFilter(k === 'all' ? null : k)}
               data-testid={`cupboard-kind-tab-${k}`}
               aria-pressed={kindFilter === k}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 5,
-                background: kindFilter === k ? COLORS.accent : COLORS.surface,
-                color: kindFilter === k ? '#fff' : COLORS.textMuted,
-                border: `1px solid ${kindFilter === k ? COLORS.accent : COLORS.border}`,
-                borderRadius: RADIUS.md,
-                padding: '6px 12px',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontFamily: FONTS.ui,
-              }}
+              style={filterButtonStyle(kindFilter === k)}
             >
               {k === 'tools' ? <Wrench size={11} /> : k !== 'all' ? <KindIcon kind={k} /> : null}
               {VIEW_FILTER_LABEL[k]}
@@ -224,22 +333,22 @@ export default function CupboardClient() {
       {pot && (
         <div
           data-testid="cupboard-pot-header"
-          style={{ display: 'flex', alignItems: 'center', gap: SIZES.sm, marginBottom: SIZES.md, flexWrap: 'wrap' }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: SIZES.sm,
+            marginBottom: 12,
+            flexWrap: 'wrap',
+            padding: 12,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: RADIUS.lg,
+            background: 'rgba(15,20,32,0.78)',
+          }}
         >
           <button
             onClick={() => void setPot(null)}
             data-testid="cupboard-pot-back"
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              background: COLORS.surface,
-              color: COLORS.textMuted,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: RADIUS.md,
-              padding: '6px 12px',
-              cursor: 'pointer',
-              fontSize: 12,
-              fontFamily: FONTS.ui,
-            }}
+            style={ghostButtonStyle}
           >
             <ArrowLeft size={13} /> All listings
           </button>
@@ -256,7 +365,20 @@ export default function CupboardClient() {
       )}
 
       {/* Search + claim filter bar */}
-      <div style={{ display: 'flex', gap: SIZES.sm, marginBottom: SIZES.lg, flexWrap: 'wrap' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: SIZES.sm,
+          marginBottom: 16,
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          padding: 12,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: RADIUS.lg,
+          background: 'rgba(15,20,32,0.82)',
+          boxShadow: '0 14px 40px rgba(0,0,0,0.20)',
+        }}
+      >
         <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
           <Search
             size={14}
@@ -273,9 +395,9 @@ export default function CupboardClient() {
               paddingRight: 10,
               paddingTop: 7,
               paddingBottom: 7,
-              background: COLORS.surface,
+              background: COLORS.bg,
               border: `1px solid ${COLORS.border}`,
-              borderRadius: RADIUS.md,
+              borderRadius: 999,
               color: COLORS.text,
               fontFamily: FONTS.ui,
               fontSize: 12,
@@ -289,17 +411,7 @@ export default function CupboardClient() {
             <button
               key={f}
               onClick={() => void setClaimFilter(f)}
-              style={{
-                background: claimFilter === f ? COLORS.accent : COLORS.surface,
-                color: claimFilter === f ? '#fff' : COLORS.textMuted,
-                border: `1px solid ${claimFilter === f ? COLORS.accent : COLORS.border}`,
-                borderRadius: RADIUS.md,
-                padding: '6px 12px',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontFamily: FONTS.ui,
-                textTransform: 'capitalize',
-              }}
+              style={{ ...filterButtonStyle(claimFilter === f), textTransform: 'capitalize' }}
             >
               {f}
             </button>
@@ -309,14 +421,7 @@ export default function CupboardClient() {
         {!toolsView && <button
           onClick={fetchListings}
           disabled={loading}
-          style={{
-            background: 'none',
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: RADIUS.md,
-            padding: '6px 10px',
-            cursor: 'pointer',
-            color: COLORS.textMuted,
-          }}
+          style={ghostButtonStyle}
           title="Refresh"
         >
           <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
@@ -331,7 +436,17 @@ export default function CupboardClient() {
         <>
       {/* Error */}
       {error && !loading && (
-        <div style={{ color: '#f87171', fontSize: 12, marginBottom: SIZES.md }}>
+        <div
+          style={{
+            color: '#fca5a5',
+            fontSize: 12,
+            marginBottom: SIZES.md,
+            padding: 12,
+            border: '1px solid rgba(239,68,68,0.24)',
+            borderRadius: RADIUS.lg,
+            background: 'rgba(127,29,29,0.16)',
+          }}
+        >
           {error === 'HTTP 503' || error.includes('fetch')
             ? 'Cupboard server unreachable. Is PAPERCUSP_CUPBOARD_URL configured?'
             : error}
@@ -340,7 +455,17 @@ export default function CupboardClient() {
 
       {/* Results — empty state (kind-aware in flat mode, Pot-aware in rollup mode) */}
       {!loading && !error && (pot ? potGroups.length === 0 : listings.length === 0) && (
-        <div style={{ color: COLORS.textMuted, fontSize: 12, textAlign: 'center', paddingTop: 40 }}>
+        <div
+          style={{
+            color: COLORS.textMuted,
+            fontSize: 12,
+            textAlign: 'center',
+            padding: '44px 18px',
+            border: `1px dashed ${COLORS.borderStrong}`,
+            borderRadius: RADIUS.lg,
+            background: 'rgba(15,20,32,0.48)',
+          }}
+        >
           {pot
             ? `No listings found for Pot "${pot}"${q ? ` matching "${q}"` : ''}.`
             : `No ${kindFilter === 'all' ? 'listings' : VIEW_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
@@ -360,7 +485,7 @@ export default function CupboardClient() {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   fontFamily: FONTS.ui, fontWeight: 600, fontSize: 14, color: COLORS.text,
-                  margin: `0 0 ${SIZES.sm}px`,
+                  margin: `0 0 ${SIZES.sm}`,
                 }}
               >
                 <KindIcon kind={group.kind} size={13} />
@@ -399,6 +524,7 @@ export default function CupboardClient() {
       )}
         </>
       )}
+      </div>
     </div>
   );
 }
@@ -424,19 +550,34 @@ export function ListingCard({
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
+  const tone = KIND_TONES[kind];
   return (
     <div
       style={{
-        background: COLORS.surface,
+        position: 'relative',
+        overflow: 'hidden',
+        background: 'linear-gradient(180deg, rgba(17,24,39,0.96), rgba(15,20,32,0.92))',
         border: `1px solid ${COLORS.border}`,
-        borderRadius: RADIUS.lg,
-        padding: SIZES.md,
+        borderRadius: 14,
+        padding: 15,
         display: 'flex',
         flexDirection: 'column',
-        gap: SIZES.sm,
+        gap: 12,
         cursor: 'default',
+        minHeight: 208,
+        boxShadow: '0 18px 42px rgba(0,0,0,0.22)',
       }}
     >
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          inset: '0 0 auto',
+          height: 3,
+          background: `linear-gradient(90deg, ${tone.fg}, transparent)`,
+          opacity: 0.86,
+        }}
+      />
       {/* Title + kind + claim badge */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <button
@@ -448,7 +589,8 @@ export function ListingCard({
             cursor: 'pointer',
             fontFamily: FONTS.ui,
             fontWeight: 600,
-            fontSize: 14,
+            fontSize: 15,
+            lineHeight: 1.3,
             color: COLORS.text,
             textAlign: 'left',
           }}
@@ -467,6 +609,7 @@ export function ListingCard({
           style={{
             fontFamily: FONTS.ui,
             fontSize: 12,
+            lineHeight: 1.5,
             color: COLORS.textMuted,
             margin: 0,
             display: '-webkit-box',
@@ -480,7 +623,7 @@ export function ListingCard({
       )}
 
       {/* Tier-A stats (P-076) */}
-      <div style={{ display: 'flex', gap: SIZES.md, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {contributors > 0 && (
           <Stat icon={<Users size={11} />} label={`${contributors} contributors`} />
         )}
@@ -508,10 +651,10 @@ export function ListingCard({
           style={{
             alignSelf: 'flex-start',
             display: 'inline-flex', alignItems: 'center', gap: 4,
-            background: COLORS.surfaceRaised,
+            background: 'rgba(17,24,39,0.82)',
             border: `1px solid ${COLORS.border}`,
-            borderRadius: RADIUS.sm,
-            padding: '2px 7px',
+            borderRadius: 999,
+            padding: '3px 8px',
             cursor: 'pointer',
             fontSize: 10,
             fontFamily: FONTS.mono,
@@ -523,7 +666,7 @@ export function ListingCard({
       )}
 
       {/* Footer — per-kind action */}
-      <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 4 }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 4 }}>
         <button
           onClick={onAction}
           data-testid="cupboard-action"
@@ -531,14 +674,15 @@ export function ListingCard({
           style={{
             flex: 1,
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            background: COLORS.accent,
+            background: `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accentHover})`,
             color: '#fff',
-            border: 'none',
-            borderRadius: RADIUS.md,
-            padding: '6px 0',
+            border: '1px solid rgba(255,255,255,0.16)',
+            borderRadius: 999,
+            padding: '8px 0',
             cursor: 'pointer',
             fontFamily: FONTS.ui,
             fontSize: 12,
+            boxShadow: '0 12px 24px rgba(94,106,210,0.22)',
           }}
         >
           <ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[listingAction(kind)]}
@@ -552,10 +696,10 @@ export function ListingCard({
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              padding: '6px 10px',
-              background: COLORS.surfaceRaised,
+              padding: '8px 11px',
+              background: 'rgba(17,24,39,0.82)',
               border: `1px solid ${COLORS.border}`,
-              borderRadius: RADIUS.md,
+              borderRadius: 999,
               color: COLORS.textMuted,
             }}
             title={`github.com/${repoSlug}`}
@@ -570,19 +714,20 @@ export function ListingCard({
 
 /** Small kind tag on a card. */
 function KindBadge({ kind }: { kind: ListingKind }) {
+  const tone = KIND_TONES[kind];
   return (
     <span
       data-testid="cupboard-kind-badge"
       data-kind={kind}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 3,
-        background: COLORS.surfaceRaised,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: RADIUS.sm,
-        padding: '2px 7px',
+        background: tone.bg,
+        border: `1px solid ${tone.border}`,
+        borderRadius: 999,
+        padding: '3px 8px',
         fontSize: 10,
         fontFamily: FONTS.ui,
-        color: COLORS.textMuted,
+        color: tone.fg,
         textTransform: 'capitalize',
       }}
     >
@@ -593,9 +738,43 @@ function KindBadge({ kind }: { kind: ListingKind }) {
 
 function Stat({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: COLORS.textMuted, fontSize: 11, fontFamily: FONTS.ui }}>
+    <div
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        color: COLORS.textMuted,
+        fontSize: 11,
+        fontFamily: FONTS.ui,
+        border: `1px solid ${COLORS.border}`,
+        background: 'rgba(11,14,20,0.34)',
+        borderRadius: 999,
+        padding: '3px 7px',
+      }}
+    >
       {icon}
       {label}
+    </div>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div
+      style={{
+        minWidth: 0,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: RADIUS.lg,
+        padding: '11px 12px',
+        background: 'rgba(11,14,20,0.52)',
+      }}
+    >
+      <div style={{ fontFamily: FONTS.ui, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: COLORS.textDim }}>
+        {label}
+      </div>
+      <div style={{ marginTop: 4, fontFamily: FONTS.ui, fontSize: 15, fontWeight: 700, color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {value}
+      </div>
     </div>
   );
 }
@@ -628,9 +807,14 @@ function PublisherSignal({ permission }: { permission?: string | null }) {
         display: 'inline-flex',
         alignItems: 'center',
         gap: 4,
+        alignSelf: 'flex-start',
         fontSize: 11,
         fontFamily: FONTS.ui,
-        color: isCollaborator ? COLORS.textMuted : '#fbbf24',
+        color: isCollaborator ? COLORS.successText : '#fbbf24',
+        border: `1px solid ${isCollaborator ? 'rgba(16,185,129,0.22)' : 'rgba(245,158,11,0.24)'}`,
+        background: isCollaborator ? 'rgba(16,185,129,0.10)' : 'rgba(245,158,11,0.10)',
+        borderRadius: 999,
+        padding: '3px 8px',
       }}
     >
       {isCollaborator ? (

@@ -12,10 +12,9 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { latestAdvSessionByCoordOwner } from '../../adv-sessions';
+import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { registerAwait } from '../../events/await/store';
 import { startAwaitSweeper } from '../../events/await/engine';
-import type { WakeHandle } from '../../events/await/types';
 
 const SU_ROLES = [
   'scoper',
@@ -82,33 +81,9 @@ export default defineTool({
     startAwaitSweeper();
 
     // ── Capture the wake handle NOW (D-003) ────────────────────────────
-    let handle: WakeHandle | null = null;
-    let handleNote: string;
-    if (args.plan_run_id) {
-      handle = { kind: 'plan-run', runId: args.plan_run_id };
-      handleNote = `plan-run ${args.plan_run_id} — woken via the plans:resume path`;
-    } else {
-      const session = await latestAdvSessionByCoordOwner(identity.ownerId);
-      if (session) {
-        handle = {
-          kind: 'adv-session',
-          advSessionId: session.id,
-          agent: session.agent,
-          sessionId: session.sessionId,
-          ompThreadId: session.ompThreadId,
-          cwd: session.cwd,
-          pid: session.pid,
-        };
-        const resumable =
-          (session.agent === 'claude' && session.sessionId) || (session.agent === 'omp' && session.ompThreadId);
-        handleNote = resumable
-          ? `session #${session.id} (${session.agent}) — injectable/resumable`
-          : `session #${session.id} (${session.agent ?? 'unknown client'}) — NOT safely resumable (no native session id); you will get an inbox nudge while alive, and the wake degrades to notify if your process exits`;
-      } else {
-        handleNote =
-          'no tracked session for your coord id — the wake degrades to an inbox notification (delivered mid-turn if you are active, on your next turn otherwise)';
-      }
-    }
+    const { handle, note: handleNote } = await captureWakeHandleForOwner(identity.ownerId, {
+      planRunId: args.plan_run_id,
+    });
 
     const row = await registerAwait({
       subscriberId: identity.ownerId,

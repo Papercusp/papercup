@@ -152,6 +152,21 @@ export async function listActiveAwaits(subscriberId: string, workspaceId?: strin
   return rows.map(mapAwait);
 }
 
+/** Active awaits whose key starts with a prefix — source-side reconciliation
+ *  (e.g. the lock-grant bridge sweeping `lock:grant:%` against waiter status). */
+export async function listActiveAwaitsByKeyPrefix(prefix: string, workspaceId?: string): Promise<AwaitRow[]> {
+  const { sql } = getOrgPg();
+  const ws = workspaceId ?? activeWorkspaceId();
+  const rows = await sql`
+    SELECT * FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws} AND event_key LIKE ${prefix + '%'}
+       AND fired_at IS NULL AND cancelled_at IS NULL
+     ORDER BY created_at ASC
+     LIMIT 200
+  `;
+  return rows.map(mapAwait);
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all). */
 export async function listActiveAwaitsForKey(eventKey: string, workspaceId?: string): Promise<AwaitRow[]> {

@@ -38,8 +38,10 @@ function ShortcutBinding({ id, commandId }: { id: string; commandId: string }) {
 
 export function RegistryShortcuts() {
   // Side-effect: load all command defs so runCommand can resolve them.
+  // '/index' is load-bearing — see voice-mode.ts: the exports map's
+  // `./lib/*` → `./lib/*.ts` wildcard can't resolve a bare directory.
   useEffect(() => {
-    void import('@papercusp/operator-core/lib/commands/defs');
+    void import('@papercusp/operator-core/lib/commands/defs/index');
   }, []);
   return (
     <>

@@ -1489,7 +1489,10 @@ if (typeof window !== 'undefined') {
       // (Oracle MCP, EL webhook, Pi) deliver 'browser:required' commands
       // through this bridge. See plan §3.3.
       const { startLeaderBridge } = await import('@papercusp/operator-core/lib/commands/leader-bridge');
-      await import('@papercusp/operator-core/lib/commands/defs');
+      // NOTE: '/index' is load-bearing — operator-core's exports map is
+      // `"./lib/*": "./lib/*.ts"`, so a bare directory subpath resolves to
+      // a nonexistent `defs.ts` and 500s the whole Vite module graph.
+      await import('@papercusp/operator-core/lib/commands/defs/index');
       let teardown: (() => void) | null = null;
       const leaderListeners = new Set<() => void>();
       const bridgeOpts = {

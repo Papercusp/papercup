@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { ADV_TABS, type AdvTabId, buildHarnessSelectOptions } from '../adv/AdvShell';
+import { ADV_TABS, type AdvTabId, buildHarnessSelectOptions, visibleAdvTabs } from '../adv/AdvShell';
 
 // ─── ADV_TABS structural invariants ──────────────────────────────────────────
 
@@ -42,16 +42,20 @@ describe('ADV_TABS', () => {
     expect(ADV_TABS.every((t) => (t.id as string) !== 'prs')).toBe(true);
   });
 
-  it('the full tab strip is scope-independent — no tab is hidden under all-mode', () => {
-    // Regression guard: the strip used to filter down to `supportsAll` tabs
-    // under scope=all, which made switching to Create (or landing in all-mode)
-    // look like every other tab had disappeared. Scope now decides each tab's
-    // CONTENT (per-harness tabs degrade to a "needs a single harness" state),
-    // never which tabs exist. There is intentionally no per-tab scope flag.
-    expect(ADV_TABS.some((t) => 'supportsAll' in t)).toBe(false);
-    // Strip order: Overview leads (the default landing surface, Brief 23 /
-    // overview-dashboard-2026-06-05 D-001); Conversations sits with the browse
-    // surfaces (Brief 25).
+  it('all-mode strip = workspace-level subset; single-pot strip = every tab', () => {
+    // Under "All Pots" the per-pot tabs (Brainstorm/Git/Tests/Docs/Insights/
+    // Config/Settings) are hidden from the strip — only the workspace-level
+    // views remain (owner directive 2026-06-05; AdvShell snaps the active tab
+    // back to Overview when it goes invisible). This supersedes the earlier
+    // "strip is scope-independent" guard: that guard existed because all-mode
+    // once collapsed to just TWO tabs, which read as breakage.
+    expect(visibleAdvTabs(true).map((t) => t.id)).toEqual([
+      'overview', 'plans', 'harnesses', 'conversations',
+    ]);
+    // A single pot shows the full strip. Strip order: Overview leads (the
+    // default landing surface, Brief 23 / overview-dashboard-2026-06-05
+    // D-001); Conversations sits with the browse surfaces (Brief 25).
+    expect(visibleAdvTabs(false)).toEqual([...ADV_TABS]);
     expect(ADV_TABS.map((t) => t.id)).toEqual([
       'overview', 'brainstorm', 'plans', 'harnesses', 'git', 'testing', 'docs', 'insights',
       'conversations', 'config', 'settings',

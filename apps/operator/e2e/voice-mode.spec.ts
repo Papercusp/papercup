@@ -25,24 +25,42 @@ test.describe('voice settings', () => {
   });
 
   test('renders all 5 TTS engines + 3 STT engines', async ({ page }) => {
-    await page.goto('/settings/voice');
+    // PRECONDITION: the STT/TTS selects are deliberately DISABLED while a
+    // full-agent engine is active ("overridden by full-agent" — see
+    // settings/voice/page.tsx sttTtsDisabled). The workspace under test may
+    // have one configured (this is the flake that quarantined this spec on
+    // the shared dev box), so pin fullAgentEngine='off' for the duration and
+    // restore the original afterwards. PUT is a partial-save.
+    const prefsUrl = '/api/agent-mcp/operator-voice-prefs';
+    const before = await (await page.request.get(prefsUrl)).json() as {
+      fullAgentEngine?: string;
+    };
+    const original = before.fullAgentEngine ?? 'off';
+    await page.request.put(prefsUrl, { data: { fullAgentEngine: 'off' } });
+    try {
+      await page.goto('/settings/voice');
 
-    // STT/TTS are custom Radix Selects (not native <select>) — options live in a
-    // portal mounted on open, with role="option". Open each by its trigger's
-    // accessible name, then assert the engine options are present.
-    const stt = page.getByRole('combobox', { name: 'STT engine' });
-    await stt.click();
-    await expect(page.getByRole('option', { name: /Voicemode/ })).toBeVisible();
-    await expect(page.getByRole('option', { name: /Web Speech/ })).toBeVisible();
-    await expect(page.getByRole('option', { name: /Deepgram/ })).toBeVisible();
-    await page.keyboard.press('Escape');
+      // STT/TTS are custom Radix Selects (not native <select>) — options live in a
+      // portal mounted on open, with role="option". Open each by its trigger's
+      // accessible name, then assert the engine options are present.
+      const stt = page.getByRole('combobox', { name: 'STT engine' });
+      await stt.click();
+      await expect(page.getByRole('option', { name: /Voicemode/ })).toBeVisible();
+      await expect(page.getByRole('option', { name: /Web Speech/ })).toBeVisible();
+      await expect(page.getByRole('option', { name: /Deepgram/ })).toBeVisible();
+      await page.keyboard.press('Escape');
 
-    const tts = page.getByRole('combobox', { name: 'TTS engine' });
-    await tts.click();
-    await expect(page.getByRole('option', { name: /Kokoro/ })).toBeVisible();
-    await expect(page.getByRole('option', { name: /Browser/ })).toBeVisible();
-    await expect(page.getByRole('option', { name: /ElevenLabs/ })).toBeVisible();
-    await page.keyboard.press('Escape');
+      const tts = page.getByRole('combobox', { name: 'TTS engine' });
+      await tts.click();
+      await expect(page.getByRole('option', { name: /Kokoro/ })).toBeVisible();
+      await expect(page.getByRole('option', { name: /Browser/ })).toBeVisible();
+      await expect(page.getByRole('option', { name: /ElevenLabs/ })).toBeVisible();
+      await page.keyboard.press('Escape');
+    } finally {
+      // Restore the workspace's real engine so the test never clobbers a
+      // configured full-agent setup (shared dev boxes run against live prefs).
+      await page.request.put(prefsUrl, { data: { fullAgentEngine: original } });
+    }
   });
 
   test('STT spend widget renders alongside TTS spend', async ({ page }) => {

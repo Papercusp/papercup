@@ -276,3 +276,42 @@ export function groupByAgent(rows: FleetAssignmentRow[]): AgentAssignment[] {
 export function orphanedClaims(rows: FleetAssignmentRow[]): FleetAssignmentRow[] {
   return rows.filter((r) => r.orphaned && r.claimActive !== false);
 }
+
+/** Claims keyed by holder ownerId — the roster's per-agent enrichment. */
+export function claimsByAgent(rows: FleetAssignmentRow[]): Map<string, AgentClaim[]> {
+  const map = new Map<string, AgentClaim[]>();
+  for (const r of rows) {
+    if (r.source === 'presence' || !r.agentId) continue;
+    const list = map.get(r.agentId);
+    if (list) list.push(toClaim(r));
+    else map.set(r.agentId, [toClaim(r)]);
+  }
+  return map;
+}
+
+/** The wire shape an orphaned claim is reported in (fleet:assignments + /api/adv/roster). */
+export interface OrphanedClaimSummary {
+  source: FleetAssignmentSource;
+  agent: string | null;
+  harness: string | null;
+  plan: string | null;
+  id: string | null;
+  detail: string;
+  expires: string | null;
+  holder_present: boolean;
+  holder_heartbeat_at: string | null;
+}
+
+export function summarizeOrphan(r: FleetAssignmentRow): OrphanedClaimSummary {
+  return {
+    source: r.source,
+    agent: r.agentId,
+    harness: r.harnessSlug,
+    plan: r.planSlug,
+    id: r.itemId ?? r.workItemId,
+    detail: r.detail,
+    expires: r.claimExpiresTs,
+    holder_present: r.holderPresent,
+    holder_heartbeat_at: r.holderHeartbeatAt,
+  };
+}

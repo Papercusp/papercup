@@ -19,6 +19,16 @@ import os from 'node:os';
 import { listPresence, type PresenceRecord } from './agent-tools/coordination/presence';
 import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
+import {
+  claimsByAgent,
+  listFleetAssignments,
+  orphanedClaims,
+  summarizeOrphan,
+  type AgentClaim,
+  type OrphanedClaimSummary,
+} from './fleet/assignments';
+
+export type { AgentClaim, OrphanedClaimSummary };
 
 // Re-export the liveness primitives (now sourced from the dep-free leaf so the
 // client presence UI can share them) for existing importers.
@@ -69,6 +79,11 @@ export interface RosterEntry {
    * the process is gone (P-008).
    */
   pidAlive: boolean | null;
+  // ── canonical assignment enrichment (fleet_assignment view, state-not-chat-
+  //    fleet-state D-002): what this agent actually HOLDS — plan-item claims,
+  //    work-item claims, durable assignments. The roster reads the one canonical
+  //    view instead of re-deriving claims per surface. ──
+  claims: AgentClaim[];
   // ── adv_sessions enrichment (null when no joinable launch row) ──
   hasLaunchRecord: boolean;
   advSessionId: number | null;
@@ -107,6 +122,7 @@ export function mergeRosterEntries(
   presence: PresenceRecord[],
   advByOwner: Map<string, AdvSessionRow>,
   nowMs: number,
+  claimsByOwner: Map<string, AgentClaim[]> = new Map(),
 ): RosterEntry[] {
   return presence.map((p) => {
     const adv = advByOwner.get(p.ownerId) ?? null;
@@ -126,6 +142,7 @@ export function mergeRosterEntries(
       userId: p.userId,
       revoked: p.revoked,
       pidAlive: null, // enriched by mergeRoster for same-host non-stale entries
+      claims: claimsByOwner.get(p.ownerId) ?? [],
       hasLaunchRecord: adv != null,
       advSessionId: adv?.id ?? null,
       currentPlanSlug: p.currentPlanSlug ?? adv?.planSlug ?? null,
@@ -180,20 +197,51 @@ export function enrichPidLiveness(entries: RosterEntry[], localHost: string): Ro
   return entries;
 }
 
+/** The roster + the claim-keyed canonical projection in one read. */
+export interface RosterWithAssignments {
+  active: RosterEntry[];
+  /**
+   * Active claims whose holder is absent/stale from the presence roster — the
+   * abandoned-work signal (state-not-chat-fleet-state D-002). Claim-primary:
+   * these rows would be invisible in a presence-keyed roster, so they ride
+   * alongside it rather than inside it.
+   */
+  orphanedClaims: OrphanedClaimSummary[];
+}
+
 /**
  * The live roster for a workspace (or all workspaces when workspaceId is
- * null/omitted). coord_presence primary + adv_sessions enrichment, liveness
- * derived from the heartbeat, pidAlive probed for same-host non-stale entries.
- * The two reads run concurrently.
+ * null/omitted): coord_presence primary + adv_sessions enrichment + per-agent
+ * claims from the canonical fleet_assignment view, liveness derived from the
+ * heartbeat, pidAlive probed for same-host non-stale entries. The three reads
+ * run concurrently. Also returns the view's orphaned-claim list (work held by
+ * dead/stale agents) — the claim-keyed half a presence-primary roster can't see.
  */
+export async function mergeRosterWithAssignments(
+  opts: { workspaceId?: string | null } = {},
+): Promise<RosterWithAssignments> {
+  const workspaceId = opts.workspaceId ?? null;
+  const [presenceAll, advByOwner, assignmentRows] = await Promise.all([
+    listPresence(),
+    advSessionsByCoordOwner(),
+    listFleetAssignments({ workspaceId }).catch(() => []),
+  ]);
+  const presence = scopePresenceToWorkspace(presenceAll, workspaceId);
+  const entries = mergeRosterEntries(
+    presence,
+    advByOwner,
+    Date.now(),
+    claimsByAgent(assignmentRows),
+  );
+  return {
+    active: enrichPidLiveness(entries, os.hostname()),
+    orphanedClaims: orphanedClaims(assignmentRows).map(summarizeOrphan),
+  };
+}
+
+/** The active roster alone (mergeRosterWithAssignments minus the orphan list). */
 export async function mergeRoster(
   opts: { workspaceId?: string | null } = {},
 ): Promise<RosterEntry[]> {
-  const [presenceAll, advByOwner] = await Promise.all([
-    listPresence(),
-    advSessionsByCoordOwner(),
-  ]);
-  const presence = scopePresenceToWorkspace(presenceAll, opts.workspaceId ?? null);
-  const entries = mergeRosterEntries(presence, advByOwner, Date.now());
-  return enrichPidLiveness(entries, os.hostname());
+  return (await mergeRosterWithAssignments(opts)).active;
 }
