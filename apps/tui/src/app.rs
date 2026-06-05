@@ -365,6 +365,15 @@ pub enum TestingFocus {
     Files,
 }
 
+/// Which sub-view of the Plugins tab has focus (D-007/D-014). `Tab` toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginsFocus {
+    /// Installed plugin manifests — contributions (frontend/backend) + settings.
+    List,
+    /// Plugin-contributed launchable TUI panes (the original D-002 view).
+    Panes,
+}
+
 /// One test run's lifecycle on the Testing tab (D-004a): in-flight, then the
 /// finished status + tail output. Replaced wholesale per run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,6 +455,16 @@ pub struct App {
     /// the selection cursor. Enter launches the selected pane in a mux pane.
     pub panes: Vec<TuiPaneContribution>,
     pub pane_sel: usize,
+    /// Plugins tab (D-007/D-014): the installed plugin manifests + cursor + which
+    /// sub-view is focused (List = manifests/contributions/settings, the new
+    /// default; Panes = the launchable tui-panes, Tab toggles). `plugin_config`
+    /// is the SELECTED plugin's saved per-harness config (loaded on selection /
+    /// refreshed after a `:pset`/`:punset` round-trip; the String is the plugin
+    /// it belongs to, so a stale fetch never paints another plugin's settings).
+    pub plugins: Vec<crate::models::PluginManifest>,
+    pub plugin_sel: usize,
+    pub plugins_focus: PluginsFocus,
+    pub plugin_config: Option<(String, serde_json::Value)>,
     /// Memory tab (D-006 Step 2): the backend's memories (`memory:list`), an
     /// optional search-hit overlay (`memory:search` — shown instead of the
     /// list while a query is active), the cursor, whether the backend reported
@@ -593,6 +612,10 @@ impl App {
             config: EffectiveClaudeSettings::default(),
             panes: Vec::new(),
             pane_sel: 0,
+            plugins: Vec::new(),
+            plugin_sel: 0,
+            plugins_focus: PluginsFocus::List,
+            plugin_config: None,
             memories: Vec::new(),
             memory_hits: None,
             memory_sel: 0,
@@ -866,6 +889,9 @@ impl App {
         self.config = EffectiveClaudeSettings::default();
         self.panes.clear();
         self.pane_sel = 0;
+        // Plugins are global, not per-harness — keep the list; just drop the
+        // selected plugin's now-stale per-harness config (D-014).
+        self.plugin_config = None;
         if let Ok(mut g) = self.active_doc.lock() {
             *g = None;
         }
@@ -1402,6 +1428,35 @@ impl App {
         if self.pane_sel >= self.panes.len() {
             self.pane_sel = self.panes.len().saturating_sub(1);
         }
+    }
+
+    /// Store the installed plugin manifests (D-007). Clamps the cursor; if the
+    /// selected plugin changed identity, drops the stale loaded config.
+    pub fn set_plugins(&mut self, plugins: Vec<crate::models::PluginManifest>) {
+        let prev = self.selected_plugin().map(|p| p.name.clone());
+        self.plugins = plugins;
+        if self.plugin_sel >= self.plugins.len() {
+            self.plugin_sel = self.plugins.len().saturating_sub(1);
+        }
+        if prev.as_deref() != self.selected_plugin().map(|p| p.name.as_str()) {
+            self.plugin_config = None;
+        }
+    }
+
+    /// The selected plugin manifest (D-007), or None when the list is empty.
+    pub fn selected_plugin(&self) -> Option<&crate::models::PluginManifest> {
+        self.plugins.get(self.plugin_sel)
+    }
+
+    /// The selected plugin's saved per-harness config, only when it's the one
+    /// currently loaded (D-014). None otherwise — the detail pane shows "(load
+    /// with Enter)" so a stale config never paints under the wrong plugin.
+    pub fn selected_plugin_config(&self) -> Option<&serde_json::Value> {
+        let name = self.selected_plugin()?.name.as_str();
+        self.plugin_config
+            .as_ref()
+            .filter(|(p, _)| p == name)
+            .map(|(_, c)| c)
     }
 
     /// The selected plan under the current pot scope (D-003): `plan_sel`
