@@ -5,23 +5,28 @@
  * a peer for an already-answered question), and so the answer is not lost if the
  * original asker went idle.
  *
- * Why mem0 is the default target: coord:ask's knowledge tier queries TWO
- * surfaces — search:semantic (escalations/brainstorm/turns/decisions) + mem0.
- * Raw conversations are NOT in the search:semantic index today (the plan's known
- * coverage gap), so the loop closes ONLY through a writeback into an indexed
- * surface. mem0 is the reliable one: it is the SAME store coord:ask reads, scoped
- * by the same `harness:<slug>` / `workspace:<id>` pseudo-user keys, so a captured
- * answer is immediately findable. (harness_decisions / agent-insights are valid
- * alternative targets per D-004 but are a follow-on — mem0 already closes the
- * loop; see the conversations plan's optional "index conversations/issues"
- * follow-up.)
+ * Why the memory store is the default target: coord:ask's knowledge tier queries
+ * TWO surfaces — search:semantic (escalations/brainstorm/turns/decisions) + the
+ * persistent memory store. Raw conversations are NOT in the search:semantic index
+ * today (the plan's known coverage gap), so the loop closes ONLY through a
+ * writeback into an indexed surface. The memory store is the reliable one: it is
+ * the SAME store coord:ask reads, scoped by the same `harness:<slug>` /
+ * `workspace:<id>` pseudo-user keys, so a captured answer is immediately
+ * findable. (harness_decisions / agent-insights are valid alternative targets per
+ * D-004 but are a follow-on; see the conversations plan's optional "index
+ * conversations/issues" follow-up.)
  *
- * Best-effort: a capture failure (mem0 unavailable) NEVER fails the resolve —
+ * Storage rides the neutral `MemoryBackend` seam (generalize-memory-backend-
+ * swappable D-003). The `mem0`/`mem0_*` wire literals are kept for surface
+ * stability (the capture-target enum + result strings are agent-visible) even
+ * though the store behind them is now swappable.
+ *
+ * Best-effort: a capture failure (store unavailable) NEVER fails the resolve —
  * the accepted answer still lives on the conversation row. We report what
  * happened so the resolver/asker can see it.
  */
 
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend } from '../../memory/backend';
 import type { ConversationScope } from './conversations-store';
 
 export type CaptureTarget = 'mem0' | 'none';
@@ -32,7 +37,7 @@ export interface CaptureInput {
   answer: string;
   scope: ConversationScope;
   harness_slug: string | null;
-  /** Workspace id (for the operator-scope mem0 pseudo-user key). */
+  /** Workspace id (for the operator-scope pseudo-user key). */
   workspace_id?: string | null;
   asker_id: string;
   resolver_id: string;
@@ -47,8 +52,8 @@ export interface CaptureResult {
 }
 
 /**
- * The mem0 pseudo-user key a captured answer is written under, mirroring
- * memory:remember's scoping so coord:ask's mem0 read (which fans out over the
+ * The memory-pool key a captured answer is written under, mirroring
+ * memory:remember's scoping so coord:ask's memory read (which fans out over the
  * same keys) finds it:
  *   harness scope   → `harness:<slug>`
  *   operator scope  → `workspace:<workspace_id>`
@@ -63,23 +68,23 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
     return { target: 'none', ok: true, detail: 'capture skipped by resolver' };
   }
 
-  // target === 'mem0'
-  let client;
+  // target === 'mem0' (the persistent memory store, whichever backend serves it)
+  const backend = getMemoryBackend();
+  let available = false;
   try {
-    client = await getMemoryClient();
+    available = (await backend.available()).ok;
   } catch {
-    client = null;
+    available = false;
   }
-  if (!client) {
-    return { target: 'mem0_unavailable', ok: false, detail: 'mem0 unavailable; answer kept on the conversation row only' };
+  if (!available) {
+    return { target: 'mem0_unavailable', ok: false, detail: 'memory store unavailable; answer kept on the conversation row only' };
   }
 
-  const userId = captureMem0Key(input.scope, input.harness_slug, input.workspace_id);
+  const scopeKey = captureMem0Key(input.scope, input.harness_slug, input.workspace_id);
   // Store as a Q→A fact so a semantic search on a paraphrase of the question
   // surfaces the answer. Anchor it to the source conversation for provenance.
   const content = `Q: ${input.question.trim()}\nA: ${input.answer.trim()}`;
   const metadata: Record<string, unknown> = {
-    kind: 'project',
     scope: input.scope === 'harness' ? 'harness' : 'workspace',
     source: 'conversation',
     conversation_id: input.conversation_id,
@@ -90,8 +95,8 @@ export async function captureResolvedAnswer(input: CaptureInput): Promise<Captur
   if (input.workspace_id) metadata.workspace_id = input.workspace_id;
 
   try {
-    await client.add(content, { userId, metadata });
-    return { target: `mem0:${userId}`, ok: true };
+    await backend.remember(content, { scope: scopeKey, kind: 'project', metadata });
+    return { target: `mem0:${scopeKey}`, ok: true };
   } catch (err) {
     return { target: 'mem0_error', ok: false, detail: (err as Error).message };
   }

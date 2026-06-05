@@ -21,21 +21,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../search/sources';
 import { buildQueryEmbedder } from '../search/embedder';
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend, type MemoryBackend } from '../../memory/backend';
 
-/** The minimal mem0 surface the tier reads (the real client satisfies it). */
-export interface KnowledgeMem0Client {
-  search(
-    query: string,
-    opts: { filters: { user_id: string }; limit: number },
-  ): Promise<{ results?: Array<{ id: string; memory?: string; text?: string; score?: number }> }>;
-}
-
-/** Injectable IO for the tier — defaults to the prod org handle + mem0 client.
- *  The tests inject a throwaway sql + a stub mem0 client. */
+/** Injectable IO for the tier — defaults to the prod org handle + the
+ *  configured MemoryBackend (generalize-memory-backend-swappable D-003).
+ *  The tests inject a throwaway sql + a stub backend. */
 export interface KnowledgeTierDeps {
   sql?: Sql;
-  getMemoryClient?: () => Promise<KnowledgeMem0Client | null>;
+  backend?: MemoryBackend;
 }
 
 export interface KnowledgeCandidate {

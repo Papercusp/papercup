@@ -18,7 +18,10 @@ describe('operator-vite desktop no-HMR mode', () => {
     expect(shouldServeNoopViteClient('/@vite/client', false)).toBe(true);
     expect(shouldServeNoopViteClient('/src/main.tsx', false)).toBe(false);
     expect(shouldServeNoopViteClient('/@vite/client', true)).toBe(false);
-    expect(NO_VITE_CLIENT_BODY).toContain('Vite client disabled');
+    expect(NO_VITE_CLIENT_BODY).toContain('Vite HMR client disabled');
+    // Load-bearing: route modules import { createHotContext } from /@vite/client
+    // even with HMR off — an empty stub white-screens the webview.
+    expect(NO_VITE_CLIENT_BODY).toContain('export function createHotContext');
   });
   it('uses the same static-host policy for reload suppression and same-origin navigation interception', () => {
     expect(shouldSuppressJsReload('http://localhost:3070')).toBe(true);
