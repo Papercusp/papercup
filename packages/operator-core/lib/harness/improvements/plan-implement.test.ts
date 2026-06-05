@@ -49,3 +49,54 @@ describe('planImplementRun — safety gates', () => {
     expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
   });
 });
+
+describe('planImplementRun — close-loop anti-re-dispatch guards (close-loop D-001)', () => {
+  const NOW = Date.parse('2026-06-05T12:00:00Z');
+
+  it('a freshly-claimed item is IN-FLIGHT and skipped (no double dispatch)', () => {
+    const items = [
+      cand({ id: 'B1', assignee: 'improvement-runner', assignedAt: '2026-06-05T11:30:00Z' }), // 30 min ago
+      cand({ id: 'B2' }),
+    ];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B2']);
+    expect(p.inFlightCount).toBe(1);
+    expect(p.autoEligibleCount).toBe(2);
+  });
+
+  it('a STALE claim (runner died) becomes dispatchable again after staleClaimMs', () => {
+    const items = [cand({ id: 'B1', assignee: 'improvement-runner', assignedAt: '2026-06-05T08:00:00Z' })]; // 4h ago
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B1']);
+    expect(p.inFlightCount).toBe(0);
+  });
+
+  it('a claim with no assignedAt is treated as in-flight (conservative)', () => {
+    const items = [cand({ id: 'B1', assignee: 'someone' })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.action).toBe('noop');
+    expect(p.inFlightCount).toBe(1);
+  });
+
+  it('attempts-exhausted items never auto-dispatch again', () => {
+    const items = [cand({ id: 'B1', attempts: 3 }), cand({ id: 'B2', attempts: 2 })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.candidates.map((c) => c.id)).toEqual(['B2']);
+    expect(p.attemptsExhaustedCount).toBe(1);
+    expect(p.message).toMatch(/attempts-exhausted/);
+  });
+
+  it('a needs-human item is not in the auto lane at all (policy tier)', () => {
+    const items = [cand({ id: 'B1', needsHuman: true })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.action).toBe('noop');
+    expect(p.autoEligibleCount).toBe(0);
+  });
+
+  it('everything in-flight → noop with the skip note (an armed loop idles instead of re-dispatching)', () => {
+    const items = [cand({ id: 'B1', assignee: 'improvement-runner', assignedAt: '2026-06-05T11:55:00Z' })];
+    const p = planImplementRun({ items, flagEnabled: true, runnerHarness: 'runner', maxPerRun: 10, nowMs: NOW });
+    expect(p.action).toBe('noop');
+    expect(p.message).toMatch(/in-flight/);
+  });
+});

@@ -85,6 +85,18 @@ describe('classifyImprovement — protected keywords (pre-paths proxy)', () => {
   });
 });
 
+describe('needs-human routing (close-loop D-001 — the resolve back-edge)', () => {
+  it('needsHuman forces the human tier even for a plain auto-eligible bug', () => {
+    const d = classifyImprovement(cand({ id: 'nh1', kind: 'bug', title: 'plain bug', needsHuman: true }));
+    expect(d.tier).toBe('human');
+    expect(d.reasons[0]).toMatch(/needs-human/);
+  });
+  it('needsHuman beats even a graduated policy', () => {
+    const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change', 'feature'] };
+    expect(classifyImprovement(cand({ id: 'nh2', kind: 'bug', needsHuman: true }), graduated).tier).toBe('human');
+  });
+});
+
 describe('Phase 4 graduation is a CONFIG change', () => {
   it('adding change to autoKinds graduates change items to auto', () => {
     const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change'] };

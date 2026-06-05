@@ -58,7 +58,9 @@ type StateTable =
   | 'operator_search_provider_credentials'
   // Migration 062 — Setup Wizard state + telemetry reports buffer:
   | 'setup_wizard_state'
-  | 'telemetry_reports';
+  | 'telemetry_reports'
+  // Migration 158 — the Pot's self-declared-wake state (autoloop-pot-operator-rebuild P0):
+  | 'pot_wake';
 
 /**
  * Read the single row for the active workspace, or null if missing.

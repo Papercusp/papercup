@@ -296,6 +296,45 @@ describe('item id allocation + append', () => {
     expect(newBody).toContain('- **P-009** `todo` After numbered phase');
   });
 
+  it('appends to an existing phase whose name ends in a non-word char (regression: \\b never matched after ")")', () => {
+    // First add creates the section…
+    const first = appendItemToBody(
+      BASE,
+      'Phase 9 — Implementation (2026-06-05)',
+      buildItemLine('P-100', 'First in dated phase', []),
+    );
+    expect(first.createdPhase).toBe(true);
+    // …the second add must APPEND to it, not create a duplicate heading.
+    const second = appendItemToBody(
+      first.newBody,
+      'Phase 9 — Implementation (2026-06-05)',
+      buildItemLine('P-101', 'Second in dated phase', []),
+    );
+    expect(second.createdPhase).toBe(false);
+    const headings = second.newBody.match(/^## Phase 9 — Implementation \(2026-06-05\)$/gm) ?? [];
+    expect(headings).toHaveLength(1);
+    expect(second.newBody.indexOf('- **P-100**')).toBeLessThan(second.newBody.indexOf('- **P-101**'));
+  });
+
+  it('still refuses a prefix match on word-ending phases ("Phase 1" must not match "Phase 1b")', () => {
+    const doc = BASE.replace('## Phase 1 — Tooling', '## Phase 1b — Tooling');
+    const hit = appendItemToBody(doc, 'Phase 1b', buildItemLine('P-102', 'Prefix guard', []));
+    expect(hit.createdPhase).toBe(false); // exact heading matched
+    const miss = appendItemToBody(doc, 'Phase 1', buildItemLine('P-103', 'x', []));
+    expect(miss.createdPhase).toBe(true); // "Phase 1" must NOT match "Phase 1b"
+  });
+
+  it('argsSchema rejects a phase the parser would not recognize as a phase section', () => {
+    const args = { slug: 's', phase: 'Implementation (2026-06-05)', text: 'x', importance: 'normal' };
+    const bad = addItemArgsSchema.safeParse(args);
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      expect(bad.error.issues.map((i) => i.message).join('\n')).toMatch(/must start with "Phase"/i);
+    }
+    const good = addItemArgsSchema.safeParse({ ...args, phase: 'Phase 1 — Implementation (2026-06-05)' });
+    expect(good.success).toBe(true);
+  });
+
   it('omits the importance keyword for the default (normal)', () => {
     expect(buildItemLine('P-004', 'Fourth item', [])).toBe('- **P-004** `todo` Fourth item');
     expect(buildItemLine('P-004', 'Fourth item', [], 'normal')).toBe('- **P-004** `todo` Fourth item');

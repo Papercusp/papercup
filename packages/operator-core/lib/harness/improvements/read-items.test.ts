@@ -1,15 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { deriveKind, issueToCandidate, readImprovementItems, IMPROVEMENT_TOPIC } from './read-items';
+import { issueToCandidate, readImprovementItems, IMPROVEMENT_TOPIC } from './read-items';
 import type { EngineerIssue } from '../../issues-engineer';
 
 function issue(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
+    kind: 'bug',
     scope: 'operator',
     body: '',
     severity: 'minor',
     source: 'su',
     state: 'open',
     assignee: null,
+    assignedBy: null,
+    assignedAt: null,
+    payload: null,
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: 'su-test',
@@ -19,21 +23,49 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
   };
 }
 
-describe('deriveKind', () => {
-  it('parses [bug]/[change]/[feature] prefixes (case-insensitive)', () => {
-    expect(deriveKind('[bug] x')).toEqual({ kind: 'bug', cleanTitle: 'x' });
-    expect(deriveKind('[Change] make it bigger')).toEqual({ kind: 'change', cleanTitle: 'make it bigger' });
-    expect(deriveKind('[FEATURE] new tab')).toEqual({ kind: 'feature', cleanTitle: 'new tab' });
-  });
-  it('defaults to change when no prefix', () => {
-    expect(deriveKind('just a title')).toEqual({ kind: 'change', cleanTitle: 'just a title' });
-  });
-});
-
-describe('issueToCandidate', () => {
-  it('maps an engineer_issue to a candidate, deriving kind + clean title', () => {
-    const c = issueToCandidate(issue({ id: 'EI-9', title: '[bug] presence overflows', severity: 'major', scope: 'operator' }));
+describe('issueToCandidate — native kind column (close-loop D-002, deriveKind retired)', () => {
+  it('reads the kind COLUMN, not the title (no prefix parsing)', () => {
+    const c = issueToCandidate(issue({ id: 'EI-9', title: 'presence overflows', kind: 'bug', severity: 'major' }));
     expect(c).toMatchObject({ id: 'EI-9', kind: 'bug', title: 'presence overflows', severity: 'major', scope: 'operator' });
+  });
+
+  it('kind=change passes through', () => {
+    expect(issueToCandidate(issue({ id: 'EI-2', title: 'make it bigger', kind: 'change' })).kind).toBe('change');
+  });
+
+  it('payload.improvementKind=feature refines a change to a feature candidate', () => {
+    const c = issueToCandidate(issue({ id: 'EI-3', title: 'new tab', kind: 'change', payload: { improvementKind: 'feature' } }));
+    expect(c.kind).toBe('feature');
+  });
+
+  it('maps payload.paths → candidate.paths (the protected-path gate feed)', () => {
+    const c = issueToCandidate(
+      issue({ id: 'EI-4', title: 'x', kind: 'bug', payload: { paths: ['packages/operator-core/lib/release/deploy.ts', 7] } }),
+    );
+    expect(c.paths).toEqual(['packages/operator-core/lib/release/deploy.ts']); // non-strings dropped
+  });
+
+  it('maps payload.implementAttempts + payload.needsHuman + assignedAt (the close-loop lifecycle)', () => {
+    const c = issueToCandidate(
+      issue({
+        id: 'EI-5',
+        title: 'x',
+        kind: 'bug',
+        assignee: 'improvement-runner',
+        assignedAt: '2026-06-05T01:00:00Z',
+        payload: { implementAttempts: 2, needsHuman: true },
+      }),
+    );
+    expect(c.attempts).toBe(2);
+    expect(c.needsHuman).toBe(true);
+    expect(c.assignedAt).toBe('2026-06-05T01:00:00Z');
+  });
+
+  it('omits the lifecycle fields when the payload has none', () => {
+    const c = issueToCandidate(issue({ id: 'EI-6', title: 'x', kind: 'bug' }));
+    expect(c.attempts).toBeUndefined();
+    expect(c.needsHuman).toBeUndefined();
+    expect(c.paths).toBeUndefined();
   });
 });
 
@@ -43,8 +75,8 @@ describe('readImprovementItems', () => {
     const fakeList = async (filter: unknown) => {
       calls.push(filter);
       return [
-        issue({ id: 'EI-1', title: '[bug] a', severity: 'critical' }),
-        issue({ id: 'EI-2', title: 'a plain change' }),
+        issue({ id: 'EI-1', title: 'a', kind: 'bug', severity: 'critical' }),
+        issue({ id: 'EI-2', title: 'a plain change', kind: 'change' }),
       ];
     };
     const items = await readImprovementItems({}, { listIssues: fakeList });

@@ -373,6 +373,10 @@ pub struct ViewState {
     /// Active harness slug.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    /// POTS scope axis (D-003): "all" | "pot". `None` (an older snapshot)
+    /// keeps the app default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// Which Harnesses column had focus ("features" | "issues").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_focus: Option<String>,
@@ -781,6 +785,51 @@ pub struct CuratedSignal {
 pub struct CurationFeedPayload {
     #[serde(default)]
     pub signals: Vec<CuratedSignal>,
+}
+
+// ─── Memory tab (D-006 Step 2, pui-completion-and-polish-2026-06-05) ────────
+//
+// The PUI Memory tab reads the `memory:list` / `memory:search` agent tools
+// (MCP envelope, `content[0].text` JSON = `{ok, reason?, results}`). The tab
+// shows whatever the configured memory BACKEND holds (mem0 today, the
+// MemoryBackend interface once D-006 Step 1 lands) — `ok:false` renders the
+// backend-unavailable empty state rather than an error.
+
+/// One memory entry (mem0 shape: `memory` is the fact text; `metadata.kind`
+/// is identity|preference|project|correction; `score` only on search hits).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemoryEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub memory: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub score: Option<f64>,
+}
+
+impl MemoryEntry {
+    /// The entry's kind from metadata (empty when unset).
+    pub fn kind(&self) -> String {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.get("kind"))
+            .and_then(|k| k.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+}
+
+/// Inner JSON of the `memory:list` / `memory:search` envelopes.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemoriesPayload {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub results: Vec<MemoryEntry>,
 }
 
 // ─── Operator chat pane (tui-operator-surface-2026-06-04) ───

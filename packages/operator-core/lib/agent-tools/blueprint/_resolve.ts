@@ -3,6 +3,13 @@
  * (`harness-blueprint-orchestration-2026-06-03` P-007 / B1). Wraps the engine's
  * loader so the tools RETURN validation issues instead of throwing — an agent
  * authoring a blueprint wants the errors back, not an exception.
+ *
+ * `extends` resolution is COMPOSED (official-blueprints-cupboard-publish
+ * D-005): local dirs (when the caller has a project context) → installed
+ * (`~/.papercusp/blueprints`, Cupboard-installed) → built-in. The old
+ * built-in-only default artificially restricted `blueprint:extend`/`validate`
+ * to bundled parents while the distribution layer already resolved all three
+ * tiers.
  */
 import { parse as parseYaml } from 'yaml';
 import {
@@ -11,7 +18,9 @@ import {
   resolveExtends,
   type Blueprint,
   type BlueprintValidation,
+  type ResolveExtendsPath,
 } from '@papercusp/orchestrator/blueprint';
+import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 
 export interface ResolveResult {
   ok: boolean;
@@ -38,11 +47,18 @@ export function parseBlueprintSource(source: string): Record<string, unknown> {
  * Resolve `extends` + schema-parse + semantic-validate a raw blueprint, returning
  * issues rather than throwing. `ok` is true only when the schema parses AND
  * `validateBlueprint` reports no errors (warnings still allow ok).
+ *
+ * `resolve` defaults to the operator's composed local→installed→built-in
+ * resolver; pass one with extra `localDirs` when a project context exists
+ * (harness:create does, for the target repo's `.papercusp/blueprints`).
  */
-export function resolveAndValidate(raw: Record<string, unknown>): ResolveResult {
+export function resolveAndValidate(
+  raw: Record<string, unknown>,
+  resolve: ResolveExtendsPath = operatorResolveExtends(),
+): ResolveResult {
   let merged: Record<string, unknown>;
   try {
-    merged = resolveExtends(raw);
+    merged = resolveExtends(raw, resolve);
   } catch (e) {
     return { ok: false, parseError: `extends resolution failed: ${e instanceof Error ? e.message : String(e)}` };
   }

@@ -273,4 +273,40 @@ describe('engineer issues surface (real PG)', () => {
     m = await blocks.getBlockedFeatures();
     expect(m.has(ref)).toBe(false);
   });
+
+  it('mergeIssuePayload shallow-merges the kind-specific jsonb (close-loop bookkeeping)', async () => {
+    const a = await issues.createIssue({ title: 'payload target', kind: 'bug', createdBy: 'agA' });
+    await issues.mergeIssuePayload(a.id, { implementAttempts: 1, lastDispatchAt: NOW, paths: ['lib/x.ts'] });
+    await issues.mergeIssuePayload(a.id, { implementAttempts: 2, needsHuman: true });
+    const got = await issues.getIssue(a.id);
+    expect(got?.payload).toMatchObject({
+      implementAttempts: 2,
+      needsHuman: true,
+      lastDispatchAt: NOW,
+      paths: ['lib/x.ts'],
+    });
+    // NULL payload treated as {} on first merge; unknown id → null.
+    expect(await issues.mergeIssuePayload('EI-404', { x: 1 })).toBeNull();
+  });
+
+  it('migration 157 backfills kind from legacy [kind] title prefixes + strips them (idempotent)', async () => {
+    const bug = await issues.createIssue({ title: '[bug] legacy bug row' }); // kind column defaulted 'bug'
+    const change = await issues.createIssue({ title: '[change] legacy change row' }); // column lied: 'bug'
+    const feature = await issues.createIssue({ title: '[FEATURE] legacy feature row' });
+    const clean = await issues.createIssue({ title: 'clean native row', kind: 'change' });
+
+    await db.sql.unsafe(readMigration('157-improvement-kind-backfill.sql')).simple();
+
+    expect(await issues.getIssue(bug.id)).toMatchObject({ kind: 'bug', title: 'legacy bug row' });
+    expect(await issues.getIssue(change.id)).toMatchObject({ kind: 'change', title: 'legacy change row' });
+    const feat = await issues.getIssue(feature.id);
+    expect(feat).toMatchObject({ kind: 'change', title: 'legacy feature row' });
+    expect((feat?.payload as Record<string, unknown>)?.improvementKind).toBe('feature');
+    // an already-native row is untouched
+    expect(await issues.getIssue(clean.id)).toMatchObject({ kind: 'change', title: 'clean native row' });
+
+    // Idempotent: after the strip the WHERE no longer matches — a re-run is a no-op.
+    await db.sql.unsafe(readMigration('157-improvement-kind-backfill.sql')).simple();
+    expect(await issues.getIssue(feature.id)).toMatchObject({ kind: 'change', title: 'legacy feature row' });
+  });
 });

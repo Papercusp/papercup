@@ -197,11 +197,12 @@ pub fn aggregate(app: &App) -> FleetAggregate {
     let agents_online = app.roster.iter().filter(|r| !r.stale).count();
     let agents_total = app.roster.len();
 
-    // Plan progress across the live (non-archived) plans.
+    // Plan progress across the live (non-archived) plans — under the current
+    // pot scope (D-003): All-Pots aggregates everything, pot scope just it.
     let mut plan_items_done = 0u32;
     let mut plan_items_total = 0u32;
     let mut active_plans = 0usize;
-    for p in app.plans.iter().filter(|p| !p.archived) {
+    for p in app.visible_plans().into_iter().filter(|p| !p.archived) {
         let total = p.item_counts.total();
         if total > 0 {
             active_plans += 1;
@@ -210,7 +211,7 @@ pub fn aggregate(app: &App) -> FleetAggregate {
         plan_items_total += total;
     }
 
-    let wi = &app.fleet.work_items;
+    let wi = app.visible_work_items();
     let wi_features = wi.iter().filter(|w| w.family == "feature").count();
     let wi_issues = wi.iter().filter(|w| w.family == "issue").count();
     let wi_open_issues = wi
@@ -374,7 +375,8 @@ fn signal_glyph(kind: &str) -> &'static str {
 /// Urgent (escalations/blockers) lead, then decisions-owed + user-completions,
 /// then routine. An empty feed means the curator is live but the fleet is calm.
 fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
-    let sigs = &app.fleet.curated_signals;
+    // Pot-scope-filtered (D-003).
+    let sigs = app.visible_signals();
     let items: Vec<ListItem> = sigs
         .iter()
         .map(|s| {
@@ -541,9 +543,10 @@ fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
 /// Fleet-wide plan progress — one bar per live plan, ordered by priority desc
 /// then by remaining work desc (the plans that need attention float up).
 fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
+    // Pot-scope-filtered (D-003), matching the aggregate's headline numbers.
     let mut plans: Vec<&crate::models::PlanSummary> = app
-        .plans
-        .iter()
+        .visible_plans()
+        .into_iter()
         .filter(|p| !p.archived && p.item_counts.total() > 0)
         .collect();
     plans.sort_by(|a, b| {
@@ -583,9 +586,9 @@ fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect
 
 /// Mirror mode: the raw fleet-wide activity firehose, newest-first.
 fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .fleet
-        .activity
+    // Pot-scope-filtered (D-003).
+    let activity = app.visible_fleet_activity();
+    let items: Vec<ListItem> = activity
         .iter()
         .map(|a| {
             let agent = a.agent.clone().unwrap_or_else(|| "-".into());
@@ -616,7 +619,7 @@ fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
         area,
         Block::default().borders(Borders::ALL).title(Line::from(format!(
             " Activity mirror ({}) — every tool call, newest first ",
-            app.fleet.activity.len()
+            activity.len()
         ))),
         &format!("{:<9}{:<7}{:<13}{}", "time", "agent", "pot", "summary"),
     );

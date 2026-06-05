@@ -17,10 +17,10 @@ import { resolveAndValidate } from './_resolve';
 export default defineTool({
   name: 'blueprint:extend',
   description:
-    'Author a CHILD blueprint extending a parent (e.g. extend "coding"). You supply only the overrides; the tool merges onto the parent, validates the resolved result, and returns {ok, errors, warnings, yaml} — the small child override file for .papercusp/blueprint.yaml. The parent must be a built-in (coding/base/research).',
+    'Author a CHILD blueprint extending a parent (e.g. extend "coding"). You supply only the overrides; the tool merges onto the parent, validates the resolved result, and returns {ok, errors, warnings, yaml} — the small child override file for .papercusp/blueprint.yaml. The parent resolves installed (~/.papercusp/blueprints, e.g. Cupboard-installed) → built-in.',
   guidance: {
-    when: 'The usual way to make a new blueprint: inherit shared structure from a built-in and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.',
-    notWhen: 'Authoring a wholly new shape with no parent — blueprint:create. Extending a LOCAL/installed (non-built-in) parent — not yet supported by this tool (built-in parents only).',
+    when: 'The usual way to make a new blueprint: inherit shared structure from any resolvable parent (a built-in, or a Cupboard-installed blueprint) and override only what differs (knobs, a few roles, a spine tweak). Cheap to author.',
+    notWhen: 'Authoring a wholly new shape with no parent — blueprint:create.',
     chaining: 'blueprint:extend { parent:"coding", overrides } → (inspect yaml) → harness:create { blueprint }.',
   },
   capability: 'harness:write',
@@ -28,7 +28,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     id: z.string().min(1).describe("The child blueprint's id"),
-    parent: z.string().min(1).describe('Parent built-in blueprint id to extend (coding, base, research)'),
+    parent: z.string().min(1).describe('Parent blueprint id to extend — resolved installed → built-in (e.g. coding, base, research, or a Cupboard-installed id)'),
     overrides: z
       .record(z.string(), z.unknown())
       .default({})

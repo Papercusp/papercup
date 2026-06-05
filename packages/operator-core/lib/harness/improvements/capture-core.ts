@@ -57,6 +57,12 @@ export interface CaptureImprovementInput {
   force?: boolean;
   /** Only run the dedup search, do not create. */
   checkDuplicatesOnly?: boolean;
+  /**
+   * Which duplicates may DECLINE the create: 'all' (default — agents see every
+   * likely dup and decide) or 'open' (only an OPEN dup declines — the watchdog's
+   * mode: a RESOLVED duplicate means the problem regressed, so re-file it).
+   */
+  dedupScope?: 'all' | 'open';
   createdBy?: string;
   source?: IssueSource;
 }
@@ -114,7 +120,9 @@ export async function captureImprovement(
   if (input.checkDuplicatesOnly) {
     return { ok: true, created: false, reason: 'check-only', possibleDuplicates };
   }
-  if (possibleDuplicates.length > 0 && !input.force) {
+  const blockingDuplicates =
+    input.dedupScope === 'open' ? possibleDuplicates.filter((d) => d.state === 'open') : possibleDuplicates;
+  if (blockingDuplicates.length > 0 && !input.force) {
     return {
       ok: true,
       created: false,

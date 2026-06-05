@@ -1,11 +1,18 @@
 /**
  * Self-improvement-loop system actions (papercusp-self-improvement-loop-2026-06-04,
- * Phase 2 + Phase 3). Two routines, registered here so the routines engine can
- * fire them; both SEEDED INACTIVE (seed-improvement-routines.ts):
+ * Phase 2 + Phase 3; close-the-self-improvement-loop-2026-06-05 D-001/D-003).
+ * Three routines, registered here so the routines engine can fire them; all
+ * SEEDED INACTIVE (seed-improvement-routines.ts):
  *
  *   - `system:improvement-digest` (Phase 2) — read the captured
  *     `papercusp-improvement` backlog, score + dedup + tier it, log the headline
  *     and best-effort surface it to the human inbox. Triage only — builds nothing.
+ *
+ *   - `system:improvement-watchdog` (close-loop D-003) — the HARD feed-in: sweep
+ *     the operator's own telemetry (red tests, failing smokes, repeated tool
+ *     errors, down services) and auto-capture each as a kind=bug improvement via
+ *     the shared capture core (search-first dedup, per-tick cap). Capture only —
+ *     builds nothing.
  *
  *   - `system:improvement-implement` (Phase 3) — the AUTO-implement loop, gated by
  *     the `papercusp-improvement-auto-implement` flag (default OFF). When OFF it
@@ -13,7 +20,10 @@
  *     auto-eligible bugs (D-004) to a DEDICATED runner harness (D-006) — never
  *     in-process — which lands them via the release gate (D-008) + the
  *     release-manager (D-005). The decision is the pure `planImplementRun`; this
- *     handler is thin glue + the dispatch.
+ *     handler is thin glue + the dispatch. Each dispatch CLAIMS the item + bumps
+ *     its attempt counter, and the worker closes the loop with
+ *     `improvements:resolve` (close-loop D-001) — so a fixed bug leaves the queue
+ *     and nothing double-dispatches.
  *
  * Runs as ONE durable step (the system-actions contract) — safe to re-run from the
  * top: the digest is a pure read; implement claims each item BEFORE firing
@@ -30,6 +40,7 @@ import { readImprovementItems } from '../improvements/read-items';
 import { buildDigest } from '../improvements/digest';
 import { planImplementRun } from '../improvements/plan-implement';
 import { claimIssue, mergeIssuePayload } from '../../issues-engineer';
+import { runWatchdogTick } from '../improvements/watchdog';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import type { ScoredItem } from '../improvements/digest';
@@ -61,6 +72,17 @@ registerSystemAction('improvement-digest', async (ctx: SystemActionCtx) => {
   } catch (e) {
     console.warn(`[improvement-digest] inbox broadcast skipped: ${e instanceof Error ? e.message : e}`);
   }
+});
+
+// ── close-loop D-003: the watchdog hard feed-in (capture only) ───────────────
+registerSystemAction('improvement-watchdog', async (ctx: SystemActionCtx) => {
+  const maxPerTick = Number(process.env.PAPERCUSP_IMPROVEMENT_WATCHDOG_MAX_PER_TICK ?? 3) || 3;
+  const result = await runWatchdogTick(ctx.workspaceId, { maxPerTick });
+  console.log(
+    `[improvement-watchdog] ${result.signals} signal(s) → captured ${result.captured.length}` +
+      (result.captured.length ? ` (${result.captured.join(', ')})` : '') +
+      `, ${result.declinedDuplicates} open-duplicate(s) declined, ${result.deferred} deferred by the per-tick cap`,
+  );
 });
 
 // ── Phase 3: the auto-implement loop (flag-gated OFF) ────────────────────────

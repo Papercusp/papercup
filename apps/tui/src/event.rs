@@ -42,6 +42,11 @@ pub enum Event {
     /// The selected testing domain's runnable files (D-004a, from domain-detail).
     /// Carries the domain id so a stale fetch never paints the wrong domain.
     TestingFiles { domain_id: String, files: Vec<String> },
+    /// The user's memories from `memory:list` (D-006 Step 2). `available=false`
+    /// = the memory backend reported unavailable (the tab's empty state).
+    Memories { available: bool, results: Vec<crate::models::MemoryEntry> },
+    /// Semantic hits from `memory:search` for the query the user typed (D-006).
+    MemoryHits { query: String, results: Vec<crate::models::MemoryEntry> },
     /// A test run finished (D-004a) — the file that ran + its result.
     TestRunDone { file: String, result: crate::models::TestRunResult },
     /// Plugin-contributed TUI panes for the active harness (D-002).

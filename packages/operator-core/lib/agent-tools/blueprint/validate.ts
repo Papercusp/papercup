@@ -8,8 +8,9 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
+import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { COORD_ROLES } from '../coordination/roles';
+import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { parseBlueprintSource, resolveAndValidate, type ResolveResult } from './_resolve';
 
 function summarize(r: ResolveResult) {
@@ -36,7 +37,7 @@ function summarize(r: ResolveResult) {
 export default defineTool({
   name: 'blueprint:validate',
   description:
-    'Validate a Harness Blueprint — a built-in id (e.g. "coding") OR inline YAML/JSON. Returns {ok, errors, warnings, summary} (errors/warnings instead of throwing) so you can iterate. Checks the Zod schema + reachability/termination/guards/bounded-recursion.',
+    'Validate a Harness Blueprint — a blueprint id (resolved installed → built-in, e.g. "coding" or a Cupboard-installed id) OR inline YAML/JSON. Returns {ok, errors, warnings, summary} (errors/warnings instead of throwing) so you can iterate. Checks the Zod schema + reachability/termination/guards/bounded-recursion.',
   guidance: {
     when: 'Before persisting a blueprint you authored (with blueprint:create/extend) or to inspect a built-in. Always validate before writing .papercusp/blueprint.yaml or calling harness:create.',
     notWhen: 'To run a blueprint — that is the orchestrator. To create a harness — harness:create.',
@@ -47,7 +48,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      id: z.string().min(1).optional().describe('A built-in blueprint id (coding, base, …)'),
+      id: z.string().min(1).optional().describe('A blueprint id — resolved installed → built-in (coding, base, …)'),
       source: z.string().min(1).optional().describe('Inline blueprint as YAML or JSON'),
     })
     .refine((a) => a.id != null || a.source != null, { message: 'pass either id or source' }),
@@ -55,7 +56,10 @@ export default defineTool({
     let result: ResolveResult;
     if (args.id != null) {
       try {
-        const loaded = loadBuiltinBlueprint(args.id);
+        const resolver = operatorResolveExtends();
+        const file = resolver(args.id);
+        if (!file) throw new Error(`no blueprint "${args.id}" in the installed or built-in tiers`);
+        const loaded = loadBlueprintFromFile(file, resolver);
         result = { ok: loaded.validation.ok, blueprint: loaded.blueprint, validation: loaded.validation };
       } catch (e) {
         result = { ok: false, parseError: e instanceof Error ? e.message : String(e) };

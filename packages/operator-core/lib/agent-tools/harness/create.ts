@@ -17,9 +17,9 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 import { defineTool, getCatalog } from '@papercusp/agent-mcp';
-import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 import { validateBlueprintDependencies } from '@papercusp/blueprint-distribution';
 import { COORD_ROLES } from '../coordination/roles';
+import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../blueprint/_resolve';
 
 const fail = (payload: Record<string, unknown>) => ({
@@ -29,7 +29,7 @@ const fail = (payload: Record<string, unknown>) => ({
 export default defineTool({
   name: 'harness:create',
   description:
-    'Create a harness and instantiate a Blueprint into it. Provide an existing repo `path` OR `parentDir`+`folderName` to make a new dir; choose the blueprint via `blueprintId` (a built-in to extend, e.g. "coding"/"research") OR an inline `blueprint` object. The blueprint\'s knobs.requiresRepo decides git-init: coding → a git repo, research → a repo-less state dir. Registers the harness, provisions its PG schema, writes the git-canonical .papercusp/blueprint.yaml. Returns {ok, slug, path, blueprint}.',
+    'Create a harness and instantiate a Blueprint into it. Provide an existing repo `path` OR `parentDir`+`folderName` to make a new dir; choose the blueprint via `blueprintId` (resolved local → installed → built-in, e.g. "coding"/"research" or a Cupboard-installed id) OR an inline `blueprint` object. The blueprint\'s knobs.requiresRepo decides git-init: coding → a git repo, research → a repo-less state dir. Registers the harness, provisions its PG schema, writes the git-canonical .papercusp/blueprint.yaml. Returns {ok, slug, path, blueprint}.',
   guidance: {
     when: 'Spinning up a new managed harness (coding from a repo, or a repo-less research harness) configured by a blueprint. The agent-authorable path to a new harness.',
     notWhen: 'Running an existing harness (orchestrator). Authoring a blueprint without creating a harness — blueprint:create/extend.',
@@ -48,7 +48,7 @@ export default defineTool({
       path: z.string().min(1).optional().describe('Absolute path to an existing repo/dir'),
       parentDir: z.string().min(1).optional().describe('Parent dir to create a new harness folder in'),
       folderName: z.string().min(1).optional().describe('New folder name (with parentDir)'),
-      blueprintId: z.string().min(1).optional().describe('A built-in blueprint to extend (coding/base/research)'),
+      blueprintId: z.string().min(1).optional().describe('A blueprint to extend — resolved local → installed → built-in (e.g. coding/base/research or a Cupboard-installed id)'),
       blueprint: z.record(z.string(), z.unknown()).optional().describe('An inline blueprint object (alternative to blueprintId)'),
     })
     .refine((a) => a.path != null || (a.parentDir != null && a.folderName != null), {
@@ -66,17 +66,19 @@ export default defineTool({
     // 1. Resolve + validate the blueprint FIRST — knobs.requiresRepo drives the
     //    dir/git decision below. `blueprintId` → a thin inheriting child
     //    (`{ id: slug, extends: <id> }`); `blueprint` → as-authored.
+    //    `extends` resolution is composed (D-005): the target repo's local
+    //    `.papercusp/blueprints` (when `path` is given) → installed
+    //    (`~/.papercusp/blueprints`, Cupboard-installed) → built-in.
+    const resolver = operatorResolveExtends({
+      localDirs: args.path != null ? [join(resolvePath(args.path), '.papercusp', 'blueprints')] : [],
+    });
     const childObj: Record<string, unknown> = args.blueprint ?? { id: args.slug, extends: args.blueprintId };
-    const validation = resolveAndValidate(childObj);
+    const validation = resolveAndValidate(childObj, resolver);
     if (validation.parseError || !validation.ok) {
       return fail({ error: 'blueprint invalid', parseError: validation.parseError, errors: validation.validation?.errors });
     }
-    if (args.blueprintId) {
-      try {
-        loadBuiltinBlueprint(args.blueprintId);
-      } catch (e) {
-        return fail({ error: `unknown built-in blueprint "${args.blueprintId}": ${e instanceof Error ? e.message : String(e)}` });
-      }
+    if (args.blueprintId && resolver(args.blueprintId) == null) {
+      return fail({ error: `unknown blueprint "${args.blueprintId}" — not in the local, installed, or built-in tiers` });
     }
     const requiresRepo = validation.blueprint!.knobs.requiresRepo !== false;
 

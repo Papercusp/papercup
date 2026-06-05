@@ -57,7 +57,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     // A transient toast for the latest notification sits above the body but
     // below the modal overlays (it shouldn't fight the help/palette/tutorial).
     if let Some(t) = &app.toast {
-        if !app.show_tutorial && !app.show_help && !app.palette_open && !app.show_notifs {
+        if !app.show_tutorial
+            && !app.show_help
+            && !app.palette_open
+            && !app.show_notifs
+            && !app.pot_picker_open
+        {
             draw_toast(f, t);
         }
     }
@@ -71,6 +76,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_help(f);
     } else if app.palette_open {
         draw_palette(f, app);
+    } else if app.pot_picker_open {
+        draw_pot_picker(f, app);
     }
 }
 
@@ -101,8 +108,9 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
         .split(area);
 
-    let items: Vec<ListItem> = app
-        .plans
+    // The pot-scope-filtered list (D-003) — `plan_sel` indexes THIS list.
+    let plans = app.visible_plans();
+    let items: Vec<ListItem> = plans
         .iter()
         .map(|p| {
             ListItem::new(Line::from(vec![
@@ -112,15 +120,15 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut state = ListState::default();
-    if !app.plans.is_empty() {
-        state.select(Some(app.plan_sel));
+    if !plans.is_empty() {
+        state.select(Some(app.plan_sel.min(plans.len() - 1)));
     }
     let body_area = block_with_header(
         f,
         cols[0],
         Block::default()
             .borders(Borders::ALL)
-            .title(Line::from(format!(" Plans ({}) ", app.plans.len()))),
+            .title(Line::from(format!(" Plans ({}) ", plans.len()))),
         &format!("  {:<9}{}", "status", "slug"),
     );
     let list = List::new(items)
@@ -272,8 +280,9 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
         .split(area);
 
-    let items: Vec<ListItem> = app
-        .inbox
+    // The pot-scope-filtered inbox (D-003) — `inbox_sel` indexes THIS list.
+    let inbox = app.visible_inbox();
+    let items: Vec<ListItem> = inbox
         .iter()
         .map(|it| {
             let loc = it
@@ -293,15 +302,15 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut state = ListState::default();
-    if !app.inbox.is_empty() {
-        state.select(Some(app.inbox_sel));
+    if !inbox.is_empty() {
+        state.select(Some(app.inbox_sel.min(inbox.len() - 1)));
     }
     let body_area = block_with_header(
         f,
         cols[0],
         Block::default()
             .borders(Borders::ALL)
-            .title(Line::from(format!(" Inbox ({}) ", app.inbox.len()))),
+            .title(Line::from(format!(" Inbox ({}) ", inbox.len()))),
         &format!("   {:<12}{:<27}{}", "status", "plan/ref", "title"),
     );
     let list = List::new(items)
@@ -857,7 +866,8 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
-        None => (app.status.clone(), Theme::dim()),
+        // The POTS scope indicator (D-003) leads the status line.
+        None => (format!("{} · {}", app.scope_label(), app.status), Theme::dim()),
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
     // Companion workbench indicator (P-004): right-aligned "⚡ N panes" when the
@@ -877,7 +887,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0        switch tab (1 Operator · 4 Brew · 5 Pots · 0 Settings)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0        switch tab (1 Operator · 4 Brew · 5 Pots · 0 Settings)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -998,6 +1008,35 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
             ),
         area,
     );
+}
+
+/// The pot-selector overlay (D-003): "All Pots" + each pot. The current choice
+/// carries a filled marker; Enter applies, Esc closes.
+fn draw_pot_picker(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 60, f.area());
+    let mut items: Vec<ListItem> = Vec::with_capacity(app.harnesses.len() + 1);
+    let all_marker = if app.all_pots { "●" } else { "○" };
+    items.push(ListItem::new(Line::from(format!("{all_marker} All Pots"))));
+    for h in &app.harnesses {
+        let marker = if !app.all_pots && h.slug == app.harness {
+            "●"
+        } else {
+            "○"
+        };
+        items.push(ListItem::new(Line::from(format!("{marker} {}", h.slug))));
+    }
+    let mut state = ListState::default();
+    state.select(Some(app.pot_picker_sel.min(app.harnesses.len())));
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Pot — Enter select · Esc close "),
+        )
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_palette(f: &mut Frame, app: &App) {
@@ -1497,6 +1536,40 @@ mod tests {
         app.set_config(String::new());
         let empty = render(&app, 100, 8);
         assert!(empty.contains("no .claude/settings.json"));
+    }
+
+    #[test]
+    fn pot_picker_overlay_and_scope_indicator_render() {
+        use crate::models::HarnessRef;
+        let mut app = App::new();
+        app.set_harnesses(vec![
+            HarnessRef { slug: "papercup".into(), path: None },
+            HarnessRef { slug: "restart".into(), path: None },
+        ]);
+        // The status bar carries the scope indicator (D-003).
+        let base = render(&app, 100, 12);
+        assert!(base.contains("⊙ all pots"));
+        // The picker overlay lists All Pots + each pot.
+        app.pot_picker_open = true;
+        let picker = render(&app, 100, 14);
+        assert!(picker.contains("All Pots"));
+        assert!(picker.contains("papercup"));
+        assert!(picker.contains("restart"));
+        assert!(picker.contains("Enter select"));
+        // Pot scope narrows the Plans list + flips the indicator.
+        app.pot_picker_open = false;
+        app.all_pots = false;
+        app.tab = Tab::Plans;
+        let mut p1 = plan("papercup-plan", "todo");
+        p1.harness = Some("papercup".into());
+        let mut p2 = plan("restart-plan", "todo");
+        p2.harness = Some("restart".into());
+        app.set_plans(vec![p1, p2]);
+        let scoped = render(&app, 100, 14);
+        assert!(scoped.contains("⊙ papercup"));
+        assert!(scoped.contains("Plans (1)"));
+        assert!(scoped.contains("papercup-plan"));
+        assert!(!scoped.contains("restart-plan"));
     }
 
     #[test]

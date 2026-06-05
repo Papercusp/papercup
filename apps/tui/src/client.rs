@@ -674,6 +674,47 @@ impl OperatorClient {
             .content)
     }
 
+    // ─── Memory tab (D-006 Step 2) ───
+
+    /// All memories for the current user (+ the active harness's pool) via the
+    /// `memory:list` agent tool. `ok:false` (backend unavailable) is a VALID
+    /// payload — the Memory tab renders its empty state from it, not an error.
+    pub async fn memory_list(&self, harness: Option<&str>) -> Result<models::MemoriesPayload> {
+        let mut body = serde_json::json!({});
+        if let Some(h) = harness {
+            body["harness_slug"] = serde_json::Value::String(h.to_string());
+        }
+        let env = self.post_json("/api/agent-tools/memory/list", body).await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("memory:list: missing content[0].text")?;
+        serde_json::from_str::<models::MemoriesPayload>(text).context("parse memory list payload")
+    }
+
+    /// Semantic recall via the `memory:search` agent tool (same envelope).
+    pub async fn memory_search(
+        &self,
+        query: &str,
+        harness: Option<&str>,
+        limit: u32,
+    ) -> Result<models::MemoriesPayload> {
+        let mut body = serde_json::json!({ "query": query, "limit": limit });
+        if let Some(h) = harness {
+            body["harness_slug"] = serde_json::Value::String(h.to_string());
+        }
+        let env = self.post_json("/api/agent-tools/memory/search", body).await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("memory:search: missing content[0].text")?;
+        serde_json::from_str::<models::MemoriesPayload>(text).context("parse memory search payload")
+    }
+
     /// Human-facing coord inbox (P-002) — messages/escalations/handoffs with
     /// 'human' in `to`. The pui consumer refetches this on a coord-inbox SSE wake.
     pub async fn coord_inbox(&self) -> Result<Vec<CoordMsg>> {

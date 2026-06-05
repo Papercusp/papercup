@@ -6,9 +6,10 @@
 use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
-    AttentionItem, ChatMessage, ChatToolCall, CrewMember, DocsResponse, FlagsResponse,
-    HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary,
-    RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
+    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, CuratedSignal,
+    DocsResponse, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig,
+    PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
+    WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -61,6 +62,9 @@ pub enum Action {
     /// The reducer already marked the run in-flight; the result returns as
     /// `Event::TestRunDone`.
     RunTest { harness: String, file: String },
+    /// Semantic memory search (D-006 Step 2) — the run loop calls the
+    /// `memory:search` tool; hits return as `Event::MemoryHits`.
+    SearchMemory { query: String, harness: String },
 }
 
 /// A command-palette workbench command (P12b / D-002). Parsed from the palette
@@ -117,13 +121,16 @@ pub enum Tab {
     Config,
     Plugins,
     Settings,
+    /// Memory browser (D-006 Step 2) — whatever the configured memory backend
+    /// holds (mem0 today; the MemoryBackend seam later). Appended; key 'm'.
+    Memory,
 }
 
 impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Brew tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 11] = [
         Tab::Operator,
         Tab::Inbox,
         Tab::Plans,
@@ -134,6 +141,7 @@ impl Tab {
         Tab::Config,
         Tab::Plugins,
         Tab::Settings,
+        Tab::Memory,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -148,11 +156,13 @@ impl Tab {
             Tab::Config => "Config",
             Tab::Plugins => "Plugins",
             Tab::Settings => "Settings",
+            Tab::Memory => "Memory",
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
-    /// dispatch in `on_key` derives from it, g1). Ten tabs, ten digits (1-9, 0);
-    /// an appended tab (e.g. the Memory tab, D-006) takes a mnemonic letter.
+    /// dispatch in `on_key` derives from it, g1). Ten lead tabs take the ten
+    /// digits (1-9, 0); appended tabs take a mnemonic letter (Memory → 'm',
+    /// freed when the Brew mode toggle moved to Tab).
     pub fn switch_key(self) -> char {
         match self {
             Tab::Operator => '1',
@@ -165,6 +175,7 @@ impl Tab {
             Tab::Config => '8',
             Tab::Plugins => '9',
             Tab::Settings => '0',
+            Tab::Memory => 'm',
         }
     }
     pub fn index(self) -> usize {
@@ -228,6 +239,16 @@ pub struct App {
     pub harness_sel: usize,
     /// Active harness slug (display copy of `active_harness`).
     pub harness: String,
+    /// POTS scope axis (D-003, matching the desktop's two-axis model): `?slug=`
+    /// is WHICH pot is active (`harness`, always a real slug); this flag is HOW
+    /// WIDE the global list tabs (Plans / Inbox / Brew) read — `true` = "All
+    /// Pots" (unfiltered), `false` = scoped to the active pot. The "all"
+    /// sentinel lives on this axis, never in `harness`.
+    pub all_pots: bool,
+    /// Pot-selector overlay (D-003; clone of the palette/notifs overlay
+    /// pattern): open flag + cursor over ["All Pots", ...harnesses].
+    pub pot_picker_open: bool,
+    pub pot_picker_sel: usize,
     /// Shared active-harness slug the backend poller reads each loop.
     pub active_harness: Arc<Mutex<String>>,
     /// Shared (harness, plan) the poller fetches plan-item-states for (P-005a) —
@@ -264,6 +285,16 @@ pub struct App {
     /// the selection cursor. Enter launches the selected pane in a mux pane.
     pub panes: Vec<TuiPaneContribution>,
     pub pane_sel: usize,
+    /// Memory tab (D-006 Step 2): the backend's memories (`memory:list`), an
+    /// optional search-hit overlay (`memory:search` — shown instead of the
+    /// list while a query is active), the cursor, whether the backend reported
+    /// itself available, and the `/`-search composer state.
+    pub memories: Vec<crate::models::MemoryEntry>,
+    pub memory_hits: Option<(String, Vec<crate::models::MemoryEntry>)>,
+    pub memory_sel: usize,
+    pub memory_available: bool,
+    pub memory_search_open: bool,
+    pub memory_search_input: String,
     /// Settings tab (P10): operator feature flags (key, enabled), sorted; the
     /// flag-backend source ('defaults'/'posthog'); + the selection cursor.
     /// Read-only v1 — the full per-group settings port lives on the desktop.
@@ -355,6 +386,10 @@ impl App {
             harnesses: Vec::new(),
             harness_sel: 0,
             harness: "papercup".to_string(),
+            // Fresh installs land in All-Pots (the desktop's fresh-load default).
+            all_pots: true,
+            pot_picker_open: false,
+            pot_picker_sel: 0,
             active_harness: Arc::new(Mutex::new("papercup".to_string())),
             active_plan: Arc::new(Mutex::new(None)),
             features: Vec::new(),
@@ -377,6 +412,12 @@ impl App {
             config: String::new(),
             panes: Vec::new(),
             pane_sel: 0,
+            memories: Vec::new(),
+            memory_hits: None,
+            memory_sel: 0,
+            memory_available: false,
+            memory_search_open: false,
+            memory_search_input: String::new(),
             flags: Vec::new(),
             flags_source: String::new(),
             flag_sel: 0,
@@ -600,7 +641,14 @@ impl App {
         }
         let cur = self.harness_sel as isize;
         let next = ((cur + delta).rem_euclid(n as isize)) as usize;
-        if next == self.harness_sel {
+        self.select_harness(next)
+    }
+
+    /// Make `harnesses[next]` the active pot: reset the per-pot tab state, clamp
+    /// the scope-filtered global selections, republish for the poller. Shared by
+    /// `[`/`]` cycling and the pot-picker overlay (D-003).
+    fn select_harness(&mut self, next: usize) -> bool {
+        if next >= self.harnesses.len() || next == self.harness_sel {
             return false;
         }
         self.harness_sel = next;
@@ -627,8 +675,113 @@ impl App {
         if let Ok(mut g) = self.active_doc.lock() {
             *g = None;
         }
+        // The scope-filtered global lists change with the pot (D-003).
+        self.clamp_scope_sel();
         self.publish_active();
         true
+    }
+
+    // ─── POTS scope axis (D-003) ───
+
+    /// True when a row attributed to harness `h` is visible under the current
+    /// scope: All-Pots shows everything; pot scope shows the active pot's rows.
+    /// Rows that carry NO slug stay visible (they can't be attributed, and
+    /// hiding them would silently drop real data).
+    fn in_scope(&self, h: Option<&str>) -> bool {
+        self.all_pots || h.map_or(true, |s| s.is_empty() || s == self.harness)
+    }
+
+    /// The Plans list under the current pot scope (what the Plans tab renders;
+    /// `plan_sel` indexes THIS list).
+    pub fn visible_plans(&self) -> Vec<&PlanSummary> {
+        self.plans
+            .iter()
+            .filter(|p| self.in_scope(p.harness.as_deref()))
+            .collect()
+    }
+
+    /// The Inbox under the current pot scope (`inbox_sel` indexes this).
+    pub fn visible_inbox(&self) -> Vec<&AttentionItem> {
+        self.inbox
+            .iter()
+            .filter(|i| self.in_scope(i.harness_slug.as_deref()))
+            .collect()
+    }
+
+    /// Fleet work-items under the current pot scope (Brew headline + rollup).
+    pub fn visible_work_items(&self) -> Vec<&WorkItem> {
+        self.fleet
+            .work_items
+            .iter()
+            .filter(|w| self.in_scope(w.harness.as_deref()))
+            .collect()
+    }
+
+    /// The Brew activity feed under the current pot scope (mirror mode).
+    pub fn visible_fleet_activity(&self) -> Vec<&ActivityRow> {
+        self.fleet
+            .activity
+            .iter()
+            .filter(|a| self.in_scope(a.harness_slug.as_deref()))
+            .collect()
+    }
+
+    /// The curator's signals under the current pot scope (Brew curated mode).
+    pub fn visible_signals(&self) -> Vec<&CuratedSignal> {
+        self.fleet
+            .curated_signals
+            .iter()
+            .filter(|s| self.in_scope(s.harness.as_deref()))
+            .collect()
+    }
+
+    /// The Memory tab's visible entries (D-006): search hits while a query is
+    /// active, else the full list. `memory_sel` indexes THIS list.
+    pub fn visible_memories(&self) -> &[crate::models::MemoryEntry] {
+        match &self.memory_hits {
+            Some((_, hits)) => hits,
+            None => &self.memories,
+        }
+    }
+
+    /// The selected memory entry (D-006).
+    pub fn selected_memory(&self) -> Option<&crate::models::MemoryEntry> {
+        self.visible_memories().get(self.memory_sel)
+    }
+
+    /// One-line scope indicator for the status bar (D-003).
+    pub fn scope_label(&self) -> String {
+        if self.all_pots {
+            "⊙ all pots".to_string()
+        } else {
+            format!("⊙ {}", self.harness)
+        }
+    }
+
+    /// Re-clamp the selections that index scope-FILTERED lists — called when
+    /// the scope or the active pot changes (the visible lists shrink/grow).
+    fn clamp_scope_sel(&mut self) {
+        let plans = self.visible_plans().len();
+        if self.plan_sel >= plans {
+            self.plan_sel = plans.saturating_sub(1);
+        }
+        let inbox = self.visible_inbox().len();
+        if self.inbox_sel >= inbox {
+            self.inbox_sel = inbox.saturating_sub(1);
+        }
+    }
+
+    /// Apply a pot-picker choice (D-003): index 0 = All Pots; index i>0 picks
+    /// `harnesses[i-1]` and narrows the scope to it.
+    fn apply_pot_choice(&mut self, index: usize) {
+        if index == 0 {
+            self.all_pots = true;
+        } else {
+            self.all_pots = false;
+            self.select_harness(index - 1);
+        }
+        self.clamp_scope_sel();
+        self.publish_active_plan();
     }
 
     fn publish_active(&self) {
@@ -761,6 +914,7 @@ impl App {
         ViewState {
             tab: Some(self.tab.title().to_string()),
             harness: Some(self.harness.clone()),
+            scope: Some(if self.all_pots { "all" } else { "pot" }.to_string()),
             harness_focus: Some(
                 match self.harness_focus {
                     HarnessFocus::Features => "features",
@@ -795,6 +949,13 @@ impl App {
                 self.harness = h.clone();
                 self.publish_active();
             }
+        }
+        // POTS scope axis (D-003): restore "all" vs "pot"; an absent value
+        // (older snapshot) keeps the app default (all).
+        match vs.scope.as_deref() {
+            Some("pot") => self.all_pots = false,
+            Some("all") => self.all_pots = true,
+            _ => {}
         }
         if let Some(f) = vs.harness_focus.as_deref() {
             self.harness_focus = match f {
@@ -875,8 +1036,9 @@ impl App {
     fn set_selection(&mut self, list: &str, index: usize) -> Result<(), String> {
         let clamp = |len: usize| if len == 0 { 0 } else { index.min(len - 1) };
         match list {
-            "plans" => self.plan_sel = clamp(self.plans.len()),
-            "inbox" => self.inbox_sel = clamp(self.inbox.len()),
+            // Plans/Inbox cursors index the scope-filtered lists (D-003).
+            "plans" => self.plan_sel = clamp(self.visible_plans().len()),
+            "inbox" => self.inbox_sel = clamp(self.visible_inbox().len()),
             "features" => self.feat_sel = clamp(self.features.len()),
             "issues" => self.issue_sel = clamp(self.issues.len()),
             "docs" => {
@@ -903,6 +1065,9 @@ impl App {
         json!({
             "tab": self.tab.title(),
             "harness": self.harness,
+            // POTS scope axis (D-003): "all" widens the global lists; "pot"
+            // narrows them to `harness`.
+            "scope": if self.all_pots { "all" } else { "pot" },
             "harness_focus": match self.harness_focus {
                 HarnessFocus::Features => "features",
                 HarnessFocus::Issues => "issues",
@@ -920,9 +1085,9 @@ impl App {
                 "agent": self.fleet.agent_sel,
             },
             "counts": {
-                "plans": self.plans.len(),
+                "plans": self.visible_plans().len(),
                 "roster": self.roster.len(),
-                "inbox": self.inbox.len(),
+                "inbox": self.visible_inbox().len(),
                 "features": self.features.len(),
                 "issues": self.issues.len(),
                 "docs": self.docs_files.len(),
@@ -965,8 +1130,10 @@ impl App {
         }
     }
 
+    /// The selected plan under the current pot scope (D-003): `plan_sel`
+    /// indexes the VISIBLE (scope-filtered) list.
     pub fn selected_plan(&self) -> Option<&PlanSummary> {
-        self.plans.get(self.plan_sel)
+        self.visible_plans().get(self.plan_sel).copied()
     }
 
     /// Store merged plan-item assignment/claim/liveness for the selected plan (P-005a).
@@ -996,7 +1163,7 @@ impl App {
     }
 
     pub fn selected_inbox(&self) -> Option<&AttentionItem> {
-        self.inbox.get(self.inbox_sel)
+        self.visible_inbox().get(self.inbox_sel).copied()
     }
 
     /// The roster entry the Brew tab has selected (the single shared cursor,
@@ -1126,12 +1293,8 @@ impl App {
     }
 
     fn clamp_sel(&mut self) {
-        if self.plan_sel >= self.plans.len() {
-            self.plan_sel = self.plans.len().saturating_sub(1);
-        }
-        if self.inbox_sel >= self.inbox.len() {
-            self.inbox_sel = self.inbox.len().saturating_sub(1);
-        }
+        // Plans/Inbox cursors index the scope-FILTERED lists (D-003).
+        self.clamp_scope_sel();
         if self.feat_sel >= self.features.len() {
             self.feat_sel = self.features.len().saturating_sub(1);
         }
@@ -1395,6 +1558,31 @@ impl App {
             self.show_notifs = false;
             return Action::Render;
         }
+        // Pot-picker overlay (D-003) captures navigation while open: j/k moves
+        // over ["All Pots", ...pots], Enter applies, Esc closes unchanged.
+        if self.pot_picker_open {
+            return match code {
+                KeyCode::Esc => {
+                    self.pot_picker_open = false;
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    let idx = self.pot_picker_sel;
+                    self.pot_picker_open = false;
+                    self.apply_pot_choice(idx);
+                    Action::Render
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.pot_picker_sel = (self.pot_picker_sel + 1).min(self.harnesses.len());
+                    Action::Render
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.pot_picker_sel = self.pot_picker_sel.saturating_sub(1);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
         // Command palette captures all input while open.
         if self.palette_open {
             return match code {
@@ -1504,6 +1692,17 @@ impl App {
                 self.show_notifs = true;
                 self.toast = None;
                 self.unseen_notifs = 0;
+                Action::Render
+            }
+            KeyCode::Char('P') => {
+                // Open the pot selector (D-003): "All Pots" + each pot, with the
+                // cursor on the current choice.
+                self.pot_picker_open = true;
+                self.pot_picker_sel = if self.all_pots {
+                    0
+                } else {
+                    self.harness_sel + 1
+                };
                 Action::Render
             }
             KeyCode::Esc => {
@@ -1688,21 +1887,23 @@ impl App {
     }
 
     fn move_sel(&mut self, delta: isize) {
-        let (len, slot): (usize, &mut usize) = match self.tab {
-            Tab::Plans => (self.plans.len(), &mut self.plan_sel),
-            Tab::Inbox => (self.inbox.len(), &mut self.inbox_sel),
+        // Two phases: the visible LENGTH first (scope-filtered lists borrow
+        // self immutably, D-003), then the cursor slot.
+        let len = match self.tab {
+            Tab::Plans => self.visible_plans().len(),
+            Tab::Inbox => self.visible_inbox().len(),
             Tab::Harnesses => match self.harness_focus {
-                HarnessFocus::Features => (self.features.len(), &mut self.feat_sel),
-                HarnessFocus::Issues => (self.issues.len(), &mut self.issue_sel),
+                HarnessFocus::Features => self.features.len(),
+                HarnessFocus::Issues => self.issues.len(),
             },
-            Tab::Docs => (self.docs_files.len(), &mut self.doc_sel),
+            Tab::Docs => self.docs_files.len(),
             Tab::Testing => match self.testing_focus {
-                TestingFocus::Domains => (self.testing.len(), &mut self.testing_sel),
-                TestingFocus::Files => (self.testing_files.len(), &mut self.testing_file_sel),
+                TestingFocus::Domains => self.testing.len(),
+                TestingFocus::Files => self.testing_files.len(),
             },
-            Tab::Plugins => (self.panes.len(), &mut self.pane_sel),
-            Tab::Settings => (self.flags.len(), &mut self.flag_sel),
-            Tab::Fleet => (self.roster.len(), &mut self.fleet.agent_sel),
+            Tab::Plugins => self.panes.len(),
+            Tab::Settings => self.flags.len(),
+            Tab::Fleet => self.roster.len(),
             // No list to navigate — j/k scroll the transcript (Operator) handled
             // in on_key; Config has no list.
             Tab::Config | Tab::Operator => return,
@@ -1710,6 +1911,23 @@ impl App {
         if len == 0 {
             return;
         }
+        let slot: &mut usize = match self.tab {
+            Tab::Plans => &mut self.plan_sel,
+            Tab::Inbox => &mut self.inbox_sel,
+            Tab::Harnesses => match self.harness_focus {
+                HarnessFocus::Features => &mut self.feat_sel,
+                HarnessFocus::Issues => &mut self.issue_sel,
+            },
+            Tab::Docs => &mut self.doc_sel,
+            Tab::Testing => match self.testing_focus {
+                TestingFocus::Domains => &mut self.testing_sel,
+                TestingFocus::Files => &mut self.testing_file_sel,
+            },
+            Tab::Plugins => &mut self.pane_sel,
+            Tab::Settings => &mut self.flag_sel,
+            Tab::Fleet => &mut self.fleet.agent_sel,
+            Tab::Config | Tab::Operator => return,
+        };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
     }
@@ -2994,6 +3212,113 @@ mod tests {
             }
             other => panic!("expected IntentResult error, got {other:?}"),
         }
+    }
+
+    // --- POTS scope axis + picker (D-003, pui-completion-and-polish) ---
+
+    fn plan_in(slug: &str, harness: Option<&str>) -> PlanSummary {
+        let mut p = plan(slug);
+        p.harness = harness.map(|s| s.to_string());
+        p
+    }
+
+    #[test]
+    fn scope_filters_plans_and_keeps_unattributed_rows() {
+        let mut a = App::new();
+        assert!(a.all_pots); // fresh installs land in All-Pots
+        a.set_plans(vec![
+            plan_in("p-papercup", Some("papercup")),
+            plan_in("p-restart", Some("restart")),
+            plan_in("p-unattributed", None),
+        ]);
+        assert_eq!(a.visible_plans().len(), 3);
+        // Narrow to the active pot (papercup): restart's plan filters out, the
+        // unattributed plan stays (it can't be attributed).
+        a.all_pots = false;
+        let vis: Vec<&str> = a.visible_plans().iter().map(|p| p.slug.as_str()).collect();
+        assert_eq!(vis, vec!["p-papercup", "p-unattributed"]);
+        // The selection indexes the VISIBLE list.
+        a.plan_sel = 1;
+        assert_eq!(a.selected_plan().unwrap().slug, "p-unattributed");
+        // Scope label follows the axis.
+        assert_eq!(a.scope_label(), "⊙ papercup");
+        a.all_pots = true;
+        assert_eq!(a.scope_label(), "⊙ all pots");
+    }
+
+    #[test]
+    fn pot_picker_opens_navigates_and_applies() {
+        use crate::models::HarnessRef;
+        let mut a = App::new();
+        a.set_harnesses(vec![
+            HarnessRef { slug: "papercup".into(), path: None },
+            HarnessRef { slug: "restart".into(), path: None },
+        ]);
+        // `P` opens the picker with the cursor on the current choice (All).
+        a.update(key('P', KeyModifiers::SHIFT));
+        assert!(a.pot_picker_open);
+        assert_eq!(a.pot_picker_sel, 0);
+        // j to "papercup", j to "restart", Enter applies pot scope + switches.
+        a.update(key('j', KeyModifiers::NONE));
+        a.update(key('j', KeyModifiers::NONE));
+        a.update(key('j', KeyModifiers::NONE)); // clamped at the last entry
+        assert_eq!(a.pot_picker_sel, 2);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(!a.pot_picker_open);
+        assert!(!a.all_pots);
+        assert_eq!(a.harness, "restart");
+        assert_eq!(*a.active_harness.lock().unwrap(), "restart");
+        // Re-open: the cursor sits on the active pot; Enter on "All Pots" widens.
+        a.update(key('P', KeyModifiers::SHIFT));
+        assert_eq!(a.pot_picker_sel, 2); // index 1 + harness_sel(1)
+        a.update(key('k', KeyModifiers::NONE));
+        a.update(key('k', KeyModifiers::NONE));
+        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(a.all_pots);
+        assert_eq!(a.harness, "restart"); // the slug axis is untouched by All
+        // Esc closes without applying.
+        a.update(key('P', KeyModifiers::SHIFT));
+        a.update(key('j', KeyModifiers::NONE));
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.pot_picker_open);
+        assert!(a.all_pots); // unchanged
+    }
+
+    #[test]
+    fn scope_persists_in_view_state_and_snapshot() {
+        let mut a = App::new();
+        a.all_pots = false;
+        let vs = a.capture_view_state();
+        assert_eq!(vs.scope.as_deref(), Some("pot"));
+        let mut b = App::new();
+        assert!(b.all_pots);
+        b.apply_view_state(&vs);
+        assert!(!b.all_pots);
+        // An older snapshot without the field keeps the default.
+        let mut c = App::new();
+        c.apply_view_state(&ViewState::default());
+        assert!(c.all_pots);
+        // The agent-facing snapshot exposes the axis.
+        assert_eq!(a.state_snapshot()["scope"], "pot");
+        assert_eq!(c.state_snapshot()["scope"], "all");
+    }
+
+    #[test]
+    fn scope_change_clamps_filtered_selection() {
+        let mut a = App::new();
+        a.set_plans(vec![
+            plan_in("p1", Some("restart")),
+            plan_in("p2", Some("restart")),
+            plan_in("p3", Some("papercup")),
+        ]);
+        a.plan_sel = 2; // p3 visible under All
+        // Narrowing to papercup leaves 1 visible plan → the cursor clamps.
+        a.apply_pot_choice(0); // All (no-op scope-wise but exercises the path)
+        assert!(a.all_pots);
+        a.all_pots = false;
+        a.clamp_scope_sel();
+        assert_eq!(a.plan_sel, 0);
+        assert_eq!(a.selected_plan().unwrap().slug, "p3");
     }
 
     // --- Testing run-on-click (D-004a, pui-completion-and-polish-2026-06-05) ---
