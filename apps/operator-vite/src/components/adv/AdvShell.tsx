@@ -9,6 +9,7 @@ import {
   Check,
   FlaskConical,
   GitBranch,
+  LayoutDashboard,
   Lightbulb,
   ListChecks,
   Plus,
@@ -24,7 +25,7 @@ import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 
-const ADV_TAB_IDS = ['harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -41,6 +42,7 @@ export const ADV_TABS: ReadonlyArray<{
   accent: string;
   accentRgb: string;
 }> = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: '#818cf8', accentRgb: '129, 140, 248' },
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
   { id: 'harnesses', label: 'Pots', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },

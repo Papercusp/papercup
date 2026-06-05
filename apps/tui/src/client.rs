@@ -186,13 +186,14 @@ impl OperatorClient {
     /// Append a turn to a conversation (persist the user message + the finalized
     /// assistant reply, so the thread stays consistent with the desktop surface).
     /// `tools` is the per-turn tool-call array (`[{name, input?}]`); pass `&[]`
-    /// for none.
+    /// for none. `report` is the optional `<report>` payload (structured-report-protocol).
     pub async fn append_turn(
         &self,
         conversation_id: &str,
         role: &str,
         text: &str,
         tools: &[serde_json::Value],
+        report: Option<&serde_json::Value>,
     ) -> Result<()> {
         let mut body = serde_json::json!({
             "role": role,
@@ -201,6 +202,9 @@ impl OperatorClient {
         });
         if !tools.is_empty() {
             body["tools"] = serde_json::Value::Array(tools.to_vec());
+        }
+        if let Some(r) = report {
+            body["report"] = r.clone();
         }
         self.post_json(
             &format!("/api/operator/conversations/{conversation_id}/turns"),

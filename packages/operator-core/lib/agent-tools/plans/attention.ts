@@ -36,7 +36,8 @@ import {
 } from '../../attention/adapters';
 import { planItemsToAttention } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
-import type { AttentionItem } from '../../attention/types';
+import { applyTriage, groupByTier, type AttentionItem } from '../../attention/types';
+import { readTriageByWorkspace } from '../../attention/triage-store';
 
 const ALL_ROLES = [
   'scoper',
@@ -122,6 +123,8 @@ export default defineTool({
             planSlug: typeof e.plan_slug === 'string' ? e.plan_slug : null,
             harnessSlug: resolveHarness(e.harnessSlug, typeof e.plan_slug === 'string' ? e.plan_slug : null),
             options: Array.isArray(e.options) ? e.options : [],
+            // The escalating agent — drives the "Message owner" action (D-005).
+            from: typeof e.from === 'string' ? e.from : null,
           }),
         );
       }
@@ -143,6 +146,7 @@ export default defineTool({
       ]);
       for (const m of msgs.slice(-50)) {
         if (acked.has(m.msg_id)) continue;
+        const mm = m as typeof m & { auto?: unknown; lifecycle?: unknown };
         items.push(
           coordMessageToAttention({
             msgId: m.msg_id,
@@ -151,6 +155,13 @@ export default defineTool({
             from: m.from,
             planSlug: typeof m.plan_slug === 'string' ? m.plan_slug : null,
             harnessSlug: resolveHarness(m.harness_slug, typeof m.plan_slug === 'string' ? m.plan_slug : null),
+            // Structured lifecycle markers coord:emit stamps (D-003) — classify
+            // an auto lifecycle broadcast as Activity, not a Decision.
+            auto: mm.auto === true,
+            lifecycle: typeof mm.lifecycle === 'string' ? mm.lifecycle : null,
+            // A message addressed DIRECTLY to the human (not solely a `*`
+            // broadcast) is a genuine ping → Decision.
+            directToOwner: Array.isArray(m.to) && m.to.includes('human'),
           }),
         );
       }
@@ -190,11 +201,34 @@ export default defineTool({
       /* best-effort */
     }
 
-    const groups = buildAttentionGroups(items);
-    ctxAny.metadata?.({ itemCount: items.length, groupCount: groups.length, scope: harnessFilter ?? 'all' });
+    // 6. Operator triage overlay (D-006): a downgrade/resolve moves the item to
+    //    the auditable "Handled by operator" tier, an escalate/confirm keeps it
+    //    a Decision — never a silent vanish. Best-effort: no triage table / PG
+    //    offline degrades to "untriaged", never a failed feed.
+    let triaged = items;
+    try {
+      const triage = await readTriageByWorkspace();
+      if (triage.size > 0) {
+        triaged = items.map((it) => {
+          const rec = triage.get(it.id);
+          return rec ? applyTriage(it, rec) : it;
+        });
+      }
+    } catch {
+      /* best-effort */
+    }
+
+    const groups = buildAttentionGroups(triaged);
+    const tierCounts = groupByTier(triaged).counts;
+    ctxAny.metadata?.({
+      itemCount: triaged.length,
+      groupCount: groups.length,
+      decisions: tierCounts.decision,
+      scope: harnessFilter ?? 'all',
+    });
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ groups }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify({ groups, tierCounts }) }],
     };
   },
 });

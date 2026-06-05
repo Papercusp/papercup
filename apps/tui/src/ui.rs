@@ -24,16 +24,37 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     draw_tabs(f, app, root[0]);
 
-    // P7: an always-visible presence sidebar (who's online + intent), toggled
-    // with `p`. Suppressed on narrow terminals so it never crowds the body.
-    let (body, presence) = if app.show_presence && root[1].width >= 80 {
+    // Operator dock (operator-always-visible-2026-06-05, Brief 24): the operator
+    // chat, docked on the RIGHT of every tab EXCEPT the Operator tab (where the
+    // whole tab already IS the chat). Reuses `draw_operator_dock`/`draw_chat` and
+    // the shared `chat_*` state — one conversation, two render sites — so the
+    // operator is usable on any tab via the `o` summon/focus key. Default-closed;
+    // width-gated so narrow terminals keep the tab full-width (the operator is
+    // reached via the Operator tab there). Carved off root[1] BEFORE the presence
+    // and plans-filter splits so the three panes never overlap.
+    let (work, op_dock) = if app.operator_dock_open
+        && app.tab != Tab::Operator
+        && root[1].width >= 100
+    {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(48), Constraint::Length(30)])
+            .constraints([Constraint::Min(56), Constraint::Length(40)])
             .split(root[1]);
         (cols[0], Some(cols[1]))
     } else {
         (root[1], None)
+    };
+
+    // P7: an always-visible presence sidebar (who's online + intent), toggled
+    // with `p`. Suppressed on narrow terminals so it never crowds the body.
+    let (body, presence) = if app.show_presence && work.width >= 80 {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(48), Constraint::Length(30)])
+            .split(work);
+        (cols[0], Some(cols[1]))
+    } else {
+        (work, None)
     };
 
     // D-009: the collapsible plans-filter rail, carved off the LEFT of the body
@@ -72,6 +93,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Some(area) = presence {
         draw_presence(f, app, area);
+    }
+    // Operator dock (operator-always-visible-2026-06-05): render last of the
+    // right-side panes so it owns its carved column outright.
+    if let Some(area) = op_dock {
+        draw_operator_dock(f, app, area);
     }
     draw_status(f, app, root[2]);
 
@@ -1062,6 +1088,49 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         for tc in &m.tools {
             lines.push(Line::from(Span::styled(format!("  ⚙ {}", tc.name), Theme::dim())));
         }
+        // Structured <report> payload — a two-tiered plan→item list below the say
+        // (structured-report-protocol-2026-06-05). Status glyphs come from the
+        // shared Theme::status_marker so they match the rest of the PUI vocabulary.
+        if let Some(rep) = &m.report {
+            if let Some(t) = &rep.title {
+                lines.push(Line::from(Span::styled(format!("  ▾ {t}"), Theme::header())));
+            }
+            for p in &rep.plans {
+                let mut head = vec![
+                    Span::raw("  "),
+                    Theme::status_marker(p.status.as_deref().unwrap_or("")),
+                    Span::raw(" "),
+                    Span::styled(p.title.clone(), Theme::selected()),
+                ];
+                if let Some(st) = &p.status {
+                    head.push(Span::styled(format!("  {st}"), Theme::dim()));
+                }
+                lines.push(Line::from(head));
+                if let Some(sum) = &p.summary {
+                    for wl in wrap_text(sum, inner_w.saturating_sub(6).max(8)) {
+                        lines.push(Line::from(Span::styled(format!("      {wl}"), Theme::dim())));
+                    }
+                }
+                for it in &p.items {
+                    let id_prefix = it.id.as_deref().map(|i| format!("{i} ")).unwrap_or_default();
+                    let wrapped = wrap_text(&it.text, inner_w.saturating_sub(8).max(8));
+                    for (li, wl) in wrapped.iter().enumerate() {
+                        let mut row = vec![Span::raw("    ")];
+                        if li == 0 {
+                            row.push(Theme::status_marker(it.status.as_deref().unwrap_or("")));
+                            row.push(Span::raw(" "));
+                            if !id_prefix.is_empty() {
+                                row.push(Span::styled(id_prefix.clone(), Theme::dim()));
+                            }
+                        } else {
+                            row.push(Span::raw("  ")); // align continuation under the text
+                        }
+                        row.push(Span::raw(wl.clone()));
+                        lines.push(Line::from(row));
+                    }
+                }
+            }
+        }
         lines.push(Line::from("")); // blank separator between turns
     }
 
@@ -1078,8 +1147,22 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else {
         ""
     };
+    // When draw_chat renders the DOCKED pane (every tab except Operator, where
+    // the full tab IS the chat), show a focus marker so the user can tell whether
+    // keystrokes reach the dock (● focused) or the active tab (○ — press o to
+    // focus). On the Operator tab this is empty, so existing renders are unchanged.
+    let dock_focus = if app.tab != Tab::Operator {
+        if app.operator_dock_focused {
+            "● "
+        } else {
+            "○ o "
+        }
+    } else {
+        ""
+    };
     let title = format!(
-        " Operator{}{} ",
+        " {}Operator{}{} ",
+        dock_focus,
         earlier,
         if app.chat_streaming { " · …thinking" } else { "" },
     );
@@ -1116,6 +1199,17 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let cpara = Paragraph::new(Line::from(Span::styled(ctext, cstyle)))
         .block(Block::default().borders(Borders::ALL).title(Line::from(ctitle)));
     f.render_widget(cpara, composer_area);
+}
+
+/// Render the operator chat into an arbitrary rectangle — the public, render-only
+/// entry point for the docked operator pane (operator-always-visible-2026-06-05,
+/// Brief 24). It carries NO layout-split logic: the caller owns the geometry (the
+/// workbench `draw()` carves a right-hand column; Brief 23's Overview reserves a
+/// bottom strip) and this fills it with the SAME transcript + composer the
+/// Operator tab shows — one conversation rendered at multiple sites. The focus
+/// marker in the title is driven by `app.operator_dock_focused` (see draw_chat).
+pub fn draw_operator_dock(f: &mut Frame, app: &App, area: Rect) {
+    draw_chat(f, app, area);
 }
 
 /// A small fixed-width mic-level meter for the voice composer line. `level` is
@@ -1370,9 +1464,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     //   • a standing discoverability hint (D-012) so the help overlay + the
     //     re-openable tutorial stay visible regardless of how long the status
     //     hint-string is (it would otherwise clip off the right edge).
-    let right = app
-        .workbench_summary()
-        .unwrap_or_else(|| "?:help · F1/:tutorial".to_string());
+    let right = app.workbench_summary().unwrap_or_else(|| {
+        // Advertise the operator dock when it's available but not yet shown, so
+        // it's discoverable without opening help (operator-always-visible-2026-06-05).
+        if app.tab != Tab::Operator && !app.operator_dock_open {
+            "o:operator · ?:help".to_string()
+        } else {
+            "?:help · F1/:tutorial".to_string()
+        }
+    });
     let w = (right.chars().count() as u16 + 1).min(area.width);
     let sub = Rect {
         x: area.x + area.width.saturating_sub(w),
@@ -1385,7 +1485,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -2601,7 +2701,7 @@ mod tests {
         let text = render(&app, 120, 44);
         assert!(text.contains("todos (1/3)"));
         assert!(text.contains("build fleet.rs"));
-        assert!(text.contains("▸")); // in_progress marker
+        assert!(text.contains(crate::glyph::status::WIP)); // in_progress marker (Brief 27 vocabulary)
     }
 
     #[test]
@@ -2738,5 +2838,72 @@ mod tests {
         let text = render(&app, 100, 40);
         assert!(text.contains(":tutorial"), "help should mention the :tutorial palette command");
         assert!(text.contains("plans filter"), "help should mention the plans filter rail");
+    }
+
+    // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
+
+    #[test]
+    fn operator_dock_renders_beside_tab_content_when_open() {
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.plans = vec![plan("alpha", "todo")];
+        app.operator_dock_open = true;
+        app.set_chat_history(
+            "c1".into(),
+            vec![crate::models::ChatMessage::assistant("docked reply here")],
+            false,
+            None,
+        );
+        // Wide enough (>=100) → the dock is carved on the right alongside Plans.
+        let text = render(&app, 120, 20);
+        assert!(text.contains("Title alpha"), "the Plans tab content still renders");
+        assert!(text.contains("Operator"), "the operator dock renders its title");
+        assert!(text.contains("docked reply here"), "the dock shows the transcript");
+    }
+
+    #[test]
+    fn operator_dock_hidden_on_narrow_terminal() {
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.plans = vec![plan("alpha", "todo")];
+        app.operator_dock_open = true;
+        // Below the width gate (<100) the dock is suppressed; Plans gets full width.
+        let text = render(&app, 80, 20);
+        assert!(text.contains("Title alpha"));
+        // The dock's focus marker ("○ o" / "●") never appears when it isn't drawn.
+        assert!(!text.contains("○ o"));
+    }
+
+    #[test]
+    fn operator_dock_not_shown_on_operator_tab() {
+        let mut app = App::new();
+        app.tab = Tab::Operator; // the full tab IS the chat; no extra dock
+        app.operator_dock_open = true;
+        let text = render(&app, 120, 20);
+        // The full-tab Operator render carries no dock focus marker.
+        assert!(!text.contains("○ o"));
+        assert!(!text.contains("● Operator"));
+    }
+
+    #[test]
+    fn operator_dock_focus_marker_reflects_focus_state() {
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.operator_dock_open = true;
+        // Unfocused → "○ o" hint (press o to focus).
+        let unfocused = render(&app, 120, 20);
+        assert!(unfocused.contains("○ o"), "unfocused dock advertises the o key");
+        // Focused → "●" marker.
+        app.operator_dock_focused = true;
+        let focused = render(&app, 120, 20);
+        assert!(focused.contains('●'), "focused dock shows the ● marker");
+    }
+
+    #[test]
+    fn operator_dock_hint_in_status_bar_when_closed() {
+        let mut app = App::new();
+        app.tab = Tab::Plans; // not the Operator tab, dock closed by default
+        let text = render(&app, 120, 20);
+        assert!(text.contains("o:operator"), "status bar advertises the dock when closed");
     }
 }

@@ -197,6 +197,7 @@ Either:
 ```
 <say>{utterance, 1-2 sentences, ≤220 chars, TTS-safe, no markdown}</say>
 {optional: <set_mode>passive|active</set_mode>}
+{optional: <report>{…}</report> — structured status, see "Reporting status" below}
 ```
 
 Or, when going quiet without acknowledgement (sleep timer):
@@ -267,6 +268,54 @@ Spawning rules:
   attribute will be rejected by the orchestrator. If you don't have
   a chunk in mind, use `role="scoper"` first to break the work into
   chunks.
+
+## Reporting status — `<report>`
+
+When the user asks "where do things stand?", "what's the fleet doing?",
+"status of plan X?", or you're surfacing progress across several plans,
+emit a **`<report>`** tag alongside your `<say>`. The `<say>` is the clean
+one-line summary (spoken aloud / shown in the bubble); the `<report>`
+carries the *structured detail* — it renders as a card on desktop and a
+two-tiered plan→item list in the terminal, so you don't cram status into
+prose.
+
+The body is a single JSON object:
+
+```
+<say>Three plans in flight — rate-limit v2 is closest to done.</say>
+<report>{
+  "title": "Fleet status",
+  "plans": [
+    {
+      "slug": "rate-limit-layer-v2",
+      "title": "Rate-limit layer v2",
+      "status": "active",
+      "summary": "top half of the layer",
+      "items": [
+        { "id": "P-001", "text": "Provider-aware error classifier", "status": "done" },
+        { "id": "P-003", "text": "Per-call pacing", "status": "wip" }
+      ]
+    }
+  ]
+}</report>
+```
+
+Shape rules:
+
+- **Always pair `<report>` with a `<say>`.** The say is the spoken summary;
+  the report is the visual detail. Never emit a bare `<report>` — without
+  a say the user hears nothing.
+- `plans` is required (an array). Each plan needs a `title` (or a `slug`
+  used as the label). `status`, `summary`, and `items` are optional.
+- Each item needs `text` (or an `id` used as the text). `id` and `status`
+  are optional.
+- `status` is a free string — use the natural token
+  (`active`/`done`/`wip`/`blocked`/`todo`/`shipped`/`needs-human`/…); it's
+  rendered with a status glyph, and an unknown value just shows neutral.
+- Keep it tight: report the plans/items that matter to the question, not
+  the entire backlog. The card has limited room.
+- Use it for **status**, not for asking a question or delegating work
+  (that's `<say>` / `<spawn>`). The report is read-only detail.
 
 ## What you do not do
 

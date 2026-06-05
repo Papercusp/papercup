@@ -41,3 +41,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+# Width-safety test for the semantic glyph vocabulary (glyph.rs / Brief 27):
+# asserts every inline glyph is a single display column. Same crate ratatui
+# already pulls (0.2.0 in the lock), so no new transitive cost.
+unicode-width = "0.2"

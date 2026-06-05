@@ -1375,6 +1375,7 @@ impl App {
             testing_sel: self.testing_sel,
             pane_sel: self.pane_sel,
             show_presence: self.show_presence,
+            operator_dock_open: self.operator_dock_open,
             fleet_agent_sel: self.fleet.agent_sel,
             fleet_mode: Some(self.fleet.mode.label().to_string()),
             plan_filter: self.plan_filter.iter().cloned().collect(),
@@ -1418,6 +1419,7 @@ impl App {
         self.testing_sel = vs.testing_sel;
         self.pane_sel = vs.pane_sel;
         self.show_presence = vs.show_presence;
+        self.operator_dock_open = vs.operator_dock_open;
         self.fleet.agent_sel = vs.fleet_agent_sel;
         if let Some(m) = vs.fleet_mode.as_deref() {
             self.fleet.mode = crate::fleet::FleetMode::from_label(m);
@@ -1589,6 +1591,10 @@ impl App {
                 "messages": self.chat_messages.len(),
                 "streaming": self.chat_streaming,
                 "composing": self.chat_composing,
+                // Operator dock (operator-always-visible-2026-06-05): whether the
+                // chat is docked beside the active tab and whether it holds focus.
+                "dock_open": self.operator_dock_open,
+                "dock_focused": self.operator_dock_focused,
             },
             // Live zellij panes (from the companion) so the operator knows which
             // pane_id to drive with the focus_pane intent (P2).
@@ -4931,5 +4937,121 @@ mod tests {
         let run = a.test_run.as_ref().unwrap();
         assert_eq!(run.status, "exit 1");
         assert!(!run.running);
+    }
+
+    // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
+
+    #[test]
+    fn operator_dock_o_opens_focuses_then_blurs() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        assert!(!a.operator_dock_open && !a.operator_dock_focused);
+        a.update(key('o', KeyModifiers::NONE)); // open + focus
+        assert!(a.operator_dock_open && a.operator_dock_focused);
+        a.update(key('o', KeyModifiers::NONE)); // blur, stays open/visible
+        assert!(a.operator_dock_open && !a.operator_dock_focused);
+    }
+
+    #[test]
+    fn operator_dock_shift_o_toggles_visibility_and_clears_focus() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.update(key('o', KeyModifiers::NONE)); // open + focus
+        a.update(key('O', KeyModifiers::SHIFT)); // hide → clears focus
+        assert!(!a.operator_dock_open && !a.operator_dock_focused);
+        a.update(key('O', KeyModifiers::SHIFT)); // re-open (unfocused)
+        assert!(a.operator_dock_open && !a.operator_dock_focused);
+    }
+
+    #[test]
+    fn operator_dock_esc_blurs_but_stays_visible() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.update(key('o', KeyModifiers::NONE));
+        assert!(a.operator_dock_focused);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.operator_dock_focused);
+        assert!(a.operator_dock_open);
+    }
+
+    #[test]
+    fn operator_dock_o_is_noop_on_operator_tab() {
+        let mut a = App::new();
+        a.tab = Tab::Operator; // the whole tab is already the chat
+        a.update(key('o', KeyModifiers::NONE));
+        assert!(!a.operator_dock_open && !a.operator_dock_focused);
+    }
+
+    #[test]
+    fn operator_dock_focused_routes_compose_and_send() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.update(key('o', KeyModifiers::NONE)); // open + focus
+        a.update(key('i', KeyModifiers::NONE)); // compose into the dock
+        assert!(a.chat_composing);
+        a.update(key('h', KeyModifiers::NONE));
+        a.update(key('i', KeyModifiers::NONE)); // types (compose capture), not re-focus
+        assert_eq!(a.chat_input, "hi");
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(act, Action::SendChat("hi".to_string()));
+        assert_eq!(a.chat_input, "");
+    }
+
+    #[test]
+    fn operator_dock_focused_routes_scroll_not_tab_nav() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.plans = vec![plan("one"), plan("two"), plan("three")];
+        a.update(key('o', KeyModifiers::NONE)); // focus the dock
+        let sel = a.plan_sel;
+        a.update(key('k', KeyModifiers::NONE)); // into history
+        assert_eq!(a.chat_scroll, 1);
+        assert_eq!(a.plan_sel, sel); // tab list NOT moved
+        a.update(key('j', KeyModifiers::NONE)); // toward latest
+        assert_eq!(a.chat_scroll, 0);
+        assert_eq!(a.plan_sel, sel);
+    }
+
+    #[test]
+    fn operator_dock_unfocused_lets_tab_nav_through() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.plans = vec![plan("one"), plan("two"), plan("three")];
+        a.operator_dock_open = true; // visible but NOT focused
+        let before = a.plan_sel;
+        a.update(key('j', KeyModifiers::NONE)); // moves the Plans selection
+        assert_eq!(a.plan_sel, before + 1);
+        assert_eq!(a.chat_scroll, 0); // chat untouched
+    }
+
+    #[test]
+    fn operator_dock_focused_enables_voice_key() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        assert!(!a.voice_key_active()); // off on a plain tab
+        a.update(key('o', KeyModifiers::NONE)); // focus the dock
+        assert!(a.voice_key_active()); // v PTT now accepted in the dock
+    }
+
+    #[test]
+    fn operator_dock_tab_switch_works_while_focused() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.update(key('o', KeyModifiers::NONE)); // focus the dock
+        a.update(key('2', KeyModifiers::NONE)); // '2' = Inbox — never trapped
+        assert_eq!(a.tab, Tab::Inbox);
+        assert!(a.operator_dock_focused); // focus follows the user across tabs
+    }
+
+    #[test]
+    fn operator_dock_open_persists_through_view_state() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.update(key('o', KeyModifiers::NONE)); // open
+        let vs = a.capture_view_state();
+        assert!(vs.operator_dock_open);
+        let mut b = App::new();
+        b.apply_view_state(&vs);
+        assert!(b.operator_dock_open);
     }
 }

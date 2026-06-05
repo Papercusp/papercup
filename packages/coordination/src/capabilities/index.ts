@@ -38,6 +38,7 @@ export {
   DELIVERY_MODES,
   LIFECYCLE_STATES,
   TAG_REL,
+  objectKey,
   objectToTargetRef,
   targetRefToObject,
   mergeResolved,

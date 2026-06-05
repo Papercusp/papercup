@@ -15,6 +15,7 @@ mod companion;
 mod event;
 mod fleet;
 mod framing;
+mod glyph;
 mod http;
 mod ipc;
 mod layout;
@@ -1107,6 +1108,7 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
         role: t.role,
         content: t.text,
         tools,
+        report: t.report,
         streaming: false,
     })
 }
@@ -1148,7 +1150,7 @@ async fn converse_send(
 
     // Persist the user turn (best-effort — the converse stream is transient).
     if let Some(id) = &conversation_id {
-        let _ = client.append_turn(id, "user", &text, &[]).await;
+        let _ = client.append_turn(id, "user", &text, &[], None).await;
     }
 
     // Build the converse payload: full transcript + the TUI surface marker so the
@@ -1216,12 +1218,17 @@ async fn converse_send(
     }
 
     // Finalize: resolve the buffered tag-document to the user-visible say text,
-    // tell the pane the turn is done, and persist the assistant turn.
+    // tell the pane the turn is done, and persist the assistant turn. The
+    // `<report>` payload (if any) is parsed from the raw turn + persisted
+    // alongside (the pane sets it on the in-flight bubble via finish_chat_turn).
     let final_text = chat_tags::finalize(&raw);
+    let report_val = chat_tags::extract_report(&raw).and_then(|r| serde_json::to_value(r).ok());
     let _ = tx.send(Event::ChatDone);
     if let Some(id) = &conversation_id {
-        if !final_text.trim().is_empty() || !tools.is_empty() {
-            let _ = client.append_turn(id, "assistant", &final_text, &tools).await;
+        if !final_text.trim().is_empty() || !tools.is_empty() || report_val.is_some() {
+            let _ = client
+                .append_turn(id, "assistant", &final_text, &tools, report_val.as_ref())
+                .await;
         }
     }
 

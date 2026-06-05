@@ -11,7 +11,7 @@
  */
 
 export type { ObjectRef, LinkRow, LinkableStore, TaggableStore } from '@papercusp/linkable-edges';
-export { TAG_REL } from '@papercusp/linkable-edges';
+export { TAG_REL, objectKey } from '@papercusp/linkable-edges';
 
 export type {
   DeliveryMode,

@@ -27,24 +27,58 @@ export type AttentionKind =
 export type AttentionSource = 'plan' | 'coord' | 'harness';
 
 /**
- * The three inbox tiers (inbox-tiering-and-message-agent-2026-06-05 D-002).
- * Orthogonal to {@link AttentionKind} — every item is exactly one tier:
+ * The four inbox tiers (inbox-tiering-and-message-agent-2026-06-05 D-002/D-006).
+ * Orthogonal to {@link AttentionKind} — every item is exactly one tier, ordered
+ * Decision ▸ Handled ▸ Alert ▸ Activity (only Decisions demands the user):
  *   - `decision` — demands the human: needs-human plan items, plan-review
  *     gates, blocker/question escalations, direct non-auto messages to the
- *     human. The ONLY tier that sets `needsHuman: true`.
+ *     human (untriaged), plus operator-confirmed/escalated items. The ONLY
+ *     tier that sets `needsHuman: true`.
+ *   - `handled` — the operator triaged it away (downgraded a false positive,
+ *     or resolved it). Kept VISIBLE + auditable (`triageNote` = what + why) so
+ *     a downgrade never silently vanishes (D-006).
  *   - `alert` — a problem worth surfacing but not a required decision:
  *     smoke-fails, advisory escalations, blocked plan items.
  *   - `activity` — lifecycle/status: `auto` coord:emit broadcasts, normal
  *     todo/wip plan items, non-auto broadcast FYI.
  */
-export type AttentionTier = 'decision' | 'alert' | 'activity';
+export type AttentionTier = 'decision' | 'handled' | 'alert' | 'activity';
 
-export const ATTENTION_TIERS: readonly AttentionTier[] = ['decision', 'alert', 'activity'];
+export const ATTENTION_TIERS: readonly AttentionTier[] = ['decision', 'handled', 'alert', 'activity'];
 
 /** The single source of truth for {@link AttentionItem.needsHuman}: an item
  *  awaits the human iff it is a Decision (D-001/D-002 invariant). */
 export function needsHumanForTier(tier: AttentionTier): boolean {
   return tier === 'decision';
+}
+
+/**
+ * The operator-triage state on an item (D-006). `untriaged` is the default
+ * (the operator hasn't looked at it this wake). The operator's triage PASS sets
+ * one of: `confirmed` (a real decision — stays Decision, now vetted),
+ * `escalated` (was under-flagged — promote to Decision), `downgraded` (a false
+ * positive — moves to Handled), `resolved` (the operator handled it — Handled).
+ */
+export type TriageState = 'untriaged' | 'confirmed' | 'escalated' | 'downgraded' | 'resolved';
+
+/** Operator triage actions, the verbs the `inbox:triage` tool accepts. Map 1:1
+ *  onto the non-`untriaged` {@link TriageState}s. */
+export type TriageAction = 'confirm' | 'escalate' | 'downgrade' | 'resolve';
+
+export const TRIAGE_ACTIONS: readonly TriageAction[] = ['confirm', 'escalate', 'downgrade', 'resolve'];
+
+/** Map a triage action to the state it records. */
+export function triageActionToState(a: TriageAction): Exclude<TriageState, 'untriaged'> {
+  switch (a) {
+    case 'confirm':
+      return 'confirmed';
+    case 'escalate':
+      return 'escalated';
+    case 'downgrade':
+      return 'downgraded';
+    case 'resolve':
+      return 'resolved';
+  }
 }
 
 /** Stable action ids the detail pane renders as buttons. The
@@ -106,8 +140,58 @@ export interface AttentionItem {
   ownerAgentId: string | null;
   /** Human-friendly label for {@link ownerAgentId}, when known. */
   ownerLabel: string | null;
+  /** Operator-triage state (D-006). Default `untriaged`. */
+  triageState: TriageState;
+  /** What the operator did + why, recorded on triage. Drives the
+   *  "Handled by operator" audit line. Null until triaged. */
+  triageNote: string | null;
+  /** Owner id of the operator that triaged this, when triaged. */
+  triagedBy: string | null;
+  /** ISO timestamp of the triage, when triaged. */
+  triagedAt: string | null;
   actions: AttentionAction[];
   ref: AttentionRef;
+}
+
+/** The untriaged-default triage fields every adapter spreads into its item
+ *  (the reader later overlays a real triage row via {@link applyTriage}). */
+export function untriaged(): Pick<
+  AttentionItem,
+  'triageState' | 'triageNote' | 'triagedBy' | 'triagedAt'
+> {
+  return { triageState: 'untriaged', triageNote: null, triagedBy: null, triagedAt: null };
+}
+
+/** A persisted operator-triage record (the `attention_triage` row). */
+export interface TriageRecord {
+  action: TriageAction;
+  note: string | null;
+  triagedBy: string | null;
+  triagedAt: string | null;
+}
+
+/**
+ * Overlay an operator-triage record onto a freshly-adapted item, producing the
+ * FINAL tier (D-006). PURE — the reader calls this after assembling the base
+ * items and looking up each item's triage row:
+ *   - `downgrade`/`resolve` → `handled` (kept visible + auditable).
+ *   - `escalate` → `decision` (promote an under-flagged item).
+ *   - `confirm`   → `decision` (a real decision, now vetted).
+ * `needsHuman` is re-derived from the final tier so the invariant holds.
+ */
+export function applyTriage(item: AttentionItem, rec: TriageRecord): AttentionItem {
+  const triageState = triageActionToState(rec.action);
+  const tier: AttentionTier =
+    triageState === 'downgraded' || triageState === 'resolved' ? 'handled' : 'decision';
+  return {
+    ...item,
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    triageState,
+    triageNote: rec.note,
+    triagedBy: rec.triagedBy,
+    triagedAt: rec.triagedAt,
+  };
 }
 
 /** Sort rank — lower = more important (urgent=0 … low=3). Unknown→normal. */
@@ -145,21 +229,24 @@ export function severityToImportance(sev: 'blocker' | 'question' | 'advisory'): 
 }
 
 /** Per-tier buckets, each importance-sorted, plus counts — the shape the
- *  tiered inbox (Decisions ▸ Alerts ▸ Activity) renders (D-002). PURE. */
+ *  tiered inbox (Decisions ▸ Handled ▸ Alerts ▸ Activity) renders (D-002/D-006).
+ *  PURE. */
 export interface TieredAttention {
   decision: AttentionItem[];
+  handled: AttentionItem[];
   alert: AttentionItem[];
   activity: AttentionItem[];
   counts: Record<AttentionTier, number>;
 }
 
-/** Partition items into the three tiers, importance-sorted within each. */
+/** Partition items into the four tiers, importance-sorted within each. */
 export function groupByTier(items: readonly AttentionItem[]): TieredAttention {
   const out: TieredAttention = {
     decision: [],
+    handled: [],
     alert: [],
     activity: [],
-    counts: { decision: 0, alert: 0, activity: 0 },
+    counts: { decision: 0, handled: 0, alert: 0, activity: 0 },
   };
   for (const it of items) out[it.tier].push(it);
   for (const tier of ATTENTION_TIERS) {

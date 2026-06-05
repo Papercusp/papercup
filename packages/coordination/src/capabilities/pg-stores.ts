@@ -401,6 +401,34 @@ export class PgLinkStore implements LinkableStore {
        ORDER BY created_at ASC, id ASC`;
     return rows.map(toLinkRow);
   }
+
+  async listOutMany(srcs: ObjectRef[], opts: { rel?: string } = {}): Promise<LinkRow[]> {
+    if (srcs.length === 0) return [];
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // Group by kind so each query is a clean `src_ref = ANY(...)` over a single
+    // kind (avoids a tuple-IN; distinct kinds are ~1 in practice). postgres-js
+    // binds the JS array as a PG text[] param, so `= ANY(${refs})` is the correct
+    // raw idiom (the array footgun is drizzle-only). Per-src ordering within a
+    // kind is preserved (ORDER BY created_at, id), matching listOut.
+    const byKind = new Map<string, string[]>();
+    for (const s of srcs) {
+      const arr = byKind.get(s.kind);
+      if (arr) arr.push(s.ref);
+      else byKind.set(s.kind, [s.ref]);
+    }
+    const out: LinkRow[] = [];
+    for (const [kind, refs] of byKind) {
+      const rows = await sql<LinkRowDb[]>`
+        SELECT id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at
+          FROM harness_shared.coord_links
+         WHERE workspace_id = ${this.ws} AND src_kind = ${kind} AND src_ref = ANY(${refs})
+           AND ${opts.rel == null ? sql`TRUE` : sql`rel = ${opts.rel}`}
+         ORDER BY created_at ASC, id ASC`;
+      out.push(...rows.map(toLinkRow));
+    }
+    return out;
+  }
 }
 
 /** Taggable over a PgLinkStore (the production wiring). */

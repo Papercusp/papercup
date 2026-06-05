@@ -22,7 +22,9 @@ import { useCallback, useState, type ReactNode } from 'react';
 import { Lightbulb, Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
 import { PendingCardsBar } from './chat/PendingCardsBar';
+import { OperatorReportCard } from './chat/OperatorReportCard';
 import { renderCard } from '@/lib/chat-cards';
+import type { ParsedReport } from '@papercusp/operator-core/lib/operator-converse-tags';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { Tooltip } from '../harness/Tooltip';
 
@@ -138,6 +140,14 @@ export function OperatorChat({
     [onAnswerChoice],
   );
 
+  // Structured <report> rendering (structured-report-protocol). Rendered
+  // below the say bubble as a card; the same renderReport flows into the
+  // docked operator pane (Brief 24), which reuses this chat path.
+  const renderReport = useCallback(
+    (report: ParsedReport): ReactNode => <OperatorReportCard report={report} />,
+    [],
+  );
+
   return (
     <ChatConversation
       messages={messages}
@@ -203,6 +213,7 @@ export function OperatorChat({
       }
       renderToolChip={renderOperatorToolChip}
       renderToolCard={renderToolCard}
+      renderReport={renderReport}
       onLoadEarlier={onLoadEarlier}
       hasMoreEarlier={hasMoreEarlier}
       loadingEarlier={loadingEarlier}

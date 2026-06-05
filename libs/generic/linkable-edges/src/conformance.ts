@@ -47,6 +47,34 @@ export function describeLinkableStoreConformance(
       expect(await store.listOut(src, { rel: 'blocks' })).toHaveLength(1);
     });
 
+    it('listOutMany batches: returns edges across many srcs, groups + filters by rel', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const a: ObjectRef = { kind: 'conversation', ref: uid() };
+      const b: ObjectRef = { kind: 'conversation', ref: uid() };
+      const c: ObjectRef = { kind: 'conversation', ref: uid() }; // no edges → absent
+      const t1: ObjectRef = { kind: 'topic', ref: uid() };
+      const t2: ObjectRef = { kind: 'topic', ref: uid() };
+      await store.link(a, t1, 'tagged', { created_ts: '2026-01-01T00:00:00.000Z' });
+      await store.link(a, t2, 'tagged', { created_ts: '2026-01-02T00:00:00.000Z' });
+      await store.link(b, t1, 'tagged', { created_ts: '2026-01-01T00:00:00.000Z' });
+      await store.link(a, b, 'relates', { created_ts: '2026-01-03T00:00:00.000Z' });
+
+      expect(await store.listOutMany([])).toEqual([]);
+
+      const tagged = await store.listOutMany([a, b, c], { rel: 'tagged' });
+      // a→t1, a→t2, b→t1 (the 'relates' edge is filtered out by rel)
+      expect(tagged).toHaveLength(3);
+      const aTags = tagged.filter((l) => l.src.ref === a.ref).map((l) => l.dst.ref);
+      expect(aTags).toEqual([t1.ref, t2.ref]); // oldest-first, like listOut
+      expect(tagged.filter((l) => l.src.ref === b.ref).map((l) => l.dst.ref)).toEqual([t1.ref]);
+      expect(tagged.some((l) => l.src.ref === c.ref)).toBe(false);
+
+      // Without a rel filter, the 'relates' edge comes back too.
+      const all = await store.listOutMany([a]);
+      expect(all.map((l) => l.rel).sort()).toEqual(['relates', 'tagged', 'tagged']);
+    });
+
     it('unlink removes the edge (idempotent)', async () => {
       if (skip) return;
       const store = makeStore();

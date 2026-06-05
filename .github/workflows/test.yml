@@ -83,6 +83,27 @@ jobs:
       - name: Check BORROWABLE catalog is in sync
         run: npm run gen:borrowable:check
 
+      # Starlight projection pages (starlight-projection-generators-2026-06-05, Brief 29)
+      # are GENERATED from code/registry/PG into apps/operator-docs/.../reference/. The
+      # DETERMINISTIC three (blueprint catalog / role registry / insights index) are
+      # pure fs/code reads of low-churn sources → GATING (fail on drift, like BORROWABLE).
+      - name: Check generated reference pages are in sync (deterministic)
+        run: |
+          npm run gen:doc-blueprint-catalog:check
+          npm run gen:doc-role-registry:check
+          npm run gen:doc-insights-index:check
+
+      # The tool catalog (heavy full-registry import, fleet-fragile) + plans index
+      # (PG-dependent, churns constantly) are INFORMATIONAL — does not gate (D-002,
+      # the docs-and-memory D-009 flap lesson). plans-index degrades to a no-op with
+      # no DB. Surfaces drift in the CI log without blocking the merge.
+      - name: Check generated reference pages (informational — does not gate)
+        if: always()
+        continue-on-error: true
+        run: |
+          npm run gen:doc-tool-catalog:check
+          npm run gen:doc-plans-index:check
+
       # Generic-first guard (generalize-libs-to-generic-2026-06-05 D-005): nudge a
       # zero-coupling, concept-naming algorithm file that landed in the app toward
       # libs/generic. Heuristic, so INFORMATIONAL — does not gate (like lint:knip).

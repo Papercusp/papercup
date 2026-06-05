@@ -47,6 +47,7 @@ export default defineTool({
             accepted_answer: c.accepted_answer,
             accepted_post_id: c.accepted_post_id,
             capture_target: c.capture_target,
+            promoted_issue_id: c.promoted_issue_id,
             created_ts: c.created_ts,
             resolved_ts: c.resolved_ts,
           },

@@ -7,12 +7,12 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
-import { listConversations } from '../conversations';
+import { listConversationsWithTopics } from '../conversations';
 
 export default defineTool({
   name: 'conversations:list',
   description:
-    'List conversations (questions + discussions), newest first. Filter by kind, state (open|resolved|closed), and harness. Summary rows; conversations:get for the full thread.',
+    'List conversations (questions + discussions), newest first. Filter by kind, state (open|resolved|closed), harness, and topic. Each row carries its topic tags; conversations:get for the full thread.',
   guidance: {
     when:
       'Browsing for open questions you could answer, or finding a conversation by topic/harness. For updates pushed to you, subscribe to a topic instead.',
@@ -26,14 +26,16 @@ export default defineTool({
     kind: z.enum(['question', 'discussion']).optional(),
     state: z.enum(['open', 'resolved', 'closed']).optional(),
     harness: z.string().optional().describe('Restrict to a harness-scoped conversation set.'),
+    topic: z.string().optional().describe('Restrict to conversations tagged with this topic slug.'),
     limit: z.number().int().min(1).max(200).optional(),
   }),
   async handler(args) {
-    const rows = await listConversations({
+    const rows = await listConversationsWithTopics({
       kind: args.kind,
       state: args.state,
       scope: args.harness ? 'harness' : undefined,
       harness_slug: args.harness,
+      topic: args.topic,
       limit: args.limit,
     });
     return {
@@ -50,6 +52,8 @@ export default defineTool({
             harness_slug: c.harness_slug,
             title: c.title ?? c.body.slice(0, 100),
             asker_id: c.asker_id,
+            topics: c.topics,
+            promoted_issue_id: c.promoted_issue_id,
             created_ts: c.created_ts,
             resolved: c.state === 'resolved',
           })),

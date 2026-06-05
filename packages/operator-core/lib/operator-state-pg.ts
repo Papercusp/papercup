@@ -60,7 +60,9 @@ type StateTable =
   | 'setup_wizard_state'
   | 'telemetry_reports'
   // Migration 158 — the Pot's self-declared-wake state (autoloop-pot-operator-rebuild P0):
-  | 'pot_wake';
+  | 'pot_wake'
+  // Migration 161 — the live-editable fleet rate-limit knobs (rate-limit-layer-v2 D-004):
+  | 'operator_rate_limit_config';
 
 /**
  * Read the single row for the active workspace, or null if missing.

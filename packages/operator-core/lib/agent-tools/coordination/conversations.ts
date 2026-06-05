@@ -32,6 +32,7 @@ import {
   joinConversationCore,
   leaveConversationCore,
   listConversationsCore,
+  listConversationsWithTopicsCore,
   openConversationCore,
   postReplyCore,
   answerQuestionCore,
@@ -39,6 +40,8 @@ import {
   promoteConversationCore,
   type ConversationDeps,
   type ConversationDetail,
+  type ConversationWithTopics,
+  type ListConversationsWithTopicsOpts,
   type OpenConversationInput,
   type OpenConversationResult,
   type PostResult,
@@ -138,6 +141,10 @@ export function leaveConversation(identity: AgentIdentity, conversationId: strin
 
 export function listConversations(input: ListConversationsOpts = {}): Promise<ConversationRow[]> {
   return listConversationsCore(deps, input);
+}
+
+export function listConversationsWithTopics(input: ListConversationsWithTopicsOpts = {}): Promise<ConversationWithTopics[]> {
+  return listConversationsWithTopicsCore(deps, input);
 }
 
 export function getConversation(id: string): Promise<ConversationDetail | null> {

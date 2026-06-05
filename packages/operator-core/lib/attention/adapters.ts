@@ -21,6 +21,7 @@ import {
   type AttentionTier,
   needsHumanForTier,
   severityToImportance,
+  untriaged,
 } from './types';
 
 const CHAT: AttentionAction = { id: 'chat', label: 'Chat' };
@@ -90,6 +91,7 @@ export function planItemToAttention(it: PlanItemInput): AttentionItem {
     needsHuman,
     ownerAgentId: it.ownerAgentId ?? null,
     ownerLabel: it.ownerLabel ?? null,
+    ...untriaged(),
     actions,
     ref: { kind: 'plan-item', slug: it.slug, itemId: it.id },
   };
@@ -132,6 +134,7 @@ export function coordEscalationToAttention(e: CoordEscalationInput): AttentionIt
     needsHuman,
     ownerAgentId: e.from ?? null,
     ownerLabel: e.fromLabel ?? e.from ?? null,
+    ...untriaged(),
     // Resolve always (coord:resolve, with the escalation's named options).
     // Chat opens a per-harness agent chat, so only offer it when the escalation
     // carries a harness — workspace-level escalations have none and Chat would
@@ -188,6 +191,7 @@ export function coordMessageToAttention(m: CoordMessageInput): AttentionItem {
     needsHuman,
     ownerAgentId: m.from ?? null,
     ownerLabel: m.fromLabel ?? m.from ?? null,
+    ...untriaged(),
     // Ack always; Chat only when the message carries a harness (workspace-level
     // broadcasts have none, so a per-harness chat can't open). Message owner
     // is always offered.
@@ -223,6 +227,7 @@ export function smokeFailToAttention(s: SmokeFailInput): AttentionItem {
     needsHuman: needsHumanForTier(tier),
     ownerAgentId: null,
     ownerLabel: null,
+    ...untriaged(),
     actions: [{ id: 'view-log', label: 'View log', primary: true }, CHAT, MESSAGE_OWNER],
     ref: { kind: 'smoke-fail', harnessSlug: s.harnessSlug },
   };
@@ -253,6 +258,7 @@ export function planReviewToAttention(r: PlanReviewInput): AttentionItem {
     needsHuman: needsHumanForTier(tier),
     ownerAgentId: null,
     ownerLabel: null,
+    ...untriaged(),
     actions: [{ id: 'open', label: 'Review', primary: true }, CHAT, MESSAGE_OWNER],
     ref: { kind: 'plan-review', harnessSlug: r.harnessSlug },
   };

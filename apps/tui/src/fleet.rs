@@ -23,6 +23,7 @@
 //! with the parallel pui work. Render is a pure function of `&App`.
 
 use crate::app::App;
+use crate::glyph;
 use crate::models::{ActivityRow, CuratedSignal, TodoSnapshot, WorkItem};
 use crate::theme::Theme;
 use crate::ui::trunc;
@@ -300,7 +301,7 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
     let line = Line::from(vec![
-        Span::styled(" ⚑ Brew ", Theme::selected()),
+        Span::styled(format!(" {} Brew ", glyph::nav::BREW), Theme::selected()),
         Span::raw(format!(
             " {}/{} online · plans {}/{} items ({} active) · work-items {}/{} done ({} open) · ",
             agg.agents_online,
@@ -359,16 +360,12 @@ fn draw_curated_heuristic(f: &mut Frame, app: &App, agg: &FleetAggregate, area: 
     draw_plan_progress(f, app, agg, right[1]);
 }
 
-/// Glyph for a curated-signal kind.
+/// Glyph for a curated-signal kind — the semantic vocabulary lives in
+/// `glyph::signal_for` (Brief 27); this stays as a local alias for the
+/// existing call sites. Note: `blocker` is now the single-width `⊘`
+/// (was the double-width `⛔`, which shifted columns).
 fn signal_glyph(kind: &str) -> &'static str {
-    match kind {
-        "escalation" => "⚠",
-        "blocker" => "⛔",
-        "decision" => "?",
-        "completion" => "✓",
-        "progress" => "·",
-        _ => "•",
-    }
+    glyph::signal_for(kind)
 }
 
 /// The curator's "what matters" — salience-ranked fleet signals (curation:feed).
@@ -380,7 +377,7 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = sigs
         .iter()
         .map(|s| {
-            let glyph = signal_glyph(&s.kind);
+            let mark = signal_glyph(&s.kind);
             let style = if s.urgent {
                 Theme::warn()
             } else if s.disposition == "surface" {
@@ -390,7 +387,7 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
             };
             let loc = s.harness.clone().filter(|h| !h.is_empty()).map(|h| format!(" [{h}]")).unwrap_or_default();
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{glyph} "), style),
+                Span::styled(format!("{mark} "), style),
                 Span::raw(trunc(&s.title, 40)),
                 Span::styled(loc, Theme::dim()),
             ]))
@@ -398,7 +395,7 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "✓ fleet calm — nothing needs attention",
+            format!("{} fleet calm — nothing needs attention", glyph::status::DONE),
             Theme::dim(),
         )))]
     } else {
@@ -406,7 +403,8 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
     };
     f.render_widget(
         List::new(body).block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " ⚡ What matters ({}) — the curator's view ",
+            " {} What matters ({}) — the curator's view ",
+            glyph::header::BOLT,
             sigs.len()
         )))),
         area,
@@ -422,13 +420,8 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = roster
         .iter()
         .map(|r| {
-            let dot = if r.stale {
-                "○"
-            } else if r.liveness == "live" {
-                "●"
-            } else {
-                "◐"
-            };
+            // Liveness dot — coloured by freshness (Brief 27 glyph vocabulary).
+            let dot = Theme::liveness_marker(r.stale, &r.liveness);
             let agent = r.agent.clone().unwrap_or_else(|| "-".into());
             // The "what it's doing" cell: live activity summary, else intent/role.
             let act = latest
@@ -445,7 +438,8 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
                 .map(|t| format!("⇄{}/{}", t.done, t.count))
                 .unwrap_or_default();
             ListItem::new(Line::from(vec![
-                Span::raw(format!("{dot} {:<6} ", trunc(&agent, 6))),
+                dot,
+                Span::raw(format!(" {:<6} ", trunc(&agent, 6))),
                 Span::raw(format!("{:<30} ", trunc(&act, 30))),
                 Span::styled(todo, Theme::dim()),
             ]))
@@ -527,11 +521,7 @@ fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
             if let Some(t) = app.fleet.agent_todos.get(&r.owner_id) {
                 out.push_str(&format!("\ntodos ({}/{}):\n", t.done, t.count));
                 for td in t.todos.iter().take(8) {
-                    let mark = match td.status.as_deref() {
-                        Some("completed") | Some("done") => "✓",
-                        Some("in_progress") => "▸",
-                        _ => "☐",
-                    };
+                    let mark = glyph::status_for(td.status.as_deref().unwrap_or("todo"));
                     out.push_str(&format!("  {mark} {}\n", trunc(&td.content, 46)));
                 }
             }
@@ -876,7 +866,7 @@ mod tests {
         assert!(text.contains("needs a human decision"));
         assert!(text.contains("design review owed"));
         assert!(text.contains("[papercup]"));
-        assert!(text.contains("⚠")); // escalation glyph
+        assert!(text.contains(glyph::severity::WARN)); // escalation glyph (Brief 27 vocabulary)
     }
 
     #[test]

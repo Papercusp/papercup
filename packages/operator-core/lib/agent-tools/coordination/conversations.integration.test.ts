@@ -36,6 +36,7 @@ import {
   answerQuestionCore,
   getConversationCore,
   joinConversationCore,
+  listConversationsWithTopicsCore,
   openConversationCore,
   promoteConversationCore,
   resolveConversationCore,
@@ -238,6 +239,40 @@ describe('conversation lifecycle (real PG)', () => {
     if ('error' in res) throw new Error(res.error);
     expect(captureCalls[0].scope).toBe('harness');
     expect(captureCalls[0].harness_slug).toBe('papercup');
+  });
+});
+
+describe('listConversationsWithTopics (browse-tab read: topics-in-rows + topic filter)', () => {
+  it('carries each row’s topic tags (batched), newest-first', async () => {
+    await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'q1', topics: ['zero-cache', 'firefox'] });
+    await openConversationCore(deps, ident('agA'), { kind: 'discussion', body: 'd1', topics: ['const-vs-let'] });
+    await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'q2 — untagged' });
+
+    const rows = await listConversationsWithTopicsCore(deps);
+    expect(rows).toHaveLength(3);
+    // newest-first (created_at DESC); deterministic clock means insert order = id order here,
+    // but created_at ties resolve by the store's ORDER BY — assert by body lookup instead.
+    const byBody = Object.fromEntries(rows.map((r) => [r.body, r.topics]));
+    expect(new Set(byBody['q1'])).toEqual(new Set(['zero-cache', 'firefox']));
+    expect(byBody['d1']).toEqual(['const-vs-let']);
+    expect(byBody['q2 — untagged']).toEqual([]);
+  });
+
+  it('filters to a topic via the reverse-edge index; honors kind alongside it', async () => {
+    await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'tagged-q', topics: ['area'] });
+    await openConversationCore(deps, ident('agA'), { kind: 'discussion', body: 'tagged-d', topics: ['area'] });
+    await openConversationCore(deps, ident('agA'), { kind: 'question', body: 'other', topics: ['elsewhere'] });
+
+    const area = await listConversationsWithTopicsCore(deps, { topic: 'area' });
+    expect(area.map((r) => r.body).sort()).toEqual(['tagged-d', 'tagged-q']);
+    expect(area.every((r) => r.topics.includes('area'))).toBe(true);
+
+    // topic + kind compose.
+    const areaQuestions = await listConversationsWithTopicsCore(deps, { topic: 'area', kind: 'question' });
+    expect(areaQuestions.map((r) => r.body)).toEqual(['tagged-q']);
+
+    // a topic nobody used → empty.
+    expect(await listConversationsWithTopicsCore(deps, { topic: 'nonexistent' })).toEqual([]);
   });
 });
 

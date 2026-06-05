@@ -14,6 +14,7 @@
  */
 
 import {
+  objectKey,
   objectToTargetRef,
   type DeliveryMode,
   type ObjectRef,
@@ -363,6 +364,38 @@ export async function leaveConversationCore(deps: ConversationDeps, identity: Ag
 
 export function listConversationsCore(deps: ConversationDeps, input: ListConversationsOpts = {}): Promise<ConversationRow[]> {
   return deps.conversations.list(input);
+}
+
+export interface ListConversationsWithTopicsOpts extends ListConversationsOpts {
+  /** Filter to conversations tagged with this topic slug (normalized lowercase).
+   *  Applied AFTER the scalar filters (kind/state/scope/harness) over the page. */
+  topic?: string;
+}
+
+export type ConversationWithTopics = ConversationRow & { topics: string[] };
+
+/** List conversations AND their topic tags in one batch (the browse-tab read).
+ *  Topics ride a single `listTagsForMany` over the page (no N+1); an optional
+ *  `topic` filters to conversations tagged with that slug via the reverse-edge
+ *  index. When `topic` is set we page wide (store cap) then narrow + re-limit, so
+ *  a topic match isn't lost behind the scalar page's `limit`. */
+export async function listConversationsWithTopicsCore(
+  deps: ConversationDeps,
+  input: ListConversationsWithTopicsOpts = {},
+): Promise<ConversationWithTopics[]> {
+  const { topic, limit, ...rest } = input;
+  const wantTopic = topic?.trim().toLowerCase();
+  // When filtering by topic, fetch the full scalar page (store caps at 200) and
+  // narrow afterwards; otherwise honor the caller's limit directly.
+  let rows = await deps.conversations.list({ ...rest, limit: wantTopic ? 200 : limit });
+  if (wantTopic) {
+    const tagged = await deps.tags.listTagged(wantTopic);
+    const ids = new Set(tagged.filter((o) => o.kind === 'conversation').map((o) => o.ref));
+    rows = rows.filter((r) => ids.has(r.id)).slice(0, limit ?? 50);
+  }
+  if (rows.length === 0) return [];
+  const tagMap = await deps.tags.listTagsForMany(rows.map((r) => convRef(r.id)));
+  return rows.map((r) => ({ ...r, topics: tagMap.get(objectKey(convRef(r.id))) ?? [] }));
 }
 
 export interface ConversationDetail {

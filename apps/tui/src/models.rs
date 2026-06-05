@@ -629,6 +629,11 @@ pub struct ViewState {
     pub pane_sel: usize,
     #[serde(default)]
     pub show_presence: bool,
+    /// Operator dock (operator-always-visible-2026-06-05, Brief 24): whether the
+    /// operator chat is docked beside the active tab. Persisted so the dock
+    /// survives a restart; an older snapshot (absent) defaults closed.
+    #[serde(default)]
+    pub operator_dock_open: bool,
     /// Fleet tab (pui-fleet-status-view): the selected agent + the view mode
     /// ("curated" | "mirror"), so the dashboard restores where it was left.
     #[serde(default)]
@@ -1086,19 +1091,23 @@ pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub tools: Vec<ChatToolCall>,
+    /// Structured `<report>` payload (structured-report-protocol-2026-06-05) —
+    /// per-plan/per-item status rendered as a two-tier list below the say. Set
+    /// from the raw turn on finalize, or from the persisted turn on history load.
+    pub report: Option<crate::chat_tags::Report>,
     pub streaming: bool,
 }
 
 impl ChatMessage {
     pub fn user(text: &str) -> Self {
-        Self { role: "user".into(), content: text.into(), tools: Vec::new(), streaming: false }
+        Self { role: "user".into(), content: text.into(), tools: Vec::new(), report: None, streaming: false }
     }
     pub fn assistant(text: &str) -> Self {
-        Self { role: "assistant".into(), content: text.into(), tools: Vec::new(), streaming: false }
+        Self { role: "assistant".into(), content: text.into(), tools: Vec::new(), report: None, streaming: false }
     }
     /// The in-flight assistant bubble — empty, `streaming`, accumulates deltas.
     pub fn streaming_assistant() -> Self {
-        Self { role: "assistant".into(), content: String::new(), tools: Vec::new(), streaming: true }
+        Self { role: "assistant".into(), content: String::new(), tools: Vec::new(), report: None, streaming: true }
     }
 }
 
@@ -1132,6 +1141,9 @@ pub struct TurnDto {
     pub text: String,
     #[serde(default)]
     pub tools: Option<Vec<TurnToolDto>>,
+    /// Persisted `<report>` payload (operator_turns.report jsonb, migration 160).
+    #[serde(default)]
+    pub report: Option<crate::chat_tags::Report>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

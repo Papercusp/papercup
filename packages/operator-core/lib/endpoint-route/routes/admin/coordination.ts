@@ -38,7 +38,7 @@ const HOST_EXTRAS: HttpToolHostExtras = {
 const ALLOWED: Record<string, ReadonlySet<string>> = {
   issues: new Set(['list', 'get', 'search', 'create', 'update', 'comment', 'claim', 'release', 'close', 'tag', 'subscribe', 'link', 'promote']),
   topics: new Set(['list', 'feed', 'create', 'subscribe', 'unsubscribe', 'merge', 'tag']),
-  conversations: new Set(['list', 'get', 'post', 'answer', 'resolve', 'join']),
+  conversations: new Set(['list', 'get', 'post', 'answer', 'resolve', 'join', 'promote']),
   coord: new Set(['ask']),
 };
 
