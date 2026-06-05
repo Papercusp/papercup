@@ -121,6 +121,11 @@ export async function spawnInvokeOnce(
   role: string,
   extras: string[],
   extraEnv: Record<string, string>,
+  /** Optional abort: when the signal fires, the child is SIGTERM'd (then SIGKILL
+   *  after a grace period). Lets a caller (e.g. fleet:cancel via the operator
+   *  spawn engine, EI-40) actually STOP the running agent, not just flip its row.
+   *  Omitted by the pipeline runner / finalizer, which never abort mid-run. */
+  opts?: { signal?: AbortSignal },
 ): Promise<{ output: string; exitCode: number; stderr: string }> {
   const { command, args, env } = buildInvokeOnce({
     projectDir,
@@ -146,7 +151,7 @@ export async function spawnInvokeOnce(
       return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait' };
     }
     try {
-      const inner = await runChild(command, args, projectDir, env, role);
+      const inner = await runChild(command, args, projectDir, env, role, opts?.signal);
       // Classify the outcome; on a detected 429/overload, pause the SHARED governor so the
       // operator's other agent spawns back off too. No retry here — the director owns that.
       const te = classifyTurnError(backend, { exitCode: inner.exitCode, signal: null, stderr: inner.stderr, stdout: inner.output });
@@ -156,8 +161,12 @@ export async function spawnInvokeOnce(
       release();
     }
   }
-  return runChild(command, args, projectDir, env, role);
+  return runChild(command, args, projectDir, env, role, opts?.signal);
 }
+
+/** SIGKILL grace after the SIGTERM on abort/timeout — gives the child a moment
+ *  to flush + exit cleanly before we hard-kill. */
+const KILL_GRACE_MS = 2_000;
 
 /** The raw subprocess spawn + timeout-kill + stdout/stderr capture (never rejects). */
 function runChild(
@@ -166,18 +175,46 @@ function runChild(
   projectDir: string,
   env: NodeJS.ProcessEnv,
   role: string,
+  signal?: AbortSignal,
 ): Promise<{ output: string; exitCode: number; stderr: string }> {
   return new Promise((resolve) => {
+    // Already-aborted before we spawn → don't launch at all.
+    if (signal?.aborted) {
+      resolve({ output: '', exitCode: 1, stderr: 'aborted before start' });
+      return;
+    }
     const child = spawn(command, args, { cwd: projectDir, env });
     let stdout = '';
     let stderr = '';
+    let killGrace: ReturnType<typeof setTimeout> | null = null;
+    let aborted = false;
     const timer = setTimeout(() => {
       try { child.kill('SIGTERM'); } catch { /* ignore */ }
     }, INVOKE_TIMEOUT_MS);
+    // Caller-driven abort (EI-40: fleet:cancel of an operator spawn): SIGTERM now,
+    // SIGKILL after a grace period if the child ignores it.
+    const onAbort = () => {
+      aborted = true;
+      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+      killGrace = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, KILL_GRACE_MS);
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (killGrace) clearTimeout(killGrace);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
     child.stdout?.on('data', (d) => { stdout += String(d); });
     child.stderr?.on('data', (d) => { stderr += String(d); });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      cleanup();
+      // A child we aborted may exit 0 (it caught SIGTERM and shut down) or via the
+      // signal — normalize to a non-zero "aborted" outcome so callers don't read a
+      // cancelled run as a clean success.
+      if (aborted) {
+        resolve({ output: extractAgentOutput(stdout), exitCode: 1, stderr: stderr.trim() || 'aborted (fleet:cancel)' });
+        return;
+      }
       const exitCode = code ?? 1;
       const failLog = formatInvokeStderr(role, exitCode, stderr);
       if (failLog) console.error(failLog);
@@ -193,7 +230,7 @@ function runChild(
       resolve({ output: extractAgentOutput(stdout), exitCode, stderr });
     });
     child.on('error', (err) => {
-      clearTimeout(timer);
+      cleanup();
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[dbos-invoke] role=${role} spawn error: ${msg}`);
       resolve({ output: '', exitCode: 1, stderr: msg });

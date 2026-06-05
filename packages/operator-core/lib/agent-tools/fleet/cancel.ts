@@ -43,6 +43,23 @@ export default defineTool({
       reason: args.reason ?? 'fleet:cancel',
       actor,
     });
+    // EI-40: the subtree flip + lock/claim release above is the DURABLE half.
+    // The other half — actually SIGTERM/SIGKILL the running child so a cancelled
+    // operator-spawn stops making edits instead of running to INVOKE_TIMEOUT — is
+    // the in-process abort registry in fleet/operator-spawn. Only spawns THIS host
+    // launched are locally tracked; others' rows still flipped, and their
+    // lease/timeout reclaims them (unchanged). Dynamic import: operator-spawn
+    // statically pulls the DBOS featurePipeline registration, which must not load
+    // at tool-mount (mirrors fleet/spawn + operator/converse).
+    let processesAborted = 0;
+    try {
+      const { abortLocalSpawn } = await import('../../fleet/operator-spawn');
+      for (const c of res.cancelled) {
+        if (abortLocalSpawn(c.spawnId)) processesAborted++;
+      }
+    } catch (err) {
+      console.warn('[fleet:cancel] local process abort failed', err);
+    }
     return {
       content: [
         {
@@ -51,6 +68,7 @@ export default defineTool({
             ok: true,
             root: res.rootSpawnId,
             cancelled: res.cancelled.map((c) => c.spawnId),
+            processes_aborted: processesAborted,
             already_terminal: res.alreadyTerminal,
             claims_released: res.claimsReleased,
             plan_claims_released: res.planClaimsReleased,

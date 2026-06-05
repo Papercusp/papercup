@@ -34,6 +34,28 @@ import { recordSpawn, finishSpawn } from './spawn-tree';
 /** Same global running-spawn ceiling the legacy plugin enforced. */
 export const MAX_CONCURRENT_SPAWNS = 10;
 
+/**
+ * In-process abort handles for spawns THIS host launched, keyed by spawnId
+ * (EI-40). `fleet:cancel` flips the durable rows + releases locks/claims; this
+ * is the other half — actually SIGTERM/SIGKILL the running child so a cancelled
+ * spawn stops making edits instead of running to INVOKE_TIMEOUT. Only this
+ * host's live spawns are here; spawns on another operator process aren't (their
+ * rows still flip, and the lease/timeout reclaims them — unchanged from before).
+ */
+const localSpawnAborts = new Map<string, AbortController>();
+
+/**
+ * Abort a locally-tracked running spawn (SIGTERM → SIGKILL). Returns true when a
+ * live local handle was found and signalled. Called by the fleet:cancel tool for
+ * each cancelled spawn id after the durable subtree flip.
+ */
+export function abortLocalSpawn(spawnId: string): boolean {
+  const ctrl = localSpawnAborts.get(spawnId);
+  if (!ctrl) return false;
+  try { ctrl.abort(); } catch { /* already aborted */ }
+  return true;
+}
+
 export interface OperatorSpawnInput {
   workspaceId: string;
   /** Registry slug of the harness to spawn into. Optional ONLY when the
@@ -227,13 +249,19 @@ export async function spawnAgentInHarness(
     workspaceId: input.workspaceId,
   });
 
+  // Register an abort handle so fleet:cancel can stop the child (EI-40).
+  const abort = new AbortController();
+  localSpawnAborts.set(spawnId, abort);
+
   // Fire-and-forget: the spawn returns now; completion lands on the nursery row.
-  void spawnInvokeOnce(project.path, role, extras, extraEnv)
+  void spawnInvokeOnce(project.path, role, extras, extraEnv, { signal: abort.signal })
     .then((r) =>
       finishSpawn(sql, {
         spawnId,
         workspaceId: input.workspaceId,
-        status: r.exitCode === 0 ? 'done' : 'failed',
+        // An aborted child (fleet:cancel) exits non-zero; record it as cancelled,
+        // not failed, when the abort was the cause.
+        status: abort.signal.aborted ? 'cancelled' : (r.exitCode === 0 ? 'done' : 'failed'),
         exitCode: r.exitCode,
         errorMessage: r.exitCode === 0 ? null : (r.stderr || '').slice(-2000) || null,
         outputTail: (r.output || '').slice(-2000) || null,
@@ -243,10 +271,11 @@ export async function spawnAgentInHarness(
       finishSpawn(sql, {
         spawnId,
         workspaceId: input.workspaceId,
-        status: 'failed',
+        status: abort.signal.aborted ? 'cancelled' : 'failed',
         errorMessage: err instanceof Error ? err.message : String(err),
       }).catch(() => { /* PG down — nothing left to record to */ }),
-    );
+    )
+    .finally(() => { localSpawnAborts.delete(spawnId); });
 
   return { ok: true, spawnId, harness: slug, projectDir: project.path, error: null };
 }

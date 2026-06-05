@@ -20,7 +20,7 @@ import { resolveProject } from '../harness-core';
 import { loadHarnessRegistry } from '../harness-registry';
 import { spawnInvokeOnce } from '../dbos/orchestrator-runner';
 import { recordSpawn, finishSpawn } from './spawn-tree';
-import { spawnAgentInHarness, MAX_CONCURRENT_SPAWNS } from './operator-spawn';
+import { spawnAgentInHarness, abortLocalSpawn, MAX_CONCURRENT_SPAWNS } from './operator-spawn';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
 const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
@@ -106,6 +106,49 @@ describe('spawnAgentInHarness — happy path', () => {
       exitCode: 1,
       errorMessage: 'boom',
     }));
+  });
+});
+
+describe('abortLocalSpawn — fleet:cancel actually stops the child (EI-40)', () => {
+  it('passes an AbortSignal to spawnInvokeOnce and abortLocalSpawn fires it', async () => {
+    // Hold the child open so the spawn stays "live" (registered in the abort map)
+    // until we abort it. Capture the signal handed to spawnInvokeOnce.
+    let captured: AbortSignal | undefined;
+    let resolveChild: (v: { output: string; exitCode: number; stderr: string }) => void;
+    vi.mocked(spawnInvokeOnce).mockImplementation(((
+      _d: string, _r: string, _e: string[], _env: Record<string, string>, opts?: { signal?: AbortSignal },
+    ) => {
+      captured = opts?.signal;
+      return new Promise((res) => { resolveChild = res; });
+    }) as never);
+
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    expect(res.ok).toBe(true);
+    expect(captured).toBeInstanceOf(AbortSignal);
+    expect(captured!.aborted).toBe(false);
+
+    // The live spawn is locally tracked → abortLocalSpawn finds + signals it.
+    expect(abortLocalSpawn(res.spawnId!)).toBe(true);
+    expect(captured!.aborted).toBe(true);
+
+    // Let the (now-aborted) child settle so the finally-cleanup runs.
+    resolveChild!({ output: '', exitCode: 1, stderr: 'aborted (fleet:cancel)' });
+    await flush();
+
+    // The completion records 'cancelled' (abort was the cause), and the handle is
+    // removed from the registry → a second abort is a no-op.
+    expect(finishSpawn).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      spawnId: res.spawnId, status: 'cancelled',
+    }));
+    expect(abortLocalSpawn(res.spawnId!)).toBe(false);
+  });
+
+  it('abortLocalSpawn returns false for an unknown / already-finished spawn', async () => {
+    expect(abortLocalSpawn('s-nonexistent')).toBe(false);
+    // A spawn that finished normally is de-registered → not abortable.
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'scoper' });
+    await flush();
+    expect(abortLocalSpawn(res.spawnId!)).toBe(false);
   });
 });
 
