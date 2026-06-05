@@ -2838,6 +2838,7 @@ mod tests {
             feature: None,
             current_plan_slug: None,
             heartbeat_at: None,
+            ..Default::default()
         }]);
         let text = render(&app, 120, 40);
         assert!(text.contains("Fleet")); // headline
@@ -2951,6 +2952,7 @@ mod tests {
             feature: None,
             current_plan_slug: None,
             heartbeat_at: None,
+            ..Default::default()
         }
     }
 
@@ -3759,6 +3761,7 @@ mod tests {
             feature: None,
             current_plan_slug: None,
             heartbeat_at: None,
+            ..Default::default()
         }
     }
 

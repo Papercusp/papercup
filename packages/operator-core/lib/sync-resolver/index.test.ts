@@ -63,7 +63,6 @@ describe('sync-resolver v2 registry', () => {
         'harnessTests.byHarness',
         'harnessArchives.byHarness',
         'harnessHookLogs.byHarness',
-        'harnessHealth.byHarness',
       ]) {
         expect(names).toContain(expected);
       }
@@ -156,9 +155,10 @@ describe('sync-resolver v2 registry', () => {
       // federation in flight). The migration-completeness signal is carried by the
       // many `toContain(...)` family assertions above + below; here we only assert
       // the registry never SHRINKS below its known floor and every name is distinct.
-      // (delegates.byWorkspace removed by collapse-delegate-into-workitems-2026-06-04 → floor 62.)
+      // (delegates.byWorkspace removed by collapse-delegate-into-workitems-2026-06-04 → floor 62;
+      // harnessHealth.byHarness removed by spec-md-ui-deprecation-cleanup P-007 → floor 61.)
       const names = knownQueryNamesV2();
-      expect(names.length).toBeGreaterThanOrEqual(62);
+      expect(names.length).toBeGreaterThanOrEqual(61);
       expect(new Set(names).size, 'queryNames are distinct').toBe(names.length);
     });
 

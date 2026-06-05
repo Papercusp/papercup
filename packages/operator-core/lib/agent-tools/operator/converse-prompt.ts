@@ -122,22 +122,43 @@ export async function buildOperatorPrompt(
   systemSections.push(loadRoleConverse('operator'));
   systemSections.push(loadRolePersona('operator'));
 
-  const operatorToolNames: string[] = [];
-  for (const fullName of ALL_AGENT_MCP_TOOLS) {
-    const stripped = fullName.replace(/^mcp__agentmcp__/, '');
-    operatorToolNames.push(stripped);
-    if (stripped.includes('_')) {
-      operatorToolNames.push(stripped.replace(/_/g, '.'));
-    }
-  }
+  // Look the catalog up by the colon MCP-catalog name (the registry key), but
+  // DISPLAY the underscore form below — Claude Code sanitizes the colon out of
+  // an MCP tool name (`harness:status` → `harness_status`) before handing it to
+  // the model, so the catalog must advertise the name the model actually sees
+  // (voice-persona P-005). The earlier dotted-variant entries were dead: they
+  // never matched the colon-keyed registry, so they only ever rendered nothing.
+  const operatorToolNames = ALL_AGENT_MCP_TOOLS.map((fullName) =>
+    fullName.replace(/^mcp__agentmcp__/, ''),
+  );
+  const toClaudeName = (mcpName: string): string => mcpName.replace(/:/g, '_');
   // Phase 4 T3.1: pass modality so the catalog filters out tools
   // that don't declare 'voice' support when this turn is voice-side.
   // Today chat:ask_choice is the load-bearing example — buttons are
   // invisible to a voice user, so the tool declares modality:['text']
   // and gets dropped from the voice catalog automatically (replaces
   // the manual NOTE in the trigger sections below).
-  const catalog = renderToolsCatalog('operator', operatorToolNames, modality);
+  const catalog = renderToolsCatalog('operator', operatorToolNames, modality, toClaudeName);
   if (catalog) systemSections.push(catalog);
+
+  // Tool-calling contract (voice-persona P-005/P-009). The brain runs on
+  // claude-code with a SMALL, directly-loaded MCP surface — the catalog above
+  // is every tool it has, already loaded, NOT deferred. The historical failure
+  // mode was the brain `ToolSearch`-ing colon names (`harness:status`) that
+  // never resolved (claude-code presents the sanitized underscore form), firing
+  // 4+ searches per turn and occasionally looping to the wall-clock cap. This
+  // note + the underscore-named catalog close that gap.
+  systemSections.push(
+    `## Calling tools\n\n` +
+      `Every tool you can call is listed in **Available tools** above — they are ` +
+      `ALREADY LOADED and ready to call directly. Two hard rules:\n` +
+      `- **Never call \`ToolSearch\`.** Your tools are not deferred; searching ` +
+      `finds nothing new and wastes the turn. Just call the tool.\n` +
+      `- **Use the exact catalog name — underscores, never colons.** It is ` +
+      `\`harness_status\`, not \`harness:status\`; \`chat_ask_choice\`, not ` +
+      `\`chat:ask_choice\`. Don't retry name variants; the catalog name is the ` +
+      `only form that resolves.`,
+  );
 
   const playbook = loadRoleToolsMd('operator');
   if (playbook) systemSections.push(playbook);

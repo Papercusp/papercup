@@ -227,6 +227,24 @@ export default defineTool({
         && /^(?:llm-testing\/)?[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
         ? input.uiClientId
         : null;
+    // The operator's curated working set (operator-mcp-tools.ts). On the TUI
+    // surface chat:ask_choice is dropped — the terminal can't render choice
+    // cards, so the brain would block until timeoutSec waiting for a click
+    // that never comes. This single set feeds BOTH the `?tools=` allowlist
+    // and `--allowed-tools`, so the listed surface and the callable surface
+    // stay identical by construction.
+    const operatorTools: readonly string[] =
+      input.surface === 'tui'
+        ? ALL_AGENT_MCP_TOOLS.filter((t) => t !== 'mcp__agentmcp__chat:ask_choice')
+        : ALL_AGENT_MCP_TOOLS;
+    // `?tools=` shrinks the operator's /api/mcp surface from ~226 → ~50 tools,
+    // loaded NON-deferred (each marked always-load server-side), so Claude
+    // Code stops ToolSearch-flailing over a giant deferred catalog
+    // (voice-persona-production-readiness P-009). The param value is the
+    // colon MCP-catalog name (strip the claude-code `mcp__agentmcp__` prefix).
+    const toolsParam = operatorTools
+      .map((t) => t.replace(/^mcp__agentmcp__/, ''))
+      .join(',');
     // workspace= is REQUIRED for state-channel scoping: chat:ask_choice
     // sub-tool calls (via claude-code → MCP HTTP) need ctx.workspaceId
     // to match what the chat surface subscribed to (subscribeWorkspace).
@@ -238,6 +256,7 @@ export default defineTool({
     // Plan ref: bespoke-card-improvements-2026-05-13.md §4.4 wire shape.
     const mcpUrl =
       `${selfUrl()}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}` +
+      `&tools=${encodeURIComponent(toolsParam)}` +
       (uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '');
     const superuserToken = readSuperuserToken();
     const mcpConfig =
@@ -260,16 +279,11 @@ export default defineTool({
             },
           }
         : undefined;
-    // On the TUI surface the terminal can't render chat:ask_choice cards (the
-    // brain would block up to timeoutSec waiting for a card-response that never
-    // comes), so drop it from the tool surface there. The converse-prompt also
-    // instructs the brain not to call it on this surface (belt + braces).
+    // The callable surface mirrors the listed (`?tools=`) surface exactly —
+    // operatorTools already dropped chat:ask_choice on the TUI surface above.
+    // (The converse-prompt also instructs the brain not to call it there.)
     const allowedTools: readonly string[] =
-      principalOk && superuserToken
-        ? input.surface === 'tui'
-          ? ALL_AGENT_MCP_TOOLS.filter((t) => t !== 'mcp__agentmcp__chat:ask_choice')
-          : ALL_AGENT_MCP_TOOLS
-        : [];
+      principalOk && superuserToken ? operatorTools : [];
 
     let totalCost = 0;
     let assembled = '';

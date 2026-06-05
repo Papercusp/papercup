@@ -268,6 +268,43 @@ impl OperatorClient {
         self.get_json("/api/admin/plans/list").await
     }
 
+    /// Bring an agent's external terminal window to the foreground via the
+    /// `/api/adv/sessions/focus` route (wmctrl `-ia`). The route resolves a
+    /// window id from (in order) an explicit `windowId`, the adv_sessions row's
+    /// stored `window_id` (looked up by `id`), the `pid` (`wmctrl -lp`), or the
+    /// `[adv:<id>]` title fragment. Best-effort: `Ok(false)` when no window can
+    /// be resolved (no wmctrl / no DISPLAY / pid has no window) — the caller
+    /// surfaces a "couldn't focus" toast rather than treating it as a hard error.
+    /// Enter-by-location external-window route (pui-workbench-usability D-001).
+    pub async fn focus_session(
+        &self,
+        adv_session_id: Option<i64>,
+        pid: Option<i64>,
+        window_id: Option<String>,
+    ) -> Result<bool> {
+        let mut body = serde_json::Map::new();
+        if let Some(id) = adv_session_id {
+            body.insert("id".into(), serde_json::json!(id));
+        }
+        if let Some(p) = pid {
+            body.insert("pid".into(), serde_json::json!(p));
+        }
+        if let Some(w) = window_id.filter(|w| !w.is_empty()) {
+            body.insert("windowId".into(), serde_json::json!(w));
+        }
+        // The route returns 404 (window unresolvable) / 500 (wmctrl failed) with
+        // a JSON `{status:'error'}` body; the transport surfaces non-2xx as an
+        // Err, so treat any failure as "couldn't focus" (Ok(false)) — only a
+        // parsed `{status:'ok'}` is success.
+        match self
+            .post_json("/api/adv/sessions/focus", serde_json::Value::Object(body))
+            .await
+        {
+            Ok(v) => Ok(v.get("status").and_then(|s| s.as_str()) == Some("ok")),
+            Err(_) => Ok(false),
+        }
+    }
+
     // --- typed ---
     pub async fn roster_typed(&self) -> Result<Vec<RosterEntry>> {
         let v = self.roster().await?;

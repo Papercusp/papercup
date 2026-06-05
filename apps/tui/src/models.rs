@@ -48,13 +48,21 @@ pub struct PlansResponse {
     pub plans: Vec<PlanSummary>,
 }
 
-/// One row of `/api/adv/roster` → `{ active: [...] }`.
-#[derive(Debug, Clone, Deserialize)]
+/// One row of `/api/adv/roster` → `{ active: [...] }`. Presence (primary) +
+/// adv_sessions enrichment; field set mirrors `adv-roster.ts`'s `RosterEntry`.
+/// The location/handle fields (pid/pidAlive/host/windowId/ompThreadId/cwd/mode/
+/// advSessionId/hasLaunchRecord) drive Enter-by-location routing (pui-workbench-
+/// usability D-001): they tell where the agent lives so Enter reaches it instead
+/// of silently focusing an empty pane.
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RosterEntry {
     pub owner_id: String,
     #[serde(default)]
     pub label: String,
+    /// client/source: claude · codex · omp · …
+    #[serde(default)]
+    pub source: String,
     #[serde(default)]
     pub intent: Option<String>,
     #[serde(default)]
@@ -73,6 +81,67 @@ pub struct RosterEntry {
     pub current_plan_slug: Option<String>,
     #[serde(default)]
     pub heartbeat_at: Option<String>,
+    // ── location / control handles (D-001) ──
+    /// OS pid of the agent process; null for a remote/console row.
+    #[serde(default)]
+    pub pid: Option<i64>,
+    /// Is the OS process alive? `Some(false)` = fresh heartbeat but dead process
+    /// (a zombie — do NOT focus, it's resumable). `None` = unknown (remote/stale).
+    #[serde(default)]
+    pub pid_alive: Option<bool>,
+    /// Hostname the agent runs on ("" = unknown/local); window-focus only works
+    /// same-host.
+    #[serde(default)]
+    pub host: String,
+    /// X11 window id of the agent's external terminal window (console launches).
+    #[serde(default)]
+    pub window_id: Option<String>,
+    /// OMP thread id (resume handle for omp sessions).
+    #[serde(default)]
+    pub omp_thread_id: Option<String>,
+    /// Working directory the session was launched in (resume cd target).
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Launch mode: "omp" | "console" (null = plain presence, no launch record).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// adv_sessions row id — the `psu --resume <id>` handle (D-001 ended-session
+    /// route) and the `/api/adv/sessions/focus` `id` lookup.
+    #[serde(default)]
+    pub adv_session_id: Option<i64>,
+    /// Whether a joinable adv_sessions launch row exists (resume/focus eligible).
+    #[serde(default)]
+    pub has_launch_record: bool,
+}
+
+impl RosterEntry {
+    /// Is the agent's process running right now? A live/idle heartbeat AND not a
+    /// known zombie (`pid_alive == Some(false)` is a fresh heartbeat over a dead
+    /// process). Used to decide focus-vs-resume so a resume never double-spawns a
+    /// still-live session (D-001 liveness-first).
+    pub fn is_live(&self) -> bool {
+        self.pid_alive != Some(false) && !self.stale && self.liveness != "stale"
+    }
+
+    /// Can this agent be resumed by id? It needs an adv_sessions launch record
+    /// (the `psu --resume <adv_session_id>` handle) and a known agent CLI.
+    pub fn is_resumable(&self) -> bool {
+        self.adv_session_id.is_some() && self.agent.is_some()
+    }
+
+    /// Does it carry a same-host external-window handle the focus route can use
+    /// (an explicit window id, or a pid the route can resolve via wmctrl)?
+    /// Cross-host pids can't be focused locally (and could collide), so they
+    /// don't count.
+    pub fn has_window_handle(&self, local_host: &str) -> bool {
+        let same_host = self.host.is_empty() || self.host == local_host;
+        let has_wid = self
+            .window_id
+            .as_deref()
+            .map(|w| !w.is_empty())
+            .unwrap_or(false);
+        has_wid || (same_host && self.pid.is_some())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

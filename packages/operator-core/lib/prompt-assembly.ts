@@ -231,6 +231,15 @@ export function renderToolsCatalog(
   role: Role,
   toolNames: string[],
   modality: 'text' | 'voice' = 'text',
+  /**
+   * Optional rewrite of the DISPLAYED tool name (lookup is unchanged — always
+   * by the colon MCP-catalog name). The operator passes `:`→`_` so the catalog
+   * advertises the same underscore names Claude Code actually presents to the
+   * model (it sanitizes the colon out of `harness:status` → `harness_status`),
+   * instead of colon names the model can't match (voice-persona P-005). Default
+   * identity — every other role's catalog is byte-identical.
+   */
+  displayTransform?: (mcpName: string) => string,
 ): string {
   if (toolNames.length === 0) return '';
 
@@ -254,7 +263,7 @@ export function renderToolsCatalog(
     const toolModality = tool.modality ?? ['text', 'voice'];
     if (!toolModality.includes(modality)) continue;
     rendered += 1;
-    lines.push(`- \`${name}\``);
+    lines.push(`- \`${displayTransform ? displayTransform(name) : name}\``);
     lines.push(`  ${tool.description}`);
     const g = mergeRoleGuidance(tool.guidance, role);
     if (g?.when) lines.push(`  When: ${g.when}`);

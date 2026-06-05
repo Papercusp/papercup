@@ -56,6 +56,11 @@ import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
 import { verifyAccessToken } from '../../../power-user-token';
+import {
+  parseToolsAllowlist,
+  filterListingsByAllowlist,
+  ALWAYS_LOAD_META,
+} from './tool-allowlist';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
 // lazily — without this import, MCP requests would arrive before any
@@ -624,16 +629,28 @@ const handler = createMcpHandler(
         const result = applyToolManifest(listMcpProjections(role, profile), {
           bypass,
         });
+        // Opt-in `?tools=a:b,c:d` allowlist (voice-persona P-009). When a
+        // caller (operator:converse) names a small working set, serve ONLY
+        // those tools and mark each always-load so Claude Code loads them
+        // directly instead of deferring the whole surface behind ToolSearch.
+        // Absent/empty `?tools=` → no filtering; worker/scoper/probe spawns
+        // keep their full role surface. Listing hint only — tools/call is
+        // unaffected. See tool-allowlist.ts.
+        const allow = parseToolsAllowlist(
+          urlFromExtra(extra)?.searchParams.get('tools'),
+        );
+        const filtered = filterListingsByAllowlist(result, allow);
         // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
         // consumers (Ollama) can parse the surface. This is THE tools/list
         // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
         // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
         return {
-          tools: result.map((t) => {
+          tools: filtered.map((t) => {
             const tt = t as { inputSchema?: unknown };
-            return tt.inputSchema
+            const base = tt.inputSchema
               ? { ...t, inputSchema: sanitizeToolSchema(tt.inputSchema) }
               : { ...t };
+            return allow ? { ...base, _meta: { ...ALWAYS_LOAD_META } } : base;
           }),
         };
       },

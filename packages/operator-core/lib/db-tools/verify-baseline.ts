@@ -26,7 +26,7 @@ import { applyPendingMigrations } from '../../../../libs/papercusp/packages/embe
 
 const REPO_ROOT = resolve(process.cwd(), '../..');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
-const EXPECTED_MIN_TABLES = 184; // harness_shared base tables in the complete baseline
+const EXPECTED_MIN_TABLES = 183; // harness_shared base tables in the complete baseline (-1: harness_health dropped, mig 171)
 const EXPECTED_MIN_REACTIVE_TRIGGERS = 18; // emit_change_notify_trg on the reactive tables (migration 107)
 
 const ROLES_DDL = `

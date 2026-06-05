@@ -168,6 +168,28 @@ export const PromotePolicySchema = z
         });
       }
     }
+    // P-001 (spawn_child): a child slug names a NEW harness, so it must be unique
+    // across waves and must differ from `target_harness` (the promote target is
+    // an existing harness, never the child being created). Cross-wave + needs
+    // target_harness → enforced at the policy level, not per-wave.
+    const childSlugs = new Set<string>();
+    for (const w of p.waves) {
+      const child = w.spawn_child;
+      if (!child) continue;
+      if (childSlugs.has(child.slug)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate spawn_child slug: ${child.slug}`,
+        });
+      }
+      childSlugs.add(child.slug);
+      if (p.target_harness && child.slug === p.target_harness) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `spawn_child slug ${child.slug} must differ from target_harness`,
+        });
+      }
+    }
   });
 export type PromotePolicy = z.infer<typeof PromotePolicySchema>;
 
@@ -251,6 +273,11 @@ export interface BuiltFeature {
    *  promote (P-044) so each feature records its own wave (consolidated.wave +
    *  the `## Promoted` row), since one promote spans many waves. */
   wave?: string;
+  /** P-001: the child-harness slug this feature is destined for, when its wave
+   *  declares `spawn_child`. Stamped by `buildWaveFeatures`; the promote spawn
+   *  branch (P-003, held) reads it to route the feature into the child instead
+   *  of `target_harness`. Undefined for ordinary in-parent features. */
+  spawn_child_slug?: string;
 }
 
 /**
@@ -321,6 +348,14 @@ export function buildWaveFeatures(
         generated: true,
       });
     }
+  }
+
+  // P-001: a spawn_child wave routes ALL its features (static + generated) into
+  // the child harness — stamp each with the destination slug so the promote
+  // spawn branch (P-003, held) can route them. Purely additive: a wave without
+  // spawn_child leaves the built features byte-identical to before.
+  if (wave.spawn_child) {
+    for (const f of features) f.spawn_child_slug = wave.spawn_child.slug;
   }
 
   return { features, warnings };

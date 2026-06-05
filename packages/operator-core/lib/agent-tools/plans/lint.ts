@@ -29,6 +29,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveEffectiveStatus } from './effective-status';
 import { IMPORTANCE_LEVELS } from './parser';
 import type { ParsedPlan } from './parser';
+import { parsePromotePolicy } from './promote-policy';
 
 const ALL_ROLES = [
   'scoper',
@@ -305,6 +306,40 @@ export async function lintParsed(
   // against the plan FILE's git mtime. Plans are PG-canonical now — there is no
   // file, and the row's `updated_at` is auto-bumped on every write, so there's
   // no faithful equivalent. Dropped with plans-pg-canonical-migration-2026-06-03.)
+
+  // P-002 (promote-spawn-child-harness, D-001): a `## Promote` wave that declares
+  // `spawn_child` creates a NEW child harness rather than promoting into the
+  // current one — a heavier act only justified at a repo/worktree boundary or for
+  // work needing its own lifecycle. That boundary is never mechanically
+  // detectable, so this is a WARNING (never an error): prompt the author to
+  // confirm the justification. A sharper warning fires when neither `repo` nor
+  // `template` is given (the child's target tree is ambiguous). Only spawn_child
+  // findings are surfaced here — a malformed/absent `## Promote` block yields a
+  // null policy and is left alone (it's not this check's remit).
+  const promote = parsePromotePolicy(parsed.raw);
+  if (promote.policy) {
+    for (const w of promote.policy.waves) {
+      const child = w.spawn_child;
+      if (!child) continue;
+      report.warnings.push({
+        level: 'warning',
+        code: 'spawn_child_wave',
+        message:
+          `Wave "${w.id}" declares spawn_child "${child.slug}", which creates a NEW child harness. ` +
+          `Per D-001, spawn_child is only justified for cross-repo / own-worktree work or work needing its own ` +
+          `lifecycle — same-repo sub-work should stay as features in the current harness. Confirm the boundary justification.`,
+      });
+      if (!child.repo && !child.template) {
+        report.warnings.push({
+          level: 'warning',
+          code: 'spawn_child_ambiguous_target',
+          message:
+            `Wave "${w.id}" spawn_child "${child.slug}" gives neither repo nor template — the child's target tree is ` +
+            `ambiguous. Set spawn_child.template (a spawnable template) or spawn_child.repo (a git URL).`,
+        });
+      }
+    }
+  }
 
   return report;
 }

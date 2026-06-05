@@ -125,7 +125,7 @@ Detached `npm run dev` in `papercusp-desktop/`. Survives closing the stream. Tai
 
 ### `restart-3055` — Restart 3055 dev server
 
-Runs `bin/dev` in the papercup repo. This invokes the `papercup-dev` systemd **user unit** that supervises the Next dev server on `:3055`. The `/admin` page itself goes offline for ~30s while Next rebuilds — you'll lose your SSE log stream and need to refresh.
+Runs `bin/dev` in the papercup repo. This invokes the `papercup-dev` systemd **user unit** that supervises the **Vite** SPA dev server on `:3055` (`@papercusp/operator-vite`). The `/admin` page may blip while it restarts — you'll lose your SSE log stream and need to refresh.
 
 ### `audit-prod-bundles` — Audit prod bundles for PostHog leaks
 

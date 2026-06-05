@@ -84,6 +84,22 @@ pub enum Action {
         intent_id: i64,
         pane_id: u32,
     },
+    /// Focus a live terminal pane in THIS workbench (companion) — the user-driven
+    /// Enter-by-location LOCAL route (pui-workbench-usability D-001). Distinct
+    /// from `FocusPane`: no `tui:dispatch` intent result is POSTed back.
+    FocusLocalPane {
+        pane_id: u32,
+    },
+    /// Bring an agent's EXTERNAL terminal window to the front via
+    /// `/api/adv/sessions/focus` (Enter-by-location D-001). The run loop calls
+    /// `client.focus_session` off the UI thread and toasts the outcome (`label`
+    /// names the agent in that toast).
+    FocusWindow {
+        adv_session_id: Option<i64>,
+        pid: Option<i64>,
+        window_id: Option<String>,
+        label: String,
+    },
     /// Fetch the next older page of operator turns (load-earlier / scroll-back).
     /// The reducer already set `chat_loading_earlier`; the run loop snapshots the
     /// conversation id + oldest cursor from App.
@@ -166,6 +182,49 @@ pub enum Action {
     PromoteConversation {
         id: String,
     },
+}
+
+/// Where a Fleet-roster agent lives → how Enter reaches it (pui-workbench-
+/// usability D-001, "Enter routes by LOCATION"). Resolved purely from the roster
+/// entry + the live companion topology + the local host, so it unit-tests
+/// without a running workbench. The reducer turns the chosen variant into an
+/// [`Action`] (or opens the [`FleetActionMenu`]); the run loop performs the I/O.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentRoute {
+    /// A live terminal pane in THIS zellij workbench → focus it (companion).
+    LocalPane { pane_id: u32 },
+    /// A live agent in an external terminal window → wmctrl focus via
+    /// `/api/adv/sessions/focus`.
+    FocusWindow {
+        adv_session_id: Option<i64>,
+        pid: Option<i64>,
+        window_id: Option<String>,
+    },
+    /// An ended/dead session with a launch record → resume it in a new pane
+    /// (`psu --resume <adv_session_id>`).
+    Resume { spec: PaneSpec },
+    /// No single unambiguous action — surface the `[r]/[n]/[f]` menu (D-002), so
+    /// Enter never silently focuses empty space.
+    Menu(FleetActionMenu),
+}
+
+/// The no-reachable-session choices Enter surfaces for a Fleet agent (D-002):
+/// `[r] resume · [n] launch · [f] focus window`. Carries the resolved handles so
+/// each key fires without re-resolving the route. `[n] launch` is always offered;
+/// `r`/`f` only when viable (`can_resume`/`can_focus_window`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FleetActionMenu {
+    /// Agent label (the menu header).
+    pub label: String,
+    /// One-line "why you're seeing this" note.
+    pub note: String,
+    pub can_resume: bool,
+    pub can_focus_window: bool,
+    /// Pre-built resume pane spec (Some iff `can_resume`).
+    pub resume_spec: Option<PaneSpec>,
+    /// External-window focus handle (adv_session_id, pid, window_id) — Some iff
+    /// `can_focus_window`.
+    pub focus: Option<(Option<i64>, Option<i64>, Option<String>)>,
 }
 
 /// A push-to-talk command on the Operator tab (voice-mode-tui-port D-007).
@@ -824,6 +883,10 @@ pub struct App {
     pub show_notifs: bool,
     pub unseen_notifs: usize,
     pub notif_seq: u64,
+    /// Fleet "no reachable session" action menu (pui-workbench-usability D-002).
+    /// `Some` while Enter on an unreachable agent has surfaced the `[r]/[n]/[f]`
+    /// choices; the next `r`/`n`/`f`/Esc closes it. Captures keys while open.
+    pub fleet_action_menu: Option<FleetActionMenu>,
     /// Live workbench topology from the companion zellij plugin (P-004 / D-008):
     /// which agent is in which pane + tab. `None` until the companion links;
     /// replaced wholesale on each snapshot (idempotent — no diff bookkeeping).
@@ -1047,6 +1110,7 @@ impl App {
             show_notifs: false,
             unseen_notifs: 0,
             notif_seq: 0,
+            fleet_action_menu: None,
             topology: None,
             hud_pane_id: None,
             companion_version: None,
@@ -2039,6 +2103,251 @@ impl App {
             format!("--agent={agent}"),
         ];
         PaneSpec::new(argv).titled(format!("pui · {agent}"))
+    }
+
+    /// Build the resume pane spec for a roster entry — `psu --resume <id>` (the
+    /// adv_sessions row id; psu resolves the row, cds to its cwd, and resumes the
+    /// EXACT agent/session). `None` when the entry carries no launch record to
+    /// resume. Enter-by-location ended-session route (D-001).
+    pub fn resume_spec(&self, entry: &RosterEntry) -> Option<PaneSpec> {
+        let id = entry.adv_session_id?;
+        let agent = entry.agent.clone().unwrap_or_default();
+        let argv = vec!["psu".to_string(), "--resume".to_string(), id.to_string()];
+        let title = if agent.is_empty() {
+            format!("resume · adv:{id}")
+        } else {
+            format!("resume · {agent}")
+        };
+        let mut spec = PaneSpec::new(argv).titled(title);
+        if let Some(cwd) = entry.cwd.clone().filter(|c| !c.is_empty()) {
+            spec = spec.cwd(cwd);
+        }
+        Some(spec)
+    }
+
+    /// The local hostname (best-effort, "" when unknown) — used to gate
+    /// same-host external-window focus (a pid on another machine can't be
+    /// wmctrl-focused here, and could collide with a local pid).
+    fn local_host() -> String {
+        std::env::var("HOSTNAME").unwrap_or_default()
+    }
+
+    /// Try to correlate a roster agent to a LIVE terminal pane in this workbench
+    /// (Enter-by-location local route, D-001). Conservative on purpose: it
+    /// returns a pane only on an UNAMBIGUOUS title/command match against the
+    /// strongest identifier the entry carries (feature → plan → role → agent
+    /// kind). Two panes matching the strongest needle → `None` (don't guess and
+    /// focus the wrong agent); the caller then falls through to window/resume.
+    fn match_local_pane(&self, entry: &RosterEntry) -> Option<u32> {
+        let topo = self.topology.as_ref()?;
+        let active = topo
+            .tabs
+            .iter()
+            .find(|t| t.active)
+            .map(|t| t.pos)
+            .unwrap_or(0);
+        let candidates: Vec<&pui_companion_proto::PaneNode> = topo
+            .panes
+            .iter()
+            .filter(|p| p.tab == active && !p.is_plugin && !p.exited && !self.is_hud_node(p))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let needles: Vec<String> = [
+            entry.feature.clone(),
+            entry.current_plan_slug.clone(),
+            entry.role.clone(),
+            entry.agent.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect();
+        for needle in &needles {
+            let matched: Vec<u32> = candidates
+                .iter()
+                .filter(|p| {
+                    p.title.to_lowercase().contains(needle)
+                        || p.command
+                            .as_deref()
+                            .map(|c| c.to_lowercase().contains(needle))
+                            .unwrap_or(false)
+                })
+                .map(|p| p.id)
+                .collect();
+            if matched.len() == 1 {
+                return Some(matched[0]);
+            }
+            if matched.len() > 1 {
+                return None; // ambiguous on the strongest needle → don't guess
+            }
+        }
+        None
+    }
+
+    /// Build the `[r]/[n]/[f]` no-session menu for an agent (D-002). `[n] launch`
+    /// is always offered; `r`/`f` only when the entry supports them. Pre-resolves
+    /// the resume spec + focus handle so the menu keys fire without re-deriving.
+    fn no_session_menu(
+        &self,
+        entry: &RosterEntry,
+        note: &str,
+        can_resume: bool,
+        can_focus_window: bool,
+    ) -> FleetActionMenu {
+        let resume_spec = if can_resume {
+            self.resume_spec(entry)
+        } else {
+            None
+        };
+        let focus = if can_focus_window {
+            Some((entry.adv_session_id, entry.pid, entry.window_id.clone()))
+        } else {
+            None
+        };
+        FleetActionMenu {
+            label: entry.label.clone(),
+            note: note.to_string(),
+            // Guard against a resume spec that couldn't be built (no launch id).
+            can_resume: can_resume && resume_spec.is_some(),
+            can_focus_window,
+            resume_spec,
+            focus,
+        }
+    }
+
+    /// Resolve where the selected Fleet agent lives → how Enter reaches it
+    /// (pui-workbench-usability D-001/D-002). Pure: roster entry + live topology
+    /// + local host. Priority: a confidently-matched LOCAL pane wins (it's right
+    /// here); else a LIVE agent focuses its external window (or, if unreachable,
+    /// opens the menu so Enter never silently no-ops); else an ENDED+resumable
+    /// session resumes; else the menu.
+    pub fn resolve_agent_route(&self, entry: &RosterEntry) -> AgentRoute {
+        // 1. Local workbench pane — highest signal, no I/O needed.
+        if let Some(pane_id) = self.match_local_pane(entry) {
+            return AgentRoute::LocalPane { pane_id };
+        }
+        let host = Self::local_host();
+        let can_focus_window = entry.has_window_handle(&host);
+        let resumable = entry.is_resumable();
+        if entry.is_live() {
+            // Running elsewhere. Focus its window if we can reach it; otherwise
+            // it's a remote / operator-PTY agent we can't reach from here — open
+            // the menu ([n] launch; resume is hidden, it'd double-spawn a live
+            // session — D-001 "check liveness first").
+            if can_focus_window {
+                return AgentRoute::FocusWindow {
+                    adv_session_id: entry.adv_session_id,
+                    pid: entry.pid,
+                    window_id: entry.window_id.clone(),
+                };
+            }
+            return AgentRoute::Menu(self.no_session_menu(
+                entry,
+                "agent is live but not reachable from this workbench",
+                false,
+                false,
+            ));
+        }
+        // Ended / dead → resume is the right move (won't double-spawn).
+        if resumable {
+            if let Some(spec) = self.resume_spec(entry) {
+                return AgentRoute::Resume { spec };
+            }
+        }
+        // Nothing live, nothing to resume → menu ([n] launch; [f] in case a
+        // window handle lingers).
+        AgentRoute::Menu(self.no_session_menu(
+            entry,
+            "no running session — launch or resume",
+            false,
+            can_focus_window,
+        ))
+    }
+
+    /// Enter on a Fleet-roster agent (D-001/D-002). Resolves the agent's location
+    /// and acts: focus a local pane, focus an external window, resume an ended
+    /// session, or open the `[r]/[n]/[f]` menu. With no agent selected (empty
+    /// roster) Enter is a no-op render — the empty-work-area hint already tells
+    /// the user to press `n`.
+    fn fleet_enter(&mut self) -> Action {
+        let Some(entry) = self.selected_session().cloned() else {
+            return Action::Render;
+        };
+        match self.resolve_agent_route(&entry) {
+            AgentRoute::LocalPane { pane_id } => Action::FocusLocalPane { pane_id },
+            AgentRoute::FocusWindow {
+                adv_session_id,
+                pid,
+                window_id,
+            } => Action::FocusWindow {
+                adv_session_id,
+                pid,
+                window_id,
+                label: entry.label.clone(),
+            },
+            AgentRoute::Resume { spec } => {
+                self.record_launch(&spec);
+                Action::Launch(spec)
+            }
+            AgentRoute::Menu(menu) => {
+                self.fleet_action_menu = Some(menu);
+                Action::Render
+            }
+        }
+    }
+
+    /// Handle a key while the Fleet `[r]/[n]/[f]` no-session menu is open (D-002).
+    /// `r` resumes (when viable), `n` launches a fresh agent, `f` focuses the
+    /// window (when viable); Esc / any other key closes it. Always consumes the
+    /// key (the menu is modal).
+    fn fleet_menu_key(&mut self, code: KeyCode) -> Action {
+        let Some(menu) = self.fleet_action_menu.clone() else {
+            return Action::Render;
+        };
+        match code {
+            KeyCode::Char('r') if menu.can_resume => {
+                self.fleet_action_menu = None;
+                if let Some(spec) = menu.resume_spec {
+                    self.record_launch(&spec);
+                    return Action::Launch(spec);
+                }
+                Action::Render
+            }
+            KeyCode::Char('n') => {
+                self.fleet_action_menu = None;
+                let spec = self.launch_spec();
+                self.record_launch(&spec);
+                Action::Launch(spec)
+            }
+            KeyCode::Char('f') if menu.can_focus_window => {
+                self.fleet_action_menu = None;
+                match menu.focus {
+                    Some((adv_session_id, pid, window_id)) => Action::FocusWindow {
+                        adv_session_id,
+                        pid,
+                        window_id,
+                        label: menu.label,
+                    },
+                    None => Action::Render,
+                }
+            }
+            _ => {
+                // Esc / any non-action key closes the menu without acting.
+                self.fleet_action_menu = None;
+                Action::Render
+            }
+        }
+    }
+
+    /// Whether the workbench WORK AREA is empty — the companion is linked but
+    /// holds no work-area terminal panes (no agents). Drives the empty-pane hint
+    /// (D-002): at startup the work area is blank, so the Fleet view shows
+    /// "press n to launch an agent here" instead of nothing.
+    pub fn work_area_empty(&self) -> bool {
+        self.companion_version.is_some() && self.work_pane_ids().is_empty()
     }
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
@@ -3995,6 +4304,7 @@ mod tests {
             feature: None,
             current_plan_slug: None,
             heartbeat_at: None,
+            ..Default::default()
         }
     }
 

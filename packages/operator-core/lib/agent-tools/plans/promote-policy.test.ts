@@ -113,6 +113,130 @@ describe('parsePromotePolicy', () => {
   });
 });
 
+describe('parsePromotePolicy — spawn_child (P-001)', () => {
+  const spawnChild = (extra: string, target = 'target_harness: restart\n') =>
+    wrap(
+      '## Promote\n\n```yaml\n' +
+        target +
+        'waves:\n' +
+        '  - id: tier1\n' +
+        '    spawn_child:\n' +
+        '      slug: my-child\n' +
+        extra +
+        '    features:\n' +
+        '      - title: "Child work"\n' +
+        '```',
+    );
+
+  it('parses a valid spawn_child wave with all fields', () => {
+    const { policy, warnings } = parsePromotePolicy(
+      spawnChild(
+        '      template: coding\n' +
+          '      repo: https://github.com/acme/widget\n' +
+          '      goal: "Build the widget"\n',
+      ),
+    );
+    expect(warnings).toEqual([]);
+    expect(policy?.waves[0].spawn_child).toEqual({
+      slug: 'my-child',
+      template: 'coding',
+      repo: 'https://github.com/acme/widget',
+      goal: 'Build the widget',
+    });
+  });
+
+  it('parses a minimal spawn_child wave (slug only)', () => {
+    const { policy, warnings } = parsePromotePolicy(spawnChild(''));
+    expect(warnings).toEqual([]);
+    expect(policy?.waves[0].spawn_child?.slug).toBe('my-child');
+    expect(policy?.waves[0].spawn_child?.template).toBeUndefined();
+  });
+
+  it('a wave WITHOUT spawn_child still parses identically (additive)', () => {
+    const { policy, warnings } = parsePromotePolicy(STATIC);
+    expect(warnings).toEqual([]);
+    expect(policy?.waves[0].spawn_child).toBeUndefined();
+  });
+
+  it('a bad slug → null + warning, never throws (fail-safe)', () => {
+    expect(() => parsePromotePolicy(spawnChild('', 'target_harness: restart\n'))).not.toThrow();
+    const bad = wrap(
+      '## Promote\n\n```yaml\n' +
+        'waves:\n' +
+        '  - id: t1\n' +
+        '    spawn_child:\n' +
+        '      slug: "Bad_Slug!"\n' +
+        '    features: [{title: x}]\n' +
+        '```',
+    );
+    const { policy, warnings } = parsePromotePolicy(bad);
+    expect(policy).toBeNull();
+    expect(warnings.join(' ')).toMatch(/kebab-case/);
+  });
+
+  it('a spawn_child wave with NO features/generate still fails the wave refine', () => {
+    const bad = wrap(
+      '## Promote\n\n```yaml\n' +
+        'waves:\n' +
+        '  - id: t1\n' +
+        '    spawn_child:\n' +
+        '      slug: my-child\n' +
+        '```',
+    );
+    const { policy, warnings } = parsePromotePolicy(bad);
+    expect(policy).toBeNull();
+    expect(warnings.join(' ')).toMatch(/features\[\] and\/or generate/);
+  });
+
+  it('an unknown spawn_child key (typo) → null + warning (.strict)', () => {
+    const typo = wrap(
+      '## Promote\n\n```yaml\n' +
+        'waves:\n' +
+        '  - id: t1\n' +
+        '    spawn_child:\n' +
+        '      slug: my-child\n' +
+        '      tempate: coding\n' + // typo'd `template`
+        '    features: [{title: x}]\n' +
+        '```',
+    );
+    const { policy, warnings } = parsePromotePolicy(typo);
+    expect(policy).toBeNull();
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('duplicate spawn_child slug across waves → null + warning', () => {
+    const dup = wrap(
+      '## Promote\n\n```yaml\n' +
+        'waves:\n' +
+        '  - id: a\n' +
+        '    spawn_child: {slug: dupe}\n' +
+        '    features: [{title: x}]\n' +
+        '  - id: b\n' +
+        '    spawn_child: {slug: dupe}\n' +
+        '    features: [{title: y}]\n' +
+        '```',
+    );
+    const { policy, warnings } = parsePromotePolicy(dup);
+    expect(policy).toBeNull();
+    expect(warnings.join(' ')).toMatch(/duplicate spawn_child slug: dupe/);
+  });
+
+  it('spawn_child slug equal to target_harness → null + warning', () => {
+    const clash = wrap(
+      '## Promote\n\n```yaml\n' +
+        'target_harness: restart\n' +
+        'waves:\n' +
+        '  - id: a\n' +
+        '    spawn_child: {slug: restart}\n' +
+        '    features: [{title: x}]\n' +
+        '```',
+    );
+    const { policy, warnings } = parsePromotePolicy(clash);
+    expect(policy).toBeNull();
+    expect(warnings.join(' ')).toMatch(/must differ from target_harness/);
+  });
+});
+
 describe('buildWaveFeatures', () => {
   it('returns static features verbatim (no warnings)', () => {
     const wave: PromoteWave = {
@@ -164,6 +288,23 @@ describe('buildWaveFeatures', () => {
     };
     const r = buildWaveFeatures(wave, { generateItems: ['A'] });
     expect(r.features.map((f) => f.title)).toEqual(['static one', 'gen A']);
+  });
+
+  it('P-001: stamps spawn_child_slug on every built feature (static + generated)', () => {
+    const wave: PromoteWave = {
+      id: 'mix',
+      spawn_child: { slug: 'my-child' },
+      features: [{ title: 'static one' }],
+      generate: { for_each: 'thing', feature_template: { title: 'gen {item}' } },
+    };
+    const r = buildWaveFeatures(wave, { generateItems: ['A'] });
+    expect(r.features.map((f) => f.spawn_child_slug)).toEqual(['my-child', 'my-child']);
+  });
+
+  it('P-001: a wave WITHOUT spawn_child leaves spawn_child_slug undefined', () => {
+    const wave: PromoteWave = { id: 'plain', features: [{ title: 'x' }] };
+    const r = buildWaveFeatures(wave);
+    expect(r.features[0].spawn_child_slug).toBeUndefined();
   });
 });
 

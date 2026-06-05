@@ -462,24 +462,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // harnessHealth.byHarness — single health row per harness.
-  //   zql.harnessHealth.where(harnessSlug).limit(1)
-  'harnessHealth.byHarness': {
-    argsSchema: z.object({ harnessSlug: z.string() }),
-    resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug: string };
-      const { getOrgPg, generated } = await import('@papercusp/db-org');
-      const { eq } = await import('drizzle-orm');
-      const t = generated.harnessHealthInHarnessShared;
-      const { db } = getOrgPg();
-      return (await db
-        .select()
-        .from(t)
-        .where(eq(t.harnessSlug, harnessSlug))
-        .limit(1)) as unknown[];
-    },
-  },
-
   // ── Batch 6: summary / phases / smoke-test / plan-review / brainstorm ─
 
   // summary.byHarness — single summary row per (harness, workspace, phase).

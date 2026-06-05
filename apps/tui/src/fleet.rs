@@ -764,6 +764,7 @@ mod tests {
             feature: None,
             current_plan_slug: None,
             heartbeat_at: None,
+            ..Default::default()
         }
     }
 
