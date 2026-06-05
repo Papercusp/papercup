@@ -1385,7 +1385,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  F           plans filter rail (Inbox / Brew)\n  f           Cupboard: cycle kind filter\n  Enter, y    Cupboard: arm + confirm join/fork/install\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane · Cupboard: refetch\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -2066,14 +2066,26 @@ mod tests {
         assert!(t.contains("Enter on a domain loads"));
 
         app.tab = Tab::Config;
-        app.set_config("permissions: allow".into());
-        let c = render(&app, 100, 8);
+        // D-013: the Config tab renders the EFFECTIVE settings view — a
+        // provenance line (which file keys are set) over the merged JSON.
+        app.set_config(crate::models::EffectiveClaudeSettings {
+            content: r#"{"permissions":{"defaultMode":"plan"}}"#.into(),
+            effective: serde_json::json!({ "permissions": { "defaultMode": "plan" } }),
+            file_keys: vec!["permissions".into()],
+            parse_error: None,
+        });
+        // render() is the full frame (tab strip + body + status bar), so a short
+        // height clips the Config pane to a few rows; render tall enough that the
+        // deep JSON lines + the footer hint land inside the body.
+        let c = render(&app, 100, 20);
         assert!(c.contains("settings.json"));
-        assert!(c.contains("permissions: allow"));
-        // D-004d: the empty state shows a clear placeholder.
-        app.set_config(String::new());
-        let empty = render(&app, 100, 8);
-        assert!(empty.contains("no .claude/settings.json"));
+        assert!(c.contains("defaultMode"));
+        assert!(c.contains("file sets: permissions"));
+        // Empty file → defaults-only provenance line + the :set/:unset hint.
+        app.set_config(crate::models::EffectiveClaudeSettings::default());
+        let empty = render(&app, 100, 20);
+        assert!(empty.contains("showing Claude Code defaults"));
+        assert!(empty.contains(":set"));
     }
 
     #[test]
@@ -2250,9 +2262,13 @@ mod tests {
 
     #[test]
     fn plugins_view_renders_panes() {
+        use crate::app::PluginsFocus;
         use crate::models::TuiPaneContribution;
         let mut app = App::new();
         app.tab = Tab::Plugins;
+        // The Plugins tab now defaults to the List sub-view (D-007); the panes
+        // launcher is the Panes focus (Tab toggles).
+        app.plugins_focus = PluginsFocus::Panes;
         app.set_panes(vec![TuiPaneContribution {
             plugin_name: "logs-plugin".into(),
             slug: "papercup".into(),
@@ -2267,6 +2283,49 @@ mod tests {
         assert!(text.contains("Server logs"));
         assert!(text.contains("logs-plugin"));
         assert!(text.contains("sh tail.sh"));
+    }
+
+    #[test]
+    fn plugins_list_view_renders_contributions_and_settings() {
+        use crate::models::{PluginManifest, PluginsGlobalResponse};
+        let mut app = App::new();
+        app.tab = Tab::Plugins; // List is the default focus (D-007).
+        app.show_presence = false; // full width for the two-column plugins layout
+        let resp: PluginsGlobalResponse = serde_json::from_str(
+            r#"{"plugins":[{
+                "name":"github-repo","version":"0.1.0","description":"GitHub repo plugin",
+                "actions":[{"name":"create-repo"}],
+                "configSchema":{"type":"object","properties":{"owner":{"type":"string"}}}
+            }]}"#,
+        )
+        .unwrap();
+        app.set_plugins(resp.plugins);
+        let text = render(&app, 120, 24);
+        assert!(text.contains("github-repo"));
+        assert!(text.contains("BE:1")); // one backend action
+        assert!(text.contains("create-repo")); // contribution name in detail
+        assert!(text.contains("backend"));
+        assert!(text.contains("settings")); // configSchema → settings section
+        // No config loaded yet → the Enter-to-load affordance.
+        assert!(text.contains("press Enter to load"));
+    }
+
+    #[test]
+    fn plugins_list_view_renders_loaded_config() {
+        use crate::models::{PluginManifest, PluginsGlobalResponse};
+        let mut app = App::new();
+        app.tab = Tab::Plugins;
+        app.show_presence = false; // full width for the two-column plugins layout
+        let resp: PluginsGlobalResponse = serde_json::from_str(
+            r#"{"plugins":[{"name":"github-repo","version":"0.1.0",
+                "configSchema":{"type":"object"}}]}"#,
+        )
+        .unwrap();
+        app.set_plugins(resp.plugins);
+        app.plugin_config = Some(("github-repo".into(), serde_json::json!({ "owner": "acme" })));
+        let text = render(&app, 120, 24);
+        assert!(text.contains("acme")); // the loaded config value renders
+        assert!(text.contains(":pset")); // the edit hint
     }
 
     #[test]

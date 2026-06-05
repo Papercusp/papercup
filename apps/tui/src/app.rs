@@ -2980,9 +2980,13 @@ mod tests {
     }
 
     #[test]
-    fn plain_c_is_noop() {
+    fn c_switches_to_cupboard_and_lazy_loads() {
+        // `c` is the Cupboard tab switch key (D-011) — switching to it while
+        // empty triggers the lazy listings fetch.
         let mut a = App::new();
-        assert_eq!(a.update(key('c', KeyModifiers::NONE)), Action::None);
+        let act = a.update(key('c', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Cupboard);
+        assert!(matches!(act, Action::FetchCupboard { .. }));
         assert!(!a.should_quit);
     }
 
@@ -3928,6 +3932,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_create_and_share_palette_commands() {
+        // `:create <slug> <source>` — both args required (D-010).
+        assert_eq!(
+            parse_palette_command("create my-pot /tmp/my-pot"),
+            Some(PaletteCommand::CreatePot {
+                slug: "my-pot".into(),
+                source: "/tmp/my-pot".into()
+            })
+        );
+        assert_eq!(
+            parse_palette_command(":create gh https://github.com/o/r"),
+            Some(PaletteCommand::CreatePot {
+                slug: "gh".into(),
+                source: "https://github.com/o/r".into()
+            })
+        );
+        assert_eq!(parse_palette_command("create only-slug"), None);
+        assert_eq!(parse_palette_command("create"), None);
+        // `:share <slug> [remote] [public]` — slug required; `public` flags the
+        // Cupboard publish; an extra non-`public` token is the remote.
+        assert_eq!(
+            parse_palette_command("share my-pot"),
+            Some(PaletteCommand::SharePot { slug: "my-pot".into(), remote: None, public: false })
+        );
+        assert_eq!(
+            parse_palette_command("share my-pot public"),
+            Some(PaletteCommand::SharePot { slug: "my-pot".into(), remote: None, public: true })
+        );
+        assert_eq!(
+            parse_palette_command("share my-pot git@github.com:o/r.git public"),
+            Some(PaletteCommand::SharePot {
+                slug: "my-pot".into(),
+                remote: Some("git@github.com:o/r.git".into()),
+                public: true
+            })
+        );
+        assert_eq!(parse_palette_command("share"), None);
+    }
+
+    #[test]
+    fn cupboard_browse_arm_confirm_and_stale_guard() {
+        use crate::models::CupboardListing;
+        let enter = |a: &mut App| a.on_key(KeyCode::Enter, KeyModifiers::empty());
+        let mut a = App::new();
+        // Switching to the Cupboard tab lazy-loads listings (key 'c').
+        let act = a.update(key('c', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Cupboard);
+        assert!(matches!(act, Action::FetchCupboard { .. }));
+        assert!(a.cupboard_loading);
+        // A listings event for the ACTIVE filter ("all", "") populates the list.
+        let listing = CupboardListing {
+            id: "L1".into(),
+            listing_kind: "plugin".into(),
+            title: Some("Worker".into()),
+            ..Default::default()
+        };
+        a.update(Event::CupboardListings {
+            kind: "all".into(),
+            query: String::new(),
+            listings: vec![listing],
+        });
+        assert_eq!(a.cupboard.len(), 1);
+        assert!(!a.cupboard_loading);
+        // A STALE event (a kind the user isn't on) is ignored.
+        a.update(Event::CupboardListings {
+            kind: "plugin".into(),
+            query: String::new(),
+            listings: vec![],
+        });
+        assert_eq!(a.cupboard.len(), 1);
+        // Enter arms the selected listing; a second Enter fires CupboardAct.
+        assert_eq!(enter(&mut a), Action::Render);
+        assert_eq!(a.cupboard_confirm.as_deref(), Some("L1"));
+        assert!(matches!(enter(&mut a), Action::CupboardAct { .. }));
+        assert!(a.cupboard_confirm.is_none());
+        // `f` cycles the kind filter (all→harness) and refetches.
+        let f = a.update(key('f', KeyModifiers::NONE));
+        assert_eq!(a.cupboard_kind, 1);
+        assert_eq!(CUPBOARD_KINDS[a.cupboard_kind], "harness");
+        assert!(matches!(f, Action::FetchCupboard { .. }));
+        // `/` opens the search composer seeded with the active query.
+        let s = a.update(key('/', KeyModifiers::NONE));
+        assert!(a.cupboard_search_open);
+        assert_eq!(s, Action::Render);
+    }
+
+    #[test]
     fn palette_enter_dispatches_workbench_command() {
         let mut a = App::new();
         a.palette_open = true;
@@ -4204,9 +4295,11 @@ mod tests {
         assert_eq!(Tab::Operator.title(), "Operator");
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
         // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
-        // digit tabs, plus the appended Memory tab on 'm' (D-006).
-        assert_eq!(Tab::ALL.len(), 11);
+        // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
+        // D-011) letter tabs.
+        assert_eq!(Tab::ALL.len(), 12);
         assert_eq!(Tab::Memory.switch_key(), 'm');
+        assert_eq!(Tab::Cupboard.switch_key(), 'c');
         // `1` returns to it from elsewhere.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));

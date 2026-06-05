@@ -140,6 +140,15 @@ beforeAll(async () => {
     CREATE TABLE IF NOT EXISTS harness_shared.feature_audit_consolidated
       (workspace_id text, harness_slug text, feature_id text, ts bigint, field text, old_value text, new_value text, actor text);
   `);
+  // harness_registry — autoloop-pot-operator-rebuild P-004 made harness:list/status
+  // MERGE the registry (which harnesses exist) with projects (Pot metadata) so the
+  // operator sees registry-only harnesses. registry-read SELECTs payload here.
+  // Created EMPTY (no workspace row) → readRegistryProjects returns [] → the merge
+  // falls back to projects-only, matching this test's project-based assertions.
+  await pg.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.harness_registry
+      (workspace_id text PRIMARY KEY, payload jsonb NOT NULL, updated_at bigint NOT NULL DEFAULT 0);
+  `);
 
   // ── Seed features: h1 has F-1 (todo) + F-2 (passed); h2 has F-9 (scope guard).
   const feat = async (slug: string, id: string, title: string, summary: string, status: string, tags: string[], order: number, seeAlso: string[]) => {
@@ -286,10 +295,13 @@ describe('harness:list', () => {
     const rows = payload(r) as Array<{ slug: string; status: string }>;
     expect(rows.map((x) => x.slug).sort()).toEqual(['h1', 'h2']);
   });
-  it('summary detail → slug+status only', async () => {
+  it('summary detail → slug+status+source', async () => {
+    // autoloop-pot-operator-rebuild P-004: harness:list now MERGES the registry
+    // with projects and tags each row's `source` ('registry' | 'project') so the
+    // operator can tell where a harness came from. Summary projects slug+status+source.
     const { r } = await call('harness:list', { detail: 'summary' });
     const rows = payload(r) as Array<Record<string, unknown>>;
-    expect(Object.keys(rows[0]).sort()).toEqual(['slug', 'status']);
+    expect(Object.keys(rows[0]).sort()).toEqual(['slug', 'source', 'status']);
   });
 });
 
