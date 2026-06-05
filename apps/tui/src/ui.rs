@@ -64,7 +64,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
 
     // D-009: the collapsible plans-filter rail, carved off the LEFT of the body
-    // on the two tabs it narrows (Inbox + Brew). Suppressed on narrow bodies so
+    // on the two tabs it narrows (Inbox + Fleet). Suppressed on narrow bodies so
     // the lists stay usable; the filter itself still applies when hidden.
     let (rail, body) =
         if app.plan_filter_open && matches!(app.tab, Tab::Inbox | Tab::Fleet) && body.width >= 70 {
@@ -82,7 +82,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Operator => draw_chat(f, app, body),
         Tab::Inbox => draw_inbox(f, app, body),
         Tab::Plans => draw_plans(f, app, body),
-        // Brew — the fleet view, which absorbed the old Sessions launcher (D-002b).
+        // Fleet — the fleet view, which absorbed the old Sessions launcher (D-002b).
         Tab::Fleet => crate::fleet::draw_fleet(f, app, body),
         Tab::Harnesses => draw_harnesses(f, app, body),
         Tab::Docs => draw_docs(f, app, body),
@@ -369,7 +369,7 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
-/// D-009: the collapsible plans-filter rail (Inbox + Brew). Lists the
+/// D-009: the collapsible plans-filter rail (Inbox + Fleet). Lists the
 /// pot-scoped plans with a checkbox glyph per slug; while the rail is open,
 /// j/k move its cursor, Space/Enter toggles the plan in/out of the filter,
 /// `c` clears it, and F/Esc closes the rail (the filter keeps applying when
@@ -2211,7 +2211,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -2292,15 +2292,15 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
             "pui is your terminal HUD over the operator. Everything here is live —\n\
              it reads + reacts to the same backend the desktop app uses.\n\n\
              Tabs (press 1‑0 / m, or  <  /  >  to cycle):\n\
-             \x20 Operator · Inbox · Plans · Brew · Pots · Docs · Testing · Config · Plugins · Settings · Memory\n\
-             \x20 Brew is the whole fleet at a glance (agents + plan progress + launch).\n\n\
+             \x20 Operator · Inbox · Plans · Fleet · Pots · Docs · Testing · Config · Plugins · Settings · Memory\n\
+             \x20 Fleet shows every live agent + plan progress at a glance (and launches new ones).\n\n\
              Pick the pot you're working in with  [  /  ] .",
         ),
         (
             "Moving around & launching agents",
             "Move:    j / k   (or ↑ / ↓)        Scroll docs:  PgUp / PgDn\n\
              Switch a split's focus (Harnesses):  Tab\n\n\
-             Launch a native agent into a pane:   n   (on the Brew tab)\n\
+             Launch a native agent into a pane:   n   (on the Fleet tab)\n\
              Open git for the active harness:     g   (lazygit)\n\n\
              Agents run at full fidelity in their own zellij panes — pui never\n\
              wraps or reimplements them.",
@@ -2782,7 +2782,7 @@ mod tests {
 
     #[test]
     fn brew_view_renders_roster_and_dossier() {
-        // The Sessions roster + dossier folded into Brew (D-002b): the Brew
+        // The Sessions roster + dossier folded into Fleet (D-002b): the Fleet
         // (Fleet) tab shows the agent list + a dossier for the selected agent,
         // including its open files.
         let mut app = App::new();
@@ -2802,7 +2802,7 @@ mod tests {
             heartbeat_at: None,
         }]);
         let text = render(&app, 120, 40);
-        assert!(text.contains("Brew")); // headline
+        assert!(text.contains("Fleet")); // headline
         assert!(text.contains("Agents (1)"));
         assert!(text.contains("claude"));
         assert!(text.contains("Dossier"));
@@ -3360,7 +3360,7 @@ mod tests {
     fn lists_render_column_headers() {
         // D-005: explicit styled header rows above the column lists (the PUI
         // bakes column labels into row format strings, so headers are added
-        // lines). Brew (agents) leads; Plans/Inbox follow the same helper.
+        // lines). Fleet (agents) leads; Plans/Inbox follow the same helper.
         let mut app = App::new();
         app.show_presence = false;
         app.tab = Tab::Fleet;
@@ -3741,7 +3741,7 @@ mod tests {
             "2026-06-04 18:53:58-04",
         )]));
         let text = render(&app, 120, 24);
-        assert!(text.contains("Brew")); // D-001 label-only rename of Fleet
+        assert!(text.contains("Fleet")); // D-001 label-only rename of Fleet
         assert!(text.contains("1/1 online")); // headline agent count
         assert!(text.contains("Agents (1)"));
         assert!(text.contains("claude"));
@@ -3798,10 +3798,10 @@ mod tests {
 
     #[test]
     fn brew_tab_shows_in_strip_with_digit_key() {
-        // Fleet titles as "Brew" (D-001) on digit '4' (D-002).
+        // Fleet titles as "Fleet" (D-001) on digit '4' (D-002).
         let app = App::new();
         let text = render(&app, 160, 8);
-        assert!(text.contains("4:Brew"));
+        assert!(text.contains("4:Fleet"));
     }
 
     // --- Operator chat pane (tui-operator-surface-2026-06-04) ---

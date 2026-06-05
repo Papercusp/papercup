@@ -38,6 +38,14 @@ pub enum Command {
     ClosePane { pane_id: u32 },
     /// Open a command pane running `command` + `args` — the agent-launch path
     /// (reliable host command vs fire-and-forget `zellij action new-pane`).
+    ///
+    /// `stack: true` makes this a DOCKVIEW launch: the plugin opens the pane,
+    /// takes the synchronously-returned PaneId, and stacks it into the work-area
+    /// group (the new pane + the other work panes) so agents pile up tab-like
+    /// instead of tiling thinner (dockview-workbench D-008). It must be the
+    /// plugin (not declarative reflow) because launches fire from the HUD pane,
+    /// and a plain open from HUD focus splits the HUD rather than joining the
+    /// stack (measured, D-007).
     OpenCommandPane {
         command: String,
         #[serde(default)]
@@ -46,6 +54,8 @@ pub enum Command {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        stack: bool,
     },
     /// Open a new tab from a stringified KDL `layout` (and optional `name`).
     NewTab {
@@ -56,6 +66,28 @@ pub enum Command {
     },
     /// Rename a tab by id.
     RenameTab { tab_id: u32, name: String },
+    /// Gather these terminal panes into one stacked group (the `:stack` dock-verb,
+    /// D-008). Id-addressed + focus-independent — the repair path when the user
+    /// has re-tiled the work area. Ids are terminal-pane ids (from [`Topology`]).
+    StackPanes { pane_ids: Vec<u32> },
+    /// Float a tiled pane, or embed a floating one (the `:float` dock-verb) —
+    /// `toggle_pane_embed_or_eject` for one terminal pane. Round-trips cleanly:
+    /// embedding restores the pane to its declared slot (measured, D-007).
+    TogglePaneFloat { pane_id: u32 },
+    /// Switch to the named swap-layout preset (`:dock`/`:layout <name>`, D-008).
+    /// The plugin advances `next_swap_layout` until the tab's active preset
+    /// matches `name` (bounded), so it works regardless of the current preset.
+    SelectSwapLayout { name: String },
+    /// Cycle to the next swap-layout preset (`:layout next`; mirrors `Alt+]`).
+    NextSwapLayout,
+    /// Cycle to the previous swap-layout preset (`:layout prev`; mirrors `Alt+[`).
+    PrevSwapLayout,
+}
+
+/// serde `skip_serializing_if` for a `false` bool — keeps optional bool flags off
+/// the wire when unset (so existing message shapes are byte-stable).
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// An event the plugin sends to `pui` (`cli_pipe_output` → stdout).
@@ -96,6 +128,15 @@ pub struct TabNode {
     pub pos: u32,
     pub name: String,
     pub active: bool,
+    /// The active swap-layout preset name, if any (dockview-workbench D-008). pui
+    /// shows this as the live preset label and uses it as the feedback signal for
+    /// `SelectSwapLayout`. serde-default for wire-compat with older plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_layout: Option<String>,
+    /// Whether the layout has been hand-modified away from the active preset
+    /// (zellij's `is_swap_layout_dirty`) — pui can hint "re-tiled" / offer :stack.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub swap_dirty: bool,
 }
 
 /// One pane in the live session (terminal or plugin).
@@ -154,6 +195,14 @@ mod tests {
                 args: vec!["--no-picker".into(), "--agent=claude".into()],
                 cwd: Some("/home/u/repo".into()),
                 title: Some("pui · claude".into()),
+                stack: true,
+            },
+            Command::OpenCommandPane {
+                command: "bash".into(),
+                args: vec![],
+                cwd: None,
+                title: None,
+                stack: false,
             },
             Command::NewTab {
                 name: Some("papercup".into()),
@@ -163,6 +212,15 @@ mod tests {
                 tab_id: 2,
                 name: "docs".into(),
             },
+            Command::StackPanes {
+                pane_ids: vec![1, 4, 7],
+            },
+            Command::TogglePaneFloat { pane_id: 3 },
+            Command::SelectSwapLayout {
+                name: "stacked-left".into(),
+            },
+            Command::NextSwapLayout,
+            Command::PrevSwapLayout,
         ];
         for c in cases {
             let line = c.to_line();
@@ -182,16 +240,57 @@ mod tests {
             Command::FocusPane { pane_id: 7 }.to_line(),
             r#"{"cmd":"focus_pane","pane_id":7}"#
         );
-        // Optional fields are omitted when absent (skip_serializing_if).
+        // Optional fields are omitted when absent (skip_serializing_if) — incl.
+        // the additive `stack` flag, so the existing wire shape is byte-stable.
         assert_eq!(
             Command::OpenCommandPane {
                 command: "bash".into(),
                 args: vec![],
                 cwd: None,
                 title: None,
+                stack: false,
             }
             .to_line(),
             r#"{"cmd":"open_command_pane","command":"bash","args":[]}"#
+        );
+        // `stack: true` rides along only when set.
+        assert_eq!(
+            Command::OpenCommandPane {
+                command: "psu".into(),
+                args: vec![],
+                cwd: None,
+                title: None,
+                stack: true,
+            }
+            .to_line(),
+            r#"{"cmd":"open_command_pane","command":"psu","args":[],"stack":true}"#
+        );
+        // The new dock-verb commands.
+        assert_eq!(
+            Command::StackPanes {
+                pane_ids: vec![1, 4]
+            }
+            .to_line(),
+            r#"{"cmd":"stack_panes","pane_ids":[1,4]}"#
+        );
+        assert_eq!(
+            Command::TogglePaneFloat { pane_id: 5 }.to_line(),
+            r#"{"cmd":"toggle_pane_float","pane_id":5}"#
+        );
+        assert_eq!(
+            Command::SelectSwapLayout {
+                name: "grid".into()
+            }
+            .to_line(),
+            r#"{"cmd":"select_swap_layout","name":"grid"}"#
+        );
+        assert_eq!(
+            Command::NextSwapLayout.to_line(),
+            r#"{"cmd":"next_swap_layout"}"#
+        );
+        assert_eq!(
+            Command::PrevSwapLayout.to_line(),
+            r#"{"cmd":"prev_swap_layout"}"#
         );
     }
 
@@ -199,8 +298,20 @@ mod tests {
     fn plugin_event_round_trips() {
         let topo = Topology {
             tabs: vec![
-                TabNode { pos: 0, name: "papercup".into(), active: true },
-                TabNode { pos: 1, name: "docs".into(), active: false },
+                TabNode {
+                    pos: 0,
+                    name: "papercup".into(),
+                    active: true,
+                    swap_layout: Some("stacked".into()),
+                    swap_dirty: false,
+                },
+                TabNode {
+                    pos: 1,
+                    name: "docs".into(),
+                    active: false,
+                    swap_layout: None,
+                    swap_dirty: true,
+                },
             ],
             panes: vec![
                 PaneNode {
@@ -255,5 +366,29 @@ mod tests {
         assert!(Command::from_line("not json").is_err());
         assert!(Command::from_line(r#"{"cmd":"no_such"}"#).is_err());
         assert!(PluginEvent::from_line("").is_err());
+    }
+
+    #[test]
+    fn tabnode_swap_fields_are_wire_compatible() {
+        // An old plugin emits a TabNode WITHOUT the swap fields — the new pui
+        // must still parse it (serde-default), and a TabNode with the defaults
+        // must serialize back to the old shape (skip_serializing_if).
+        let old = r#"{"pos":0,"name":"papercup","active":true}"#;
+        let t: TabNode = serde_json::from_str(old).unwrap();
+        assert_eq!(t.swap_layout, None);
+        assert!(!t.swap_dirty);
+        assert_eq!(serde_json::to_string(&t).unwrap(), old);
+        // The fields ride along only when set.
+        let t2 = TabNode {
+            pos: 0,
+            name: "x".into(),
+            active: true,
+            swap_layout: Some("grid".into()),
+            swap_dirty: true,
+        };
+        assert_eq!(
+            serde_json::to_string(&t2).unwrap(),
+            r#"{"pos":0,"name":"x","active":true,"swap_layout":"grid","swap_dirty":true}"#
+        );
     }
 }

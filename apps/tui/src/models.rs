@@ -703,7 +703,7 @@ pub struct ViewState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet_mode: Option<String>,
     /// Plans filter (D-009): the selected plan slugs narrowing the Inbox list
-    /// and the Brew roster (empty = no filtering), plus whether the
+    /// and the Fleet roster (empty = no filtering), plus whether the
     /// collapsible left rail is open.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plan_filter: Vec<String>,

@@ -68,6 +68,47 @@ struct PuiCompanion {
     panes: PaneManifest,
     /// Latest tab list from `TabUpdate`.
     tabs: Vec<TabInfo>,
+    /// In-flight `SelectSwapLayout` target (dockview-workbench D-008): the preset
+    /// name we're cycling toward + the remaining attempt budget. zellij has no
+    /// "select preset by name" primitive, so we fire `next_swap_layout` and
+    /// re-check on each `TabUpdate` until the active preset matches (bounded so an
+    /// unknown name can't loop forever). `None` when not seeking.
+    pending_swap: Option<(String, u8)>,
+}
+
+/// Marker substring identifying the pui HUD pane by its command (`pui hud`). The
+/// work area is "everything beside the HUD", so the HUD is excluded from the
+/// stack/work set (D-004/D-008).
+const HUD_CMD_MARKER: &str = "pui hud";
+
+/// The terminal-pane ids of the active tab's WORK area: non-plugin panes minus
+/// the HUD (D-004). Pure (no host calls) so it's unit-testable off-wasm. Used by
+/// the stack-on-open launch path and as the default `:stack` set. The active tab
+/// is the one flagged `active`; with no tab info, falls back to tab position 0.
+fn work_terminal_pane_ids(panes: &PaneManifest, tabs: &[TabInfo]) -> Vec<u32> {
+    let active_tab = tabs
+        .iter()
+        .find(|t| t.active)
+        .map(|t| t.position)
+        .unwrap_or(0);
+    let Some(list) = panes.panes.get(&active_tab) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter(|p| !p.is_plugin && !is_hud_pane(p))
+        .map(|p| p.id)
+        .collect()
+}
+
+/// Is this pane the pui HUD? Matches its command (`pui hud`) first, then falls
+/// back to the title (`pui`) for panes whose command zellij didn't surface.
+fn is_hud_pane(p: &zellij_tile::prelude::PaneInfo) -> bool {
+    if let Some(cmd) = &p.terminal_command {
+        if cmd.contains(HUD_CMD_MARKER) {
+            return true;
+        }
+    }
+    p.title == "pui"
 }
 
 /// Build the compact wire [`Topology`] from the latest manifest + tab list.
@@ -80,6 +121,8 @@ fn build_topology(panes: &PaneManifest, tabs: &[TabInfo]) -> Topology {
             pos: t.position as u32,
             name: t.name.clone(),
             active: t.active,
+            swap_layout: t.active_swap_layout_name.clone(),
+            swap_dirty: t.is_swap_layout_dirty,
         })
         .collect();
     let mut pane_nodes = Vec::new();
@@ -146,6 +189,10 @@ impl ZellijPlugin for PuiCompanion {
             }
             Event::TabUpdate(tabs) => {
                 self.tabs = tabs;
+                // Drive any in-flight SelectSwapLayout toward its target: each
+                // next_swap_layout fires a fresh TabUpdate, so this re-enters
+                // until the active preset matches (or the budget runs out).
+                self.advance_pending_swap();
                 self.emit_topology();
             }
             // A command pane's command exited (pane is held) — the crash/finish
@@ -225,6 +272,7 @@ impl PuiCompanion {
                 args,
                 cwd,
                 title,
+                stack,
             } => {
                 let to_run = CommandToRun {
                     path: PathBuf::from(command),
@@ -238,7 +286,26 @@ impl PuiCompanion {
                 if let Some(t) = title {
                     context.insert("pui_title".to_string(), t);
                 }
-                open_command_pane(to_run, context);
+                let opened = open_command_pane(to_run, context);
+                // Dockview launch (D-008): stack the new pane into the work group.
+                // open_command_pane returns the new PaneId synchronously, so we
+                // gather the existing work panes (from the current manifest, which
+                // doesn't yet include the new one) + the new id and stack them.
+                // Focus-independent — works even though the launch fired from the
+                // HUD pane (a plain reflow would split the HUD instead, D-007).
+                if stack {
+                    if let Some(new_id) = opened {
+                        let mut ids: Vec<PaneId> = work_terminal_pane_ids(&self.panes, &self.tabs)
+                            .into_iter()
+                            .map(PaneId::Terminal)
+                            .collect();
+                        ids.push(new_id);
+                        // A 1-pane stack is a no-op; only stack once there's a set.
+                        if ids.len() >= 2 {
+                            stack_panes(ids);
+                        }
+                    }
+                }
             }
             Command::NewTab { name, layout } => {
                 // new_tabs_with_layout needs a stringified KDL layout. An explicit
@@ -259,7 +326,65 @@ impl PuiCompanion {
             Command::RenameTab { tab_id, name } => {
                 rename_tab_with_id(tab_id as u64, name);
             }
+            // ── dockview dock-verbs (D-008) ──
+            Command::StackPanes { pane_ids } => {
+                let ids: Vec<PaneId> = pane_ids.into_iter().map(PaneId::Terminal).collect();
+                if ids.len() >= 2 {
+                    stack_panes(ids);
+                }
+            }
+            Command::TogglePaneFloat { pane_id } => {
+                toggle_pane_embed_or_eject_for_pane_id(PaneId::Terminal(pane_id));
+            }
+            Command::SelectSwapLayout { name } => {
+                // Seek the named preset: if we're already on it, nothing to do;
+                // otherwise arm the budget and take the first step. Each step
+                // triggers a TabUpdate which re-enters advance_pending_swap.
+                if self.active_swap_name().as_deref() == Some(name.as_str()) {
+                    self.pending_swap = None;
+                } else {
+                    // Budget = a small multiple of the preset count so a full
+                    // cycle is always reachable; bounded so an unknown name stops.
+                    self.pending_swap = Some((name, 8));
+                    self.advance_pending_swap();
+                }
+            }
+            Command::NextSwapLayout => {
+                self.pending_swap = None; // an explicit cycle cancels any seek
+                next_swap_layout();
+            }
+            Command::PrevSwapLayout => {
+                self.pending_swap = None;
+                previous_swap_layout();
+            }
         }
+    }
+
+    /// The active tab's current swap-layout preset name, if any.
+    fn active_swap_name(&self) -> Option<String> {
+        self.tabs
+            .iter()
+            .find(|t| t.active)
+            .and_then(|t| t.active_swap_layout_name.clone())
+    }
+
+    /// Step an in-flight `SelectSwapLayout` toward its target. Called on each
+    /// `TabUpdate` (and once when the command arrives). Clears `pending_swap` when
+    /// the active preset matches the target or the attempt budget is exhausted.
+    fn advance_pending_swap(&mut self) {
+        let Some((target, attempts)) = self.pending_swap.clone() else {
+            return;
+        };
+        if self.active_swap_name().as_deref() == Some(target.as_str()) {
+            self.pending_swap = None; // arrived
+            return;
+        }
+        if attempts == 0 {
+            self.pending_swap = None; // gave up (unknown/unreachable preset)
+            return;
+        }
+        self.pending_swap = Some((target, attempts - 1));
+        next_swap_layout(); // → a fresh TabUpdate re-enters this method
     }
 
     fn emit_topology(&self) {
@@ -330,5 +455,100 @@ mod tests {
     fn empty_session_is_empty_topology() {
         let topo = build_topology(&PaneManifest::default(), &[]);
         assert!(topo.tabs.is_empty() && topo.panes.is_empty());
+    }
+
+    #[test]
+    fn topology_carries_active_swap_layout() {
+        let tabs = vec![TabInfo {
+            position: 0,
+            name: "papercup".into(),
+            active: true,
+            active_swap_layout_name: Some("stacked".into()),
+            is_swap_layout_dirty: true,
+            ..Default::default()
+        }];
+        let topo = build_topology(&PaneManifest::default(), &tabs);
+        assert_eq!(topo.tabs[0].swap_layout.as_deref(), Some("stacked"));
+        assert!(topo.tabs[0].swap_dirty);
+    }
+
+    fn cmd_pane(id: u32, title: &str, cmd: Option<&str>, is_plugin: bool) -> PaneInfo {
+        PaneInfo {
+            id,
+            title: title.to_string(),
+            is_plugin,
+            terminal_command: cmd.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn work_set_excludes_hud_and_plugin_panes() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            0usize,
+            vec![
+                cmd_pane(1, "claude", Some("psu --agent=claude"), false),
+                cmd_pane(2, "pui", Some("pui hud"), false), // the HUD — excluded
+                cmd_pane(3, "codex", Some("psu --agent=codex"), false),
+                cmd_pane(4, "tab-bar", None, true), // a plugin pane — excluded
+            ],
+        );
+        let tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..Default::default()
+        }];
+        let ids = work_terminal_pane_ids(&PaneManifest { panes }, &tabs);
+        assert_eq!(ids, vec![1, 3]);
+    }
+
+    #[test]
+    fn work_set_identifies_hud_by_title_when_command_absent() {
+        let mut panes = HashMap::new();
+        panes.insert(
+            0usize,
+            vec![
+                cmd_pane(1, "claude", None, false),
+                cmd_pane(2, "pui", None, false), // HUD by title fallback
+            ],
+        );
+        let tabs = vec![TabInfo {
+            position: 0,
+            active: true,
+            ..Default::default()
+        }];
+        assert_eq!(
+            work_terminal_pane_ids(&PaneManifest { panes }, &tabs),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn work_set_uses_the_active_tab() {
+        let mut panes = HashMap::new();
+        panes.insert(0usize, vec![cmd_pane(1, "a", None, false)]);
+        panes.insert(1usize, vec![cmd_pane(5, "b", None, false)]);
+        let tabs = vec![
+            TabInfo {
+                position: 0,
+                active: false,
+                ..Default::default()
+            },
+            TabInfo {
+                position: 1,
+                active: true,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            work_terminal_pane_ids(&PaneManifest { panes }, &tabs),
+            vec![5]
+        );
+    }
+
+    #[test]
+    fn work_set_empty_when_no_panes() {
+        assert!(work_terminal_pane_ids(&PaneManifest::default(), &[]).is_empty());
     }
 }

@@ -456,9 +456,10 @@ pub enum Tab {
     Operator,
     Inbox,
     Plans,
-    /// Brew — the fleet monitoring + agent-launch surface. `Tab::Fleet` is the
-    /// stable variant; it titles as "Brew" (D-001) and absorbed the old Sessions
-    /// launcher (D-002b: roster + dossier + n-launch fold into the fleet view).
+    /// Fleet — the fleet monitoring + agent-launch surface. Titles as "Fleet"
+    /// (the cup-theme Fleet→Brew rename was reversed by the owner 2026-06-05);
+    /// absorbed the old Sessions launcher (D-002b: roster + dossier + n-launch
+    /// fold into the fleet view).
     Fleet,
     /// Pots — the per-project features/issues surface (`Tab::Harnesses` variant,
     /// titled "Pots" per D-001).
@@ -514,8 +515,9 @@ impl Tab {
             Tab::Operator => "Operator",
             Tab::Inbox => "Inbox",
             Tab::Plans => "Plans",
-            // D-001 label-only renames (cup theme): Fleet→Brew, Harnesses→Pots.
-            Tab::Fleet => "Brew",
+            // D-001 label-only rename: Harnesses→Pots. The Fleet→Brew rename
+            // was REVERSED by the owner (2026-06-05) — "Fleet is clearer".
+            Tab::Fleet => "Fleet",
             Tab::Harnesses => "Pots",
             Tab::Docs => "Docs",
             Tab::Testing => "Testing",
@@ -4526,12 +4528,12 @@ mod tests {
     fn view_state_loaded_event_applies() {
         let mut a = App::new();
         let vs = ViewState {
-            tab: Some("Brew".into()),
+            tab: Some("Fleet".into()),
             fleet_agent_sel: 5,
             ..Default::default()
         };
         a.update(Event::ViewStateLoaded(vs));
-        assert_eq!(a.tab, Tab::Fleet); // "Brew" titles Tab::Fleet
+        assert_eq!(a.tab, Tab::Fleet); // "Fleet" titles Tab::Fleet
         assert_eq!(a.fleet.agent_sel, 5);
     }
 
@@ -4556,7 +4558,7 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Fleet;
         let v = a.apply_intent("get_state", &serde_json::json!({})).unwrap();
-        assert_eq!(v["tab"], "Brew");
+        assert_eq!(v["tab"], "Fleet");
         assert!(v["counts"]["plans"].is_number());
         assert_eq!(v["selections"]["plan"], 0);
     }

@@ -84,8 +84,12 @@ describe('lastActivityAt', () => {
 });
 
 describe('currentlyRunning', () => {
+  // Operator scans were retired (unify-agent-launches-as-blueprints D-005);
+  // `harness_shared.operator_scans` no longer exists, so currentlyRunning
+  // runs only the harness_status + harness_lanes queries and always reports
+  // scan: null. The contract keeps the nullable `scan` field for the mobile
+  // Option<RunningScan> binding.
   it('returns null scan + empty harnesses when nothing is running', async () => {
-    queue.push([]); // scans
     queue.push([]); // harnesses
     queue.push([]); // lanes
     const out = await currentlyRunning('ws-Y');
@@ -93,8 +97,19 @@ describe('currentlyRunning', () => {
     expect(out.harnesses).toEqual([]);
   });
 
-  it('returns the most recent unfinished scan + active harnesses with merged roles', async () => {
-    queue.push([{ id: 7, started_at: 1000, request_text: 'scan all', cost_usd: 0.42 }]);
+  it('never queries the retired operator_scans table', async () => {
+    queue.push([]); // harnesses
+    queue.push([]); // lanes
+    await currentlyRunning('ws-S');
+    // Exactly two queries (harness_status, harness_lanes) — no scans query.
+    expect(captured).toHaveLength(2);
+    const allSql = captured.map((c) => c.strings.join('?')).join('\n');
+    expect(allSql).not.toContain('operator_scans');
+    expect(allSql).toContain('FROM harness_shared.harness_status');
+    expect(allSql).toContain('FROM harness_shared.harness_lanes');
+  });
+
+  it('returns null scan + active harnesses with merged roles', async () => {
     queue.push([
       { harness_slug: 'h1', phase: 'staging', status: 'iterating', iteration: 2,
         total_features: 5, passed_count: 3, todo_count: 1, blocked_count: 0,
@@ -112,8 +127,7 @@ describe('currentlyRunning', () => {
     ]);
 
     const out = await currentlyRunning('ws-Z');
-    expect(out.scan?.id).toBe(7);
-    expect(out.scan?.request_text).toBe('scan all');
+    expect(out.scan).toBeNull();
     expect(out.harnesses).toHaveLength(2);
     const h1 = out.harnesses.find((h) => h.harness_slug === 'h1')!;
     expect(h1.active_roles.sort()).toEqual(['reviewer', 'worker']);
@@ -122,7 +136,6 @@ describe('currentlyRunning', () => {
   });
 
   it('emits empty active_roles when no lanes match', async () => {
-    queue.push([]); // no scan
     queue.push([
       { harness_slug: 'lonely', phase: 'staging', status: 'running', iteration: 1,
         total_features: 1, passed_count: 0, todo_count: 1, blocked_count: 0,
