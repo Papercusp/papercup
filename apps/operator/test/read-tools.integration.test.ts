@@ -356,9 +356,9 @@ describe('tasks:list / tasks:get (features-backed)', () => {
   });
 });
 
-describe('issues:list', () => {
-  it('v1 stub → empty list (degraded, points at per-harness reads)', async () => {
-    const { r } = await call('issues:list', { slug: 'h1' });
-    expect(payload(r)).toEqual([]);
-  });
-});
+// NOTE: the old agent-mcp `issues:list` v1 STUB (a degraded placeholder that
+// returned [] and pointed at per-harness reads) is gone. `issues:list` is now a
+// real, kind-aware tool in operator-core (lib/agent-tools/issues/list.ts), on its
+// way to folding into `work_items:*` (unify-work-items D-007). Its coverage lives
+// with operator-core (issues-engineer + work-items integration tests); it is NOT
+// an agent-mcp read-tool, so this agent-mcp-only suite no longer tests it.

@@ -15,6 +15,7 @@ import { makeFrame, readFrame, FRAME_BYTES, FPS, DURATION_MS } from './lib-stats
 const K = Number(process.env.PEERS || 3); // echoer peers → (K+1)-party call
 const CONNECT_TIMEOUT_MS = 60_000;
 const topic = crypto.randomBytes(32);
+const mkSwarm = () => new Hyperswarm(); // public DHT (proven in voice/02)
 
 function frameReader(conn, onFrame) {
   let acc = Buffer.alloc(0);
@@ -28,13 +29,13 @@ function frameReader(conn, onFrame) {
 // Echoer peers
 const echoers = [];
 for (let i = 0; i < K; i++) {
-  const sw = new Hyperswarm();
+  const sw = mkSwarm();
   sw.on('connection', (conn) => frameReader(conn, (f) => { try { conn.write(Buffer.from(f)); } catch {} }));
   echoers.push(sw);
 }
 
 // Originator
-const origin = new Hyperswarm();
+const origin = mkSwarm();
 const peers = new Map(); // conn -> { rtts:[], inflight:Map }
 let streaming = false;
 
@@ -89,5 +90,8 @@ async function finish() {
 }
 
 console.log(`voice/03 ${K + 1}-party mesh — joining topic via public DHT (${K} echoers + 1 originator)...`);
-for (const e of echoers) e.join(topic, { server: true, client: true });
-await origin.join(topic, { server: true, client: true }).flushed();
+// Echoers are the announced servers — they MUST flush (announce) before the
+// originator (client) can discover them. (The bug in the first cut: unflushed
+// echoer joins → nothing to discover → 0 connections.)
+await Promise.all(echoers.map((e) => e.join(topic, { server: true, client: true }).flushed()));
+origin.join(topic, { server: true, client: true });

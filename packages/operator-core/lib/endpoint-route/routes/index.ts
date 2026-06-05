@@ -348,6 +348,10 @@ import deviceVoice from './device/voice';
 import deviceOperator from './device/operator';
 import deviceHarnesses from './device/harnesses';
 import deviceSync from './device/sync';
+import devicePush from './device/push';
+import deviceOperatorConverse from './device/operator-converse';
+import devicePlans from './device/plans';
+import deviceAttention from './device/attention';
 import coordRoutes from './coord/index';
 import tuiRoutes from './tui/index';
 import activityRoutes from './activity/index';
@@ -730,6 +734,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deviceOperator as AnyRoute[]),
   ...flatten(deviceHarnesses as AnyRoute[]),
   ...flatten(deviceSync as AnyRoute[]),
+  ...flatten(devicePush as AnyRoute[]),
+  ...flatten(deviceOperatorConverse as AnyRoute[]),
+  ...flatten(devicePlans as AnyRoute[]),
+  ...flatten(deviceAttention as AnyRoute[]),
   ...flatten(coordRoutes as AnyRoute[]),
   ...flatten(tuiRoutes as AnyRoute[]),
   ...flatten(activityRoutes as AnyRoute[]),

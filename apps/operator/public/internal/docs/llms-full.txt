@@ -610,6 +610,54 @@ Why this was safe to do at once: each source is its own chokepoint, so there’s
 * **The desktop native notification needs a cargo rebuild** of `papercusp-desktop` to pick up `tauri-plugin-notification` + the `show_attention_notification` command. The toast + mobile push work without it; the native OS notification is a no-op (caught) until the rebuild.
 * End-to-end delivery (APNs/FCM, native OS notification) is **not headless-testable** — verify in the desktop shell. The `notifyAttention` fan-out + the gates are unit-tested (`attention-notify.test.ts`, `set-status.test.ts`).
 
+# The autoloop is the routines engine now (Pot operator + self-declared wake)
+
+> After autoloop-pot-operator-rebuild, there is no setInterval autoloop ticker — the DBOS routines engine fires each harness's blueprint-declared schedule, and a Pot operator decides its own next wake via pot:declare-wake. autoloop:control flips routine rows, not a timer.
+
+## What
+
+[Section titled “What”](#what)
+
+`autoloop-pot-operator-rebuild-2026-06-05` removed the legacy in-process `setInterval` autoloop and reframed the whole loop around two ideas:
+
+1. **The autoloop IS the durable routines engine** — not a process-local timer. A harness’s autoloop is its blueprint-declared schedule (`triggers.schedule` → `bp-schedule-*` routine rows, materialized at `harness:create`). The routines workflow fires those rows; there is no `setInterval` anywhere in `packages/operator-core/lib/autoloop.ts`.
+2. **The Pot operator decides its own next wake** — there is no cadence trigger for the operator (D-002). Before ending a turn it calls `pot:declare-wake` to set a *time*, an *event-subscription*, or *nothing*; the manual/event fire target is `pot:wake`.
+
+If your mental model is still “a ticker loops every N seconds and fires the director,” it’s wrong post-2026-06-05. The loop is event/schedule-driven and durable (survives restarts, no double-fire).
+
+## Why it matters / the load-bearing facts
+
+[Section titled “Why it matters / the load-bearing facts”](#why-it-matters--the-load-bearing-facts)
+
+* **`autoloop:control` flips routine rows, not a timer.** `pause`/`resume` toggle the `bp-schedule-*` routine rows’ `active` column (durable, cross-process). `reset-errors` zeroes `consecutive_errors` in `autoloop_state`, closing the P-009 backoff circuit. There is no in-process handle to clear.
+* **Error-backoff is real and READ at the fire point (P-009).** `autoloop.ts` exports `evaluateFireGate` / `checkFireGate` / `recordFire`. `routines-workflow.ts` calls `checkFireGate` *before* firing a role and `recordFire(...,'ok'|'error')` after — so a repeatedly-failing director gets exponential backoff and, at `circuitThreshold()` consecutive errors, the circuit OPENS (one attempt per `backoffCapSec()` window) until a fix + `autoloop:control reset-errors`. `consecutive_errors` used to be written-but-never-read; now it gates.
+* **Enablement = the blueprint, not a flag or `director-config.json`.** A harness autoloops because its blueprint declares a schedule + a `dispatch:` policy (concurrency/priority/readiness/costCap/safetyCeiling — see `coding.yaml`/`research.yaml`). There is no `autoLoop:true` flag and the old `.papercusp/director-config.json` is detached.
+* **The Pot is a real blueprint.** `blueprints/pot/blueprint.yaml` (`extends: base`, decider = the `operator` role) is the 14th built-in and a *launch* blueprint (fired via `system:blueprint-run` / the invoke route), not a feature pipeline. `blueprint:catalog` lists it with `launchable:true`.
+* **`pot:declare-wake` has REPLACE semantics** (like `coord:declare-intent`): each call describes the *whole* next wake; omitted parts are cleared. Time wakes are clamped to a wake floor (`floorSec`, default 60) so a confused operator can’t spin; event wakes register a persisted `@papercusp/rules` reaction rule that fires `pot:wake` on match; `pot:wake` is floor-debounced (a burst collapses to one wake; `force` overrides).
+
+## The operator’s superpower (discovery → create)
+
+[Section titled “The operator’s superpower (discovery → create)”](#the-operators-superpower-discovery--create)
+
+The Pot chooses what to run via `blueprint:catalog` (built-in + installed tiers; per-entry decider/roles/spineModel/triggers/dispatch; abstract parents like `base` flagged `abstract`, broken ones kept as `{id,tier,error}`) → `blueprint:validate`/`extend` → `harness:create`. The `operator` role carries the caps for all of these — granted both in `OPERATOR_CAPS` (provision.ts) AND `BLUEPRINT_ROLE_CAPS['operator']` (role-principal-caps.ts). The second is load-bearing: provisioning without `force` is a no-op on an existing principal row, so a pre-rebuild operator row would otherwise lack the new caps.
+
+## Gotcha: harness read tools were org-table-only
+
+[Section titled “Gotcha: harness read tools were org-table-only”](#gotcha-harness-read-tools-were-org-table-only)
+
+`harness:list` / `harness:status` historically read ONLY `harness_shared.projects` (the org/department table). A harness created via `harness:create` writes the **registry** (`harness_shared.harness_registry`), so its own read-back returned “not found” — the Pot could create a harness it then couldn’t see. Both tools now read the registry first (merged with `projects` for budget/status enrichment; org-only rows kept as `source:'project'`). If you add another “what harnesses exist?” surface, read the registry, not just `projects`.
+
+## Related
+
+[Section titled “Related”](#related)
+
+* `packages/operator-core/lib/autoloop.ts` — the fire-gate + backoff state machine (no setInterval).
+* `packages/operator-core/lib/dbos/routines-workflow.ts` — where `checkFireGate`/`recordFire` gate the fire.
+* `packages/operator-core/lib/agent-tools/pot/{declare_wake,wake,status}.ts` — the self-declared-wake surface.
+* `packages/operator-core/lib/agent-tools/blueprint/catalog.ts` — the blueprint discovery tool.
+* `packages/agent-mcp/src/tools/harness/{list,status,registry-read}.ts` — the registry-aware harness read tools.
+* Plan `autoloop-pot-operator-rebuild-2026-06-05` — the full design + decisions (D-001..D-009).
+
 # The command palette and the agent MCP catalog are two registries unified at projection, not merged
 
 > Ctrl+P commands come from lib/commands (Action Registry, browser-reflexive); agent tools come from defineTool/tooldef (server, gated). The Capability contract (lib/capabilities) unifies them at the read/projection layer with a §3 safety filter — it does NOT merge the two definition systems. Key gotchas: persona-axis ≠ RBAC-axis, :3070 serves a static build, runsIn mirrors CommandDef.browser.
@@ -35961,11 +36009,11 @@ A static CI guard (`packages/operator-core/lib/__tests__/blueprint-deps-catalog.
 `POST /api/cupboard/publish-blueprint` (`packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`) publishes a locally-resolvable blueprint as a `kind=blueprint` listing via the **standard** listing-publish core (`publishListingToCupboard` — gh-token + channel-2 device attestation):
 
 ```jsonc
-{ "id": "review", "github_url": "https://github.com/papercupai/official-blueprints" }
+{ "id": "review", "github_url": "https://github.com/Papercusp/blueprints" }
 // optional: listing_ref (defaults to id), project_ref, title, description
 ```
 
-A blueprint listing is **GitHub-repo-backed**: it points at a PUBLIC repo whose `<listing_ref>/blueprint.yaml` is the blueprint (the official library is one public mirror repo hosting all official blueprints, one listing per blueprint — the bundled sources live in the private monorepo, so the content repo is always explicit). The Cupboard worker’s standard gates apply, verified in P0 (plan D-006):
+A blueprint listing is **GitHub-repo-backed**: it points at a PUBLIC repo whose `<listing_ref>/blueprint.yaml` is the blueprint. The official library is the public mirror repo [`github.com/Papercusp/blueprints`](https://github.com/Papercusp/blueprints) — one repo hosting every official blueprint as a top-level `<id>/` dir, one Cupboard listing per blueprint (`listing_ref` = the id). The bundled sources live in the private monorepo (`libs/papercusp/packages/harness/blueprints/`), so the content repo is always explicit; the mirror is regenerated + papercupai-pushed by `scripts/publish-official-blueprints.mts sync`. The Cupboard worker’s standard gates apply, verified in P0 (plan D-006):
 
 * bearer auth + publisher attestation;
 * **5 publishes/hour/user** (durable) — the official set publishes in batches;
@@ -36001,17 +36049,19 @@ In the UI, a `kind=blueprint` Cupboard listing’s **Fork** button (`apps/operat
 
 [Section titled “Source map”](#source-map)
 
-| Concern                           | Source                                                                                                                     |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Composed resolver + installed dir | `packages/operator-core/lib/blueprint/installed-blueprints.ts`                                                             |
-| Pure tiered resolver              | `libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts`                                           |
-| Dep validator (pure)              | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                     |
-| Pack model (tool→provider)        | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                         |
-| Publish route                     | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`                                           |
-| Install route + core              | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, `lib/cupboard/install-blueprint-core.ts` |
-| Live pack catalog (host wiring)   | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                      |
-| Static CI dep guard               | `packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts`                                                      |
-| Authoring tools                   | `packages/operator-core/lib/agent-tools/blueprint/{validate,extend,create,_resolve}.ts`                                    |
+| Concern                              | Source                                                                                                                                                                                                                                         |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Composed resolver + installed dir    | `packages/operator-core/lib/blueprint/installed-blueprints.ts`                                                                                                                                                                                 |
+| Pure tiered resolver                 | `libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts`                                                                                                                                                               |
+| Dep validator (pure)                 | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                                                                                                                         |
+| Pack model (tool→provider)           | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                                                                                                                                             |
+| Publish route                        | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`                                                                                                                                                               |
+| Install route + core                 | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, `lib/cupboard/install-blueprint-core.ts`                                                                                                                     |
+| Live pack catalog (host wiring)      | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                                                                                                                                          |
+| Static CI dep guard                  | `packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts`                                                                                                                                                                          |
+| Authoring tools                      | `packages/operator-core/lib/agent-tools/blueprint/{validate,extend,create,_resolve}.ts`                                                                                                                                                        |
+| Official mirror sync + batch publish | `scripts/publish-official-blueprints.mts` (`sync` regenerates [`Papercusp/blueprints`](https://github.com/Papercusp/blueprints) from the bundle; `publish [--ids a,b] [--limit N]` runs the publish route in-process, respecting the 5/hr cap) |
+| Dep derivation aid                   | `scripts/derive-blueprint-deps.mjs` (derives each blueprint’s tool list from its role personas — a review aid, not an auto-writer)                                                                                                             |
 
 # Credentials encryption (pgcrypto)
 

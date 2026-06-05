@@ -40,12 +40,22 @@ describe('integration globalSetup — full schema from migrations alone', () => 
     expect(rows.map((r: { table_name: string }) => r.table_name).sort()).toEqual([...expected].sort());
   });
 
-  it('has the 2nd-migration-system tables (delegates after the rename)', async () => {
+  it('applies the full 2nd-migration chain incl. the delegate collapse (152 drops delegates)', async () => {
+    // The delegate primitives are GONE at head: claude_sessions was renamed →
+    // delegates (commands/003), then migration 152 (collapse-delegate D-001/D-003)
+    // DROPPED both `delegates` + `delegate_inbox` — a delegated task is now a
+    // work_item[kind=task], no bespoke session table. This asserts empty→head
+    // applies the whole chain including that drop (the migration-system invariant),
+    // not just the additive tail.
     const [{ has_delegates }] = await sql.unsafe(
       `SELECT to_regclass('harness_shared.delegates') IS NOT NULL AS has_delegates`,
     );
-    expect(has_delegates).toBe(true);
-    // claude_sessions was renamed → delegates by migration commands/003; the old name is gone.
+    expect(has_delegates).toBe(false);
+    const [{ has_inbox }] = await sql.unsafe(
+      `SELECT to_regclass('harness_shared.delegate_inbox') IS NOT NULL AS has_inbox`,
+    );
+    expect(has_inbox).toBe(false);
+    // The pre-rename name is gone too.
     const [{ has_claude }] = await sql.unsafe(
       `SELECT to_regclass('harness_shared.claude_sessions') IS NOT NULL AS has_claude`,
     );

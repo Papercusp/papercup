@@ -101,15 +101,18 @@ publishes a locally-resolvable blueprint as a `kind=blueprint` listing via the
 channel-2 device attestation):
 
 ```jsonc
-{ "id": "review", "github_url": "https://github.com/papercupai/official-blueprints" }
+{ "id": "review", "github_url": "https://github.com/Papercusp/blueprints" }
 // optional: listing_ref (defaults to id), project_ref, title, description
 ```
 
 A blueprint listing is **GitHub-repo-backed**: it points at a PUBLIC repo
-whose `<listing_ref>/blueprint.yaml` is the blueprint (the official library is
-one public mirror repo hosting all official blueprints, one listing per
-blueprint — the bundled sources live in the private monorepo, so the content
-repo is always explicit). The Cupboard worker's standard gates apply, verified
+whose `<listing_ref>/blueprint.yaml` is the blueprint. The official library is
+the public mirror repo [`github.com/Papercusp/blueprints`](https://github.com/Papercusp/blueprints) —
+one repo hosting every official blueprint as a top-level `<id>/` dir, one
+Cupboard listing per blueprint (`listing_ref` = the id). The bundled sources
+live in the private monorepo (`libs/papercusp/packages/harness/blueprints/`),
+so the content repo is always explicit; the mirror is regenerated +
+papercupai-pushed by `scripts/publish-official-blueprints.mts sync`. The Cupboard worker's standard gates apply, verified
 in P0 (plan D-006):
 
 * bearer auth + publisher attestation;
@@ -156,14 +159,16 @@ URL-backed via nuqs `?kind=`).
 
 ## Source map
 
-| Concern                           | Source                                                                                                                     |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Composed resolver + installed dir | `packages/operator-core/lib/blueprint/installed-blueprints.ts`                                                             |
-| Pure tiered resolver              | `libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts`                                           |
-| Dep validator (pure)              | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                     |
-| Pack model (tool→provider)        | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                         |
-| Publish route                     | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`                                           |
-| Install route + core              | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, `lib/cupboard/install-blueprint-core.ts` |
-| Live pack catalog (host wiring)   | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                      |
-| Static CI dep guard               | `packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts`                                                      |
-| Authoring tools                   | `packages/operator-core/lib/agent-tools/blueprint/{validate,extend,create,_resolve}.ts`                                    |
+| Concern                              | Source                                                                                                                                                                                                                                         |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Composed resolver + installed dir    | `packages/operator-core/lib/blueprint/installed-blueprints.ts`                                                                                                                                                                                 |
+| Pure tiered resolver                 | `libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts`                                                                                                                                                               |
+| Dep validator (pure)                 | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                                                                                                                         |
+| Pack model (tool→provider)           | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                                                                                                                                             |
+| Publish route                        | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`                                                                                                                                                               |
+| Install route + core                 | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, `lib/cupboard/install-blueprint-core.ts`                                                                                                                     |
+| Live pack catalog (host wiring)      | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                                                                                                                                          |
+| Static CI dep guard                  | `packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts`                                                                                                                                                                          |
+| Authoring tools                      | `packages/operator-core/lib/agent-tools/blueprint/{validate,extend,create,_resolve}.ts`                                                                                                                                                        |
+| Official mirror sync + batch publish | `scripts/publish-official-blueprints.mts` (`sync` regenerates [`Papercusp/blueprints`](https://github.com/Papercusp/blueprints) from the bundle; `publish [--ids a,b] [--limit N]` runs the publish route in-process, respecting the 5/hr cap) |
+| Dep derivation aid                   | `scripts/derive-blueprint-deps.mjs` (derives each blueprint's tool list from its role personas — a review aid, not an auto-writer)                                                                                                             |
