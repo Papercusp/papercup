@@ -26,6 +26,10 @@ import path from 'node:path';
 import {
   configureMemory,
   buildLocalEmbedder,
+  registerMemoryBackend,
+  ClaudeFileMemoryBackend,
+  CLAUDE_FILE_BACKEND_NAME,
+  claudeProjectMemoryDir,
   type EmbedFn,
   type ResolvedEmbedder,
 } from '@papercusp/memory';
@@ -143,6 +147,25 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
   return { mode: 'disabled', reason: 'no_openai_key_and_local_not_installed' };
 }
 
+// The Claude Code topic-file bridge (generalize-memory-backend-swappable
+// D-005 / claude-memory-projection-integration P-004): select with
+// PAPERCUSP_MEMORY_BACKEND=claude-file to read/write the owner's native
+// Claude file memory through the neutral seam. The store location is the
+// Claude project derived from $HOME (where the owner runs Claude Code) —
+// override the dir with PAPERCUSP_CLAUDE_MEMORY_DIR or the project with
+// PAPERCUSP_CLAUDE_PROJECT_DIR. Never creates the dir: a box without a
+// Claude store reports unavailable rather than inventing one. MEMORY.md
+// (the auto-generated index) is never touched; the SessionStart
+// memory-compact hook projects new topic files into it.
+registerMemoryBackend(CLAUDE_FILE_BACKEND_NAME, () => new ClaudeFileMemoryBackend({
+  memoryDir:
+    process.env.PAPERCUSP_CLAUDE_MEMORY_DIR ||
+    claudeProjectMemoryDir(
+      process.env.PAPERCUSP_CLAUDE_PROJECT_DIR || os.homedir(),
+      path.join(os.homedir(), '.claude'),
+    ),
+}));
+
 configureMemory({
   getAdminUrl: getHarnessAdminUrl,
   // The operator's memory tables live in the harness_shared schema
@@ -151,6 +174,11 @@ configureMemory({
   schema: 'harness_shared',
   defaultDbName: 'papercusp',
   localStoreDir: path.join(os.homedir(), '.papercusp'),
+  // The swappable-store selector (generalize-memory-backend-swappable
+  // D-004): which MemoryBackend getMemoryBackend() serves. A config
+  // flip — 'mem0' (default) | 'noop' | any name registered via
+  // registerMemoryBackend(). An unknown name fails loud at first use.
+  backend: process.env.PAPERCUSP_MEMORY_BACKEND || 'mem0',
   getCredentials: async () => {
     const c = await readCredentials();
     return { openai_api_key: c.openai_api_key, anthropic_api_key: c.anthropic_api_key };

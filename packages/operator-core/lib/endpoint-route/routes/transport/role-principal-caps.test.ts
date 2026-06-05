@@ -44,15 +44,37 @@ describe('loadRoleCapabilities', () => {
     expect(caps.size).toBe(0);
   });
 
-  test('a provisioned row is unioned with the baseline (operator: row only, no blueprint grant)', async () => {
+  test('operator: a provisioned row is unioned with the pot-decider baseline', async () => {
+    // autoloop-pot-operator-rebuild-2026-06-05 P-004: operator became a
+    // blueprint-declared role (the pot's decider), so a STALE provisioned row
+    // (pre-P-004 caps) still gets the superpower/survey baseline unioned in.
     const caps = await loadRoleCapabilities(
       fakeTx([{ capabilities: ['messages:write', 'chat:write'] }]),
       'ws',
       'operator',
     );
-    expect(caps.has('messages:write')).toBe(true);
-    expect(caps.has('chat:write')).toBe(true);
-    expect(caps.has('coord:write')).toBe(false); // operator is not a program-blueprint role
+    expect(caps.has('messages:write')).toBe(true); // from the row
+    expect(caps.has('chat:write')).toBe(true); // from the row
+    expect(caps.has('harness:write')).toBe(true); // baseline — harness:create / blueprint:extend
+    expect(caps.has('coord:write')).toBe(true); // baseline — survey/coord surface
+  });
+
+  test('operator with NO row gets the full pot-decider baseline (fresh workspace, pre-provision)', async () => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'operator');
+    for (const c of [
+      'harness:read', // blueprint:catalog / blueprint:validate / harness:status
+      'harness:write', // blueprint:extend / harness:create
+      'work_items:read',
+      'work_items:write',
+      'curation:read',
+      'activity:read',
+      'coord:read',
+      'coord:write',
+      'plans:read',
+      'routines:write', // pot:declare-wake
+    ]) {
+      expect(caps.has(c), `missing ${c}`).toBe(true);
+    }
   });
 
   test('a blueprint role WITH a row gets the union of both', async () => {

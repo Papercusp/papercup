@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
-vi.mock('../../memory/mem0-client', () => ({
-  getMemoryClient: vi.fn(),
+vi.mock('../../memory/backend', () => ({
+  getMemoryBackend: vi.fn(),
 }));
 vi.mock('../../auth', () => ({
   getSessionUserOrDefault: vi.fn(),
@@ -14,21 +14,33 @@ vi.mock('@papercusp/db-org', () => ({
 }));
 
 import remember from './remember';
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
 
-type FakeClient = {
-  add: ReturnType<typeof vi.fn>;
+type FakeBackend = {
+  name: string;
+  available: ReturnType<typeof vi.fn>;
+  remember: ReturnType<typeof vi.fn>;
   search: ReturnType<typeof vi.fn>;
 };
 
-const fakeClient = (
-  searchResults: Array<{ id: string; memory: string; score?: number }> = [],
-): FakeClient => ({
-  add: vi.fn(async () => ({ ok: true })),
-  search: vi.fn(async () => ({ results: searchResults })),
+/** A fake neutral MemoryBackend (generalize-memory-backend-swappable D-003). */
+const fakeBackend = (
+  searchResults: Array<{ id: string; text: string; scope?: string; score?: number }> = [],
+  rememberIds: string[] = [],
+): FakeBackend => ({
+  name: 'fake',
+  available: vi.fn(async () => ({ ok: true })),
+  remember: vi.fn(async () => ({ ids: rememberIds })),
+  search: vi.fn(async () =>
+    searchResults.map((r) => ({ scope: 'user-1', ...r })),
+  ),
 });
+
+const useBackend = (b: FakeBackend): void => {
+  vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
+};
 
 const fakeCtx = {
   workspaceId: 'ws-test',
@@ -46,10 +58,46 @@ beforeEach(() => {
   } as unknown as ReturnType<typeof getOrgPg>);
 });
 
+describe('memory:remember — backend seam (D-003)', () => {
+  it('reports the backend-unavailable reason verbatim', async () => {
+    const b = fakeBackend();
+    b.available.mockResolvedValue({ ok: false, reason: 'memory_backend_disabled' });
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'anything', kind: 'preference' },
+      fakeCtx,
+    );
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(parsed).toEqual({ ok: false, reason: 'memory_backend_disabled' });
+    expect(b.remember).not.toHaveBeenCalled();
+  });
+
+  it('scopes to the session user by default, harness pool when harness_slug given', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    await remember.handler({ content: 'personal', kind: 'preference' }, fakeCtx);
+    expect(b.remember).toHaveBeenLastCalledWith('personal', expect.objectContaining({
+      scope: 'user-1',
+      kind: 'preference',
+    }));
+
+    await remember.handler(
+      { content: 'team fact', kind: 'project', harness_slug: 'sheets' },
+      fakeCtx,
+    );
+    expect(b.remember).toHaveBeenLastCalledWith('team fact', expect.objectContaining({
+      scope: 'harness:sheets',
+      kind: 'project',
+    }));
+  });
+});
+
 describe('memory:remember — anchor extraction (P-015)', () => {
   it('writes anchors metadata when body contains structural references', async () => {
-    const c = fakeClient();
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    const b = fakeBackend();
+    useBackend(b);
 
     const res = await remember.handler(
       {
@@ -62,8 +110,8 @@ describe('memory:remember — anchor extraction (P-015)', () => {
 
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
 
-    expect(c.add).toHaveBeenCalledTimes(1);
-    const [, opts] = c.add.mock.calls[0];
+    expect(b.remember).toHaveBeenCalledTimes(1);
+    const [, opts] = b.remember.mock.calls[0];
     const meta = (opts as { metadata: Record<string, unknown> }).metadata;
 
     expect(meta.anchor_count).toBe(3);
@@ -77,8 +125,8 @@ describe('memory:remember — anchor extraction (P-015)', () => {
   });
 
   it('omits anchor metadata when body has no anchors', async () => {
-    const c = fakeClient();
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    const b = fakeBackend();
+    useBackend(b);
 
     await remember.handler(
       {
@@ -88,15 +136,15 @@ describe('memory:remember — anchor extraction (P-015)', () => {
       fakeCtx,
     );
 
-    const [, opts] = c.add.mock.calls[0];
+    const [, opts] = b.remember.mock.calls[0];
     const meta = (opts as { metadata: Record<string, unknown> }).metadata;
     expect(meta.anchors).toBeUndefined();
     expect(meta.anchor_count).toBeUndefined();
   });
 
-  it('preserves existing metadata fields (kind, scope, etc.) alongside anchors', async () => {
-    const c = fakeClient();
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+  it('preserves scope/provenance metadata alongside anchors; kind rides opts.kind', async () => {
+    const b = fakeBackend();
+    useBackend(b);
 
     await remember.handler(
       {
@@ -107,9 +155,9 @@ describe('memory:remember — anchor extraction (P-015)', () => {
       fakeCtx,
     );
 
-    const [, opts] = c.add.mock.calls[0];
+    const [, opts] = b.remember.mock.calls[0];
+    expect((opts as { kind: string }).kind).toBe('project');
     const meta = (opts as { metadata: Record<string, unknown> }).metadata;
-    expect(meta.kind).toBe('project');
     expect(meta.scope).toBe('harness');
     expect(meta.harness_slug).toBe('sheets');
     expect(meta.workspace_id).toBe('ws-test');
@@ -128,10 +176,10 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
   });
 
   it('refuses when a similar memory exists (score above threshold)', async () => {
-    const c = fakeClient([
-      { id: 'mem-old', memory: 'Avi prefers terse responses', score: 0.95 },
+    const b = fakeBackend([
+      { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.95 },
     ]);
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    useBackend(b);
 
     const res = await remember.handler(
       { content: 'Avi prefers short responses', kind: 'preference' },
@@ -143,28 +191,29 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     expect(parsed.reason).toBe('similar_exists');
     expect(parsed.similar_memory_id).toBe('mem-old');
     expect(parsed.similar_score).toBe(0.95);
-    expect(c.add).not.toHaveBeenCalled();
+    expect(parsed.similar_text).toBe('Avi prefers terse responses');
+    expect(b.remember).not.toHaveBeenCalled();
   });
 
   it('allows when no similar memory found (low score)', async () => {
-    const c = fakeClient([
-      { id: 'mem-old', memory: 'unrelated', score: 0.30 },
+    const b = fakeBackend([
+      { id: 'mem-old', text: 'unrelated', score: 0.30 },
     ]);
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    useBackend(b);
 
     const res = await remember.handler(
       { content: 'New unrelated fact', kind: 'preference' },
       fakeCtx,
     );
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
-    expect(c.add).toHaveBeenCalled();
+    expect(b.remember).toHaveBeenCalled();
   });
 
   it('force: true bypasses the dedup check', async () => {
-    const c = fakeClient([
-      { id: 'mem-old', memory: 'Avi prefers terse responses', score: 0.99 },
+    const b = fakeBackend([
+      { id: 'mem-old', text: 'Avi prefers terse responses', score: 0.99 },
     ]);
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    useBackend(b);
 
     const res = await remember.handler(
       {
@@ -175,54 +224,47 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
       fakeCtx,
     );
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
-    expect(c.add).toHaveBeenCalled();
+    expect(b.remember).toHaveBeenCalled();
     // search not invoked when force=true (no dedup check)
-    expect(c.search).not.toHaveBeenCalled();
+    expect(b.search).not.toHaveBeenCalled();
   });
 
   it('proceeds defensively if dedup search throws', async () => {
-    const c = fakeClient();
-    c.search.mockRejectedValue(new Error('mem0 search broken'));
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    const b = fakeBackend();
+    b.search.mockRejectedValue(new Error('backend search broken'));
+    useBackend(b);
 
     const res = await remember.handler(
       { content: 'something', kind: 'preference' },
       fakeCtx,
     );
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
-    expect(c.add).toHaveBeenCalled();
+    expect(b.remember).toHaveBeenCalled();
   });
 
   it('dedup is disabled by default (env not set)', async () => {
     delete process.env.PAPERCUSP_MEMORY_DEDUP;
-    // Re-import to re-evaluate the module-level const
-    vi.resetModules();
-    const { default: rememberFresh } = await import('./remember');
-    const c = fakeClient([
-      { id: 'mem-old', memory: 'exact match', score: 0.99 },
+    const b = fakeBackend([
+      { id: 'mem-old', text: 'exact match', score: 0.99 },
     ]);
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    useBackend(b);
 
-    const res = await rememberFresh.handler(
+    const res = await remember.handler(
       { content: 'exact match', kind: 'preference' },
       fakeCtx,
     );
     // With flag off, the high-similarity write should still succeed
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
-    expect(c.search).not.toHaveBeenCalled();
+    expect(b.search).not.toHaveBeenCalled();
     // restore for following tests
     process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
   });
 });
 
-
 describe('memory:remember — anchor table wiring (P-015)', () => {
-  it('hands the new memory id + extracted anchors to the writer after a successful add', async () => {
-    const c = fakeClient();
-    c.add.mockResolvedValue({
-      results: [{ id: '77777777-7777-7777-7777-777777777777', event: 'ADD' }],
-    });
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+  it('hands the new memory ids + extracted anchors to the writer after a successful add', async () => {
+    const b = fakeBackend([], ['77777777-7777-7777-7777-777777777777']);
+    useBackend(b);
 
     const sql = vi.fn(async () => undefined);
     vi.mocked(getOrgPg).mockReturnValue({
@@ -236,7 +278,9 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
       },
       fakeCtx,
     );
-    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text).ok).toBe(true);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ids).toEqual(['77777777-7777-7777-7777-777777777777']);
 
     // Fire-and-forget — yield once so the void IIFE's microtasks run.
     await new Promise((r) => setImmediate(r));
@@ -255,11 +299,8 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
   });
 
   it('skips the writer entirely when no anchors were extracted', async () => {
-    const c = fakeClient();
-    c.add.mockResolvedValue({
-      results: [{ id: '88888888-8888-8888-8888-888888888888', event: 'ADD' }],
-    });
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+    const b = fakeBackend([], ['88888888-8888-8888-8888-888888888888']);
+    useBackend(b);
 
     const sql = vi.fn(async () => undefined);
     vi.mocked(getOrgPg).mockReturnValue({
@@ -274,15 +315,9 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
     expect(sql).not.toHaveBeenCalled();
   });
 
-  it('skips the writer when mem0 returned no addable ids (DELETE/NONE only)', async () => {
-    const c = fakeClient();
-    c.add.mockResolvedValue({
-      results: [
-        { id: '99999999-9999-9999-9999-999999999999', event: 'DELETE' },
-        { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', event: 'NONE' },
-      ],
-    });
-    vi.mocked(getMemoryClient).mockResolvedValue(c as unknown as Awaited<ReturnType<typeof getMemoryClient>>);
+  it('skips the writer when the backend reported no newly-added ids', async () => {
+    const b = fakeBackend([], []); // e.g. mem0 merged into existing entries (UPDATE/NONE)
+    useBackend(b);
 
     const sql = vi.fn(async () => undefined);
     vi.mocked(getOrgPg).mockReturnValue({

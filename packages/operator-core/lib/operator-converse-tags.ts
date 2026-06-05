@@ -4,14 +4,15 @@
  *   <say>{utterance}</say>
  *   <set_mode>passive|active</set_mode>
  *   <sleep duration_minutes="N" reason="…">
- *   <spawn role="worker" feature="…" chunk="…" extras="K=V,K2=V2">
+ *   <spawn role="worker" harness="…" feature="…" chunk="…" extras="K=V,K2=V2">
  *
  * The conversation engine parses each operator turn through this
  * module and dispatches four side-effects:
  *   1. Render the say-text (if any) into the chat transcript + TTS.
  *   2. Flip operator mode (if a set_mode tag was emitted).
  *   3. Set the sleep-until clock (if a sleep tag was emitted).
- *   4. POST to /api/plugins/orchestrator/spawn for each spawn tag.
+ *   4. Dispatch each spawn tag through the durable nursery spawn
+ *      (fleet/operator-spawn → harness_shared.spawned_agents).
  *
  * Pure parsing only — no DOM, no fetch, no state writes. Callers
  * thread the parsed result into the OperatorConversation reducer.
@@ -30,6 +31,10 @@ export type OperatorMode = 'active' | 'passive';
 
 export interface SpawnRequest {
   role: string;
+  /** Registry slug of the harness to spawn into (the `harness` attribute).
+   *  null → the dispatcher falls back to the workspace's single registered
+   *  harness, or fails loud when that's ambiguous. */
+  harness: string | null;
   featureId: string | null;
   chunkId: string | null;
   extras: string[];
@@ -209,6 +214,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
       .filter((s) => s.length > 0);
     result.spawns.push({
       role,
+      harness: attrs['harness'] ? attrs['harness'] : null,
       featureId: attrs['feature'] ? attrs['feature'] : null,
       chunkId: attrs['chunk'] ? attrs['chunk'] : null,
       extras,

@@ -175,9 +175,8 @@ async function scan(): Promise<Hit[]> {
  * to zero, not to live with violations.
  */
 const BASELINE: Array<{ rule: string; fileSuffix: string }> = [
-  // A6: `<details>` wrapping a heavy component (paperclip-active file;
-  // should migrate to LazyDetails when convenient).
-  { rule: 'A6', fileSuffix: '_components/OperatorPanel.tsx' },
+  // (A6 OperatorPanel entry removed: the panel was deleted with the scanner
+  // card stream — unify-agent-launches D-005. The violation is gone for real.)
 
   // (A1 plugin-runtime entry removed: the Next route was retired; its
   // migrated successor lib/endpoint-route/routes/plugin-runtime/catchall.ts —

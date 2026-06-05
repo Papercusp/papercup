@@ -21,6 +21,7 @@
  * purpose (it's why agents stop committing).
  */
 import { spawn } from 'node:child_process';
+import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 
@@ -38,6 +39,11 @@ const defaultRunGit: RunGit = (args, cwd) =>
     child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
   });
 
+/** GitHub hard-rejects blobs ≥100MB (pre-receive) — a committed oversized blob makes
+ *  the whole unpushed range PERMANENTLY unpushable (EI-18: 10.4GB of Rust target/
+ *  artifacts wedged the push for 20h). Stay safely under. */
+export const DEFAULT_MAX_BLOB_BYTES = 95 * 1024 * 1024;
+
 export interface GitSyncConfig {
   /** Push to origin after committing/merging (default true). */
   push?: boolean;
@@ -50,6 +56,10 @@ export interface GitSyncConfig {
   remote?: string;
   /** Commit subject (a default is used otherwise). */
   message?: string;
+  /** Dirty files larger than this are EXCLUDED from the auto-commit and reported
+   *  (`oversized` on the outcome) instead of wedging the push forever
+   *  (default DEFAULT_MAX_BLOB_BYTES). */
+  maxBlobBytes?: number;
 }
 
 /** One (sub)repo that hit a merge conflict during a pass. */
@@ -63,6 +73,16 @@ export interface RepoError {
   scope: string;
   message: string;
 }
+/** A dirty file excluded from the auto-commit because it exceeds maxBlobBytes. */
+export interface OversizedFile {
+  path: string;
+  sizeBytes: number;
+}
+/** An oversized file, qualified by which repo it sits in. */
+export interface ScopedOversized extends OversizedFile {
+  /** 'superproject' or a submodule path (repo-relative). */
+  scope: string;
+}
 
 /**
  * The aggregate result of one whole-repo pass. `pushed`/`merged` name the scopes
@@ -72,11 +92,18 @@ export interface RepoError {
  * only defers the superproject (see runGitSync). `status` is the worst outcome:
  * any conflict → 'conflict', else any error → 'error', else 'synced'/'nothing'.
  */
-export type GitSyncOutcome =
+export type GitSyncOutcome = {
+  /** Dirty files excluded from this pass's auto-commits for exceeding maxBlobBytes
+   *  (EI-18). Non-empty = someone must gitignore/remove them — this NEVER self-heals;
+   *  the caller escalates. Present on every status ('nothing' included: an
+   *  oversized-only dirty tree commits nothing but still reports). */
+  oversized: ScopedOversized[];
+} & (
   | { status: 'nothing' }
   | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
   | { status: 'conflict'; conflicts: RepoConflict[]; errors: RepoError[]; pushed: string[]; merged: string[] }
-  | { status: 'error'; errors: RepoError[]; pushed: string[]; merged: string[] };
+  | { status: 'error'; errors: RepoError[]; pushed: string[]; merged: string[] }
+);
 
 export interface RunGitSyncOpts {
   /** Override the repo path (tests); else resolved via `projectDirForSlug(slug)`. */
@@ -132,11 +159,41 @@ const discoverSubmodulesRecursive = async (runGit: RunGit, repo: string): Promis
   return paths.sort((a, b) => b.split('/').length - a.split('/').length);
 };
 
-type RepoSyncResult =
+type RepoSyncResult = { oversized: OversizedFile[] } & (
   | { status: 'nothing' }
   | { status: 'synced'; pushed: boolean; merged: boolean }
   | { status: 'conflict'; conflictedFiles: string[] }
-  | { status: 'error'; message: string };
+  | { status: 'error'; message: string }
+);
+
+/**
+ * Dirty (modified/untracked) files exceeding maxBytes — detected BEFORE `add -A` so
+ * the auto-commit can EXCLUDE them (EI-18: GitHub hard-rejects >100MB blobs, and one
+ * committed oversized blob makes the unpushed range permanently unpushable; recovery
+ * is manual history surgery). Uses `status --porcelain -z` (NUL-separated, unquoted —
+ * robust to spaces/specials in paths).
+ */
+async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, maxBytes: number): Promise<OversizedFile[]> {
+  const r = await runGit(['status', '--porcelain', '-z'], repoPath);
+  if (r.code !== 0) return [];
+  const entries = r.stdout.split('\0').filter(Boolean);
+  const out: OversizedFile[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.length < 4) continue;
+    const xy = e.slice(0, 2);
+    const path = e.slice(3);
+    if (xy.includes('R') || xy.includes('C')) i++; // -z renames: "XY new\0old" — skip the origin path
+    if (xy.includes('D')) continue; // deletions have no blob to size
+    try {
+      const st = await lstat(join(repoPath, path));
+      if (st.isFile() && st.size > maxBytes) out.push({ path, sizeBytes: st.size });
+    } catch {
+      /* a racing build artifact vanished mid-pass — nothing to commit, skip */
+    }
+  }
+  return out;
+}
 
 /**
  * Sync ONE repo (superproject or a single submodule) to origin: commit dirty →
@@ -145,14 +202,23 @@ type RepoSyncResult =
 async function syncOneRepo(
   runGit: RunGit,
   repoPath: string,
-  o: { remote: string; defaultBranch: string; message: string; doPush: boolean },
+  o: { remote: string; defaultBranch: string; message: string; doPush: boolean; maxBlobBytes: number },
 ): Promise<RepoSyncResult> {
   const { remote, message, doPush } = o;
   const branch = (await currentBranch(runGit, repoPath)) ?? o.defaultBranch;
 
   let committedLocal = false;
+  let oversized: OversizedFile[] = [];
   if (await isDirty(runGit, repoPath)) {
-    await runGit(['add', '-A'], repoPath);
+    // EI-18 guard: never bake an unpushable blob into the range. Oversized dirty
+    // files are excluded from the commit (`:(exclude,literal)` pathspecs) and
+    // reported; everything else still syncs this tick.
+    oversized = await findOversizedDirtyFiles(runGit, repoPath, o.maxBlobBytes);
+    const addArgs =
+      oversized.length === 0
+        ? ['add', '-A']
+        : ['add', '-A', '--', '.', ...oversized.map((f) => `:(exclude,literal)${f.path}`)];
+    await runGit(addArgs, repoPath);
     const c = await runGit(['commit', '--no-verify', '-m', message], repoPath);
     if (c.code === 0) committedLocal = true;
   }
@@ -169,18 +235,18 @@ async function syncOneRepo(
       const rl = await runGit(['rev-list', '--count', `${remote}/${branch}..HEAD`], repoPath);
       const aheadCount = rl.code === 0 ? Number.parseInt(rl.stdout.trim(), 10) || 0 : 1; // ref missing → assume unpushed
       if (committedLocal || aheadCount > 0) {
-        return { status: 'error', message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)` };
+        return { status: 'error', message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)`, oversized };
       }
-      return { status: 'nothing' };
+      return { status: 'nothing', oversized };
     }
-    return committedLocal ? { status: 'synced', pushed: false, merged: false } : { status: 'nothing' };
+    return committedLocal ? { status: 'synced', pushed: false, merged: false, oversized } : { status: 'nothing', oversized };
   }
 
   const merge = await runGit(['merge', '--no-edit', `${remote}/${branch}`], repoPath);
   if (merge.code !== 0) {
     const conflicted = await conflictedFiles(runGit, repoPath);
     await runGit(['merge', '--abort'], repoPath); // clean tree
-    return { status: 'conflict', conflictedFiles: conflicted };
+    return { status: 'conflict', conflictedFiles: conflicted, oversized };
   }
   let mergedNew = !/Already up to date/i.test(merge.stdout);
 
@@ -194,19 +260,19 @@ async function syncOneRepo(
       if (m2.code !== 0) {
         const conflicted = await conflictedFiles(runGit, repoPath);
         await runGit(['merge', '--abort'], repoPath);
-        return { status: 'conflict', conflictedFiles: conflicted };
+        return { status: 'conflict', conflictedFiles: conflicted, oversized };
       }
       mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
       push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
     }
     if (push.code !== 0) {
-      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
+      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}`, oversized };
     }
     pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
   }
 
-  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
-  return { status: 'synced', pushed, merged: mergedNew };
+  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing', oversized };
+  return { status: 'synced', pushed, merged: mergedNew, oversized };
 }
 
 /**
@@ -230,20 +296,26 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const doPush = cfg.push !== false;
   const doSub = cfg.pushSubmodules !== false;
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
+  const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   const log = opts.log ?? (() => {});
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));
   if (!repo) {
-    return { status: 'error', errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }], pushed: [], merged: [] };
+    return { status: 'error', errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }], pushed: [], merged: [], oversized: [] };
   }
 
   const conflicts: RepoConflict[] = [];
   const errors: RepoError[] = [];
   const pushed: string[] = [];
   const merged: string[] = [];
+  const oversized: ScopedOversized[] = [];
   let didSomething = false;
 
   const absorb = (scope: string, r: RepoSyncResult): void => {
+    if (r.oversized.length > 0) {
+      oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
+      log(`[git-sync] ${scope}: EXCLUDED ${r.oversized.length} oversized file(s) from the auto-commit (${r.oversized.map((f) => `${f.path} ${(f.sizeBytes / 1048576).toFixed(1)}MB`).join(', ')}) — gitignore or remove them (${slug})`);
+    }
     if (r.status === 'conflict') {
       conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
       log(`[git-sync] ${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`);
@@ -266,20 +338,22 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       : await discoverSubmodulesRecursive(runGit, repo);
   }
   for (const sub of subPaths) {
-    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: branch, message, doPush }));
+    absorb(sub, await syncOneRepo(runGit, join(repo, sub), { remote, defaultBranch: branch, message, doPush, maxBlobBytes }));
   }
 
   // Superproject last — ONLY when every submodule reconciled (else its bumped pointers
   // would reference unpushed submodule commits). One unreconciled submodule defers it.
+  // (Oversized exclusions do NOT defer it: the submodule's commit — without the big
+  // file — IS on its origin, so the parent gitlink resolves fine.)
   const blocked = conflicts.length > 0 || errors.length > 0;
   if (!blocked) {
-    absorb('superproject', await syncOneRepo(runGit, repo, { remote, defaultBranch: branch, message, doPush }));
+    absorb('superproject', await syncOneRepo(runGit, repo, { remote, defaultBranch: branch, message, doPush, maxBlobBytes }));
   } else {
     log(`[git-sync] ${conflicts.length} conflict(s) + ${errors.length} error(s) in submodules — deferring superproject push (${slug})`);
   }
 
-  if (conflicts.length > 0) return { status: 'conflict', conflicts, errors, pushed, merged };
-  if (errors.length > 0) return { status: 'error', errors, pushed, merged };
-  if (!didSomething) return { status: 'nothing' };
-  return { status: 'synced', headSha: await headSha(runGit, repo), pushed, merged };
+  if (conflicts.length > 0) return { status: 'conflict', conflicts, errors, pushed, merged, oversized };
+  if (errors.length > 0) return { status: 'error', errors, pushed, merged, oversized };
+  if (!didSomething) return { status: 'nothing', oversized };
+  return { status: 'synced', headSha: await headSha(runGit, repo), pushed, merged, oversized };
 }

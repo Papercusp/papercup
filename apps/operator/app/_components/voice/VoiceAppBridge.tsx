@@ -159,7 +159,7 @@ export function VoiceAppBridge(): null {
         // separate listen-window like Siri.
         if (stripped.matched && !stripped.trailing) {
           const { speak } = await import('./voice-mode');
-          speak('Say a command after the wake word, like "open" or "approve sheets".', 'system:operator', 'polite');
+          speak('Say a command after the wake word, like "scan" or "approve sheets".', 'system:operator', 'polite');
           return;
         }
         const normalized = stripped.matched ? stripped.dispatchText : text;
@@ -167,21 +167,28 @@ export function VoiceAppBridge(): null {
         // No matching intent → tell the user, so silence isn't a black hole.
         if (stripped.matched && stripped.trailing && !intent) {
           const { speak } = await import('./voice-mode');
-          speak(`I didn't recognize "${stripped.trailing}". Try open, scan, approve, or across workspaces.`, 'system:operator', 'polite');
+          speak(`I didn't recognize "${stripped.trailing}". Try scan, or approve followed by a harness name.`, 'system:operator', 'polite');
           return;
         }
         if (intent) {
-          if (intent.kind === 'open' || intent.kind === 'open-and-scan') {
-            const { setOperatorState } = await import('@papercusp/operator-core/lib/operator-shared-state');
-            setOperatorState({ open: true });
-            if (intent.kind === 'open-and-scan') {
-              // Defer the scan trigger to next tick so the panel mounts first.
-              setTimeout(() => {
-                window.dispatchEvent(new CustomEvent('operator:scan-request', {
-                  detail: { query: intent.query ?? '' },
-                }));
-              }, 100);
-            }
+          if (intent.kind === 'scan') {
+            // D-005 (unify-agent-launches): a voice scan fires the `scan` launch
+            // blueprint via the invoke route (loopback inside the desktop webview).
+            // Findings land as work_items in the self-improvement backlog — the
+            // operator-card panel is retired.
+            const { speak } = await import('./voice-mode');
+            void fetch('/api/harness/papercup/invoke?role=scanner', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                kickoff: intent.query
+                  ? `Voice-requested workspace scan: ${intent.query}. Capture each finding via improvements:capture.`
+                  : 'Voice-requested workspace scan. Capture each finding via improvements:capture.',
+                extra: ['BLUEPRINT_ID=scan'],
+                timeoutMs: 900_000,
+              }),
+            }).catch(() => { /* fire-and-forget — the cadence routine is the reliable path */ });
+            speak('Started a workspace scan. Findings will land in the improvements backlog.', 'system:operator', 'polite');
             return;
           }
           if (intent.kind === 'approve') {
@@ -213,21 +220,6 @@ export function VoiceAppBridge(): null {
             } catch {
               /* network blip — settings UI is the fallback */
             }
-            return;
-          }
-          if (intent.kind === 'across-workspaces') {
-            try {
-              const r = await fetch('/api/agent-mcp/operator-multi-workspace');
-              const body = await r.json();
-              const ws: { name: string; cardCount: number }[] = body.workspaces ?? [];
-              const { speak } = await import('./voice-mode');
-              if (ws.length === 0) {
-                speak('No other workspaces.', 'system:operator', 'polite');
-              } else {
-                const phrases = ws.map((w) => `${w.name}: ${w.cardCount} card${w.cardCount === 1 ? '' : 's'}`);
-                speak(`Across workspaces: ${phrases.join('; ')}.`, 'system:operator', 'polite');
-              }
-            } catch { /* ignore */ }
             return;
           }
         }

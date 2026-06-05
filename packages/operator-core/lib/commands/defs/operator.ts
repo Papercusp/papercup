@@ -1,10 +1,10 @@
 /**
- * operator.* — scan / approve / across-workspaces.
+ * operator.* — scan / approve.
  *
- * Replaces the four legacy voice callbacks (onIntentOpen, onIntentScan,
- * onIntentApprove, onIntentAcrossWorkspaces) by registering them as
- * proper commands. Voice engines now drive these via the registry like
- * any other action; the panel listens for the same window events.
+ * Voice engines + palette drive these via the registry like any other
+ * action. (`operator.across-workspaces` and the panel-event scan were
+ * retired with the operator-card panel — unify-agent-launches D-005;
+ * `operator.scan` survives, repointed at the `scan` launch blueprint.)
  */
 import { z } from 'zod';
 import { register } from '../registry';
@@ -21,12 +21,11 @@ const ApproveArg = z.object({
 });
 type ApproveArgT = z.infer<typeof ApproveArg>;
 
-const Empty = z.object({}).strict();
-
 const scan: CommandDef<ScanArgT, { ok: true }> = {
   id: 'operator.scan',
   kind: 'command',
-  description: 'Open the Papercup panel and trigger a scan with an optional query.',
+  description:
+    'Fire a workspace scan (the `scan` launch blueprint). Findings land as work_items in the self-improvement backlog.',
   schema: ScanArg,
   agents: ['operator', 'oracle', 'palette'],
   browser: 'required',
@@ -37,7 +36,19 @@ const scan: CommandDef<ScanArgT, { ok: true }> = {
     if (typeof window === 'undefined') {
       throw new CommandError({ code: 'wrong-process', message: 'scan must run in the browser', retryable: false });
     }
-    window.dispatchEvent(new CustomEvent('operator:scan-request', { detail: { query: query ?? '' } }));
+    // D-005 (unify-agent-launches): the scan IS the `scan` launch blueprint —
+    // fire it via the invoke route (loopback inside the desktop webview).
+    void fetch('/api/harness/papercup/invoke?role=scanner', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kickoff: query
+          ? `Palette/voice-requested workspace scan: ${query}. Capture each finding via improvements:capture.`
+          : 'Palette/voice-requested workspace scan. Capture each finding via improvements:capture.',
+        extra: ['BLUEPRINT_ID=scan'],
+        timeoutMs: 900_000,
+      }),
+    }).catch(() => { /* fire-and-forget — the cadence routine is the reliable path */ });
     return { ok: true };
   },
 };
@@ -74,25 +85,5 @@ const approve: CommandDef<ApproveArgT, { ok: true }> = {
   },
 };
 
-const across: CommandDef<{}, { ok: true }> = {
-  id: 'operator.across-workspaces',
-  kind: 'command',
-  description: 'Read out a summary of pending suggestions across all workspaces.',
-  schema: Empty,
-  agents: ['operator', 'oracle', 'palette'],
-  browser: 'required',
-  concurrent: 'allow',
-  tier: 'reflexive',
-  paletteEntry: { section: 'Papercup', title: 'Summarize across workspaces', icon: '⌖', keywords: 'across workspaces summary' },
-  handler: async () => {
-    if (typeof window === 'undefined') {
-      throw new CommandError({ code: 'wrong-process', message: 'must run in the browser', retryable: false });
-    }
-    window.dispatchEvent(new CustomEvent('operator:across-workspaces'));
-    return { ok: true };
-  },
-};
-
 register(scan);
 register(approve);
-register(across);

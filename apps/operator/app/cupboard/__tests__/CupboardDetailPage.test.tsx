@@ -1,13 +1,19 @@
 /**
  * @vitest-environment jsdom
  *
- * CupboardDetailPage — snapshot "Fork" action (revive-cupboard D-008).
+ * CupboardDetailPage — direct-execution actions.
  *
- * A snapshot listing's Fork button is CROSS-MACHINE: it POSTs
+ * snapshot "Fork" (revive-cupboard D-008): POSTs
  * /api/snapshots/fork-from-cupboard {listing_id}, which pulls the tarball from
  * the Cupboard R2 store, verifies it, and restore()s a new local harness — then
- * navigates to it. Blueprint/plugin actions keep their E1/E2 + plugin-host
- * hand-off (not exercised here).
+ * navigates to it.
+ *
+ * blueprint "Fork" (official-blueprints-cupboard-publish-2026-06-05 P-004):
+ * POSTs /api/cupboard/install-blueprint {listingId} — clone + validate +
+ * dep-check into ~/.papercusp/blueprints/<id>/ — WITHOUT installPlugins (the
+ * consent for plugin deps stays explicit; the toast lists installables).
+ *
+ * Plugin install keeps its plugin-host hand-off (not exercised here).
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -53,6 +59,18 @@ function snapshotListing(overrides: Partial<HarnessListing> = {}): HarnessListin
   };
 }
 
+function blueprintListing(overrides: Partial<HarnessListing> = {}): HarnessListing {
+  return snapshotListing({
+    slug: 'demo-blueprint',
+    title: 'Demo blueprint',
+    description: 'a published blueprint',
+    listing_kind: 'blueprint',
+    listing_ref: 'review',
+    tarball_content_hash: undefined as unknown as string,
+    ...overrides,
+  });
+}
+
 const realFetch = globalThis.fetch;
 afterEach(() => {
   cleanup();
@@ -60,15 +78,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function mockFetch(listing: HarnessListing, fork: { status: number; body: unknown }) {
+function mockFetch(listing: HarnessListing, action: { status: number; body: unknown }) {
   const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/api/cupboard/listings/')) {
       return new Response(JSON.stringify({ listing }), { status: 200 });
     }
-    if (u.includes('/api/snapshots/fork-from-cupboard')) {
+    if (u.includes('/api/snapshots/fork-from-cupboard') || u.includes('/api/cupboard/install-blueprint')) {
       void init;
-      return new Response(JSON.stringify(fork.body), { status: fork.status });
+      return new Response(JSON.stringify(action.body), { status: action.status });
     }
     return new Response('{}', { status: 404 });
   });
@@ -106,6 +124,56 @@ describe('CupboardDetailPage — snapshot Fork (cross-machine)', () => {
 
     await waitFor(() => expect(h.toastError).toHaveBeenCalled());
     expect(String(h.toastError.mock.calls[0][0])).toContain('metadata-only');
+    expect(h.push).not.toHaveBeenCalled();
+  });
+});
+
+describe('CupboardDetailPage — blueprint Fork (install into the local installed tier)', () => {
+  it('Fork POSTs install-blueprint with the listing id (no installPlugins) and toasts installable plugin deps', async () => {
+    const fetchMock = mockFetch(blueprintListing(), {
+      status: 200,
+      body: {
+        ok: true,
+        id: 'review',
+        version: '0.2.0',
+        installedTo: '/home/u/.papercusp/blueprints/review',
+        depCheck: { ok: true, installable: { plugins: ['repomix'] } },
+      },
+    });
+    render(<CupboardDetailPage />);
+
+    const btn = await screen.findByTestId('cupboard-detail-action');
+    expect(btn.getAttribute('data-action')).toBe('fork');
+    fireEvent.click(btn);
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find((c) => String(c[0]).includes('/api/cupboard/install-blueprint'));
+      expect(call).toBeTruthy();
+      // Consent stays explicit: the button must NOT auto-install plugin deps.
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ listingId: 'snap-listing-1' });
+    });
+    await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
+    const msg = String(h.toastSuccess.mock.calls[0][0]);
+    expect(msg).toContain('review');
+    expect(msg).toContain('repomix');
+    // No navigation for a blueprint install — it lands in ~/.papercusp/blueprints.
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an install failure (e.g. dep-validation 422) as a toast', async () => {
+    mockFetch(blueprintListing(), {
+      status: 422,
+      body: { ok: false, error: 'blueprint dependencies unresolvable', detail: 'needs plugin "ghost"' },
+    });
+    render(<CupboardDetailPage />);
+
+    const btn = await screen.findByTestId('cupboard-detail-action');
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(h.toastError).toHaveBeenCalled());
+    const msg = String(h.toastError.mock.calls[0][0]);
+    expect(msg).toContain('dependencies unresolvable');
+    expect(msg).toContain('needs plugin "ghost"');
     expect(h.push).not.toHaveBeenCalled();
   });
 });

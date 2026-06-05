@@ -1,66 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  extractAddedIds,
   persistAnchorsSql,
   _resetForTests,
   type SqlTag,
 } from './persist-anchors';
 import type { Anchor } from './anchors';
 
+// NOTE: extractAddedIds (mem0 add-result parsing) moved behind the
+// Mem0Backend in @papercusp/memory (generalize-memory-backend-swappable
+// D-002) — its tests live in libs/generic/memory/src/backend.test.ts.
+
 const VALID_UUID = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const ANOTHER_UUID = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
-
-describe('extractAddedIds', () => {
-  it('returns ids for ADD events only', () => {
-    expect(
-      extractAddedIds({
-        results: [
-          { id: VALID_UUID, event: 'ADD' },
-          { id: ANOTHER_UUID, event: 'UPDATE' },
-          { id: 'cccccccc-cccc-4ccc-cccc-cccccccccccc', event: 'NONE' },
-        ],
-      }),
-    ).toEqual([VALID_UUID]);
-  });
-
-  it('returns empty for non-uuid ids', () => {
-    expect(
-      extractAddedIds({
-        results: [{ id: 'not-a-uuid', event: 'ADD' }],
-      }),
-    ).toEqual([]);
-  });
-
-  it('returns empty for missing/null/non-object input', () => {
-    expect(extractAddedIds(null)).toEqual([]);
-    expect(extractAddedIds(undefined)).toEqual([]);
-    expect(extractAddedIds({})).toEqual([]);
-    expect(extractAddedIds({ results: null })).toEqual([]);
-    expect(extractAddedIds('garbage')).toEqual([]);
-  });
-
-  it('is case-insensitive on event names', () => {
-    expect(
-      extractAddedIds({
-        results: [
-          { id: VALID_UUID, event: 'add' },
-          { id: ANOTHER_UUID, event: 'Add' },
-        ],
-      }),
-    ).toEqual([VALID_UUID, ANOTHER_UUID]);
-  });
-
-  it('skips rows with missing id', () => {
-    expect(
-      extractAddedIds({
-        results: [
-          { event: 'ADD' },
-          { id: VALID_UUID, event: 'ADD' },
-        ],
-      }),
-    ).toEqual([VALID_UUID]);
-  });
-});
 
 describe('persistAnchorsSql', () => {
   beforeEach(() => _resetForTests());

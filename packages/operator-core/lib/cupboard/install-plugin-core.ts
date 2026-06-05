@@ -42,11 +42,19 @@ export interface InstallPluginCoreResult {
   ok: true;
   name: string;
   version: string;
+  /** Manifest distribution kind — 'plugin' (default) or 'pack' (runtime-less code-tool pack). */
+  kind: string;
   capabilities: string[];
   source: string;
   installedTo: string;
   /** Capabilities granted for `harness` (only when harness + acceptCapabilities). */
   granted: string[];
+  /**
+   * Deps this unit declares that are not installed but resolvable from the
+   * Cupboard (advisory — tool-distribution-granularity D-003). Empty when the
+   * manifest declares no dependencies.
+   */
+  installableDependencies?: { tools: string[]; packs: string[]; plugins: string[] };
 }
 
 export interface InstallPluginCoreDeps {
@@ -65,6 +73,24 @@ export interface InstallPluginCoreDeps {
   }) => Promise<void>;
   /** Drop the in-memory plugin-host + api-route caches so the new plugin goes live. */
   invalidateHost: () => void | Promise<void>;
+  /**
+   * Validate the manifest's declared `dependencies.{tools,packs,plugins}`
+   * against the host's pack catalog BEFORE the unit is copied into place
+   * (tool-distribution-granularity D-003 — plugin-to-tool deps, install-time
+   * gate). Optional: when absent, declared deps are not gated. Return the
+   * dep-validator verdict; hard-missing deps abort the install (422),
+   * installable ones surface advisorily on the result.
+   */
+  validateDependencies?: (deps: {
+    tools?: string[];
+    packs?: string[];
+    plugins?: string[];
+  }) => Promise<{
+    ok: boolean;
+    missing: { tools: string[]; packs: string[]; plugins: string[] };
+    installable: { tools: string[]; packs: string[]; plugins: string[] };
+    messages: string[];
+  }>;
 }
 
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
@@ -162,6 +188,31 @@ export async function installPluginFromCupboardCore(
         400,
       );
     }
+
+    // Install-time dependency gate (tool-distribution-granularity D-003): a
+    // unit declaring `dependencies` with a hard-missing dep (no provider
+    // anywhere) fails BEFORE anything is copied into place. Installable-from-
+    // Cupboard deps never block — they surface advisorily on the result.
+    const declaredDeps = (manifest as { dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[] } }).dependencies;
+    let installableDependencies: InstallPluginCoreResult['installableDependencies'];
+    const hasDeclaredDeps =
+      (declaredDeps?.tools?.length ?? 0) > 0 ||
+      (declaredDeps?.packs?.length ?? 0) > 0 ||
+      (declaredDeps?.plugins?.length ?? 0) > 0;
+    if (hasDeclaredDeps && deps.validateDependencies) {
+      const verdict = await deps.validateDependencies(declaredDeps!);
+      if (!verdict.ok) {
+        throw new InstallPluginError(
+          `dependencies unmet: ${verdict.messages.join('; ') || 'unknown'}`,
+          422,
+        );
+      }
+      const inst = verdict.installable;
+      if (inst.tools.length > 0 || inst.packs.length > 0 || inst.plugins.length > 0) {
+        installableDependencies = inst;
+      }
+    }
+
     const target = join(deps.globalPluginsDir(), manifest.name);
     assertInside(deps.globalPluginsDir(), target, `plugin name "${manifest.name}"`);
     await fs.mkdir(deps.globalPluginsDir(), { recursive: true });
@@ -189,10 +240,12 @@ export async function installPluginFromCupboardCore(
       ok: true,
       name: manifest.name,
       version: manifest.version,
+      kind: typeof manifest.kind === 'string' ? manifest.kind : 'plugin',
       capabilities,
       source: url,
       installedTo: target,
       granted,
+      ...(installableDependencies ? { installableDependencies } : {}),
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

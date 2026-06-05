@@ -289,6 +289,17 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.mergeIssuePayload('EI-404', { x: 1 })).toBeNull();
   });
 
+  it('updateIssue corrects a mislabeled kind (bug↔change — the auto-lane selector, close-loop D-002)', async () => {
+    const a = await issues.createIssue({ title: 'design follow-on mislabeled by the column default', kind: 'bug', createdBy: 'agA' });
+    expect(a.kind).toBe('bug');
+    const updated = await issues.updateIssue(a.id, { kind: 'change', by: 'agA', silent: true });
+    expect(updated?.kind).toBe('change');
+    // Untouched fields survive; a patch without kind leaves it alone.
+    const retitled = await issues.updateIssue(a.id, { title: 'retitled', by: 'agA', silent: true });
+    expect(retitled?.kind).toBe('change');
+    expect(retitled?.title).toBe('retitled');
+  });
+
   it('migration 157 backfills kind from legacy [kind] title prefixes + strips them (idempotent)', async () => {
     const bug = await issues.createIssue({ title: '[bug] legacy bug row' }); // kind column defaulted 'bug'
     const change = await issues.createIssue({ title: '[change] legacy change row' }); // column lied: 'bug'

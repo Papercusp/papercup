@@ -36,6 +36,22 @@ pub fn draw(f: &mut Frame, app: &App) {
         (root[1], None)
     };
 
+    // D-009: the collapsible plans-filter rail, carved off the LEFT of the body
+    // on the two tabs it narrows (Inbox + Brew). Suppressed on narrow bodies so
+    // the lists stay usable; the filter itself still applies when hidden.
+    let (rail, body) = if app.plan_filter_open
+        && matches!(app.tab, Tab::Inbox | Tab::Fleet)
+        && body.width >= 70
+    {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(32), Constraint::Min(38)])
+            .split(body);
+        (Some(cols[0]), cols[1])
+    } else {
+        (None, body)
+    };
+
     match app.tab {
         Tab::Operator => draw_chat(f, app, body),
         Tab::Inbox => draw_inbox(f, app, body),
@@ -49,6 +65,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Plugins => draw_plugins(f, app, body),
         Tab::Settings => draw_settings(f, app, body),
         Tab::Memory => draw_memory(f, app, body),
+    }
+    if let Some(area) = rail {
+        draw_plan_filter(f, app, area);
     }
     if let Some(area) = presence {
         draw_presence(f, app, area);
@@ -275,6 +294,46 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+/// D-009: the collapsible plans-filter rail (Inbox + Brew). Lists the
+/// pot-scoped plans with a checkbox glyph per slug; while the rail is open,
+/// j/k move its cursor, Space/Enter toggles the plan in/out of the filter,
+/// `c` clears it, and F/Esc closes the rail (the filter keeps applying when
+/// hidden — the list titles carry a badge so it's never invisible).
+fn draw_plan_filter(f: &mut Frame, app: &App, area: Rect) {
+    let plans = app.visible_plans();
+    let items: Vec<ListItem> = plans
+        .iter()
+        .map(|p| {
+            let mark = if app.plan_filter.contains(&p.slug) { "[x]" } else { "[ ]" };
+            ListItem::new(Line::from(format!("{mark} {}", trunc(&p.slug, 25))))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !plans.is_empty() {
+        state.select(Some(app.plan_filter_sel.min(plans.len() - 1)));
+    }
+    let body_area = block_with_header(
+        f,
+        area,
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " Filter: plans ({} on) ",
+            app.plan_filter.len()
+        ))),
+        "  ␣ toggle · c clear · F close",
+    );
+    if items.is_empty() {
+        f.render_widget(
+            Paragraph::new(Span::styled("(no plans loaded)", Theme::dim())),
+            body_area,
+        );
+        return;
+    }
+    let list = List::new(items)
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body_area, &mut state);
+}
+
 fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -306,12 +365,16 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     if !inbox.is_empty() {
         state.select(Some(app.inbox_sel.min(inbox.len() - 1)));
     }
+    // The plans-filter badge (D-009) keeps an active-but-hidden rail visible.
+    let title = if app.plan_filter.is_empty() {
+        format!(" Inbox ({}) ", inbox.len())
+    } else {
+        format!(" Inbox ({}) · F:plans({}) ", inbox.len(), app.plan_filter.len())
+    };
     let body_area = block_with_header(
         f,
         cols[0],
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(format!(" Inbox ({}) ", inbox.len()))),
+        Block::default().borders(Borders::ALL).title(Line::from(title)),
         &format!("   {:<12}{:<27}{}", "status", "plan/ref", "title"),
     );
     let list = List::new(items)
@@ -755,23 +818,46 @@ fn draw_operator_config(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, area);
 }
 
+/// Config tab (D-013): renders the *effective* settings — Claude Code defaults
+/// overlaid by the harness's `.claude/settings.json` — so an empty file shows
+/// the real editable structure instead of a blank. A provenance line says
+/// which top-level keys the file provides (or that everything is defaults),
+/// and the footer hints the `:set`/`:unset` palette editor.
 fn draw_config(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Line::from(format!(" {} · .claude/settings.json (read-only) ", app.harness)));
-    // D-004d: a clear, dim placeholder when the harness has no settings file
-    // (genuinely empty for some pots — distinguish "empty" from "not loaded").
-    let para = if app.config.is_empty() {
-        Paragraph::new(Line::from(Span::styled(
-            "(no .claude/settings.json for this pot — nothing to show)",
+        .title(Line::from(format!(" {} · .claude/settings.json (effective) ", app.harness)));
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(err) = &app.config.parse_error {
+        lines.push(Line::from(Span::styled(
+            format!("file invalid: {err} — showing defaults"),
+            Theme::warn(),
+        )));
+    } else if app.config.file_keys.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no settings file for this pot — showing Claude Code defaults)",
             Theme::dim(),
-        )))
-        .block(block)
+        )));
     } else {
-        Paragraph::new(app.config.clone())
-            .wrap(Wrap { trim: false })
-            .block(block)
+        lines.push(Line::from(Span::styled(
+            format!("file sets: {} (rest = defaults)", app.config.file_keys.join(", ")),
+            Theme::dim(),
+        )));
+    }
+    lines.push(Line::from(""));
+    let rendered = if app.config.effective.is_null() {
+        "(loading…)".to_string()
+    } else {
+        serde_json::to_string_pretty(&app.config.effective)
+            .unwrap_or_else(|_| "(unrenderable)".into())
     };
+    lines.extend(rendered.lines().map(|l| Line::from(l.to_string())));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        ":set <key.path> <value> · :unset <key.path> — edits write .claude/settings.json",
+        Theme::dim(),
+    )));
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
     f.render_widget(para, area);
 }
 
@@ -980,7 +1066,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m    switch tab (1 Operator · 4 Brew · 5 Pots · m Memory)\n  /           search memory (on Memory)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m    switch tab (1 Operator · 4 Brew · 5 Pots · m Memory)\n  /           search memory (on Memory)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  F           plans filter rail (Inbox / Brew)\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -1139,7 +1225,7 @@ fn draw_palette(f: &mut Frame, app: &App) {
         Paragraph::new(format!("> {}", app.palette_input)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Command (Esc to close) "),
+                .title(" Command — tutorial · layouts · crews · save/restore-crew|layout (Esc closes) "),
         ),
         area,
     );
@@ -1880,7 +1966,7 @@ mod tests {
         if let Ok(v) = c.testing_domains(slug).await {
             app.set_testing(v);
         }
-        if let Ok(v) = c.claude_settings(slug).await {
+        if let Ok(v) = c.claude_settings_effective(slug).await {
             app.set_config(v);
         }
         if let Ok(v) = c.tui_panes_for(slug).await {

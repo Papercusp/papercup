@@ -352,6 +352,36 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
       }
     }
   }
+  // kind='pack' — a runtime-less code-tool pack (tool-distribution-granularity
+  // 2026-06-05 D-001/D-004): statically-declared tools are its ONLY
+  // contribution, so a pack stays installable in isolation by construction.
+  // A plugin = a pack WITH a runtime; anything runtime-bearing here means the
+  // author wanted kind='plugin'.
+  const kind =
+    (manifest as { kind?: string }).kind ?? (plugin as { kind?: string }).kind ?? 'plugin';
+  if (kind === 'pack') {
+    const runtimeKind = manifest.runtime?.kind ?? 'js';
+    if (runtimeKind !== 'js') {
+      return `pack "${plugin.name}" declares runtime.kind "${runtimeKind}" — a pack is runtime-less (js-loaded tool handlers only); use kind "plugin"`;
+    }
+    if (hasDynamicTools) {
+      return `pack "${plugin.name}" implements getDynamicTools — dynamic (MCP-proxy) tools ride a plugin runtime; use kind "plugin"`;
+    }
+    const offending: string[] = [];
+    if (Array.isArray(plugin.ui) && plugin.ui.length > 0) offending.push('ui');
+    if ((plugin.dashboardTabs?.length ?? 0) > 0) offending.push('dashboardTabs');
+    if ((plugin.sidebarItems?.length ?? 0) > 0) offending.push('sidebarItems');
+    if (Object.keys(plugin.roles ?? {}).length > 0) offending.push('roles');
+    if ((plugin.routines?.length ?? 0) > 0) offending.push('routines');
+    if ((plugin.actions?.length ?? 0) > 0) offending.push('actions');
+    if (plugin.hooks && Object.keys(plugin.hooks).length > 0) offending.push('hooks');
+    if (offending.length > 0) {
+      return `pack "${plugin.name}" declares runtime-bearing surface(s) ${offending.join(', ')} — a pack contributes tools only; use kind "plugin"`;
+    }
+    if (manifestTools.length === 0) {
+      return `pack "${plugin.name}" declares no tools — a pack is a distribution unit of n≥1 tools`;
+    }
+  }
   return null;
 }
 
@@ -369,6 +399,15 @@ async function runtimeDispatch(
   source: string,
 ): Promise<CoreLoadedPlugin<Plugin, ManifestShape> | { error: string; path: string } | null> {
   const runtime = manifest.runtime;
+  // kind='pack' purity, runtime half (tool-distribution-granularity D-004):
+  // wasm/daemon manifests short-circuit validate() below, so the runtime-less
+  // rule for packs must gate HERE, before the dispatch.
+  if ((manifest as { kind?: string }).kind === 'pack' && runtime && runtime.kind !== 'js') {
+    return {
+      error: `pack "${(manifest as { name?: string }).name ?? '?'}" declares runtime.kind "${runtime.kind}" — a pack is runtime-less (js-loaded tool handlers only); use kind "plugin"`,
+      path,
+    };
+  }
   if (runtime?.kind === 'wasm') {
     if (!runtime.wasmPath) {
       return { error: 'manifest.runtime.kind = "wasm" but runtime.wasmPath missing', path };

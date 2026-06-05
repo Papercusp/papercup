@@ -3,11 +3,12 @@
  *
  * Brain calls when user says "forget X" or contradicts a stored fact.
  * Always informs the user out loud ("Removing that from memory").
+ * Storage rides the neutral `MemoryBackend` seam.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend } from '../../memory/backend';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
@@ -31,13 +32,14 @@ export default defineTool({
     id: z.string().min(1),
   }),
   async handler(args) {
-    const client = await getMemoryClient();
-    if (!client) {
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'mem0_unavailable' }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
       };
     }
-    await client.delete(args.id);
+    await backend.forget(args.id);
     return {
       content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
     };

@@ -86,15 +86,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     // swallow a literal '?' typed into any text input.
     category: 'global',
   },
-  {
-    id: 'operator.toggle',
-    description: 'Open or close the Papercup panel',
-    // mod+; (semicolon) is universally free across Firefox/Chrome/Safari.
-    // mod+shift+o is kept as an alternate for muscle memory.
-    defaultCombo: 'mod+;, mod+shift+o',
-    category: 'global',
-    command: 'panel.toggle',
-  },
+  // (operator.toggle — the panel.toggle binding on mod+; — was removed with
+  // the operator-card panel, unify-agent-launches D-005.)
   {
     id: 'operator.generateIdeas',
     description: 'Ask Papercup for suggestions (Generate ideas)',

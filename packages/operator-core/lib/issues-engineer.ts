@@ -165,7 +165,16 @@ async function nextIssueId(): Promise<string> {
   return `EI-${(Number(rows[0]?.n) || 0) + 1}`;
 }
 
-async function deliver(issue: EngineerIssue, op: 'created' | 'updated' | 'commented' | 'resolved', summary: string, actor = 'substrate'): Promise<number> {
+/** Per-op notify_kind, as data (mirrors the fanout-projection registry shape —
+ *  adopt-event-rules-engines D-005). `resolved` is the one lifecycle resolution. */
+const ISSUE_NOTIFY_KINDS = {
+  created: 'issue_created',
+  updated: 'issue_updated',
+  commented: 'issue_commented',
+  resolved: 'issue_resolved',
+} as const;
+
+async function deliver(issue: EngineerIssue, op: keyof typeof ISSUE_NOTIFY_KINDS, summary: string, actor = 'substrate'): Promise<number> {
   // Fan out to the issue's subscribers (direct ∪ topic), excluding the actor so
   // an agent is never notified of its own action. Routed through the canonical
   // fanoutForObject seam (A6) instead of an inline resolve→deliverInjectMany —
@@ -176,8 +185,7 @@ async function deliver(issue: EngineerIssue, op: 'created' | 'updated' | 'commen
     from: actor,
     subject: `${ISSUE_KIND}:${issue.id}`,
     summary,
-    notify_kind:
-      op === 'resolved' ? 'issue_resolved' : op === 'commented' ? 'issue_commented' : op === 'created' ? 'issue_created' : 'issue_updated',
+    notify_kind: ISSUE_NOTIFY_KINDS[op],
     isResolution: op === 'resolved',
   };
   return fanoutForObject(issueRef(issue.id), ev, { excludeId: actor });
@@ -303,6 +311,10 @@ export interface UpdateIssuePatch {
   title?: string;
   body?: string;
   severity?: IssueSeverity;
+  /** Correct a mislabeled work-item kind (issue-surface kinds only — bug|change).
+   *  The kind column is load-bearing post close-the-self-improvement-loop D-002
+   *  (it picks the auto-implement lane), so mislabels must be fixable via the verb. */
+  kind?: IssueKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
   by?: string;
@@ -317,6 +329,7 @@ export async function updateIssue(id: string, patch: UpdateIssuePatch): Promise<
       title = ${patch.title ?? sql`title`},
       body = ${patch.body ?? sql`body`},
       severity = ${patch.severity ?? sql`severity`},
+      kind = ${patch.kind ?? sql`kind`},
       found_during = ${patch.foundDuring !== undefined ? patch.foundDuring : sql`found_during`},
       linked_feature_id = ${patch.linkedFeatureId !== undefined ? patch.linkedFeatureId : sql`linked_feature_id`}
     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}

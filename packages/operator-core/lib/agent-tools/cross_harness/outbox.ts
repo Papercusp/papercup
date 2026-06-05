@@ -36,9 +36,20 @@ export default defineTool({
     slug: z.string().optional(),
     limit: z.number().int().positive().max(200).optional(),
   }),
+  // Declarative precondition (adopt-event-rules-engines requires:-half): the
+  // former in-handler `if (!slug) throw` guard, lifted.
+  requires: [
+    {
+      id: 'harness-slug',
+      when: {
+        any: [{ 'args.slug': { truthy: true } }, { 'ctx.harnessSlug': { truthy: true } }],
+      },
+      error: 'cross_harness:outbox — slug required (passed or in spawn ctx)',
+    },
+  ],
   async handler(args, ctx) {
+    // Non-empty by the `harness-slug` precondition above.
     const slug = args.slug ?? ctx.harnessSlug ?? '';
-    if (!slug) throw new Error('cross_harness:outbox — slug required');
     const messages = await readOutbox(slug, args.limit);
     return { content: [{ type: 'text', text: JSON.stringify({ slug, messages }) }] };
   },

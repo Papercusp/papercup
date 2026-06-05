@@ -76,6 +76,34 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
     expect(fired[0]).toMatchObject({ blueprintId: 'scan', role: 'scanner', kickoff: 'sweep now' });
   });
 
+  it('payload.timeoutMs threads through to the launch fire (a scan needs >> the 90s route default)', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+
+    await handleBlueprintRun(
+      ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep now', timeoutMs: 900_000 } }),
+    );
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ blueprintId: 'scan', role: 'scanner', timeoutMs: 900_000 });
+  });
+
+  it('a missing/garbage payload.timeoutMs is omitted from the fire (route default applies)', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+
+    await handleBlueprintRun(
+      ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep', timeoutMs: 'soon' } }),
+    );
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0].timeoutMs).toBeUndefined();
+  });
+
   // mode='work-item' touches getOrgPg().sql (the work_items base insert), so it is covered
   // by blueprint-run-action.integration.test.ts against a throwaway DB — exercising it here
   // would write to whatever PG getOrgPg() resolves to. This unit file stays hermetic: it

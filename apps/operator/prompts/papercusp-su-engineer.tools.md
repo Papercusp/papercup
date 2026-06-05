@@ -596,11 +596,13 @@ workflows) > `<role>.persona.md` (behavior). In dev
 immediately. (Note: the SU playbooks themselves are
 `apps/operator/prompts/papercusp-su-{engineer,power}.tools.md`. They render
 **per-launch** — `psu` → `bootstrap-su` → `renderSuPlaybook` reads the
-source file fresh on every launch — so **committing the source IS the
-deploy**; no `install-standalone-mcp.sh` re-render and no `:3070` restart
-are needed for prompt edits to go live on the next psu session. The
-`~/.papercusp/*-collaborator*.md` files the installer writes are a
-vestigial fallback, not read on a psu launch.)
+source file fresh on every launch — but post the release-gate cutover
+(2026-06-05) the `:3070` host reads the **release checkout's** copy
+(`papercup-release`), so a playbook edit in `main` goes live on psu only
+after a **release-gate deploy** carries it there (green-checkpoint →
+`deploy-cli --execute`); no `install-standalone-mcp.sh` re-render is
+needed. The `~/.papercusp/*-collaborator*.md` files the installer writes
+are a vestigial fallback, not read on a psu launch.)
 
 ## Where not to go
 

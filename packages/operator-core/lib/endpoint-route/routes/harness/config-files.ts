@@ -1,14 +1,21 @@
 /**
  * Project-root config files editable from the harness UI:
  *
- *   GET/PUT /api/harness/:slug/mcp              — .mcp.json
- *   GET/PUT /api/harness/:slug/claude-settings  — .claude/settings.json
- *   GET/PUT /api/harness/:slug/env              — .env (secrets — gated by header)
+ *   GET/PUT /api/harness/:slug/mcp                       — .mcp.json
+ *   GET/PUT /api/harness/:slug/claude-settings           — .claude/settings.json
+ *   GET     /api/harness/:slug/claude-settings/effective — defaults ⊕ file (D-013)
+ *   GET/PUT /api/harness/:slug/env                       — .env (secrets — gated by header)
  *
  * mcp.json + claude-settings.json are PG-canonical (Phase 0d) via
  * text-artifacts with a custom disk mirror at the project root. .env is
  * FS-only (never mirrored to PG) and PUT requires an explicit
  * `X-Confirm-Secrets: yes` header.
+ *
+ * The `/effective` view (pui-completion-and-polish-2026-06-05 D-013) renders
+ * the harness's *effective* Claude Code settings — `CLAUDE_SETTINGS_DEFAULTS`
+ * overlaid by whatever the file provides — so an empty/missing
+ * `.claude/settings.json` shows the real default structure instead of a blank,
+ * and editors (the PUI Config tab's `:set`/`:unset`) have a structure to edit.
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 15).
@@ -93,6 +100,117 @@ const [getClaudeSettings, putClaudeSettings] = jsonConfigRoutes({
   diskPath: claudeSettingsPath,
 });
 
+/**
+ * Claude Code per-project settings defaults (D-013). `.claude/settings.json`
+ * in a harness checkout configures the Claude Code CLI for every agent
+ * spawned there (permissions, hooks, env, model, MCP gating). Keys mirror
+ * Claude Code's documented settings surface; values are Claude Code's own
+ * defaults — `model: null` means "no override; the CLI resolves its default".
+ * Kept deliberately curated: only keys a harness plausibly tunes.
+ */
+export const CLAUDE_SETTINGS_DEFAULTS: Record<string, unknown> = {
+  model: null,
+  permissions: {
+    allow: [],
+    deny: [],
+    ask: [],
+    additionalDirectories: [],
+    defaultMode: 'default',
+  },
+  env: {},
+  hooks: {},
+  includeCoAuthoredBy: true,
+  cleanupPeriodDays: 30,
+  enableAllProjectMcpServers: false,
+  enabledMcpjsonServers: [],
+  disabledMcpjsonServers: [],
+};
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Deep-merge `overlay` onto `base`: plain objects merge per-key, everything
+ * else (scalars, arrays, null) is replaced by the overlay value. Overlay keys
+ * unknown to the defaults pass through untouched.
+ */
+export function mergeSettings(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [k, v] of Object.entries(overlay)) {
+    out[k] = isPlainObject(out[k]) && isPlainObject(v)
+      ? mergeSettings(out[k] as Record<string, unknown>, v)
+      : v;
+  }
+  return out;
+}
+
+/**
+ * Compute the effective settings view from raw file content (PG-canonical or
+ * disk). Empty/missing content → pure defaults. Invalid JSON (or a non-object
+ * root) → defaults plus a `parseError` the UI surfaces; the broken file
+ * content still round-trips via the plain GET so the user can fix it.
+ */
+export function effectiveClaudeSettings(content: string | null | undefined): {
+  parsed: Record<string, unknown> | null;
+  parseError?: string;
+  effective: Record<string, unknown>;
+  fileKeys: string[];
+} {
+  const raw = (content ?? '').trim();
+  if (!raw) return { parsed: null, effective: { ...CLAUDE_SETTINGS_DEFAULTS }, fileKeys: [] };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e: any) {
+    return {
+      parsed: null,
+      parseError: `invalid JSON: ${e.message}`,
+      effective: { ...CLAUDE_SETTINGS_DEFAULTS },
+      fileKeys: [],
+    };
+  }
+  if (!isPlainObject(parsed)) {
+    return {
+      parsed: null,
+      parseError: 'settings root must be a JSON object',
+      effective: { ...CLAUDE_SETTINGS_DEFAULTS },
+      fileKeys: [],
+    };
+  }
+  return {
+    parsed,
+    effective: mergeSettings(CLAUDE_SETTINGS_DEFAULTS, parsed),
+    fileKeys: Object.keys(parsed),
+  };
+}
+
+const getClaudeSettingsEffective = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/claude-settings/effective',
+  auth: 'public',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const project = await resolvePhasedProject(slug, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const { loadTextArtifact } = await import('../../../text-artifacts');
+    const fromPg = await loadTextArtifact(slug, 'claude-settings.json');
+    const content = fromPg ?? safeRead(claudeSettingsPath(project)) ?? '';
+    const view = effectiveClaudeSettings(content);
+    return Response.json({
+      ok: true,
+      content,
+      defaults: CLAUDE_SETTINGS_DEFAULTS,
+      effective: view.effective,
+      fileKeys: view.fileKeys,
+      ...(view.parseError ? { parseError: view.parseError } : {}),
+    });
+  },
+});
+
 const getEnv = defineTool({
   method: 'GET',
   path: '/harness/:slug/env',
@@ -124,4 +242,4 @@ const putEnv = defineTool({
   },
 });
 
-export default [getMcp, putMcp, getClaudeSettings, putClaudeSettings, getEnv, putEnv];
+export default [getMcp, putMcp, getClaudeSettings, putClaudeSettings, getClaudeSettingsEffective, getEnv, putEnv];

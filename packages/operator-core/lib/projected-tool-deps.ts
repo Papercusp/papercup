@@ -23,6 +23,7 @@ import {
   papercuspComputeQuotaWindow,
   type DispatchProjectedDeps,
   type PostInvokeEvent,
+  type PreconditionFireRequest,
   type ToolDispatchOverrideFn,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -40,6 +41,22 @@ import { recordToolAuthzEvent } from './tool-authz-audit';
 let reactionPostInvoke: ((event: PostInvokeEvent) => void) | null = null;
 export function setReactionPostInvoke(handler: ((event: PostInvokeEvent) => void) | null): void {
   reactionPostInvoke = handler;
+}
+
+/**
+ * The PRECONDITION FIRE PORT (`requires:` auto-correct — autoloop-pot-operator-
+ * rebuild D-006). Installed by `lib/events` alongside the postInvoke handler —
+ * the corrective fire rides the SAME dispatch path as reactions
+ * (`fireReactionInProcess`: auth-gated, audited, cause-chained). Same setter
+ * indirection as above to avoid the `events → dispatch-reaction →
+ * projected-tool-deps` cycle. Unset ⇒ auto-correct preconditions FAIL CLOSED
+ * (the dispatcher rejects with a message naming the uninstalled port).
+ */
+let preconditionFire: ((req: PreconditionFireRequest) => Promise<void>) | null = null;
+export function setPreconditionFire(
+  handler: ((req: PreconditionFireRequest) => Promise<void>) | null,
+): void {
+  preconditionFire = handler;
 }
 
 async function readQuotaStateImpl(
@@ -208,6 +225,15 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // RFC tooldef-auth Phase 1b: persist every authorize allow/deny + policy bypass.
   auditAuth: (event) => {
     void recordToolAuthzEvent(event);
+  },
+  // Precondition auto-correct fire port (`requires:` — D-006). AWAITED by the
+  // dispatcher's `preconditions` step; a throw (incl. "not installed") rejects
+  // the trigger fail-closed. Installed by `lib/events` at startup.
+  firePrecondition: async (req) => {
+    if (!preconditionFire) {
+      throw new Error('precondition fire port not installed (lib/events not loaded)');
+    }
+    await preconditionFire(req);
   },
   // RFC tooldef-auth Phase 3 (D1): default-deny ON. Audited 2026-05-31 — every built-in
   // is type-certain gated (defineTool requires `capability`; defineUITool routes through

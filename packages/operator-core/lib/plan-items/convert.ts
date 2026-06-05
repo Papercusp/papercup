@@ -1,0 +1,233 @@
+/**
+ * plan-item → work_item conversion — convert-at-pickup.
+ *
+ * Plans: project-centric-harness-rethink-2026-06-04 D-015 ("working a plan item =
+ * convert it to a work_item first — no untracked self-item") +
+ * unify-work-items-2026-06-04 + plan-item-assignment-claim-liveness-2026-06-04.
+ *
+ * When an agent picks up a PLAN ITEM to work it, the first step is to convert it
+ * to a WORK_ITEM (the execution unit: kind + assignee + claim/lease + lifecycle).
+ * Strategy (self/inline vs a blueprint) is orthogonal — it is *how* the work_item
+ * executes, not *whether* one exists. This module is that conversion:
+ *
+ *   1. POLICY + LEASE first — `claimPlanItem` (liveness.ts) enforces the
+ *      assignment/work-group policy and takes the authority-mediated lease.
+ *      A refused/conflicted pickup creates NOTHING.
+ *   2. IDEMPOTENT — re-picking an already-converted item RESUMES its existing
+ *      work_item (found via the `implements` link edge) instead of minting a
+ *      duplicate. A lapsed peer's stale work-item assignee is taken over: the
+ *      plan-item lease (step 1) is the mutual-exclusion authority, so whoever
+ *      holds it owns the execution record too.
+ *   3. LINKED BACK — the work_item carries an `implements` coord_links edge to
+ *      the plan item (`plan_item` / '<plan>#<item>', the same ObjectRef
+ *      vocabulary issue-blocks-merge + work_items:link use) AND stamps
+ *      `payload.plan_item = { plan_slug, item_id, harness_slug }`. The edge is
+ *      the queryable substrate truth (idempotency, detail views); the payload
+ *      stamp is what lets the PURE reflect rules (reflect-rules.ts) read the
+ *      linkage straight off a work_items:* tool event without I/O.
+ *
+ * The plan-item STATUS flip (todo→wip on pickup, →done on completion) is NOT
+ * done here — it rides the event-reaction system: `plan_items:convert` declares
+ * an `emits:` firing plans:set-status, and reflect-rules.ts maps the work_item
+ * lifecycle back onto the plan item. One mechanism, inspectable in events:graph.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { readPlanBySlug } from '../agent-tools/plans/source';
+import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
+import {
+  createWorkItem,
+  claimWorkItem,
+  releaseWorkItem,
+  getWorkItem,
+  linkWorkItem,
+  isWorkItemKind,
+  type WorkItem,
+  type WorkItemKind,
+} from '../work-items';
+import { claimPlanItem } from './liveness';
+import type { LivenessMode, PlanItemClaim } from './claims';
+
+/** The link rel from a work_item to the plan item it executes. */
+export const IMPLEMENTS_REL = 'implements';
+
+/** The payload stamp the reflect rules read off work_items:* tool events. */
+export interface PlanItemStamp {
+  plan_slug: string;
+  item_id: string;
+  harness_slug: string;
+}
+
+/** Work-item states that mean "this execution record is finished" — a re-pickup
+ *  of the plan item mints a FRESH work_item rather than resuming a closed one. */
+const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'resolved', 'closed', 'done', 'deprecated', 'dropped']);
+
+export interface ConvertPlanItemOpts {
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  itemId: string;
+  /** Work-item kind to mint (D-002 vocabulary). Default 'task' — the generic
+   *  "an agent is executing this" record; pass feature/research-task/bug/… when
+   *  the item warrants a pipeline-shaped unit. */
+  kind?: WorkItemKind;
+  /** Override the work-item title (default: the plan item's text, truncated). */
+  title?: string;
+  owner: string;
+  ownerLabel?: string | null;
+  ownerName?: string | null;
+  ownerUser: string;
+  intent?: string;
+  livenessMode?: LivenessMode;
+  ttlSec?: number;
+}
+
+export type ConvertPlanItemResult =
+  | {
+      /** converted = a new work_item was minted; resumed = an existing one re-claimed. */
+      status: 'converted' | 'resumed';
+      workItem: WorkItem;
+      claim: PlanItemClaim;
+      mode: LivenessMode;
+      viaAssignment: boolean;
+      planItem: { plan: string; item: string; status: string | null; text: string | null };
+    }
+  | { status: 'refused'; reason: string; assignee?: string }
+  | { status: 'conflict'; conflict: PlanItemClaim };
+
+/** Resolve the work_item that `implements` a plan item (or null). Reads the
+ *  coord_links edge written at conversion; src is an issue-family id or a
+ *  harness-qualified feature ref ('<harness>#<id>'). */
+export async function findImplementingWorkItem(
+  planSlug: string,
+  itemId: string,
+): Promise<WorkItem | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ src_kind: string; src_ref: string }[]>`
+    SELECT src_kind, src_ref
+      FROM harness_shared.coord_links
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND rel = ${IMPLEMENTS_REL}
+       AND dst_kind = ${PLAN_ITEM_KIND}
+       AND dst_ref = ${planItemRef(planSlug, itemId)}
+     ORDER BY created_at DESC`;
+  for (const r of rows) {
+    if (r.src_kind === 'issue') {
+      const wi = await getWorkItem(r.src_ref);
+      if (wi) return wi;
+    } else if (r.src_kind === 'feature') {
+      // featureRef '<harness>#<id>' (issue-blocks-merge).
+      const i = r.src_ref.indexOf('#');
+      if (i > 0) {
+        const wi = await getWorkItem(r.src_ref.slice(i + 1), r.src_ref.slice(0, i));
+        if (wi) return wi;
+      }
+    }
+  }
+  return null;
+}
+
+/** First ~`max` chars of a plan item's text as a work-item title (one line). */
+export function planItemTitle(text: string, max = 140): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
+}
+
+/**
+ * Convert a plan item to a work_item at pickup (D-015): policy-checked lease →
+ * mint-or-resume the work_item → claim it → link it back. See module header.
+ */
+export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<ConvertPlanItemResult> {
+  const kind = opts.kind ?? 'task';
+  if (!isWorkItemKind(kind)) return { status: 'refused', reason: `unknown work_item kind '${kind}'` };
+
+  // ── The plan item itself ───────────────────────────────────────────────────
+  const read = await readPlanBySlug(opts.planSlug, {
+    harnessSlug: opts.harnessSlug,
+    workspaceId: opts.workspaceId,
+  });
+  if (!read) return { status: 'refused', reason: `plan '${opts.planSlug}' not found` };
+  const items =
+    read.row.items.length > 0
+      ? read.row.items.map((i) => ({ id: i.id, status: i.status as string | null, text: i.text as string | null }))
+      : read.parsed.items.map((i) => ({ id: i.id, status: i.storedStatus as string | null, text: i.text ?? null }));
+  const item = items.find((i) => i.id === opts.itemId);
+  if (!item) {
+    return { status: 'refused', reason: `plan item ${opts.itemId} not found in '${opts.planSlug}'` };
+  }
+  if (item.status === 'done' || item.status === 'dropped') {
+    return { status: 'refused', reason: `plan item ${opts.itemId} is already ${item.status}` };
+  }
+
+  // ── 1. Policy + lease FIRST (assignment / work-group / mutual exclusion) ──
+  const claimRes = await claimPlanItem({
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    planSlug: opts.planSlug,
+    itemId: opts.itemId,
+    owner: opts.owner,
+    ownerLabel: opts.ownerLabel,
+    ownerName: opts.ownerName,
+    ownerUser: opts.ownerUser,
+    intent: opts.intent ?? `convert-at-pickup → work_item[kind=${kind}]`,
+    livenessMode: opts.livenessMode,
+    ttlSec: opts.ttlSec,
+  });
+  if (claimRes.status !== 'claimed') return claimRes;
+
+  const stamp: PlanItemStamp = {
+    plan_slug: opts.planSlug,
+    item_id: opts.itemId,
+    harness_slug: opts.harnessSlug,
+  };
+  const planItem = { plan: opts.planSlug, item: opts.itemId, status: item.status, text: item.text };
+
+  // ── 2. Resume an existing non-terminal execution record, if any ───────────
+  const existing = await findImplementingWorkItem(opts.planSlug, opts.itemId);
+  if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
+    let resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
+    if (!resumed) {
+      // Held by a lapsed peer. The plan-item lease (step 1) is the exclusion
+      // authority — we hold it, so take the execution record over.
+      await releaseWorkItem(existing.id, { harness: existing.harness ?? undefined });
+      resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
+    }
+    return {
+      status: 'resumed',
+      workItem: resumed ?? existing,
+      claim: claimRes.claim,
+      mode: claimRes.mode,
+      viaAssignment: claimRes.viaAssignment,
+      planItem,
+    };
+  }
+
+  // ── 3. Mint the work_item (kind + claim + back-link) ──────────────────────
+  const title = opts.title ?? (item.text ? planItemTitle(item.text) : `${opts.planSlug} ${opts.itemId}`);
+  const created = await createWorkItem({
+    kind,
+    title,
+    summary: item.text ?? undefined,
+    harness: opts.harnessSlug,
+    payload: { plan_item: stamp },
+    createdBy: opts.owner,
+    // Issue-family kinds take the assignee at creation; feature-family is
+    // claimed right after (no assignee column on insert).
+    assignee: opts.owner,
+  });
+  const claimed = await claimWorkItem(created.id, opts.owner, { harness: created.harness ?? undefined });
+  await linkWorkItem(
+    created.id,
+    { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, opts.itemId) },
+    IMPLEMENTS_REL,
+    { harness: created.harness ?? undefined, by: opts.owner },
+  );
+  return {
+    status: 'converted',
+    workItem: claimed ?? created,
+    claim: claimRes.claim,
+    mode: claimRes.mode,
+    viaAssignment: claimRes.viaAssignment,
+    planItem,
+  };
+}

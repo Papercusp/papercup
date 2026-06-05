@@ -13,20 +13,20 @@ describe('parseOperatorIntent', () => {
     expect(parseOperatorIntent('hello world')).toBeNull();
   });
 
-  it('parses open verbs', () => {
-    expect(parseOperatorIntent('operator open')).toEqual({ kind: 'open' });
-    expect(parseOperatorIntent('operator show')).toEqual({ kind: 'open' });
+  it('panel verbs were retired with the card panel (D-005) — open/show no longer parse', () => {
+    expect(parseOperatorIntent('operator open')).toBeNull();
+    expect(parseOperatorIntent('operator show')).toBeNull();
   });
 
   it('parses scan verbs', () => {
-    expect(parseOperatorIntent('operator scan')).toEqual({ kind: 'open-and-scan' });
-    expect(parseOperatorIntent('operator status')).toEqual({ kind: 'open-and-scan' });
-    expect(parseOperatorIntent("operator what's pending")).toEqual({ kind: 'open-and-scan' });
+    expect(parseOperatorIntent('operator scan')).toEqual({ kind: 'scan' });
+    expect(parseOperatorIntent('operator status')).toEqual({ kind: 'scan' });
+    expect(parseOperatorIntent("operator what's pending")).toEqual({ kind: 'scan' });
   });
 
   it('parses scan with query', () => {
     expect(parseOperatorIntent('operator scan tell me about auth')).toEqual({
-      kind: 'open-and-scan',
+      kind: 'scan',
       query: 'tell me about auth',
     });
   });
@@ -47,9 +47,9 @@ describe('parseOperatorIntent', () => {
     expect(parseOperatorIntent('operator yodel')).toBeNull();
   });
 
-  it('parses cross-workspace summary intent', () => {
-    expect(parseOperatorIntent('operator across workspaces')).toEqual({ kind: 'across-workspaces' });
-    expect(parseOperatorIntent('operator across workspace')).toEqual({ kind: 'across-workspaces' });
+  it('across-workspaces was retired with the card panel (D-005) — no longer parses', () => {
+    expect(parseOperatorIntent('operator across workspaces')).toBeNull();
+    expect(parseOperatorIntent('operator across workspace')).toBeNull();
   });
 });
 

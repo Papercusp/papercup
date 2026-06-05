@@ -88,23 +88,41 @@ the `system:release-trigger` routine dispatch it.
   the shared dev-api; the **deploy** apply is fail-loud → a bad migration aborts the
   deploy and rolls back.
 
-## ⚠ The cutover (owner-gated — NOT done automatically)
+## ✅ The cutover happened (2026-06-05) — the standing two-port model
 
-Everything above is built + tested, and the green-checkpoint / release-trigger
-routines are seeded **INACTIVE**. The live operator still runs from the integration
-tree. Flipping it to run from the release checkout changes deploy semantics for the
-**whole running fleet** (a peer's `dev:restart` would stop picking up their lib edits
-— they'd use the deploy/escape-hatch instead), so it should happen when the fleet is
-quiesced and aware. The cutover is one reversible step:
+The live operator **runs from the release checkout**: `papercup-dev-api.service`
+(`:3070`) has `WorkingDirectory=…/papercup-release/apps/operator` and
+`PAPERCUSP_INTEGRATION_ROOT=…/papercup` in its unit env. A second **staging
+operator** `papercup-staging-api.service` (`:3170`) runs from the integration
+tree (`main`, DBOS/routines disabled) so server-side edits can be tested live
+without touching the stable host:
 
-1. Build/refresh the release checkout at the current `ready`:
-   `bash apps/operator/bin/release/setup-release-checkout.sh --ref ready`
-2. Repoint the systemd unit's `WorkingDirectory` to
-   `…/papercup-release/apps/operator` (`systemctl --user edit papercup-dev-api.service`),
-   `daemon-reload`, `restart`.
-3. Health-check `/api/health`; if bad, revert `WorkingDirectory` to
-   `…/papercup/apps/operator` + restart (≈30s recovery).
-4. Audit the remaining `process.cwd()`-based agent-spawn paths
-   (`console-launcher.ts`) to confirm spawned agents still work in the integration
-   tree, not the release checkout.
-5. Activate the routines: `npx tsx apps/operator/lib/release/seed-release-routines.ts --active`.
+- **Test a `lib/**` edit:** `systemctl --user restart papercup-staging-api.service`,
+  probe `:3170`.
+- **Promote to `:3070`:** the deploy chokepoint above (green-checkpoint → `deploy-cli
+  --execute`). A raw `:3070` restart just reboots the same green snapshot.
+- **Revert the cutover** (if ever needed): repoint `WorkingDirectory` back to
+  `…/papercup/apps/operator`, `daemon-reload`, restart (≈30s recovery).
+
+**Spawn-path invariant (step-4 audit, done 2026-06-05):** anything that spawns an
+agent or resolves "the repo" must target the **integration tree**, not the release
+checkout — `PAPERCUSP_INTEGRATION_ROOT` is the declared seam. `release-config.ts`,
+`release-actions.ts`, `setup-release-checkout.sh`, `detectPapercupRoot()` (ambient
+mode — covers `plans:launch/resume` cwd + harness registration) and
+`console-launcher.ts`'s scripts-dir all honor it. Keep new spawn sites on that seam.
+
+## Routine posture: deploys stay deliberate (decided 2026-06-05)
+
+- **`green-checkpoint` — ACTIVE, hourly** (`0 15 * * * *`). It never deploys: it
+  fast-forwards `ready` when `main` is green and broadcasts 🟩/🟥 — a continuous
+  main-health signal plus a fresh `ready` for whenever a deliberate deploy happens.
+  (Re-cadenced from the original 10-min seed to respect the shared box.)
+- **`release-trigger` — INACTIVE.** This is the auto-deploy path (it dispatches the
+  release-manager to make a go/no-go call). The owner's posture is that **deploys
+  stay deliberate**: a human (or an explicitly-launched release-manager via
+  `psu --role release-manager`) runs `deploy-cli --execute`. Graduate it later with
+  `npx tsx apps/operator/lib/release/seed-release-routines.ts --active` once
+  auto-deploy trust is earned (D-010).
+
+`seed-release-routines.ts` encodes these per-routine defaults — running it with no
+flags (re)applies the decided posture.

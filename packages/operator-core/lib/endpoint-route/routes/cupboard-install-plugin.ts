@@ -122,6 +122,24 @@ export default defineTool({
         grant: (args) =>
           grantCapabilities({ ...args, grantedBy: 'user', reason: 'cupboard install-consent' }),
         invalidateHost,
+        // Install-time dep gate (tool-distribution-granularity D-003): resolve
+        // the unit's declared {tools,packs,plugins} against the live pack
+        // catalog. Hard-missing deps 422 before the copy; installable ones
+        // surface advisorily.
+        validateDependencies: async (deps) => {
+          const { validateBlueprintDependencies } = await import('@papercusp/blueprint-distribution');
+          const { derivePackCatalog, depHostSetsFromCatalog } = await import('../../cupboard/pack-catalog');
+          const catalog = await derivePackCatalog({});
+          const verdict = validateBlueprintDependencies(deps, depHostSetsFromCatalog(catalog));
+          // Mirror the harness:create gate: a transient cupboard-unreachable
+          // must not hard-fail pack/plugin deps that may be installable there.
+          // Tools with no provider still fail (the in-process catalog is
+          // authoritative).
+          if (!catalog.cupboardReachable && verdict.missing.tools.length === 0) {
+            return { ...verdict, ok: true };
+          }
+          return verdict;
+        },
       });
       return Response.json(result);
     } catch (e) {

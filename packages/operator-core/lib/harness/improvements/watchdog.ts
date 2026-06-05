@@ -106,6 +106,10 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
         FROM harness_shared.test_runs
        WHERE started_at > now() - make_interval(hours => ${windowHours})
          AND status IN ('pass', 'fail', 'error')
+         -- Only plausible repo paths: the test-runner's own test suites record
+         -- synthetic fixture rows ('b', 'fail', 'no-such-bin') into test_runs;
+         -- a real run always carries a repo-relative path with a separator.
+         AND file_path LIKE '%/%'
     )
     SELECT file_path,
            max(framework) AS framework,

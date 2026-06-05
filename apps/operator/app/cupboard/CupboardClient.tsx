@@ -3,12 +3,15 @@
 /**
  * CupboardClient — the storefront for the Cupboard registry.
  *
- * ONE storefront, three listing kinds (distribution plan D-005), each with its
- * own consumer action:
+ * ONE storefront, five listing kinds (distribution plan D-005;
+ * tool-distribution-granularity D-001), each with its own consumer action:
  *   harness   → join     (shared-harness via the Hypercore topic)
  *   blueprint → fork     (a blueprint stream within a project)
  *   snapshot  → fork     (a captured snapshot)
- *   plugin    → install  (a distributable plugin)
+ *   plugin    → install  (a distributable plugin — a pack WITH a runtime)
+ *   pack      → install  (a runtime-less code-tool pack)
+ * Plus the **Tools** discovery view (`?kind=tools`) — tool-level discovery over
+ * `GET /api/cupboard/tools`, where each tool resolves to its providing unit.
  *
  * - Kind filter is URL-backed (nuqs `?kind=`), forwarded to the worker via the
  *   `/api/cupboard/listings` proxy.
@@ -24,7 +27,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Camera, Package, ArrowLeft } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Camera, Package, ArrowLeft, Box, Wrench } from 'lucide-react';
 import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
 import {
   isPubliclyVisible,
@@ -40,17 +43,22 @@ import {
 } from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../harness/theme';
 import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
+import { ToolsSection } from './ToolsSection';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
 type KindFilter = 'all' | ListingKind;
+/** The tab row's domain: listing-kind filters + the tool-level discovery view. */
+type ViewFilter = KindFilter | 'tools';
 
-const KIND_FILTERS: KindFilter[] = ['all', 'harness', 'blueprint', 'snapshot', 'plugin'];
-const KIND_FILTER_LABEL: Record<KindFilter, string> = {
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'blueprint', 'snapshot', 'plugin', 'pack', 'tools'];
+const VIEW_FILTER_LABEL: Record<ViewFilter, string> = {
   all: 'All',
   harness: 'Pots',
   blueprint: 'Blueprints',
   snapshot: 'Snapshots',
   plugin: 'Plugins',
+  pack: 'Packs',
+  tools: 'Tools',
 };
 
 /** Per-kind icon for the card badge + action button. */
@@ -60,6 +68,8 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'blueprint': return <Boxes size={size} />;
     case 'snapshot': return <Camera size={size} />;
     case 'plugin': return <Plug size={size} />;
+    case 'pack': return <Box size={size} />;
+    default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
 
@@ -83,10 +93,11 @@ export default function CupboardClient() {
       serialize: (v) => v,
     },
   );
-  const [kindFilter, setKindFilter] = useQueryState<KindFilter>(
+  const [kindFilter, setKindFilter] = useQueryState<ViewFilter>(
     'kind',
-    parseAsStringEnum<KindFilter>(KIND_FILTERS).withDefault('all'),
+    parseAsStringEnum<ViewFilter>(VIEW_FILTERS).withDefault('all'),
   );
+  const toolsView = kindFilter === 'tools';
   // Per-Pot rollup (D-005): when set, the storefront narrows to one project
   // ("Pot") and presents its recipe/snapshot/plugin/harness facets grouped by
   // kind. `null` = normal flat browse. A Pot is identified by `project_ref`
@@ -113,7 +124,7 @@ export default function CupboardClient() {
         // can present all facets grouped. The kind tabs are hidden in this
         // mode, so `kind` is intentionally not forwarded.
         params.set('project', pot);
-      } else if (kindFilter !== 'all') {
+      } else if (kindFilter !== 'all' && kindFilter !== 'tools') {
         params.set('kind', kindFilter);
       }
       const res = await fetch(`/api/cupboard/listings?${params}`, { signal: ctrl.signal });
@@ -132,8 +143,10 @@ export default function CupboardClient() {
   }, [q, claimFilter, kindFilter, pot]);
 
   useEffect(() => {
+    // The Tools view has its own fetch (ToolsSection); skip the listings read.
+    if (toolsView && !pot) return;
     void fetchListings();
-  }, [fetchListings]);
+  }, [fetchListings, toolsView, pot]);
 
   // Pot rollup: client-side safety filter (the server `project` filter only
   // matches rows that actually carry `project_ref`; this keeps the grouping
@@ -174,14 +187,15 @@ export default function CupboardClient() {
           Cupboard
         </h1>
         <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
-          Discover and install shared harnesses, blueprints, snapshots, and plugins.
+          Discover and install shared harnesses, blueprints, snapshots, plugins, packs, and tools.
         </p>
       </div>
 
-      {/* Kind filter tabs — hidden in Pot rollup mode (the rollup shows all kinds, grouped) */}
+      {/* Kind filter tabs (+ the Tools discovery view) — hidden in Pot rollup
+          mode (the rollup shows all kinds, grouped) */}
       {!pot && (
         <div style={{ display: 'flex', gap: 4, marginBottom: SIZES.md, flexWrap: 'wrap' }}>
-          {KIND_FILTERS.map((k) => (
+          {VIEW_FILTERS.map((k) => (
             <button
               key={k}
               onClick={() => void setKindFilter(k === 'all' ? null : k)}
@@ -199,8 +213,8 @@ export default function CupboardClient() {
                 fontFamily: FONTS.ui,
               }}
             >
-              {k !== 'all' && <KindIcon kind={k} />}
-              {KIND_FILTER_LABEL[k]}
+              {k === 'tools' ? <Wrench size={11} /> : k !== 'all' ? <KindIcon kind={k} /> : null}
+              {VIEW_FILTER_LABEL[k]}
             </button>
           ))}
         </div>
@@ -270,7 +284,7 @@ export default function CupboardClient() {
           />
         </div>
 
-        <div style={{ display: 'flex', gap: 4 }}>
+        {!toolsView && <div style={{ display: 'flex', gap: 4 }}>
           {(['all', 'claimed', 'unclaimed'] as ClaimFilter[]).map((f) => (
             <button
               key={f}
@@ -290,9 +304,9 @@ export default function CupboardClient() {
               {f}
             </button>
           ))}
-        </div>
+        </div>}
 
-        <button
+        {!toolsView && <button
           onClick={fetchListings}
           disabled={loading}
           style={{
@@ -306,9 +320,15 @@ export default function CupboardClient() {
           title="Refresh"
         >
           <RefreshCw size={14} style={loading ? { animation: 'spin 1s linear infinite' } : {}} />
-        </button>
+        </button>}
       </div>
 
+      {/* Tools discovery view (?kind=tools) — tool-level discovery with its own
+          fetch/empty/error handling; the listing branches below are skipped. */}
+      {toolsView && !pot ? (
+        <ToolsSection q={q} onOpenListing={(id) => router.push(`/cupboard/${id}`)} />
+      ) : (
+        <>
       {/* Error */}
       {error && !loading && (
         <div style={{ color: '#f87171', fontSize: 12, marginBottom: SIZES.md }}>
@@ -323,7 +343,7 @@ export default function CupboardClient() {
         <div style={{ color: COLORS.textMuted, fontSize: 12, textAlign: 'center', paddingTop: 40 }}>
           {pot
             ? `No listings found for Pot "${pot}"${q ? ` matching "${q}"` : ''}.`
-            : `No ${kindFilter === 'all' ? 'listings' : KIND_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
+            : `No ${kindFilter === 'all' ? 'listings' : VIEW_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
         </div>
       )}
 
@@ -344,7 +364,7 @@ export default function CupboardClient() {
                 }}
               >
                 <KindIcon kind={group.kind} size={13} />
-                {KIND_FILTER_LABEL[group.kind]}
+                {VIEW_FILTER_LABEL[group.kind]}
                 <span style={{ color: COLORS.textMuted, fontWeight: 400, fontSize: 12 }}>
                   {group.listings.length}
                 </span>
@@ -376,6 +396,8 @@ export default function CupboardClient() {
             />
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   );

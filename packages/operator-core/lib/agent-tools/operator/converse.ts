@@ -391,31 +391,42 @@ export default defineTool({
       })();
     }
 
-    // Server-side <spawn> tag dispatch. Same pattern as the old route —
-    // parsing the assembled turn server-side ensures voice and text
-    // surfaces both trigger spawns. (EL's ask_operator handler doesn't
-    // run the client-side parser.)
+    // Server-side <spawn> tag dispatch. Parsing the assembled turn
+    // server-side ensures voice and text surfaces both trigger spawns.
+    // (EL's ask_operator handler doesn't run the client-side parser.)
+    //
+    // Dispatches through the durable nursery spawn engine
+    // (fleet/operator-spawn) — NOT the retired POST
+    // /api/plugins/orchestrator/spawn, which 404'd silently (the plugin
+    // is not installed) and targeted harness='system' (not a registered
+    // project). The engine resolves the tag's harness attr (or the
+    // workspace's single registered harness), records the row in
+    // harness_shared.spawned_agents (visible in fleet:tree), launches the
+    // child in the harness's real project dir, and records resolution
+    // failures as failed nursery rows instead of dropping them.
     try {
       const parsed = parseOperatorTurn(assembled);
-      for (const sp of parsed.spawns) {
-        const params = new URLSearchParams({
-          workspace: workspaceId,
-          harness: 'system',
-          role: 'operator',
-          run: `op-converse-${Date.now()}`,
-          spawn: `op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-        });
-        const fetchBody: Record<string, unknown> = { role: sp.role };
-        if (sp.featureId) fetchBody.featureId = sp.featureId;
-        if (sp.chunkId) fetchBody.chunkId = sp.chunkId;
-        if (sp.extras.length > 0) fetchBody.extras = sp.extras;
-        void fetch(`${selfUrl()}/api/plugins/orchestrator/spawn?${params.toString()}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(fetchBody),
-        }).catch((err) => {
-          console.warn('[operator-converse] spawn dispatch failed', err);
-        });
+      if (parsed.spawns.length > 0) {
+        const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
+        const parentSpawnId = `op-converse-${Date.now()}`;
+        for (const sp of parsed.spawns) {
+          void spawnAgentInHarness({
+            workspaceId,
+            harness: sp.harness,
+            role: sp.role,
+            featureId: sp.featureId,
+            chunkId: sp.chunkId,
+            extras: sp.extras,
+            parentSpawnId,
+            parentRole: 'operator',
+          })
+            .then((r) => {
+              if (!r.ok) console.warn(`[operator-converse] spawn dispatch rejected: ${r.error}`);
+            })
+            .catch((err) => {
+              console.warn('[operator-converse] spawn dispatch failed', err);
+            });
+        }
       }
     } catch (err) {
       console.warn('[operator-converse] spawn parse/dispatch error', err);

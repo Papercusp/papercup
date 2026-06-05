@@ -11,19 +11,34 @@
  * (up to a concurrency cap) — the production counterpart to the manual
  * `POST /admin/dbos/pipeline/start` trigger.
  *
- * Double-gated for safety:
+ * The dispatch policy is **blueprint-driven** (`autoloop-pot-operator-rebuild-2026-06-05`
+ * D-005/D-009, P-006): each harness's *effective blueprint* (the PG cache
+ * `harness_shared.blueprints`, lazily projected from the git-canonical
+ * `.papercusp/blueprint.yaml`) declares a `dispatch:` section
+ * `{ concurrency, priority, readiness, costCapUsd, safetyCeiling }` — so a
+ * `coding` harness runs 4 pipelines while `research` runs 1, all declared.
+ * Per-install config (`.papercusp/config.json` `parallelWorkers.*` /
+ * `maxCostUsd`) overrides the blueprint (instance refines shape); a harness
+ * with no blueprint (or no `dispatch:`) keeps the legacy config-only
+ * resolution. Enablement is the harness's own blueprint — there is no
+ * `director-config.json` / `autoLoop:true` coupling here.
+ *
+ * The env switches are OVERRIDES, not the policy source (D-009 demotion):
  *   - `PAPERCUSP_DBOS_ORCHESTRATOR=1` — registers the workflow (via bootstrap).
- *   - `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES=slug,slug` — which harnesses opt in
- *     (empty → the tick is a no-op, so enabling the orchestrator flag alone
- *     never auto-starts agent work). The legacy `PAPERCUSP_DBOS_DISPATCH_HARNESSES`
- *     is still accepted as a back-compat alias (D-007).
+ *   - `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES` — an override switch on WHICH
+ *     harnesses are swept: unset/`'*'` → all (the default since P-009);
+ *     `none`/`off` → explicit opt-out (e.g. the contended shared dev box); a
+ *     comma list → a scoped allowlist. The legacy
+ *     `PAPERCUSP_DBOS_DISPATCH_HARNESSES` is still accepted as an alias (D-007).
  *   - `PAPERCUSP_DBOS_MAX_PIPELINES` — OPTIONAL global concurrency ceiling that
  *     clamps every harness (e.g. the shared dev box); unset → each harness uses
- *     its own `parallelWorkers` cap up to a hard `SAFETY_CEILING` (#1).
+ *     its blueprint/config cap up to a hard `SAFETY_CEILING` (#1, D-007: the
+ *     ceiling stays imperative code a blueprint can tighten but never raise).
  *
  * Concurrency is per-harness, not a flat global (#1): each harness fills its own
  * slots up to `resolvePerHarnessCap` (from its `parallelWorkers.max` /
- * `maxFeaturesInFlight`). Two paths feed it: the periodic 30s tick (the backstop
+ * `maxFeaturesInFlight` config, falling back to the blueprint's declared
+ * `dispatch.concurrency`). Two paths feed it: the periodic 30s tick (the backstop
  * that picks up newly-filed work) and `refillHarnessOnSettle` (a finished feature
  * immediately refills its freed slot — continuous dispatch rather than ≤30s lag).
  *
@@ -42,12 +57,15 @@ import postgres from 'postgres';
 import {
   durableOwnedFeatureIdsPg,
   readConfig,
+  configGet,
   evaluateCostCap,
   parallelMaxWorkers,
   maxFeaturesInFlight,
   dispatchAuditorLane,
 } from '@papercusp/orchestrator';
-import type { AuditorSpawnFn, CreateEscalationFn } from '@papercusp/orchestrator';
+import type { AuditorSpawnFn, CreateEscalationFn, HarnessConfig } from '@papercusp/orchestrator';
+import type { BlueprintDispatch } from '@papercusp/orchestrator/blueprint';
+import { getEffectiveBlueprint } from '../blueprint/project-to-pg';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
@@ -82,8 +100,12 @@ export function setAuditorLaneFns(
  * `pending`/`failed` aliases from the FeatureRecord type are kept for safety.
  * `in_progress` is excluded (already being worked), as are `passed`/`blocked`/
  * `deprecated`/`proposed`.
+ *
+ * Since D-005 this is the DEFAULT readiness set — a harness blueprint's
+ * `dispatch.readiness` overrides it (and the schema's own default for a declared
+ * `dispatch:` is this exact set, so declared-but-unspecified stays equivalent).
  */
-const NEEDS_WORK = new Set(['todo', 'failing', 'pending', 'failed']);
+const NEEDS_WORK: ReadonlySet<string> = new Set(['todo', 'failing', 'pending', 'failed']);
 
 /**
  * Hard safety ceiling on per-harness pipeline concurrency when no explicit
@@ -97,25 +119,50 @@ const SAFETY_CEILING = 16;
  * Per-harness pipeline concurrency cap (#1 — concurrency-aware dispatch). DBOS
  * runs one pipeline per in-flight feature, so the cap on concurrent pipelines is
  * the harness's own feature-concurrency budget — NOT a flat global:
- *   - `parallelWorkers.max` is the worker budget; with one worker per feature
- *     (chunk-loop), that bounds how many features can run at once.
+ *   - `parallelWorkers.max` (per-install config) is the worker budget; with one
+ *     worker per feature (chunk-loop), that bounds how many features can run at
+ *     once. Pass `null` when the config is SILENT — then the blueprint's
+ *     declared `dispatch.concurrency` fills the budget (D-005), and 1 is the
+ *     floor when neither declares.
  *   - `parallelWorkers.maxFeaturesInFlight`, when set, tightens that further
  *     (cap distinct features below the worker budget) but never widens past it.
+ *   - `blueprintSafetyCeiling` (`dispatch.safetyCeiling`) tightens the default
+ *     ceiling for this harness shape; it can never RAISE it past the imperative
+ *     `SAFETY_CEILING` (D-007 — safety stays deterministic code).
  *   - `envCeiling` (`PAPERCUSP_DBOS_MAX_PIPELINES`) is an optional global clamp
- *     (e.g. the shared dev box) on top of the resolved per-harness value.
+ *     (e.g. the shared dev box) that replaces the resolved ceiling outright (the
+ *     operator's explicit box-level override, as before).
  * Always at least 1 (a harness can never be dispatch-starved by config).
  */
 export function resolvePerHarnessCap(opts: {
-  parallelMax: number;
+  /** Explicit per-install worker budget, or null when config doesn't set one. */
+  parallelMax: number | null;
   maxFeaturesInFlight: number | null;
   envCeiling?: number;
+  /** Blueprint-declared `dispatch.concurrency` — fills a silent config (D-005). */
+  blueprintConcurrency?: number | null;
+  /** Blueprint-declared `dispatch.safetyCeiling` — tighten-only (D-007). */
+  blueprintSafetyCeiling?: number | null;
 }): number {
-  const budget = Number.isFinite(opts.parallelMax) ? opts.parallelMax : 1;
+  const declared =
+    opts.blueprintConcurrency != null &&
+    Number.isFinite(opts.blueprintConcurrency) &&
+    opts.blueprintConcurrency > 0
+      ? Math.floor(opts.blueprintConcurrency)
+      : null;
+  const budget =
+    opts.parallelMax != null && Number.isFinite(opts.parallelMax)
+      ? opts.parallelMax
+      : declared ?? 1;
   const base =
     opts.maxFeaturesInFlight != null && opts.maxFeaturesInFlight > 0
       ? Math.min(budget, opts.maxFeaturesInFlight)
       : budget;
-  const ceiling = opts.envCeiling && opts.envCeiling > 0 ? opts.envCeiling : SAFETY_CEILING;
+  const declaredCeiling =
+    opts.blueprintSafetyCeiling != null && opts.blueprintSafetyCeiling > 0
+      ? Math.min(Math.floor(opts.blueprintSafetyCeiling), SAFETY_CEILING)
+      : SAFETY_CEILING;
+  const ceiling = opts.envCeiling && opts.envCeiling > 0 ? opts.envCeiling : declaredCeiling;
   return Math.max(1, Math.min(base, ceiling));
 }
 
@@ -154,19 +201,24 @@ export interface FrontierFeature {
  *      blocked. `slots <= 0` (cap full, or over the cost cap) → start nothing.
  * Also returns `stuck`: work remains but nothing is ready (all remaining are
  * blocked/failing) — the P-044 stuck-wave signal the retired sweep used to raise.
+ *
+ * `readiness` is the dispatchable-status set — the blueprint's declared
+ * `dispatch.readiness` (D-005), defaulting to the legacy `NEEDS_WORK` set so an
+ * undeclared policy is byte-equivalent to the pre-lift behavior.
  */
 export function computeFrontier(
   features: readonly FrontierFeature[],
   planPriority: ReadonlyMap<string, number>,
   owned: ReadonlySet<string>,
   slots: number,
+  readiness: ReadonlySet<string> = NEEDS_WORK,
 ): { toStart: string[]; stuck: boolean } {
   const present = new Set(features.map((f) => f.id));
   const terminal = new Set(features.filter((f) => TERMINAL.has(f.status)).map((f) => f.id));
   const satisfied = (blockerId: string): boolean => !present.has(blockerId) || terminal.has(blockerId);
 
   const ready = features.filter(
-    (f) => NEEDS_WORK.has(f.status) && !owned.has(f.id) && f.blockedBy.every(satisfied),
+    (f) => readiness.has(f.status) && !owned.has(f.id) && f.blockedBy.every(satisfied),
   );
 
   // Group ready by plan ('' = manual / no source_plan).
@@ -198,7 +250,7 @@ export function computeFrontier(
   }
 
   const toStart = slots > 0 ? ordered.slice(0, slots) : [];
-  const pendingWork = features.some((f) => NEEDS_WORK.has(f.status) && !owned.has(f.id));
+  const pendingWork = features.some((f) => readiness.has(f.status) && !owned.has(f.id));
   return { toStart, stuck: pendingWork && ready.length === 0 };
 }
 
@@ -206,7 +258,8 @@ export function computeFrontier(
 const DISPATCH_OFF = new Set(['none', 'off']);
 
 /**
- * Which harnesses the orchestrator serves, from the environment. Primary env is
+ * The harness-scope OVERRIDE switch (D-009: demoted from policy source — the
+ * per-harness dispatch policy itself lives on the blueprint). Primary env is
  * `PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES`; the legacy `PAPERCUSP_DBOS_DISPATCH_HARNESSES`
  * is still honored as a back-compat alias (D-007 rename). Same grammar either way.
  */
@@ -270,39 +323,93 @@ function pipelineEnvCeiling(): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-interface HarnessDispatchGate {
-  /** Per-harness pipeline concurrency cap from `parallelWorkers` (#1). */
+export interface HarnessDispatchGate {
+  /** Per-harness pipeline concurrency cap (config, else `dispatch.concurrency`). */
   cap: number;
-  /** Whether the harness is over its configured `maxCostUsd` (P-004). */
+  /** Whether the harness is over its cost cap (config `maxCostUsd`, else `dispatch.costCapUsd`). */
   overCostCap: boolean;
+  /** Dispatchable statuses (`dispatch.readiness`; legacy NEEDS_WORK when undeclared). */
+  readiness: ReadonlySet<string>;
 }
 
 /**
- * Resolve the harness's `.papercusp/config.json` ONCE and derive both dispatch
- * gates from it: the per-harness concurrency `cap` (from `parallelWorkers`) and
- * the cost-cap (`maxCostUsd` vs run-log spend). Any resolution/read failure →
- * the safe defaults (`cap: 1`, `overCostCap: false`) so a bad slug never strands
- * work or floods the box.
+ * Merge the blueprint-declared `dispatch:` policy with the per-install config
+ * (D-005 / P-006). Pure — the IO half (`resolveHarnessDispatchGate`) feeds it.
+ * Precedence: per-install config overrides the blueprint (instance refines
+ * shape); the blueprint fills where config is silent; imperative clamps
+ * (`SAFETY_CEILING`, env ceiling) apply on top (D-007).
+ *
+ * Returns the cap + readiness plus the `effectiveCfg` the cost-cap evaluator
+ * should run against: when config has no `maxCostUsd` and the blueprint
+ * declares `dispatch.costCapUsd`, the cap is overlaid so `evaluateCostCap`'s
+ * whole warn/pause machinery sees one consistent value.
+ */
+export function resolveDispatchPolicy(opts: {
+  dispatch: BlueprintDispatch | null | undefined;
+  cfg: HarnessConfig;
+  envCeiling?: number;
+}): { cap: number; readiness: ReadonlySet<string>; effectiveCfg: HarnessConfig } {
+  const { dispatch, cfg } = opts;
+  // Explicitness matters: `parallelMaxWorkers(cfg)` returns 1 for BOTH "unset"
+  // and "set to 1", but only an unset config should defer to the blueprint.
+  const explicitParallelMax =
+    configGet<number | string | null>(cfg, 'parallelWorkers.max', null) != null
+      ? parallelMaxWorkers(cfg)
+      : null;
+  const cap = resolvePerHarnessCap({
+    parallelMax: explicitParallelMax,
+    maxFeaturesInFlight: maxFeaturesInFlight(cfg),
+    envCeiling: opts.envCeiling,
+    blueprintConcurrency: dispatch?.concurrency ?? null,
+    blueprintSafetyCeiling: dispatch?.safetyCeiling ?? null,
+  });
+  const effectiveCfg =
+    dispatch?.costCapUsd != null && configGet<number | null>(cfg, 'maxCostUsd', null) == null
+      ? ({ ...cfg, maxCostUsd: dispatch.costCapUsd } as HarnessConfig)
+      : cfg;
+  const readiness: ReadonlySet<string> = dispatch ? new Set(dispatch.readiness) : NEEDS_WORK;
+  return { cap, readiness, effectiveCfg };
+}
+
+/**
+ * Resolve a harness's dispatch gates for one tick (P-006): the harness's
+ * EFFECTIVE BLUEPRINT (the PG cache `harness_shared.blueprints`, lazily
+ * projected from the git-canonical `.papercusp/blueprint.yaml`) declares the
+ * `dispatch:` policy; the per-install `.papercusp/config.json` refines it
+ * (`resolveDispatchPolicy`); `evaluateCostCap` checks run-log spend against the
+ * effective cost cap. Best-effort at every layer: a missing/corrupt blueprint →
+ * the legacy config-only resolution (a non-blueprint harness behaves exactly as
+ * before the lift); any resolution/read failure → the safe defaults (`cap: 1`,
+ * `overCostCap: false`, legacy readiness) so a bad slug never strands work or
+ * floods the box.
  */
 async function resolveHarnessDispatchGate(
+  pg: ReturnType<typeof postgres>,
   slug: string,
   workspaceId: string,
 ): Promise<HarnessDispatchGate> {
   try {
     const project = await resolveProject(slug, workspaceId);
-    if (!project) return { cap: 1, overCostCap: false };
+    if (!project) return { cap: 1, overCostCap: false, readiness: NEEDS_WORK };
     const stateDir = join(project.path, '.papercusp');
     const logDir = join(stateDir, 'logs');
     const cfg = readConfig(stateDir);
-    const cap = resolvePerHarnessCap({
-      parallelMax: parallelMaxWorkers(cfg),
-      maxFeaturesInFlight: maxFeaturesInFlight(cfg),
+    const dispatch = await getEffectiveBlueprint(pg as never, {
+      workspaceId,
+      harnessSlug: slug,
+      blueprintPath: join(stateDir, 'blueprint.yaml'),
+    })
+      .then((bp) => bp?.dispatch ?? null)
+      .catch(() => null);
+    const { cap, readiness, effectiveCfg } = resolveDispatchPolicy({
+      dispatch,
+      cfg,
       envCeiling: pipelineEnvCeiling(),
     });
-    const overCostCap = evaluateCostCap(cfg, logDir, stateDir).overCap;
-    return { cap, overCostCap };
+    const overCostCap = evaluateCostCap(effectiveCfg, logDir, stateDir).overCap;
+    return { cap, overCostCap, readiness };
   } catch {
-    return { cap: 1, overCostCap: false };
+    return { cap: 1, overCostCap: false, readiness: NEEDS_WORK };
   }
 }
 
@@ -439,9 +546,12 @@ export async function dispatchOneHarness(
       readPlanPriority(pg, workspaceId, slug),
     ]);
     const liveCount = await liveCountFor(slug);
-    const { cap, overCostCap } = await resolveHarnessDispatchGate(slug, workspaceId);
+    // P-006 (D-005): the gate is blueprint-driven — cap/costCap/readiness come
+    // from the harness's effective blueprint `dispatch:` policy, refined by the
+    // per-install config.
+    const { cap, overCostCap, readiness } = await resolveHarnessDispatchGate(pg, slug, workspaceId);
     const slots = overCostCap ? 0 : Math.max(0, cap - liveCount);
-    const { toStart, stuck } = computeFrontier(features, planPriority, owned, slots);
+    const { toStart, stuck } = computeFrontier(features, planPriority, owned, slots, readiness);
     if (overCostCap) console.log(`[dbos-orchestrator] ${slug} over maxCostUsd — skipping new pipelines`);
     if (stuck) {
       console.warn(

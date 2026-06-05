@@ -15,6 +15,7 @@ use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
 use pui_companion_proto::Topology;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 /// Cap on retained notification history (P8).
@@ -317,6 +318,13 @@ pub struct App {
     pub palette_input: String,
     /// Always-on presence sidebar visible (P7 — who's online + intent). `p` toggles.
     pub show_presence: bool,
+    /// Plans-filter rail (D-009 — Inbox + Brew). `plan_filter` is the selected
+    /// plan slugs (empty = no filtering); `plan_filter_open` shows the
+    /// collapsible left rail (`F` toggles on the two tabs it narrows);
+    /// `plan_filter_sel` is the rail's own cursor into `visible_plans()`.
+    pub plan_filter: BTreeSet<String>,
+    pub plan_filter_open: bool,
+    pub plan_filter_sel: usize,
     /// First-run tutorial overlay (P9). `show_tutorial` is set true at startup
     /// when the device hasn't completed it (and re-openable via F1);
     /// `tutorial_step` is the current 0-based step. Default hidden so tests and
@@ -428,6 +436,9 @@ impl App {
             palette_open: false,
             palette_input: String::new(),
             show_presence: true,
+            plan_filter: BTreeSet::new(),
+            plan_filter_open: false,
+            plan_filter_sel: 0,
             show_tutorial: false,
             tutorial_step: 0,
             notifs: Vec::new(),
@@ -567,9 +578,11 @@ impl App {
 
     pub fn set_roster(&mut self, roster: Vec<RosterEntry>) {
         self.roster = roster;
-        // The Fleet tab navigates the roster too — keep its cursor in range.
-        if self.fleet.agent_sel >= self.roster.len() {
-            self.fleet.agent_sel = self.roster.len().saturating_sub(1);
+        // The Fleet tab navigates the (plans-filtered, D-009) roster too —
+        // keep its cursor in range of what actually renders.
+        let len = self.visible_roster().len();
+        if self.fleet.agent_sel >= len {
+            self.fleet.agent_sel = len.saturating_sub(1);
         }
         self.clamp_sel();
     }
@@ -700,12 +713,55 @@ impl App {
             .collect()
     }
 
-    /// The Inbox under the current pot scope (`inbox_sel` indexes this).
+    /// The Inbox under the current pot scope AND the plans filter (D-009) —
+    /// `inbox_sel` indexes this. With a filter on, only items attributed to a
+    /// selected plan show (an Inbox item without a plan is filtered out — the
+    /// strict rule for a plan-attributed list).
     pub fn visible_inbox(&self) -> Vec<&AttentionItem> {
         self.inbox
             .iter()
             .filter(|i| self.in_scope(i.harness_slug.as_deref()))
+            .filter(|i| {
+                self.plan_filter.is_empty()
+                    || i.plan_slug
+                        .as_deref()
+                        .is_some_and(|s| self.plan_filter.contains(s))
+            })
             .collect()
+    }
+
+    /// The Brew roster under the plans filter (D-009) — `fleet.agent_sel`
+    /// indexes this. Rows with NO current plan are never hidden (the desktop's
+    /// rule: an unattributed agent must stay visible), so a filter only
+    /// narrows plan-attributed rows.
+    pub fn visible_roster(&self) -> Vec<&RosterEntry> {
+        self.roster
+            .iter()
+            .filter(|r| {
+                self.plan_filter.is_empty()
+                    || r.current_plan_slug
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .is_none_or(|s| self.plan_filter.contains(s))
+            })
+            .collect()
+    }
+
+    /// Re-clamp the cursors of the lists the plans filter narrows (D-009) so a
+    /// shrinking filter never strands a selection past the visible end.
+    fn clamp_filtered_cursors(&mut self) {
+        let plans_len = self.visible_plans().len();
+        if self.plan_filter_sel >= plans_len {
+            self.plan_filter_sel = plans_len.saturating_sub(1);
+        }
+        let inbox_len = self.visible_inbox().len();
+        if self.inbox_sel >= inbox_len {
+            self.inbox_sel = inbox_len.saturating_sub(1);
+        }
+        let roster_len = self.visible_roster().len();
+        if self.fleet.agent_sel >= roster_len {
+            self.fleet.agent_sel = roster_len.saturating_sub(1);
+        }
     }
 
     /// Fleet work-items under the current pot scope (Brew headline + rollup).
@@ -934,6 +990,8 @@ impl App {
             show_presence: self.show_presence,
             fleet_agent_sel: self.fleet.agent_sel,
             fleet_mode: Some(self.fleet.mode.label().to_string()),
+            plan_filter: self.plan_filter.iter().cloned().collect(),
+            plan_filter_open: self.plan_filter_open,
         }
     }
 
@@ -977,6 +1035,9 @@ impl App {
         if let Some(m) = vs.fleet_mode.as_deref() {
             self.fleet.mode = crate::fleet::FleetMode::from_label(m);
         }
+        // Plans filter (D-009): restore the selection + rail visibility.
+        self.plan_filter = vs.plan_filter.iter().cloned().collect();
+        self.plan_filter_open = vs.plan_filter_open;
     }
 
     /// Apply an agent control intent (P12b / D-002 A6 — tui:dispatch). Returns the
@@ -1013,6 +1074,29 @@ impl App {
                 }
                 self.publish_active();
                 Ok(json!({ "ok": true, "harness": slug }))
+            }
+            // Plans filter (D-009): set the slugs that narrow Inbox + the Brew
+            // roster ([] clears), optionally opening/closing the rail — keeps
+            // the filter agent-driveable, not just key-driveable.
+            "set_plan_filter" => {
+                let plans = args
+                    .get("plans")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "set_plan_filter: missing array `plans`".to_string())?;
+                self.plan_filter = plans
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string)
+                    .collect();
+                if let Some(open) = args.get("open").and_then(|v| v.as_bool()) {
+                    self.plan_filter_open = open;
+                }
+                self.clamp_filtered_cursors();
+                Ok(json!({
+                    "ok": true,
+                    "plan_filter": self.plan_filter.iter().cloned().collect::<Vec<_>>(),
+                    "plan_filter_open": self.plan_filter_open,
+                }))
             }
             "select" => {
                 let list = args
@@ -1051,9 +1135,10 @@ impl App {
             "flags" | "settings" => self.flag_sel = clamp(self.flags.len()),
             "memory" | "memories" => self.memory_sel = clamp(self.visible_memories().len()),
             // The Brew tab (fleet ⋃ the old Sessions launcher, D-002b) shares one
-            // cursor; every legacy alias resolves to it.
+            // cursor; every legacy alias resolves to it. Clamped to the
+            // plans-filtered roster (D-009) — the list that actually renders.
             "agents" | "fleet" | "brew" | "roster" | "sessions" => {
-                self.fleet.agent_sel = clamp(self.roster.len())
+                self.fleet.agent_sel = clamp(self.visible_roster().len())
             }
             other => return Err(format!("select: unknown list `{other}`")),
         }
@@ -1088,7 +1173,8 @@ impl App {
             },
             "counts": {
                 "plans": self.visible_plans().len(),
-                "roster": self.roster.len(),
+                "roster": self.visible_roster().len(),
+                "roster_total": self.roster.len(),
                 "inbox": self.visible_inbox().len(),
                 "features": self.features.len(),
                 "issues": self.issues.len(),
@@ -1103,6 +1189,10 @@ impl App {
             },
             "doc_scroll": self.doc_scroll,
             "show_presence": self.show_presence,
+            // The plans filter (D-009) — agent-visible so a driver can see what
+            // narrows the Inbox/Brew lists.
+            "plan_filter": self.plan_filter.iter().cloned().collect::<Vec<_>>(),
+            "plan_filter_open": self.plan_filter_open,
             "companion": self.companion_version,
             "unseen_notifs": self.unseen_notifs,
             "fleet_mode": self.fleet.mode.label(),
@@ -1171,9 +1261,10 @@ impl App {
 
     /// The roster entry the Brew tab has selected (the single shared cursor,
     /// `fleet.agent_sel`, after the Sessions↦Brew merge — D-002b). Backs the
-    /// dossier + the `n`-launch agent default.
+    /// dossier + the `n`-launch agent default. Indexes the plans-filtered
+    /// roster (D-009) — the list the tab renders.
     pub fn selected_session(&self) -> Option<&RosterEntry> {
-        self.roster.get(self.fleet.agent_sel)
+        self.visible_roster().get(self.fleet.agent_sel).copied()
     }
 
     pub fn selected_feature(&self) -> Option<&HarnessFeature> {
@@ -1654,10 +1745,24 @@ impl App {
                     Action::Render
                 }
                 KeyCode::Enter => {
+                    let line = self
+                        .palette_input
+                        .trim()
+                        .strip_prefix(':')
+                        .unwrap_or(self.palette_input.trim())
+                        .trim()
+                        .to_string();
                     // Parse the palette line into a workbench command (P12b).
                     let cmd = parse_palette_command(&self.palette_input);
                     self.palette_open = false;
                     self.palette_input.clear();
+                    // `:tutorial` re-opens the guided tour from the start any
+                    // time (D-012) — an app-local command, not a workbench one.
+                    if line == "tutorial" {
+                        self.show_tutorial = true;
+                        self.tutorial_step = 0;
+                        return Action::Render;
+                    }
                     match cmd {
                         Some(c) => Action::Workbench(c),
                         None => Action::Render,
@@ -1723,6 +1828,47 @@ impl App {
             self.should_quit = true;
             return Action::Quit;
         }
+        // Plans-filter rail capture (D-009): while the rail is open on a tab it
+        // narrows, the list keys drive the rail (j/k move, Space/Enter toggle a
+        // plan in/out of the filter, c clears, F/Esc closes). Everything else
+        // falls through — digits still switch tabs, q still quits.
+        if self.plan_filter_open && matches!(self.tab, Tab::Inbox | Tab::Fleet) {
+            match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let len = self.visible_plans().len();
+                    if len > 0 {
+                        self.plan_filter_sel = (self.plan_filter_sel + 1).min(len - 1);
+                    }
+                    return Action::Render;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.plan_filter_sel = self.plan_filter_sel.saturating_sub(1);
+                    return Action::Render;
+                }
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    let slug = self
+                        .visible_plans()
+                        .get(self.plan_filter_sel)
+                        .map(|p| p.slug.clone());
+                    if let Some(slug) = slug {
+                        if !self.plan_filter.remove(&slug) {
+                            self.plan_filter.insert(slug);
+                        }
+                        self.clamp_filtered_cursors();
+                    }
+                    return Action::Render;
+                }
+                KeyCode::Char('c') => {
+                    self.plan_filter.clear();
+                    return Action::Render;
+                }
+                KeyCode::Char('F') | KeyCode::Esc => {
+                    self.plan_filter_open = false;
+                    return Action::Render;
+                }
+                _ => {}
+            }
+        }
         match code {
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -1747,6 +1893,13 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.show_presence = !self.show_presence;
+                Action::Render
+            }
+            // Plans-filter rail (D-009): `F` opens it on the tabs it narrows
+            // (the rail's own capture above handles `F`-to-close while open).
+            KeyCode::Char('F') if matches!(self.tab, Tab::Inbox | Tab::Fleet) => {
+                self.plan_filter_open = true;
+                self.plan_filter_sel = 0;
                 Action::Render
             }
             KeyCode::Char('N') => {
@@ -1977,7 +2130,7 @@ impl App {
             },
             Tab::Plugins => self.panes.len(),
             Tab::Settings => self.flags.len(),
-            Tab::Fleet => self.roster.len(),
+            Tab::Fleet => self.visible_roster().len(),
             Tab::Memory => self.visible_memories().len(),
             // No list to navigate — j/k scroll the transcript (Operator) handled
             // in on_key; Config has no list.
@@ -2531,6 +2684,119 @@ mod tests {
     }
 
     #[test]
+    fn palette_tutorial_command_reopens_tutorial() {
+        // D-012: `:tutorial` in the command palette re-opens the guided tour.
+        let mut a = App::new();
+        a.tutorial_step = 3; // stale progress from a previous run
+        a.update(key(':', KeyModifiers::NONE));
+        assert!(a.palette_open);
+        for c in "tutorial".chars() {
+            a.update(key(c, KeyModifiers::NONE));
+        }
+        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(!a.palette_open);
+        assert!(a.show_tutorial);
+        assert_eq!(a.tutorial_step, 0); // restarts from the first page
+    }
+
+    #[test]
+    fn plan_filter_rail_keys_toggle_clear_and_close() {
+        // D-009: `F` opens the rail on Inbox/Brew; j/k move its cursor;
+        // Space toggles the plan under it; c clears; F closes.
+        let mut a = App::new();
+        a.set_plans(vec![plan("alpha"), plan("beta")]);
+        a.update(key('2', KeyModifiers::NONE)); // Inbox tab
+        assert_eq!(a.tab, Tab::Inbox);
+        assert!(!a.plan_filter_open);
+        a.update(key('F', KeyModifiers::NONE));
+        assert!(a.plan_filter_open);
+        a.update(key('j', KeyModifiers::NONE)); // cursor → "beta"
+        assert_eq!(a.plan_filter_sel, 1);
+        a.update(key(' ', KeyModifiers::NONE)); // toggle "beta" on
+        assert!(a.plan_filter.contains("beta"));
+        a.update(key(' ', KeyModifiers::NONE)); // toggle "beta" off
+        assert!(a.plan_filter.is_empty());
+        a.update(key(' ', KeyModifiers::NONE)); // back on for the clear check
+        a.update(key('c', KeyModifiers::NONE));
+        assert!(a.plan_filter.is_empty());
+        a.update(key('F', KeyModifiers::NONE)); // close
+        assert!(!a.plan_filter_open);
+        // On a tab the filter doesn't narrow, `F` is a no-op.
+        a.update(key('3', KeyModifiers::NONE)); // Plans tab
+        a.update(key('F', KeyModifiers::NONE));
+        assert!(!a.plan_filter_open);
+    }
+
+    #[test]
+    fn plan_filter_narrows_inbox_strict_and_roster_keeps_unattributed() {
+        use crate::models::AttentionItem;
+        let item = |id: &str, plan: Option<&str>| AttentionItem {
+            id: id.into(),
+            kind: "plan-item".into(),
+            source: "plan".into(),
+            harness_slug: None,
+            plan_slug: plan.map(Into::into),
+            item_ref: None,
+            title: id.into(),
+            body: None,
+            status: "todo".into(),
+            importance: None,
+            needs_human: false,
+        };
+        let mut a = App::new();
+        a.set_inbox(vec![
+            item("a", Some("alpha")),
+            item("b", Some("beta")),
+            item("c", None),
+        ]);
+        let on_plan = |slug: &str| {
+            let mut r = roster_entry("claude");
+            r.owner_id = format!("su-{slug}");
+            r.current_plan_slug = Some(slug.into());
+            r
+        };
+        let unattributed = roster_entry("codex"); // current_plan_slug: None
+        a.set_roster(vec![on_plan("alpha"), on_plan("beta"), unattributed]);
+        // No filter → everything visible.
+        assert_eq!(a.visible_inbox().len(), 3);
+        assert_eq!(a.visible_roster().len(), 3);
+        a.plan_filter.insert("alpha".into());
+        // Inbox is strict: only items attributed to a selected plan remain
+        // (the no-plan item drops out).
+        let inbox: Vec<_> = a.visible_inbox().iter().map(|i| i.id.clone()).collect();
+        assert_eq!(inbox, vec!["a"]);
+        // The roster never hides unattributed rows: alpha + the no-plan agent.
+        let roster: Vec<_> = a
+            .visible_roster()
+            .iter()
+            .map(|r| r.owner_id.clone())
+            .collect();
+        assert_eq!(roster, vec!["su-alpha", "su-1"]);
+        // The Brew cursor + selected_session ride the filtered list.
+        a.fleet.agent_sel = 1;
+        assert_eq!(
+            a.selected_session().map(|r| r.owner_id.as_str()),
+            Some("su-1")
+        );
+    }
+
+    #[test]
+    fn plan_filter_round_trips_view_state() {
+        // D-009: the filter selection + rail visibility persist via ViewState.
+        let mut a = App::new();
+        a.plan_filter.insert("alpha".into());
+        a.plan_filter.insert("beta".into());
+        a.plan_filter_open = true;
+        let vs = a.capture_view_state();
+        assert_eq!(vs.plan_filter, vec!["alpha", "beta"]);
+        assert!(vs.plan_filter_open);
+        let mut b = App::new();
+        b.apply_view_state(&vs);
+        assert_eq!(b.plan_filter, a.plan_filter);
+        assert!(b.plan_filter_open);
+    }
+
+    #[test]
     fn companion_topology_pane_exit_and_close() {
         use pui_companion_proto::{PaneNode, TabNode, Topology};
         let mut a = App::new();
@@ -2715,6 +2981,29 @@ mod tests {
         assert_eq!(a.tab, Tab::Docs);
         assert!(a.apply_intent("set_tab", &serde_json::json!({"tab":"Nope"})).is_err());
         assert!(a.apply_intent("set_tab", &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn intent_set_plan_filter_sets_clears_and_validates() {
+        // D-009: the plans filter is agent-driveable via tui:dispatch.
+        let mut a = App::new();
+        let v = a
+            .apply_intent(
+                "set_plan_filter",
+                &serde_json::json!({"plans": ["alpha", "beta"], "open": true}),
+            )
+            .unwrap();
+        assert_eq!(v["plan_filter"], serde_json::json!(["alpha", "beta"]));
+        assert!(a.plan_filter_open);
+        assert!(a.plan_filter.contains("alpha"));
+        // [] clears; omitted `open` leaves the rail alone.
+        a.apply_intent("set_plan_filter", &serde_json::json!({"plans": []}))
+            .unwrap();
+        assert!(a.plan_filter.is_empty());
+        assert!(a.plan_filter_open);
+        assert!(a
+            .apply_intent("set_plan_filter", &serde_json::json!({}))
+            .is_err());
     }
 
     #[test]

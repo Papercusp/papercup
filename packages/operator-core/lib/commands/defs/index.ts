@@ -12,8 +12,6 @@
  * import-cycle hell — see plan §2.3).
  */
 
-import './panel';
-import './panel-state';
 import './nav';
 import './voice';
 import './workspace';
@@ -23,6 +21,5 @@ import './delegation';
 import './operator';
 import './agents';
 import './agent-dispatch';
-import './panel-cards';
 import './scans';
 import './recent-activity';

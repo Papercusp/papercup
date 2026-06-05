@@ -20,16 +20,31 @@ import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
 import { loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
+import { sendMessage } from '../../agent-tools/coordination/messages';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
-import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict } from './run-git-sync';
+import { decideGitSyncEscalation, oversizedKey, type EscalationReason } from './git-sync-escalation';
+import { runGitSync, type GitSyncConfig, type GitSyncOutcome, type RepoConflict, type RepoError, type ScopedOversized } from './run-git-sync';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_RESOURCES = ['git-sync', 'libs-papercusp-submodule'] as const;
 const LOCK_TTL_SEC = 600;
 const ESCALATION_PHASE = 'staging';
 const ESCALATION_KIND = 'git-sync-conflict';
+/** EI-18: repeated push failures / oversized-file exclusions — needs a human/agent,
+ *  but is NOT a merge conflict (no resolver dispatch). */
+const ESCALATION_ERROR_KIND = 'git-sync-error';
 /** The event key the `merge-resolution` launch blueprint declares (its trigger). */
 const CONFLICT_EVENT = 'git-sync:conflict';
+
+/** Coord identity for git-sync's own broadcasts (mirrors service-health's). */
+const GIT_SYNC_IDENTITY: AgentIdentity = {
+  ownerId: 'system:git-sync',
+  ownerLabel: 'git-sync',
+  source: 'static-client',
+  workspaceId: null,
+  userId: null,
+};
 
 function configFromTrigger(triggerConfig: Record<string, unknown>): GitSyncConfig {
   return {
@@ -37,6 +52,7 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): GitSyncConfi
     pushSubmodules: triggerConfig.push_submodules !== false,
     branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
     remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
+    maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
   };
 }
 
@@ -132,17 +148,66 @@ async function writeGitSyncEscalation(slug: string, workspaceId: string, conflic
   );
 }
 
-/** Clear a git-sync-conflict escalation after a clean sync (leave other kinds intact). */
-async function clearGitSyncEscalation(slug: string): Promise<void> {
+/** Clear git-sync escalations of the given kinds after a clean sync (other kinds intact). */
+async function clearGitSyncEscalation(slug: string, kinds: string[]): Promise<void> {
   const { sql } = getOrgPg();
   await sql.unsafe(
     `UPDATE harness_shared.harness_escalations
         SET escalation = NULL, mtime_ms = $2
       WHERE harness_slug = $1 AND phase = $3
         AND escalation IS NOT NULL
-        AND (escalation::jsonb ->> 'kind') = $4`,
-    [slug, Date.now(), ESCALATION_PHASE, ESCALATION_KIND],
+        AND (escalation::jsonb ->> 'kind') = ANY($4)`,
+    [slug, Date.now(), ESCALATION_PHASE, kinds],
   );
+}
+
+/**
+ * EI-18: write/refresh the `git-sync-error` escalation (repeated push failures and/or
+ * oversized-file exclusions). The (harness_slug, phase) row is SHARED with the
+ * conflict escalation — the conditional DO UPDATE makes this a strict non-clobber:
+ * an open `git-sync-conflict` (which a merge-resolver may be reading) always wins.
+ */
+async function writeGitSyncErrorEscalation(
+  slug: string,
+  workspaceId: string,
+  info: { reasons: EscalationReason[]; consecutiveErrorTicks: number; errors: RepoError[]; oversized: ScopedOversized[] },
+): Promise<void> {
+  const { sql } = getOrgPg();
+  const body = JSON.stringify({
+    kind: ESCALATION_ERROR_KIND,
+    harness_slug: slug,
+    reasons: info.reasons,
+    consecutive_error_ticks: info.consecutiveErrorTicks,
+    errors: info.errors.map((e) => ({ scope: e.scope, message: e.message.slice(0, 500) })),
+    oversized: info.oversized.map((f) => ({ scope: f.scope, path: f.path, size_bytes: f.sizeBytes })),
+    emitted_at: Date.now(),
+    detail:
+      `git-sync needs attention: ${info.reasons.join(' + ')}` +
+      (info.reasons.includes('push-failure') ? ` — push failed ${info.consecutiveErrorTicks} consecutive ticks (commits NOT reaching origin)` : '') +
+      (info.oversized.length > 0 ? ` — ${info.oversized.length} oversized file(s) excluded from auto-commit (gitignore or remove them)` : ''),
+  });
+  await sql.unsafe(
+    `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (harness_slug, phase)
+     DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms
+     WHERE harness_escalations.escalation IS NULL
+        OR (harness_escalations.escalation::jsonb ->> 'kind') = $6`,
+    [slug, ESCALATION_PHASE, body, Date.now(), workspaceId, ESCALATION_ERROR_KIND],
+  );
+}
+
+/** Previous tick's EI-18 counters from the routine metadata. */
+async function readEscalationCounters(slug: string): Promise<{ errTicks: number; oversizedKeys: string[] }> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ et: number; lo: string[] | null }[]>`
+    SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
+           array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo
+      FROM harness_shared.routines
+     WHERE install_slug = ${slug} AND target_role = 'system:git-sync'
+     LIMIT 1
+  `;
+  return { errTicks: rows[0]?.et ?? 0, oversizedKeys: rows[0]?.lo ?? [] };
 }
 
 /**
@@ -238,7 +303,7 @@ async function patchRoutineMetadata(slug: string, patch: Record<string, unknown>
   );
 }
 
-async function recordOutcome(slug: string, outcome: GitSyncOutcome): Promise<void> {
+async function recordOutcome(slug: string, outcome: GitSyncOutcome, consecutiveErrorTicks: number): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
   // errors[] exists on both 'conflict' and 'error' outcomes — record it ALWAYS so a
@@ -255,6 +320,9 @@ async function recordOutcome(slug: string, outcome: GitSyncOutcome): Promise<voi
     last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
     // GAP-3: clear the stale single error on any non-error outcome (JSONB `||` keeps old keys).
     last_error: outcome.status === 'error' ? errors.map((e) => `${e.scope}: ${e.message}`).join('; ') : null,
+    // EI-18 counters: ticks-of-uninterrupted-error + the oversized set (scope:path keys).
+    consecutive_error_ticks: consecutiveErrorTicks,
+    last_oversized: outcome.oversized.map(oversizedKey),
     ...(outcome.status === 'synced' ? { head_sha: outcome.headSha } : {}),
   });
 }
@@ -271,6 +339,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     console.log(`[git-sync] ${slug}: a peer holds git-sync/submodule locks — skipping this tick`);
     return;
   }
+  // EI-18: previous tick's counters BEFORE this tick overwrites them.
+  const prev = await readEscalationCounters(slug);
+
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
   try {
@@ -279,7 +350,8 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     if (state === 'acquired') await releaseAll(cd, acquired);
   }
 
-  await recordOutcome(slug, outcome);
+  const errTicks = outcome.status === 'error' ? prev.errTicks + 1 : 0;
+  await recordOutcome(slug, outcome, errTicks);
 
   if (outcome.status === 'conflict') {
     // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch
@@ -292,10 +364,36 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     }
   } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     // A clean pass means any prior conflict is resolved — clear the escalation.
-    await clearGitSyncEscalation(slug);
+    await clearGitSyncEscalation(slug, [ESCALATION_KIND]);
   }
-  // status === 'error' (no conflict): leave any open escalation untouched; errors
-  // aren't merge conflicts and shouldn't trigger/clear the resolver.
+  // status === 'error' (no conflict): leave any open conflict escalation untouched;
+  // errors aren't merge conflicts and shouldn't trigger/clear the resolver.
+
+  // EI-18: repeated push failures / oversized exclusions must be LOUD — a silent
+  // metadata-only error once accumulated 20h of unpushable history. The escalation
+  // row never clobbers an open conflict escalation (conditional upsert); the coord
+  // broadcast fires on transitions only.
+  const decision = decideGitSyncEscalation({
+    status: outcome.status,
+    consecutiveErrorTicks: errTicks,
+    errors: 'errors' in outcome ? outcome.errors : [],
+    oversized: outcome.oversized,
+    prevOversizedKeys: prev.oversizedKeys,
+  });
+  if (decision.escalate) {
+    await writeGitSyncErrorEscalation(slug, workspaceId, {
+      reasons: decision.reasons,
+      consecutiveErrorTicks: errTicks,
+      errors: 'errors' in outcome ? outcome.errors : [],
+      oversized: outcome.oversized,
+    });
+  } else if (decision.clear) {
+    await clearGitSyncEscalation(slug, [ESCALATION_ERROR_KIND]);
+  }
+  if (decision.broadcast) {
+    console.warn(`[git-sync] ${slug}: ${decision.broadcast}`);
+    await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary: decision.broadcast, category: 'git-sync' }).catch(() => {});
+  }
 }
 
 registerSystemAction('git-sync', handleGitSync);

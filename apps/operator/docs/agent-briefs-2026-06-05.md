@@ -107,6 +107,25 @@
 **Verify:** tutorial reachable all 3 ways; a config edit round-trips and re-renders effective values; a github-repo setting edited in the TUI persists + shows in the desktop; the Activity decision implemented + documented.
 **Constraints:** coordinate with Brief 8/9's agent — same files (`app.rs`/`ui.rs`/`client.rs`); check `coord:presence` before editing.
 
+## Brief 18 — Android app revival + redesign 〔mobile, L〕
+**Plan:** `mobile-apps-revival-redesign-2026-06-05` (D-001..D-006) — read it first. **Repos:** `papercup-rust-mobile` (sibling repo — **normal git commit/push applies there**, it is NOT under git-sync) + `papercup` (the backend device routes — git-sync owns commit/push).
+**Mission:** get the Android app working against today's server, then rebuild the UI around the new model.
+1. **Shared P0 — CLAIM-FIRST** (the iPhone agent, Brief 19, shares this layer — `coord:declare-intent` + claim each chunk before touching `crates/papercup-core` or `routes/device/`): the **6 contract fixes** (sync → `rest-query`; rebuild `push/register`; voice via `runtime-config` → `:3068` + `voice-session-init`; pairing consumes `defguardEnrollmentUrl`; nested error decoder; 403 = re-pair) and the **3 new device routes** (`device/operator-converse` bridging the shared conversation, `device/plans`, `device/attention` — work_items-native). Update the wiremock tests to the CURRENT shapes (today's green tests mock dead endpoints).
+2. **Compose redesign:** 5 tabs **Inbox-first** (Inbox · Operator · Plans · Brew · Settings), the operator tab is a **real chat thread** with the suggestion-cards rendered **inline as actionable bubbles** (retire the card-feed tab; absorb "Running" into Brew), **Pot switcher in the header** with "All Pots" (slug+scope two-axis, matching desktop/PUI), voice FAB kept everywhere.
+3. **FCM push end-to-end:** register → server sends on inbox events → notification **deep-links to the Inbox item**.
+**Verify:** on an emulator/device against the live operator — pair (incl. the Defguard URL handling), Inbox renders live attention items, a chat round-trip on the shared thread, voice connects (`runtime-config` discovery), one push deep-link.
+**Constraints:** backend route work is tested on **staging `:3170`**; the phone pairs against **green `:3070`** (promote via the release gate). Android build = `make build-android` (cargo-ndk + gradle, JDK 17, SDK/NDK 27). Secrets (`google-services.json`, `picovoice.access-key`) are uncommitted — **ask the owner** where they live.
+
+## Brief 19 — iPhone app revival + redesign 〔mobile, L〕
+**Plan:** `mobile-apps-revival-redesign-2026-06-05` (D-001..D-006) — read it first. **Repos:** same split as Brief 18.
+**Mission:** the SwiftUI app reaches parity on the new model, built + verified through the Mac VM.
+1. **Shared P0 — CLAIM-FIRST with Brief 18's agent:** coordinate via coord on the shared `papercup-core` fixes + device routes — take unclaimed chunks, verify claimed ones; do NOT duplicate. (If Brief 18's agent has P0 fully claimed, start at step 2 against their landed contract.)
+2. **SwiftUI redesign parity:** the same 5-tab Inbox-first design as Brief 18 (chat with inline cards, Pot switcher header, Brew absorbing Running, voice FAB) — screen-for-screen with the Compose app per the repo's parallel-UI convention.
+3. **APNS push:** register via the rebuilt route; deep-link to Inbox. (APNS needs cert/entitlement work — flag to the owner if the push cert is missing; simulator can't receive real APNS, use a device or the simulator push file.)
+4. **The Mac-VM build pipeline:** build via `papercup-vm-mac.service` (QEMU macOS Sonoma; Xcode 16.2+; `tools/build-scripts/build-ios.sh` + `install-ios.sh` per `docs/BUILD.md`). **VM gotchas:** QEMU **pauses on disk I/O errors** (black screen + SSH hang + flat CPU = paused, not crashed — resume via monitor `cont`); the unit must stay `Type=simple` (the old `Type=forking`+PIDFile combo kill-looped it).
+**Verify:** the app builds in the VM, installs on the simulator (documented iPhone 16 sim), pairs against green `:3070`, Inbox/Operator/Plans/Brew render live data, a chat round-trip works.
+**Constraints:** never block on the shared P0 — coordinate; the VM is slow, batch your build cycles; commit/push normally in `papercup-rust-mobile`.
+
 ---
 
-**Next batch (not in these 17):** `finish-next-removal` (ready), the tui-workbench P-010 tail (coord-inbox→PUI bridge, HTTP remote transport, spawn-to-pane), `dbos-scheduler-consolidation`, `linux-test-vm-and-federation`, the federation/substrate phase-1b arc, `voice-persona-production-readiness`, `harness-blueprint-distribution` tail, `coordination-integration-adoption`, the mem0 revive-vs-retire decision.
+**Next batch (not in these 19):** `finish-next-removal` (ready), the tui-workbench P-010 tail (coord-inbox→PUI bridge, HTTP remote transport, spawn-to-pane), `dbos-scheduler-consolidation`, `linux-test-vm-and-federation`, the federation/substrate phase-1b arc, `voice-persona-production-readiness`, `harness-blueprint-distribution` tail, `coordination-integration-adoption`, the mem0 revive-vs-retire decision.

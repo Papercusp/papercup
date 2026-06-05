@@ -29,6 +29,15 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # serde; the SAME crate the wasm plugin (apps/pui-zellij-plugin) depends on, so
 # both ends of the `zellij pipe` duplex speak one format.
 pui-companion-proto = { path = "../pui-companion-proto" }
+# Voice mode (voice-mode-tui-port-2026-06-05): PTT mic capture + TTS playback.
+# cpal rides ALSA→PipeWire on Linux; rodio decodes wav+mp3 (kokoro/cloud TTS);
+# hound encodes the 16k mono PCM16 WAV Whisper wants; base64 because audio
+# crosses the operator transport as JSON (IPC string frames are binary-unsafe —
+# plan D-006).
+cpal = "0.15"
+rodio = "0.20"
+hound = "3.5"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

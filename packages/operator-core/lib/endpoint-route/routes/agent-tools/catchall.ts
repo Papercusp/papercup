@@ -32,9 +32,26 @@ import '../../../agent-tools/index';
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 import { chooseScopedHandle, isWorkspaceIsolationEnabled } from './scoped-handle';
 import { principalFromDeviceJwt } from '../../../auth/principal/from-device-jwt';
+import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const HOST_EXTRAS: HttpToolHostExtras = {
+  // `?superuser=1` admission for built-in tools over HTTP — same gate the
+  // /api/plugins/* catch-all carries (loopback origin + the on-disk bearer).
+  // Without this the framework's superuser check has no validator and every
+  // `?superuser=1` call here was rejected, so an SU shell could reach a
+  // built-in tool via MCP but not via its projected HTTP path (e.g. the
+  // fleet:spawn admin trigger, Brief 4 of agent-briefs-2026-06-05).
+  validateSuperuser: (req) => {
+    const h = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === 'string') h.set(k, v);
+    }
+    if (!isLoopbackRequest(h)) return false;
+    const auth = req.headers['authorization'] ?? '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+    return isValidSuperuserBearer(bearer);
+  },
   resolvePrincipalAndTx: async (bearer) => {
     // Composite resolution: agent bearer (token_index → system/pi) first,
     // then the mobile device JWT. `resolveBearer` hits PG; a transient PG

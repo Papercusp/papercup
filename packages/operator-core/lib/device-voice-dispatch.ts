@@ -13,14 +13,9 @@ import { parseVoiceCommand } from './voice-commands';
 import { readCandidates, refreshCandidates } from './operator-standing-candidates';
 import { appendPreferenceEntry } from './operator-preferences';
 import { touchLastSeen } from './device-store';
-import {
-  listPendingCards,
-  dispatchCard,
-  dismissCard,
-  describeCard,
-  setPaused,
-  setResumed,
-} from './device-operator-actions';
+import { setPaused, setResumed } from './device-operator-actions';
+import { fireLaunchBlueprint } from './blueprint/launch-blueprint';
+import { activeWorkspaceId } from './workspace-registry';
 import type { DeviceClaims } from './device-jwt';
 
 /**
@@ -72,17 +67,11 @@ export async function dispatchIntent(
   send: SendFrame,
 ): Promise<void> {
   switch (intent.kind) {
-    case 'open':
-      send({ kind: 'speak', text: 'Papercup panel is open on your desktop.', source: 'operator' });
-      return;
-    case 'open-and-scan':
+    case 'scan':
       await runOperatorScan(intent.query ?? '', send);
       return;
     case 'approve':
       await runStandingApprove(intent, send);
-      return;
-    case 'across-workspaces':
-      send({ kind: 'speak', text: 'Cross-workspace operator mode is not available on mobile.', source: 'operator' });
       return;
   }
 }
@@ -105,12 +94,6 @@ export async function dispatchCommand(
       return;
     case 'scan':
       await runOperatorScan(cmd.query ?? '', send);
-      return;
-    case 'dispatch':
-      await runDispatch(cmd.ordinal, send);
-      return;
-    case 'dismiss':
-      await runDismiss(cmd.ordinal, send);
       return;
     case 'freeform':
       send({ kind: 'status', status: 'thinking' });
@@ -157,50 +140,24 @@ export async function runStandingApprove(
   }
 }
 
-export async function runDispatch(ordinal: number | undefined, send: SendFrame): Promise<void> {
-  const cards = await listPendingCards();
-  if (cards.length === 0) {
-    send({ kind: 'speak', text: 'No pending suggestions to dispatch.', source: 'operator' });
-    return;
-  }
-  const idx = (ordinal ?? 1) - 1;
-  if (idx < 0 || idx >= cards.length) {
-    send({ kind: 'speak', text: `Only ${cards.length} pending — say "dispatch ${cards.length}" or lower.`, source: 'operator' });
-    return;
-  }
-  const card = cards[idx];
-  send({ kind: 'speak', text: `Dispatching: ${describeCard(card)}.`, source: 'operator' });
-  const result = await dispatchCard(card);
-  send({ kind: 'speak', text: result, source: 'operator' });
-}
-
-export async function runDismiss(ordinal: number | undefined, send: SendFrame): Promise<void> {
-  const cards = await listPendingCards();
-  if (cards.length === 0) {
-    send({ kind: 'speak', text: 'Nothing to dismiss.', source: 'operator' });
-    return;
-  }
-  const idx = (ordinal ?? 1) - 1;
-  if (idx < 0 || idx >= cards.length) {
-    send({ kind: 'speak', text: `Only ${cards.length} pending — say "dismiss ${cards.length}" or lower.`, source: 'operator' });
-    return;
-  }
-  const card = cards[idx];
-  const result = await dismissCard(card);
-  send({ kind: 'speak', text: result, source: 'operator' });
-}
+/** Mirrors seed-scan-routine.ts: the workspace the scan blueprint sweeps. */
+const SCAN_SLUG = process.env.SCAN_ROUTINE_SLUG ?? 'papercup';
 
 export async function runOperatorScan(query: string, send: SendFrame): Promise<void> {
+  // D-005 (unify-agent-launches): a voice scan fires the `scan` launch
+  // blueprint — same launch the cadence routine uses. Findings land as
+  // work_items in the self-improvement backlog, not panel cards.
   send({ kind: 'status', status: 'scanning' });
   try {
-    const url = new URL('/api/agent-mcp/operator-scan', selfBase());
-    if (query) url.searchParams.set('request', query);
-    const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) {
-      send({ kind: 'speak', text: `Scan failed: HTTP ${res.status}.`, source: 'operator' });
-      return;
-    }
-    send({ kind: 'speak', text: 'Scanning. Suggestions will appear in the Papercup panel.', source: 'operator' });
+    await fireLaunchBlueprint('scan', {
+      installSlug: SCAN_SLUG,
+      workspaceId: activeWorkspaceId(),
+      kickoff: query
+        ? `Voice-requested workspace scan: ${query}. Capture each finding via improvements:capture.`
+        : 'Voice-requested workspace scan. Capture each finding via improvements:capture.',
+      timeoutMs: 900_000,
+    });
+    send({ kind: 'speak', text: 'Started a workspace scan. Findings will land in the improvements backlog.', source: 'operator' });
   } catch (e) {
     send({
       kind: 'speak',

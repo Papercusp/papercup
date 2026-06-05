@@ -7,9 +7,9 @@
  *   GET    /device/operator/pause                   device JWT
  *   POST   /device/operator/pause                   device JWT
  *   DELETE /device/operator/pause                   device JWT
- *   GET    /device/operator/cards                   device JWT
- *   POST   /device/operator/cards/:id/dispatch      device JWT
- *   POST   /device/operator/cards/:id/dismiss       device JWT
+ *   GET    /device/operator/cards                   device JWT  (RETIRED — empty)
+ *   POST   /device/operator/cards/:id/dispatch      device JWT  (RETIRED — 410)
+ *   POST   /device/operator/cards/:id/dismiss       device JWT  (RETIRED — 410)
  *   GET    /device/operator/standing-candidates     device JWT
  *   POST   /device/operator/standing-candidates/decide  device JWT
  */
@@ -17,14 +17,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
 import { recentToasts, recentAuditEntries } from '../../../device-feeds';
-import {
-  listPendingCards,
-  dispatchCard,
-  dismissCard,
-  setPaused,
-  setResumed,
-  getPauseInfo,
-} from '../../../device-operator-actions';
+import { setPaused, setResumed, getPauseInfo } from '../../../device-operator-actions';
 import { readCandidates, refreshCandidates } from '../../../operator-standing-candidates';
 import { appendPreferenceEntry } from '../../../operator-preferences';
 
@@ -92,7 +85,12 @@ const pauseClear = defineTool({
   },
 });
 
-/* ─── Operator cards ─────────────────────────────────────────────────── */
+/* ─── Operator cards — RETIRED (unify-agent-launches D-005) ──────────────
+ * The scanner card stream dissolved into the scheduled `scan` launch
+ * blueprint; findings are tracked work_items in the self-improvement
+ * backlog (read via improvements:digest), not a card feed. The list route
+ * stays as a graceful empty so older mobile builds render an empty deck;
+ * the card mutations are 410 Gone. */
 
 const cardsList = defineTool({
   method: 'GET',
@@ -100,37 +98,26 @@ const cardsList = defineTool({
   auth: DEVICE_AUTH,
   cors: true,
   async handler() {
-    return Response.json({ cards: await listPendingCards() });
+    return Response.json({ cards: [] });
   },
 });
 
-const cardDispatch = defineTool({
-  method: 'POST',
-  path: '/device/operator/cards/:id/dispatch',
-  auth: DEVICE_AUTH,
-  cors: true,
-  async handler(_req, ctx) {
-    const cards = await listPendingCards();
-    const card = cards.find((x) => x.id === ctx.params.id);
-    if (!card) return Response.json({ ok: false, error: 'card_not_found' }, { status: 404 });
-    const result = await dispatchCard(card);
-    return Response.json({ ok: true, message: result });
-  },
-});
+const cardGone = (path: string) =>
+  defineTool({
+    method: 'POST',
+    path,
+    auth: DEVICE_AUTH,
+    cors: true,
+    async handler() {
+      return Response.json(
+        { ok: false, error: 'operator cards retired (unify-agent-launches D-005) — findings live in the improvements backlog' },
+        { status: 410 },
+      );
+    },
+  });
 
-const cardDismiss = defineTool({
-  method: 'POST',
-  path: '/device/operator/cards/:id/dismiss',
-  auth: DEVICE_AUTH,
-  cors: true,
-  async handler(_req, ctx) {
-    const cards = await listPendingCards();
-    const card = cards.find((x) => x.id === ctx.params.id);
-    if (!card) return Response.json({ ok: false, error: 'card_not_found' }, { status: 404 });
-    const result = await dismissCard(card);
-    return Response.json({ ok: true, message: result });
-  },
-});
+const cardDispatch = cardGone('/device/operator/cards/:id/dispatch');
+const cardDismiss = cardGone('/device/operator/cards/:id/dismiss');
 
 /* ─── Standing-approval candidates ───────────────────────────────────── */
 

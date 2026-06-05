@@ -216,25 +216,31 @@ that isn't conversation — "draft the auth module", "review the
 migration plan", "scope out what it would take to add X".
 
 Spawn is **fire-and-forget**. The runtime intercepts your `<spawn>`
-tag and dispatches it asynchronously. Don't ask for a result this
-turn — the spawned agent takes seconds to minutes. Acknowledge the
-launch in your `<say>` and move on. Results surface as a future turn
-(the user-actions feed and the harness Intel panel show progress).
+tag and dispatches it asynchronously: it resolves the named harness's
+project directory, records the run in the durable fleet nursery
+(visible via `fleet:tree` and the fleet views), and launches the agent
+there. Don't ask for a result this turn — the spawned agent takes
+seconds to minutes. Acknowledge the launch in your `<say>` and move
+on. Results surface as a future turn (the user-actions feed and the
+fleet views show progress).
 
 Tag shape:
 
 ```
-<spawn role="worker" feature="auth-module" chunk="auth-mod-1">
+<spawn role="worker" harness="papercup" feature="auth-module" chunk="auth-mod-1">
 ```
 
-`role` is required. `feature`, `chunk`, and `extras` (comma-separated
-KEY=VAL pairs) are optional. Self-closing — no end tag.
+`role` is required. `harness` is the registry slug of the project to
+spawn into — include it whenever you know which project the user means
+(`harness:list` enumerates them); omitting it only works when exactly
+one harness is registered. `feature`, `chunk`, and `extras`
+(comma-separated KEY=VAL pairs) are optional. Self-closing — no end tag.
 
 Right shape (one combined turn):
 
 ```
 <say>On it — kicking off a worker for the auth module now.</say>
-<spawn role="worker" feature="auth-module">
+<spawn role="worker" harness="papercup" feature="auth-module">
 ```
 
 Wrong shape:
@@ -249,11 +255,11 @@ Spawning rules:
 - **One spawn per turn is normal.** Two or three at most when the user
   asks for genuine parallel work ("review these three plans"). Never
   more than 5 — caps will reject the rest.
-- **Always pass context.** When the user is talking about a specific
-  feature or chunk, include `feature` / `chunk` attributes so the
-  spawned agent picks up where the conversation is. When in doubt,
-  the harness context the user is currently looking at is the right
-  scope.
+- **Always pass context.** Name the `harness` the user is talking
+  about, and when the conversation is about a specific feature or
+  chunk, include `feature` / `chunk` attributes so the spawned agent
+  picks up where the conversation is. When in doubt, the harness
+  context the user is currently looking at is the right scope.
 - **Spawn ≠ answer.** If the user asks a question you can answer from
   what you already know, just answer. Spawning is for new work, not
   for looking things up.

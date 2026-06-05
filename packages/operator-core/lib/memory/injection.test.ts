@@ -8,24 +8,34 @@ vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: async () => sqlRows }),
 }));
 
-vi.mock('./mem0-client', () => ({
-  getMemoryClient: vi.fn(),
+vi.mock('./backend', () => ({
+  getMemoryBackend: vi.fn(),
 }));
 
 import { buildMemoryContextBlock, lastUserContext } from './injection';
-import { getMemoryClient } from './mem0-client';
+import { getMemoryBackend } from './backend';
 import { _resetForTests } from './bump-last-surfaced';
 
-type Hit = { id?: string; memory: string; metadata?: Record<string, unknown> };
+type Row = { id: string; text: string; kind?: string };
 
-// The mem0 client mock: returns the same `results` for the user pull and any
-// harness pull (tests that exercise harness fan-out pass harnessSlugs explicitly).
-const mockClient = (results: Hit[]) => ({
-  search: vi.fn(async (_q: string, _opts: { filters: { user_id: string } }) => ({ results })),
+// The neutral-backend mock (generalize-memory-backend-swappable D-003):
+// `search` stamps each canned row with the scope it was queried under,
+// mimicking the real backend's per-pool attribution.
+const mockBackend = (rows: Row[], availability: { ok: boolean; reason?: string } = { ok: true }) => ({
+  name: 'fake',
+  available: vi.fn(async () => availability),
+  search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
+    const scope = typeof opts.scope === 'string' ? opts.scope : opts.scope[0];
+    return rows.map((r) => ({ ...r, scope }));
+  }),
 });
 
+const useBackend = (b: ReturnType<typeof mockBackend>): void => {
+  vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
+};
+
 beforeEach(() => {
-  vi.mocked(getMemoryClient).mockReset();
+  vi.mocked(getMemoryBackend).mockReset();
   sqlRows = [];
   _resetForTests();
 });
@@ -50,73 +60,68 @@ describe('lastUserContext', () => {
 
 describe('buildMemoryContextBlock', () => {
   it('returns null when query context is empty', async () => {
+    useBackend(mockBackend([]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: '' });
     expect(block).toBeNull();
   });
 
-  it('returns null when mem0 client unavailable', async () => {
-    vi.mocked(getMemoryClient).mockResolvedValue(null);
+  it('returns null when the backend is unavailable', async () => {
+    useBackend(mockBackend([], { ok: false, reason: 'mem0_unavailable' }));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
   });
 
-  it('returns null when client throws', async () => {
-    vi.mocked(getMemoryClient).mockRejectedValue(new Error('boom'));
+  it('returns null when the availability probe throws', async () => {
+    const b = mockBackend([]);
+    b.available = vi.fn(async () => { throw new Error('boom'); });
+    useBackend(b);
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
   });
 
   it('returns null when search throws', async () => {
-    const c = mockClient([]);
-    c.search = vi.fn(async () => { throw new Error('pg down'); });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(c as any);
+    const b = mockBackend([]);
+    b.search = vi.fn(async () => { throw new Error('pg down'); });
+    useBackend(b);
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
   });
 
   it('returns null when no hits', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([]) as any);
+    useBackend(mockBackend([]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
   });
 
-  it('formats user hits with kind metadata', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([
-      { memory: 'User prefers terse replies', metadata: { kind: 'preference' } },
-      { memory: 'User name is Aviyn', metadata: { kind: 'identity' } },
-    ]) as any);
+  it('formats user hits with their kind', async () => {
+    useBackend(mockBackend([
+      { id: 'i1', text: 'User prefers terse replies', kind: 'preference' },
+      { id: 'i2', text: 'User name is Aviyn', kind: 'identity' },
+    ]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'who am i' });
     expect(block).toContain('## Operator memory (relevant entries)');
-    expect(block).toContain('- [preference] User prefers terse replies');
-    expect(block).toContain('- [identity] User name is Aviyn');
+    expect(block).toContain('- [preference] (id=i1) User prefers terse replies');
+    expect(block).toContain('- [identity] (id=i2) User name is Aviyn');
   });
 
   it('labels a harness-scoped hit with its slug', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([
-      { memory: 'Project uses PG by default', metadata: { kind: 'project' } },
-    ]) as any);
+    useBackend(mockBackend([
+      { id: 'i3', text: 'Project uses PG by default', kind: 'project' },
+    ]));
     const block = await buildMemoryContextBlock({
       userId: null, workspaceId: 'ws', harnessSlugs: ['papercup'], queryContext: 'storage?',
     });
-    expect(block).toContain('- [project @ papercup] Project uses PG by default');
+    expect(block).toContain('- [project @ papercup] (id=i3) Project uses PG by default');
   });
 
-  it('falls back to unknown kind when missing metadata', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([{ memory: 'Bare fact' }]) as any);
+  it('falls back to unknown kind when the entry has none', async () => {
+    useBackend(mockBackend([{ id: 'i4', text: 'Bare fact' }]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
-    expect(block).toContain('- [unknown] Bare fact');
+    expect(block).toContain('- [unknown] (id=i4) Bare fact');
   });
 
   it('respects custom heading', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([
-      { memory: 'X', metadata: { kind: 'project' } },
-    ]) as any);
+    useBackend(mockBackend([{ id: 'i5', text: 'X', kind: 'project' }]));
     const block = await buildMemoryContextBlock({
       userId: 'u1', workspaceId: 'ws', queryContext: 'x', heading: 'Brainstorm memory',
     });
@@ -124,26 +129,26 @@ describe('buildMemoryContextBlock', () => {
   });
 
   it('pulls user + harness scopes only — no deprecated workspace pull (D-005)', async () => {
-    const c = mockClient([{ memory: 'x', metadata: { kind: 'preference' } }]);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(c as any);
+    const b = mockBackend([{ id: 'i6', text: 'x', kind: 'preference' }]);
+    useBackend(b);
     await buildMemoryContextBlock({
       userId: 'u-123', workspaceId: 'ws-7', harnessSlugs: ['papercup'], queryContext: 'foo',
     });
-    const calls = (c.search as ReturnType<typeof vi.fn>).mock.calls;
-    const userIds = calls.map((call) => (call[1] as { filters: { user_id: string } }).filters.user_id);
-    expect(userIds).toEqual(['u-123', 'harness:papercup']); // never a `workspace:*` pull
-    expect(calls[0][1]).toEqual({ filters: { user_id: 'u-123' }, limit: 6 });
+    // One user pull (limit 6) + one harness pull (per-pool limit 3) —
+    // never a `workspace:*` scope.
+    expect(b.search.mock.calls).toEqual([
+      ['foo', { scope: 'u-123', limit: 6 }],
+      ['foo', { scope: ['harness:papercup'], limit: 3 }],
+    ]);
   });
 
   it('dedups a memory surfaced within the watermark window (D-006)', async () => {
     const stale = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const fresh = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([
-      { id: stale, memory: 'stale fact', metadata: { kind: 'preference' } },
-      { id: fresh, memory: 'fresh fact', metadata: { kind: 'preference' } },
-    ]) as any);
+    useBackend(mockBackend([
+      { id: stale, text: 'stale fact', kind: 'preference' },
+      { id: fresh, text: 'fresh fact', kind: 'preference' },
+    ]));
     // `stale` was surfaced recently → the guard must drop it; `fresh` stays.
     sqlRows = [{ id: stale }];
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
@@ -153,10 +158,9 @@ describe('buildMemoryContextBlock', () => {
 
   it('returns null when every hit was recently surfaced', async () => {
     const id = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.mocked(getMemoryClient).mockResolvedValue(mockClient([
-      { id, memory: 'only fact', metadata: { kind: 'preference' } },
-    ]) as any);
+    useBackend(mockBackend([
+      { id, text: 'only fact', kind: 'preference' },
+    ]));
     sqlRows = [{ id }];
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
     expect(block).toBeNull();

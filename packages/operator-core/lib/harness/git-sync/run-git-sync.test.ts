@@ -301,3 +301,146 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
     });
   });
 });
+
+describe('runGitSync — EI-18 oversized-blob guard', () => {
+  let root: string;
+  let originDir: string;
+  let repo: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'gitsync-oversized-'));
+    originDir = join(root, 'origin.git');
+    git(root, 'init', '--bare', '-b', 'main', originDir);
+    const seed = join(root, 'seed');
+    git(root, 'clone', originDir, seed);
+    configUser(seed);
+    writeFileSync(join(seed, 'file.txt'), 'line1\n');
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '--no-verify', '-m', 'init');
+    git(seed, 'push', '-u', 'origin', 'main');
+    repo = join(root, 'repo');
+    git(root, 'clone', originDir, repo);
+    configUser(repo);
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // A tiny limit so tests don't write real 95MB files.
+  const cfg = { pushSubmodules: false, maxBlobBytes: 1024 } as const;
+
+  it('EXCLUDES an oversized file from the auto-commit, still syncs the rest, and reports it', async () => {
+    writeFileSync(join(repo, 'small.txt'), 'ok\n');
+    writeFileSync(join(repo, 'big.bin'), Buffer.alloc(2048, 1));
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toContain('superproject');
+    expect(out.oversized).toEqual([{ scope: 'superproject', path: 'big.bin', sizeBytes: 2048 }]);
+
+    // origin received small.txt but NOT the unpushable blob
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('small.txt');
+    expect(originFiles).not.toContain('big.bin');
+
+    // the file is untouched on disk, just left uncommitted (untracked)
+    expect(readFileSync(join(repo, 'big.bin')).length).toBe(2048);
+    expect(git(repo, 'status', '--porcelain')).toContain('?? big.bin');
+  });
+
+  it('an oversized-ONLY dirty tree commits nothing ("nothing") but still reports the file', async () => {
+    writeFileSync(join(repo, 'big.bin'), Buffer.alloc(4096, 1));
+    const before = git(originDir, 'log', '--format=%s', 'main');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('nothing');
+    expect(out.oversized).toEqual([{ scope: 'superproject', path: 'big.bin', sizeBytes: 4096 }]);
+    expect(git(originDir, 'log', '--format=%s', 'main')).toBe(before); // origin untouched
+  });
+
+  it('a clean tree under the limit reports no oversized files', async () => {
+    writeFileSync(join(repo, 'fits.txt'), 'small enough\n');
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(out.status).toBe('synced');
+    expect(out.oversized).toEqual([]);
+  });
+
+  it('oversized paths with spaces are excluded correctly (-z parsing + literal pathspec)', async () => {
+    writeFileSync(join(repo, 'big file with spaces.bin'), Buffer.alloc(2048, 1));
+    writeFileSync(join(repo, 'small.txt'), 'ok\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(out.oversized).toEqual([{ scope: 'superproject', path: 'big file with spaces.bin', sizeBytes: 2048 }]);
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('small.txt');
+    expect(originFiles).not.toContain('big file with spaces.bin');
+  });
+});
+
+describe('runGitSync — EI-18 oversized in a SUBMODULE does not defer the superproject', () => {
+  const allowFile = ['-c', 'protocol.file.allow=always'];
+  let root: string;
+  let superOrigin: string;
+  let subOrigin: string;
+  let repo: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'gitsync-oversized-sub-'));
+    superOrigin = join(root, 'super-origin.git');
+    subOrigin = join(root, 'sub-origin.git');
+    git(root, 'init', '--bare', '-b', 'main', superOrigin);
+    git(root, 'init', '--bare', '-b', 'main', subOrigin);
+
+    const subseed = join(root, 'subseed');
+    git(root, 'clone', subOrigin, subseed);
+    configUser(subseed);
+    writeFileSync(join(subseed, 'sub.txt'), 'sub-v1\n');
+    git(subseed, 'add', '-A');
+    git(subseed, 'commit', '--no-verify', '-m', 'sub init');
+    git(subseed, 'push', '-u', 'origin', 'main');
+
+    const superseed = join(root, 'superseed');
+    git(root, 'clone', superOrigin, superseed);
+    configUser(superseed);
+    git(superseed, ...allowFile, 'submodule', 'add', subOrigin, 'libs/sub');
+    configUser(join(superseed, 'libs/sub'));
+    git(superseed, 'add', '-A');
+    git(superseed, 'commit', '--no-verify', '-m', 'super init + submodule');
+    git(superseed, 'push', '-u', 'origin', 'main');
+
+    repo = join(root, 'repo');
+    git(root, 'clone', superOrigin, repo);
+    configUser(repo);
+    git(repo, ...allowFile, 'submodule', 'update', '--init', '--recursive');
+    configUser(join(repo, 'libs/sub'));
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('submodule syncs WITHOUT the big file; superproject pointer still bumps + pushes', async () => {
+    writeFileSync(join(repo, 'libs/sub', 'sub-small.txt'), 'sub ok\n');
+    writeFileSync(join(repo, 'libs/sub', 'sub-big.bin'), Buffer.alloc(2048, 1));
+    writeFileSync(join(repo, 'super-new.txt'), 'super ok\n');
+
+    const out = await runGitSync('test', { repoPath: repo, config: { maxBlobBytes: 1024 } });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') {
+      expect(out.pushed).toContain('libs/sub');
+      expect(out.pushed).toContain('superproject'); // NOT deferred by the exclusion
+    }
+    expect(out.oversized).toEqual([{ scope: 'libs/sub', path: 'sub-big.bin', sizeBytes: 2048 }]);
+
+    // the submodule's origin got the small file, never the big one
+    const subFiles = git(subOrigin, 'ls-tree', '-r', '--name-only', 'main');
+    expect(subFiles).toContain('sub-small.txt');
+    expect(subFiles).not.toContain('sub-big.bin');
+
+    // the pushed superproject pointer resolves on the submodule origin (no broken gitlink)
+    const pointer = git(repo, 'rev-parse', 'HEAD:libs/sub');
+    expect(() => git(subOrigin, 'cat-file', '-e', `${pointer}^{commit}`)).not.toThrow();
+  });
+});

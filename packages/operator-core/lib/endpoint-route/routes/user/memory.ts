@@ -1,13 +1,20 @@
 /**
- * /api/user/memory — list + delete + edit operator memories for the
- * session user. Wraps mem0's getAll/delete/update with session-user
- * scoping + workspace-shared union.
+ * /api/user/memory — list + delete + edit persistent memories for the
+ * session user. Rides the neutral `MemoryBackend` seam
+ * (generalize-memory-backend-swappable D-003) — rows are the neutral
+ * entry shape `{ id, text, kind, scope, harness_slug?, metadata }`,
+ * regardless of which store backs them.
+ *
+ * The audit enrichment (state + broken anchors) reads the mem0
+ * canonical tables directly — it is mem0-specific by design and
+ * degrades silently for other backends (no matching ids → no audit
+ * fields).
  *
  * Ported from app/api/user/memory/route.ts. `auth: 'public'` —
  * session-cookie auth via getSessionUser(req.headers).
  */
 import { getSessionUser } from '../../../auth';
-import { getMemoryClient, invalidateMemoryClient } from '../../../memory/mem0-client';
+import { getMemoryBackend, type MemoryEntry } from '../../../memory/backend';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { recordFeedback } from '../../../memory/feedback';
@@ -101,6 +108,23 @@ async function loadAuditEnrichment(
   return out;
 }
 
+/**
+ * Map a neutral entry's opaque scope string onto the display grouping
+ * the settings page renders: the session user's pool → 'user',
+ * `harness:<slug>` → 'harness' (+ slug), legacy `workspace:<id>` →
+ * 'workspace', anything else → 'user' (still the user's own view).
+ */
+function displayScope(e: MemoryEntry, userId: string): {
+  scope: 'user' | 'harness' | 'workspace';
+  harness_slug?: string;
+} {
+  if (e.scope.startsWith('harness:')) {
+    return { scope: 'harness', harness_slug: e.scope.slice('harness:'.length) };
+  }
+  if (e.scope.startsWith('workspace:')) return { scope: 'workspace' };
+  return e.scope === userId ? { scope: 'user' } : { scope: 'user' };
+}
+
 const list = defineTool({
   method: 'GET',
   path: '/user/memory',
@@ -108,47 +132,41 @@ const list = defineTool({
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
-    const client = await getMemoryClient();
-    if (!client) {
-      return Response.json({ results: [], reason: 'mem0_unavailable' });
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) {
+      return Response.json({ results: [], reason: avail.reason, backend: backend.name });
     }
     const ws = activeWorkspaceId();
 
-    // Two-way fan-out: user-scoped + per-harness (one pull per slug). The
-    // deprecated workspace-shared pool was drained (docs-and-memory-as-projections
-    // D-005). mem0's PGVector adapter doesn't support OR/IN filters, so each pool
-    // is a separate getAll() — see the memory-harness-scope plan for the audit.
+    // User pool + one pool per harness. The per-pool fan-out is the
+    // backend's concern; the deprecated workspace-shared pool was
+    // drained (docs-and-memory-as-projections D-005).
     let harnessSlugs: string[] = [];
     try {
       const reg = await loadHarnessRegistry(ws);
       harnessSlugs = reg.projects.map((p) => p.slug);
     } catch { /* leave empty — section will just be empty */ }
 
-    const userPull = client.getAll({ filters: { user_id: user.id }, topK: 5000 });
-    const harnessPulls = harnessSlugs.map((slug) =>
-      client.getAll({ filters: { user_id: `harness:${slug}` }, topK: 5000 })
-        .then((r) => ({ slug, results: r.results ?? [] })),
-    );
+    const entries = await backend.list({
+      scope: [user.id, ...harnessSlugs.map((slug) => `harness:${slug}`)],
+    });
 
-    const [userRes, ...harnessResults] = await Promise.all([
-      userPull,
-      ...harnessPulls,
-    ]);
-
-    const combined = [
-      ...((userRes.results ?? []).map((r) => ({ ...r, scope: 'user' as const }))),
-      ...harnessResults.flatMap((h) =>
-        h.results.map((r) => ({ ...r, scope: 'harness' as const, harness_slug: h.slug })),
-      ),
-    ];
+    const combined = entries.map((e) => ({
+      id: e.id,
+      text: e.text,
+      kind: e.kind,
+      metadata: e.metadata,
+      ...displayScope(e, user.id),
+    }));
     combined.sort((a, b) => {
-      const tA = ((a.metadata as Record<string, unknown>)?.turn_at as number) ?? 0;
-      const tB = ((b.metadata as Record<string, unknown>)?.turn_at as number) ?? 0;
+      const tA = ((a.metadata as Record<string, unknown> | undefined)?.turn_at as number) ?? 0;
+      const tB = ((b.metadata as Record<string, unknown> | undefined)?.turn_at as number) ?? 0;
       return tB - tA;
     });
 
     // Enrich with canonical audit state (state column + broken anchors).
-    // Silent no-op until migration 085 is applied.
+    // mem0-specific; silently absent for other backends / pre-085 schemas.
     const audit = await loadAuditEnrichment(combined.map((r) => r.id));
     const enriched = combined.map((r) => {
       const e = audit.get(r.id);
@@ -164,7 +182,7 @@ const list = defineTool({
       };
     });
 
-    return Response.json({ results: enriched });
+    return Response.json({ results: enriched, backend: backend.name });
   },
 });
 
@@ -175,39 +193,38 @@ const del = defineTool({
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
-    const client = await getMemoryClient();
-    if (!client) return Response.json({ error: 'mem0_unavailable' }, { status: 503 });
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
     const url = new URL(req.url);
     const id = url.searchParams.get('id');
     const all = url.searchParams.get('all');
     if (all === '1') {
-      const myResults = await client.getAll({ filters: { user_id: user.id }, topK: 5000 });
+      const mine = await backend.list({ scope: user.id });
       let n = 0;
-      for (const r of myResults.results ?? []) {
+      for (const entry of mine) {
         try {
-          await client.delete(r.id);
-          const k = (r.metadata as Record<string, unknown> | undefined)?.kind;
+          await backend.forget(entry.id);
           await recordFeedback({
-            memId: r.id, userId: user.id, action: 'forget_all',
-            kind: typeof k === 'string' ? k : null,
-            priorText: r.memory ?? null,
+            memId: entry.id, userId: user.id, action: 'forget_all',
+            kind: entry.kind ?? null,
+            priorText: entry.text || null,
           });
           n += 1;
         } catch { /* best-effort */ }
       }
-      invalidateMemoryClient();
+      backend.invalidate?.();
       return Response.json({ ok: true, deleted: n });
     }
     if (!id) return Response.json({ error: 'id_or_all_required' }, { status: 400 });
     let priorText: string | null = null;
     let priorKind: string | null = null;
     try {
-      const got = await client.get(id);
-      priorText = (got as { memory?: string } | null)?.memory ?? null;
-      const k = (got as { metadata?: Record<string, unknown> } | null)?.metadata?.kind;
-      priorKind = typeof k === 'string' ? k : null;
+      const got = await backend.get(id);
+      priorText = got?.text ?? null;
+      priorKind = got?.kind ?? null;
     } catch { /* best-effort */ }
-    await client.delete(id);
+    await backend.forget(id);
     await recordFeedback({
       memId: id, userId: user.id, action: 'delete', kind: priorKind, priorText,
     });
@@ -222,24 +239,26 @@ const patch = defineTool({
   async handler(req) {
     const user = await getSessionUser(req.headers);
     if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
-    const client = await getMemoryClient();
-    if (!client) return Response.json({ error: 'mem0_unavailable' }, { status: 503 });
-    const body = (await req.json().catch(() => null)) as { id?: string; memory?: string } | null;
-    if (!body?.id || typeof body.memory !== 'string' || !body.memory.trim()) {
-      return Response.json({ error: 'id_and_memory_required' }, { status: 400 });
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
+    const body = (await req.json().catch(() => null)) as { id?: string; text?: string; memory?: string } | null;
+    // `text` is the neutral field; `memory` accepted from older clients.
+    const nextText = (body?.text ?? body?.memory)?.trim();
+    if (!body?.id || !nextText) {
+      return Response.json({ error: 'id_and_text_required' }, { status: 400 });
     }
     let priorText: string | null = null;
     let priorKind: string | null = null;
     try {
-      const got = await client.get(body.id);
-      priorText = (got as { memory?: string } | null)?.memory ?? null;
-      const k = (got as { metadata?: Record<string, unknown> } | null)?.metadata?.kind;
-      priorKind = typeof k === 'string' ? k : null;
+      const got = await backend.get(body.id);
+      priorText = got?.text ?? null;
+      priorKind = got?.kind ?? null;
     } catch { /* best-effort */ }
-    await client.update(body.id, body.memory.trim());
+    await backend.update(body.id, { text: nextText });
     await recordFeedback({
       memId: body.id, userId: user.id, action: 'edit',
-      kind: priorKind, priorText, newText: body.memory.trim(),
+      kind: priorKind, priorText, newText: nextText,
     });
     return Response.json({ ok: true });
   },

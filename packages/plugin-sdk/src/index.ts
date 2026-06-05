@@ -671,9 +671,12 @@ export interface Plugin {
   /**
    * Manifest discriminator. Mirrors the `kind` field in papercusp.json so
    * `Plugin` literals in source can match. The loader treats `'plugin'` as
-   * default; other values reserve room for future package types.
+   * default; `'pack'` marks a runtime-less code-tool pack (tools only — the
+   * loader rejects ui/roles/routines/actions/non-js runtimes on packs;
+   * tool-distribution-granularity-2026-06-05 D-001/D-004). Other values
+   * reserve room for future package types.
    */
-  kind?: 'plugin' | 'service' | 'theme' | 'harness';
+  kind?: 'plugin' | 'pack' | 'service' | 'theme' | 'harness';
   /** Unique plugin name (filesystem dir + Postgres schema prefix). */
   name: string;
   /** Plugin semver. */

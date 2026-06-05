@@ -7,6 +7,8 @@
  *
  *   GET  /api/cupboard/listings                      — list + search (public)
  *   GET  /api/cupboard/listings/:id                  — detail (public)
+ *   GET  /api/cupboard/tools                         — tool discovery (local pack
+ *        catalog merged with Cupboard provides_tools; tool-distribution P-006)
  *   GET  /api/cupboard/admin/reports                 — operator: list reports
  *   POST /api/cupboard/admin/reports/:id/resolve     — operator: resolve a report
  *   POST /api/cupboard/admin/harnesses/:id/unlist    — operator: takedown
@@ -19,6 +21,9 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { getGhAuthToken } from '../../identity/gh-token';
 import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
+import { derivePackCatalog } from '../../cupboard/pack-catalog';
+import { buildToolsDiscovery } from '../../cupboard/tools-discovery';
+import { getPluginHost } from '../../plugin-host-runtime';
 
 // Base URL for the external Cupboard worker. Single source of truth is
 // resolveCupboardBaseUrl() (PAPERCUSP_CUPBOARD_URL or the canonical default) —
@@ -112,6 +117,39 @@ const getCupboardListing = defineTool({
   },
 });
 
+// ─── GET /cupboard/tools ─────────────────────────────────────────
+// The marketplace's Tools discovery section (tool-distribution-granularity
+// P-006/D-005): every known tool resolved to its provider — the merged local
+// pack catalog (built-ins + installed plugins/packs) plus the Cupboard's
+// provides_tools declarations. NOT a proxy: the local registries are half the
+// answer, so this derives the catalog in-process and folds the Cupboard in.
+
+const listCupboardTools = defineTool({
+  method: 'GET',
+  path: '/cupboard/tools',
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    const q = url.searchParams.get('q') ?? undefined;
+    const statusRaw = url.searchParams.get('status');
+    const status =
+      statusRaw === 'available' || statusRaw === 'installable' ? statusRaw : undefined;
+    if (statusRaw != null && statusRaw !== '' && !status) {
+      return Response.json({ error: 'invalid_field', field: 'status' }, { status: 400 });
+    }
+    try {
+      // The projected-tool registry only carries plugin tools once the plugin
+      // host has loaded them (lazy on first use) — warm it so a cold operator's
+      // first discovery call doesn't under-report installed units.
+      await getPluginHost();
+      const cat = await derivePackCatalog({ timeoutMs: 8_000 });
+      return Response.json(buildToolsDiscovery(cat, { q, status }));
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 503 });
+    }
+  },
+});
+
 // ─── Operator moderation proxy (/cupboard/admin/*) ───────────────────
 // Adds the maintainer's gh-token server-side (browser never holds it), like
 // the publish proxy; the Cupboard worker enforces the operator allowlist.
@@ -198,6 +236,7 @@ const unlistCupboardHarness = defineTool({
 export default [
   listCupboardListings,
   getCupboardListing,
+  listCupboardTools,
   listCupboardReports,
   resolveCupboardReport,
   unlistCupboardHarness,

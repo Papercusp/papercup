@@ -48,16 +48,40 @@ describe('autoloop:status', () => {
     expect(payload).toEqual({ harnessSlug: 'sheets', rows });
   });
 
-  it('throws when no slug', async () => {
+  it('rejects with precondition_failed when no slug (declarative requires: — D-006)', async () => {
+    // The former in-handler `if (!slug) throw` guard is lifted into a
+    // `requires:` precondition; the DISPATCHER rejects before the handler runs.
     vi.doMock('../../autoloop', () => ({
       getAutoLoopState: vi.fn(),
       startAutoLoopOnce: vi.fn(),
       stopAutoLoop: vi.fn(),
     }));
     const { default: tool } = await import('../autoloop/status');
-    await expect(
-      tool.handler({}, MAKE_CTX({ harnessSlug: undefined })),
-    ).rejects.toThrow(/slug required/i);
+    const { lookupByMcpName, dispatchProjectedTool } = await import('@papercusp/tooldef');
+    // The tool declares the precondition…
+    expect(tool.requires?.[0]?.id).toBe('harness-slug');
+    // …and the dispatcher enforces it: no arg, no ctx slug → precondition_failed.
+    const projected = lookupByMcpName('autoloop:status');
+    expect(projected).toBeDefined();
+    const denied = await dispatchProjectedTool(
+      projected!,
+      'autoloop:status',
+      {},
+      MAKE_CTX({ harnessSlug: undefined, emit: vi.fn() }),
+      {},
+    );
+    expect(denied.ok).toBe(false);
+    expect(denied.error?.code).toBe('precondition_failed');
+    expect(denied.error?.message).toMatch(/slug required/i);
+    // A ctx-scoped slug satisfies it (the handler then runs).
+    const allowed = await dispatchProjectedTool(
+      projected!,
+      'autoloop:status',
+      {},
+      MAKE_CTX({ emit: vi.fn() }),
+      {},
+    );
+    expect(allowed.ok).toBe(true);
   });
 });
 

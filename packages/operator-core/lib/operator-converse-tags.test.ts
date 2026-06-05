@@ -228,3 +228,55 @@ describe('sleepTagToEpochMs (clamped)', () => {
     expect(r.sleep?.durationMinutes).toBe(15);
   });
 });
+
+describe('spawn tags', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('parses a full spawn tag including the harness attribute', () => {
+    const r = parseOperatorTurn(
+      '<say>On it.</say>\n<spawn role="worker" harness="papercup" feature="auth-module" chunk="auth-1" extras="A=1,B=2">',
+    );
+    expect(r.spawns).toEqual([
+      {
+        role: 'worker',
+        harness: 'papercup',
+        featureId: 'auth-module',
+        chunkId: 'auth-1',
+        extras: ['A=1', 'B=2'],
+      },
+    ]);
+  });
+
+  it('harness defaults to null when the attribute is omitted', () => {
+    const r = parseOperatorTurn('<spawn role="validator" feature="F-1">');
+    expect(r.spawns).toHaveLength(1);
+    expect(r.spawns[0].harness).toBeNull();
+    expect(r.spawns[0].role).toBe('validator');
+  });
+
+  it('collects multiple spawn tags in one turn', () => {
+    const r = parseOperatorTurn(
+      '<say>Fanning out.</say>\n' +
+        '<spawn role="reviewer" harness="alpha">\n' +
+        '<spawn role="reviewer" harness="beta">',
+    );
+    expect(r.spawns.map((s) => s.harness)).toEqual(['alpha', 'beta']);
+  });
+
+  it('drops a spawn tag with no role (warn emitted)', () => {
+    const r = parseOperatorTurn('<spawn harness="papercup" feature="F-1">');
+    expect(r.spawns).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('accepts single-quoted attributes', () => {
+    const r = parseOperatorTurn("<spawn role='scoper' harness='demo'>");
+    expect(r.spawns[0]).toMatchObject({ role: 'scoper', harness: 'demo' });
+  });
+});

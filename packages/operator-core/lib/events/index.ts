@@ -14,13 +14,41 @@
  * Imported once at startup from the agent-tools bootstrap. Idempotent.
  */
 
-import { setReactionPostInvoke } from '../projected-tool-deps';
+import { setReactionPostInvoke, setPreconditionFire } from '../projected-tool-deps';
 import { handleToolInvoked } from './engine';
+import { fireReactionInProcess } from './dispatch-reaction';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import './rules';
 
 // Wire the single observation point. The dispatcher now calls handleToolInvoked
 // after every tool settles (best-effort, non-blocking).
 setReactionPostInvoke(handleToolInvoked);
+
+// Wire the precondition fire port (`requires:` auto-correct — autoloop-pot-
+// operator-rebuild D-006). The corrective fire rides the SAME dispatch path as
+// reactions: auth-gated, audited, cause-chained (so a correction that itself
+// triggers reactions is loop-guarded). Unlike postInvoke this is AWAITED by the
+// dispatcher's `preconditions` step — the trigger blocks on its own correction —
+// and a failure throws so the trigger rejects fail-closed.
+setPreconditionFire(async (req) => {
+  const ruleId = `requires:${req.trigger}#${req.requireId}`;
+  const result = await fireReactionInProcess({
+    fire: req.fire,
+    args: req.args,
+    // The trigger's ctx IS a UnifiedToolContext at runtime; the request carries
+    // it as tooldef's open structural shape to stay domain-free.
+    parentCtx: req.ctx as unknown as UnifiedToolContext,
+    cause: {
+      depth: 1,
+      chain: [ruleId],
+      ruleId,
+      rootRunId: typeof req.ctx.runId === 'string' ? req.ctx.runId : null,
+    },
+  });
+  if (!result.ok) {
+    throw new Error(result.error ?? `precondition fire "${req.fire}" failed`);
+  }
+});
 
 export {
   registerReactionRule,

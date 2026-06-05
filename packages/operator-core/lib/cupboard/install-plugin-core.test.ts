@@ -156,4 +156,89 @@ describe('installPluginFromCupboardCore', () => {
     // only 'remote' + 'global-plugins' remain; the clone temp dir is gone
     expect(entries.filter((e) => e.startsWith('cupboard-plugin-'))).toEqual([]);
   });
+
+  // ── tool-distribution-granularity-2026-06-05: pack installs + the dep gate ──
+
+  it('installs a kind=pack unit and reports kind on the result', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'tool-pack',
+      version: '0.1.0',
+      kind: 'pack',
+      tools: [{ name: 'noop' }],
+    });
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/tool-pack' },
+      makeDeps(),
+    );
+    expect(res.kind).toBe('pack');
+    expect(existsSync(join(globalDir, 'tool-pack', 'papercusp.json'))).toBe(true);
+  });
+
+  it('fails (422) BEFORE copying when declared dependencies are hard-missing', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'needy',
+      version: '1.0.0',
+      dependencies: { tools: ['ghost.tool'] },
+    });
+    await expect(
+      installPluginFromCupboardCore(
+        { githubUrl: 'https://github.com/acme/needy' },
+        makeDeps({
+          validateDependencies: async () => ({
+            ok: false,
+            missing: { tools: ['ghost.tool'], packs: [], plugins: [] },
+            installable: { tools: [], packs: [], plugins: [] },
+            messages: ['needs tool "ghost.tool" — not in the tool catalog and no Cupboard pack/plugin provides it'],
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+    expect(existsSync(join(globalDir, 'needy'))).toBe(false);
+  });
+
+  it('proceeds on installable deps and surfaces them advisorily', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'soft-needy',
+      version: '1.0.0',
+      dependencies: { plugins: ['firecrawl'] },
+    });
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/soft-needy' },
+      makeDeps({
+        validateDependencies: async () => ({
+          ok: true,
+          missing: { tools: [], packs: [], plugins: [] },
+          installable: { tools: [], packs: [], plugins: ['firecrawl'] },
+          messages: [],
+        }),
+      }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.installableDependencies).toEqual({ tools: [], packs: [], plugins: ['firecrawl'] });
+  });
+
+  it('does not gate deps when no validateDependencies dep is wired', async () => {
+    await writeManifest(fixtureRepo, {
+      name: 'ungated',
+      version: '1.0.0',
+      dependencies: { tools: ['whatever.tool'] },
+    });
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/ungated' },
+      makeDeps(),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.installableDependencies).toBeUndefined();
+  });
+
+  it('skips the validator entirely for a manifest with no declared deps', async () => {
+    await writeManifest(fixtureRepo, { name: 'no-deps', version: '1.0.0' });
+    const validateDependencies = vi.fn();
+    const res = await installPluginFromCupboardCore(
+      { githubUrl: 'https://github.com/acme/no-deps' },
+      makeDeps({ validateDependencies }),
+    );
+    expect(res.ok).toBe(true);
+    expect(validateDependencies).not.toHaveBeenCalled();
+  });
 });

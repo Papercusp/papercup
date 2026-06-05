@@ -283,6 +283,10 @@ import './fleet/tree';
 import './fleet/supervise';
 import './fleet/admit';
 import './fleet/governor';
+// fleet:spawn — the operator→agent launch verb over the same durable nursery
+// (Brief 4, agent-briefs-2026-06-05): chat <spawn> tags, the operator brain's
+// tool call, and the admin HTTP trigger all land in spawnAgentInHarness.
+import './fleet/spawn';
 
 // Coordination ops as blueprint primitives — the dual-surface decision tools
 // (coordination-ops-as-blueprint-primitives-2026-06-04 D-001). coord:vote /

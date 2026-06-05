@@ -37,9 +37,20 @@ export default defineTool({
     projectId: z.string().min(1),
     revId: z.number().int().positive(),
   }),
+  // Declarative precondition (adopt-event-rules-engines requires:-half): the
+  // former in-handler `if (!slug) throw` guard, lifted.
+  requires: [
+    {
+      id: 'harness-slug',
+      when: {
+        any: [{ 'args.harnessSlug': { truthy: true } }, { 'ctx.harnessSlug': { truthy: true } }],
+      },
+      error: 'projects:spec_revision — slug required (passed or in spawn ctx)',
+    },
+  ],
   async handler(args, ctx) {
+    // Non-empty by the `harness-slug` precondition above.
     const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
-    if (!slug) throw new Error('projects:spec_revision — slug required');
     const revision = await getProjectSpecRevision(slug, args.projectId, args.revId);
     return {
       content: [{

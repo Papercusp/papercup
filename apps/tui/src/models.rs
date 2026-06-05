@@ -188,6 +188,121 @@ pub struct ProjectsResponse {
     pub projects: Vec<HarnessRef>,
 }
 
+// ─── Create / share pot (D-010) ───
+
+/// `POST /api/harness/projects` result — the registered project on success;
+/// `error` carries the backend's message (e.g. "slug already exists") on 4xx.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateProjectResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub project: Option<HarnessRef>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// `POST /api/harness/binding/resolve` — a GitHub remote resolved to its
+/// canonical repo identity (the share flow's first step). `github_repo` is the
+/// bare repo NAME (it pairs with `github_owner`; publish calls it `github_name`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BindingResolveResponse {
+    #[serde(default)]
+    pub github_repository_id: i64,
+    #[serde(default)]
+    pub github_owner: String,
+    #[serde(default)]
+    pub github_repo: String,
+    /// Repo visibility — Cupboard publish refuses private repos.
+    #[serde(default)]
+    pub private: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+// ─── Cupboard tab (D-011) ───
+
+/// One marketplace listing from `GET /api/cupboard/listings` (the operator's
+/// proxy onto the Cupboard worker). Field-tolerant: every field defaults so a
+/// worker-side schema addition never breaks the tab.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct CupboardListing {
+    #[serde(default)]
+    pub id: String,
+    /// harness | blueprint | snapshot | plugin (D-005 listing kinds).
+    #[serde(default)]
+    pub listing_kind: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The Pot rollup key (D-008).
+    #[serde(default)]
+    pub project_ref: Option<String>,
+    /// Within-project discriminator (blueprint/snapshot/plugin name).
+    #[serde(default)]
+    pub listing_ref: Option<String>,
+    #[serde(default)]
+    pub github_repository_id: Option<i64>,
+    #[serde(default)]
+    pub github_owner: Option<String>,
+    #[serde(default)]
+    pub github_name: Option<String>,
+    #[serde(default)]
+    pub github_url: Option<String>,
+    /// 64-char hex Hypercore topic (harness listings).
+    #[serde(default)]
+    pub topic_hex: Option<String>,
+    #[serde(default)]
+    pub publisher_github_login: Option<String>,
+    #[serde(default)]
+    pub claim_status: Option<String>,
+    #[serde(default)]
+    pub stars: Option<i64>,
+    #[serde(default)]
+    pub contributor_count: Option<i64>,
+    #[serde(default)]
+    pub last_activity_at: Option<i64>,
+    /// Ready-made `papercusp://harness?…` join link (harness listings; when
+    /// absent the join flow derives it from topic/github/repo-id).
+    #[serde(default)]
+    pub harness_link: Option<String>,
+}
+
+impl CupboardListing {
+    /// Display name: title > listing_ref > github repo > id.
+    pub fn display_name(&self) -> &str {
+        self.title
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(self.listing_ref.as_deref())
+            .or(self.github_name.as_deref())
+            .unwrap_or(&self.id)
+    }
+
+    /// The `papercusp://harness?…` join link for a harness listing — the
+    /// published one, else derived from topic + github + repo id (the same
+    /// fields `buildHarnessJoinLink` uses on the desktop).
+    pub fn join_link(&self) -> Option<String> {
+        if let Some(l) = self.harness_link.as_deref().filter(|s| !s.is_empty()) {
+            return Some(l.to_string());
+        }
+        let topic = self.topic_hex.as_deref().filter(|s| !s.is_empty())?;
+        let owner = self.github_owner.as_deref().filter(|s| !s.is_empty())?;
+        let name = self.github_name.as_deref().filter(|s| !s.is_empty())?;
+        let repo_id = self.github_repository_id?;
+        Some(format!(
+            "papercusp://harness?topic={topic}&github={owner}/{name}&repo_id={repo_id}"
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CupboardListingsResponse {
+    #[serde(default)]
+    pub listings: Vec<CupboardListing>,
+}
+
 // NOTE: the old Activity tab's `/api/harness/all/recent-activity` DTOs
 // (ActivityEvent/ActivityResponse) were removed with the tab (D-004b) — the
 // Brew tab's `ActivityRow` (agent_activity) is the live activity surface.
@@ -254,11 +369,22 @@ pub struct TestRunResult {
     pub output: String,
 }
 
-/// `/api/harness/:slug/claude-settings` → `{content}` (read-only file body).
-#[derive(Debug, Clone, Deserialize)]
-pub struct ClaudeSettings {
+/// `/api/harness/:slug/claude-settings/effective` → the editable Config-tab
+/// view (D-013): the raw file body (`content` — what `:set`/`:unset` edit and
+/// PUT back), the *effective* settings (Claude Code defaults overlaid by the
+/// file), which top-level keys the file provides, and a parse error when the
+/// on-disk file is broken (the tab then shows defaults + the error).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveClaudeSettings {
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub effective: serde_json::Value,
+    #[serde(default)]
+    pub file_keys: Vec<String>,
+    #[serde(default)]
+    pub parse_error: Option<String>,
 }
 
 /// `/api/harness/:slug/project-docs[?path=]` → docs file list + the active doc.
@@ -1121,11 +1247,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_claude_settings_shape() {
-        let r: ClaudeSettings = serde_json::from_str(r#"{"content":"x=1"}"#).unwrap();
-        assert_eq!(r.content, "x=1");
-        let empty: ClaudeSettings = serde_json::from_str("{}").unwrap();
+    fn parses_effective_claude_settings_shape() {
+        let r: EffectiveClaudeSettings = serde_json::from_str(
+            r#"{"ok":true,"content":"{\"model\":\"opus\"}","effective":{"model":"opus","env":{}},"fileKeys":["model"]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.content, "{\"model\":\"opus\"}");
+        assert_eq!(r.file_keys, vec!["model"]);
+        assert_eq!(r.effective["model"], "opus");
+        assert!(r.parse_error.is_none());
+        // Empty body decodes to defaults (defensive) — effective is Null until fetched.
+        let empty: EffectiveClaudeSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.content, "");
+        assert!(empty.effective.is_null());
+        // A broken file surfaces parseError.
+        let bad: EffectiveClaudeSettings =
+            serde_json::from_str(r#"{"parseError":"invalid JSON: x","effective":{}}"#).unwrap();
+        assert_eq!(bad.parse_error.as_deref(), Some("invalid JSON: x"));
     }
 
     #[test]

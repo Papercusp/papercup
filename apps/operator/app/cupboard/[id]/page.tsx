@@ -7,10 +7,17 @@
  * (Join / Fork / Install — D-005). Renders against either the live-worker row
  * shape or the aspirational HarnessListing shape via the cupboard/types helpers.
  *
- * The fork/install EXECUTION engine (pull blueprint/snapshot + `init --from`;
- * pull plugin code + install-consent) is owned by E1/E2 + the plugin host — the
- * storefront surfaces the listing and routes to the harness create/manage flow
- * with the listing referenced.
+ * Two kinds execute their action directly from here:
+ *   - snapshot Fork  → POST /api/snapshots/fork-from-cupboard (cross-machine
+ *     tarball pull + restore, revive-cupboard D-008);
+ *   - blueprint Fork → POST /api/cupboard/install-blueprint (clone + validate +
+ *     dep-check → ~/.papercusp/blueprints/<id>/, the installed tier of the
+ *     local→installed→built-in resolution —
+ *     official-blueprints-cupboard-publish-2026-06-05 P-004/D-001/D-004).
+ *     Declared plugin deps are NOT auto-installed from this button (consent
+ *     stays explicit — the toast lists what's installable instead).
+ *
+ * Plugin install still hands off to the plugin-host install-consent flow.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -47,7 +54,9 @@ export default function CupboardDetailPage() {
   const [listing, setListing] = useState<HarnessListing | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [forking, setForking] = useState(false);
+  // In-flight lifecycle flag for the direct-execution actions (snapshot fork /
+  // blueprint install) — render-lifecycle state, not URL state.
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -69,18 +78,24 @@ export default function CupboardDetailPage() {
     }
     // Snapshot fork is CROSS-MACHINE (revive-cupboard D-008): pull the tarball
     // from the Cupboard R2 blob store, verify the sha256, and restore() into a
-    // new local harness. Blueprint fork + plugin install hand off to the
-    // E1/E2 `init --from` / plugin-host install-consent create flow.
+    // new local harness.
     if (kind === 'snapshot') {
       void forkSnapshotFromCupboard();
+      return;
+    }
+    // Blueprint fork installs the listing into the local installed tier
+    // (~/.papercusp/blueprints/<id>/), where it shadows a same-id built-in and
+    // becomes resolvable to harness:create / blueprint:extend.
+    if (kind === 'blueprint') {
+      void installBlueprintFromCupboard();
       return;
     }
     router.push(`/harness?cupboardListing=${encodeURIComponent(listing.id)}&action=${listingAction(kind)}`);
   };
 
   const forkSnapshotFromCupboard = async () => {
-    if (!listing || forking) return;
-    setForking(true);
+    if (!listing || busy) return;
+    setBusy(true);
     try {
       const r = await fetch('/api/snapshots/fork-from-cupboard', {
         method: 'POST',
@@ -97,7 +112,44 @@ export default function CupboardDetailPage() {
     } catch (e) {
       toast.error(`Fork crashed: ${(e as Error)?.message ?? String(e)}`);
     } finally {
-      setForking(false);
+      setBusy(false);
+    }
+  };
+
+  const installBlueprintFromCupboard = async () => {
+    if (!listing || busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/cupboard/install-blueprint', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        // No installPlugins:true — plugin-capability consent stays an explicit
+        // per-plugin act; the toast lists what's installable instead.
+        body: JSON.stringify({ listingId: listing.id }),
+      });
+      const d = (await r.json().catch(() => ({}))) as {
+        ok?: boolean;
+        id?: string;
+        version?: string | null;
+        depCheck?: { installable?: { plugins?: string[] } } | null;
+        error?: string;
+        detail?: string;
+      };
+      if (!r.ok || !d.ok) {
+        toast.error(`Install failed: ${d.error ?? `HTTP ${r.status}`}${d.detail ? ` — ${d.detail}` : ''}`);
+        return;
+      }
+      const installable = d.depCheck?.installable?.plugins ?? [];
+      toast.success(
+        `Blueprint "${d.id}" installed${d.version ? ` v${d.version}` : ''} — usable in harness:create / blueprint:extend.` +
+          (installable.length > 0
+            ? ` Declares plugin deps you can install from their listings: ${installable.join(', ')}.`
+            : ''),
+      );
+    } catch (e) {
+      toast.error(`Install crashed: ${(e as Error)?.message ?? String(e)}`);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -128,6 +180,17 @@ export default function CupboardDetailPage() {
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
   const action = listingAction(kind);
+  // provides_tools (worker migration 006): JSON string[] of the MCP tool names
+  // a plugin/pack unit registers — surfaced so the user sees what installing buys.
+  const providesTools: string[] = (() => {
+    if (!listing.provides_tools) return [];
+    try {
+      const parsed: unknown = JSON.parse(listing.provides_tools);
+      return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+    } catch {
+      return [];
+    }
+  })();
 
   return (
     <div style={{ padding: SIZES.lg, maxWidth: 700, margin: '0 auto' }}>
@@ -186,8 +249,18 @@ export default function CupboardDetailPage() {
             </MetaRow>
           )}
           {listing.listing_ref && (
-            <MetaRow label={kind === 'plugin' ? 'Plugin' : 'Listing'}>
+            <MetaRow label={kind === 'plugin' ? 'Plugin' : kind === 'pack' ? 'Pack' : 'Listing'}>
               <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}>{listing.listing_ref}</span>
+            </MetaRow>
+          )}
+          {providesTools.length > 0 && (
+            <MetaRow label="Provides tools">
+              <span
+                data-testid="cupboard-detail-provides-tools"
+                style={{ fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text }}
+              >
+                {providesTools.join(', ')}
+              </span>
             </MetaRow>
           )}
           {listing.project_ref && (
@@ -226,22 +299,22 @@ export default function CupboardDetailPage() {
         <div style={{ marginTop: SIZES.lg, display: 'flex', gap: 8 }}>
           <button
             onClick={handleAction}
-            disabled={forking}
+            disabled={busy}
             data-testid="cupboard-detail-action"
             data-action={action}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 7,
               background: COLORS.accent, color: '#fff', border: 'none',
               borderRadius: RADIUS.md, padding: '9px 20px',
-              cursor: forking ? 'default' : 'pointer',
-              opacity: forking ? 0.7 : 1,
+              cursor: busy ? 'default' : 'pointer',
+              opacity: busy ? 0.7 : 1,
               fontFamily: FONTS.ui, fontSize: SIZES.sm, fontWeight: 600,
             }}
           >
-            {forking ? (
-              <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Forking snapshot…</>
+            {busy ? (
+              <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> {kind === 'blueprint' ? 'Installing blueprint…' : 'Forking snapshot…'}</>
             ) : (
-              <><ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ' plugin' : action === 'fork' ? ` ${kind}` : ' harness'}</>
+              <><ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[action]}{action === 'install' ? ` ${kind}` : action === 'fork' ? ` ${kind}` : ' harness'}</>
             )}
           </button>
           {repoSlug && (

@@ -45,12 +45,16 @@ function walkToolFiles(dir, onFile) {
     else if (entry.endsWith('.ts') && !entry.includes('.test.') && !entry.startsWith('index.')) onFile(full);
   }
 }
-for (const root of ['packages/agent-mcp/src/tools', 'packages/operator-core/lib/agent-tools']) {
+// Walk ALL of agent-mcp + operator-core lib — defineTool calls live outside
+// lib/agent-tools too (e.g. lib/coord-ops/agent-tools.ts defines coord:vote /
+// coord:thread-post; lib/endpoint-route defines named tools).
+for (const root of ['packages/agent-mcp/src', 'packages/operator-core/lib']) {
   walkToolFiles(join(REPO, root), (file) => {
     const src = readFileSync(file, 'utf8');
     if (!src.includes('defineTool(')) return;
-    const m = src.match(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/);
-    if (m) catalogBuiltin.add(m[1]);
+    for (const m of src.matchAll(/name:\s*['"]([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-]+)['"]/g)) {
+      catalogBuiltin.add(m[1]);
+    }
   });
 }
 function walkManifests(dir) {
@@ -76,10 +80,22 @@ walkManifests(join(REPO, 'libs/papercusp/plugins'));
 const FILE_SUFFIX = /\.(md|ts|tsx|js|jsx|mjs|cjs|json|sh|py|css|html|toml|yaml|yml)$/i;
 function mentionsIn(md) {
   const out = new Set();
+  // Bare `tool:verb` mentions (the tools-md-sync regex) PLUS the leading
+  // tool token of an arg-bearing span (`plans:items {actionable:true}`).
   for (const m of md.matchAll(/`([a-zA-Z0-9_]+[:.][a-zA-Z0-9_:.\-\/]+)`/g)) {
     const c = m[1];
     if (FILE_SUFFIX.test(c) || c.includes('/')) continue;
     out.add(c);
+  }
+  for (const m of md.matchAll(/`([a-zA-Z0-9_]+:[a-zA-Z0-9_.\-]+) [^`]*`/g)) {
+    out.add(m[1]);
+  }
+  // CLI bridge usage: `harness-features <verb>` is the features/work-items
+  // surface reached over the CLI instead of MCP — map to the canonical read
+  // pair so the dep travels with the listing.
+  if (/harness-features\s+(list|all|get|count)/.test(md)) {
+    out.add('features:get');
+    out.add('work_items:list');
   }
   return out;
 }

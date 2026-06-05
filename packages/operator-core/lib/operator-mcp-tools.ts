@@ -58,29 +58,17 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__memory:forget',
   'mcp__agentmcp__memory:update',
 
-  // Spawn primitive (Phase 9 / @papercupai/orchestrator-spawn plugin).
-  // Operator role is allowlisted to spawn any other role with a
-  // perRun: 60 quota. See /docs/agent-spawning.
-  //
-  // KNOWN GAP (2026-05-10): listing these in allowedTools is necessary
-  // but not sufficient. The standalone agent-mcp server spawned by
-  // claude-code (packages/agent-mcp/src/server-entry.ts → bootstrap.ts)
-  // only registers BUILT-IN tools — it does not run the plugin loader.
-  // So orchestrator.spawn currently returns "tool not found" at the
-  // MCP layer even though it's listed here. Real fix is one of:
-  //   A) Add plugin loading to bootstrap.ts (duplicates host wiring)
-  //   B) Run an HTTP MCP route on the operator (claude-code supports
-  //      type:'http' mcpServers) so the subprocess proxies into the
-  //      operator's already-loaded plugin catalog
-  // B is the right answer; tracked for follow-up.
-  // claude-code converts `.` to `_` in MCP tool names — server-side
-  // these are exposed as orchestrator.spawn / poll / list_active / cancel
-  // but Claude sees them as orchestrator_spawn etc. Allowlist must match
-  // what Claude sees, not what the server exports.
-  'mcp__agentmcp__orchestrator_spawn',
-  'mcp__agentmcp__orchestrator_poll',
-  'mcp__agentmcp__orchestrator_list_active',
-  'mcp__agentmcp__orchestrator_cancel',
+  // Spawn primitive — fleet:spawn over the durable nursery
+  // (harness_shared.spawned_agents), Brief 4 of agent-briefs-2026-06-05.
+  // Replaces the @papercupai/orchestrator-spawn plugin's orchestrator_*
+  // tools, which were dead on this surface (the plugin is not installed,
+  // and the standalone agent-mcp server never ran the plugin loader —
+  // every call returned "tool not found"). These are BUILT-IN tools, so
+  // they exist on every surface; what's spawned shows up in fleet:tree
+  // and is cancellable with fleet:cancel.
+  'mcp__agentmcp__fleet:spawn',
+  'mcp__agentmcp__fleet:tree',
+  'mcp__agentmcp__fleet:cancel',
 
   // Tool introspection — answers "what can I call?". Companion to
   // tools/list with role+capability+quota metadata that the standard
@@ -117,6 +105,15 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__pot:declare-wake',
   'mcp__agentmcp__pot:wake',
   'mcp__agentmcp__pot:status',
+
+  // The Pot's superpower surface (autoloop-pot-operator-rebuild-2026-06-05
+  // P-004): discover the blueprint shapes (catalog), inspect/author one
+  // (validate/extend), then create the harness whose blueprint carries its own
+  // autoloop. harness:status (above) is the matching read-back.
+  'mcp__agentmcp__blueprint:catalog',
+  'mcp__agentmcp__blueprint:validate',
+  'mcp__agentmcp__blueprint:extend',
+  'mcp__agentmcp__harness:create',
 ];
 
 /**

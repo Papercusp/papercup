@@ -21,6 +21,27 @@ const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = {
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
+  // The Pot's decider (autoloop-pot-operator-rebuild-2026-06-05 P-004,
+  // D-001/D-003): the `pot` launch blueprint wakes the `operator` role to
+  // survey the blackboard (work_items frontier, curation feed, activity
+  // bridge, coord, plans) and create/manage harnesses from blueprints
+  // (blueprint:catalog/validate → harness:read; blueprint:extend +
+  // harness:create → harness:write; pot:declare-wake → routines:write).
+  // Declared here AS WELL AS in the provisioned OPERATOR_CAPS (provision.ts)
+  // because provision-without-force is a no-op for an existing row — the pot
+  // must not depend on a re-provision to function. The two union cleanly.
+  operator: [
+    'harness:read',
+    'harness:write',
+    'work_items:read',
+    'work_items:write',
+    'curation:read',
+    'activity:read',
+    'coord:read',
+    'coord:write',
+    'plans:read',
+    'routines:write',
+  ],
 };
 
 /**

@@ -4,11 +4,12 @@
  * Brain calls when the user corrects a stored fact ("actually my name
  * is Daniel, not Dan"). Preserves the memory's id + lifecycle while
  * replacing content. Always informs the user out loud.
+ * Storage rides the neutral `MemoryBackend` seam.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend } from '../../memory/backend';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
@@ -33,13 +34,14 @@ export default defineTool({
     content: z.string().min(1).max(2000),
   }),
   async handler(args) {
-    const client = await getMemoryClient();
-    if (!client) {
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'mem0_unavailable' }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
       };
     }
-    await client.update(args.id, args.content);
+    await backend.update(args.id, { text: args.content });
     return {
       content: [{ type: 'text', text: JSON.stringify({ ok: true }) }],
     };

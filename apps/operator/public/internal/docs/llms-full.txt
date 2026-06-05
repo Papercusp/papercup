@@ -863,6 +863,48 @@ The injection is a **tail append** — it lands *after* the latest tool result, 
 * **Codex coord hook is SU-only** (pipeline-role sessions coordinate via `messages:send`/`inbox`, not the SU coord bus) and activates server-side on the next operator restart (the `:3070` host has no hot-reload).
 * **OMP `deliverAs:'steer'`** delivering mid-turn is verify-at-deploy — the fetch/format/dedup path is live-verified, but steer-into-a-running-turn needs a real OMP turn to observe.
 
+# Integration-testing coord modules with module-level PG handles
+
+> coord-inbox-bus / presence / topics-feed resolve getOrgPg/getHarnessAdminUrl at call time — repoint env at the baseline DSN and reset 3 caches (codified in _baseline-coord-fixture.ts); drive the inbox producer via _coordInboxTestSeam.
+
+## What
+
+[Section titled “What”](#what)
+
+`coord-inbox-bus`, `presence`, and `topics-feed` call `getOrgPg()` (peek/sweep/tag reads, harness\_app) — and coord-inbox-bus also `getHarnessAdminUrl()` (the LISTEN connection, harness\_admin) — **at call time from module level**, so their PG handles aren’t injectable. To integration-test their EXPORTS (not just the underlying lib stores):
+
+## The fixture
+
+[Section titled “The fixture”](#the-fixture)
+
+Repoint env at the shared baseline-schema DSN and reset **3 caches**:
+
+* `process.env.HARNESS_DATABASE_URL` = harness\_app and `HARNESS_ADMIN_DATABASE_URL` = harness\_admin (both off `inject('baselineSchemaDsn')`).
+* `_resetUrlCacheForTests()` — relative import from `libs/papercusp/libs/db/src/connection` (NOT in the `@papercusp/db-org` index; needs `eslint-disable import/no-relative-packages`), plus `await _resetForTests()` (the db-org pool), plus `_resetHarnessAdminUrlCacheForTests()` (embedded-pg-discovery keeps its OWN URL memo — `_resetForTests` does not null it).
+
+Codified in `packages/operator-core/lib/_baseline-coord-fixture.ts` (mirrors the plans `_pg-tool-fixture.ts`). The baseline globalSetup is ONE `papercusp_it` DB with full migrations (incl. the mig-126 NOTIFY trigger), so NOTIFY/LISTEN works database-wide. Integration runs serial (`fileParallelism: false`) → safe to repoint global env and share coord tables; still clean up rows per test.
+
+## The coord-inbox-bus test seam
+
+[Section titled “The coord-inbox-bus test seam”](#the-coord-inbox-bus-test-seam)
+
+The producer is drivable via `_coordInboxTestSeam` (mirrors `_stopForTests`): `pump(onNotify)`, `ready` (awaitable ensureStarted — await LISTEN readiness after the fire-and-forget `onCoordInbox`), `addHandler`, `setPeek` (stub the human-relevance peek → deterministic draining/dirty coalescing + the `handlers.size === 0` skip with no NOTIFY race), `setCursor`, `state()`. A real e2e (insert into `coord_event_log` via admin `${admin.json(body)}` → mig-126 NOTIFY → wake) covers the once/only-human + below-cursor paths.
+
+## Gotchas
+
+[Section titled “Gotchas”](#gotchas)
+
+* harness\_app has DML on `coord_event_log`/`coord_presence` via mig-109’s blanket `GRANT … ON ALL TABLES` (both tables predate 109).
+* coord\_\* tables have NO RLS; `harness_features_consolidated` DOES → the topics-feed feature-kind enrich is RLS-gated (use conversation+issue kinds in tests instead).
+* Use `admin.json()`, never `${x}::jsonb` (the `no-bare-jsonb-cast` eslint rule on `operator-core/lib/**`).
+* Run from the package dir: `cd packages/operator-core && npx vitest run --config vitest.integration.config.ts <file>`.
+
+## Provenance
+
+[Section titled “Provenance”](#provenance)
+
+Proven by the coordination-federation test-coverage pass (41 tests, 2026-06-04, su-06a38). Lifted from the Claude memory archive (`project_coord_federation_test_coverage`) during the claude-memory-projection-integration boundary split.
+
 # PG is canonical state, not a transport
 
 > Don't poll PG to send messages between apps. Use HTTP/SSE/in-process; persist to PG after the message is delivered, never as the channel itself.
@@ -1694,6 +1736,44 @@ Everything else stays inert and the legacy single-writer paths run unchanged.
 3. After ANY substrate activity → bootstrap-progress shows merge count.
 4. After ANY claim attempt → claim-attempt-stats pill grows.
 5. `<HarnessChromeHeaderBadges slug={...} />` in a header → three live pills.
+
+# Dropping a harness_shared column — the 4-place procedure
+
+> A DROP COLUMN migration alone fails the fresh-migrate STRICT gate. Sync 4 places (migration, 000-baseline, generated.ts, schema.ts), unfreeze SELECT* views, grep pg_proc bodies, and boot-apply via dev:restart.
+
+## What
+
+[Section titled “What”](#what)
+
+Dropping a `harness_shared.*` column in papercup touches **4 places**, not 1 — a plain `DROP COLUMN` migration alone fails the `fresh-migrate.integration` STRICT gate. First proven on migration **155** (drop `harness_features_consolidated.blocked_by`, plan `harness-blueprint-orchestration-2026-06-03` P-020/EI-1).
+
+## The 4 consistency points (same change, same tick)
+
+[Section titled “The 4 consistency points (same change, same tick)”](#the-4-consistency-points-same-change-same-tick)
+
+1. **The migration** — `libs/papercusp/libs/db/sql/<NNN>-*.sql`. Reserve the number via `db:next-migration` (never max-on-disk+1; it collides with peers’ reservations).
+2. **`000-baseline.sql`** — the squashed dump still defines the column + its indexes. Re-applying baseline RAW on the post-drop head fails (`CREATE INDEX … (col)` → “column does not exist”; the `CREATE TABLE IF NOT EXISTS` is a no-op so it doesn’t re-add the column). The fresh-migrate “re-applying 000-baseline.sql RAW is a clean no-op” gate catches this. → **Surgically remove the column def + any index from baseline.** There is no baseline-regen CI compare (`verify-baseline.ts` only counts tables), so a hand-edit is safe. A full live-dump regen is the WRONG scope — it folds in every peer’s un-regenerated migration.
+3. **`src/schema/generated.ts`** — the canonical drizzle mirror (runtime imports it via `schema/index.ts`). `pull-schema.mjs` regenerates it but the file is stale fleet-wide (peers don’t run it), so **surgical-edit** the column + index out; don’t full-regen.
+4. **`src/schema/schema.ts`** — the raw drizzle-kit introspect intermediate (not imported, but keep it consistent). Same surgical edit.
+
+## Two hazards that bite
+
+[Section titled “Two hazards that bite”](#two-hazards-that-bite)
+
+* **`SELECT *` views freeze their column list at CREATE.** `work_items` is `SELECT * FROM harness_features_consolidated` (migration 136) — created after the column existed, so it froze it and PG refuses the `DROP COLUMN` while the view lists it. The migration must `DROP VIEW` → `DROP COLUMN` → recreate the view. Views frozen *before* the column existed don’t list it — verify live with `information_schema.view_column_usage WHERE column_name='<col>'`.
+* **Function/trigger bodies aren’t in pg\_depend.** Grep `pg_proc.prosrc ILIKE '%<col>%'` live before dropping — `DROP … CASCADE` does not rewrite function bodies that name the column.
+
+## Applying live
+
+[Section titled “Applying live”](#applying-live)
+
+The native `:5432` dev box **boot-applies pending migrations on `dev:restart`** (`papercup-dev-api.service`). Restart FIRST so new code stops reading the column before the drop lands (no error window), then check `notifications:recent { level: 'error' }`.
+
+## Provenance
+
+[Section titled “Provenance”](#provenance)
+
+Lifted from the Claude memory archive (`project_drop_baseline_column_procedure`, 2026-06-04) during the claude-memory-projection-integration boundary split — runbooks live here, not in per-client memory.
 
 # Never hardcode PG port — read embedded-pg.json
 
@@ -3412,6 +3492,41 @@ During the coord FS→PG cutover, a real `coord:send` kept writing `coord/messag
 
 See also the user-level memory note `verify-server-pid-before-measuring` and the engineer playbook’s CLAUDE.md pointer.
 
+# Unit-testing operator-core route handlers — partial-mock db-org, direct-handler pattern
+
+> vi.mock('@papercusp/db-org') must spread importOriginal or the agent-mcp bootstrap fails on the missing `generated` export; invoke handlers directly with a crafted Request + RouteContext; the loopback gate reads the host HEADER.
+
+## What
+
+[Section titled “What”](#what)
+
+Writing Vitest unit tests for `packages/operator-core/lib/endpoint-route/routes/**` handlers without real PG, Hono, or telemetry.
+
+## The patterns
+
+[Section titled “The patterns”](#the-patterns)
+
+* **db-org must be PARTIALLY mocked.** A full `vi.mock('@papercusp/db-org', () => ({ getOrgPg }))` fails at import with `No "generated" export is defined on the "@papercusp/db-org" mock` — importing any route barrel pulls the `@papercusp/agent-mcp` bootstrap (`agent-mcp/src/tools/harness/list.ts`), which reads db-org’s `generated`. Use:
+
+  ```ts
+  vi.mock('@papercusp/db-org', async (importOriginal) => ({
+    ...(await importOriginal()),
+    getOrgPg: () => ({ sql: sqlStub }),
+  }));
+  ```
+
+* **Cleanest pattern = invoke handlers directly** with a crafted `Request` + hand-built `RouteContext` (`{ principal: null, input, params, log, signal }`); mock the store module + db-org. Precedent: `endpoint-route/__tests__/device-routes.test.ts`. (The Hono `registerRoute` + `app.request()` route also works — precedent `destructive-public-routes.test.ts` — but needs `../telemetry` mocked.)
+
+* **The in-handler loopback gate reads the `host` HEADER, not `req.url`.** `isLoopbackRequest` (from `superuser-token`, used by the tui `intent-result`/`intents-stream` routes) is a different helper than `requireLoopbackOr403`/`isLoopbackHost`. The `host` header IS settable on a `Request` in Node 25 (`new Request(url, { headers: { host: 'localhost' } })`) and Hono `app.request` preserves it. No host header → not provably loopback → 403.
+
+* **Auth posture for a route family** is pinned in `auth-posture.test.ts` via a `RULES` prefix entry (e.g. `{ prefix: '/tui/', expect: 'public' }`); the walk runs over `ALL_ROUTES`.
+
+## Provenance
+
+[Section titled “Provenance”](#provenance)
+
+Proven on `tui-routes.test.ts` (48 tests, 2026-06-04). Lifted from the Claude memory archive (`project_operator_core_route_test_dborg_mock`) during the claude-memory-projection-integration boundary split.
+
 # Operator Next app is retired — ship UI in operator-vite only
 
 > The Next.js operator app at `apps/operator/app/**` no longer serves the live Tauri shell. Routes there are dead code. All new UI ships in `apps/operator-vite/src/routes/**` as TanStack-Router file routes. API routes still live in apps/operator/lib/endpoint-route/ and are mounted by bin/hono-host.ts.
@@ -4728,6 +4843,20 @@ The discriminator-extension pattern works because POST /harness/projects’s ent
 * `apps/operator/lib/harness/init-local-dir.ts` — Entry 1 helper + structured error.
 * `apps/operator/lib/harness/clone-github.ts` — Entry 2 helper + structured error.
 * [`verification-signal-on-the-row`](/internal/docs/agent-insights/verification-signal-on-the-row/) — sister principle: signals belong on the entity they describe; the same instinct applied to error shapes here.
+
+# Routines are claimed by WHICHEVER host's tick wins — green and staging race on one table
+
+> Green (:3070, release tree) and staging (:3170, main) both run routinesTick against one harness_shared.routines table, so which CODE VERSION handles a fire is a lottery — new-code-only payloads fail intermittently until the release deploy.
+
+**What.** Since the 2026-06-05 release-gate cutover the dev box runs TWO operators — green `:3070` from the `papercup-release` checkout (the `ready` ref) and staging `:3170` from `main` — and **both** register the DBOS `routinesTick` against the **same** `harness_shared.routines` table (they share `apps/operator/.env.local`, so both see `PAPERCUSP_DBOS_ROUTINES=1`). The atomic claim in `claimDueRoutine` guarantees exactly ONE host fires a due routine, but **which one wins is a race** — so the code version that executes a routine’s payload is a per-fire lottery.
+
+**Why it matters.** A routine whose payload only newer code understands fails intermittently-to-always until the next release deploy. Observed live (autoloop-pot-operator-rebuild D-010): a `system:blueprint-run {blueprintId:'pot'}` wake was claimed by the green host, whose release tree had no `pot` blueprint — `fireLaunchBlueprint` threw, and (second, compounding bug fixed on `main` in `lib/harness/routines/claim.ts`) the old claim semantics left the one-shot row ACTIVE with `next_fire_at=NULL`, which means “due now” — an infinite 30s refire loop until the row was deactivated by hand.
+
+**How to apply.**
+
+* Don’t arm (activate) a routine whose `target_role`/payload needs code that hasn’t reached the **green** checkout yet — seed it INACTIVE and flip it after the release deploy, or verify green has the code first (`journalctl --user -u papercup-dev-api` paths name the serving tree).
+* A misfiring routine loop is stopped with `UPDATE harness_shared.routines SET active=false WHERE name='<name>'`.
+* If you change routine CLAIM/fire semantics on `main`, remember the live ticker is green’s until a deploy — your fix is not protecting production rows yet.
 
 # Which schedulers deliberately stay OFF DBOS (and why)
 
@@ -35720,6 +35849,119 @@ These hold by construction once the migration completes:
 * RLS policies are added in a follow-up migration after backfill completes.
 * Existing reads continue to work during the transition because `harness_admin` bypasses RLS; application code (`harness_app`) is cut over only after backfill is complete and verified.
 
+# Blueprint distribution — publish, install, resolve
+
+> How blueprints travel — the local→installed→built-in resolution tiers, the Cupboard publish/install routes, the dependencies model ({tools, packs, plugins}), and why the bundled built-ins are both the bootstrap floor AND ordinary published listings.
+
+A **blueprint** (the declarative shape of a harness — see the blueprint engine in `libs/papercusp/packages/orchestrator/src/blueprint/`) is a distributable unit: it can be published to the **Cupboard** as a `kind=blueprint` listing and installed on any other Papercusp host. This page is the architecture of that distribution path (plans: `official-blueprints-cupboard-publish-2026-06-05`, `harness-blueprint-distribution-2026-06-03`, `tool-distribution-granularity-2026-06-05`).
+
+## The three resolution tiers
+
+[Section titled “The three resolution tiers”](#the-three-resolution-tiers)
+
+Every place a blueprint id is resolved (`extends` parents, `harness:create`, `blueprint:validate`/`extend`, install-time validation) goes through ONE composed resolver — `operatorResolveExtends()` (`packages/operator-core/lib/blueprint/installed-blueprints.ts`, wrapping `makeComposedResolveExtends` from `@papercusp/blueprint-distribution`):
+
+| Tier          | Where                                                                                   | Wins over            |
+| ------------- | --------------------------------------------------------------------------------------- | -------------------- |
+| **local**     | a project’s `.papercusp/blueprints/<id>/blueprint.yaml` (when a project context exists) | installed + built-in |
+| **installed** | `~/.papercusp/blueprints/<id>/blueprint.yaml` (Cupboard-installed)                      | built-in             |
+| **built-in**  | the bundled dir `@papercusp/harness/blueprints/<id>/`                                   | —                    |
+
+First hit wins, so an installed copy of `review` **shadows** the bundled `review`. The authoring tools (`blueprint:extend`, `blueprint:validate`) resolve all three tiers — the old “parent must be a built-in” gating was an artificial tool-level restriction, retired per D-005.
+
+D-004 — the bundle is the bootstrap floor, not a special tier
+
+The engine must boot **without** the Cupboard (you can’t fetch `base` from the Cupboard if the Cupboard needs a blueprint to run), so the built-ins stay bundled as the offline floor. They are **also** published as ordinary `kind=blueprint` listings authored by the `papercupai` account (D-003) — the official library dogfoods the exact distribution path every community blueprint uses. “Official” means “authored by papercupai”, not “exempt from the process”. The only thing removed is the un-publishable special treatment, not the bundle.
+
+`base` is the **abstract parent** — it has no spine of its own and only exists to be extended; it does not schema-parse standalone (the install route reports it as `abstract: true`).
+
+## The dependencies model
+
+[Section titled “The dependencies model”](#the-dependencies-model)
+
+A blueprint declares what its roles need in a top-level `dependencies:` block (`DependenciesSchema` in the engine schema; validated by `validateBlueprintDependencies` in `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`):
+
+```yaml
+dependencies:
+  tools:   [work_items:claim, coord:send, plans:get]   # capability names
+  packs:   []                                          # curated tool sets (runtime-less)
+  plugins: [repomix]                                   # runtime-bearing units
+```
+
+Resolution rules (tool-distribution D-001/D-002 — a *tool* is a pack of n=1, a *plugin* is a pack **with a runtime**):
+
+* a declared **tool** is satisfied iff it’s in the host’s available-tool set (built-ins + tools registered by installed units); a tool provided by a known installable Cupboard unit is **installable** (advisory); a tool with no known provider is a **hard failure**;
+* a declared **pack** resolves against every distribution unit (installed → satisfied, Cupboard → installable, neither → hard failure);
+* a declared **plugin** must be installed (satisfied) or Cupboard-listed (installable — `init --from` and the install route’s consent-gated step can fetch it); neither → hard failure.
+
+This validation runs **upfront** — at `harness:create`, `init --from`, and blueprint install — closing the old call-time-only `unknown_tool` gap.
+
+Two sharp edges worth knowing when authoring a `dependencies:` block:
+
+1. **Exact names only.** There is no wildcard/group expansion — `coord:*` is treated as a literal (unknown) tool name and hard-fails. Declare concrete tool names.
+2. **`extends`-merge replaces arrays.** The loader’s `mergeRaw` recurses into objects but replaces arrays wholesale, so a child’s `dependencies.tools` **wipes** its parent’s list (no union). Declare the full list per blueprint; don’t rely on inheriting a parent’s deps.
+
+A static CI guard (`packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts`) validates every bundled built-in’s resolved deps against the static tool catalog + the in-repo plugin manifests on every run — a typo’d tool name or an unknown plugin dep fails at commit time, mirroring `tools-md-sync`’s static catalog approach.
+
+## Publish
+
+[Section titled “Publish”](#publish)
+
+`POST /api/cupboard/publish-blueprint` (`packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`) publishes a locally-resolvable blueprint as a `kind=blueprint` listing via the **standard** listing-publish core (`publishListingToCupboard` — gh-token + channel-2 device attestation):
+
+```jsonc
+{ "id": "review", "github_url": "https://github.com/papercupai/official-blueprints" }
+// optional: listing_ref (defaults to id), project_ref, title, description
+```
+
+A blueprint listing is **GitHub-repo-backed**: it points at a PUBLIC repo whose `<listing_ref>/blueprint.yaml` is the blueprint (the official library is one public mirror repo hosting all official blueprints, one listing per blueprint — the bundled sources live in the private monorepo, so the content repo is always explicit). The Cupboard worker’s standard gates apply, verified in P0 (plan D-006):
+
+* bearer auth + publisher attestation;
+* **5 publishes/hour/user** (durable) — the official set publishes in batches;
+* the repo **must be public** (authed GitHub check + repository-id match);
+* dedup per (repo, kind, listing\_ref) — re-publish is idempotent;
+* **no pre-publication review** — open publishing with post-facto moderation (reports / unlist / device-pubkey ban-list). See [distribution trust](/internal/docs/security/distribution-trust).
+
+## Install / fork
+
+[Section titled “Install / fork”](#install--fork)
+
+`POST /api/cupboard/install-blueprint` (`packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, core: `lib/cupboard/install-blueprint-core.ts`):
+
+```jsonc
+{ "listingId": "…" }                       // resolve repo + ref from the listing
+// or { "githubUrl": "https://github.com/…", "listingRef": "review" }
+// optional: installPlugins: true — consent to auto-install declared plugin deps
+```
+
+The flow: shallow-clone → locate `<listing_ref>/blueprint.yaml` → schema + semantic validation (under the composed resolver, so `extends: base` resolves against the bundled floor) → **import-time dep-validation** → place under `~/.papercusp/blueprints/<id>/` (the installed tier, where it shadows a same-id built-in). The response carries `{ id, version, abstract, installedTo, dependencies, depCheck }`.
+
+Plugin deps are **consent-gated** (D-001): only `installPlugins: true` fetches the declared, Cupboard-resolvable plugins; each install goes through the normal plugin capability-grant path.
+
+In the UI, a `kind=blueprint` Cupboard listing’s **Fork** button (`apps/operator/app/cupboard/[id]/page.tsx`) executes this route directly (without `installPlugins` — consent stays an explicit per-plugin act; the success toast lists what’s installable).
+
+## Browse
+
+[Section titled “Browse”](#browse)
+
+`GET /api/cupboard/listings?kind=blueprint` lists blueprint listings (the operator proxies the Cupboard worker; the storefront’s kind tabs are URL-backed via nuqs `?kind=`).
+
+## Source map
+
+[Section titled “Source map”](#source-map)
+
+| Concern                           | Source                                                                                                                     |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Composed resolver + installed dir | `packages/operator-core/lib/blueprint/installed-blueprints.ts`                                                             |
+| Pure tiered resolver              | `libs/papercusp/packages/blueprint-distribution/src/resolve-extends-composed.ts`                                           |
+| Dep validator (pure)              | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                     |
+| Pack model (tool→provider)        | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                         |
+| Publish route                     | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts`                                           |
+| Install route + core              | `packages/operator-core/lib/endpoint-route/routes/cupboard-install-blueprint.ts`, `lib/cupboard/install-blueprint-core.ts` |
+| Live pack catalog (host wiring)   | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                      |
+| Static CI dep guard               | `packages/operator-core/lib/__tests__/blueprint-deps-catalog.test.ts`                                                      |
+| Authoring tools                   | `packages/operator-core/lib/agent-tools/blueprint/{validate,extend,create,_resolve}.ts`                                    |
+
 # Credentials encryption (pgcrypto)
 
 > How credentials-class operator-state tables are encrypted at rest, and the runbook for rotation and recovery.
@@ -36619,6 +36861,153 @@ If your state truly fits one of the acceptable buckets, document *why* in the mo
 | 14    | Browser localStorage for cross-device preferences (auto\_scan, toast\_last\_seen\_ms)                                                                                                                                                  |
 
 If you’re adding new state and it’s not obviously in this list, default to PG.
+
+# Tool distribution — packs (tool = pack[n=1], plugin = pack+runtime)
+
+> The pack model — one distribution concept for tools, packs, and plugins; authoring a runtime-less code-tool pack (kind 'pack'); declaring dependencies on units; the tool→provider resolver and the live pack catalog.
+
+How **tools** travel between Papercusp installs (plan: `tool-distribution-granularity-2026-06-05`). Companion to [Blueprint distribution](/internal/docs/system/blueprint-distribution), which covers the blueprint side of the same dependency model.
+
+## The taxonomy (D-001)
+
+[Section titled “The taxonomy (D-001)”](#the-taxonomy-d-001)
+
+One distribution concept, not three:
+
+| Concept    | What it is                                                                  | Distribution                                                             |
+| ---------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Tool**   | the atomic capability + dependency unit (a `defineTool` / manifest tool)    | rides its providing unit; a *single tool* is the degenerate **n=1 pack** |
+| **Pack**   | the distribution/marketplace unit — n≥1 tools, **no runtime**               | installs in isolation (a code package into the operator registry)        |
+| **Plugin** | a pack **with a runtime** (hooks / MCP server / daemon / WASM / UI / state) | installs as a unit; its tools ride it                                    |
+
+So “single tool” and “plugin” are just *points* on the pack axis (n=1, and has-a-runtime). Dependencies are declared on **tools** (capabilities) and resolved to their providing pack/plugin/built-in (D-002) — needing one tool out of a five-tool pack never drags in a different unit’s runtime.
+
+Two distribution stories by tool kind (D-004)
+
+**In-process code-tools** (self-contained handlers) get true pack-granular distribution. **MCP-server-backed tools** (gitnexus, ast-grep…) ride their plugin — the runtime is the thing being installed; the tool *listing* is a discovery view that resolves to the providing plugin. A pack is the pressure-relief that keeps coherent capability sets together (D-005).
+
+## Authoring a code-tool pack (`kind: "pack"`)
+
+[Section titled “Authoring a code-tool pack (kind: "pack")”](#authoring-a-code-tool-pack-kind-pack)
+
+A pack is a plugin-manifest package whose only contribution is statically declared in-process tools. Reference implementation: `libs/papercusp/plugins/example-tool-pack/`.
+
+papercusp.json
+
+```jsonc
+{
+  "kind": "pack",
+  "name": "example-tool-pack",
+  "version": "0.1.0",
+  "papercusp": "^0.1.0",
+  "capabilities": ["tools:text:word_count", "tools:text:slugify"],
+  "tools": [
+    { "name": "word_count", "description": "…", "inputSchema": { /* … */ },
+      "capabilities": ["tools:text:word_count"] },
+    { "name": "slugify", "description": "…", "inputSchema": { /* … */ },
+      "capabilities": ["tools:text:slugify"] }
+  ]
+}
+```
+
+The entry (`index.cjs`) exports the matching handlers under `tools:` exactly like a plugin. The host loads a pack through the SAME plugin loader/host machinery and projects its tools onto both transports (`example-tool-pack.word_count` on MCP, `/api/plugins/example-tool-pack/word_count` on HTTP) — there is no second runtime path to learn.
+
+**Purity rules** — the loader (`packages/plugin-loader/src/index.ts` `validate()` + `runtimeDispatch()`) rejects a `kind: "pack"` manifest that declares anything runtime-bearing:
+
+* `ui[]`, `dashboardTabs`, `sidebarItems`, `roles`, `routines`, `actions`, code-side `hooks`;
+* a non-`js` `runtime` (`wasm` / `daemon`);
+* `getDynamicTools` (MCP-proxy tools ride a plugin);
+* zero `tools[]` (a pack is a unit of n≥1 tools).
+
+Anything on that list means the author wanted `kind: "plugin"`.
+
+## Declaring dependencies on a unit (D-003)
+
+[Section titled “Declaring dependencies on a unit (D-003)”](#declaring-dependencies-on-a-unit-d-003)
+
+Plugins **and** packs may declare the tools their handlers call, same shape as a blueprint’s block:
+
+```jsonc
+"dependencies": { "tools": ["repomix.pack"], "packs": [], "plugins": [] }
+```
+
+The Cupboard install path (`install-plugin-core.ts`) validates these against the live pack catalog **before** the unit is copied into place: a dep with no known provider aborts the install (422); deps installable from the Cupboard never block and surface on the result as `installableDependencies`. When the Cupboard is unreachable, only tool deps (in-process, authoritative) can fail.
+
+Who declares dependencies, in full: **blueprints** (primary — `dependencies: {tools, packs, plugins}`, see [Blueprint distribution](/internal/docs/system/blueprint-distribution)), **plugins/packs** (this block), and **the Pot operator** — whose standing toolbox is just its launch blueprint’s `dependencies` block (the `pot` built-in), not a separate mechanism. **Snapshots inherit** deps via the blueprint they captured; they do not declare their own.
+
+## The tool→provider resolver + the live pack catalog
+
+[Section titled “The tool→provider resolver + the live pack catalog”](#the-toolprovider-resolver--the-live-pack-catalog)
+
+The pure model lives in `@papercusp/blueprint-distribution` (`pack-model.ts`): `buildPackCatalogView(packs, builtinTools)` indexes distribution units; `resolveToolProvider(tool, view)` answers *who provides this tool* —
+
+* `available` — built-in, or an installed plugin/pack registered it;
+* `installable` — a Cupboard listing declares it in `provides_tools`;
+* `unknown` — no known provider (the hard-fail case for deps).
+
+The operator wires it in `packages/operator-core/lib/cupboard/pack-catalog.ts` (`derivePackCatalog()`): built-ins from the projected-tool registry (`pluginName: 'agent-mcp'`), installed units from the manifest scan + live registry, Cupboard units from `GET /listings?kind=plugin|pack` with their `provides_tools`. `depHostSetsFromCatalog()` projects it into the dep-validator’s host sets — the one-call wiring used by the `harness:create` gate and the install gate.
+
+Pre-pack-model gap, fixed
+
+`harness:create`’s tool gate used to resolve against the legacy built-in catalog only — a blueprint depending on a plugin-provided tool (`repomix.pack`) hard-failed even with the plugin installed. The pack catalog unions the projected registry, so plugin/pack-provided tools resolve.
+
+## Distribution + discovery
+
+[Section titled “Distribution + discovery”](#distribution--discovery)
+
+Packs publish/install through the **standard Cupboard machinery** as listing kind `pack` (the install route `POST /api/cupboard/install-plugin` is kind-agnostic — it clones the listing repo and installs the manifest dir; capability grants stay consent-gated). Listings of kinds `plugin`/`pack` carry `provides_tools` (the tool names the unit registers) so the storefront can render a **tools section** that resolves each tool to its providing listing, and the dep-validator can mark not-installed tools *installable*.
+
+### The worker wire (migration 006)
+
+[Section titled “The worker wire (migration 006)”](#the-worker-wire-migration-006)
+
+The Cupboard worker (`apps/operator-public`) stores listings with `listing_kind ∈ {harness, blueprint, snapshot, plugin, pack}` and a nullable `provides_tools` TEXT column (JSON `string[]`; migration `006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can’t ALTER the kind CHECK). On `POST /listings`, `provides_tools` is accepted only for kinds `plugin`/`pack` (1–200 entries, each a non-empty string ≤128 chars) and returned verbatim on every GET. `pack` listings follow the non-harness rules: `listing_ref` required, `(repo, kind, ref)` dedup, action **install** (`listingAction('pack')` in `operator-core/lib/cupboard/types.ts`).
+
+### Publishing a unit
+
+[Section titled “Publishing a unit”](#publishing-a-unit)
+
+`POST /api/cupboard/publish-plugin { slug }` publishes an installed unit: a `kind: "pack"` manifest lists as `listing_kind='pack'`, anything else as `plugin`. `provides_tools` defaults to the manifest’s tool names (the loader’s `<unit>.<tool>` naming convention via `manifestToolNames`); pass `provides_tools: [...]` in the body to override.
+
+### Tool-level discovery: `GET /api/cupboard/tools`
+
+[Section titled “Tool-level discovery: GET /api/cupboard/tools”](#tool-level-discovery-get-apicupboardtools)
+
+The marketplace’s **Tools** view is the resolver fanned out — every known tool resolved to its provider, merging the local pack catalog (built-ins + installed units) with the Cupboard’s `provides_tools` declarations:
+
+```jsonc
+// GET /api/cupboard/tools?q=md&status=installable
+{
+  "tools": [{
+    "tool": "md.render",
+    "status": "installable",                                  // or "available"
+    "provider": { "kind": "pack", "name": "markdown-tools", "listingId": "…" },
+    "unit": { "name": "markdown-tools", "kind": "pack", "source": "cupboard", "listingId": "…" }
+  }],
+  "counts": { "available": 344, "installable": 1 },
+  "cupboardReachable": true                                    // false ⇒ local-only view
+}
+```
+
+A tool never installs in isolation (D-005): the storefront’s Tools view (`/cupboard?kind=tools`) routes an installable tool’s action to its **providing listing’s** detail page, where the normal install-consent flow executes. The storefront also gains a **Packs** kind tab, and plugin/pack detail pages surface the listing’s `provides_tools`.
+
+## Source map
+
+[Section titled “Source map”](#source-map)
+
+| Concern                                   | Source                                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pure pack model + resolver                | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                                                |
+| Live pack catalog (operator wiring)       | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                                             |
+| Pack purity validation                    | `packages/plugin-loader/src/index.ts` (`validate`, `runtimeDispatch`)                                                                             |
+| Manifest schema (`kind`, `dependencies`)  | `packages/plugin-sdk/papercusp-plugin.schema.json`                                                                                                |
+| Install gate                              | `packages/operator-core/lib/cupboard/install-plugin-core.ts` + `…/routes/cupboard-install-plugin.ts`                                              |
+| Reference pack                            | `libs/papercusp/plugins/example-tool-pack/`                                                                                                       |
+| Dep validator (pure)                      | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                            |
+| Worker schema + routes (`provides_tools`) | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/src/routes/listings.ts`                                |
+| Publish route (pack-aware)                | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts`                                                                     |
+| Tools discovery (route + projection)      | `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` (`GET /cupboard/tools`) + `packages/operator-core/lib/cupboard/tools-discovery.ts` |
+| Storefront UI (Packs tab + Tools view)    | `apps/operator/app/cupboard/CupboardClient.tsx` + `apps/operator/app/cupboard/ToolsSection.tsx`                                                   |
 
 # Testing — strategy, conventions, and OSS stack (v1.1)
 

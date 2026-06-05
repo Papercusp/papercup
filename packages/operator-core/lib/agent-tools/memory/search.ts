@@ -1,16 +1,21 @@
 /**
- * memory:search — semantic recall over the user's mem0 memories.
+ * memory:search — semantic recall over the user's persistent memories.
  *
  * The route's pre-turn injection auto-surfaces relevant memories every
  * turn; brain only needs to call this for targeted lookup ("did I tell
  * you about X?"). Searches user-scoped + harness-scoped (current
  * harness if `harness_slug` is passed, every harness in the workspace
  * otherwise). The deprecated workspace-shared pool was drained (D-005).
+ *
+ * Storage rides the neutral `MemoryBackend` seam; per-scope fan-out and
+ * merge live behind it. RESPONSE CONTRACT (byte-stable — the TUI Memory
+ * tab consumes it): { ok, reason?, results: [{ id, memory, metadata,
+ * score }] }.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { loadHarnessRegistry } from '../../harness-registry';
 
@@ -18,6 +23,21 @@ const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
   'reviewer', 'debugger', 'operator', 'documenter', 'curator',
 ] as const;
+
+/** Map a neutral entry onto the stable wire row the surfaces consume. */
+export function toWireRow(e: MemoryEntry): {
+  id: string;
+  memory: string;
+  metadata?: Record<string, unknown>;
+  score?: number;
+} {
+  return {
+    id: e.id,
+    memory: e.text,
+    ...(e.metadata !== undefined ? { metadata: e.metadata } : {}),
+    ...(e.score !== undefined ? { score: e.score } : {}),
+  };
+}
 
 export default defineTool({
   name: 'memory:search',
@@ -43,10 +63,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
-    const client = await getMemoryClient();
-    if (!client) {
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'mem0_unavailable', results: [] }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason, results: [] }) }],
       };
     }
     const limit = args.limit ?? 8;
@@ -63,25 +84,16 @@ export default defineTool({
       }
     }
 
-    // mem0 v3: filter key is `user_id` (snake_case), not `userId`.
-    // Fan-out is N parallel searches; mem0's PGVector adapter does not
-    // support OR/IN at the storage layer (see audit in the
-    // memory-harness-scope plan).
-    const userPull = client.search(args.query, { filters: { user_id: user.id }, limit });
-    const harnessPulls = harnessSlugs.map((slug) =>
-      client.search(args.query, { filters: { user_id: `harness:${slug}` }, limit }),
-    );
-
-    const all = (await Promise.all([userPull, ...harnessPulls]))
-      .flatMap((r) => r.results ?? []);
-
-    // Merge + dedupe by id, take top N by score.
-    const byId = new Map<string, typeof all[0]>();
-    for (const h of all) byId.set(h.id, h);
-    const merged = [...byId.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, limit);
+    // The backend fans out per scope (limit applies per pool), merges,
+    // de-dupes by id and sorts by score; we apply the global cap here.
+    const hits = await backend.search(args.query, {
+      scope: [user.id, ...harnessSlugs.map((slug) => `harness:${slug}`)],
+      limit,
+    });
+    const results = hits.slice(0, limit).map(toWireRow);
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, results: merged }) }],
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, results }) }],
     };
   },
 });

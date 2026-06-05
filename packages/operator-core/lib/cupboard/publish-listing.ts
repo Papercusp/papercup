@@ -45,6 +45,12 @@ export interface CupboardListingInput {
   tarball_content_hash?: string;
   /** Compressed byte size of the snapshot tarball. */
   tarball_bytes?: number;
+  /**
+   * Pack model (worker migration 006 / tool-distribution-granularity): the MCP
+   * tool names the unit registers when installed. Kinds plugin|pack only — the
+   * worker 400s it elsewhere. Powers the Cupboard's tool→provider discovery.
+   */
+  provides_tools?: string[];
 }
 
 export type CupboardPublishResult =

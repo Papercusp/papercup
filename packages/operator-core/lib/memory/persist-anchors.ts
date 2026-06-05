@@ -83,37 +83,9 @@ export async function persistAnchorsSql(
   }
 }
 
-/**
- * mem0's `client.add(...)` returns `{ results: Array<{ id, event, memory? }> }`.
- * Extract the ids of newly-inserted rows ('ADD' events). 'UPDATE' and
- * 'NONE' rows are existing memories the extractor merged into, not new
- * inserts — we don't want to add duplicate anchors for those.
- */
-export interface Mem0AddResultRow {
-  id?: unknown;
-  event?: unknown;
-}
-
-export interface Mem0AddResult {
-  results?: unknown;
-}
-
-export function extractAddedIds(result: unknown): string[] {
-  const r = result as Mem0AddResult | null;
-  const rows = Array.isArray(r?.results) ? (r.results as Mem0AddResultRow[]) : [];
-  const out: string[] = [];
-  for (const row of rows) {
-    const event = typeof row?.event === 'string' ? row.event.toUpperCase() : '';
-    // 'ADD' is mem0's signal that this row is new. We deliberately skip
-    // 'UPDATE' — those merged into an existing memory_canonical row
-    // whose anchors were already persisted (or could be, idempotently
-    // — ON CONFLICT DO NOTHING — but adds noise).
-    if (event !== 'ADD') continue;
-    const id = typeof row.id === 'string' ? row.id : null;
-    if (id && UUID_RE.test(id)) out.push(id);
-  }
-  return out;
-}
+// NOTE: extractAddedIds (mem0 add-result parsing) moved behind the
+// Mem0Backend in @papercusp/memory (generalize-memory-backend-swappable
+// D-002) — `MemoryBackend.remember` now returns the added ids directly.
 
 /** Test hook: reset the table-missing cache. */
 export function _resetForTests(): void {

@@ -1,5 +1,5 @@
 /**
- * memory:remember — explicit add to mem0.
+ * memory:remember — explicit add to the persistent memory store.
  *
  * Brain calls this when the user says "remember X" or when the brain
  * itself notices an error/preference that would recur without
@@ -8,19 +8,25 @@
  *
  * userId is resolved server-side from the session cookie. Brain does
  * NOT pass it; the route guarantees the memory lands on the right user.
+ *
+ * Storage goes through the neutral `MemoryBackend` seam
+ * (generalize-memory-backend-swappable-2026-06-05) — which store
+ * actually holds the fact is a config flip (`PAPERCUSP_MEMORY_BACKEND`),
+ * not a handler concern. Dedup + conflict checking ride the neutral
+ * `search` (scored entries); anchor extraction is operator-side.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { getMemoryClient } from '../../memory/mem0-client';
+import { getMemoryBackend } from '../../memory/backend';
 import { anchorMetadata } from '../../memory/anchors';
 import { checkConflicts } from '../../memory/conflict-check';
 import { createAnthropicJudge } from '../../memory/anthropic-judge';
-import { extractAddedIds, persistAnchorsSql } from '../../memory/persist-anchors';
+import { persistAnchorsSql } from '../../memory/persist-anchors';
 import { getSessionUserOrDefault } from '../../auth';
 
-// mem0 holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
+// The store holds only STABLE facts (docs-and-memory-as-projections-2026-06-05 D-006).
 // The `ephemeral` kind was retired — ephemeral state belongs in coord (delta-
 // delivered, never re-pushed), not in a semantic store.
 const KINDS = ['identity', 'preference', 'project', 'correction'] as const;
@@ -78,24 +84,24 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const user = await getSessionUserOrDefault();
-    const client = await getMemoryClient();
-    if (!client) {
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) {
       return {
-        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'mem0_unavailable' }) }],
+        content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: avail.reason }) }],
       };
     }
-    let userIdForWrite: string;
+    let scopeKey: string;
     let scope: 'user' | 'harness';
     if (args.harness_slug) {
-      userIdForWrite = `harness:${args.harness_slug}`;
+      scopeKey = `harness:${args.harness_slug}`;
       scope = 'harness';
     } else {
-      userIdForWrite = user.id;
+      scopeKey = user.id;
       scope = 'user';
     }
 
     const metadata: Record<string, unknown> = {
-      kind: args.kind,
       scope,
       workspace_id: ctx.workspaceId,
       created_by: user.id,
@@ -113,7 +119,7 @@ export default defineTool({
       metadata.anchor_count = anchors.anchor_count;
     }
 
-    // Phase 4 P-016: dedup-on-write. Semantic-search the same scope for
+    // Phase 4 P-016: dedup-on-write. Search the same scope for
     // near-duplicates before inserting. If similarity exceeds the
     // threshold, refuse and surface the existing memory_id so the agent
     // can decide to merge / forget-then-rewrite / force-through.
@@ -123,11 +129,11 @@ export default defineTool({
     // as injection.ts (failures degrade silently).
     if (dedupEnabled() && !args.force) {
       try {
-        const dedup = await client.search(args.content, {
-          filters: { user_id: userIdForWrite },
+        const neighbors = await backend.search(args.content, {
+          scope: scopeKey,
           limit: DEDUP_TOP_K,
         });
-        const top = dedup?.results?.[0];
+        const top = neighbors[0];
         const topScore = typeof top?.score === 'number' ? top.score : null;
         if (top && topScore !== null && topScore >= dedupThreshold()) {
           return {
@@ -138,7 +144,7 @@ export default defineTool({
                 reason: 'similar_exists',
                 similar_memory_id: top.id,
                 similar_score: topScore,
-                similar_text: top.memory,
+                similar_text: top.text,
                 hint: 'Set force=true to write anyway, or call memory:forget on the similar memory first.',
               }),
             }],
@@ -150,14 +156,10 @@ export default defineTool({
         // contradict an existing one — Haiku judges). Same posture as
         // dedup: feature-flagged, failures fall through to write,
         // bypassable via force=true.
-        const neighbors = (dedup?.results ?? [])
-          .filter((r): r is { id: string; memory: string; score?: number } =>
-            typeof r?.id === 'string' && typeof r?.memory === 'string')
-          .map((r) => ({ id: r.id, text: r.memory, score: r.score }));
         if (neighbors.length > 0) {
           const conflict = await checkConflicts({
             newText: args.content,
-            neighbors,
+            neighbors: neighbors.map((n) => ({ id: n.id, text: n.text, score: n.score })),
             judge: createAnthropicJudge(),
           });
           if (conflict.conflicts.length > 0) {
@@ -179,8 +181,9 @@ export default defineTool({
       }
     }
 
-    const result = await client.add(args.content, {
-      userId: userIdForWrite,
+    const { ids } = await backend.remember(args.content, {
+      scope: scopeKey,
+      kind: args.kind,
       metadata,
     });
 
@@ -188,24 +191,21 @@ export default defineTool({
     // Layer 1 (audit-memory-anchors.ts) and the settings-UI broken_anchors
     // enrichment can find them. Fire-and-forget — never load-bearing on
     // the write path; same posture as bumpLastSurfacedSql in injection.ts.
-    if (anchors) {
-      const addedIds = extractAddedIds(result);
-      if (addedIds.length > 0) {
-        void (async () => {
-          try {
-            const { sql } = getOrgPg();
-            for (const id of addedIds) {
-              await persistAnchorsSql(sql, id, anchors.anchors);
-            }
-          } catch {
-            /* swallow — never load-bearing on the mem0 write path */
+    if (anchors && ids.length > 0) {
+      void (async () => {
+        try {
+          const { sql } = getOrgPg();
+          for (const id of ids) {
+            await persistAnchorsSql(sql, id, anchors.anchors);
           }
-        })();
-      }
+        } catch {
+          /* swallow — never load-bearing on the store write path */
+        }
+      })();
     }
 
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, result }) }],
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, ids }) }],
     };
   },
 });

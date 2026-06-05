@@ -1,0 +1,193 @@
+# Tool distribution — packs (tool = pack[n=1], plugin = pack+runtime)
+URL: /internal/docs/system/tool-packs
+
+The pack model — one distribution concept for tools, packs, and plugins; authoring a runtime-less code-tool pack (kind 'pack'); declaring dependencies on units; the tool→provider resolver and the live pack catalog.
+
+import { Aside } from '@astrojs/starlight/components';
+
+How **tools** travel between Papercusp installs
+(plan: `tool-distribution-granularity-2026-06-05`). Companion to
+[Blueprint distribution](/internal/docs/system/blueprint-distribution), which
+covers the blueprint side of the same dependency model.
+
+## The taxonomy (D-001)
+
+One distribution concept, not three:
+
+| Concept    | What it is                                                                  | Distribution                                                             |
+| ---------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Tool**   | the atomic capability + dependency unit (a `defineTool` / manifest tool)    | rides its providing unit; a *single tool* is the degenerate **n=1 pack** |
+| **Pack**   | the distribution/marketplace unit — n≥1 tools, **no runtime**               | installs in isolation (a code package into the operator registry)        |
+| **Plugin** | a pack **with a runtime** (hooks / MCP server / daemon / WASM / UI / state) | installs as a unit; its tools ride it                                    |
+
+So "single tool" and "plugin" are just *points* on the pack axis (n=1, and
+has-a-runtime). Dependencies are declared on **tools** (capabilities) and
+resolved to their providing pack/plugin/built-in (D-002) — needing one tool
+out of a five-tool pack never drags in a different unit's runtime.
+
+**In-process code-tools** (self-contained handlers) get true pack-granular
+distribution. **MCP-server-backed tools** (gitnexus, ast-grep…) ride their
+plugin — the runtime is the thing being installed; the tool *listing* is a
+discovery view that resolves to the providing plugin. A pack is the
+pressure-relief that keeps coherent capability sets together (D-005).
+
+## Authoring a code-tool pack (`kind: "pack"`)
+
+A pack is a plugin-manifest package whose only contribution is statically
+declared in-process tools. Reference implementation:
+`libs/papercusp/plugins/example-tool-pack/`.
+
+```jsonc
+// papercusp.json
+{
+  "kind": "pack",
+  "name": "example-tool-pack",
+  "version": "0.1.0",
+  "papercusp": "^0.1.0",
+  "capabilities": ["tools:text:word_count", "tools:text:slugify"],
+  "tools": [
+    { "name": "word_count", "description": "…", "inputSchema": { /* … */ },
+      "capabilities": ["tools:text:word_count"] },
+    { "name": "slugify", "description": "…", "inputSchema": { /* … */ },
+      "capabilities": ["tools:text:slugify"] }
+  ]
+}
+```
+
+The entry (`index.cjs`) exports the matching handlers under `tools:` exactly
+like a plugin. The host loads a pack through the SAME plugin loader/host
+machinery and projects its tools onto both transports
+(`example-tool-pack.word_count` on MCP,
+`/api/plugins/example-tool-pack/word_count` on HTTP) — there is no second
+runtime path to learn.
+
+**Purity rules** — the loader (`packages/plugin-loader/src/index.ts`
+`validate()` + `runtimeDispatch()`) rejects a `kind: "pack"` manifest that
+declares anything runtime-bearing:
+
+* `ui[]`, `dashboardTabs`, `sidebarItems`, `roles`, `routines`, `actions`,
+  code-side `hooks`;
+* a non-`js` `runtime` (`wasm` / `daemon`);
+* `getDynamicTools` (MCP-proxy tools ride a plugin);
+* zero `tools[]` (a pack is a unit of n≥1 tools).
+
+Anything on that list means the author wanted `kind: "plugin"`.
+
+## Declaring dependencies on a unit (D-003)
+
+Plugins **and** packs may declare the tools their handlers call, same shape
+as a blueprint's block:
+
+```jsonc
+"dependencies": { "tools": ["repomix.pack"], "packs": [], "plugins": [] }
+```
+
+The Cupboard install path (`install-plugin-core.ts`) validates these against
+the live pack catalog **before** the unit is copied into place: a dep with no
+known provider aborts the install (422); deps installable from the Cupboard
+never block and surface on the result as `installableDependencies`. When the
+Cupboard is unreachable, only tool deps (in-process, authoritative) can fail.
+
+Who declares dependencies, in full: **blueprints** (primary —
+`dependencies: {tools, packs, plugins}`, see
+[Blueprint distribution](/internal/docs/system/blueprint-distribution)),
+**plugins/packs** (this block), and **the Pot operator** — whose standing
+toolbox is just its launch blueprint's `dependencies` block (the `pot`
+built-in), not a separate mechanism. **Snapshots inherit** deps via the
+blueprint they captured; they do not declare their own.
+
+## The tool→provider resolver + the live pack catalog
+
+The pure model lives in `@papercusp/blueprint-distribution`
+(`pack-model.ts`): `buildPackCatalogView(packs, builtinTools)` indexes
+distribution units; `resolveToolProvider(tool, view)` answers *who provides
+this tool* —
+
+* `available` — built-in, or an installed plugin/pack registered it;
+* `installable` — a Cupboard listing declares it in `provides_tools`;
+* `unknown` — no known provider (the hard-fail case for deps).
+
+The operator wires it in `packages/operator-core/lib/cupboard/pack-catalog.ts`
+(`derivePackCatalog()`): built-ins from the projected-tool registry
+(`pluginName: 'agent-mcp'`), installed units from the manifest scan + live
+registry, Cupboard units from `GET /listings?kind=plugin|pack` with their
+`provides_tools`. `depHostSetsFromCatalog()` projects it into the
+dep-validator's host sets — the one-call wiring used by the `harness:create`
+gate and the install gate.
+
+`harness:create`'s tool gate used to resolve against the legacy built-in
+catalog only — a blueprint depending on a plugin-provided tool
+(`repomix.pack`) hard-failed even with the plugin installed. The pack catalog
+unions the projected registry, so plugin/pack-provided tools resolve.
+
+## Distribution + discovery
+
+Packs publish/install through the **standard Cupboard machinery** as listing
+kind `pack` (the install route `POST /api/cupboard/install-plugin` is
+kind-agnostic — it clones the listing repo and installs the manifest dir;
+capability grants stay consent-gated). Listings of kinds `plugin`/`pack`
+carry `provides_tools` (the tool names the unit registers) so the storefront
+can render a **tools section** that resolves each tool to its providing
+listing, and the dep-validator can mark not-installed tools *installable*.
+
+### The worker wire (migration 006)
+
+The Cupboard worker (`apps/operator-public`) stores listings with
+`listing_kind ∈ {harness, blueprint, snapshot, plugin, pack}` and a nullable
+`provides_tools` TEXT column (JSON `string[]`; migration
+`006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can't
+ALTER the kind CHECK). On `POST /listings`, `provides_tools` is accepted only
+for kinds `plugin`/`pack` (1–200 entries, each a non-empty string ≤128 chars)
+and returned verbatim on every GET. `pack` listings follow the non-harness
+rules: `listing_ref` required, `(repo, kind, ref)` dedup, action **install**
+(`listingAction('pack')` in `operator-core/lib/cupboard/types.ts`).
+
+### Publishing a unit
+
+`POST /api/cupboard/publish-plugin { slug }` publishes an installed unit: a
+`kind: "pack"` manifest lists as `listing_kind='pack'`, anything else as
+`plugin`. `provides_tools` defaults to the manifest's tool names (the
+loader's `<unit>.<tool>` naming convention via `manifestToolNames`); pass
+`provides_tools: [...]` in the body to override.
+
+### Tool-level discovery: `GET /api/cupboard/tools`
+
+The marketplace's **Tools** view is the resolver fanned out — every known
+tool resolved to its provider, merging the local pack catalog (built-ins +
+installed units) with the Cupboard's `provides_tools` declarations:
+
+```jsonc
+// GET /api/cupboard/tools?q=md&status=installable
+{
+  "tools": [{
+    "tool": "md.render",
+    "status": "installable",                                  // or "available"
+    "provider": { "kind": "pack", "name": "markdown-tools", "listingId": "…" },
+    "unit": { "name": "markdown-tools", "kind": "pack", "source": "cupboard", "listingId": "…" }
+  }],
+  "counts": { "available": 344, "installable": 1 },
+  "cupboardReachable": true                                    // false ⇒ local-only view
+}
+```
+
+A tool never installs in isolation (D-005): the storefront's Tools view
+(`/cupboard?kind=tools`) routes an installable tool's action to its
+**providing listing's** detail page, where the normal install-consent flow
+executes. The storefront also gains a **Packs** kind tab, and plugin/pack
+detail pages surface the listing's `provides_tools`.
+
+## Source map
+
+| Concern                                   | Source                                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Pure pack model + resolver                | `libs/papercusp/packages/blueprint-distribution/src/pack-model.ts`                                                                                |
+| Live pack catalog (operator wiring)       | `packages/operator-core/lib/cupboard/pack-catalog.ts`                                                                                             |
+| Pack purity validation                    | `packages/plugin-loader/src/index.ts` (`validate`, `runtimeDispatch`)                                                                             |
+| Manifest schema (`kind`, `dependencies`)  | `packages/plugin-sdk/papercusp-plugin.schema.json`                                                                                                |
+| Install gate                              | `packages/operator-core/lib/cupboard/install-plugin-core.ts` + `…/routes/cupboard-install-plugin.ts`                                              |
+| Reference pack                            | `libs/papercusp/plugins/example-tool-pack/`                                                                                                       |
+| Dep validator (pure)                      | `libs/papercusp/packages/blueprint-distribution/src/blueprint-deps.ts`                                                                            |
+| Worker schema + routes (`provides_tools`) | `apps/operator-public/migrations/006_pack_kind_provides_tools.sql` + `apps/operator-public/src/routes/listings.ts`                                |
+| Publish route (pack-aware)                | `packages/operator-core/lib/endpoint-route/routes/cupboard-publish-plugin.ts`                                                                     |
+| Tools discovery (route + projection)      | `packages/operator-core/lib/endpoint-route/routes/cupboard.ts` (`GET /cupboard/tools`) + `packages/operator-core/lib/cupboard/tools-discovery.ts` |
+| Storefront UI (Packs tab + Tools view)    | `apps/operator/app/cupboard/CupboardClient.tsx` + `apps/operator/app/cupboard/ToolsSection.tsx`                                                   |

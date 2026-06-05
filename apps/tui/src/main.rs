@@ -25,6 +25,7 @@ mod sse;
 mod theme;
 mod tutorial;
 mod ui;
+mod voice;
 mod workbench;
 
 use anyhow::Result;
@@ -253,6 +254,24 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 tokio::spawn(search_memory(query, harness, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::ConfigEdit { harness, key, value } => {
+                // Config-tab edit (D-013): read→edit→PUT→refetch off the UI
+                // thread; the refreshed effective view returns as Event::Config.
+                tokio::spawn(config_edit(harness, key, value, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchCupboard { kind, query } => {
+                // Cupboard browse (D-011): GET the listings for the active
+                // (kind, query) filter off the UI thread.
+                tokio::spawn(fetch_cupboard(kind, query, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::CupboardAct { listing } => {
+                // A confirmed per-kind Cupboard action (D-011): join / fork /
+                // install. Outcomes ride Notify/Error events.
+                tokio::spawn(cupboard_act(listing, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::Quit => break,
             Action::None => {}
         }
@@ -304,6 +323,59 @@ async fn search_memory(query: String, harness: String, tx: UnboundedSender<Event
         Err(e) => {
             let _ = tx.send(Event::Error(format!("memory search: {e}")));
             let _ = tx.send(Event::MemoryHits { query, results: Vec::new() });
+        }
+    }
+}
+
+/// Apply one `:set`/`:unset` Config-tab edit (D-013): fetch the current file
+/// body, edit the dotted path (`value: Some` sets, `None` removes), PUT the
+/// result back, then refetch the effective view so the tab re-renders from
+/// what the backend actually persisted. Every failure lands in the status bar
+/// and the view is refetched anyway (so the tab never shows a phantom edit).
+async fn config_edit(
+    harness: String,
+    key: String,
+    value: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("config edit: {e}")));
+            return;
+        }
+    };
+    let apply = async {
+        let current = client.claude_settings_effective(&harness).await?;
+        let mut root: serde_json::Value = if current.content.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            // An invalid file is never silently clobbered — surface the parse
+            // error and make the user fix or `:set` after clearing manually.
+            serde_json::from_str(&current.content)
+                .map_err(|e| anyhow::anyhow!("settings file is invalid JSON ({e}) — fix it before :set"))?
+        };
+        app::edit_json_path(&mut root, &key, value.as_deref().map(app::parse_config_value))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        // An object emptied by :unset deletes the file (backend delete path).
+        let body = if root.as_object().map(|o| o.is_empty()).unwrap_or(false) {
+            String::new()
+        } else {
+            serde_json::to_string_pretty(&root)?
+        };
+        client.put_claude_settings(&harness, &body).await?;
+        anyhow::Ok(())
+    };
+    if let Err(e) = apply.await {
+        let _ = tx.send(Event::Error(format!("config edit: {e}")));
+    }
+    // Always refetch — success re-renders the new truth; failure restores it.
+    match client.claude_settings_effective(&harness).await {
+        Ok(v) => {
+            let _ = tx.send(Event::Config(v));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("config refetch: {e}")));
         }
     }
 }
@@ -457,6 +529,293 @@ async fn execute_workbench_command(
                 let _ = tx.send(Event::Error(format!("restore-crew: {e}")));
             }
         },
+        // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
+        // then refresh the pot list so it appears in the selector immediately.
+        P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {
+            Ok(resp) => {
+                if let Some(err) = resp.error {
+                    let _ = tx.send(Event::Error(format!("create '{slug}': {err}")));
+                } else {
+                    let path = resp
+                        .project
+                        .as_ref()
+                        .and_then(|p| p.path.clone())
+                        .unwrap_or_default();
+                    let _ = tx.send(toast(format!("created pot '{slug}' at {path}")));
+                    if let Ok(hs) = client.harnesses().await {
+                        let _ = tx.send(Event::Harnesses(hs));
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("create '{slug}': {e}")));
+            }
+        },
+        // `:share <slug> [remote] [public]` (D-010) — the full share sequence.
+        P::SharePot { slug, remote, public } => {
+            share_pot(&client, &slug, remote, public, &tx).await;
+        }
+    }
+}
+
+/// The `:share <slug>` sequence (D-010), mirroring the desktop ShareWizard's
+/// calls: resolve the GitHub remote (explicit arg, else the pot repo's
+/// `origin`), resolve the canonical repo binding, generate a fresh 32-byte
+/// topic, POST share/finalize (writes shared.json + boots the swarm + publishes
+/// the binding), and — for `public` — publish the harness listing to the
+/// Cupboard. Failures surface in the status bar; progress lands as toasts.
+async fn share_pot(
+    client: &OperatorClient,
+    slug: &str,
+    remote: Option<String>,
+    public: bool,
+    tx: &UnboundedSender<Event>,
+) {
+    let toast = |msg: String| {
+        Event::Notify(models::Notif {
+            level: "info".to_string(),
+            message: msg,
+            harness: Some(slug.to_string()),
+            ts: None,
+        })
+    };
+    // 1. The GitHub remote: explicit arg wins, else read the repo's `origin`.
+    let remote = match remote {
+        Some(r) => r,
+        None => {
+            let path = match client.harnesses().await {
+                Ok(hs) => hs.into_iter().find(|h| h.slug == slug).and_then(|h| h.path),
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("share: list pots: {e}")));
+                    return;
+                }
+            };
+            let Some(path) = path else {
+                let _ = tx.send(Event::Error(format!(
+                    "share: pot '{slug}' not found (or has no local path)"
+                )));
+                return;
+            };
+            match tokio::process::Command::new("git")
+                .args(["-C", &path, "remote", "get-url", "origin"])
+                .output()
+                .await
+            {
+                Ok(o) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                }
+                _ => {
+                    let _ = tx.send(Event::Error(format!(
+                        "share: no `origin` remote in {path} — pass one: :share {slug} <github-url>"
+                    )));
+                    return;
+                }
+            }
+        }
+    };
+    // 2. Resolve the binding (canonical repo id/owner/name + visibility).
+    let binding = match client.resolve_binding(&remote).await {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("share: resolve binding: {e}")));
+            return;
+        }
+    };
+    if let Some(e) = binding.error {
+        let _ = tx.send(Event::Error(format!("share: resolve binding: {e}")));
+        return;
+    }
+    if public && binding.private {
+        let _ = tx.send(Event::Error(
+            "share: repo is private — the Cupboard refuses private repos (drop `public`)".into(),
+        ));
+        return;
+    }
+    // 3. A fresh 32-byte topic (the shared.json human-link topic; the swarm
+    //    topic is derived server-side from the repo id).
+    let topic = match random_topic_hex() {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("share: topic gen: {e}")));
+            return;
+        }
+    };
+    // 4. Finalize — writes shared.json, boots the swarm, publishes the binding.
+    let privacy = if public { "shared-public" } else { "shared-private" };
+    let state = serde_json::json!({
+        "topic": topic,
+        "github_remote": remote,
+        "github_repository_id": binding.github_repository_id,
+        "privacy": privacy,
+    });
+    match client.share_finalize(slug, state).await {
+        Ok(v) => {
+            if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
+                let _ = tx.send(Event::Error(format!("share finalize: {e}")));
+                return;
+            }
+            let _ = tx.send(toast(format!("shared '{slug}' ({privacy})")));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("share finalize: {e}")));
+            return;
+        }
+    }
+    // 5. Cupboard publish (public shares only).
+    if public {
+        let body = serde_json::json!({
+            "listing_kind": "harness",
+            "github_repository_id": binding.github_repository_id,
+            "github_owner": binding.github_owner,
+            "github_name": binding.github_repo,
+            "github_url": format!(
+                "https://github.com/{}/{}",
+                binding.github_owner, binding.github_repo
+            ),
+            "topic_hex": topic,
+        });
+        match client.cupboard_publish_harness(body).await {
+            Ok(v) => {
+                if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
+                    let _ = tx.send(Event::Error(format!("cupboard publish: {e}")));
+                } else {
+                    let _ = tx.send(toast(format!("published '{slug}' to the Cupboard")));
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("cupboard publish: {e}")));
+            }
+        }
+    }
+}
+
+/// 32 random bytes as lowercase hex — the shared.json topic. Reads
+/// `/dev/urandom` directly (this TUI is Unix-targeted; zero new deps).
+fn random_topic_hex() -> Result<String> {
+    use std::io::Read;
+    let mut buf = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Fetch Cupboard listings for the active (kind, query) filter (D-011) and emit
+/// `Event::CupboardListings` (stale-guarded in the reducer by kind+query). On
+/// error an empty page still ships so the loading state resolves; the error
+/// itself lands in the status bar.
+async fn fetch_cupboard(kind: String, query: String, tx: UnboundedSender<Event>) {
+    let empty = |kind: String, query: String| Event::CupboardListings {
+        kind,
+        query,
+        listings: Vec::new(),
+    };
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("cupboard: {e}")));
+            let _ = tx.send(empty(kind, query));
+            return;
+        }
+    };
+    match client
+        .cupboard_listings(Some(kind.as_str()), Some(query.as_str()), 100)
+        .await
+    {
+        Ok(listings) => {
+            let _ = tx.send(Event::CupboardListings { kind, query, listings });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("cupboard: {e}")));
+            let _ = tx.send(empty(kind, query));
+        }
+    }
+}
+
+/// Execute a confirmed per-kind Cupboard action (D-011): harness→join,
+/// blueprint→fork (install), snapshot→fork, plugin→install. Success/failure
+/// ride Notify/Error; harness-affecting outcomes also refresh the pot list.
+async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("cupboard action: {e}")));
+            return;
+        }
+    };
+    let name = listing.display_name().to_string();
+    let toast = |msg: String| {
+        Event::Notify(models::Notif {
+            level: "info".to_string(),
+            message: msg,
+            harness: None,
+            ts: None,
+        })
+    };
+    // The (outcome, success message, whether the pot list changed).
+    let (result, ok_msg, pots_changed) = match listing.listing_kind.as_str() {
+        "plugin" => (
+            client.cupboard_install_plugin(&listing.id).await,
+            format!("installed plugin '{name}'"),
+            false,
+        ),
+        "blueprint" => (
+            client.cupboard_install_blueprint(&listing.id).await,
+            format!("installed blueprint '{name}' — start a pot from it with :create"),
+            false,
+        ),
+        "snapshot" => (
+            client.snapshot_fork_from_cupboard(&listing.id).await,
+            format!("forked snapshot '{name}' into a new pot"),
+            true,
+        ),
+        "harness" => {
+            let Some(link) = listing.join_link() else {
+                let _ = tx.send(Event::Error(format!(
+                    "join '{name}': listing has no topic/github join link"
+                )));
+                return;
+            };
+            // Local slug defaults to the listing's name fields.
+            let slug = listing
+                .listing_ref
+                .clone()
+                .or_else(|| listing.github_name.clone())
+                .unwrap_or_else(|| name.clone());
+            (
+                client.harness_join_link(&slug, &link).await,
+                format!("joined '{name}' as pot '{slug}'"),
+                true,
+            )
+        }
+        other => {
+            let _ = tx.send(Event::Error(format!(
+                "cupboard: no action for listing kind '{other}'"
+            )));
+            return;
+        }
+    };
+    match result {
+        Ok(v) => {
+            if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
+                let _ = tx.send(Event::Error(format!("cupboard {}: {e}", listing.listing_kind)));
+                return;
+            }
+            // Surface the blueprint dep-checker's missing-deps note when present.
+            let dep_note = v
+                .get("depCheck")
+                .and_then(|d| d.get("ok"))
+                .and_then(|b| b.as_bool())
+                .map(|ok| if ok { String::new() } else { " (missing deps — see desktop)".into() })
+                .unwrap_or_default();
+            let _ = tx.send(toast(format!("{ok_msg}{dep_note}")));
+            if pots_changed {
+                if let Ok(hs) = client.harnesses().await {
+                    let _ = tx.send(Event::Harnesses(hs));
+                }
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("cupboard {}: {e}", listing.listing_kind)));
+        }
     }
 }
 
@@ -1114,7 +1473,7 @@ async fn refetch_all(
             let _ = tx.send(Event::Error(format!("testing: {e}")));
         }
     }
-    match client.claude_settings(&slug).await {
+    match client.claude_settings_effective(&slug).await {
         Ok(c) => {
             let _ = tx.send(Event::Config(c));
         }

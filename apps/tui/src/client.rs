@@ -10,7 +10,7 @@ use crate::http::HttpClient;
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AttentionItem, AttentionResponse,
-    ClaudeSettings, ConversationLoad, CoordInboxResponse, CuratedSignal, CurationFeedPayload,
+    ConversationLoad, CoordInboxResponse, CuratedSignal, CurationFeedPayload,
     CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
     HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, Notif,
     AgentConfigResponse, OperatorConfig, PlanItemStates, PlanSummary,
@@ -665,13 +665,36 @@ impl OperatorClient {
         serde_json::from_value::<models::TestRunResult>(v).context("decode test run result")
     }
 
-    pub async fn claude_settings(&self, slug: &str) -> Result<String> {
+    /// The effective Config-tab view (D-013): Claude Code defaults overlaid by
+    /// the harness's `.claude/settings.json`, plus the raw file body for edits.
+    pub async fn claude_settings_effective(
+        &self,
+        slug: &str,
+    ) -> Result<models::EffectiveClaudeSettings> {
         let v = self
-            .get_json(&format!("/api/harness/{slug}/claude-settings"))
+            .get_json(&format!("/api/harness/{slug}/claude-settings/effective"))
             .await?;
-        Ok(serde_json::from_value::<ClaudeSettings>(v)
-            .context("decode claude-settings")?
-            .content)
+        serde_json::from_value::<models::EffectiveClaudeSettings>(v)
+            .context("decode claude-settings effective")
+    }
+
+    /// Write `.claude/settings.json` for a harness (D-013). Empty content
+    /// deletes the file (the backend clears the PG row + unlinks the mirror).
+    pub async fn put_claude_settings(&self, slug: &str, content: &str) -> Result<()> {
+        let v = self
+            .put_json(
+                &format!("/api/harness/{slug}/claude-settings"),
+                serde_json::json!({ "content": content }),
+            )
+            .await?;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "put claude-settings: {}",
+                v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error")
+            )
+        }
     }
 
     // ─── Memory tab (D-006 Step 2) ───
@@ -739,6 +762,132 @@ impl OperatorClient {
                 ts: Some(t.created_at.to_string()),
             })
             .collect())
+    }
+
+    // ─── Create / share pot (D-010) ───
+
+    /// Register a new pot. `source` is either an existing local directory or a
+    /// GitHub URL (`https://github.com/…` / `git@github.com:…`) to clone —
+    /// `POST /api/harness/projects` supports both entry points. The backend's
+    /// 4xx errors ("slug already exists", "path does not exist") come back as
+    /// `error` in the decoded response, not a transport Err.
+    pub async fn create_harness(
+        &self,
+        slug: &str,
+        source: &str,
+    ) -> Result<models::CreateProjectResponse> {
+        let body = if source.starts_with("https://") || source.starts_with("git@") {
+            serde_json::json!({ "slug": slug, "githubUrl": source })
+        } else {
+            serde_json::json!({ "slug": slug, "path": source })
+        };
+        let v = self.post_json("/api/harness/projects", body).await?;
+        serde_json::from_value::<models::CreateProjectResponse>(v).context("decode create project")
+    }
+
+    /// Resolve a GitHub remote to its canonical repo identity — the share
+    /// flow's first step (`POST /api/harness/binding/resolve`).
+    pub async fn resolve_binding(
+        &self,
+        github_remote: &str,
+    ) -> Result<models::BindingResolveResponse> {
+        let v = self
+            .post_json(
+                "/api/harness/binding/resolve",
+                serde_json::json!({ "github_remote": github_remote }),
+            )
+            .await?;
+        serde_json::from_value::<models::BindingResolveResponse>(v).context("decode binding resolve")
+    }
+
+    /// Finalize sharing a pot (`POST /api/harness/:slug/share/finalize`):
+    /// writes shared.json, boots the swarm, publishes the binding. `state`
+    /// carries `{topic, github_remote, github_repository_id, privacy}` — the
+    /// same shape the desktop ShareWizard submits.
+    pub async fn share_finalize(
+        &self,
+        slug: &str,
+        state: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            &format!("/api/harness/{}/share/finalize", urlencode(slug)),
+            serde_json::json!({ "state": state }),
+        )
+        .await
+    }
+
+    /// Publish a harness listing to the Cupboard
+    /// (`POST /api/harness/cupboard/publish` — the gh-token-adding proxy).
+    pub async fn cupboard_publish_harness(
+        &self,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json("/api/harness/cupboard/publish", body).await
+    }
+
+    // ─── Cupboard tab (D-011) ───
+
+    /// Browse/search marketplace listings (`GET /api/cupboard/listings`).
+    /// `kind` narrows to harness|blueprint|snapshot|plugin; `q` is full-text.
+    pub async fn cupboard_listings(
+        &self,
+        kind: Option<&str>,
+        q: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<models::CupboardListing>> {
+        let mut path = format!("/api/cupboard/listings?limit={limit}");
+        if let Some(k) = kind.filter(|k| !k.is_empty() && *k != "all") {
+            path.push_str(&format!("&kind={}", urlencode(k)));
+        }
+        if let Some(q) = q.filter(|q| !q.is_empty()) {
+            path.push_str(&format!("&q={}", urlencode(q)));
+        }
+        let v = self.get_json(&path).await?;
+        Ok(serde_json::from_value::<models::CupboardListingsResponse>(v)
+            .context("decode cupboard listings")?
+            .listings)
+    }
+
+    /// Install a plugin listing (`POST /api/cupboard/install-plugin`).
+    /// `acceptCapabilities` auto-grants the manifest's capability requests —
+    /// the TUI confirm step happens BEFORE this call (the `y` confirm).
+    pub async fn cupboard_install_plugin(&self, listing_id: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/cupboard/install-plugin",
+            serde_json::json!({ "listingId": listing_id, "acceptCapabilities": true }),
+        )
+        .await
+    }
+
+    /// Install (fork) a blueprint listing (`POST /api/cupboard/install-blueprint`),
+    /// auto-installing its declared plugin deps from the Cupboard.
+    pub async fn cupboard_install_blueprint(&self, listing_id: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/cupboard/install-blueprint",
+            serde_json::json!({ "listingId": listing_id, "installPlugins": true }),
+        )
+        .await
+    }
+
+    /// Fork a snapshot listing into a new local harness
+    /// (`POST /api/snapshots/fork-from-cupboard` — downloads + SHA-verifies the
+    /// published tarball, then instantiates).
+    pub async fn snapshot_fork_from_cupboard(&self, listing_id: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/snapshots/fork-from-cupboard",
+            serde_json::json!({ "listing_id": listing_id }),
+        )
+        .await
+    }
+
+    /// Join a shared harness from its `papercusp://harness?…` link
+    /// (`POST /api/harness/join-link` — clones, registers, scaffolds).
+    pub async fn harness_join_link(&self, slug: &str, link: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/harness/join-link",
+            serde_json::json!({ "slug": slug, "harnessLinkUrl": link }),
+        )
+        .await
     }
 }
 

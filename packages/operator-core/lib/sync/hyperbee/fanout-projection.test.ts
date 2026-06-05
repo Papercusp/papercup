@@ -102,8 +102,30 @@ describe('runFanoutForOutboxRow', () => {
       kind: 'engineer_issue',
       ref: (k) => k,
       summary: (_op, _row, ref) => `engineer issue ${ref}`,
-      notifyKind: () => 'engineer_issue_updated',
+      notifyKind: { put: 'engineer_issue_updated', del: 'engineer_issue_removed' },
     });
     expect(getSubscribableMapping('engineer_issues')?.kind).toBe('engineer_issue');
+  });
+
+  it('the mapping conditions are declarative data (adopt-event-rules-engines D-005): notifyKind per-op map + isResolution DataCondition', () => {
+    const feature = getSubscribableMapping('harness_features_consolidated')!;
+    // notifyKind is a serializable per-op map, not a function.
+    expect(feature.notifyKind).toEqual({ put: 'feature_updated', del: 'feature_removed' });
+    // isResolution is a serializable @papercusp/rules DataCondition over {op,key,row}.
+    expect(feature.isResolution).toEqual({ op: { notEquals: 'del' }, 'row.status': { in: ['passed', 'deprecated'] } });
+  });
+
+  it('a del op is never a resolution even when the row carries a terminal status (the notEquals leg)', async () => {
+    const rec = recorder();
+    const row: OutboxFanoutRow = {
+      id: 11,
+      table_name: 'harness_features_consolidated',
+      op: 'del',
+      key: 'F-9',
+      row: { status: 'passed' },
+    };
+    const n = await runFanoutForOutboxRow(row, { resolve: async () => SUBS, deliver: rec.deliver });
+    expect(n).toBe(2); // mention subscriber NOT included — a delete is not a resolution
+    expect(rec.calls.every((c) => c.ev.isResolution === false)).toBe(true);
   });
 });

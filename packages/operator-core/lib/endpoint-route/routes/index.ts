@@ -224,9 +224,11 @@ import agentMcp_operatorScans from './agent-mcp/operator-scans';
 import agentMcp_operatorScan from './agent-mcp/operator-scan';
 import agentMcp_operatorStandingApprovals from './agent-mcp/operator-standing-approvals';
 import agentMcp_operatorStats from './agent-mcp/operator-stats';
+import agentMcp_operatorStt from './agent-mcp/operator-stt';
 import agentMcp_operatorSttBootstrap from './agent-mcp/operator-stt-bootstrap';
 import agentMcp_operatorSttSpend from './agent-mcp/operator-stt-spend';
 import agentMcp_operatorTriggerState from './agent-mcp/operator-trigger-state';
+import agentMcp_operatorTts from './agent-mcp/operator-tts';
 import agentMcp_operatorTtsPreview from './agent-mcp/operator-tts-preview';
 import agentMcp_operatorTtsSpend from './agent-mcp/operator-tts-spend';
 import agentMcp_operatorVoicePrefs from './agent-mcp/operator-voice-prefs';
@@ -432,9 +434,11 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorScan as AnyRoute),
   ...flatten(agentMcp_operatorStandingApprovals as AnyRoute[]),
   ...flatten(agentMcp_operatorStats as AnyRoute),
+  ...flatten(agentMcp_operatorStt as AnyRoute),
   ...flatten(agentMcp_operatorSttBootstrap as AnyRoute),
   ...flatten(agentMcp_operatorSttSpend as AnyRoute[]),
   ...flatten(agentMcp_operatorTriggerState as AnyRoute),
+  ...flatten(agentMcp_operatorTts as AnyRoute),
   ...flatten(agentMcp_operatorTtsPreview as AnyRoute),
   ...flatten(agentMcp_operatorTtsSpend as AnyRoute[]),
   ...flatten(agentMcp_operatorVoicePrefs as AnyRoute[]),

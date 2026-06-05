@@ -65,8 +65,21 @@ vi.mock('../../../agent-config', () => ({
 vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['tasks:read', 'mcp__agentmcp__chat:ask_choice'],
 }));
+// The <spawn>-tag dispatch goes through the durable nursery spawn engine
+// (fleet/operator-spawn), dynamically imported by the handler — mock the module
+// so the test asserts the dispatch contract without touching PG / processes.
+vi.mock('../../../fleet/operator-spawn', () => ({
+  spawnAgentInHarness: vi.fn(async () => ({
+    ok: true,
+    spawnId: 's-mock',
+    harness: 'demo',
+    projectDir: '/tmp/demo',
+    error: null,
+  })),
+}));
 
 import { runAgentChat } from '../../../agent-chat-stream';
+import { spawnAgentInHarness } from '../../../fleet/operator-spawn';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget } from '../../../operator-budget';
 import tool from '../converse';
@@ -191,16 +204,30 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(ctx.emit).toHaveBeenCalledWith('delta', { text: 'hi there' });
   });
 
-  it('a <spawn> tag in the turn dispatches to the orchestrator spawn route', async () => {
+  it('a <spawn> tag in the turn dispatches through the nursery spawn engine', async () => {
+    // Re-pin the workspace mocks: the URL-encoding test above swaps them to a
+    // wonky id and vi.clearAllMocks() does not restore implementations.
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+    const { readSystemPrincipal } = await import('../../../system-principal');
+    vi.mocked(readSystemPrincipal).mockResolvedValue({ workspaceId: 'ws-real' } as never);
     vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
-      yield { type: 'delta', text: 'on it <spawn role="worker" feature="F-1">' };
+      yield {
+        type: 'delta',
+        text: 'on it <spawn role="worker" harness="demo" feature="F-1" chunk="F-1.c1">',
+      };
     });
     await handler({ messages: [], sessionUser: null }, makeCtx());
-    expect(fetchMock).toHaveBeenCalled();
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/api/plugins/orchestrator/spawn');
-    const body = JSON.parse((init as { body: string }).body);
-    expect(body).toMatchObject({ role: 'worker', featureId: 'F-1' });
+    expect(spawnAgentInHarness).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spawnAgentInHarness).mock.calls[0][0]).toMatchObject({
+      workspaceId: 'ws-real',
+      harness: 'demo',
+      role: 'worker',
+      featureId: 'F-1',
+      chunkId: 'F-1.c1',
+      parentRole: 'operator',
+    });
+    // The retired plugin route must NOT be fetched anymore.
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -36,11 +36,25 @@ export default defineTool({
   args: z.object({
     harnessSlug: z.string().optional(),
   }),
+  // Declarative precondition (D-006 proof migration): the former in-handler
+  // `if (!slug) throw` guard, lifted. A non-empty slug must arrive via the
+  // arg or the spawn ctx; the dispatcher rejects with `precondition_failed`
+  // before the handler runs.
+  requires: [
+    {
+      id: 'harness-slug',
+      when: {
+        any: [
+          { 'args.harnessSlug': { truthy: true } },
+          { 'ctx.harnessSlug': { truthy: true } },
+        ],
+      },
+      error: 'autoloop:status — harness slug required (passed or in spawn ctx)',
+    },
+  ],
   async handler(args, ctx) {
+    // Non-empty by the `harness-slug` precondition above.
     const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
-    if (!slug) {
-      throw new Error('autoloop:status — harness slug required (passed or in spawn ctx)');
-    }
     const rows = await getAutoLoopState(slug);
     return {
       content: [{ type: 'text', text: JSON.stringify({ harnessSlug: slug, rows }) }],

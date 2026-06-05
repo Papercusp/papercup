@@ -82,6 +82,19 @@ describe('publishListingToCupboard', () => {
     expect(r).toMatchObject({ ok: false, status: 502, error: 'cupboard_unreachable' });
   });
 
+  it('passes provides_tools through to the wire body for a pack listing (migration 006)', async () => {
+    const r = await publishListingToCupboard({
+      ...baseInput,
+      listing_kind: 'pack',
+      listing_ref: 'markdown-tools',
+      provides_tools: ['md.render', 'md.lint'],
+    });
+    expect(r.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body.listing_kind).toBe('pack');
+    expect(body.provides_tools).toEqual(['md.render', 'md.lint']);
+  });
+
   it('falls back to /harnesses on a 404 only for kind=harness', async () => {
     fetchMock
       .mockResolvedValueOnce(new Response('not found', { status: 404 }))

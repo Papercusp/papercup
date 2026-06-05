@@ -9,7 +9,6 @@ import { useReducedMotion } from 'motion/react';
 import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { reconcileActiveTheme } from '@/lib/theme';
 import { reconcileShortcutOverrides } from '@papercusp/operator-core/lib/shortcut-registry';
-import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
 import { BrainMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
@@ -38,7 +37,6 @@ import { OperatorChatSidebar } from './OperatorChatSidebar';
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
-const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
 const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ default: m.VoiceAppBridge })));
 const OperatorDelegationListener = lazy(() => import('./OperatorDelegationListener'));
 const RegistryShortcuts = lazy(() => import('../../lib/commands/shims/shortcut-shim').then(m => ({ default: m.RegistryShortcuts })));
@@ -191,8 +189,6 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">OPS</span>
             </RouteLink>
           )}
-          {testingFlag ? <OperatorButton /> : null}
-          {testingFlag ? <OperatorAutoScanToggle /> : null}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           {testingFlag ? (
@@ -280,7 +276,6 @@ function DeferredDocks() {
     <Suspense fallback={null}>
       <ChatwootWidget />
       {oracleEnabled ? <OracleDock /> : null}
-      <OperatorBackgroundScanner />
       <VoiceAppBridge />
       <OperatorDelegationListener />
       <OperatorVoiceAnnouncer />

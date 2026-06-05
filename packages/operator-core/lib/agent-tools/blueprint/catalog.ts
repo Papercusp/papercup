@@ -13,10 +13,16 @@
  * autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1).
  */
 import { z } from 'zod';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { defineTool } from '@papercusp/agent-mcp';
-import { builtinBlueprintPath, isProgramSpine, loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
+import {
+  builtinBlueprintPath,
+  isProgramSpine,
+  loadBlueprintFromFile,
+  resolveExtends,
+} from '@papercusp/orchestrator/blueprint';
 import { COORD_ROLES } from '../coordination/roles';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { BUILTIN_LAUNCH_BLUEPRINTS } from '../../blueprint/launch-blueprint';
@@ -58,9 +64,11 @@ export default defineTool({
     const resolver = operatorResolveExtends();
     const launchable = new Set<string>(BUILTIN_LAUNCH_BLUEPRINTS);
 
+    // `??` so a raw-handler caller (tests) without zod's `.default` still gets 'all'.
+    const wanted = args.tier ?? 'all';
     const ids = [...new Set([...builtinIds, ...installedIds])].sort().filter((id) => {
       const tier = installedIds.has(id) ? 'installed' : 'builtin';
-      return args.tier === 'all' || tier === args.tier;
+      return wanted === 'all' || tier === wanted;
     });
 
     const blueprints = ids.map((id) => {
@@ -93,6 +101,27 @@ export default defineTool({
           ...(validation.warnings.length > 0 ? { warnings: validation.warnings } : {}),
         };
       } catch (e) {
+        // A deliberately-PARTIAL parent (e.g. `base` — no own workItem/spine;
+        // children supply them) is extendable but not instantiable: surface it
+        // as `abstract`, not as a scary error. Broken files (yaml/type errors
+        // with the sections present) still get the error entry below.
+        try {
+          const file = resolver(id);
+          if (file) {
+            const raw = parseYaml(readFileSync(file, 'utf8')) as Record<string, unknown>;
+            const merged = resolveExtends(raw, resolver);
+            if (merged.workItem == null || merged.spine == null) {
+              return {
+                ...base,
+                abstract: true,
+                ...(typeof merged.version === 'string' ? { version: merged.version } : {}),
+                ...(typeof merged.description === 'string' ? { description: merged.description } : {}),
+              };
+            }
+          }
+        } catch {
+          /* fall through to the error entry */
+        }
         // Keep the broken entry visible — a catalog that silently drops a
         // mid-edit/invalid blueprint reads as "doesn't exist".
         return { ...base, error: e instanceof Error ? e.message : String(e) };

@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,10 +51,65 @@ describe('detectPapercupRoot', () => {
 
   it('detects the real papercup repo from this test file location', () => {
     // The test itself runs from inside apps/operator, so detection
-    // should find the real papercup root.
+    // should find the real papercup root. The checkout's dir name varies
+    // (papercup, papercup-checkpoint, papercup-release — the green-
+    // checkpoint suite runs in an isolated tree), so assert the markers,
+    // not the basename.
     const found = detectPapercupRoot();
     expect(found).not.toBe(null);
-    expect(found).toMatch(/papercup$/);
+    expect(existsSync(join(found!, 'apps', 'operator', 'package.json'))).toBe(true);
+    expect(existsSync(join(found!, 'libs', 'papercusp', 'package.json'))).toBe(true);
+  });
+
+  describe('PAPERCUSP_INTEGRATION_ROOT preference (release-gate cutover)', () => {
+    const ENV_KEY = 'PAPERCUSP_INTEGRATION_ROOT';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV_KEY];
+    });
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = savedEnv;
+    });
+
+    async function makeMarkedRoot(name: string): Promise<string> {
+      const root = join(work, name);
+      await mkdir(join(root, 'apps', 'operator'), { recursive: true });
+      await mkdir(join(root, 'libs', 'papercusp'), { recursive: true });
+      await writeFile(join(root, 'apps', 'operator', 'package.json'), '{}');
+      await writeFile(join(root, 'libs', 'papercusp', 'package.json'), '{}');
+      return root;
+    }
+
+    it('ambient detection prefers a marked PAPERCUSP_INTEGRATION_ROOT over the cwd walk', async () => {
+      const integration = await makeMarkedRoot('integration-tree');
+      process.env[ENV_KEY] = integration;
+      // No explicit start: env wins even though cwd would detect the
+      // real repo (or, on a release-checkout host, the release worktree).
+      expect(detectPapercupRoot()).toBe(integration);
+    });
+
+    it('ambient detection falls back to the cwd walk when the env root lacks markers', async () => {
+      const bogus = join(work, 'not-a-repo');
+      await mkdir(bogus, { recursive: true });
+      process.env[ENV_KEY] = bogus;
+      const found = detectPapercupRoot();
+      // cwd walk from inside apps/operator still finds the real repo.
+      expect(found).not.toBe(null);
+      expect(found).toMatch(/papercup$/);
+    });
+
+    it('an explicit start ignores PAPERCUSP_INTEGRATION_ROOT', async () => {
+      const integration = await makeMarkedRoot('integration-tree-2');
+      const other = await makeMarkedRoot('other-tree');
+      process.env[ENV_KEY] = integration;
+      expect(detectPapercupRoot(other)).toBe(other);
+      // And an explicit unmarked start still returns null (not the env root).
+      const bare = join(work, 'bare');
+      await mkdir(bare, { recursive: true });
+      expect(detectPapercupRoot(bare)).toBe(null);
+    });
   });
 
   it('respects 8-iteration walk bound — does not unbounded-walk on weird filesystems', async () => {

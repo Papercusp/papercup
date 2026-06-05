@@ -6,9 +6,13 @@
  * caller routes to its normal consumer.
  *
  * Verb whitelist:
- *   open / show           → open the panel
- *   scan / status / what's pending → open + trigger scan
+ *   scan / status / what's pending → fire the `scan` launch blueprint
+ *     (unify-agent-launches D-005: the panel + card stream are retired;
+ *     findings land as work_items in the self-improvement backlog)
  *   approve <slug> [<cap>] → standing-approval shortcut
+ *
+ * (`open`/`show` and `across workspaces` were panel verbs — removed with
+ * the operator-card panel, D-005.)
  *
  * Cap normalization rules (v4 §2f):
  *   Eligible: 2 segments, alphabetic-only, no _ or .
@@ -17,12 +21,9 @@
  */
 
 export type OperatorIntent =
-  | { kind: 'open' }
-  | { kind: 'open-and-scan'; query?: string }
-  | { kind: 'approve'; targetSlug: string; capability?: string }
-  | { kind: 'across-workspaces' };
+  | { kind: 'scan'; query?: string }
+  | { kind: 'approve'; targetSlug: string; capability?: string };
 
-const OPEN_VERBS = new Set(['open', 'show']);
 const SCAN_VERBS = new Set(['scan', 'status']);
 
 const CAP_ELIGIBLE_RE = /^[a-z]+:[a-z]+$/;
@@ -33,10 +34,7 @@ export function parseOperatorIntent(utterance: string): OperatorIntent | null {
 
   // Multi-word verbs first.
   if (/^operator\s+what'?s\s+pending\b/.test(trimmed)) {
-    return { kind: 'open-and-scan' };
-  }
-  if (/^operator\s+across\s+workspaces?\b/.test(trimmed)) {
-    return { kind: 'across-workspaces' };
+    return { kind: 'scan' };
   }
 
   const m = trimmed.match(/^operator\s+(\S+)(?:\s+(.+))?$/);
@@ -44,11 +42,8 @@ export function parseOperatorIntent(utterance: string): OperatorIntent | null {
   const verb = m[1];
   const rest = m[2]?.trim();
 
-  if (OPEN_VERBS.has(verb)) {
-    return { kind: 'open' };
-  }
   if (SCAN_VERBS.has(verb)) {
-    return rest ? { kind: 'open-and-scan', query: rest } : { kind: 'open-and-scan' };
+    return rest ? { kind: 'scan', query: rest } : { kind: 'scan' };
   }
   if (verb === 'approve') {
     if (!rest) return null;

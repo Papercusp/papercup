@@ -16,11 +16,15 @@ import './assign';
 import './unassign';
 import './my-items';
 import './claim';
+import './convert';
 import './release';
 import './heartbeat';
 import './status';
 import './join-group';
 import './leave-group';
+// Reflect rules: work_item lifecycle → plan-item status (convert-at-pickup D-015).
+// Importing registers them on the event-reaction engine, like lifecycle-rules.
+import '../../plan-items/reflect-rules';
 import { installSwarmClaimAuthority } from '../../plan-items/claim-authority-swarm';
 import { registerPlanItemClaimAuthorityOps } from '../../plan-items/plan-item-claim-authority-ops';
 

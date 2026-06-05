@@ -39,9 +39,21 @@ export default defineTool({
     role: z.string().optional(),
     limit: z.number().int().positive().max(200).optional(),
   }),
+  // Declarative precondition (adopt-event-rules-engines requires:-half): the
+  // former in-handler `if (!slug) throw` guard, lifted. A non-empty slug must
+  // arrive via the arg or the spawn ctx.
+  requires: [
+    {
+      id: 'harness-slug',
+      when: {
+        any: [{ 'args.slug': { truthy: true } }, { 'ctx.harnessSlug': { truthy: true } }],
+      },
+      error: 'cross_harness:inbox — slug required (passed or in spawn ctx)',
+    },
+  ],
   async handler(args, ctx) {
+    // Non-empty by the `harness-slug` precondition above.
     const slug = args.slug ?? ctx.harnessSlug ?? '';
-    if (!slug) throw new Error('cross_harness:inbox — slug required');
     const messages = await readInbox(slug, {
       status: args.status,
       role: args.role ?? null,

@@ -113,6 +113,7 @@ describe('Cupboard ListingCard — per-kind action (D-005)', () => {
     { kind: 'blueprint', action: 'fork', label: 'Fork' },
     { kind: 'snapshot', action: 'fork', label: 'Fork' },
     { kind: 'plugin', action: 'install', label: 'Install' },
+    { kind: 'pack', action: 'install', label: 'Install' }, // runtime-less code-tool pack (migration 006)
     { kind: undefined, action: 'join', label: 'Join' }, // absent kind ⇒ harness
   ];
   for (const c of cases) {

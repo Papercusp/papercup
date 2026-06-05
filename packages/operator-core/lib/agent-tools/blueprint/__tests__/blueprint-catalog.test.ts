@@ -24,6 +24,7 @@ type Entry = {
   tier: string;
   shadowsBuiltin?: boolean;
   launchable: boolean;
+  abstract?: boolean;
   workItemKind?: string;
   decider?: string;
   roles?: Array<{ id: string }>;
@@ -63,6 +64,12 @@ describe('blueprint:catalog — built-in tier', () => {
     const vote = byId(r, 'vote')!;
     expect(vote.spineModel).toBe('program-steps');
     expect(vote.spineSteps!.length).toBeGreaterThan(0);
+
+    // `base` is a deliberately-partial parent (no own workItem/spine) —
+    // extendable, not instantiable. Abstract, NOT an error.
+    const base = byId(r, 'base')!;
+    expect(base.abstract).toBe(true);
+    expect(base.error).toBeUndefined();
   });
 
   it('tier filter narrows to built-ins only', async () => {
@@ -134,12 +141,24 @@ describe('blueprint:catalog — installed tier (temp PAPERCUSP_HOME)', () => {
   });
 
   it('keeps a broken installed blueprint as an error entry without hiding the rest', async () => {
-    await writeInstalled('broken-bp', ['id: broken-bp', 'workItem: { kind: feature }' /* no spine */]);
+    // Sections PRESENT but mistyped — genuinely broken (vs. merely partial).
+    await writeInstalled('broken-bp', ['id: broken-bp', 'workItem: { kind: feature }', 'spine: not-an-object']);
 
     const r = await run();
     expect(r.ok).toBe(true);
     const broken = byId(r, 'broken-bp')!;
     expect(broken.error).toBeTruthy();
+    expect(broken.abstract).toBeUndefined();
     expect(byId(r, 'coding')).toBeTruthy();
+  });
+
+  it('classifies a partial parent (sections absent) as abstract, not broken', async () => {
+    await writeInstalled('partial-parent', ['id: partial-parent', 'description: extend me' /* no workItem/spine */]);
+
+    const r = await run();
+    const partial = byId(r, 'partial-parent')!;
+    expect(partial.abstract).toBe(true);
+    expect(partial.error).toBeUndefined();
+    expect(partial.description).toBe('extend me');
   });
 });

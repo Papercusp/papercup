@@ -132,6 +132,14 @@ export {
   type PostInvokeEvent,
   type ToolDispatchOverrideFn,
 } from '@papercusp/tooldef';
+// Declarative preconditions (`requires:` — autoloop-pot-operator-rebuild D-006):
+// the preInvoke mirror of `emits:`. The host wires `deps.firePrecondition` to
+// its dispatcher (Papercusp's: `lib/events` → fireReactionInProcess).
+export type {
+  ToolRequireSpec,
+  ToolPreInvokeEvent,
+  PreconditionFireRequest,
+} from '@papercusp/tooldef';
 // Papercusp's quota windowing policy (plan P-011) — the host impl of
 // tooldef's `computeQuotaWindow` seam. Wired into PROJECTED_DEPS.
 export { papercuspComputeQuotaWindow } from './quota-policy';

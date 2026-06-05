@@ -22,9 +22,18 @@
  * is the companion plans' job (op-keys + a projection module). This file only
  * needs the table→ObjectRef MAPPING — companions call registerSubscribableTable
  * for their object so its changes fan out, without touching this file.
+ *
+ * POLICY vs DELIVERY (adopt-event-rules-engines D-005/D-006): the registry IS
+ * the policy layer — a trigger-key-indexed rule table (`on: table_name → build
+ * InjectEvent`). Its decision content is declarative: `notifyKind` a per-op data
+ * map, `isResolution` a canonical `@papercusp/rules` DataCondition. The delivery
+ * substrate below (idempotent ON CONFLICT insert, drain ordering, subscriber
+ * resolution) stays imperative by design — the gate/substrate protects
+ * correctness, only the policy is data.
  */
 
 import type { Sql } from 'postgres';
+import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   PgEntitySubscriptionStore,
@@ -39,7 +48,17 @@ import { buildInjectEnvelope, shouldDeliver, type InjectEvent, type InjectSink }
 
 type OutboxOp = 'put' | 'del';
 
-/** How to turn a captured change to one table into a subscribable-object notice. */
+/**
+ * How to turn a captured change to one table into a subscribable-object notice.
+ *
+ * The CONDITION parts of a mapping are declarative (adopt-event-rules-engines
+ * D-005): `notifyKind` is a plain per-op data map, and `isResolution` is the
+ * canonical `@papercusp/rules` `DataCondition` evaluated over the outbox change
+ * `{ op, key, row }` — serializable, inspectable, the same `when` language as
+ * the event-reaction rules + the blueprint spine. The string-TEMPLATING parts
+ * (`ref`, `summary`) stay functions: they render row data, they don't decide
+ * anything (the same boundary as the rules engine's own args function-form).
+ */
 export interface SubscribableMapping {
   /** ObjectRef.kind for this object (e.g. 'feature'). */
   kind: string;
@@ -47,10 +66,12 @@ export interface SubscribableMapping {
   ref: (key: string, row: Record<string, unknown> | null) => string;
   /** One-line notice summary. */
   summary: (op: OutboxOp, row: Record<string, unknown> | null, ref: string) => string;
-  /** notify_kind sub-type for rendering. */
-  notifyKind: (op: OutboxOp) => string;
-  /** True if this change is a lifecycle resolution (mention-mode also receives these). */
-  isResolution?: (op: OutboxOp, row: Record<string, unknown> | null) => boolean;
+  /** notify_kind sub-type for rendering, per outbox op. */
+  notifyKind: Record<OutboxOp, string>;
+  /** Declarative resolution condition over `{ op, key, row }` — when it matches,
+   *  the change is a lifecycle resolution (mention-mode also receives these).
+   *  Omitted ⇒ never a resolution. */
+  isResolution?: DataCondition;
 }
 
 const SUBSCRIBABLE_TABLES = new Map<string, SubscribableMapping>();
@@ -77,8 +98,8 @@ registerSubscribableTable('harness_features_consolidated', {
   ref: (key) => key, // capture key = feature_id
   summary: (op, row, ref) =>
     op === 'del' ? `feature ${ref} removed` : `feature ${ref}${row?.status ? ` → ${str(row.status)}` : ''}${row?.title ? `: ${str(row.title)}` : ''}`,
-  notifyKind: (op) => (op === 'del' ? 'feature_removed' : 'feature_updated'),
-  isResolution: (op, row) => op !== 'del' && ['passed', 'deprecated'].includes(str(row?.status)),
+  notifyKind: { put: 'feature_updated', del: 'feature_removed' },
+  isResolution: { op: { notEquals: 'del' }, 'row.status': { in: ['passed', 'deprecated'] } },
 });
 
 registerSubscribableTable('harness_issues_consolidated', {
@@ -86,8 +107,8 @@ registerSubscribableTable('harness_issues_consolidated', {
   ref: (key) => key, // capture key = issue_id
   summary: (op, row, ref) =>
     op === 'del' ? `issue ${ref} removed` : `issue ${ref}${row?.status ? ` → ${str(row.status)}` : ''}${row?.title ? `: ${str(row.title)}` : ''}`,
-  notifyKind: (op) => (op === 'del' ? 'issue_removed' : 'issue_updated'),
-  isResolution: (op, row) => op !== 'del' && ['resolved', 'closed'].includes(str(row?.status)),
+  notifyKind: { put: 'issue_updated', del: 'issue_removed' },
+  isResolution: { op: { notEquals: 'del' }, 'row.status': { in: ['resolved', 'closed'] } },
 });
 
 registerSubscribableTable('harness_plans', {
@@ -95,8 +116,8 @@ registerSubscribableTable('harness_plans', {
   ref: (key) => key, // capture key = plan_slug (su-fcb0d confirmed)
   summary: (op, row, ref) =>
     op === 'del' ? `plan ${ref} removed` : `plan ${ref}${row?.status ? ` → ${str(row.status)}` : ''}${row?.title ? `: ${str(row.title)}` : ''}`,
-  notifyKind: (op) => (op === 'del' ? 'plan_removed' : 'plan_updated'),
-  isResolution: (op, row) => op !== 'del' && str(row?.status) === 'shipped',
+  notifyKind: { put: 'plan_updated', del: 'plan_removed' },
+  isResolution: { op: { notEquals: 'del' }, 'row.status': { equals: 'shipped' } },
 });
 
 // ── The runner ──────────────────────────────────────────────────────────────
@@ -136,8 +157,10 @@ export async function runFanoutForOutboxRow(outboxRow: OutboxFanoutRow, deps: Fa
     from: 'substrate',
     subject: `${mapping.kind}:${ref}`,
     summary: mapping.summary(outboxRow.op, outboxRow.row, ref),
-    notify_kind: mapping.notifyKind(outboxRow.op),
-    isResolution: mapping.isResolution?.(outboxRow.op, outboxRow.row) ?? false,
+    notify_kind: mapping.notifyKind[outboxRow.op],
+    isResolution:
+      mapping.isResolution != null &&
+      evaluateDataCondition(mapping.isResolution, { op: outboxRow.op, key: outboxRow.key, row: outboxRow.row }),
   };
 
   let delivered = 0;

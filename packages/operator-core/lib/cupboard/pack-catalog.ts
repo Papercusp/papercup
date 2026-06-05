@@ -221,13 +221,46 @@ export async function fetchCupboardUnits(
 /**
  * Derive the live pack catalog. `includeCupboard:false` skips the network
  * read (local-only view — `cupboardReachable` reports `true` vacuously).
+ *
+ * Warms the plugin host first (memoized after the first call) so the
+ * projected registry carries every loaded unit's tools — without it, a cold
+ * host under-reports DYNAMIC-tool plugins (gitnexus-style), whose tool list
+ * exists only at runtime (static manifests fall back to `tools[]` either
+ * way). `warmHost:false` opts out (pure-ish contexts/tests).
  */
 export async function derivePackCatalog(
-  opts: { harnessSlug?: string; includeCupboard?: boolean; timeoutMs?: number } = {},
+  opts: { harnessSlug?: string; includeCupboard?: boolean; timeoutMs?: number; warmHost?: boolean } = {},
 ): Promise<DerivedPackCatalog> {
-  const installed = (await listAllInstalledPlugins(opts.harnessSlug)) as Array<
+  // The warmed host's `loaded` list is the truthful installed set — it
+  // includes the BUNDLED units (libs/papercusp/plugins) that the
+  // plugin-listings manifest scan does not walk, and carries each unit's
+  // kind/version/description. Without it a bundled pack mis-attributes as a
+  // registry-only `kind: 'plugin'` fallback with null metadata.
+  const hostUnits: InstalledUnitInput[] = [];
+  if (opts.warmHost !== false) {
+    try {
+      const { getPluginHost } = await import('../plugin-host-runtime');
+      const host = await getPluginHost();
+      for (const lp of host.loaded) {
+        const p = lp.plugin as InstalledUnitInput & { kind?: string };
+        hostUnits.push({
+          name: p.name,
+          version: p.version,
+          description: p.description,
+          kind: p.kind,
+          tools: (lp as { toolDefinitions?: InstalledUnitInput['tools'] }).toolDefinitions ?? p.tools,
+        });
+      }
+    } catch {
+      /* headless/test context without a host — manifest fallback still applies */
+    }
+  }
+  const scanned = (await listAllInstalledPlugins(opts.harnessSlug)) as Array<
     InstalledPlugin & InstalledUnitInput
   >;
+  // Host-loaded units first (richer + truthful); the scan adds
+  // installed-but-not-loaded units (assemblePackCatalog dedups by name).
+  const installed: InstalledUnitInput[] = [...hostUnits, ...scanned];
   const projectedTools = listAllProjectedTools()
     .map((t) => ({ pluginName: t.pluginName, mcpName: t.expose?.mcp?.name ?? '' }))
     .filter((t) => t.mcpName.length > 0);

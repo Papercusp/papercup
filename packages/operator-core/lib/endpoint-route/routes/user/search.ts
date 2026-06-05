@@ -14,7 +14,7 @@
  * session-cookie auth via getSessionUser(req.headers), 401 if absent.
  */
 import { getSessionUser } from '../../../auth';
-import { getMemoryClient } from '../../../memory/mem0-client';
+import { getMemoryBackend } from '../../../memory/backend';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -71,20 +71,25 @@ async function searchProse(q: string, mode: 'bm25' | 'hybrid', limit: number): P
 }
 
 async function searchMemories(q: string, userId: string, limit: number) {
-  const client = await getMemoryClient();
-  if (!client) return [];
+  // Neutral MemoryBackend seam (generalize-memory-backend-swappable
+  // D-003): the user pool + the legacy workspace-shared pool (read-
+  // through only — the write path no longer emits workspace entries).
+  const backend = getMemoryBackend();
   try {
+    if (!(await backend.available()).ok) return [];
     const ws = activeWorkspaceId();
-    const [userHits, sharedHits] = await Promise.all([
-      client.search(q, { filters: { user_id: userId }, limit }),
-      client.search(q, { filters: { user_id: `workspace:${ws}` }, limit }),
-    ]);
-    const merged = [
-      ...(userHits.results ?? []).map((r) => ({ ...r, scope: 'user' as const })),
-      ...(sharedHits.results ?? []).map((r) => ({ ...r, scope: 'workspace' as const })),
-    ];
-    merged.sort((a, b) => ((b.score ?? 0) - (a.score ?? 0)));
-    return merged.slice(0, limit);
+    const hits = await backend.search(q, {
+      scope: [userId, `workspace:${ws}`],
+      limit,
+    });
+    return hits.slice(0, limit).map((e) => ({
+      id: e.id,
+      text: e.text,
+      kind: e.kind,
+      metadata: e.metadata,
+      score: e.score,
+      scope: e.scope.startsWith('workspace:') ? ('workspace' as const) : ('user' as const),
+    }));
   } catch {
     return [];
   }

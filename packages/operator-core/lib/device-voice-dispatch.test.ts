@@ -2,6 +2,10 @@
  * Tests for the mobile voice dispatch tree. Mocks all upstream readers/writers
  * so we can exercise the routing logic without spinning up a WS server, hitting
  * Postgres, or making real HTTP calls.
+ *
+ * (The card verbs — dispatch/dismiss ordinals over the scanner card stream —
+ * were retired with the operator-card panel, unify-agent-launches D-005. A
+ * voice scan now fires the `scan` launch blueprint.)
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -9,10 +13,6 @@ vi.mock('./device-store', () => ({
   touchLastSeen: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('./device-operator-actions', () => ({
-  listPendingCards: vi.fn(),
-  dispatchCard: vi.fn(),
-  dismissCard: vi.fn(),
-  describeCard: vi.fn((c: any) => c.directive_subject ?? c.action),
   setPaused: vi.fn(),
   setResumed: vi.fn(),
 }));
@@ -23,22 +23,18 @@ vi.mock('./operator-standing-candidates', () => ({
 vi.mock('./operator-preferences', () => ({
   appendPreferenceEntry: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('./blueprint/launch-blueprint', () => ({
+  fireLaunchBlueprint: vi.fn().mockResolvedValue({ blueprintId: 'scan', role: 'scanner', url: 'http://test/invoke' }),
+}));
+vi.mock('./workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-test'),
+}));
 
-import {
-  listPendingCards,
-  dispatchCard,
-  dismissCard,
-  setPaused,
-  setResumed,
-} from './device-operator-actions';
+import { setPaused, setResumed } from './device-operator-actions';
 import { refreshCandidates } from './operator-standing-candidates';
 import { appendPreferenceEntry } from './operator-preferences';
-import {
-  dispatchTranscript,
-  runDispatch,
-  runDismiss,
-  type OutgoingFrame,
-} from './device-voice-dispatch';
+import { fireLaunchBlueprint } from './blueprint/launch-blueprint';
+import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch';
 import type { DeviceClaims } from './device-jwt';
 
 const claims: DeviceClaims = {
@@ -61,24 +57,29 @@ beforeEach(() => {
 });
 
 describe('dispatchTranscript — wake word + intent routing', () => {
-  it('strips wake word, then routes "operator scan" → operator-scan fetch', async () => {
-    (global.fetch as any).mockResolvedValue({ ok: true });
+  it('strips wake word, then routes "operator scan" → the scan launch blueprint (D-005)', async () => {
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, 'hey operator scan all the harnesses', 'hey operator', send);
 
     expect(frames.find((f) => f.kind === 'status' && f.status === 'scanning')).toBeTruthy();
-    expect(frames.find((f) => f.kind === 'speak' && f.text?.includes('Scanning'))).toBeTruthy();
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    const url = (global.fetch as any).mock.calls[0][0] as URL;
-    expect(url.pathname).toBe('/api/agent-mcp/operator-scan');
-    expect(url.searchParams.get('request')).toBe('all the harnesses');
+    expect(frames.find((f) => f.kind === 'speak' && f.text?.includes('Started a workspace scan'))).toBeTruthy();
+    expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
+    const [bpId, input] = (fireLaunchBlueprint as any).mock.calls[0];
+    expect(bpId).toBe('scan');
+    expect(input.kickoff).toContain('all the harnesses');
+    expect(input.timeoutMs).toBe(900_000);
+    // No bespoke scan route fetch — the launch blueprint IS the path now.
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('routes "operator open" without invoking scan', async () => {
+  it('"operator open" is no longer an intent (panel retired, D-005) — falls through to Oracle freeform', async () => {
+    (global.fetch as any).mockResolvedValue({ ok: false, status: 503, body: null });
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, 'hey operator open', 'hey operator', send);
-    expect(frames).toEqual([{ kind: 'speak', text: expect.stringContaining('Papercup panel'), source: 'operator' }]);
-    expect(global.fetch).not.toHaveBeenCalled();
+    // Routed as freeform → oracle (which we fail here to keep the test cheap).
+    const speak = frames.find((f) => f.kind === 'speak');
+    expect(speak?.source).toBe('oracle');
+    expect(fireLaunchBlueprint).not.toHaveBeenCalled();
   });
 
   it('routes "pause" → setPaused + frame', async () => {
@@ -99,82 +100,24 @@ describe('dispatchTranscript — wake word + intent routing', () => {
     // Wake-word stripping rewrites the prefix to "operator " so the intent
     // parser matches. Voice commands (bare "pause"/"resume") don't use the
     // wake-word path — they parse from the raw transcript directly.
-    (global.fetch as any).mockResolvedValue({ ok: true });
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, 'computer scan all', 'computer', send);
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(frames.some((f) => f.kind === 'speak' && f.text?.includes('Scanning'))).toBe(true);
+    expect(fireLaunchBlueprint).toHaveBeenCalledTimes(1);
+    expect(frames.some((f) => f.kind === 'speak' && f.text?.includes('Started a workspace scan'))).toBe(true);
+  });
+
+  it('a failed launch fire surfaces as a friendly speak', async () => {
+    (fireLaunchBlueprint as any).mockRejectedValueOnce(new Error('blueprint registry down'));
+    const { frames, send } = frameSink();
+    await dispatchTranscript(claims, 'hey operator scan', 'hey operator', send);
+    expect(frames.some((f) => f.text?.includes('Scan dispatch failed'))).toBe(true);
+    expect(frames.some((f) => f.kind === 'status' && f.status === 'idle')).toBe(true);
   });
 
   it('empty transcript is a no-op', async () => {
     const { frames, send } = frameSink();
     await dispatchTranscript(claims, '   ', 'hey operator', send);
     expect(frames).toEqual([]);
-  });
-});
-
-describe('runDispatch — ordinal resolution', () => {
-  it('no pending → friendly speak', async () => {
-    (listPendingCards as any).mockResolvedValue([]);
-    const { frames, send } = frameSink();
-    await runDispatch(undefined, send);
-    expect(frames).toHaveLength(1);
-    expect(frames[0].text).toMatch(/no pending/i);
-  });
-
-  it('default ordinal picks #1', async () => {
-    (listPendingCards as any).mockResolvedValue([
-      { id: 'c1', action: 'send_directive', target_harness: 'foo', status: 'pending', directive_subject: 'first' },
-      { id: 'c2', action: 'send_directive', target_harness: 'bar', status: 'pending', directive_subject: 'second' },
-    ]);
-    (dispatchCard as any).mockResolvedValue('Dispatched to foo.');
-    const { frames, send } = frameSink();
-    await runDispatch(undefined, send);
-    expect(dispatchCard).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }));
-    expect(frames.some((f) => f.text?.includes('Dispatching: first'))).toBe(true);
-    expect(frames.some((f) => f.text === 'Dispatched to foo.')).toBe(true);
-  });
-
-  it('ordinal=3 picks third', async () => {
-    (listPendingCards as any).mockResolvedValue([
-      { id: 'c1', action: 'send_directive', status: 'pending' },
-      { id: 'c2', action: 'send_directive', status: 'pending' },
-      { id: 'c3', action: 'send_directive', target_harness: 'baz', status: 'pending', directive_subject: 'third' },
-    ]);
-    (dispatchCard as any).mockResolvedValue('Dispatched to baz.');
-    const { frames, send } = frameSink();
-    await runDispatch(3, send);
-    expect(dispatchCard).toHaveBeenCalledWith(expect.objectContaining({ id: 'c3' }));
-  });
-
-  it('out-of-range ordinal → guidance frame', async () => {
-    (listPendingCards as any).mockResolvedValue([
-      { id: 'c1', action: 'send_directive', status: 'pending' },
-    ]);
-    const { frames, send } = frameSink();
-    await runDispatch(5, send);
-    expect(dispatchCard).not.toHaveBeenCalled();
-    expect(frames[0].text).toMatch(/Only 1 pending/);
-  });
-});
-
-describe('runDismiss', () => {
-  it('no pending → friendly speak', async () => {
-    (listPendingCards as any).mockResolvedValue([]);
-    const { frames, send } = frameSink();
-    await runDismiss(undefined, send);
-    expect(frames[0].text).toMatch(/Nothing to dismiss/);
-  });
-
-  it('default ordinal dismisses #1', async () => {
-    (listPendingCards as any).mockResolvedValue([
-      { id: 'c1', action: 'inform', status: 'pending', directive_subject: 'A' },
-    ]);
-    (dismissCard as any).mockResolvedValue('Dismissed: A.');
-    const { frames, send } = frameSink();
-    await runDismiss(undefined, send);
-    expect(dismissCard).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }));
-    expect(frames[0].text).toBe('Dismissed: A.');
   });
 });
 

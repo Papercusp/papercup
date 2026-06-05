@@ -10,11 +10,13 @@ vi.mock('../workspace-registry', () => ({
   }),
 }));
 
+import type { HarnessConfig } from '@papercusp/orchestrator';
 import {
   computeFrontier,
   resolveOrchestratorHarnesses,
   shouldScheduleOrchestrator,
   resolvePerHarnessCap,
+  resolveDispatchPolicy,
   orchestratorWorkspaceIds,
   type FrontierFeature,
 } from './orchestrator-loop';
@@ -111,6 +113,141 @@ describe('resolvePerHarnessCap — honor the harness parallelism settings (#1)',
 
   test('floors at 1 even with degenerate inputs', () => {
     expect(resolvePerHarnessCap({ parallelMax: 0, maxFeaturesInFlight: 0, envCeiling: 0 })).toBe(1);
+  });
+
+  // ── blueprint-declared dispatch policy (D-005 / P-006) ────────────────────
+  test('a silent config defers to the blueprint dispatch.concurrency', () => {
+    expect(
+      resolvePerHarnessCap({ parallelMax: null, maxFeaturesInFlight: null, blueprintConcurrency: 4 }),
+    ).toBe(4);
+  });
+
+  test('a silent config with no blueprint policy keeps the legacy floor of 1', () => {
+    expect(resolvePerHarnessCap({ parallelMax: null, maxFeaturesInFlight: null })).toBe(1);
+    expect(
+      resolvePerHarnessCap({ parallelMax: null, maxFeaturesInFlight: null, blueprintConcurrency: null }),
+    ).toBe(1);
+  });
+
+  test('an explicit per-install config OVERRIDES the blueprint (instance refines shape)', () => {
+    expect(
+      resolvePerHarnessCap({ parallelMax: 2, maxFeaturesInFlight: null, blueprintConcurrency: 4 }),
+    ).toBe(2);
+    // explicit 1 is NOT "silent" — it wins over a wider blueprint value.
+    expect(
+      resolvePerHarnessCap({ parallelMax: 1, maxFeaturesInFlight: null, blueprintConcurrency: 4 }),
+    ).toBe(1);
+  });
+
+  test('maxFeaturesInFlight tightens a blueprint-sourced budget too', () => {
+    expect(
+      resolvePerHarnessCap({ parallelMax: null, maxFeaturesInFlight: 2, blueprintConcurrency: 4 }),
+    ).toBe(2);
+  });
+
+  test('blueprint safetyCeiling tightens the default ceiling…', () => {
+    expect(
+      resolvePerHarnessCap({
+        parallelMax: null,
+        maxFeaturesInFlight: null,
+        blueprintConcurrency: 12,
+        blueprintSafetyCeiling: 8,
+      }),
+    ).toBe(8);
+  });
+
+  test('…but can never RAISE it past the imperative SAFETY_CEILING (D-007)', () => {
+    expect(
+      resolvePerHarnessCap({
+        parallelMax: null,
+        maxFeaturesInFlight: null,
+        blueprintConcurrency: 99,
+        blueprintSafetyCeiling: 99,
+      }),
+    ).toBe(16);
+  });
+
+  test('the env ceiling (explicit operator override) still clamps a blueprint budget', () => {
+    expect(
+      resolvePerHarnessCap({
+        parallelMax: null,
+        maxFeaturesInFlight: null,
+        envCeiling: 2,
+        blueprintConcurrency: 8,
+      }),
+    ).toBe(2);
+  });
+});
+
+describe('resolveDispatchPolicy — blueprint dispatch: merged with per-install config (D-005 / P-006)', () => {
+  const cfg = (c: Record<string, unknown> = {}): HarnessConfig => c as HarnessConfig;
+  const LEGACY_READINESS = ['todo', 'failing', 'pending', 'failed'];
+  /** A declared dispatch policy as the schema resolves it (readiness default filled). */
+  const dispatch = (over: Record<string, unknown> = {}) => ({
+    priority: 'plan-order' as const,
+    readiness: LEGACY_READINESS,
+    ...over,
+  });
+
+  test('no blueprint → the legacy config-only resolution, byte-equivalent (cap 1, NEEDS_WORK, cfg untouched)', () => {
+    const c = cfg();
+    const r = resolveDispatchPolicy({ dispatch: null, cfg: c });
+    expect(r.cap).toBe(1);
+    expect([...r.readiness].sort()).toEqual([...LEGACY_READINESS].sort());
+    expect(r.effectiveCfg).toBe(c); // identity — no overlay invented
+  });
+
+  test('no blueprint + explicit parallelWorkers config → exactly the legacy cap', () => {
+    const r = resolveDispatchPolicy({ dispatch: null, cfg: cfg({ parallelWorkers: { max: 3 } }) });
+    expect(r.cap).toBe(3);
+  });
+
+  test('coding-style policy (concurrency 4) fills a silent config', () => {
+    const r = resolveDispatchPolicy({ dispatch: dispatch({ concurrency: 4 }), cfg: cfg() });
+    expect(r.cap).toBe(4);
+  });
+
+  test('per-install parallelWorkers.max wins over the blueprint concurrency', () => {
+    const r = resolveDispatchPolicy({
+      dispatch: dispatch({ concurrency: 4 }),
+      cfg: cfg({ parallelWorkers: { max: 2 } }),
+    });
+    expect(r.cap).toBe(2);
+  });
+
+  test('a declared dispatch with the schema-default readiness === the legacy set (byte-equivalence)', () => {
+    const r = resolveDispatchPolicy({ dispatch: dispatch({ concurrency: 4 }), cfg: cfg() });
+    expect([...r.readiness].sort()).toEqual([...LEGACY_READINESS].sort());
+  });
+
+  test('a narrowed readiness is honored', () => {
+    const r = resolveDispatchPolicy({
+      dispatch: dispatch({ readiness: ['todo'] }),
+      cfg: cfg(),
+    });
+    expect(r.readiness.has('todo')).toBe(true);
+    expect(r.readiness.has('failing')).toBe(false);
+  });
+
+  test('dispatch.costCapUsd fills a silent config (overlaid for evaluateCostCap)', () => {
+    const r = resolveDispatchPolicy({ dispatch: dispatch({ costCapUsd: 25 }), cfg: cfg() });
+    expect((r.effectiveCfg as Record<string, unknown>).maxCostUsd).toBe(25);
+  });
+
+  test('per-install maxCostUsd wins over dispatch.costCapUsd (no overlay)', () => {
+    const c = cfg({ maxCostUsd: 10 });
+    const r = resolveDispatchPolicy({ dispatch: dispatch({ costCapUsd: 25 }), cfg: c });
+    expect(r.effectiveCfg).toBe(c);
+    expect((r.effectiveCfg as Record<string, unknown>).maxCostUsd).toBe(10);
+  });
+
+  test('the env ceiling clamps the merged result', () => {
+    const r = resolveDispatchPolicy({
+      dispatch: dispatch({ concurrency: 8 }),
+      cfg: cfg(),
+      envCeiling: 2,
+    });
+    expect(r.cap).toBe(2);
   });
 });
 
@@ -265,5 +402,29 @@ describe('computeFrontier — frontier dispatch (P-042)', () => {
   test('not stuck when ready features exist but slots are full', () => {
     const features = [f('F-1', 'todo')];
     expect(computeFrontier(features, NO_PLANS, NONE, 0).stuck).toBe(false);
+  });
+
+  // ── blueprint-declared readiness (D-005 / P-006) ─────────────────────────
+  test('a declared readiness set replaces the legacy NEEDS_WORK selection', () => {
+    const features = [f('F-1', 'todo'), f('F-2', 'failing'), f('F-3', 'pending')];
+    // narrowed to todo-only: failing/pending are no longer dispatchable.
+    expect(computeFrontier(features, NO_PLANS, NONE, 10, new Set(['todo'])).toStart).toEqual(['F-1']);
+  });
+
+  test('omitting readiness keeps the legacy selection byte-identical (default param)', () => {
+    const features = [f('F-1', 'todo'), f('F-2', 'failing'), f('F-3', 'pending'), f('F-4', 'failed')];
+    expect(computeFrontier(features, NO_PLANS, NONE, 10).toStart).toEqual(
+      computeFrontier(features, NO_PLANS, NONE, 10, new Set(['todo', 'failing', 'pending', 'failed'])).toStart,
+    );
+  });
+
+  test('the stuck signal respects the declared readiness too', () => {
+    // F-1 is failing — under todo-only readiness there is NO pending work at
+    // all, so the frontier is empty but NOT stuck.
+    const features = [f('F-1', 'failing')];
+    expect(computeFrontier(features, NO_PLANS, NONE, 4, new Set(['todo']))).toEqual({
+      toStart: [],
+      stuck: false,
+    });
   });
 });

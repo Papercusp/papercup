@@ -8,8 +8,9 @@
 
 use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CuratedSignal, DocsResponse,
-    FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig,
-    PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    EffectiveClaudeSettings, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif,
+    OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution,
+    ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -51,8 +52,10 @@ pub enum Event {
     TestRunDone { file: String, result: crate::models::TestRunResult },
     /// Plugin-contributed TUI panes for the active harness (D-002).
     TuiPanes(Vec<TuiPaneContribution>),
-    /// Claude-settings file content for the active harness (read-only).
-    Config(String),
+    /// The active harness's effective claude-settings view (D-013) — defaults
+    /// overlaid by the file, plus the raw file body the `:set`/`:unset` editor
+    /// round-trips.
+    Config(EffectiveClaudeSettings),
     /// Feature flags + values for the read-only Settings tab (P10).
     Flags(FlagsResponse),
     /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a) —
@@ -73,6 +76,15 @@ pub enum Event {
     /// The curator's salience-ranked "what matters" signals (curation:feed) for
     /// the Fleet curated mode (P3 — wire curated view to the curator-operator).
     CuratedSignals(Vec<CuratedSignal>),
+    /// Marketplace listings for the Cupboard tab (D-011) — the result of a
+    /// `FetchCupboard` action. Carries the (kind, query) the fetch was for so a
+    /// stale response never paints a newer filter's view. Action outcomes
+    /// (join/fork/install) ride the ordinary `Notify`/`Error` events.
+    CupboardListings {
+        kind: String,
+        query: String,
+        listings: Vec<crate::models::CupboardListing>,
+    },
     /// A live `attention.notify` event (P8) — raise a toast + OS notification.
     Notify(Notif),
     /// Backfilled notification history from `/api/toast-log` (P8).

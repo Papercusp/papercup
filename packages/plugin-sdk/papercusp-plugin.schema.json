@@ -42,9 +42,19 @@
         "plugin",
         "template",
         "snapshot",
-        "subagent-pack"
+        "pack"
       ],
-      "description": "Distribution kind. Defaults to 'plugin'."
+      "description": "Distribution kind. Defaults to 'plugin'. 'pack' = a runtime-less code-tool pack: tools only — no ui/roles/routines/actions, runtime must stay js (tool-distribution-granularity-2026-06-05 D-001/D-004; replaces the never-used 'subagent-pack')."
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Tool/pack/plugin deps this unit's tools need (tool-distribution-granularity D-003 plugin-to-tool deps). Validated at Cupboard install time against the host's pack catalog; same shape as a blueprint's dependencies.",
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "string" } },
+        "packs": { "type": "array", "items": { "type": "string" } },
+        "plugins": { "type": "array", "items": { "type": "string" } }
+      }
     },
     "papercusp": {
       "type": "string",

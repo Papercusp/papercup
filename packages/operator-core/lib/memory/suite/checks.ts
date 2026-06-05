@@ -18,7 +18,10 @@ import {
 } from '../mem0-client';
 import { buildMemoryContextBlock } from '../injection';
 import { extractAnchors, anchorMetadata } from '../anchors';
-import { extractAddedIds, persistAnchorsSql } from '../persist-anchors';
+// extractAddedIds moved behind Mem0Backend (generalize-memory-backend-swappable
+// D-002); this suite is mem0-internal diagnostics, so the lib import is right.
+import { extractAddedIds } from '@papercusp/memory';
+import { persistAnchorsSql } from '../persist-anchors';
 import { activeWorkspaceId } from '../../workspace-registry';
 import type { AdminTestCheckResult } from '../../admin-test-suites-shared';
 

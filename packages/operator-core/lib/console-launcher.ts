@@ -85,7 +85,14 @@ const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
  */
 function resolveScriptsDir(): string | null {
   const cwd = process.cwd();
+  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
   const candidates = [
+    // Release-gate cutover (2026-06-05): the operator may run from the
+    // RELEASE checkout, but a spawned console is an integration-tree
+    // context — prefer the integration tree's scripts when declared.
+    ...(integrationRoot
+      ? [resolvePath(integrationRoot, 'apps', 'operator', 'scripts')]
+      : []),
     // dev: started from apps/operator/, scripts is a sibling of lib/
     resolvePath(cwd, 'scripts'),
     // dev from monorepo root: papercup/

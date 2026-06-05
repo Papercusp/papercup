@@ -22,23 +22,23 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { getMemoryClient } from './mem0-client';
+import { getMemoryBackend, type MemoryEntry } from './backend';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 
 /**
- * mem0 memory injection is a best-effort enhancement — never
- * load-bearing — and it must never *hang*. `buildOperatorPrompt`
- * awaits this helper inline, so a slow/stuck embedder (e.g. the local
- * BGE ONNX model downloading on first use when no OpenAI key is set)
- * would otherwise block the entire operator turn — the failure mode
- * observed 2026-05-21 where operator-converse emitted only SSE
- * heartbeats and never produced a turn.
+ * Memory injection is a best-effort enhancement — never load-bearing —
+ * and it must never *hang*. `buildOperatorPrompt` awaits this helper
+ * inline, so a slow/stuck embedder (e.g. the local BGE ONNX model
+ * downloading on first use when no OpenAI key is set) would otherwise
+ * block the entire operator turn — the failure mode observed 2026-05-21
+ * where operator-converse emitted only SSE heartbeats and never
+ * produced a turn.
  *
- * Every mem0 call here is bounded by MEMORY_OP_TIMEOUT_MS. The first
+ * Every store call here is bounded by MEMORY_OP_TIMEOUT_MS. The first
  * timeout drops the whole process into a degraded mode so later turns
- * skip mem0 instantly instead of paying the timeout on every turn.
- * The flag resets on restart; mem0-client's own TTL + poison-cache
- * handle client-level recovery.
+ * skip the store instantly instead of paying the timeout on every turn.
+ * The flag resets on restart; the backend's own caching/poison-cache
+ * handles client-level recovery.
  */
 const MEMORY_OP_TIMEOUT_MS = 5_000;
 let memoryDegraded = false;
@@ -48,7 +48,7 @@ class MemoryTimeoutError extends Error {}
 function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new MemoryTimeoutError(`mem0 ${label} exceeded ${MEMORY_OP_TIMEOUT_MS}ms`));
+      reject(new MemoryTimeoutError(`memory ${label} exceeded ${MEMORY_OP_TIMEOUT_MS}ms`));
     }, MEMORY_OP_TIMEOUT_MS);
     p.then(
       (v) => { clearTimeout(timer); resolve(v); },
@@ -116,14 +116,14 @@ export async function buildMemoryContextBlock(
   if (!input.queryContext.trim()) return null;
   if (memoryDegraded) return null;
 
-  let client;
+  const backend = getMemoryBackend();
   try {
-    client = await withTimeout(getMemoryClient(), 'getMemoryClient');
+    const avail = await withTimeout(backend.available(), 'available()');
+    if (!avail.ok) return null;
   } catch (err) {
     noteMemoryFailure(err);
     return null;
   }
-  if (!client) return null;
 
   const userLimit = input.limit ?? 6;
 
@@ -135,31 +135,33 @@ export async function buildMemoryContextBlock(
     harnessSlugs = harnessSlugs.slice(0, MAX_HARNESS_FANOUT);
   }
 
-  // mem0 holds only STABLE facts now — user + harness scopes (D-005: mem0 is the
-  // sole semantic store; the deprecated `workspace:`/`shared` scope is drained, so
-  // there is no workspace pull).
-  type Hit = { id?: string; memory: string; metadata?: Record<string, unknown> };
-  type Hits = { results?: Array<Hit> };
-  let userHits: Hits = {};
-  let harnessHitsByPool: Hits[] = [];
+  // The store holds only STABLE facts now — user + harness scopes (D-005:
+  // the deprecated `workspace:`/`shared` scope is drained, so there is no
+  // workspace pull). The backend fans out per scope; `limit` is per-pool,
+  // which is exactly the user-pool-vs-harness-pool asymmetry we want.
+  let userResults: MemoryEntry[] = [];
+  let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   try {
-    const userPull: Promise<Hits> = input.userId
-      ? (client.search(input.queryContext, {
-          filters: { user_id: input.userId },
-          limit: userLimit,
-        }) as Promise<Hits>)
-      : Promise.resolve({} as Hits);
+    const userPull: Promise<MemoryEntry[]> = input.userId
+      ? backend.search(input.queryContext, { scope: input.userId, limit: userLimit })
+      : Promise.resolve([]);
 
-    const harnessPulls: Promise<Hits>[] = harnessSlugs.map((slug) =>
-      client.search(input.queryContext, {
-        filters: { user_id: `harness:${slug}` },
-        limit: PER_HARNESS_LIMIT,
-      }) as Promise<Hits>,
+    const harnessPull: Promise<MemoryEntry[]> = harnessSlugs.length > 0
+      ? backend.search(input.queryContext, {
+          scope: harnessSlugs.map((slug) => `harness:${slug}`),
+          limit: PER_HARNESS_LIMIT,
+        })
+      : Promise.resolve([]);
+
+    const [userEntries, harnessEntries] = await withTimeout(
+      Promise.all([userPull, harnessPull]),
+      'search',
     );
-
-    const all = await withTimeout(Promise.all([userPull, ...harnessPulls]), 'search');
-    userHits = all[0];
-    harnessHitsByPool = all.slice(1);
+    userResults = userEntries;
+    harnessHits = harnessEntries.map((hit) => ({
+      hit,
+      slug: hit.scope.startsWith('harness:') ? hit.scope.slice('harness:'.length) : hit.scope,
+    }));
   } catch (err) {
     noteMemoryFailure(err);
     if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
@@ -168,10 +170,6 @@ export async function buildMemoryContextBlock(
     return null;
   }
 
-  let userResults = userHits.results ?? [];
-  let harnessHits = harnessSlugs.flatMap((slug, i) =>
-    (harnessHitsByPool[i]?.results ?? []).map((hit) => ({ hit, slug })),
-  );
   if (userResults.length + harnessHits.length === 0) return null;
 
   // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
@@ -182,6 +180,7 @@ export async function buildMemoryContextBlock(
     ...userResults.map((h) => h.id),
     ...harnessHits.map(({ hit }) => hit.id),
   ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+  // (ids are always present on neutral entries; the filter guards legacy/odd rows)
   if (candidateIds.length > 0) {
     try {
       const { sql } = getOrgPg();
@@ -196,8 +195,8 @@ export async function buildMemoryContextBlock(
   }
   if (userResults.length + harnessHits.length === 0) return null;
 
-  const fmtScope = (meta: Record<string, unknown>, slug?: string): string => {
-    const kind = (meta.kind as string) ?? 'unknown';
+  const fmtScope = (entry: MemoryEntry, slug?: string): string => {
+    const kind = entry.kind ?? 'unknown';
     if (slug) return `[${kind} @ ${slug}]`;
     return `[${kind}]`;
   };
@@ -210,8 +209,8 @@ export async function buildMemoryContextBlock(
     typeof h.id === 'string' && h.id ? ` (id=${h.id})` : '';
 
   const lines: string[] = [];
-  for (const h of userResults) lines.push(`- ${fmtScope((h.metadata ?? {}) as Record<string, unknown>)}${fmtId(h)} ${h.memory}`);
-  for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope((hit.metadata ?? {}) as Record<string, unknown>, slug)}${fmtId(hit)} ${hit.memory}`);
+  for (const h of userResults) lines.push(`- ${fmtScope(h)}${fmtId(h)} ${h.text}`);
+  for (const { hit, slug } of harnessHits) lines.push(`- ${fmtScope(hit, slug)}${fmtId(hit)} ${hit.text}`);
 
   // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced — this is
   // ALSO the dedup watermark the next turn reads. Fire-and-forget: bumpLastSurfacedSql

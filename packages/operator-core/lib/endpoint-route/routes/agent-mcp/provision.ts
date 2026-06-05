@@ -26,6 +26,22 @@ const OPERATOR_CAPS = [
   'goals:write',
   'routines:write',
   'chat:write',
+  // autoloop-pot-operator-rebuild-2026-06-05 P-004 — the Pot operator's
+  // superpower + survey surface: harness:write gates blueprint:extend/create +
+  // harness:create (create/manage harnesses from blueprints); the read/write
+  // pairs cover the blackboard it surveys each wake (work_items frontier,
+  // curation feed, activity bridge, coord, plans). Mirrored in
+  // BLUEPRINT_ROLE_CAPS['operator'] (role-principal-caps.ts) because an
+  // already-provisioned row keeps its old cap list (provision without force is
+  // a no-op) — keep the two in sync.
+  'harness:write',
+  'work_items:read',
+  'work_items:write',
+  'curation:read',
+  'activity:read',
+  'coord:read',
+  'coord:write',
+  'plans:read',
 ];
 
 export default defineTool({

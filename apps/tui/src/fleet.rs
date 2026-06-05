@@ -417,8 +417,9 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
 /// progress. The navigable spine of the Fleet tab (j/k).
 fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     let latest = app.fleet.latest_by_owner();
-    let items: Vec<ListItem> = app
-        .roster
+    // The plans-filtered roster (D-009) — `fleet.agent_sel` indexes THIS list.
+    let roster = app.visible_roster();
+    let items: Vec<ListItem> = roster
         .iter()
         .map(|r| {
             let dot = if r.stale {
@@ -451,8 +452,8 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut state = ListState::default();
-    if !app.roster.is_empty() {
-        state.select(Some(app.fleet.agent_sel.min(app.roster.len().saturating_sub(1))));
+    if !roster.is_empty() {
+        state.select(Some(app.fleet.agent_sel.min(roster.len().saturating_sub(1))));
     }
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
@@ -462,14 +463,22 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     } else {
         items
     };
+    // The plans-filter badge (D-009) keeps an active-but-hidden rail visible.
+    let title = if app.plan_filter.is_empty() {
+        format!(" Agents ({}) · n: launch ", roster.len())
+    } else {
+        format!(
+            " Agents ({}/{}) · F:plans({}) · n: launch ",
+            roster.len(),
+            app.roster.len(),
+            app.plan_filter.len()
+        )
+    };
     // Styled column header above the roster (D-005).
     let body_area = crate::ui::block_with_header(
         f,
         area,
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " Agents ({}) · n: launch ",
-            app.roster.len()
-        ))),
+        Block::default().borders(Borders::ALL).title(Line::from(title)),
         &format!("    {:<7}{:<31}{}", "agent", "doing now", "todos"),
     );
     let list = List::new(body)
@@ -480,7 +489,12 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
 
 /// Detail for the selected agent: presence + last activity + its mirrored todos.
 fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
-    let sel = app.roster.get(app.fleet.agent_sel.min(app.roster.len().saturating_sub(1)));
+    // Same plans-filtered roster as `draw_agents` (D-009) — the dossier must
+    // describe the row the cursor is on.
+    let roster = app.visible_roster();
+    let sel = roster
+        .get(app.fleet.agent_sel.min(roster.len().saturating_sub(1)))
+        .copied();
     let body = match sel {
         Some(r) => {
             let latest = app.fleet.latest_by_owner();

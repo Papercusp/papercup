@@ -102,8 +102,9 @@ export interface RegisterResult {
 export async function registerPapercupHarness(opts: {
   pathOverride?: string;
 } = {}): Promise<RegisterResult> {
-  const path =
-    opts.pathOverride ?? detectPapercupRoot(process.cwd());
+  // Ambient detection (no explicit start) — honors PAPERCUSP_INTEGRATION_ROOT
+  // so a release-checkout-hosted operator registers the integration tree.
+  const path = opts.pathOverride ?? detectPapercupRoot();
   if (!path) {
     return {
       state: 'skipped',

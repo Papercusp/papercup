@@ -62,17 +62,22 @@ immediately with a two-word ack.
 
 ### Delegate work to another agent
 
-For OPERATOR specifically: prefer the `<spawn role="..." />` tag
-in your turn output over `orchestrator.spawn` MCP tool. The tag
-routes through the same dispatcher without an MCP roundtrip.
+For OPERATOR specifically: prefer the `<spawn role="..." harness="..." />`
+tag in your turn output over the `fleet:spawn` MCP tool. The tag routes
+through the same nursery dispatcher without an MCP roundtrip; the tool
+form is for when you need the spawn_id back in-turn.
 
-1. If the user names a feature or chunk, include `feature` / `chunk`
+1. Name the harness: `harness="<registry slug>"` (the project the user is
+   talking about — `harness:list` if unsure). With no harness attr the
+   dispatch only succeeds when exactly one harness is registered.
+2. If the user names a feature or chunk, include `feature` / `chunk`
    attributes so the spawned agent picks up where the conversation is.
-2. Worker spawns REQUIRE `chunk`. If you don't have one, spawn a
+3. Worker spawns REQUIRE `chunk`. If you don't have one, spawn a
    `scoper` first to break the work into chunks.
-3. Fire-and-forget — acknowledge the launch in your `<say>` and move on.
-   Results surface as a future turn via the actions feed + Intel panel.
-4. One spawn per turn is normal; two or three at most for genuine
+4. Fire-and-forget — acknowledge the launch in your `<say>` and move on.
+   Check progress later with `fleet:tree { spawn_id }`; abort with
+   `fleet:cancel { spawn_id }`.
+5. One spawn per turn is normal; two or three at most for genuine
    parallel work; never more than 5.
 
 ### Answer "what's wrong with X?"
