@@ -658,6 +658,25 @@ after a **release-gate deploy** carries it there (green-checkpoint →
 needed. The `~/.papercusp/*-collaborator*.md` files the installer writes
 are a vestigial fallback, not read on a psu launch.)
 
+**Measure an edit to THIS playbook — run the behavioral suite, don't just
+eyeball it.** The engineer playbook has automated behavioral coverage
+(`su-scenario-suite-2026-05-31`): the `su` llm-testing target loads this file
+as the system prompt, hands the model the `papercusp-su` catalog, and asserts
+the load-bearing hard rules (harness-scope, Tauri-only, push-not-poll,
+design-first, no-invent-write, shared-tree-git). Run it before shipping a
+playbook rewrite so the change is measured, not assumed:
+
+```bash
+npm --prefix apps/operator run llm-test -- --target su                                    # all su-S01..S06
+npm --prefix apps/operator run llm-test -- --scenario su-S01-harness-scope --no-matrix     # one, N=1 (fast iterate)
+```
+
+Needs a Claude/Anthropic credential (the sim-user + judge + SUT all call the
+model). The suite is in-process (no live operator / `:3070` needed). Target +
+scenarios + rubric live in
+`packages/operator-core/lib/llm-testing/{targets/su.ts,scenarios/su,rubrics/su.ts}`;
+add a scenario when a new SU failure mode shows up.
+
 ## Where not to go
 
 - **Don't open Papercusp in a browser — it's the Tauri desktop app, and the

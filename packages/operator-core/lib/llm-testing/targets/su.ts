@@ -427,11 +427,35 @@ interface AnthropicClient {
   messages: { create(params: unknown, opts?: unknown): Promise<AnthropicResponse> };
 }
 
+function errStatus(err: unknown): number | undefined {
+  const s = (err as { status?: unknown })?.status;
+  return typeof s === 'number' ? s : undefined;
+}
+
 function isTransient(err: unknown): boolean {
+  const status = errStatus(err);
+  if (status === 429 || status === 529 || (status !== undefined && status >= 500 && status < 505)) return true;
   const msg = err instanceof Error ? err.message : String(err);
-  return /(\b529\b|overloaded|rate.?limit|service unavailable|\b50[02-4]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up)/i.test(
+  return /(\b429\b|\b529\b|overloaded|rate.?limit|service unavailable|\b50[02-4]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up)/i.test(
     msg,
   );
+}
+
+/** Seconds from a `retry-after` header (plain seconds or an HTTP date), if the
+ *  SDK error exposed headers. */
+function retryAfterMs(err: unknown): number | undefined {
+  const h = (err as { headers?: Record<string, string | undefined> | { get?: (k: string) => string | null } })?.headers;
+  let raw: string | null | undefined;
+  if (h && typeof (h as { get?: unknown }).get === 'function') {
+    raw = (h as { get: (k: string) => string | null }).get('retry-after');
+  } else if (h && typeof h === 'object') {
+    raw = (h as Record<string, string | undefined>)['retry-after'];
+  }
+  if (!raw) return undefined;
+  const secs = Number(raw);
+  if (Number.isFinite(secs)) return Math.min(120_000, secs * 1000);
+  const at = Date.parse(raw);
+  return Number.isFinite(at) ? Math.min(120_000, Math.max(0, at - Date.now())) : undefined;
 }
 
 async function callWithRetry(
@@ -439,7 +463,10 @@ async function callWithRetry(
   params: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<AnthropicResponse> {
-  const RETRY_MAX = 5;
+  // Patient retry — the SUT shares one Claude-Max OAuth session with the whole
+  // fleet, so a transient 429 is expected under contention. Honor Retry-After
+  // when present, else exponential backoff capped at 60s.
+  const RETRY_MAX = 7;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= RETRY_MAX; attempt++) {
     if (signal.aborted) throw new Error('su target: aborted');
@@ -448,7 +475,8 @@ async function callWithRetry(
     } catch (err) {
       lastErr = err;
       if (!isTransient(err) || attempt === RETRY_MAX) throw err;
-      const backoffMs = Math.min(30_000, 1000 * 2 ** attempt) + Math.random() * 400;
+      const backoffMs =
+        retryAfterMs(err) ?? Math.min(60_000, 1000 * 2 ** attempt) + Math.random() * 500;
       await new Promise((r) => setTimeout(r, backoffMs));
     }
   }

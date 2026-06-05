@@ -62,6 +62,19 @@ async function seedIssue(
        '2024-05-29T12:00:00.000Z', 0, 1700, 1700, ${opts.origin ?? 'local'})`;
 }
 
+async function seedPlan(
+  sql: postgres.Sql,
+  slug: string,
+  opts: { origin?: string; workspace_id?: string; harness_slug?: string } = {},
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.harness_plans
+      (harness_slug, plan_slug, workspace_id, title, status, content, origin)
+    VALUES
+      (${opts.harness_slug ?? SLUG}, ${slug}, ${opts.workspace_id ?? WS},
+       ${`P ${slug}`}, 'active', ${`body ${slug}`}, ${opts.origin ?? 'local'})`;
+}
+
 async function outboxRows(sql: postgres.Sql) {
   return sql<{
     table_name: string;
@@ -111,6 +124,20 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
         origin       TEXT NOT NULL DEFAULT 'local',
         PRIMARY KEY (harness_slug, issue_id)
       );
+      -- plans-pg-canonical-migration-2026-06-03 (Stage 2) added harness_plans to
+      -- BACKFILL_TARGETS (key == plan_slug); the fixture must create it or the
+      -- backfill's count query hits a missing relation. Subset of the real
+      -- columns the SELECT / to_jsonb touch.
+      CREATE TABLE harness_shared.harness_plans (
+        harness_slug TEXT NOT NULL,
+        plan_slug    TEXT NOT NULL,
+        workspace_id TEXT NOT NULL DEFAULT '',
+        title        TEXT,
+        status       TEXT,
+        content      TEXT,
+        origin       TEXT NOT NULL DEFAULT 'local',
+        PRIMARY KEY (harness_slug, plan_slug)
+      );
       CREATE TABLE harness_shared.substrate_outbox (
         id           BIGSERIAL PRIMARY KEY,
         workspace_id TEXT   NOT NULL,
@@ -139,30 +166,36 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
   beforeEach(async () => {
     await db.sql`TRUNCATE harness_shared.harness_features_consolidated`;
     await db.sql`TRUNCATE harness_shared.harness_issues_consolidated`;
+    await db.sql`TRUNCATE harness_shared.harness_plans`;
     await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
     await db.sql`TRUNCATE harness_shared.substrate_meta`;
   });
 
-  it('enqueues exactly the local feature + issue rows (not remote, not other harnesses), writes the marker', async () => {
-    // 4 local features + 2 local issues for THIS harness.
+  it('enqueues exactly the local feature + issue + plan rows (not remote, not other harnesses), writes the marker', async () => {
+    // 4 local features + 2 local issues + 2 local plans for THIS harness.
     await seedFeature(db.sql, 'F-1');
     await seedFeature(db.sql, 'F-2');
     await seedFeature(db.sql, 'F-3');
     await seedFeature(db.sql, 'F-4');
     await seedIssue(db.sql, 'I-1');
     await seedIssue(db.sql, 'I-2');
-    // 1 remote feature — MUST NOT be enqueued (echo-loop guard).
+    // plans-pg-canonical (Stage 2): local plans federate too (key == plan_slug).
+    await seedPlan(db.sql, 'P-1');
+    await seedPlan(db.sql, 'P-2');
+    // 1 remote feature/plan — MUST NOT be enqueued (echo-loop guard).
     await seedFeature(db.sql, 'F-REMOTE', { origin: 'remote' });
+    await seedPlan(db.sql, 'P-REMOTE', { origin: 'remote' });
     // A different harness / workspace — MUST NOT be enqueued.
     await seedFeature(db.sql, 'F-OTHER', { harness_slug: 'other' });
     await seedFeature(db.sql, 'F-OTHERWS', { workspace_id: 'other_ws' });
+    await seedPlan(db.sql, 'P-OTHER', { harness_slug: 'other' });
 
     const res = await backfillLocalState(fakeHandle(), db.sql);
     expect(res.skipped).toBe(false);
-    expect(res.enqueued).toBe(6);
+    expect(res.enqueued).toBe(8);
 
     const rows = await outboxRows(db.sql);
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(8);
     // All for THIS (workspace, harness), all put, all undrained.
     for (const r of rows) {
       expect(r.workspace_id).toBe(WS);
@@ -179,8 +212,13 @@ describe('backfillLocalState (Stage 4, real PG)', () => {
       .filter((r) => r.table_name === 'harness_issues_consolidated')
       .map((r) => r.key)
       .sort();
+    const planKeys = rows
+      .filter((r) => r.table_name === 'harness_plans')
+      .map((r) => r.key)
+      .sort();
     expect(featureKeys).toEqual(['F-1', 'F-2', 'F-3', 'F-4']);
     expect(issueKeys).toEqual(['I-1', 'I-2']);
+    expect(planKeys).toEqual(['P-1', 'P-2']);
 
     // The row jsonb mirrors to_jsonb of the consolidated row.
     const f1 = rows.find((r) => r.key === 'F-1');
