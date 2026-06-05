@@ -254,9 +254,7 @@ fn capture_thread(
             ),
             cpal::SampleFormat::I16 => device.build_input_stream(
                 &config.clone().into(),
-                move |data: &[i16], _| {
-                    push(data.iter().map(|&s| s as f32 / 32768.0).collect())
-                },
+                move |data: &[i16], _| push(data.iter().map(|&s| s as f32 / 32768.0).collect()),
                 on_err,
                 None,
             ),
@@ -322,7 +320,11 @@ fn capture_thread(
 
 /// Pick a device: name-substring override first (case-insensitive), else the
 /// host default. Shared by capture (input) and playback (output).
-fn pick_device<I>(devices: I, default: Option<cpal::Device>, want: Option<&str>) -> Option<cpal::Device>
+fn pick_device<I>(
+    devices: I,
+    default: Option<cpal::Device>,
+    want: Option<&str>,
+) -> Option<cpal::Device>
 where
     I: Iterator<Item = cpal::Device>,
 {
@@ -441,10 +443,9 @@ fn player_thread(
                     let opened = match want.as_deref().filter(|w| !w.trim().is_empty()) {
                         Some(w) => {
                             let host = cpal::default_host();
-                            let dev = host
-                                .output_devices()
-                                .ok()
-                                .and_then(|it| pick_device(it, host.default_output_device(), Some(w)));
+                            let dev = host.output_devices().ok().and_then(|it| {
+                                pick_device(it, host.default_output_device(), Some(w))
+                            });
                             match dev {
                                 Some(d) => rodio::OutputStream::try_from_device(&d),
                                 None => rodio::OutputStream::try_default(),

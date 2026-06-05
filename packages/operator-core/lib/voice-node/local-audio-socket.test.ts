@@ -14,6 +14,13 @@ const joinVoiceChannel = vi.fn(async (ch: string) => ({ channel: { id: ch }, mut
 const leaveVoiceChannel = vi.fn(async () => ({ channel: null, muted: false, peers: [], identity: { id: 't', label: 't' } }));
 const setVoiceMuted = vi.fn();
 
+const listVoiceChannels = vi.fn(async () => [{ id: 'vc-1', name: 'standup', topicHex: 'a'.repeat(64), createdAt: 1 }]);
+const createVoiceChannel = vi.fn(async (name: string) => ({ id: 'vc-2', name, topicHex: 'b'.repeat(64), createdAt: 2 }));
+vi.mock('./registry', () => ({
+  listVoiceChannels: () => listVoiceChannels(),
+  createVoiceChannel: (n: string) => createVoiceChannel(n),
+}));
+
 vi.mock('./manager', () => ({
   joinVoiceChannel: (ch: string) => joinVoiceChannel(ch),
   leaveVoiceChannel: () => leaveVoiceChannel(),
@@ -96,6 +103,20 @@ describe('local voice socket', () => {
     c.sock.write(encodeFrame(MIC, new Uint8Array(rest.buffer)));
     await settle();
     expect(pushMicFrame).toHaveBeenCalledTimes(3);
+    c.sock.destroy();
+  });
+
+  it('serves the channel registry over ctrl (channels + create)', async () => {
+    const { socketPath } = startLocalVoiceSocket();
+    const c = client(socketPath);
+    await settle(40);
+    c.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'channels' }))));
+    c.sock.write(encodeFrame(CTRL, te.encode(JSON.stringify({ op: 'create', name: 'design-crit' }))));
+    await settle();
+    const chans = c.ctrl.filter((m) => (m as { ev?: string }).ev === 'channels') as Array<{ channels: unknown[] }>;
+    expect(chans.length).toBe(2);
+    expect(chans[0].channels).toHaveLength(1);
+    expect(createVoiceChannel).toHaveBeenCalledWith('design-crit');
     c.sock.destroy();
   });
 

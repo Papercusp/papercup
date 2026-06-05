@@ -107,7 +107,8 @@ impl IpcClient {
 
         let req = serde_json::json!({ "id": id, "toolName": tool, "input": input });
         let payload = serde_json::to_vec(&req)?;
-        let frame = encode_frame(FrameType::Request, &payload).map_err(|e| anyhow!("encode: {e}"))?;
+        let frame =
+            encode_frame(FrameType::Request, &payload).map_err(|e| anyhow!("encode: {e}"))?;
         let mut w = self.writer.lock().await;
         w.write_all(&frame).await.context("write request frame")?;
         let _ = w.flush().await;
@@ -133,7 +134,12 @@ impl IpcClient {
 
     /// Invoke `sys:http` for an `/api/*` route; reassemble the `body` EVENT_BIN
     /// chunks into the response bytes. Errors on a non-2xx/3xx status.
-    pub async fn sys_http(&self, method: &str, path: &str, body: Option<String>) -> Result<Vec<u8>> {
+    pub async fn sys_http(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<String>,
+    ) -> Result<Vec<u8>> {
         let mut input = serde_json::json!({ "method": method, "path": path });
         if let Some(b) = body {
             input["headers"] = serde_json::json!({ "content-type": "application/json" });
@@ -155,7 +161,10 @@ impl IpcClient {
             }
         }
         if !(200..400).contains(&status) {
-            let txt: String = String::from_utf8_lossy(&body_bytes).chars().take(200).collect();
+            let txt: String = String::from_utf8_lossy(&body_bytes)
+                .chars()
+                .take(200)
+                .collect();
             return Err(anyhow!("{method} {path} -> {status}: {txt}"));
         }
         Ok(body_bytes)
@@ -170,7 +179,11 @@ fn route_frame(sinks: &Sinks, frame: Frame) {
                 Err(_) => return,
             };
             let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let name = v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             let data = v.get("data").cloned().unwrap_or(Value::Null);
             (id, CallFrame::Event(CallEvent::Json { name, data }))
         }
@@ -190,7 +203,10 @@ fn route_frame(sinks: &Sinks, frame: Frame) {
                 Err(_) => return,
             };
             let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-            (id, CallFrame::Done(v.get("result").cloned().unwrap_or(Value::Null)))
+            (
+                id,
+                CallFrame::Done(v.get("result").cloned().unwrap_or(Value::Null)),
+            )
         }
         FrameType::Error => {
             let v: Value = match serde_json::from_slice(&frame.payload) {
@@ -199,8 +215,16 @@ fn route_frame(sinks: &Sinks, frame: Frame) {
             };
             let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
             let err = v.get("error").cloned().unwrap_or(Value::Null);
-            let code = err.get("code").and_then(|x| x.as_str()).unwrap_or("error").to_string();
-            let message = err.get("message").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let code = err
+                .get("code")
+                .and_then(|x| x.as_str())
+                .unwrap_or("error")
+                .to_string();
+            let message = err
+                .get("message")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             (id, CallFrame::Error { code, message })
         }
         // Client→server frame types never arrive here.
@@ -224,8 +248,7 @@ fn route_frame(sinks: &Sinks, frame: Frame) {
 fn discover_socket() -> Result<PathBuf> {
     let home = dirs::home_dir().context("no home dir")?;
     let disc = home.join(".papercusp").join("endpoint-ipc.json");
-    let txt =
-        std::fs::read_to_string(&disc).with_context(|| format!("read {}", disc.display()))?;
+    let txt = std::fs::read_to_string(&disc).with_context(|| format!("read {}", disc.display()))?;
     let v: Value = serde_json::from_str(&txt).context("parse endpoint-ipc.json")?;
     let sp = v
         .get("socketPath")
@@ -266,8 +289,9 @@ mod tests {
             let req: Value = serde_json::from_slice(&payload).unwrap();
             let id = req["id"].as_u64().unwrap();
 
-            let head = serde_json::json!({"id":id,"name":"head","data":{"status":status,"headers":{}}})
-                .to_string();
+            let head =
+                serde_json::json!({"id":id,"name":"head","data":{"status":status,"headers":{}}})
+                    .to_string();
             let _ = w
                 .write_all(&encode_frame(FrameType::EventJson, head.as_bytes()).unwrap())
                 .await;
@@ -317,17 +341,26 @@ mod tests {
     async fn invoke_stream_yields_events_then_closes() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("op.sock");
-        spawn_fake_stream(sock.clone(), vec!["event: a\ndata: 1\n\n", "event: b\ndata: 2\n\n"]).await;
+        spawn_fake_stream(
+            sock.clone(),
+            vec!["event: a\ndata: 1\n\n", "event: b\ndata: 2\n\n"],
+        )
+        .await;
         let client = IpcClient::connect(&sock).await.unwrap();
         let mut rx = client
-            .invoke_stream("sys:http", serde_json::json!({"method":"GET","path":"/api/sse"}))
+            .invoke_stream(
+                "sys:http",
+                serde_json::json!({"method":"GET","path":"/api/sse"}),
+            )
             .await
             .unwrap();
         let mut chunks = 0;
         let mut saw_done = false;
         while let Some(f) = rx.recv().await {
             match f {
-                CallFrame::Event(CallEvent::Json { name, .. }) if name == "sse-chunk" => chunks += 1,
+                CallFrame::Event(CallEvent::Json { name, .. }) if name == "sse-chunk" => {
+                    chunks += 1
+                }
                 CallFrame::Done(_) => {
                     saw_done = true;
                     break;
@@ -356,7 +389,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a running operator (endpoint-ipc socket present)"]
     async fn live_ipc_smoke() {
-        let client = IpcClient::connect_discovered().await.expect("connect via discovery");
+        let client = IpcClient::connect_discovered()
+            .await
+            .expect("connect via discovery");
         let bytes = client
             .sys_http("GET", "/api/admin/plans/list", None)
             .await
@@ -414,7 +449,10 @@ mod tests {
         let sock = dir.path().join("op.sock");
         spawn_fake(sock.clone(), 404, b"not found").await;
         let client = IpcClient::connect(&sock).await.unwrap();
-        let err = client.sys_http("GET", "/api/missing", None).await.unwrap_err();
+        let err = client
+            .sys_http("GET", "/api/missing", None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("404"));
     }
 }

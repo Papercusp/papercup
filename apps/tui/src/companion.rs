@@ -135,7 +135,11 @@ impl Companion {
                     },
                     _ = hb.tick() => Command::Ping.to_line(),
                 };
-                if stdin.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+                if stdin
+                    .write_all(format!("{line}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
                     break; // pipe closed → child gone
                 }
                 if stdin.flush().await.is_err() {
@@ -189,7 +193,9 @@ fn companion_wasm_path() -> Option<PathBuf> {
             return Some(pb);
         }
     }
-    let pb = dirs::home_dir()?.join(".papercusp").join("pui-companion.wasm");
+    let pb = dirs::home_dir()?
+        .join(".papercusp")
+        .join("pui-companion.wasm");
     pb.exists().then_some(pb)
 }
 
@@ -268,7 +274,12 @@ mod tests {
     fn spec_becomes_open_command_pane() {
         let spec = PaneSpec::new(["psu", "--no-picker", "--agent=claude"]).titled("pui · claude");
         match spec_to_open_command(&spec) {
-            Command::OpenCommandPane { command, args, cwd, title } => {
+            Command::OpenCommandPane {
+                command,
+                args,
+                cwd,
+                title,
+            } => {
                 assert_eq!(command, "psu");
                 assert_eq!(args, vec!["--no-picker", "--agent=claude"]);
                 assert_eq!(cwd, None);
@@ -289,8 +300,14 @@ mod tests {
             Event::Topology(_)
         ));
         assert!(matches!(
-            map_plugin_event(PluginEvent::PaneExited { pane_id: 3, exit_code: Some(1) }),
-            Event::PaneExited { pane_id: 3, exit_code: Some(1) }
+            map_plugin_event(PluginEvent::PaneExited {
+                pane_id: 3,
+                exit_code: Some(1)
+            }),
+            Event::PaneExited {
+                pane_id: 3,
+                exit_code: Some(1)
+            }
         ));
         assert!(matches!(
             map_plugin_event(PluginEvent::PaneClosed { pane_id: 7 }),
@@ -301,7 +318,11 @@ mod tests {
     #[test]
     fn topology_event_carries_the_payload() {
         let topo = Topology {
-            tabs: vec![TabNode { pos: 0, name: "papercup".into(), active: true }],
+            tabs: vec![TabNode {
+                pos: 0,
+                name: "papercup".into(),
+                active: true,
+            }],
             panes: vec![PaneNode {
                 id: 1,
                 tab: 0,

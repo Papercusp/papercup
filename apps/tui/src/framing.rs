@@ -130,7 +130,10 @@ impl FrameDecoder {
             let frame_type =
                 FrameType::from_u8(type_byte).ok_or(FrameError::UnknownType(type_byte))?;
             let payload = self.buf.split_to(len).to_vec();
-            self.ready.push_back(Frame { frame_type, payload });
+            self.ready.push_back(Frame {
+                frame_type,
+                payload,
+            });
         }
         Ok(())
     }
@@ -174,7 +177,8 @@ mod tests {
         let mut combined = Vec::new();
         combined.extend_from_slice(&f1);
         combined.extend_from_slice(&f2);
-        combined.extend_from_slice(&encode_frame(FrameType::EventJson, b"{\"id\":2}").unwrap()[..3]);
+        combined
+            .extend_from_slice(&encode_frame(FrameType::EventJson, b"{\"id\":2}").unwrap()[..3]);
         dec.push(&combined).unwrap();
         let out = dec.drain();
         assert_eq!(out.len(), 2);

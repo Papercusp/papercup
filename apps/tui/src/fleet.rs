@@ -299,10 +299,34 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn fleet_block(title: Line<'static>, active: bool) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .style(if active {
+            Theme::panel_active()
+        } else {
+            Theme::panel()
+        })
+        .border_style(if active {
+            Theme::border_active()
+        } else {
+            Theme::border()
+        })
+        .title_style(if active {
+            Theme::title_active()
+        } else {
+            Theme::title()
+        })
+        .title(title)
+}
+
 fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
     let line = Line::from(vec![
         // Label is "Fleet" — the Brew rename was reversed by the owner (2026-06-05).
-        Span::styled(format!(" {} Fleet ", glyph::nav::FLEET), Theme::selected()),
+        Span::styled(
+            format!(" {} Fleet ", glyph::nav::FLEET),
+            Theme::title_active(),
+        ),
         Span::raw(format!(
             " {}/{} online · plans {}/{} items ({} active) · work-items {}/{} done ({} open) · ",
             agg.agents_online,
@@ -314,9 +338,9 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
             agg.wi_total,
             agg.wi_remaining,
         )),
-        Span::styled(format!("[{}]  m: toggle", mode.label()), Theme::dim()),
+        Span::styled(format!("[{}]  m: toggle", mode.label()), Theme::info()),
     ]);
-    f.render_widget(Paragraph::new(line), area);
+    f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
 }
 
 /// Curated mode (D-006 — "the curator deciding what matters, calm"). When the
@@ -361,14 +385,6 @@ fn draw_curated_heuristic(f: &mut Frame, app: &App, agg: &FleetAggregate, area: 
     draw_plan_progress(f, app, agg, right[1]);
 }
 
-/// Glyph for a curated-signal kind — the semantic vocabulary lives in
-/// `glyph::signal_for` (Brief 27); this stays as a local alias for the
-/// existing call sites. Note: `blocker` is now the single-width `⊘`
-/// (was the double-width `⛔`, which shifted columns).
-fn signal_glyph(kind: &str) -> &'static str {
-    glyph::signal_for(kind)
-}
-
 /// The curator's "what matters" — salience-ranked fleet signals (curation:feed).
 /// Urgent (escalations/blockers) lead, then decisions-owed + user-completions,
 /// then routine. An empty feed means the curator is live but the fleet is calm.
@@ -378,7 +394,7 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = sigs
         .iter()
         .map(|s| {
-            let mark = signal_glyph(&s.kind);
+            let mark = Theme::signal_marker(&s.kind);
             let style = if s.urgent {
                 Theme::warn()
             } else if s.disposition == "surface" {
@@ -386,28 +402,40 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Theme::dim()
             };
-            let loc = s.harness.clone().filter(|h| !h.is_empty()).map(|h| format!(" [{h}]")).unwrap_or_default();
+            let loc = s
+                .harness
+                .clone()
+                .filter(|h| !h.is_empty())
+                .map(|h| format!(" [{h}]"))
+                .unwrap_or_default();
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{mark} "), style),
-                Span::raw(trunc(&s.title, 40)),
+                mark,
+                Span::raw(" "),
+                Span::styled(trunc(&s.title, 40), style),
                 Span::styled(loc, Theme::dim()),
             ]))
         })
         .collect();
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            format!("{} fleet calm — nothing needs attention", glyph::status::DONE),
+            format!(
+                "{} fleet calm — nothing needs attention",
+                glyph::status::DONE
+            ),
             Theme::dim(),
         )))]
     } else {
         items
     };
     f.render_widget(
-        List::new(body).block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} What matters ({}) — the curator's view ",
-            glyph::header::BOLT,
-            sigs.len()
-        )))),
+        List::new(body).style(Theme::panel()).block(fleet_block(
+            Line::from(format!(
+                " {} What matters ({}) — the curator's view ",
+                glyph::header::BOLT,
+                sigs.len()
+            )),
+            !sigs.is_empty(),
+        )),
         area,
     );
 }
@@ -448,7 +476,9 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let mut state = ListState::default();
     if !roster.is_empty() {
-        state.select(Some(app.fleet.agent_sel.min(roster.len().saturating_sub(1))));
+        state.select(Some(
+            app.fleet.agent_sel.min(roster.len().saturating_sub(1)),
+        ));
     }
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
@@ -473,7 +503,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     let body_area = crate::ui::block_with_header(
         f,
         area,
-        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        fleet_block(Line::from(title), true),
         &format!("    {:<7}{:<31}{}", "agent", "doing now", "todos"),
     );
     let list = List::new(body)
@@ -540,7 +570,8 @@ fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(
         Paragraph::new(body)
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(" Dossier ")),
+            .style(Theme::panel())
+            .block(fleet_block(Line::from(" Dossier "), sel.is_some())),
         area,
     );
 }
@@ -581,10 +612,13 @@ fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect
         items
     };
     f.render_widget(
-        List::new(body).block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " Plan progress — {}/{} items done ",
-            agg.plan_items_done, agg.plan_items_total
-        )))),
+        List::new(body).style(Theme::panel()).block(fleet_block(
+            Line::from(format!(
+                " Plan progress — {}/{} items done ",
+                agg.plan_items_done, agg.plan_items_total
+            )),
+            agg.plan_items_total > 0,
+        )),
         area,
     );
 }
@@ -598,9 +632,10 @@ fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
         .map(|a| {
             let agent = a.agent.clone().unwrap_or_else(|| "-".into());
             let harness = a.harness_slug.clone().unwrap_or_default();
-            let summary = a.summary.clone().unwrap_or_else(|| {
-                a.tool_name.clone().unwrap_or_else(|| a.kind.clone())
-            });
+            let summary = a
+                .summary
+                .clone()
+                .unwrap_or_else(|| a.tool_name.clone().unwrap_or_else(|| a.kind.clone()));
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<8} ", hms(&a.created_at)), Theme::dim()),
                 Span::raw(format!("{:<6} ", trunc(&agent, 6))),
@@ -622,13 +657,16 @@ fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
     let body_area = crate::ui::block_with_header(
         f,
         area,
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " Activity mirror ({}) — every tool call, newest first ",
-            activity.len()
-        ))),
+        fleet_block(
+            Line::from(format!(
+                " Activity mirror ({}) — every tool call, newest first ",
+                activity.len()
+            )),
+            !activity.is_empty(),
+        ),
         &format!("{:<9}{:<7}{:<13}{}", "time", "agent", "pot", "summary"),
     );
-    f.render_widget(List::new(body), body_area);
+    f.render_widget(List::new(body).style(Theme::panel()), body_area);
 }
 
 #[cfg(test)]
@@ -693,8 +731,9 @@ mod tests {
     fn seed_activity_replaces_and_caps() {
         let mut s = FleetState::default();
         s.push_activity(row("su-a", "tool", "live"));
-        let backfill: Vec<ActivityRow> =
-            (0..3).map(|i| row("su-b", "tool", &format!("b{i}"))).collect();
+        let backfill: Vec<ActivityRow> = (0..3)
+            .map(|i| row("su-b", "tool", &format!("b{i}")))
+            .collect();
         s.seed_activity(backfill);
         assert_eq!(s.activity.len(), 3);
         assert_eq!(s.activity[0].summary.as_deref(), Some("b0"));
@@ -708,10 +747,13 @@ mod tests {
         assert_eq!(snap.done, 2);
         assert_eq!(snap.count, 5);
         assert_eq!(snap.todos[0].content, "build fleet.rs");
-        assert_eq!(snap.todos[0], TodoItem {
-            content: "build fleet.rs".into(),
-            status: Some("in_progress".into()),
-        });
+        assert_eq!(
+            snap.todos[0],
+            TodoItem {
+                content: "build fleet.rs".into(),
+                status: Some("in_progress".into()),
+            }
+        );
         // A newer todos row replaces the snapshot.
         s.push_activity(todos_row("su-a", 4, 5, "wire pollers"));
         assert_eq!(s.agent_todos.get("su-a").unwrap().done, 4);
@@ -724,7 +766,10 @@ mod tests {
         s.push_activity(row("su-a", "tool", "first"));
         s.push_activity(row("su-a", "tool", "second"));
         let latest = s.latest_by_owner();
-        assert_eq!(latest.get("su-a").unwrap().summary.as_deref(), Some("second"));
+        assert_eq!(
+            latest.get("su-a").unwrap().summary.as_deref(),
+            Some("second")
+        );
     }
 
     fn roster_entry(owner: &str, stale: bool) -> RosterEntry {
@@ -759,7 +804,10 @@ mod tests {
     #[test]
     fn aggregate_rolls_up_plans_workitems_roster() {
         let mut app = App::new();
-        app.set_roster(vec![roster_entry("su-a", false), roster_entry("su-b", true)]);
+        app.set_roster(vec![
+            roster_entry("su-a", false),
+            roster_entry("su-b", true),
+        ]);
         // Two plans: one with progress, one archived (excluded).
         let mut p1 = crate::models::PlanSummary {
             slug: "p1".into(),
@@ -770,7 +818,11 @@ mod tests {
             harness: None,
             archived: false,
             next_action: None,
-            item_counts: crate::models::ItemCounts { todo: 3, done: 2, ..Default::default() },
+            item_counts: crate::models::ItemCounts {
+                todo: 3,
+                done: 2,
+                ..Default::default()
+            },
             priority: Some(5),
         };
         let mut p2 = p1.clone();
@@ -834,7 +886,12 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| crate::ui::draw(f, app)).unwrap();
-        term.backend().buffer().content().iter().map(|c| c.symbol()).collect()
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
     }
 
     fn curated(id: &str, kind: &str, title: &str, harness: &str, urgent: bool) -> CuratedSignal {
@@ -843,7 +900,11 @@ mod tests {
             kind: kind.into(),
             title: title.into(),
             detail: None,
-            harness: if harness.is_empty() { None } else { Some(harness.into()) },
+            harness: if harness.is_empty() {
+                None
+            } else {
+                Some(harness.into())
+            },
             severity: None,
             disposition: "surface".into(),
             urgent,
@@ -857,7 +918,13 @@ mod tests {
         app.tab = crate::app::Tab::Fleet;
         app.show_presence = false;
         app.fleet.set_curated_signals(vec![
-            curated("e1", "escalation", "needs a human decision", "papercup", true),
+            curated(
+                "e1",
+                "escalation",
+                "needs a human decision",
+                "papercup",
+                true,
+            ),
             curated("d1", "decision", "design review owed", "restart", false),
         ]);
         assert!(app.fleet.curation_available);
@@ -927,7 +994,11 @@ mod tests {
         match c.plans_typed().await {
             Ok(v) => {
                 let with_items = v.iter().filter(|p| p.item_counts.total() > 0).count();
-                eprintln!("plans: {} loaded, {} with item progress", v.len(), with_items);
+                eprintln!(
+                    "plans: {} loaded, {} with item progress",
+                    v.len(),
+                    with_items
+                );
                 app.set_plans(v);
             }
             Err(e) => eprintln!("plans_typed ERR: {e}"),

@@ -17,6 +17,14 @@ export interface RatePauseDeps {
   sleep(ms: number): Promise<void>;
   maxPauseMs?: number;
   maxRetries?: number;
+  /** Fired when a pause begins / ends (await-event-primitive-2026-06-05 P-010):
+   *  the host wires these to `rate-limit:paused:<scope>` / `rate-limit:reset:<scope>`
+   *  emits (rate-pause-events.ts) so the gym's rate state is AWAITABLE
+   *  (events:await) instead of invisible inside a 30-min in-process sleep.
+   *  Optional + fire-and-forget — purity (the fake-clock test) is preserved
+   *  when unwired, and a hook failure never breaks the pause. */
+  onPause?(info: { waitMs: number; attempt: number }): void;
+  onReset?(info: { waitedMs: number; attempt: number }): void;
 }
 
 export async function runWithRatePause<T>(fn: () => Promise<T>, deps: RatePauseDeps): Promise<T> {
@@ -31,7 +39,17 @@ export async function runWithRatePause<T>(fn: () => Promise<T>, deps: RatePauseD
       // Wait out the server's stated reset; bail (rethrow) if it's farther off than we'll wait.
       const waitMs = rl.retryAfterMs ?? (rl.resetAt !== undefined ? rl.resetAt - deps.now() : maxPauseMs);
       if (waitMs > maxPauseMs) throw err;
+      try {
+        deps.onPause?.({ waitMs, attempt });
+      } catch {
+        /* visibility must never break the pause */
+      }
       await deps.sleep(Math.max(0, waitMs));
+      try {
+        deps.onReset?.({ waitedMs: waitMs, attempt });
+      } catch {
+        /* ditto */
+      }
     }
   }
 }

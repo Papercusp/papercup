@@ -233,6 +233,32 @@ describe('executeWake — the liveness ladder', () => {
     expect((write.mock.calls[0] as unknown as [string, Buffer])[0]).toBe('pty-omp');
   });
 
+  it('NO recorded pid + fresh presence → park (never concurrent-resume a live session)', async () => {
+    const spawnManagedPty = vi.fn(() => ({ id: 'x' }));
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ pid: null }) }),
+      deps({
+        getSession: vi.fn(async () => session({ pid: null })) as never,
+        spawnManagedPty: spawnManagedPty as never,
+      }),
+    );
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(spawnManagedPty).not.toHaveBeenCalled();
+  });
+
+  it('NO recorded pid + stale presence → resume (the session is gone)', async () => {
+    const spawnManagedPty = vi.fn(() => ({ id: 'pty-new' }));
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ pid: null }) }),
+      deps({
+        getSession: vi.fn(async () => session({ pid: null })) as never,
+        presence: vi.fn(async () => stalePresence) as never,
+        spawnManagedPty: spawnManagedPty as never,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume' });
+  });
+
   it('pty cap reached → claude falls back to a detached headless -p turn', async () => {
     const spawnDetached = vi.fn(() => 4321);
     const out = await executeWake(

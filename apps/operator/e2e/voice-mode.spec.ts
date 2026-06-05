@@ -31,12 +31,36 @@ test.describe('voice settings', () => {
     // have one configured (this is the flake that quarantined this spec on
     // the shared dev box), so pin fullAgentEngine='off' for the duration and
     // restore the original afterwards. PUT is a partial-save.
+    //
+    // Workspace resolution rides the `x-papercusp-workspace` header
+    // (workspace-registry.ts): the SPA sends it from getBrowserWorkspaceId(),
+    // while a bare page.request lands on the HOST's active workspace — which
+    // can be a different one than the page reads. So mirror the page's
+    // workspace id explicitly. (Don't use in-page fetch for this: the shell
+    // holds several SSE streams, which can exhaust Chromium's per-origin
+    // HTTP/1.1 sockets and starve an in-page fetch indefinitely.)
     const prefsUrl = '/api/agent-mcp/operator-voice-prefs';
-    const before = await (await page.request.get(prefsUrl)).json() as {
-      fullAgentEngine?: string;
+    // Same precedence as getBrowserWorkspaceId(): injected global → 'default'.
+    // Read it from the served index.html (page.request, NOT a navigation —
+    // the page must load exactly once, AFTER the precondition PUT, or the
+    // shell's SSE streams starve the in-page prefs fetch on re-navigation
+    // and the page wedges on "Loading your voice settings…").
+    const indexHtml = await (await page.request.get('/settings/voice')).text();
+    const ws =
+      /__PAPERCUSP_WS__\s*=\s*["']([^"']+)["']/.exec(indexHtml)?.[1] ?? 'default';
+    const wsHeaders = { 'x-papercusp-workspace': ws };
+    const putEngine = async (engine: string) => {
+      const r = await page.request.put(prefsUrl, {
+        headers: wsHeaders,
+        data: { fullAgentEngine: engine },
+      });
+      if (!r.ok()) throw new Error(`prefs PUT failed: ${r.status()}`);
     };
+    const before = await (
+      await page.request.get(prefsUrl, { headers: wsHeaders })
+    ).json() as { fullAgentEngine?: string };
     const original = before.fullAgentEngine ?? 'off';
-    await page.request.put(prefsUrl, { data: { fullAgentEngine: 'off' } });
+    await putEngine('off');
     try {
       await page.goto('/settings/voice');
 
@@ -59,7 +83,7 @@ test.describe('voice settings', () => {
     } finally {
       // Restore the workspace's real engine so the test never clobbers a
       // configured full-agent setup (shared dev boxes run against live prefs).
-      await page.request.put(prefsUrl, { data: { fullAgentEngine: original } });
+      await putEngine(original);
     }
   });
 

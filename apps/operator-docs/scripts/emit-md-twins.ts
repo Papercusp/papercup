@@ -78,7 +78,11 @@ for (const file of files) {
   const url = isIndex ? URL_BASE : `${URL_BASE}/${slug}`;
   const raw = await readFile(file, 'utf-8');
   const { data, body } = parseFrontmatter(raw);
-  const rendered = await renderMdxToMarkdown(body, file);
+  // Plain .md pages ARE already markdown — pass them through verbatim. Running
+  // them through the MDX pipeline mis-parses literal `{`/`<` (Starlight .md has
+  // no JSX/expression syntax), which broke the build on the generated
+  // reference/ projections (plans-index, agent-insights-index, role-registry).
+  const rendered = file.endsWith('.md') ? body : await renderMdxToMarkdown(body, file);
   const text = withPreamble(rendered, {
     title: data.title ?? (isIndex ? 'Index' : slug),
     url,

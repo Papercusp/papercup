@@ -50,7 +50,8 @@ impl FrameParser {
             if self.buf.len() < 5 {
                 break;
             }
-            let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+            let len =
+                u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
             if self.buf.len() < 5 + len {
                 break;
             }
@@ -132,7 +133,8 @@ struct Discovery {
 pub fn discover_socket_path() -> Result<std::path::PathBuf> {
     let home = std::env::var("HOME").context("HOME unset")?;
     let p = Path::new(&home).join(".papercusp").join("voice-ipc.json");
-    let raw = std::fs::read_to_string(&p).with_context(|| format!("voice discovery missing at {}", p.display()))?;
+    let raw = std::fs::read_to_string(&p)
+        .with_context(|| format!("voice discovery missing at {}", p.display()))?;
     let d: Discovery = serde_json::from_str(&raw).context("bad voice-ipc.json")?;
     Ok(std::path::PathBuf::from(d.socket_path))
 }
@@ -154,7 +156,8 @@ impl VoiceStream {
     }
 
     pub fn connect_to(path: &Path) -> Result<(Self, Receiver<VoiceEvent>, Receiver<Vec<i16>>)> {
-        let stream = UnixStream::connect(path).with_context(|| format!("voice socket connect {}", path.display()))?;
+        let stream = UnixStream::connect(path)
+            .with_context(|| format!("voice socket connect {}", path.display()))?;
         let reader = stream.try_clone().context("voice socket clone")?;
         let writer = Arc::new(Mutex::new(stream));
         let (ev_tx, ev_rx) = channel::<VoiceEvent>();
@@ -219,7 +222,10 @@ impl VoiceStream {
         self.mic_level_bits
             .store(crate::voice::rms(&mono).to_bits(), Ordering::Relaxed);
         let at48k = resample_linear(&mono, src_rate, VOICE_RATE);
-        let mut acc = self.mic_acc.lock().map_err(|_| anyhow!("mic acc poisoned"))?;
+        let mut acc = self
+            .mic_acc
+            .lock()
+            .map_err(|_| anyhow!("mic acc poisoned"))?;
         acc.extend_from_slice(&at48k);
         while acc.len() >= FRAME_SAMPLES {
             let frame: Vec<f32> = acc.drain(..FRAME_SAMPLES).collect();
@@ -238,7 +244,12 @@ impl VoiceStream {
     }
 }
 
-fn read_loop(mut sock: UnixStream, ev_tx: Sender<VoiceEvent>, mix_tx: Sender<Vec<i16>>, alive: Arc<AtomicBool>) {
+fn read_loop(
+    mut sock: UnixStream,
+    ev_tx: Sender<VoiceEvent>,
+    mix_tx: Sender<Vec<i16>>,
+    alive: Arc<AtomicBool>,
+) {
     let mut parser = FrameParser::default();
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -252,13 +263,18 @@ fn read_loop(mut sock: UnixStream, ev_tx: Sender<VoiceEvent>, mix_tx: Sender<Vec
                                 match v.get("ev").and_then(|e| e.as_str()) {
                                     Some("status") => {
                                         if let Some(s) = v.get("status") {
-                                            if let Ok(st) = serde_json::from_value::<VoiceStatus>(s.clone()) {
+                                            if let Ok(st) =
+                                                serde_json::from_value::<VoiceStatus>(s.clone())
+                                            {
                                                 let _ = ev_tx.send(VoiceEvent::Status(st));
                                             }
                                         }
                                     }
                                     Some("error") => {
-                                        let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("?");
+                                        let msg = v
+                                            .get("message")
+                                            .and_then(|m| m.as_str())
+                                            .unwrap_or("?");
                                         let _ = ev_tx.send(VoiceEvent::Error(msg.to_string()));
                                     }
                                     _ => {}
@@ -405,9 +421,17 @@ mod tests {
         let mono: Vec<f32> = (0..480).map(|i| (i as f32) / 480.0).collect();
         assert_eq!(resample_linear(&mono, 48_000, 48_000).len(), 480);
         let up = resample_linear(&mono, 24_000, 48_000);
-        assert!((up.len() as i64 - 960).abs() <= 1, "24k→48k doubles: {}", up.len());
+        assert!(
+            (up.len() as i64 - 960).abs() <= 1,
+            "24k→48k doubles: {}",
+            up.len()
+        );
         let down = resample_linear(&mono, 48_000, 16_000);
-        assert!((down.len() as i64 - 160).abs() <= 1, "48k→16k thirds: {}", down.len());
+        assert!(
+            (down.len() as i64 - 160).abs() <= 1,
+            "48k→16k thirds: {}",
+            down.len()
+        );
         // monotone ramp stays monotone under linear interp
         assert!(up.windows(2).all(|w| w[1] >= w[0] - f32::EPSILON));
     }
@@ -464,7 +488,9 @@ mod tests {
                                         "peers": [{ "id": "B", "label": "Bob", "muted": false, "speaking": true }],
                                     }
                                 });
-                                writer.write_all(&encode_frame(CTRL, status.to_string().as_bytes())).unwrap();
+                                writer
+                                    .write_all(&encode_frame(CTRL, status.to_string().as_bytes()))
+                                    .unwrap();
                             }
                         }
                         MIC => {
@@ -484,7 +510,9 @@ mod tests {
         let (vs, events, mix) = VoiceStream::connect_to(&path).unwrap();
         vs.join("standup").unwrap();
 
-        let ev = events.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+        let ev = events
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
         match ev {
             VoiceEvent::Status(st) => {
                 assert_eq!(st.channel.as_ref().unwrap().id, "vc-1");
@@ -496,7 +524,9 @@ mod tests {
 
         // push 2.5 frames of 48k mono; expect exactly 2 MIC frames shipped,
         // echoed back as 2 MIX frames of FRAME_SAMPLES each.
-        let pcm: Vec<f32> = (0..(FRAME_SAMPLES * 5 / 2)).map(|i| ((i % 100) as f32) / 200.0).collect();
+        let pcm: Vec<f32> = (0..(FRAME_SAMPLES * 5 / 2))
+            .map(|i| ((i % 100) as f32) / 200.0)
+            .collect();
         vs.push_pcm(&pcm, 1, VOICE_RATE).unwrap();
         assert!(vs.mic_level() > 0.0);
 
@@ -543,8 +573,16 @@ mod tests {
         let stereo: Vec<f32> = (0..(4410 * 2)).map(|i| ((i % 7) as f32) / 10.0).collect();
         vs.push_pcm(&stereo, 2, 44_100).unwrap();
         let sizes = server.join().unwrap();
-        assert_eq!(sizes.len(), 5, "expected exactly 5 MIC frames, got {}", sizes.len());
-        assert!(sizes.iter().all(|s| *s == FRAME_SAMPLES * 2), "exact 1920B frames: {sizes:?}");
+        assert_eq!(
+            sizes.len(),
+            5,
+            "expected exactly 5 MIC frames, got {}",
+            sizes.len()
+        );
+        assert!(
+            sizes.iter().all(|s| *s == FRAME_SAMPLES * 2),
+            "exact 1920B frames: {sizes:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

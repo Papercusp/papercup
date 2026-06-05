@@ -145,6 +145,21 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ status: 'dropped', lastError: 'dead waiter' });
   });
 
+  it('ack settles MY parked wake as inbox-delivered; a peer cannot ack it', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-ack', eventKey: 'ack:k' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'ack:k' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = await store.claimDueDeliveries({ limit: 5 });
+    await store.markDeliveryParked(w.id, 'alive, no pty', 60_000);
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-imposter' })).toBe(false);
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toBe(true);
+    const recent = await store.listRecentDeliveries('su-ack');
+    expect(recent[0]).toMatchObject({ status: 'delivered', channel: 'inbox' });
+    // Idempotence: a second ack is a no-op (already settled).
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toBe(false);
+  });
+
   it('deferred rows give back their attempt and re-queue', async () => {
     const fired = await store
       .registerAwait({ subscriberId: 'su-9', eventKey: 'defer:k' })

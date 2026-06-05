@@ -105,8 +105,8 @@ pub mod header {
 pub fn status_for(token: &str) -> &'static str {
     match token.trim().to_ascii_lowercase().as_str() {
         "todo" | "pending" | "open" | "ready" | "queued" => status::TODO,
-        "wip" | "doing" | "in_progress" | "in-progress" | "active" | "validating"
-        | "running" | "review" => status::WIP,
+        "wip" | "doing" | "in_progress" | "in-progress" | "active" | "validating" | "running"
+        | "review" => status::WIP,
         "blocked" => status::BLOCKED,
         "done" | "completed" | "complete" | "passed" | "shipped" | "resolved" | "closed" => {
             status::DONE
@@ -218,7 +218,11 @@ mod tests {
     fn header_namespace_is_the_only_place_double_width_lives() {
         // The header glyphs are the *intended* wide ones.
         for g in HEADER {
-            assert_eq!(UnicodeWidthStr::width(*g), 2, "header glyph {g:?} expected width 2");
+            assert_eq!(
+                UnicodeWidthStr::width(*g),
+                2,
+                "header glyph {g:?} expected width 2"
+            );
         }
         // And no inline glyph is wide.
         for g in INLINE {

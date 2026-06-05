@@ -86,7 +86,10 @@ async fn main() -> Result<()> {
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
-        let _ = execute!(terminal.backend_mut(), crossterm::event::PopKeyboardEnhancementFlags);
+        let _ = execute!(
+            terminal.backend_mut(),
+            crossterm::event::PopKeyboardEnhancementFlags
+        );
     }
     disable_raw_mode().ok();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
@@ -209,7 +212,11 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::IntentResult { id, result_json, error } => {
+            Action::IntentResult {
+                id,
+                result_json,
+                error,
+            } => {
                 // An agent intent was applied (P12b) — ship the result back, redraw.
                 let _ = intent_result_tx.send((id, result_json, error));
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -300,7 +307,11 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 tokio::spawn(search_memory(query, harness, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::ConfigEdit { harness, key, value } => {
+            Action::ConfigEdit {
+                harness,
+                key,
+                value,
+            } => {
                 // Config-tab edit (D-013): read→edit→PUT→refetch off the UI
                 // thread; the refreshed effective view returns as Event::Config.
                 tokio::spawn(config_edit(harness, key, value, tx.clone()));
@@ -312,7 +323,12 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 tokio::spawn(load_plugin_config(harness, plugin, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::PluginConfigEdit { harness, plugin, key, value } => {
+            Action::PluginConfigEdit {
+                harness,
+                plugin,
+                key,
+                value,
+            } => {
                 // Plugin-settings edit (D-014): read→edit-path→PUT→refetch off
                 // the UI thread; the refreshed config returns as Event::PluginConfig.
                 tokio::spawn(plugin_config_edit(harness, plugin, key, value, tx.clone()));
@@ -360,8 +376,8 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                             let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Ok(()))));
                         }
                         Err(e) => {
-                            let _ = tx
-                                .send(Event::Voice(event::VoiceMsg::Started(Err(e.to_string()))));
+                            let _ =
+                                tx.send(Event::Voice(event::VoiceMsg::Started(Err(e.to_string()))));
                         }
                     },
                     VoiceCmd::Cancel => {
@@ -407,7 +423,10 @@ async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSe
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(Event::Error(format!("testing files: {e}")));
-            let _ = tx.send(Event::TestingFiles { domain_id, files: Vec::new() });
+            let _ = tx.send(Event::TestingFiles {
+                domain_id,
+                files: Vec::new(),
+            });
             return;
         }
     };
@@ -417,7 +436,10 @@ async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSe
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("testing files: {e}")));
-            let _ = tx.send(Event::TestingFiles { domain_id, files: Vec::new() });
+            let _ = tx.send(Event::TestingFiles {
+                domain_id,
+                files: Vec::new(),
+            });
         }
     }
 }
@@ -431,17 +453,26 @@ async fn search_memory(query: String, harness: String, tx: UnboundedSender<Event
         Ok(c) => c,
         Err(e) => {
             let _ = tx.send(Event::Error(format!("memory search: {e}")));
-            let _ = tx.send(Event::MemoryHits { query, results: Vec::new() });
+            let _ = tx.send(Event::MemoryHits {
+                query,
+                results: Vec::new(),
+            });
             return;
         }
     };
     match client.memory_search(&query, Some(&harness), 20).await {
         Ok(payload) => {
-            let _ = tx.send(Event::MemoryHits { query, results: payload.results });
+            let _ = tx.send(Event::MemoryHits {
+                query,
+                results: payload.results,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("memory search: {e}")));
-            let _ = tx.send(Event::MemoryHits { query, results: Vec::new() });
+            let _ = tx.send(Event::MemoryHits {
+                query,
+                results: Vec::new(),
+            });
         }
     }
 }
@@ -492,11 +523,16 @@ async fn config_edit(
         } else {
             // An invalid file is never silently clobbered — surface the parse
             // error and make the user fix or `:set` after clearing manually.
-            serde_json::from_str(&current.content)
-                .map_err(|e| anyhow::anyhow!("settings file is invalid JSON ({e}) — fix it before :set"))?
+            serde_json::from_str(&current.content).map_err(|e| {
+                anyhow::anyhow!("settings file is invalid JSON ({e}) — fix it before :set")
+            })?
         };
-        app::edit_json_path(&mut root, &key, value.as_deref().map(app::parse_config_value))
-            .map_err(|e| anyhow::anyhow!(e))?;
+        app::edit_json_path(
+            &mut root,
+            &key,
+            value.as_deref().map(app::parse_config_value),
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
         // An object emptied by :unset deletes the file (backend delete path).
         let body = if root.as_object().map(|o| o.is_empty()).unwrap_or(false) {
             String::new()
@@ -562,8 +598,12 @@ async fn plugin_config_edit(
         if !root.is_object() {
             root = serde_json::json!({});
         }
-        app::edit_json_path(&mut root, &key, value.as_deref().map(app::parse_config_value))
-            .map_err(|e| anyhow::anyhow!(e))?;
+        app::edit_json_path(
+            &mut root,
+            &key,
+            value.as_deref().map(app::parse_config_value),
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
         client.put_plugin_config(&harness, &plugin, &root).await?;
         anyhow::Ok(())
     };
@@ -591,7 +631,10 @@ async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
         Err(e) => {
-            let _ = tx.send(Event::TestRunDone { file, result: fail(format!("{e}")) });
+            let _ = tx.send(Event::TestRunDone {
+                file,
+                result: fail(format!("{e}")),
+            });
             return;
         }
     };
@@ -600,7 +643,10 @@ async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>
             let _ = tx.send(Event::TestRunDone { file, result });
         }
         Err(e) => {
-            let _ = tx.send(Event::TestRunDone { file, result: fail(format!("{e}")) });
+            let _ = tx.send(Event::TestRunDone {
+                file,
+                result: fail(format!("{e}")),
+            });
         }
     }
 }
@@ -637,7 +683,10 @@ async fn execute_workbench_command(
                 let names = if ls.is_empty() {
                     "(none saved)".to_string()
                 } else {
-                    ls.iter().map(|l| l.name.clone()).collect::<Vec<_>>().join(", ")
+                    ls.iter()
+                        .map(|l| l.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 };
                 let _ = tx.send(toast(format!("layouts: {names}")));
             }
@@ -734,17 +783,27 @@ async fn execute_workbench_command(
         // POST /api/tui/plan-item-convert; the server-side emits broadcast the
         // claim + flip the item todo→wip. Refetch the item states right after
         // so the pane reflects the new holder without waiting for the poller.
-        P::PickupPlanItem { harness, plan, item } => {
+        P::PickupPlanItem {
+            harness,
+            plan,
+            item,
+        } => {
             let harness = harness.unwrap_or_else(|| "all".to_string());
             let Some(plan) = plan else {
                 let _ = tx.send(Event::Error("pickup: no plan selected".to_string()));
                 return;
             };
-            match client.plan_item_convert(&owner, &harness, &plan, &item).await {
+            match client
+                .plan_item_convert(&owner, &harness, &plan, &item)
+                .await
+            {
                 Ok(v) => {
                     let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
                     if ok {
-                        let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("converted");
+                        let status = v
+                            .get("status")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("converted");
                         let wi = v
                             .pointer("/workItem/id")
                             .and_then(|s| s.as_str())
@@ -761,7 +820,11 @@ async fn execute_workbench_command(
                                     .and_then(|s| s.as_str())
                                     .map(|holder| format!("held by {holder}"))
                             })
-                            .or_else(|| v.get("error").and_then(|s| s.as_str()).map(|s| s.to_string()))
+                            .or_else(|| {
+                                v.get("error")
+                                    .and_then(|s| s.as_str())
+                                    .map(|s| s.to_string())
+                            })
                             .unwrap_or_else(|| "refused".to_string());
                         let _ = tx.send(Event::Error(format!("pickup {item}: {why}")));
                     }
@@ -777,7 +840,10 @@ async fn execute_workbench_command(
         // Config-tab (D-013) + plugin-settings (D-014) commands are routed to
         // their own Actions in the reducer and never reach the workbench
         // executor — defensive no-op.
-        P::ConfigSet { .. } | P::ConfigUnset { .. } | P::PluginSet { .. } | P::PluginUnset { .. } => {}
+        P::ConfigSet { .. }
+        | P::ConfigUnset { .. }
+        | P::PluginSet { .. }
+        | P::PluginUnset { .. } => {}
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {
@@ -801,13 +867,24 @@ async fn execute_workbench_command(
             }
         },
         // `:share <slug> [remote] [public]` (D-010) — the full share sequence.
-        P::SharePot { slug, remote, public } => {
+        P::SharePot {
+            slug,
+            remote,
+            public,
+        } => {
             share_pot(&client, &slug, remote, public, &tx).await;
         }
         // `:message <text>` (inbox-tiering D-004) — "Message owner": open a
         // work-item-scoped conversation with the selected inbox item's owning
         // agent. The thread is browsable + repliable in the Conversations tab.
-        P::MessageOwner { to, harness, plan_slug, item_ref, title, body } => {
+        P::MessageOwner {
+            to,
+            harness,
+            plan_slug,
+            item_ref,
+            title,
+            body,
+        } => {
             match client
                 .message_agent(
                     to.as_deref(),
@@ -916,7 +993,11 @@ async fn share_pot(
         }
     };
     // 4. Finalize — writes shared.json, boots the swarm, publishes the binding.
-    let privacy = if public { "shared-public" } else { "shared-private" };
+    let privacy = if public {
+        "shared-public"
+    } else {
+        "shared-private"
+    };
     let state = serde_json::json!({
         "topic": topic,
         "github_remote": remote,
@@ -996,7 +1077,11 @@ async fn fetch_cupboard(kind: String, query: String, tx: UnboundedSender<Event>)
         .await
     {
         Ok(listings) => {
-            let _ = tx.send(Event::CupboardListings { kind, query, listings });
+            let _ = tx.send(Event::CupboardListings {
+                kind,
+                query,
+                listings,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("cupboard: {e}")));
@@ -1020,8 +1105,16 @@ async fn fetch_conversations(state: String, kind: String, tx: UnboundedSender<Ev
             return;
         }
     };
-    let st = if state == "all" { None } else { Some(state.as_str()) };
-    let kd = if kind == "all" { None } else { Some(kind.as_str()) };
+    let st = if state == "all" {
+        None
+    } else {
+        Some(state.as_str())
+    };
+    let kd = if kind == "all" {
+        None
+    } else {
+        Some(kind.as_str())
+    };
     match client.conversations_list(st, kd, None).await {
         Ok(list) => {
             let _ = tx.send(Event::Conversations(list));
@@ -1150,7 +1243,10 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
     match result {
         Ok(v) => {
             if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
-                let _ = tx.send(Event::Error(format!("cupboard {}: {e}", listing.listing_kind)));
+                let _ = tx.send(Event::Error(format!(
+                    "cupboard {}: {e}",
+                    listing.listing_kind
+                )));
                 return;
             }
             // Surface the blueprint dep-checker's missing-deps note when present.
@@ -1158,7 +1254,13 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
                 .get("depCheck")
                 .and_then(|d| d.get("ok"))
                 .and_then(|b| b.as_bool())
-                .map(|ok| if ok { String::new() } else { " (missing deps — see desktop)".into() })
+                .map(|ok| {
+                    if ok {
+                        String::new()
+                    } else {
+                        " (missing deps — see desktop)".into()
+                    }
+                })
                 .unwrap_or_default();
             let _ = tx.send(toast(format!("{ok_msg}{dep_note}")));
             if pots_changed {
@@ -1168,7 +1270,10 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
             }
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("cupboard {}: {e}", listing.listing_kind)));
+            let _ = tx.send(Event::Error(format!(
+                "cupboard {}: {e}",
+                listing.listing_kind
+            )));
         }
     }
 }
@@ -1219,7 +1324,10 @@ async fn load_earlier_chat(conversation_id: String, before_seq: i64, tx: Unbound
             return;
         }
     };
-    match client.load_earlier_turns(&conversation_id, before_seq, 200).await {
+    match client
+        .load_earlier_turns(&conversation_id, before_seq, 200)
+        .await
+    {
         Ok(page) => {
             let oldest_seq = page.turns.iter().map(|t| t.seq).min();
             let messages: Vec<models::ChatMessage> =
@@ -1423,16 +1531,22 @@ async fn voice_turn(
     let cap = match tokio::task::spawn_blocking(move || session.finish()).await {
         Ok(Ok(c)) => c,
         Ok(Err(e)) => {
-            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("capture: {e}"))));
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!(
+                "capture: {e}"
+            ))));
             return;
         }
         Err(e) => {
-            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("capture join: {e}"))));
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!(
+                "capture join: {e}"
+            ))));
             return;
         }
     };
     if cap.seconds < 0.3 {
-        let _ = tx.send(Event::Voice(event::VoiceMsg::Error("recording too short".into())));
+        let _ = tx.send(Event::Voice(event::VoiceMsg::Error(
+            "recording too short".into(),
+        )));
         return;
     }
 
@@ -1453,7 +1567,9 @@ async fn voice_turn(
         }
     };
     if text.trim().is_empty() {
-        let _ = tx.send(Event::Voice(event::VoiceMsg::Error("didn't catch that".into())));
+        let _ = tx.send(Event::Voice(event::VoiceMsg::Error(
+            "didn't catch that".into(),
+        )));
         return;
     }
 
@@ -1534,7 +1650,13 @@ fn spawn_sync(
 ) {
     // Internal signal channel: invalidation_loop → refetch_loop ("something changed").
     let (sig_tx, sig_rx) = mpsc::unbounded_channel::<()>();
-    tokio::spawn(refetch_loop(tx.clone(), active_harness, active_doc, active_plan, sig_rx));
+    tokio::spawn(refetch_loop(
+        tx.clone(),
+        active_harness,
+        active_doc,
+        active_plan,
+        sig_rx,
+    ));
     // Coord-inbox push (P-002 / D-003b): a 3rd task on its own SSE stream.
     tokio::spawn(coord_inbox_loop(tx.clone()));
     // Live worker-activity overlay (pui-fleet-status-view-2026-06-04, P1): a 4th
@@ -1815,7 +1937,10 @@ fn coord_msg_to_notif(m: &models::CoordMsg) -> models::Notif {
 /// into a `Notif`. Returns None if the payload is absent/unusable.
 fn parse_attention_notify(data: Option<&serde_json::Value>) -> Option<models::Notif> {
     let d = data?;
-    let title = d.get("title").and_then(|v| v.as_str()).unwrap_or("(attention)");
+    let title = d
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(attention)");
     let body = d.get("body").and_then(|v| v.as_str()).unwrap_or("");
     let level = d
         .get("importance")
@@ -2029,10 +2154,16 @@ async fn refetch_all(
     // its empty state, so errors are quiet here too.
     match client.memory_list(Some(&slug)).await {
         Ok(p) => {
-            let _ = tx.send(Event::Memories { available: p.ok, results: p.results });
+            let _ = tx.send(Event::Memories {
+                available: p.ok,
+                results: p.results,
+            });
         }
         Err(_) => {
-            let _ = tx.send(Event::Memories { available: false, results: Vec::new() });
+            let _ = tx.send(Event::Memories {
+                available: false,
+                results: Vec::new(),
+            });
         }
     }
 }

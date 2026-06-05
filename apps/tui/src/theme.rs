@@ -11,7 +11,6 @@ pub struct Theme;
 impl Theme {
     const INK: Color = Color::Rgb(232, 238, 232);
     const MUTED: Color = Color::Rgb(134, 150, 146);
-    const SUBTLE: Color = Color::Rgb(88, 106, 102);
     const PANEL: Color = Color::Rgb(9, 18, 20);
     const PANEL_ACTIVE: Color = Color::Rgb(15, 31, 34);
     const BORDER: Color = Color::Rgb(43, 67, 67);
@@ -44,7 +43,9 @@ impl Theme {
     }
 
     pub fn title() -> Style {
-        Style::default().fg(Self::ACCENT_HOT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Self::ACCENT_HOT)
+            .add_modifier(Modifier::BOLD)
     }
 
     pub fn title_active() -> Style {
@@ -52,10 +53,6 @@ impl Theme {
             .fg(Color::Black)
             .bg(Self::ACCENT_HOT)
             .add_modifier(Modifier::BOLD)
-    }
-
-    pub fn tab() -> Style {
-        Style::default().fg(Self::MUTED).bg(Color::Rgb(6, 12, 14))
     }
 
     pub fn status_bar() -> Style {
@@ -76,7 +73,9 @@ impl Theme {
         Style::default().fg(Self::WARN).add_modifier(Modifier::BOLD)
     }
     pub fn danger() -> Style {
-        Style::default().fg(Self::DANGER).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Self::DANGER)
+            .add_modifier(Modifier::BOLD)
     }
     pub fn success() -> Style {
         Style::default().fg(Self::SAGE).add_modifier(Modifier::BOLD)
@@ -84,14 +83,9 @@ impl Theme {
     pub fn info() -> Style {
         Style::default().fg(Self::SKY).add_modifier(Modifier::BOLD)
     }
-    pub fn accent() -> Style {
-        Style::default().fg(Self::ACCENT).add_modifier(Modifier::BOLD)
-    }
     /// Notification flash in the status bar (accent, not an error).
     pub fn notify() -> Style {
-        Style::default()
-            .fg(Self::SAGE)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Self::SAGE).add_modifier(Modifier::BOLD)
     }
     /// Column-header row above a list (D-005, pui-completion-and-polish).
     pub fn header() -> Style {
@@ -99,10 +93,6 @@ impl Theme {
             .fg(Self::ACCENT)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     }
-    pub fn quiet_header() -> Style {
-        Style::default().fg(Self::SUBTLE).add_modifier(Modifier::BOLD)
-    }
-
     // ---- Semantic glyph styling (Brief 27 / tui-glyph-vocabulary) ----
     // The glyph SHAPE comes from `crate::glyph`; the COLOUR is paired here.
     // Call sites render `Theme::*_marker(token)` to get a styled `Span` in
@@ -143,7 +133,9 @@ impl Theme {
             "escalation" => Self::warn(),
             "blocker" => Self::danger(),
             "completion" => Self::success(),
-            "decision" => Style::default().fg(Self::HUMAN).add_modifier(Modifier::BOLD),
+            "decision" => Style::default()
+                .fg(Self::HUMAN)
+                .add_modifier(Modifier::BOLD),
             _ => Self::dim(),
         }
     }

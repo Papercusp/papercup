@@ -2,7 +2,9 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
-use crate::models::{contribution_count, contribution_names, tier_glyph, tier_label, Notif, INBOX_TIERS};
+use crate::models::{
+    contribution_count, contribution_names, tier_glyph, tier_label, Notif, INBOX_TIERS,
+};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -64,18 +66,16 @@ pub fn draw(f: &mut Frame, app: &App) {
     // D-009: the collapsible plans-filter rail, carved off the LEFT of the body
     // on the two tabs it narrows (Inbox + Brew). Suppressed on narrow bodies so
     // the lists stay usable; the filter itself still applies when hidden.
-    let (rail, body) = if app.plan_filter_open
-        && matches!(app.tab, Tab::Inbox | Tab::Fleet)
-        && body.width >= 70
-    {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(32), Constraint::Min(38)])
-            .split(body);
-        (Some(cols[0]), cols[1])
-    } else {
-        (None, body)
-    };
+    let (rail, body) =
+        if app.plan_filter_open && matches!(app.tab, Tab::Inbox | Tab::Fleet) && body.width >= 70 {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(32), Constraint::Min(38)])
+                .split(body);
+            (Some(cols[0]), cols[1])
+        } else {
+            (None, body)
+        };
 
     match app.tab {
         Tab::Overview => draw_overview(f, app, body),
@@ -145,8 +145,16 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             // tier that demands the user. Falls back to the unseen-notification
             // count when nothing is in the Decisions tier.
             if *t == Tab::Inbox {
-                let decisions = app.visible_inbox().iter().filter(|it| it.tier_rank() == 0).count();
-                let badge = if decisions > 0 { decisions } else { app.unseen_notifs };
+                let decisions = app
+                    .visible_inbox()
+                    .iter()
+                    .filter(|it| it.tier_rank() == 0)
+                    .count();
+                let badge = if decisions > 0 {
+                    decisions
+                } else {
+                    app.unseen_notifs
+                };
                 if badge > 0 {
                     Line::from(format!(" {}:{} ({}) ", k, t.title(), badge))
                 } else {
@@ -250,7 +258,10 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
             // converts an item to a claimed work_item — advertised here so the
             // claim action is discoverable from the pane it acts on.
             (
-                format!(" Items ({}) · liveness: {mode} · :pickup <item> ", s.items.len()),
+                format!(
+                    " Items ({}) · liveness: {mode} · :pickup <item> ",
+                    s.items.len()
+                ),
                 rows,
             )
         }
@@ -259,8 +270,13 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         area,
-        Block::default().borders(Borders::ALL).title(Line::from(title)),
-        &format!("{:<2}{:<8}{:<10}{:<15}{:<7}{}", "", "item", "state", "who", "live", "intent"),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
+        &format!(
+            "{:<2}{:<8}{:<10}{:<15}{:<7}{}",
+            "", "item", "state", "who", "live", "intent"
+        ),
     );
     f.render_widget(List::new(items), body_area);
 }
@@ -304,8 +320,7 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
     // "Who's online" — only non-stale presence (the roster carries the whole
     // fleet incl. long-dead heartbeats; those would drown the live ones). The
     // title still shows online/total so the offline tail is visible at a glance.
-    let online: Vec<&crate::models::RosterEntry> =
-        app.roster.iter().filter(|r| !r.stale).collect();
+    let online: Vec<&crate::models::RosterEntry> = app.roster.iter().filter(|r| !r.stale).collect();
     let items: Vec<ListItem> = online
         .iter()
         .map(|r| {
@@ -333,11 +348,9 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
     } else {
         items
     };
-    let list = List::new(body).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(format!(" Presence {}/{} ", online.len(), app.roster.len()))),
-    );
+    let list = List::new(body).block(Block::default().borders(Borders::ALL).title(Line::from(
+        format!(" Presence {}/{} ", online.len(), app.roster.len()),
+    )));
     f.render_widget(list, area);
 }
 
@@ -351,7 +364,11 @@ fn draw_plan_filter(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = plans
         .iter()
         .map(|p| {
-            let mark = if app.plan_filter.contains(&p.slug) { "[x]" } else { "[ ]" };
+            let mark = if app.plan_filter.contains(&p.slug) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
             ListItem::new(Line::from(format!("{mark} {}", trunc(&p.slug, 25))))
         })
         .collect();
@@ -362,10 +379,12 @@ fn draw_plan_filter(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         area,
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " Filter: plans ({} on) ",
-            app.plan_filter.len()
-        ))),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(
+                " Filter: plans ({} on) ",
+                app.plan_filter.len()
+            ))),
         "  ␣ toggle · c clear · F close",
     );
     if items.is_empty() {
@@ -407,7 +426,12 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             continue;
         }
         list_items.push(ListItem::new(Line::from(Span::styled(
-            format!("{} {} ({})", tier_glyph(tier), tier_label(tier), tier_items.len()),
+            format!(
+                "{} {} ({})",
+                tier_glyph(tier),
+                tier_label(tier),
+                tier_items.len()
+            ),
             Theme::header(),
         ))));
         for it in tier_items {
@@ -442,7 +466,9 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
         "  ◆ Decisions · ✓ Handled · ! Alerts · · Activity",
     );
     let list = List::new(list_items)
@@ -508,9 +534,20 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
             let tags = if c.topics.is_empty() {
                 String::new()
             } else {
-                format!("  {}", c.topics.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "))
+                format!(
+                    "  {}",
+                    c.topics
+                        .iter()
+                        .map(|t| format!("#{t}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
             };
-            let promoted = if c.promoted_issue_id.is_some() { " →issue" } else { "" };
+            let promoted = if c.promoted_issue_id.is_some() {
+                " →issue"
+            } else {
+                ""
+            };
             ListItem::new(Line::from(format!(
                 "{} {:<9} {}{}{}",
                 k,
@@ -544,7 +581,9 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
         "   k state      title / topics",
     );
     let list = List::new(items)
@@ -561,9 +600,9 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
     );
     let preview = if let (true, Some(d)) = (detail_matches, app.conversation_detail.as_ref()) {
         let c = d.conversation.as_ref();
-        let title = c.and_then(|c| c.title.clone()).unwrap_or_else(|| {
-            selected.map(|s| s.id.clone()).unwrap_or_default()
-        });
+        let title = c
+            .and_then(|c| c.title.clone())
+            .unwrap_or_else(|| selected.map(|s| s.id.clone()).unwrap_or_default());
         let kind = c.map(|c| c.kind.as_str()).unwrap_or("");
         let st = c.map(|c| c.state.as_str()).unwrap_or("");
         let asker = c.map(|c| c.asker_id.as_str()).unwrap_or("");
@@ -572,12 +611,20 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
         let topics = if d.topics.is_empty() {
             "—".to_string()
         } else {
-            d.topics.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")
+            d.topics
+                .iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         };
         let mut s = format!(
             "{title}\n\n{kind} · {st} · {} follower(s){}\nasked by: {asker}\ntopics:   {topics}\n",
             d.subscriber_count,
-            if scope == "harness" && !harness.is_empty() { format!(" · {harness}") } else { String::new() },
+            if scope == "harness" && !harness.is_empty() {
+                format!(" · {harness}")
+            } else {
+                String::new()
+            },
         );
         if let Some(body) = c.map(|c| c.body.as_str()).filter(|b| !b.is_empty()) {
             s.push_str(&format!("\n{body}\n"));
@@ -586,7 +633,9 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
             s.push_str(&format!("\n✓ accepted: {ans}\n"));
         }
         if let Some(issue) = c.and_then(|c| c.promoted_issue_id.clone()) {
-            s.push_str(&format!("\n→ linked work-item: {issue} (promoted; discussion continues there)\n"));
+            s.push_str(&format!(
+                "\n→ linked work-item: {issue} (promoted; discussion continues there)\n"
+            ));
         } else if c.map(|c| c.state.as_str()) != Some("closed") {
             s.push_str("\n[i] promote to an issue\n");
         }
@@ -605,7 +654,11 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
         let topics = if sel.topics.is_empty() {
             "—".to_string()
         } else {
-            sel.topics.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")
+            sel.topics
+                .iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" ")
         };
         format!(
             "{title}\n\n{} · {} · asked by {}\ntopics: {topics}\n\n[Enter] load the thread + accepted answer",
@@ -614,7 +667,8 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
     } else if app.conversations_loading {
         "Loading conversations…".to_string()
     } else {
-        "No conversations under this filter.\n\ns: state · t: kind · T: topic · r: refresh".to_string()
+        "No conversations under this filter.\n\ns: state · t: kind · T: topic · r: refresh"
+            .to_string()
     };
     let para = Paragraph::new(preview)
         .wrap(Wrap { trim: false })
@@ -655,14 +709,16 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     let fbody = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {}{} ({}/{}) [/] · features ({}) ",
-            if feat_focused { "▸ " } else { "" },
-            app.harness,
-            app.harness_sel + 1,
-            app.harnesses.len().max(1),
-            app.features.len()
-        ))),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(
+                " {}{} ({}/{}) [/] · features ({}) ",
+                if feat_focused { "▸ " } else { "" },
+                app.harness,
+                app.harness_sel + 1,
+                app.harnesses.len().max(1),
+                app.features.len()
+            ))),
         &format!("  {:<11}{:<9}{}", "id", "status", "title"),
     );
     let flist = List::new(fitems)
@@ -693,7 +749,11 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
                     trunc(&is.severity, 8),
                     trunc(&is.status, 11),
                     trunc(&is.title, 22),
-                    if fix.is_empty() { String::new() } else { format!("→{fix}") },
+                    if fix.is_empty() {
+                        String::new()
+                    } else {
+                        format!("→{fix}")
+                    },
                 )))
             })
             .collect();
@@ -766,11 +826,15 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.doc_sel));
     }
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} · docs ({}) ",
-            app.harness,
-            app.docs_files.len()
-        ))))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(format!(
+                    " {} · docs ({}) ",
+                    app.harness,
+                    app.docs_files.len()
+                ))),
+        )
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
     f.render_stateful_widget(list, cols[0], &mut state);
@@ -789,7 +853,11 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     let para = Paragraph::new(body)
         .wrap(Wrap { trim: false })
         .scroll((app.doc_scroll, 0))
-        .block(Block::default().borders(Borders::ALL).title(Line::from(reader_title)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(reader_title)),
+        );
     f.render_widget(para, cols[1]);
 }
 
@@ -836,12 +904,14 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
     let dbody = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {}{} · domains ({}) ",
-            if dom_focused { "▸ " } else { "" },
-            app.harness,
-            app.testing.len()
-        ))),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(
+                " {}{} · domains ({}) ",
+                if dom_focused { "▸ " } else { "" },
+                app.harness,
+                app.testing.len()
+            ))),
         &format!("  {:<11}{:<21}{}", "tier", "domain", "description"),
     );
     let list = List::new(items)
@@ -902,12 +972,20 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
             body
         })
         .wrap(Wrap { trim: false })
-        .style(if run.running { Theme::dim() } else { Style::default() })
-        .block(Block::default().borders(Borders::ALL).title(Line::from(vec![
-            Span::raw(format!(" ▶ {} · ", trunc(&run.file, 48))),
-            Span::styled(status_label, style),
-            Span::raw(" "),
-        ])));
+        .style(if run.running {
+            Theme::dim()
+        } else {
+            Style::default()
+        })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(vec![
+                    Span::raw(format!(" ▶ {} · ", trunc(&run.file, 48))),
+                    Span::styled(status_label, style),
+                    Span::raw(" "),
+                ])),
+        );
         f.render_widget(para, rows[1]);
     }
 }
@@ -934,7 +1012,11 @@ fn draw_plugins_list(f: &mut Frame, app: &App, area: Rect) {
         .plugins
         .iter()
         .map(|p| {
-            let gear = if p.config_schema.is_some() { "⚙" } else { " " };
+            let gear = if p.config_schema.is_some() {
+                "⚙"
+            } else {
+                " "
+            };
             ListItem::new(Line::from(format!(
                 "{:<24} {:>6} FE:{:<2} BE:{:<2} {}",
                 trunc(&p.name, 24),
@@ -952,14 +1034,21 @@ fn draw_plugins_list(f: &mut Frame, app: &App, area: Rect) {
     let left_body = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " plugins ({}) — Tab→panes ",
-            app.plugins.len()
-        ))),
-        &format!("  {:<24} {:>6} {:<6}{:<6}{}", "name", "ver", "front", "back", "cfg"),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(
+                " plugins ({}) — Tab→panes ",
+                app.plugins.len()
+            ))),
+        &format!(
+            "  {:<24} {:>6} {:<6}{:<6}{}",
+            "name", "ver", "front", "back", "cfg"
+        ),
     );
     f.render_stateful_widget(
-        List::new(items).highlight_style(Theme::selected()).highlight_symbol("> "),
+        List::new(items)
+            .highlight_style(Theme::selected())
+            .highlight_symbol("> "),
         left_body,
         &mut state,
     );
@@ -1040,7 +1129,9 @@ fn draw_plugins_list(f: &mut Frame, app: &App, area: Rect) {
         }
     };
     f.render_widget(
-        Paragraph::new(detail).wrap(Wrap { trim: false }).block(block),
+        Paragraph::new(detail)
+            .wrap(Wrap { trim: false })
+            .block(block),
         cols[1],
     );
 }
@@ -1085,11 +1176,13 @@ fn draw_plugin_panes(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         area,
-        Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} · plugin panes ({}) — Enter to launch · Tab→list ",
-            app.harness,
-            app.panes.len()
-        ))),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(
+                " {} · plugin panes ({}) — Enter to launch · Tab→list ",
+                app.harness,
+                app.panes.len()
+            ))),
         &format!("  {:<3}{:<23}{:<19}{}", "", "pane", "plugin", "command"),
     );
     let list = List::new(items)
@@ -1126,10 +1219,14 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         app.flags_source.as_str()
     };
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " feature flags ({}) · source: {source} — read-only ",
-            app.flags.len()
-        ))))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(format!(
+                    " feature flags ({}) · source: {source} — read-only ",
+                    app.flags.len()
+                ))),
+        )
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
     f.render_stateful_widget(list, rows[1], &mut state);
@@ -1149,7 +1246,11 @@ fn draw_operator_config(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 a.effective_backend.as_str()
             };
-            lines.push(Line::from(format!("backend:  {}  ·  {}", backend, trunc(&a.config.cmd, 50))));
+            lines.push(Line::from(format!(
+                "backend:  {}  ·  {}",
+                backend,
+                trunc(&a.config.cmd, 50)
+            )));
             if !a.config.models.is_empty() {
                 let models = a
                     .config
@@ -1182,9 +1283,11 @@ fn draw_operator_config(f: &mut Frame, app: &App, area: Rect) {
             .join("  ");
         lines.push(Line::from(format!("providers: {}", trunc(&provs, 70))));
     }
-    let para = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(Block::default().borders(Borders::ALL).title(" operator config (read-only) "));
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" operator config (read-only) "),
+    );
     f.render_widget(para, area);
 }
 
@@ -1196,7 +1299,10 @@ fn draw_operator_config(f: &mut Frame, app: &App, area: Rect) {
 fn draw_config(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Line::from(format!(" {} · .claude/settings.json (effective) ", app.harness)));
+        .title(Line::from(format!(
+            " {} · .claude/settings.json (effective) ",
+            app.harness
+        )));
     let mut lines: Vec<Line> = Vec::new();
     if let Some(err) = &app.config.parse_error {
         lines.push(Line::from(Span::styled(
@@ -1210,7 +1316,10 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            format!("file sets: {} (rest = defaults)", app.config.file_keys.join(", ")),
+            format!(
+                "file sets: {} (rest = defaults)",
+                app.config.file_keys.join(", ")
+            ),
             Theme::dim(),
         )));
     }
@@ -1227,7 +1336,9 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
         ":set <key.path> <value> · :unset <key.path> — edits write .claude/settings.json",
         Theme::dim(),
     )));
-    let para = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(block);
     f.render_widget(para, area);
 }
 
@@ -1266,7 +1377,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(Span::styled(header, who_style)));
         let body = if m.streaming {
             let p = crate::chat_tags::live_preview(&m.content);
-            if p.is_empty() { "…".to_string() } else { p }
+            if p.is_empty() {
+                "…".to_string()
+            } else {
+                p
+            }
         } else {
             m.content.clone()
         };
@@ -1274,14 +1389,20 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(wl));
         }
         for tc in &m.tools {
-            lines.push(Line::from(Span::styled(format!("  ⚙ {}", tc.name), Theme::dim())));
+            lines.push(Line::from(Span::styled(
+                format!("  ⚙ {}", tc.name),
+                Theme::dim(),
+            )));
         }
         // Structured <report> payload — a two-tiered plan→item list below the say
         // (structured-report-protocol-2026-06-05). Status glyphs come from the
         // shared Theme::status_marker so they match the rest of the PUI vocabulary.
         if let Some(rep) = &m.report {
             if let Some(t) = &rep.title {
-                lines.push(Line::from(Span::styled(format!("  ▾ {t}"), Theme::header())));
+                lines.push(Line::from(Span::styled(
+                    format!("  ▾ {t}"),
+                    Theme::header(),
+                )));
             }
             for p in &rep.plans {
                 let mut head = vec![
@@ -1296,11 +1417,18 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(head));
                 if let Some(sum) = &p.summary {
                     for wl in wrap_text(sum, inner_w.saturating_sub(6).max(8)) {
-                        lines.push(Line::from(Span::styled(format!("      {wl}"), Theme::dim())));
+                        lines.push(Line::from(Span::styled(
+                            format!("      {wl}"),
+                            Theme::dim(),
+                        )));
                     }
                 }
                 for it in &p.items {
-                    let id_prefix = it.id.as_deref().map(|i| format!("{i} ")).unwrap_or_default();
+                    let id_prefix = it
+                        .id
+                        .as_deref()
+                        .map(|i| format!("{i} "))
+                        .unwrap_or_default();
                     let wrapped = wrap_text(&it.text, inner_w.saturating_sub(8).max(8));
                     for (li, wl) in wrapped.iter().enumerate() {
                         let mut row = vec![Span::raw("    ")];
@@ -1352,11 +1480,17 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         " {}Operator{}{} ",
         dock_focus,
         earlier,
-        if app.chat_streaming { " · …thinking" } else { "" },
+        if app.chat_streaming {
+            " · …thinking"
+        } else {
+            ""
+        },
     );
-    let para = Paragraph::new(lines)
-        .scroll((top, 0))
-        .block(Block::default().borders(Borders::ALL).title(Line::from(title)));
+    let para = Paragraph::new(lines).scroll((top, 0)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
+    );
     f.render_widget(para, transcript_area);
 
     let (ctitle, ctext, cstyle) = if app.voice_phase.is_active() {
@@ -1366,7 +1500,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         use crate::app::VoicePhase;
         let badge = app.voice_phase.badge();
         let body = if app.voice_phase == VoicePhase::Recording {
-            format!("{badge}  {}   (v / release to send · Esc cancel)", mic_meter(app.voice_level))
+            format!(
+                "{badge}  {}   (v / release to send · Esc cancel)",
+                mic_meter(app.voice_level)
+            )
         } else {
             badge.to_string()
         };
@@ -1382,10 +1519,17 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Some(e) => format!("press i to talk · v to speak — last voice: {e}"),
             None => "press i to talk · v to speak to the operator".to_string(),
         };
-        (" Composer — i type · v speak · j/k scroll ", hint, Theme::dim())
+        (
+            " Composer — i type · v speak · j/k scroll ",
+            hint,
+            Theme::dim(),
+        )
     };
-    let cpara = Paragraph::new(Line::from(Span::styled(ctext, cstyle)))
-        .block(Block::default().borders(Borders::ALL).title(Line::from(ctitle)));
+    let cpara = Paragraph::new(Line::from(Span::styled(ctext, cstyle))).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(ctitle)),
+    );
     f.render_widget(cpara, composer_area);
 }
 
@@ -1463,32 +1607,75 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 /// The Overview tile chrome: bordered block, title styled selected/dim so the
 /// j/k tile cursor is visible (the focus_hl idiom the column panes use).
 fn overview_tile_block(title: String, selected: bool) -> Block<'static> {
-    let style = if selected { Theme::selected() } else { Theme::header() };
+    let style = if selected {
+        Theme::selected()
+    } else {
+        Theme::header()
+    };
     Block::default()
         .borders(Borders::ALL)
         .title(Line::from(Span::styled(title, style)))
 }
 
-/// Top bar: the fleet rate/usage/max read-model slots (STUB values until
-/// Brief 20's rate-limit-layer-v2 exposes the route — the slots are final so
-/// wiring it is a fetch + three substitutions) + a live alerts count off the
-/// inbox alert tier.
+/// Top bar: the fleet rate/usage/max read-model (rate-limit-layer-v2 P-013,
+/// GET /api/operator/rate-limit-config — live once the poller has fetched it;
+/// dashes before that / on a pre-route host) + a live alerts count off the
+/// inbox alert tier. `+`/`-` edit the hard cap (P-005).
 fn draw_overview_topbar(f: &mut Frame, app: &App, area: Rect) {
     let alerts = app
         .visible_inbox()
         .iter()
         .filter(|i| i.tier_rank() == 2)
         .count();
-    let mut spans: Vec<Span> = vec![
-        Span::styled(" usage ", Theme::dim()),
-        Span::raw("—%"),
-        Span::styled("  ·  spend ", Theme::dim()),
-        Span::raw("$—"),
-        Span::styled("  ·  max agents ", Theme::dim()),
-        Span::raw("—"),
-        Span::styled("  (pending rate-limit-layer-v2)", Theme::dim()),
-        Span::styled("  ·  ", Theme::dim()),
-    ];
+    let mut spans: Vec<Span> = vec![Span::styled(" usage ", Theme::dim())];
+    match &app.fleet_rate {
+        Some(s) => {
+            // Usage%: the worst known bucket; a dash when no provider exposes
+            // a ceiling (never fabricated — rate-limit v2 D-002).
+            match s.headline_usage_pct() {
+                Some(p) => spans.push(Span::raw(format!("{p:.0}%"))),
+                None => spans.push(Span::styled("—%", Theme::dim())),
+            }
+            spans.push(Span::styled("  ·  spend ", Theme::dim()));
+            let spend = s.usage.spend_usd;
+            spans.push(Span::raw(if spend <= 0.0 {
+                "$0".to_string()
+            } else if spend < 0.01 {
+                format!("${spend:.4}")
+            } else {
+                format!("${spend:.2}")
+            }));
+            spans.push(Span::styled("  ·  agents ", Theme::dim()));
+            // in-flight / AIMD-effective / editable max (eff shown only when
+            // the adaptive layer sits under the cap) — mirrors the desktop.
+            let fleet = &s.fleet;
+            if fleet.effective < fleet.cap {
+                spans.push(Span::raw(format!(
+                    "{} / eff {} / {}",
+                    fleet.in_flight, fleet.effective, fleet.cap
+                )));
+            } else {
+                spans.push(Span::raw(format!("{} / {}", fleet.in_flight, fleet.cap)));
+            }
+            spans.push(Span::styled("  +/- max", Theme::dim()));
+            let paused = s.paused_count();
+            if paused > 0 {
+                spans.push(Span::styled(
+                    format!("  ·  {} {paused} rate-paused", crate::glyph::severity::WARN),
+                    Theme::warn(),
+                ));
+            }
+        }
+        None => {
+            spans.push(Span::styled("—%", Theme::dim()));
+            spans.push(Span::styled("  ·  spend ", Theme::dim()));
+            spans.push(Span::styled("$—", Theme::dim()));
+            spans.push(Span::styled("  ·  agents ", Theme::dim()));
+            spans.push(Span::styled("—", Theme::dim()));
+            spans.push(Span::styled("  (connecting…)", Theme::dim()));
+        }
+    }
+    spans.push(Span::styled("  ·  ", Theme::dim()));
     if alerts > 0 {
         spans.push(Span::styled(
             format!("{} {} alerts", crate::glyph::severity::WARN, alerts),
@@ -1520,7 +1707,11 @@ fn draw_overview_plans_tile(f: &mut Frame, app: &App, area: Rect, selected: bool
             let done = c.done;
             let total = c.todo + c.wip + c.blocked + c.needs_human + c.done;
             let bar = progress_bar(done, total, 10);
-            let title = if p.title.is_empty() { &p.slug } else { &p.title };
+            let title = if p.title.is_empty() {
+                &p.slug
+            } else {
+                &p.title
+            };
             ListItem::new(Line::from(vec![
                 Theme::status_marker(&p.status),
                 Span::raw(format!(" {:<28} ", trunc(title, 28))),
@@ -1559,10 +1750,7 @@ fn draw_overview_needs_you_tile(f: &mut Frame, app: &App, area: Rect, selected: 
         })
         .collect();
     let n = decisions.len();
-    let list = List::new(items).block(overview_tile_block(
-        format!(" Needs you ({n}) "),
-        selected,
-    ));
+    let list = List::new(items).block(overview_tile_block(format!(" Needs you ({n}) "), selected));
     f.render_widget(list, area);
 }
 
@@ -1580,7 +1768,11 @@ fn draw_overview_agents_tile(f: &mut Frame, app: &App, area: Rect, selected: boo
         .take(rows_avail.max(1))
         .map(|r| {
             let what = r.intent.clone().unwrap_or_default();
-            let who = if r.label.is_empty() { &r.owner_id } else { &r.label };
+            let who = if r.label.is_empty() {
+                &r.owner_id
+            } else {
+                &r.label
+            };
             ListItem::new(Line::from(vec![
                 Theme::liveness_marker(r.stale, &r.liveness),
                 Span::raw(format!(" {:<14} ", trunc(who, 14))),
@@ -1671,7 +1863,11 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
 
     let entries = app.visible_memories();
     let title = match &app.memory_hits {
-        Some((q, hits)) => format!(" Memory · \"{}\" ({}) · Esc: back ", trunc(q, 24), hits.len()),
+        Some((q, hits)) => format!(
+            " Memory · \"{}\" ({}) · Esc: back ",
+            trunc(q, 24),
+            hits.len()
+        ),
         None => format!(" Memory ({}) · /: search ", entries.len()),
     };
     let items: Vec<ListItem> = entries
@@ -1703,7 +1899,9 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
         &format!("  {:<12}{}", "kind", "fact"),
     );
     let list = List::new(body)
@@ -1719,8 +1917,14 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
                 .as_ref()
                 .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
                 .unwrap_or_default();
-            let score = m.score.map(|s| format!("\nscore: {s:.3}")).unwrap_or_default();
-            format!("{}\n\nid: {}{}\n\nmetadata:\n{}", m.memory, m.id, score, meta)
+            let score = m
+                .score
+                .map(|s| format!("\nscore: {s:.3}"))
+                .unwrap_or_default();
+            format!(
+                "{}\n\nid: {}{}\n\nmetadata:\n{}",
+                m.memory, m.id, score, meta
+            )
         }
         None => "No memory selected.".to_string(),
     };
@@ -1811,7 +2015,9 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
     let body_area = block_with_header(
         f,
         cols[0],
-        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(title)),
         &format!("  {:<11}{:<29}{}", "kind", "name", "description"),
     );
     let list = List::new(body)
@@ -1820,7 +2026,9 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, body_area, &mut state);
 
     // Detail (right): the selected listing + its per-kind action.
-    let sel = app.cupboard.get(app.cupboard_sel.min(app.cupboard.len().saturating_sub(1)));
+    let sel = app
+        .cupboard
+        .get(app.cupboard_sel.min(app.cupboard.len().saturating_sub(1)));
     let (detail, action_label) = match sel {
         Some(l) => {
             let action = match l.listing_kind.as_str() {
@@ -1885,7 +2093,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
         // The POTS scope indicator (D-003) leads the status line.
-        None => (format!("{} · {}", app.scope_label(), app.status), Theme::dim()),
+        None => (
+            format!("{} · {}", app.scope_label(), app.status),
+            Theme::dim(),
+        ),
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
     // The right edge carries one of two right-aligned indicators (each in its
@@ -1978,10 +2189,12 @@ fn draw_notifs(f: &mut Frame, app: &App) {
     f.render_widget(Clear, area);
     f.render_widget(
         List::new(items).block(
-            Block::default().borders(Borders::ALL).title(Line::from(format!(
-                " Notifications ({}) · any key to close ",
-                app.notifs.len()
-            ))),
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(format!(
+                    " Notifications ({}) · any key to close ",
+                    app.notifs.len()
+                ))),
         ),
         area,
     );
@@ -2098,7 +2311,10 @@ pub(crate) fn block_with_header(f: &mut Frame, area: Rect, block: Block, header:
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(header.to_string(), Theme::header()))),
+        Paragraph::new(Line::from(Span::styled(
+            header.to_string(),
+            Theme::header(),
+        ))),
         rows[0],
     );
     rows[1]
@@ -2244,7 +2460,12 @@ mod tests {
         let mut app = App::new();
         assert_eq!(app.tab, Tab::Overview); // the default landing surface (D-001)
         let mut p = plan("overview-dashboard", "active");
-        p.item_counts = ItemCounts { todo: 1, wip: 1, done: 2, ..Default::default() };
+        p.item_counts = ItemCounts {
+            todo: 1,
+            wip: 1,
+            done: 2,
+            ..Default::default()
+        };
         app.set_plans(vec![p, plan("shipped-one", "shipped")]);
         app.set_inbox(vec![
             overview_attention("d1", "decision"),
@@ -2266,27 +2487,41 @@ mod tests {
         });
 
         let text = render(&app, 120, 32);
-        // Top bar: the stub rate slots (pending rate-limit-layer-v2, D-004) +
-        // the LIVE alert-tier count.
+        // Top bar: no fleet_rate seeded here → the connecting slots render
+        // (the LIVE branch is covered by overview_topbar_renders_live_fleet_rate)
+        // + the LIVE alert-tier count.
         assert!(text.contains("usage"), "topbar usage slot missing");
-        assert!(text.contains("max agents"), "topbar max slot missing");
+        assert!(text.contains("agents"), "topbar agents slot missing");
+        assert!(text.contains("connecting"), "pre-fetch topbar state missing");
         assert!(text.contains("1 alerts"), "alert count missing");
         // Plans tile: shipped plans excluded; progress off item_counts (2 done
         // of 4 active — dropped/unknown excluded from the denominator).
-        assert!(text.contains("Plans (1)"), "plans tile header wrong: {text:?}");
+        assert!(
+            text.contains("Plans (1)"),
+            "plans tile header wrong: {text:?}"
+        );
         assert!(text.contains("Title overview-dashboard"));
         assert!(text.contains("2/4"), "plan progress fraction missing");
         // Needs-you tile: ONLY the decision tier (alert/activity stay out).
-        assert!(text.contains("Needs you (1)"), "needs-you should count decisions only");
+        assert!(
+            text.contains("Needs you (1)"),
+            "needs-you should count decisions only"
+        );
         assert!(text.contains("decide d1"));
-        assert!(!text.contains("decide ac1"), "activity-tier item leaked into needs-you");
+        assert!(
+            !text.contains("decide ac1"),
+            "activity-tier item leaked into needs-you"
+        );
         // Agents tile: live roster + what each is doing.
         assert!(text.contains("Agents (1 live)"));
         assert!(text.contains("building the overview"));
         // Activity tile: server-enriched summary rows.
         assert!(text.contains("edited ui.rs"));
         // Operator strip at the bottom (Brief 24's render-only dock, D-008).
-        assert!(text.contains("press i to talk to the operator"), "operator strip missing");
+        assert!(
+            text.contains("press i to talk to the operator"),
+            "operator strip missing"
+        );
     }
 
     #[test]
@@ -2304,6 +2539,36 @@ mod tests {
         let short = render(&app, 120, 18);
         assert!(short.contains("Plans"));
         assert!(!short.contains("press i to talk to the operator"));
+    }
+
+    #[test]
+    fn overview_topbar_renders_live_fleet_rate() {
+        use crate::models::{FleetRateFleet, FleetRateStatus, FleetRateUsageBucket};
+        let mut app = App::new();
+        // Before the read-model lands: dashes + the connecting hint.
+        let connecting = render(&app, 120, 30);
+        assert!(connecting.contains("connecting"));
+        // Live: usage% (worst known bucket) + spend + in/eff/max + edit hint.
+        let mut s = FleetRateStatus::default();
+        s.config.max_simultaneous_agents = 6;
+        s.fleet = FleetRateFleet {
+            cap: 6,
+            in_flight: 3,
+            effective: 4,
+            floor: 1,
+        };
+        s.usage.spend_usd = 1.23;
+        s.usage.buckets.push(FleetRateUsageBucket {
+            key: "a".into(),
+            usage_pct: Some(42.0),
+        });
+        app.fleet_rate = Some(s);
+        let text = render(&app, 120, 30);
+        assert!(text.contains("42%"), "headline usage missing");
+        assert!(text.contains("$1.23"), "spend missing");
+        assert!(text.contains("3 / eff 4 / 6"), "in/eff/max missing");
+        assert!(text.contains("+/- max"), "edit hint missing");
+        assert!(!text.contains("connecting"));
     }
 
     #[test]
@@ -2358,7 +2623,10 @@ mod tests {
     fn plans_view_renders_list_and_detail() {
         let mut app = App::new();
         app.tab = Tab::Plans; // the default landing tab is now Operator
-        app.set_plans(vec![plan("alpha-2026", "todo"), plan("beta-2026", "shipped")]);
+        app.set_plans(vec![
+            plan("alpha-2026", "todo"),
+            plan("beta-2026", "shipped"),
+        ]);
         let text = render(&app, 90, 16);
         assert!(text.contains("Plans (2)"));
         assert!(text.contains("alpha-2026"));
@@ -2378,8 +2646,24 @@ mod tests {
         app.topology = Some(Topology {
             tabs: vec![],
             panes: vec![
-                PaneNode { id: 1, tab: 0, title: "claude".into(), focused: true, is_plugin: false, exited: false, command: None },
-                PaneNode { id: 2, tab: 0, title: "pui".into(), focused: false, is_plugin: false, exited: false, command: None },
+                PaneNode {
+                    id: 1,
+                    tab: 0,
+                    title: "claude".into(),
+                    focused: true,
+                    is_plugin: false,
+                    exited: false,
+                    command: None,
+                },
+                PaneNode {
+                    id: 2,
+                    tab: 0,
+                    title: "pui".into(),
+                    focused: false,
+                    is_plugin: false,
+                    exited: false,
+                    command: None,
+                },
             ],
         });
         let text = render(&app, 90, 12);
@@ -2471,8 +2755,16 @@ mod tests {
             tier: Some(tier.into()),
             owner_agent_id: Some("su-worker".into()),
             owner_label: Some("worker".into()),
-            triage_state: if tier == "handled" { Some("downgraded".into()) } else { None },
-            triage_note: if tier == "handled" { Some("auto lifecycle, not a decision".into()) } else { None },
+            triage_state: if tier == "handled" {
+                Some("downgraded".into())
+            } else {
+                None
+            },
+            triage_note: if tier == "handled" {
+                Some("auto lifecycle, not a decision".into())
+            } else {
+                None
+            },
         };
         let mut app = App::new();
         app.tab = Tab::Inbox;
@@ -2497,7 +2789,11 @@ mod tests {
         RosterEntry {
             owner_id: "su-1".into(),
             label: "su · su-1".into(),
-            intent: if intent.is_empty() { None } else { Some(intent.into()) },
+            intent: if intent.is_empty() {
+                None
+            } else {
+                Some(intent.into())
+            },
             current_files: vec![],
             liveness: "live".into(),
             stale: false,
@@ -2596,7 +2892,10 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         m.insert("papercusp-oracle".to_string(), false);
         m.insert("papercusp-snapshots".to_string(), true);
-        app.set_flags(crate::models::FlagsResponse { flags: m, source: "defaults".into() });
+        app.set_flags(crate::models::FlagsResponse {
+            flags: m,
+            source: "defaults".into(),
+        });
         app.tab = Tab::Settings;
         // Taller now that Settings stacks the config overview (P10b) above the flags.
         let text = render(&app, 90, 22);
@@ -2847,8 +3146,14 @@ mod tests {
         use crate::models::HarnessRef;
         let mut app = App::new();
         app.set_harnesses(vec![
-            HarnessRef { slug: "papercup".into(), path: None },
-            HarnessRef { slug: "restart".into(), path: None },
+            HarnessRef {
+                slug: "papercup".into(),
+                path: None,
+            },
+            HarnessRef {
+                slug: "restart".into(),
+                path: None,
+            },
         ]);
         // The status bar carries the scope indicator (D-003).
         let base = render(&app, 100, 12);
@@ -2895,7 +3200,7 @@ mod tests {
         app.tab = Tab::Inbox;
         let inbox = render(&app, 100, 14);
         assert!(inbox.contains("Decisions")); // inbox tier-legend header (D-006)
-        // Mirror firehose header.
+                                              // Mirror firehose header.
         app.tab = Tab::Fleet;
         app.fleet.mode = crate::fleet::FleetMode::Mirror;
         let mirror = render(&app, 120, 16);
@@ -2986,7 +3291,7 @@ mod tests {
         assert!(text.contains("create-repo")); // contribution name in detail
         assert!(text.contains("backend"));
         assert!(text.contains("settings")); // configSchema → settings section
-        // No config loaded yet → the Enter-to-load affordance.
+                                            // No config loaded yet → the Enter-to-load affordance.
         assert!(text.contains("press Enter to load"));
     }
 
@@ -3034,7 +3339,10 @@ mod tests {
             .await
             .expect("timed out")
             .expect("a frame");
-        eprintln!("live coord-inbox SSE frame: {} | {}", frame.event, frame.data);
+        eprintln!(
+            "live coord-inbox SSE frame: {} | {}",
+            frame.event, frame.data
+        );
         assert!(matches!(frame.event.as_str(), "heartbeat" | "invalidate"));
         let inbox = client.coord_inbox().await.expect("coord inbox read");
         eprintln!("coord inbox: {} human-facing entries", inbox.len());
@@ -3207,7 +3515,12 @@ mod tests {
         }
     }
 
-    fn fleet_activity(owner: &str, agent: &str, summary: &str, ts: &str) -> crate::models::ActivityRow {
+    fn fleet_activity(
+        owner: &str,
+        agent: &str,
+        summary: &str,
+        ts: &str,
+    ) -> crate::models::ActivityRow {
         crate::models::ActivityRow {
             id: "1".into(),
             owner_id: owner.into(),
@@ -3230,7 +3543,11 @@ mod tests {
         app.show_presence = false; // full width for the headline assertions
         app.set_roster(vec![fleet_roster("su-a", "claude", "building fleet view")]);
         let mut p = plan("fleet-view-2026", "active");
-        p.item_counts = ItemCounts { todo: 2, done: 3, ..Default::default() };
+        p.item_counts = ItemCounts {
+            todo: 2,
+            done: 3,
+            ..Default::default()
+        };
         app.set_plans(vec![p]);
         app.fleet.set_work_items(vec![WorkItem {
             id: "F-1".into(),
@@ -3325,7 +3642,7 @@ mod tests {
     fn chat_view_renders_transcript_and_composer() {
         let mut app = App::new();
         app.tab = Tab::Operator; // chat view — Overview is the default landing now (Brief 23)
-        // Empty state prompts the user to compose.
+                                 // Empty state prompts the user to compose.
         let empty = render(&app, 100, 16);
         assert!(empty.contains("Operator"));
         assert!(empty.contains("press i to talk to the operator"));
@@ -3423,11 +3740,17 @@ mod tests {
         // active-filter badge.
         let mut app = App::new();
         app.tab = Tab::Inbox;
-        app.set_plans(vec![plan("alpha-2026", "todo"), plan("beta-2026", "shipped")]);
+        app.set_plans(vec![
+            plan("alpha-2026", "todo"),
+            plan("beta-2026", "shipped"),
+        ]);
         app.plan_filter_open = true;
         app.plan_filter.insert("alpha-2026".to_string());
         let text = render(&app, 120, 16);
-        assert!(text.contains("Filter: plans (1 on)"), "rail title missing: {text:?}");
+        assert!(
+            text.contains("Filter: plans (1 on)"),
+            "rail title missing: {text:?}"
+        );
         assert!(text.contains("[x]"), "checked plan glyph missing");
         assert!(text.contains("[ ]"), "unchecked plan glyph missing");
         assert!(text.contains("toggle"), "rail hint missing");
@@ -3435,8 +3758,14 @@ mod tests {
         // Closing the rail hides it but keeps the badge (filter still applies).
         app.plan_filter_open = false;
         let closed = render(&app, 120, 16);
-        assert!(!closed.contains("Filter: plans"), "rail should be hidden when closed");
-        assert!(closed.contains("F:plans(1)"), "badge should persist while rail hidden");
+        assert!(
+            !closed.contains("Filter: plans"),
+            "rail should be hidden when closed"
+        );
+        assert!(
+            closed.contains("F:plans(1)"),
+            "badge should persist while rail hidden"
+        );
     }
 
     #[test]
@@ -3447,12 +3776,18 @@ mod tests {
         // (operator-always-visible-2026-06-05).
         let mut app = App::new();
         let text = render(&app, 100, 12);
-        assert!(text.contains("o:operator"), "dock hint missing on the Overview landing");
+        assert!(
+            text.contains("o:operator"),
+            "dock hint missing on the Overview landing"
+        );
         assert!(text.contains("?:help"), "help hint missing from status bar");
         app.tab = Tab::Operator;
         let text = render(&app, 100, 12);
         assert!(text.contains("?:help"), "help hint missing from status bar");
-        assert!(text.contains("F1/:tutorial"), "tutorial hint missing from status bar");
+        assert!(
+            text.contains("F1/:tutorial"),
+            "tutorial hint missing from status bar"
+        );
     }
 
     #[test]
@@ -3464,8 +3799,14 @@ mod tests {
         // Tall enough that the full help text (incl. the F1/:tutorial line near
         // the bottom) renders without clipping.
         let text = render(&app, 100, 40);
-        assert!(text.contains(":tutorial"), "help should mention the :tutorial palette command");
-        assert!(text.contains("plans filter"), "help should mention the plans filter rail");
+        assert!(
+            text.contains(":tutorial"),
+            "help should mention the :tutorial palette command"
+        );
+        assert!(
+            text.contains("plans filter"),
+            "help should mention the plans filter rail"
+        );
     }
 
     // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
@@ -3484,9 +3825,18 @@ mod tests {
         );
         // Wide enough (>=100) → the dock is carved on the right alongside Plans.
         let text = render(&app, 120, 20);
-        assert!(text.contains("Title alpha"), "the Plans tab content still renders");
-        assert!(text.contains("Operator"), "the operator dock renders its title");
-        assert!(text.contains("docked reply here"), "the dock shows the transcript");
+        assert!(
+            text.contains("Title alpha"),
+            "the Plans tab content still renders"
+        );
+        assert!(
+            text.contains("Operator"),
+            "the operator dock renders its title"
+        );
+        assert!(
+            text.contains("docked reply here"),
+            "the dock shows the transcript"
+        );
     }
 
     #[test]
@@ -3520,7 +3870,10 @@ mod tests {
         app.operator_dock_open = true;
         // Unfocused → "○ o" hint (press o to focus).
         let unfocused = render(&app, 120, 20);
-        assert!(unfocused.contains("○ o"), "unfocused dock advertises the o key");
+        assert!(
+            unfocused.contains("○ o"),
+            "unfocused dock advertises the o key"
+        );
         // Focused → "●" marker.
         app.operator_dock_focused = true;
         let focused = render(&app, 120, 20);
@@ -3532,7 +3885,10 @@ mod tests {
         let mut app = App::new();
         app.tab = Tab::Plans; // not the Operator tab, dock closed by default
         let text = render(&app, 120, 20);
-        assert!(text.contains("o:operator"), "status bar advertises the dock when closed");
+        assert!(
+            text.contains("o:operator"),
+            "status bar advertises the dock when closed"
+        );
     }
 
     #[test]

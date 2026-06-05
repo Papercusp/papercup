@@ -44,14 +44,26 @@ pub enum Event {
     Testing(Vec<TestingDomain>),
     /// The selected testing domain's runnable files (D-004a, from domain-detail).
     /// Carries the domain id so a stale fetch never paints the wrong domain.
-    TestingFiles { domain_id: String, files: Vec<String> },
+    TestingFiles {
+        domain_id: String,
+        files: Vec<String>,
+    },
     /// The user's memories from `memory:list` (D-006 Step 2). `available=false`
     /// = the memory backend reported unavailable (the tab's empty state).
-    Memories { available: bool, results: Vec<crate::models::MemoryEntry> },
+    Memories {
+        available: bool,
+        results: Vec<crate::models::MemoryEntry>,
+    },
     /// Semantic hits from `memory:search` for the query the user typed (D-006).
-    MemoryHits { query: String, results: Vec<crate::models::MemoryEntry> },
+    MemoryHits {
+        query: String,
+        results: Vec<crate::models::MemoryEntry>,
+    },
     /// A test run finished (D-004a) — the file that ran + its result.
-    TestRunDone { file: String, result: crate::models::TestRunResult },
+    TestRunDone {
+        file: String,
+        result: crate::models::TestRunResult,
+    },
     /// Plugin-contributed TUI panes for the active harness (D-002).
     TuiPanes(Vec<TuiPaneContribution>),
     /// All installed plugin manifests for the Plugins tab (D-007) — identity +
@@ -60,7 +72,10 @@ pub enum Event {
     /// One plugin's saved per-harness config (D-014) — loaded on Enter in the
     /// Plugins list, refreshed after each `:pset`/`:punset` round-trip. Carries
     /// the plugin name so a stale fetch never paints another plugin's config.
-    PluginConfig { plugin: String, config: serde_json::Value },
+    PluginConfig {
+        plugin: String,
+        config: serde_json::Value,
+    },
     /// The active harness's effective claude-settings view (D-013) — defaults
     /// overlaid by the file, plus the raw file body the `:set`/`:unset` editor
     /// round-trips.
@@ -152,7 +167,10 @@ pub enum Event {
     /// Fresh live workbench topology (tabs + panes) from the companion plugin.
     Topology(Topology),
     /// A command pane's command exited — the crash/finish signal (offer relaunch).
-    PaneExited { pane_id: u32, exit_code: Option<i32> },
+    PaneExited {
+        pane_id: u32,
+        exit_code: Option<i32>,
+    },
     /// A pane was fully closed in the live session.
     PaneClosed { pane_id: u32 },
     // --- Voice mode (voice-mode-tui-port-2026-06-05) ---

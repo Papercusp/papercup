@@ -6,10 +6,10 @@
 use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
-    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, CuratedSignal,
-    DocsResponse, EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature,
-    HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, CuratedSignal, DocsResponse,
+    EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
+    HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
+    TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -65,7 +65,10 @@ pub enum Action {
     /// Focus a worker's zellij pane via the companion (tui-operator-surface P2 —
     /// the `focus_pane` tui:dispatch intent). The run loop drives the companion
     /// and POSTs the intent result back.
-    FocusPane { intent_id: i64, pane_id: u32 },
+    FocusPane {
+        intent_id: i64,
+        pane_id: u32,
+    },
     /// Fetch the next older page of operator turns (load-earlier / scroll-back).
     /// The reducer already set `chat_loading_earlier`; the run loop snapshots the
     /// conversation id + oldest cursor from App.
@@ -73,14 +76,23 @@ pub enum Action {
     /// Fetch the selected testing domain's runnable files (D-004a) — the run
     /// loop spawns the domain-detail fetch; results return as
     /// `Event::TestingFiles` (stale-guarded by domain id).
-    FetchTestingFiles { harness: String, domain_id: String },
+    FetchTestingFiles {
+        harness: String,
+        domain_id: String,
+    },
     /// Run one test file via `POST /api/harness/:slug/testing/run` (D-004a).
     /// The reducer already marked the run in-flight; the result returns as
     /// `Event::TestRunDone`.
-    RunTest { harness: String, file: String },
+    RunTest {
+        harness: String,
+        file: String,
+    },
     /// Semantic memory search (D-006 Step 2) — the run loop calls the
     /// `memory:search` tool; hits return as `Event::MemoryHits`.
-    SearchMemory { query: String, harness: String },
+    SearchMemory {
+        query: String,
+        harness: String,
+    },
     /// One `:set <key.path> <value>` / `:unset <key.path>` Config-tab edit
     /// (D-013) — the run loop fetches the current file, edits the dotted path
     /// (`value: Some` sets, `None` removes), PUTs it back, and refetches the
@@ -92,7 +104,10 @@ pub enum Action {
     },
     /// Load the selected plugin's saved per-harness config (D-014) — the run
     /// loop GETs `/api/plugins/config` and returns `Event::PluginConfig`.
-    LoadPluginConfig { harness: String, plugin: String },
+    LoadPluginConfig {
+        harness: String,
+        plugin: String,
+    },
     /// One `:pset <key.path> <value>` / `:punset <key.path>` plugin-settings
     /// edit on the selected plugin (D-014) — fetch→edit-path→PUT→refetch, result
     /// returns as `Event::PluginConfig`. `value: None` removes the key.
@@ -105,7 +120,10 @@ pub enum Action {
     /// Fetch Cupboard listings for the active (kind, query) filter (D-011) —
     /// the run loop GETs `/api/cupboard/listings` and the result returns as
     /// `Event::CupboardListings` (stale-guarded by kind+query).
-    FetchCupboard { kind: String, query: String },
+    FetchCupboard {
+        kind: String,
+        query: String,
+    },
     /// Execute the CONFIRMED per-kind Cupboard action (D-011): harness→join,
     /// blueprint→fork (install), snapshot→fork, plugin→install. The reducer
     /// only returns this after the Enter-arm + `y`-confirm two-step.
@@ -119,13 +137,20 @@ pub enum Action {
     Voice(VoiceCmd),
     /// Fetch the Conversations list (Brief 25) under the active state/kind filter
     /// ("all" → unfiltered). Result returns as `Event::Conversations`.
-    FetchConversations { state: String, kind: String },
+    FetchConversations {
+        state: String,
+        kind: String,
+    },
     /// Load the selected conversation's full thread → `Event::ConversationDetail`
     /// (stale-guarded by id in the reducer).
-    FetchConversationDetail { id: String },
+    FetchConversationDetail {
+        id: String,
+    },
     /// Promote the selected conversation → an engineer issue (carries the thread).
     /// Outcome rides `Notify`/`Error` + a detail refetch.
-    PromoteConversation { id: String },
+    PromoteConversation {
+        id: String,
+    },
 }
 
 /// A push-to-talk command on the Operator tab (voice-mode-tui-port D-007).
@@ -161,7 +186,10 @@ pub enum PaletteCommand {
     },
     /// `:create <slug> <path-or-github-url>` (D-010) — register a new pot via
     /// `POST /api/harness/projects` (local dir or GitHub clone).
-    CreatePot { slug: String, source: String },
+    CreatePot {
+        slug: String,
+        source: String,
+    },
     /// `:share <slug> [github-remote] [public]` (D-010) — the share sequence:
     /// resolve binding → finalize shared.json/swarm → (public only) Cupboard
     /// publish. With no remote given the run loop reads the pot repo's
@@ -173,14 +201,24 @@ pub enum PaletteCommand {
     },
     /// `:set <key.path> <value>` — edit the Config tab's settings file (D-013).
     /// Routed to `Action::ConfigEdit` in the reducer, not the workbench task.
-    ConfigSet { key: String, value: String },
+    ConfigSet {
+        key: String,
+        value: String,
+    },
     /// `:unset <key.path>` — remove a key from the settings file (D-013).
-    ConfigUnset { key: String },
+    ConfigUnset {
+        key: String,
+    },
     /// `:pset <key.path> <value>` — edit the SELECTED plugin's config (D-014).
     /// The plugin is resolved from `plugin_sel` in the palette-Enter handler.
-    PluginSet { key: String, value: String },
+    PluginSet {
+        key: String,
+        value: String,
+    },
     /// `:punset <key.path>` — remove a key from the selected plugin's config.
-    PluginUnset { key: String },
+    PluginUnset {
+        key: String,
+    },
     /// `:message <text>` / `:msg <text>` — "Message owner" (inbox-tiering D-004):
     /// open a work-item-scoped conversation with the SELECTED inbox item's owning
     /// agent. `to`/harness/plan_slug/item_ref/title are None at parse; the palette
@@ -198,7 +236,11 @@ pub enum PaletteCommand {
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
 /// leading ':' is tolerated. Pure — unit-tested.
 pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
-    let line = input.trim().strip_prefix(':').unwrap_or(input.trim()).trim();
+    let line = input
+        .trim()
+        .strip_prefix(':')
+        .unwrap_or(input.trim())
+        .trim();
     let mut it = line.splitn(2, char::is_whitespace);
     let cmd = it.next().unwrap_or("");
     let arg = it.next().unwrap_or("").trim().to_string();
@@ -214,8 +256,16 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             let mut parts = arg.split_whitespace().map(|s| s.to_string());
             let first = parts.next().unwrap_or_default();
             match parts.next() {
-                Some(item) => Some(PaletteCommand::PickupPlanItem { harness: None, plan: Some(first), item }),
-                None => Some(PaletteCommand::PickupPlanItem { harness: None, plan: None, item: first }),
+                Some(item) => Some(PaletteCommand::PickupPlanItem {
+                    harness: None,
+                    plan: Some(first),
+                    item,
+                }),
+                None => Some(PaletteCommand::PickupPlanItem {
+                    harness: None,
+                    plan: None,
+                    item: first,
+                }),
             }
         }
         // `:create <slug> <path-or-github-url>` — both args required (D-010).
@@ -248,7 +298,11 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             if slug.is_empty() {
                 return None;
             }
-            Some(PaletteCommand::SharePot { slug, remote, public })
+            Some(PaletteCommand::SharePot {
+                slug,
+                remote,
+                public,
+            })
         }
         // Config-tab editor (D-013): `:set <key.path> <value>` / `:unset <key.path>`.
         "set" if !arg.is_empty() => {
@@ -301,7 +355,11 @@ pub fn parse_config_value(raw: &str) -> Value {
 /// creating intermediate objects on set. Errors when a path segment lands on a
 /// non-object (never silently clobbers a scalar with a subtree); `:unset` of a
 /// missing path is a no-op. Pure — unit-tested.
-pub fn edit_json_path(root: &mut Value, path: &str, mut value: Option<Value>) -> Result<(), String> {
+pub fn edit_json_path(
+    root: &mut Value,
+    path: &str,
+    mut value: Option<Value>,
+) -> Result<(), String> {
     let segs: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
     if segs.is_empty() {
         return Err("empty key path".into());
@@ -762,7 +820,8 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
-            status: "pui · h overview · 1 operator · j/k move · [/] pot · ? help · q quit".to_string(),
+            status: "pui · h overview · 1 operator · j/k move · [/] pot · ? help · q quit"
+                .to_string(),
             // The Overview dashboard is the default landing surface (Brief 23,
             // overview-dashboard-2026-06-05 D-001); the operator chat stays
             // always-on via the Overview's bottom strip + the `o` right dock.
@@ -1114,8 +1173,11 @@ impl App {
         if !self.harnesses.iter().any(|h| h.slug == self.harness) {
             if let Some(h) = self.harnesses.get(self.harness_sel) {
                 self.harness = h.slug.clone();
-                self.harness_sel =
-                    self.harnesses.iter().position(|x| x.slug == self.harness).unwrap_or(0);
+                self.harness_sel = self
+                    .harnesses
+                    .iter()
+                    .position(|x| x.slug == self.harness)
+                    .unwrap_or(0);
                 self.publish_active();
             }
         } else {
@@ -1812,8 +1874,8 @@ impl App {
         if p.command.is_empty() {
             return None;
         }
-        let spec = PaneSpec::new(p.command.clone())
-            .titled(format!("{} · {}", p.plugin_name, p.slug));
+        let spec =
+            PaneSpec::new(p.command.clone()).titled(format!("{} · {}", p.plugin_name, p.slug));
         Some(if p.cwd.is_empty() {
             spec
         } else {
@@ -2005,11 +2067,7 @@ impl App {
             Event::MemoryHits { query, results } => {
                 // Only paint hits for the query that is still active (a cleared
                 // search drops a late response).
-                if self
-                    .memory_hits
-                    .as_ref()
-                    .is_some_and(|(q, _)| *q == query)
-                {
+                if self.memory_hits.as_ref().is_some_and(|(q, _)| *q == query) {
                     self.memory_hits = Some((query, results));
                     self.memory_sel = 0;
                 }
@@ -2074,7 +2132,11 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
-            Event::CupboardListings { kind, query, listings } => {
+            Event::CupboardListings {
+                kind,
+                query,
+                listings,
+            } => {
                 // Stale-guard (D-011): drop a response whose (kind, query) the
                 // user has since changed — only the latest filter paints.
                 if kind == CUPBOARD_KINDS[self.cupboard_kind] && query == self.cupboard_query {
@@ -2096,7 +2158,11 @@ impl App {
                 }
                 // Drop a client-side topic filter no longer present in the page.
                 if let Some(t) = self.conv_topic.clone() {
-                    if !self.conversations.iter().any(|c| c.topics.iter().any(|x| x == &t)) {
+                    if !self
+                        .conversations
+                        .iter()
+                        .any(|c| c.topics.iter().any(|x| x == &t))
+                    {
                         self.conv_topic = None;
                     }
                 }
@@ -2105,7 +2171,8 @@ impl App {
             }
             Event::ConversationDetail { id, detail } => {
                 // Stale-guard: only paint if it's still the selected conversation.
-                let matches = self.selected_conversation().map(|c| c.id.clone()) == Some(id.clone());
+                let matches =
+                    self.selected_conversation().map(|c| c.id.clone()) == Some(id.clone());
                 if matches {
                     self.conversation_detail = Some(detail);
                     self.last_error = None;
@@ -2396,8 +2463,13 @@ impl App {
                         // plan when not given explicitly (the parser is pure and
                         // can't see app state). No plan in scope → an error
                         // notif, not a half-scoped dispatch.
-                        Some(PaletteCommand::PickupPlanItem { harness, plan, item }) => {
-                            let plan = plan.or_else(|| self.selected_plan().map(|p| p.slug.clone()));
+                        Some(PaletteCommand::PickupPlanItem {
+                            harness,
+                            plan,
+                            item,
+                        }) => {
+                            let plan =
+                                plan.or_else(|| self.selected_plan().map(|p| p.slug.clone()));
                             match plan {
                                 Some(plan) => {
                                     let harness = harness
@@ -2416,8 +2488,9 @@ impl App {
                                 None => {
                                     self.push_notif(crate::models::Notif {
                                         level: "error".to_string(),
-                                        message: "pickup: no plan selected — use :pickup <plan> <item>"
-                                            .to_string(),
+                                        message:
+                                            "pickup: no plan selected — use :pickup <plan> <item>"
+                                                .to_string(),
                                         harness: None,
                                         ts: None,
                                     });
@@ -2450,7 +2523,8 @@ impl App {
                                 None => {
                                     self.push_notif(crate::models::Notif {
                                         level: "error".to_string(),
-                                        message: "pset: no plugin selected (Plugins tab)".to_string(),
+                                        message: "pset: no plugin selected (Plugins tab)"
+                                            .to_string(),
                                         harness: None,
                                         ts: None,
                                     });
@@ -2469,7 +2543,8 @@ impl App {
                                 None => {
                                     self.push_notif(crate::models::Notif {
                                         level: "error".to_string(),
-                                        message: "punset: no plugin selected (Plugins tab)".to_string(),
+                                        message: "punset: no plugin selected (Plugins tab)"
+                                            .to_string(),
                                         harness: None,
                                         ts: None,
                                     });
@@ -2851,16 +2926,14 @@ impl App {
             }
             KeyCode::Char('g') => Action::Launch(self.git_spec()),
             // Relaunch the last-exited agent/command pane (P-004), when armed.
-            KeyCode::Char('r') if self.relaunch_command.is_some() => {
-                match self.relaunch_spec() {
-                    Some(spec) => {
-                        self.relaunch_command = None;
-                        self.toast = None;
-                        Action::Launch(spec)
-                    }
-                    None => Action::None,
+            KeyCode::Char('r') if self.relaunch_command.is_some() => match self.relaunch_spec() {
+                Some(spec) => {
+                    self.relaunch_command = None;
+                    self.toast = None;
+                    Action::Launch(spec)
                 }
-            }
+                None => Action::None,
+            },
             KeyCode::Char(']') => {
                 self.cycle_harness(1);
                 Action::Render
@@ -2977,7 +3050,10 @@ impl App {
                     }
                     // Same lazy-load for Conversations (Brief 25) — not in the
                     // startup poll; fetch the list on first open.
-                    if t == Tab::Conversations && self.conversations.is_empty() && !self.conversations_loading {
+                    if t == Tab::Conversations
+                        && self.conversations.is_empty()
+                        && !self.conversations_loading
+                    {
                         return self.refetch_conversations();
                     }
                     Action::Render
@@ -3046,7 +3122,9 @@ impl App {
         };
         if self.cupboard_confirm.as_deref() == Some(listing.id.as_str()) {
             self.cupboard_confirm = None;
-            Action::CupboardAct { listing: listing.clone() }
+            Action::CupboardAct {
+                listing: listing.clone(),
+            }
         } else {
             self.cupboard_confirm = Some(listing.id.clone());
             Action::Render
@@ -3068,7 +3146,9 @@ impl App {
     }
 
     pub fn selected_conversation(&self) -> Option<&crate::models::ConvSummary> {
-        self.visible_conversations().get(self.conversation_sel).copied()
+        self.visible_conversations()
+            .get(self.conversation_sel)
+            .copied()
     }
 
     pub fn conv_state(&self) -> &'static str {
@@ -3315,7 +3395,10 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Plans;
         // On a non-Operator tab `v` is not a voice key (no Start).
-        assert_ne!(a.update(key('v', KeyModifiers::NONE)), Action::Voice(VoiceCmd::Start));
+        assert_ne!(
+            a.update(key('v', KeyModifiers::NONE)),
+            Action::Voice(VoiceCmd::Start)
+        );
         assert_eq!(a.voice_phase, VoicePhase::Idle);
         // While composing, `v` types into the message, never starts voice.
         let mut b = App::new();
@@ -3340,7 +3423,9 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Operator;
         let before = a.chat_messages.len();
-        a.update(Event::Voice(crate::event::VoiceMsg::Transcribed("hello there".into())));
+        a.update(Event::Voice(crate::event::VoiceMsg::Transcribed(
+            "hello there".into(),
+        )));
         assert_eq!(a.voice_phase, VoicePhase::Thinking);
         // begin_user_send added the user msg + a streaming assistant bubble.
         assert_eq!(a.chat_messages.len(), before + 2);
@@ -3359,7 +3444,9 @@ mod tests {
         a.update(Event::Voice(crate::event::VoiceMsg::Finished));
         assert_eq!(a.voice_phase, VoicePhase::Idle);
         // An open failure resets + records the error.
-        a.update(Event::Voice(crate::event::VoiceMsg::Started(Err("no mic".into()))));
+        a.update(Event::Voice(crate::event::VoiceMsg::Started(Err(
+            "no mic".into()
+        ))));
         assert_eq!(a.voice_phase, VoicePhase::Idle);
         assert_eq!(a.voice_error.as_deref(), Some("no mic"));
     }
@@ -3564,8 +3651,14 @@ mod tests {
         let mut a = App::new();
         assert!(!a.cycle_harness(1)); // empty → no-op
         a.set_harnesses(vec![
-            HarnessRef { slug: "papercup".into(), path: Some("/r/papercup".into()) },
-            HarnessRef { slug: "restart".into(), path: Some("/r/restart".into()) },
+            HarnessRef {
+                slug: "papercup".into(),
+                path: Some("/r/papercup".into()),
+            },
+            HarnessRef {
+                slug: "restart".into(),
+                path: Some("/r/restart".into()),
+            },
         ]);
         assert_eq!(a.harness, "papercup");
         assert!(a.cycle_harness(1));
@@ -3601,8 +3694,18 @@ mod tests {
         assert_eq!(a.update(key('7', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Testing);
         a.set_testing(vec![
-            TestingDomain { id: "unit".into(), label: "Unit".into(), description: "d".into(), tier: "universal".into() },
-            TestingDomain { id: "e2e".into(), label: "E2E".into(), description: "d".into(), tier: "project".into() },
+            TestingDomain {
+                id: "unit".into(),
+                label: "Unit".into(),
+                description: "d".into(),
+                tier: "universal".into(),
+            },
+            TestingDomain {
+                id: "e2e".into(),
+                label: "E2E".into(),
+                description: "d".into(),
+                tier: "project".into(),
+            },
         ]);
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.testing_sel, 1);
@@ -3645,7 +3748,10 @@ mod tests {
         assert_eq!(a.plugins_focus, PluginsFocus::Panes);
         // Enter with no panes is a no-op.
         assert_eq!(
-            a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
+            a.update(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
             Action::None
         );
         a.set_panes(vec![
@@ -3657,7 +3763,10 @@ mod tests {
         assert_eq!(a.pane_sel, 1);
         assert_eq!(a.selected_pane().unwrap().label, "Watch");
         // Enter launches the selected pane: command → argv, cwd set, titled.
-        match a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))) {
+        match a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))) {
             Action::Launch(spec) => {
                 assert_eq!(spec.argv, vec!["watch", "ls"]);
                 assert_eq!(spec.cwd.as_deref(), Some("/tmp"));
@@ -3674,7 +3783,10 @@ mod tests {
         a.set_panes(vec![pane("Logs", "p", "/r", &["sh"])]);
         // On the Plans tab, Enter doesn't launch (on Operator it focuses the composer).
         assert_eq!(
-            a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
+            a.update(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE
+            ))),
             Action::None
         );
     }
@@ -3686,7 +3798,7 @@ mod tests {
         let spec = a.plugin_launch_spec().expect("a spec");
         assert_eq!(spec.argv, vec!["render"]);
         assert_eq!(spec.cwd, None); // empty cwd → not threaded
-        // An empty command yields no launchable spec.
+                                    // An empty command yields no launchable spec.
         a.set_panes(vec![pane("Broken", "p", "/r", &[])]);
         assert!(a.plugin_launch_spec().is_none());
     }
@@ -3745,10 +3857,19 @@ mod tests {
             content: Some("x".into()),
         });
         assert_eq!(a.doc_scroll, 0);
-        a.update(Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)));
-        a.update(Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)));
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::PageDown,
+            KeyModifiers::NONE,
+        )));
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::PageDown,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(a.doc_scroll, 20);
-        a.update(Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)));
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::PageUp,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(a.doc_scroll, 10);
         // Selecting a different doc resets scroll to top.
         a.update(key('j', KeyModifiers::NONE));
@@ -3894,7 +4015,10 @@ mod tests {
         for c in "tutorial".chars() {
             a.update(key(c, KeyModifiers::NONE));
         }
-        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         assert!(!a.palette_open);
         assert!(a.show_tutorial);
         assert_eq!(a.tutorial_step, 0); // restarts from the first page
@@ -4013,7 +4137,11 @@ mod tests {
         assert_eq!(a.companion_version.as_deref(), Some("0.1.0"));
 
         let topo = Topology {
-            tabs: vec![TabNode { pos: 0, name: "papercup".into(), active: true }],
+            tabs: vec![TabNode {
+                pos: 0,
+                name: "papercup".into(),
+                active: true,
+            }],
             panes: vec![PaneNode {
                 id: 7,
                 tab: 0,
@@ -4027,12 +4155,18 @@ mod tests {
         assert_eq!(a.update(Event::Topology(topo)), Action::Render);
         assert_eq!(a.topology.as_ref().unwrap().panes.len(), 1);
         // The HUD follows the live focus: the focused terminal pane is shown.
-        assert_eq!(a.workbench_summary().as_deref(), Some("⚡ 1 panes · ▶ claude · F-1"));
+        assert_eq!(
+            a.workbench_summary().as_deref(),
+            Some("⚡ 1 panes · ▶ claude · F-1")
+        );
 
         // A pane-exit raises a notification naming the pane, marks it exited, and
         // arms r-to-relaunch with the exited command.
         let before = a.notif_seq;
-        a.update(Event::PaneExited { pane_id: 7, exit_code: Some(0) });
+        a.update(Event::PaneExited {
+            pane_id: 7,
+            exit_code: Some(0),
+        });
         assert!(a.notif_seq > before);
         assert!(a.toast.as_ref().unwrap().message.contains("claude · F-1"));
         assert!(a.toast.as_ref().unwrap().message.contains("relaunch"));
@@ -4065,8 +4199,14 @@ mod tests {
         assert_eq!(a.update(key('r', KeyModifiers::NONE)), Action::None);
 
         // After the pane exits, `r` relaunches its command line via `sh -c`.
-        a.update(Event::PaneExited { pane_id: 4, exit_code: Some(1) });
-        assert_eq!(a.relaunch_command.as_deref(), Some("psu --no-picker --agent=claude"));
+        a.update(Event::PaneExited {
+            pane_id: 4,
+            exit_code: Some(1),
+        });
+        assert_eq!(
+            a.relaunch_command.as_deref(),
+            Some("psu --no-picker --agent=claude")
+        );
         match a.update(key('r', KeyModifiers::NONE)) {
             Action::Launch(spec) => {
                 assert_eq!(spec.argv[0], "sh");
@@ -4097,7 +4237,10 @@ mod tests {
                 command: None, // a plain shell, not a command/agent pane
             }],
         });
-        a.update(Event::PaneExited { pane_id: 1, exit_code: Some(0) });
+        a.update(Event::PaneExited {
+            pane_id: 1,
+            exit_code: Some(0),
+        });
         assert_eq!(a.relaunch_command, None);
         assert!(!a.toast.as_ref().unwrap().message.contains("relaunch"));
     }
@@ -4183,9 +4326,12 @@ mod tests {
     #[test]
     fn intent_set_tab_switches_and_validates() {
         let mut a = App::new();
-        a.apply_intent("set_tab", &serde_json::json!({"tab":"Docs"})).unwrap();
+        a.apply_intent("set_tab", &serde_json::json!({"tab":"Docs"}))
+            .unwrap();
         assert_eq!(a.tab, Tab::Docs);
-        assert!(a.apply_intent("set_tab", &serde_json::json!({"tab":"Nope"})).is_err());
+        assert!(a
+            .apply_intent("set_tab", &serde_json::json!({"tab":"Nope"}))
+            .is_err());
         assert!(a.apply_intent("set_tab", &serde_json::json!({})).is_err());
     }
 
@@ -4239,7 +4385,9 @@ mod tests {
     #[test]
     fn intent_unknown_errors() {
         let mut a = App::new();
-        assert!(a.apply_intent("frobnicate", &serde_json::json!({})).is_err());
+        assert!(a
+            .apply_intent("frobnicate", &serde_json::json!({}))
+            .is_err());
     }
 
     #[test]
@@ -4250,7 +4398,11 @@ mod tests {
             intent: "get_state".into(),
             args: serde_json::json!({}),
         }) {
-            Action::IntentResult { id, result_json, error } => {
+            Action::IntentResult {
+                id,
+                result_json,
+                error,
+            } => {
                 assert_eq!(id, 42);
                 assert!(error.is_none());
                 let v: serde_json::Value = serde_json::from_str(&result_json).unwrap();
@@ -4278,7 +4430,10 @@ mod tests {
         for (k, v) in pairs {
             m.insert((*k).to_string(), *v);
         }
-        FlagsResponse { flags: m, source: "test-src".into() }
+        FlagsResponse {
+            flags: m,
+            source: "test-src".into(),
+        }
     }
 
     #[test]
@@ -4327,8 +4482,14 @@ mod tests {
 
     #[test]
     fn parse_palette_commands() {
-        assert_eq!(parse_palette_command("layouts"), Some(PaletteCommand::ListLayouts));
-        assert_eq!(parse_palette_command(":crews"), Some(PaletteCommand::ListCrews));
+        assert_eq!(
+            parse_palette_command("layouts"),
+            Some(PaletteCommand::ListLayouts)
+        );
+        assert_eq!(
+            parse_palette_command(":crews"),
+            Some(PaletteCommand::ListCrews)
+        );
         assert_eq!(
             parse_palette_command("save-crew morning"),
             Some(PaletteCommand::SaveCrew("morning".into()))
@@ -4348,7 +4509,11 @@ mod tests {
         // `:pickup <item>` resolves plan later (selected plan); `:pickup <plan> <item>` is explicit.
         assert_eq!(
             parse_palette_command(":pickup P-012"),
-            Some(PaletteCommand::PickupPlanItem { harness: None, plan: None, item: "P-012".into() })
+            Some(PaletteCommand::PickupPlanItem {
+                harness: None,
+                plan: None,
+                item: "P-012".into()
+            })
         );
         assert_eq!(
             parse_palette_command("pickup demo-plan P-012"),
@@ -4419,11 +4584,19 @@ mod tests {
         // Cupboard publish; an extra non-`public` token is the remote.
         assert_eq!(
             parse_palette_command("share my-pot"),
-            Some(PaletteCommand::SharePot { slug: "my-pot".into(), remote: None, public: false })
+            Some(PaletteCommand::SharePot {
+                slug: "my-pot".into(),
+                remote: None,
+                public: false
+            })
         );
         assert_eq!(
             parse_palette_command("share my-pot public"),
-            Some(PaletteCommand::SharePot { slug: "my-pot".into(), remote: None, public: true })
+            Some(PaletteCommand::SharePot {
+                slug: "my-pot".into(),
+                remote: None,
+                public: true
+            })
         );
         assert_eq!(
             parse_palette_command("share my-pot git@github.com:o/r.git public"),
@@ -4539,7 +4712,12 @@ mod tests {
         a.update(Event::ConversationDetail {
             id: "c1".into(),
             detail: ConvDetail {
-                conversation: Some(ConvCore { id: "c1".into(), kind: "question".into(), state: "open".into(), ..Default::default() }),
+                conversation: Some(ConvCore {
+                    id: "c1".into(),
+                    kind: "question".into(),
+                    state: "open".into(),
+                    ..Default::default()
+                }),
                 topics: vec!["zero-cache".into()],
                 posts: vec![],
                 subscriber_count: 2,
@@ -4547,9 +4725,15 @@ mod tests {
         });
         assert!(a.conversation_detail.is_some());
         // A STALE detail (a different conversation) is ignored.
-        a.update(Event::ConversationDetail { id: "cX".into(), detail: ConvDetail::default() });
+        a.update(Event::ConversationDetail {
+            id: "cX".into(),
+            detail: ConvDetail::default(),
+        });
         assert_eq!(
-            a.conversation_detail.as_ref().and_then(|d| d.conversation.as_ref()).map(|c| c.id.as_str()),
+            a.conversation_detail
+                .as_ref()
+                .and_then(|d| d.conversation.as_ref())
+                .map(|c| c.id.as_str()),
             Some("c1"),
         );
 
@@ -4582,7 +4766,10 @@ mod tests {
         // Unknown command just closes the palette.
         a.palette_open = true;
         a.palette_input = "nope".to_string();
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
     }
 
     #[test]
@@ -4597,17 +4784,25 @@ mod tests {
         );
         assert_eq!(
             parse_palette_command("set cleanupPeriodDays 60"),
-            Some(PaletteCommand::ConfigSet { key: "cleanupPeriodDays".into(), value: "60".into() })
+            Some(PaletteCommand::ConfigSet {
+                key: "cleanupPeriodDays".into(),
+                value: "60".into()
+            })
         );
         // Value with spaces survives (splitn 2 on the key).
         assert_eq!(
             parse_palette_command(r#":set env.NAME some value"#),
-            Some(PaletteCommand::ConfigSet { key: "env.NAME".into(), value: "some value".into() })
+            Some(PaletteCommand::ConfigSet {
+                key: "env.NAME".into(),
+                value: "some value".into()
+            })
         );
         assert_eq!(parse_palette_command(":set model"), None); // value required
         assert_eq!(
             parse_palette_command(":unset env.FOO"),
-            Some(PaletteCommand::ConfigUnset { key: "env.FOO".into() })
+            Some(PaletteCommand::ConfigUnset {
+                key: "env.FOO".into()
+            })
         );
         assert_eq!(parse_palette_command(":unset"), None);
     }
@@ -4630,7 +4825,11 @@ mod tests {
         a.palette_input = ":unset model".to_string();
         assert_eq!(
             a.on_key(KeyCode::Enter, KeyModifiers::empty()),
-            Action::ConfigEdit { harness: "papercup".into(), key: "model".into(), value: None }
+            Action::ConfigEdit {
+                harness: "papercup".into(),
+                key: "model".into(),
+                value: None
+            }
         );
     }
 
@@ -4641,7 +4840,10 @@ mod tests {
         assert_eq!(parse_config_value("null"), json!(null));
         assert_eq!(parse_config_value(r#"["a","b"]"#), json!(["a", "b"]));
         assert_eq!(parse_config_value(r#"{"x":1}"#), json!({ "x": 1 }));
-        assert_eq!(parse_config_value("claude-opus-4-8"), json!("claude-opus-4-8"));
+        assert_eq!(
+            parse_config_value("claude-opus-4-8"),
+            json!("claude-opus-4-8")
+        );
         // A quoted JSON string stays a string (unquoted).
         assert_eq!(parse_config_value(r#""sixty""#), json!("sixty"));
     }
@@ -4698,7 +4900,11 @@ mod tests {
     fn work_item(family: &str, state: &str) -> WorkItem {
         WorkItem {
             id: "WI-1".into(),
-            kind: if family == "issue" { "bug".into() } else { "feature".into() },
+            kind: if family == "issue" {
+                "bug".into()
+            } else {
+                "feature".into()
+            },
             family: family.into(),
             harness: Some("papercup".into()),
             title: "t".into(),
@@ -4773,7 +4979,9 @@ mod tests {
         );
         assert_eq!(a.fleet.work_items.len(), 1);
         assert_eq!(
-            a.update(Event::ActivitySeed(vec![activity_row("su-a", "tool", "✎ x.rs")])),
+            a.update(Event::ActivitySeed(vec![activity_row(
+                "su-a", "tool", "✎ x.rs"
+            )])),
             Action::Render
         );
         assert_eq!(a.fleet.activity.len(), 1);
@@ -4783,7 +4991,7 @@ mod tests {
         );
         assert_eq!(a.fleet.activity.len(), 2);
         assert_eq!(a.fleet.activity[0].summary.as_deref(), Some("▶ test")); // prepended
-        // The curator feed marks the surface available + stores the signals (P3).
+                                                                            // The curator feed marks the surface available + stores the signals (P3).
         assert!(!a.fleet.curation_available);
         let sig = crate::models::CuratedSignal {
             id: "e1".into(),
@@ -4884,15 +5092,28 @@ mod tests {
         s.fleet.cap = 4;
         a.update(Event::FleetRate(s));
         // '+' raises optimistically + emits the PUT action; cap follows.
-        assert_eq!(a.update(key('+', KeyModifiers::NONE)), Action::SetMaxAgents(5));
+        assert_eq!(
+            a.update(key('+', KeyModifiers::NONE)),
+            Action::SetMaxAgents(5)
+        );
         let fr = a.fleet_rate.as_ref().unwrap();
         assert_eq!(fr.config.max_simultaneous_agents, 5);
         assert_eq!(fr.fleet.cap, 5);
         // '=' (unshifted '+') raises too; '-' lowers.
-        assert_eq!(a.update(key('=', KeyModifiers::NONE)), Action::SetMaxAgents(6));
-        assert_eq!(a.update(key('-', KeyModifiers::NONE)), Action::SetMaxAgents(5));
+        assert_eq!(
+            a.update(key('=', KeyModifiers::NONE)),
+            Action::SetMaxAgents(6)
+        );
+        assert_eq!(
+            a.update(key('-', KeyModifiers::NONE)),
+            Action::SetMaxAgents(5)
+        );
         // Clamp floor at 1 — no redundant PUT.
-        a.fleet_rate.as_mut().unwrap().config.max_simultaneous_agents = 1;
+        a.fleet_rate
+            .as_mut()
+            .unwrap()
+            .config
+            .max_simultaneous_agents = 1;
         assert_eq!(a.update(key('-', KeyModifiers::NONE)), Action::None);
         // The editor only lives on the Overview tab.
         a.tab = Tab::Plans;
@@ -4930,11 +5151,11 @@ mod tests {
     #[test]
     fn compose_mode_captures_input_and_sends() {
         let mut a = App::new(); // starts on Operator
-        // Outside compose, digit keys still switch tabs.
+                                // Outside compose, digit keys still switch tabs.
         a.update(key('2', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Inbox);
         a.update(key('1', KeyModifiers::NONE)); // back to Operator (leads the strip)
-        // `i` focuses the composer; now keys are captured as text.
+                                                // `i` focuses the composer; now keys are captured as text.
         a.update(key('i', KeyModifiers::NONE));
         assert!(a.chat_composing);
         a.update(key('h', KeyModifiers::NONE));
@@ -4994,8 +5215,10 @@ mod tests {
         a.update(Event::ChatDelta("lo</say>".into()));
         assert!(a.chat_messages[1].streaming);
         assert_eq!(a.chat_messages[1].content, "<say>hello</say>"); // raw while streaming
-        // A tool call becomes a chip on the streaming bubble.
-        a.update(Event::ChatToolCall(ChatToolCall { name: "harness:list".into() }));
+                                                                    // A tool call becomes a chip on the streaming bubble.
+        a.update(Event::ChatToolCall(ChatToolCall {
+            name: "harness:list".into(),
+        }));
         assert_eq!(a.chat_messages[1].tools.len(), 1);
         // Done finalizes: raw → the <say> body, streaming cleared.
         a.update(Event::ChatDone);
@@ -5008,7 +5231,9 @@ mod tests {
     fn chat_report_tag_is_parsed_onto_the_finalized_bubble() {
         let mut a = App::new();
         a.begin_user_send("status?");
-        a.update(Event::ChatDelta("<say>Here is where things stand.</say>".into()));
+        a.update(Event::ChatDelta(
+            "<say>Here is where things stand.</say>".into(),
+        ));
         a.update(Event::ChatDelta(
             concat!(
                 r#"<report>{"plans":[{"slug":"rate-limit-layer-v2","title":"Rate-limit v2","#,
@@ -5021,7 +5246,10 @@ mod tests {
         a.update(Event::ChatDone);
         // On finalize: say becomes the content, report parsed from the raw buffer.
         assert_eq!(a.chat_messages[1].content, "Here is where things stand.");
-        let rep = a.chat_messages[1].report.as_ref().expect("report parsed on finalize");
+        let rep = a.chat_messages[1]
+            .report
+            .as_ref()
+            .expect("report parsed on finalize");
         assert_eq!(rep.plans.len(), 1);
         assert_eq!(rep.plans[0].title, "Rate-limit v2");
         assert_eq!(rep.plans[0].items[0].text, "Error classifier");
@@ -5079,7 +5307,10 @@ mod tests {
         assert_eq!(a.update(ev(KeyCode::PageUp)), Action::Render);
         // The earlier page prepends before the existing turns + advances the cursor.
         a.update(Event::ChatEarlier {
-            messages: vec![ChatMessage::user("older-1"), ChatMessage::assistant("older-2")],
+            messages: vec![
+                ChatMessage::user("older-1"),
+                ChatMessage::assistant("older-2"),
+            ],
             has_more_earlier: false,
             oldest_seq: Some(8),
         });
@@ -5097,7 +5328,7 @@ mod tests {
     fn page_up_no_load_without_more_or_conversation() {
         let mut a = App::new();
         a.tab = Tab::Operator; // chat behavior — Overview is the default now (Brief 23)
-        // No conversation loaded yet → PageUp just scrolls.
+                               // No conversation loaded yet → PageUp just scrolls.
         assert_eq!(a.update(ev(KeyCode::PageUp)), Action::Render);
         assert!(!a.chat_loading_earlier);
         // Conversation loaded but no earlier history → PageUp just scrolls.
@@ -5114,17 +5345,17 @@ mod tests {
     #[test]
     fn chat_history_for_send_excludes_streaming_and_empty() {
         let mut a = App::new();
-        a.chat_messages = vec![
-            ChatMessage::user("q1"),
-            ChatMessage::assistant("a1"),
-        ];
+        a.chat_messages = vec![ChatMessage::user("q1"), ChatMessage::assistant("a1")];
         a.begin_user_send("q2"); // pushes user q2 + an empty streaming bubble
         let h = a.chat_history_for_send();
-        assert_eq!(h, vec![
-            ("user".to_string(), "q1".to_string()),
-            ("assistant".to_string(), "a1".to_string()),
-            ("user".to_string(), "q2".to_string()),
-        ]);
+        assert_eq!(
+            h,
+            vec![
+                ("user".to_string(), "q1".to_string()),
+                ("assistant".to_string(), "a1".to_string()),
+                ("user".to_string(), "q2".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -5201,7 +5432,10 @@ mod tests {
         // The list lands from memory:list; availability follows the payload.
         a.update(Event::Memories {
             available: true,
-            results: vec![mem("m1", "likes rust", "preference"), mem("m2", "tz is ET", "identity")],
+            results: vec![
+                mem("m1", "likes rust", "preference"),
+                mem("m2", "tz is ET", "identity"),
+            ],
         });
         assert!(a.memory_available);
         assert_eq!(a.visible_memories().len(), 2);
@@ -5227,9 +5461,15 @@ mod tests {
         }
         assert!(!a.memory_search_open);
         // Hits for the ACTIVE query apply; a stale query's hits are dropped.
-        a.update(Event::MemoryHits { query: "stale".into(), results: vec![mem("x", "x", "project")] });
+        a.update(Event::MemoryHits {
+            query: "stale".into(),
+            results: vec![mem("x", "x", "project")],
+        });
         assert!(a.visible_memories().is_empty()); // armed query, no hits yet
-        a.update(Event::MemoryHits { query: "rust".into(), results: vec![mem("m1", "likes rust", "preference")] });
+        a.update(Event::MemoryHits {
+            query: "rust".into(),
+            results: vec![mem("m1", "likes rust", "preference")],
+        });
         assert_eq!(a.visible_memories().len(), 1);
         assert_eq!(a.selected_memory().unwrap().kind(), "preference");
         // Esc clears the search back to the full list.
@@ -5293,8 +5533,14 @@ mod tests {
         use crate::models::HarnessRef;
         let mut a = App::new();
         a.set_harnesses(vec![
-            HarnessRef { slug: "papercup".into(), path: None },
-            HarnessRef { slug: "restart".into(), path: None },
+            HarnessRef {
+                slug: "papercup".into(),
+                path: None,
+            },
+            HarnessRef {
+                slug: "restart".into(),
+                path: None,
+            },
         ]);
         // `P` opens the picker with the cursor on the current choice (All).
         a.update(key('P', KeyModifiers::SHIFT));
@@ -5305,7 +5551,10 @@ mod tests {
         a.update(key('j', KeyModifiers::NONE));
         a.update(key('j', KeyModifiers::NONE)); // clamped at the last entry
         assert_eq!(a.pot_picker_sel, 2);
-        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         assert!(!a.pot_picker_open);
         assert!(!a.all_pots);
         assert_eq!(a.harness, "restart");
@@ -5315,10 +5564,13 @@ mod tests {
         assert_eq!(a.pot_picker_sel, 2); // index 1 + harness_sel(1)
         a.update(key('k', KeyModifiers::NONE));
         a.update(key('k', KeyModifiers::NONE));
-        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         assert!(a.all_pots);
         assert_eq!(a.harness, "restart"); // the slug axis is untouched by All
-        // Esc closes without applying.
+                                          // Esc closes without applying.
         a.update(key('P', KeyModifiers::SHIFT));
         a.update(key('j', KeyModifiers::NONE));
         a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -5354,7 +5606,7 @@ mod tests {
             plan_in("p3", Some("papercup")),
         ]);
         a.plan_sel = 2; // p3 visible under All
-        // Narrowing to papercup leaves 1 visible plan → the cursor clamps.
+                        // Narrowing to papercup leaves 1 visible plan → the cursor clamps.
         a.apply_pot_choice(0); // All (no-op scope-wise but exercises the path)
         assert!(a.all_pots);
         a.all_pots = false;
@@ -5432,11 +5684,17 @@ mod tests {
         a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
         // A stale fetch for a NON-selected domain is dropped.
         a.update(key('j', KeyModifiers::NONE)); // select e2e
-        a.update(Event::TestingFiles { domain_id: "unit".into(), files: vec!["a.test.ts".into()] });
+        a.update(Event::TestingFiles {
+            domain_id: "unit".into(),
+            files: vec!["a.test.ts".into()],
+        });
         assert!(a.testing_files.is_empty());
         assert_eq!(a.testing_focus, TestingFocus::Domains);
         // A matching fetch applies + focuses the file column.
-        a.update(Event::TestingFiles { domain_id: "e2e".into(), files: vec!["x.spec.ts".into()] });
+        a.update(Event::TestingFiles {
+            domain_id: "e2e".into(),
+            files: vec!["x.spec.ts".into()],
+        });
         assert_eq!(a.testing_files.len(), 1);
         assert_eq!(a.testing_focus, TestingFocus::Files);
         // Tab hops back to the domain column; changing the domain clears the
@@ -5454,7 +5712,10 @@ mod tests {
         a.set_testing(vec![test_domain("unit")]);
         // On the domain column `r` is not a run key (and no relaunch armed).
         assert_eq!(a.update(key('r', KeyModifiers::NONE)), Action::None);
-        a.update(Event::TestingFiles { domain_id: "unit".into(), files: vec!["a.test.ts".into()] });
+        a.update(Event::TestingFiles {
+            domain_id: "unit".into(),
+            files: vec!["a.test.ts".into()],
+        });
         match a.update(key('r', KeyModifiers::NONE)) {
             Action::RunTest { file, .. } => assert_eq!(file, "a.test.ts"),
             other => panic!("expected RunTest, got {other:?}"),
@@ -5527,7 +5788,10 @@ mod tests {
         a.update(key('h', KeyModifiers::NONE));
         a.update(key('i', KeyModifiers::NONE)); // types (compose capture), not re-focus
         assert_eq!(a.chat_input, "hi");
-        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        let act = a.update(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
         assert_eq!(act, Action::SendChat("hi".to_string()));
         assert_eq!(a.chat_input, "");
     }

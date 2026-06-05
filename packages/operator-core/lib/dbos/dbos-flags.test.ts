@@ -19,12 +19,22 @@ describe('dbosOrchestratorActive — default-on since P-009 (off only when =0)',
 // director-cadence autoloop is retired; scheduled fires are the routines
 // engine's job (dbosRoutinesActive).
 
-describe('dbosTimersActive — Phase-2 timers default-on with the orchestrator', () => {
-  test('unset → active', () => expect(dbosTimersActive({})).toBe(true));
-  test('TIMERS=0 → disabled (just the timers)', () =>
-    expect(dbosTimersActive({ PAPERCUSP_DBOS_TIMERS: '0' })).toBe(false));
-  test('ORCHESTRATOR=0 → off (full legacy revert)', () =>
-    expect(dbosTimersActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
+describe('dbosTimersActive — timers active only when DBOS actually launches (no-gap)', () => {
+  // The legacy fallbacks (push-cred refresher, harness-status sweep) stand
+  // down on this predicate, so it must be false whenever DBOS isn't launched
+  // (ENABLE is the host-bootstrap launch gate, default OFF) — otherwise both
+  // sides are off. Found live on staging: push creds never minted
+  // (mobile-apps-revival D-004).
+  test('fully unset → INACTIVE (DBOS never launches; legacy must run)', () =>
+    expect(dbosTimersActive({})).toBe(false));
+  test('ENABLE=0 → inactive (legacy must run)', () =>
+    expect(dbosTimersActive({ PAPERCUSP_DBOS_ENABLE: '0' })).toBe(false));
+  test('ENABLE=1 → active (default-on with the orchestrator)', () =>
+    expect(dbosTimersActive({ PAPERCUSP_DBOS_ENABLE: '1' })).toBe(true));
+  test('ENABLE=1 + TIMERS=0 → disabled (just the timers)', () =>
+    expect(dbosTimersActive({ PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_DBOS_TIMERS: '0' })).toBe(false));
+  test('ENABLE=1 + ORCHESTRATOR=0 → off (full legacy revert)', () =>
+    expect(dbosTimersActive({ PAPERCUSP_DBOS_ENABLE: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
 });
 
 describe('dbosProvisionActive — default-on with the orchestrator (off only when =0)', () => {

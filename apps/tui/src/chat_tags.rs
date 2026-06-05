@@ -99,7 +99,11 @@ fn normalize_report(r: &mut Report) {
     normalize_opt(&mut r.title);
     r.plans.retain_mut(|p| {
         let title = if p.title.trim().is_empty() {
-            p.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+            p.slug
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
         } else {
             Some(p.title.trim().to_string())
         };
@@ -112,7 +116,11 @@ fn normalize_report(r: &mut Report) {
         normalize_opt(&mut p.summary);
         p.items.retain_mut(|it| {
             let text = if it.text.trim().is_empty() {
-                it.id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+                it.id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
             } else {
                 Some(it.text.trim().to_string())
             };
@@ -252,7 +260,10 @@ mod tests {
 
     #[test]
     fn extract_say_basic() {
-        assert_eq!(extract_say("<say>hello there</say>").as_deref(), Some("hello there"));
+        assert_eq!(
+            extract_say("<say>hello there</say>").as_deref(),
+            Some("hello there")
+        );
         // Surrounding tags + whitespace.
         assert_eq!(
             extract_say("<set_mode>active</set_mode>\n<say>  hi  </say>\n").as_deref(),
@@ -276,7 +287,10 @@ mod tests {
 
     #[test]
     fn finalize_sleep_without_say_is_silent() {
-        assert_eq!(finalize("<sleep duration_minutes=\"5\" reason=\"busy\"/>"), "");
+        assert_eq!(
+            finalize("<sleep duration_minutes=\"5\" reason=\"busy\"/>"),
+            ""
+        );
         // sleep + prose noise around it → still silent (no say).
         assert_eq!(finalize("ok <sleep duration_minutes=\"2\"/> bye"), "");
     }
@@ -341,7 +355,7 @@ mod tests {
         let r = extract_report(raw).expect("one valid plan survives");
         assert_eq!(r.plans.len(), 1);
         assert_eq!(r.plans[0].title, "alpha"); // title fell back to slug
-        // The status-only item is dropped; id-only falls back to its id as text.
+                                               // The status-only item is dropped; id-only falls back to its id as text.
         assert_eq!(r.plans[0].items.len(), 2);
         assert_eq!(r.plans[0].items[0].text, "P-9");
         assert_eq!(r.plans[0].items[1].text, "real");

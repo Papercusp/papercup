@@ -147,11 +147,25 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const fresh = await getSession(handle.advSessionId).catch(() => null);
     const pid = fresh?.pid ?? handle.pid;
     const ended = fresh?.endedAt != null;
-    const isAlive = !ended && alive(pid);
+    const pidKnown = pid != null && pid > 0;
+    // Liveness: a recorded pid is authoritative; with NO pid recorded (hook-
+    // bootstrapped sessions), FRESH presence is the alive-evidence — resuming
+    // a session whose process is actually still open would run a concurrent
+    // second client on the same session file. When in doubt, park (the parked
+    // row converts to a resume once presence goes stale or the row ends).
+    let isAlive: boolean;
+    if (ended) {
+      isAlive = false;
+    } else if (pidKnown) {
+      isAlive = alive(pid);
+    } else {
+      const p = await presence(d.subscriberId).catch(() => null);
+      isAlive = Boolean(p && !p.stale && !p.revoked);
+    }
 
     const text = wakeTurnText(d);
 
-    if (isAlive && pid) {
+    if (isAlive && pidKnown) {
       // Channel 1: one of our managed ptys? (pid match — /adv-spawned sessions)
       const pty = findPty(pid);
       if (pty) {
@@ -160,6 +174,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
       // Channel 3: alive in a terminal we don't own — park (+ inbox nudge by pump).
       return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty` };
+    }
+    if (isAlive) {
+      // No pid recorded but presence is fresh — the session is (very likely)
+      // still open somewhere we can't see. Never concurrent-resume it; park.
+      return { kind: 'park', reason: 'no recorded pid but presence is fresh — parking to avoid a concurrent resume of a live session' };
     }
 
     // Channel 2: process gone → resume.

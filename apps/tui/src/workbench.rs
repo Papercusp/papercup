@@ -231,10 +231,20 @@ mod tests {
 
     #[test]
     fn crew_member_from_spec_resume_forms_and_rejects_nonpsu() {
-        let s1 = PaneSpec::new(vec!["psu".to_string(), "--resume".to_string(), "r1".to_string()]);
-        assert_eq!(crew_member_from_spec(&s1).unwrap().resume_id.as_deref(), Some("r1"));
+        let s1 = PaneSpec::new(vec![
+            "psu".to_string(),
+            "--resume".to_string(),
+            "r1".to_string(),
+        ]);
+        assert_eq!(
+            crew_member_from_spec(&s1).unwrap().resume_id.as_deref(),
+            Some("r1")
+        );
         let s2 = PaneSpec::new(vec!["psu".to_string(), "--resume=r2".to_string()]);
-        assert_eq!(crew_member_from_spec(&s2).unwrap().resume_id.as_deref(), Some("r2"));
+        assert_eq!(
+            crew_member_from_spec(&s2).unwrap().resume_id.as_deref(),
+            Some("r2")
+        );
         assert!(crew_member_from_spec(&PaneSpec::new(vec!["lazygit".to_string()])).is_none());
     }
 

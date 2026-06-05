@@ -81,9 +81,7 @@ pub trait Multiplexer {
 
 /// Spawn an argv, returning the process status as `()`.
 fn spawn(argv: Vec<String>) -> std::io::Result<()> {
-    let (prog, rest) = argv
-        .split_first()
-        .expect("multiplexer argv is never empty");
+    let (prog, rest) = argv.split_first().expect("multiplexer argv is never empty");
     Command::new(prog).args(rest).status().map(|_| ())
 }
 

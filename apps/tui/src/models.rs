@@ -948,7 +948,13 @@ pub struct ItemCounts {
 impl ItemCounts {
     /// All items across every status.
     pub fn total(&self) -> u32 {
-        self.todo + self.wip + self.blocked + self.needs_human + self.done + self.dropped + self.unknown
+        self.todo
+            + self.wip
+            + self.blocked
+            + self.needs_human
+            + self.done
+            + self.dropped
+            + self.unknown
     }
     /// Items still to do (everything that isn't done or dropped).
     pub fn remaining(&self) -> u32 {
@@ -1154,14 +1160,32 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn user(text: &str) -> Self {
-        Self { role: "user".into(), content: text.into(), tools: Vec::new(), report: None, streaming: false }
+        Self {
+            role: "user".into(),
+            content: text.into(),
+            tools: Vec::new(),
+            report: None,
+            streaming: false,
+        }
     }
     pub fn assistant(text: &str) -> Self {
-        Self { role: "assistant".into(), content: text.into(), tools: Vec::new(), report: None, streaming: false }
+        Self {
+            role: "assistant".into(),
+            content: text.into(),
+            tools: Vec::new(),
+            report: None,
+            streaming: false,
+        }
     }
     /// The in-flight assistant bubble — empty, `streaming`, accumulates deltas.
     pub fn streaming_assistant() -> Self {
-        Self { role: "assistant".into(), content: String::new(), tools: Vec::new(), report: None, streaming: true }
+        Self {
+            role: "assistant".into(),
+            content: String::new(),
+            tools: Vec::new(),
+            report: None,
+            streaming: true,
+        }
     }
 }
 
@@ -1432,10 +1456,8 @@ mod fleet_rate_tests {
     #[test]
     fn fleet_rate_headline_is_none_when_no_ceiling_known() {
         // Subscription paths expose no ceiling → None, never fabricated.
-        let s: FleetRateStatus = serde_json::from_str(
-            r#"{"usage":{"buckets":[{"key":"x","usagePct":null}]}}"#,
-        )
-        .unwrap();
+        let s: FleetRateStatus =
+            serde_json::from_str(r#"{"usage":{"buckets":[{"key":"x","usagePct":null}]}}"#).unwrap();
         assert_eq!(s.headline_usage_pct(), None);
         // And a fully-empty payload decodes via defaults.
         let empty: FleetRateStatus = serde_json::from_str("{}").unwrap();
@@ -1658,7 +1680,12 @@ mod tests {
             {"id":"s2","label":"S2","files":[{"path":"b.test.ts"}],"runners":[]}
         ]}"#;
         let d: TestingDomainDetail = serde_json::from_str(j).unwrap();
-        let files: Vec<String> = d.sections.into_iter().flat_map(|s| s.files).map(|f| f.path).collect();
+        let files: Vec<String> = d
+            .sections
+            .into_iter()
+            .flat_map(|s| s.files)
+            .map(|f| f.path)
+            .collect();
         assert_eq!(files, vec!["a.test.ts", "b.test.ts"]);
 
         // run result (camelCase wire).
@@ -1714,11 +1741,17 @@ mod tests {
     #[test]
     fn empty_and_missing_arrays_default() {
         assert_eq!(
-            serde_json::from_str::<PlansResponse>("{}").unwrap().plans.len(),
+            serde_json::from_str::<PlansResponse>("{}")
+                .unwrap()
+                .plans
+                .len(),
             0
         );
         assert_eq!(
-            serde_json::from_str::<RosterResponse>("{}").unwrap().active.len(),
+            serde_json::from_str::<RosterResponse>("{}")
+                .unwrap()
+                .active
+                .len(),
             0
         );
     }
@@ -1760,8 +1793,10 @@ mod tests {
         assert_eq!(l.layouts.len(), 1);
         assert_eq!(l.layouts[0].name, "main");
 
-        let lr: LayoutRow =
-            serde_json::from_str(r#"{"name":"main","kdl":"layout {}","description":null,"updated_at":"t"}"#).unwrap();
+        let lr: LayoutRow = serde_json::from_str(
+            r#"{"name":"main","kdl":"layout {}","description":null,"updated_at":"t"}"#,
+        )
+        .unwrap();
         assert_eq!(lr.kdl, "layout {}");
 
         let c: CrewsResponse = serde_json::from_str(
@@ -1797,7 +1832,10 @@ mod tests {
         assert_eq!(f.flags.get("papercusp-snapshots"), Some(&true));
         assert_eq!(f.flags.get("papercusp-oracle"), Some(&false));
         // Missing flags map defaults to empty.
-        assert!(serde_json::from_str::<FlagsResponse>("{}").unwrap().flags.is_empty());
+        assert!(serde_json::from_str::<FlagsResponse>("{}")
+            .unwrap()
+            .flags
+            .is_empty());
     }
 
     #[test]
@@ -1840,11 +1878,24 @@ mod tests {
         assert_eq!(r.config.backend, "claude-code");
         assert_eq!(r.effective_backend, "claude-code");
         assert_eq!(r.config.cmd, "claude -p --model haiku");
-        assert_eq!(r.config.models.get("worker").map(String::as_str), Some("opus"));
-        assert_eq!(r.config.models.get("merge-resolver").map(String::as_str), Some("opus:xhigh"));
-        assert_eq!(r.config.surface_models.get("operator").map(String::as_str), Some("sonnet"));
+        assert_eq!(
+            r.config.models.get("worker").map(String::as_str),
+            Some("opus")
+        );
+        assert_eq!(
+            r.config.models.get("merge-resolver").map(String::as_str),
+            Some("opus:xhigh")
+        );
+        assert_eq!(
+            r.config.surface_models.get("operator").map(String::as_str),
+            Some("sonnet")
+        );
         // Empty shape defaults cleanly.
-        assert!(serde_json::from_str::<AgentConfigResponse>("{}").unwrap().config.backend.is_empty());
+        assert!(serde_json::from_str::<AgentConfigResponse>("{}")
+            .unwrap()
+            .config
+            .backend
+            .is_empty());
     }
 
     #[test]
@@ -1901,7 +1952,10 @@ mod tests {
         assert_eq!(r.activity[0].owner_id, "su-c8ca5-smoke");
         assert_eq!(r.activity[0].agent.as_deref(), Some("claude"));
         assert_eq!(r.activity[0].kind, "tool");
-        assert_eq!(r.activity[0].summary.as_deref(), Some("▶ npm run test:affected"));
+        assert_eq!(
+            r.activity[0].summary.as_deref(),
+            Some("▶ npm run test:affected")
+        );
         assert!(r.activity[0].detail.is_some());
         assert_eq!(r.activity[1].agent.as_deref(), Some("omp"));
     }
@@ -1933,7 +1987,7 @@ mod tests {
         };
         assert_eq!(c.total(), 7);
         assert_eq!(c.remaining(), 5); // total - (done + dropped)
-        // An empty `{}` (a plan with no items) → all-zero.
+                                      // An empty `{}` (a plan with no items) → all-zero.
         let empty: ItemCounts = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.total(), 0);
         assert_eq!(empty.remaining(), 0);
@@ -1952,8 +2006,7 @@ mod tests {
         assert_eq!(p.item_counts.needs_human, 1);
         assert_eq!(p.item_counts.total(), 6);
         // A plan list row without itemCounts defaults to all-zero.
-        let q: PlanSummary =
-            serde_json::from_str(r#"{"slug":"q","status":"draft"}"#).unwrap();
+        let q: PlanSummary = serde_json::from_str(r#"{"slug":"q","status":"draft"}"#).unwrap();
         assert_eq!(q.item_counts.total(), 0);
         assert_eq!(q.priority, None);
     }
@@ -2004,7 +2057,8 @@ mod tests {
         assert_eq!(p.results[1].kind(), "identity");
         // The unavailable shape ({ok:false, reason}) decodes cleanly.
         let u: MemoriesPayload =
-            serde_json::from_str(r#"{"ok":false,"reason":"mem0_unavailable","results":[]}"#).unwrap();
+            serde_json::from_str(r#"{"ok":false,"reason":"mem0_unavailable","results":[]}"#)
+                .unwrap();
         assert!(!u.ok);
         assert_eq!(u.reason.as_deref(), Some("mem0_unavailable"));
         // Metadata-less entries report an empty kind.
@@ -2035,10 +2089,7 @@ mod tests {
         assert_eq!(r.turns.len(), 2);
         assert_eq!(r.turns[0].role, "user");
         assert_eq!(r.turns[1].text, "hello there");
-        assert_eq!(
-            r.turns[1].tools.as_ref().unwrap()[0].name,
-            "harness:list"
-        );
+        assert_eq!(r.turns[1].tools.as_ref().unwrap()[0].name, "harness:list");
         assert!(r.turns[0].tools.is_none());
         // Empty shape (force-created conversation, no turns) still decodes.
         let e: ConversationLoad =
@@ -2078,7 +2129,10 @@ mod tests {
         let p: ConvListResponse = serde_json::from_str(j).unwrap();
         assert_eq!(p.conversations.len(), 2);
         assert_eq!(p.conversations[0].topics, vec!["zero-cache", "firefox"]);
-        assert_eq!(p.conversations[1].promoted_issue_id.as_deref(), Some("EI-9"));
+        assert_eq!(
+            p.conversations[1].promoted_issue_id.as_deref(),
+            Some("EI-9")
+        );
         assert_eq!(p.conversations[1].harness_slug.as_deref(), Some("papercup"));
         assert!(p.conversations[1].title.is_none());
     }

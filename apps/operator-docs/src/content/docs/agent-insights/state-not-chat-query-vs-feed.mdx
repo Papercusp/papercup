@@ -1,6 +1,10 @@
 ---
 title: Fleet state is queried, not chatted — query vs change-feed vs message
-description: "Who's on what" is a table query (fleet:assignments over the harness_shared.fleet_assignment view), change-awareness is the fleet_assignment PG NOTIFY feed, and the coord message channel carries only the unpredictable. Never reconstruct fleet state by replaying coord messages.
+description: >-
+  "Who's on what" is a table query (fleet:assignments over the
+  harness_shared.fleet_assignment view), change-awareness is the
+  fleet_assignment PG NOTIFY feed, and the coord message channel carries only
+  the unpredictable. Never reconstruct fleet state by replaying coord messages.
 discovered: 2026-06-05
 tags: [coord, fleet, presence, claims, state, change-feed, notify, assignments, inbox]
 status: active

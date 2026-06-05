@@ -8,7 +8,8 @@
  *
  *   0x01 CTRL  (both ways, UTF-8 JSON)
  *     client→server: {op:'join', channel} | {op:'leave'} | {op:'mute', muted} | {op:'status'}
- *     server→client: {ev:'status', status} | {ev:'error', message}
+ *                  | {op:'channels'} | {op:'create', name}
+ *     server→client: {ev:'status', status} | {ev:'channels', channels} | {ev:'error', message}
  *   0x02 MIC   (client→server)  raw PCM16-LE mono 48kHz — any chunking; server reframes
  *   0x03 MIX   (server→client)  one mixed 20ms PCM16-LE frame (1920 bytes), 50/s while in a channel
  *
@@ -30,6 +31,7 @@ import {
   setVoiceMuted,
   voiceStatus,
 } from './manager';
+import { createVoiceChannel, listVoiceChannels } from './registry';
 
 const CTRL = 0x01;
 const MIC = 0x02;
@@ -62,7 +64,7 @@ function broadcastCtrl(msg: unknown): void {
 }
 
 async function handleCtrl(sock: Socket, raw: Uint8Array): Promise<void> {
-  let msg: { op?: string; channel?: string; muted?: boolean };
+  let msg: { op?: string; channel?: string; muted?: boolean; name?: string };
   try {
     msg = JSON.parse(new TextDecoder().decode(raw));
   } catch {
@@ -84,6 +86,15 @@ async function handleCtrl(sock: Socket, raw: Uint8Array): Promise<void> {
       case 'mute': {
         setVoiceMuted(Boolean(msg.muted));
         sendCtrl(sock, { ev: 'status', status: voiceStatus() });
+        break;
+      }
+      case 'channels': {
+        sendCtrl(sock, { ev: 'channels', channels: await listVoiceChannels() });
+        break;
+      }
+      case 'create': {
+        await createVoiceChannel(String(msg.name ?? ''));
+        sendCtrl(sock, { ev: 'channels', channels: await listVoiceChannels() });
         break;
       }
       case 'status':

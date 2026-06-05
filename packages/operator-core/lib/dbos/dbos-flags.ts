@@ -23,9 +23,22 @@ export function dbosOrchestratorActive(env: DbosEnv = process.env): boolean {
 // scheduled-fire loop, gated by dbosRoutinesActive below.
 
 /** The DBOS periodic timers (telemetry flush, GC, embed backfill, backup cadence,
- *  …) are on by default with the orchestrator; disable with PAPERCUSP_DBOS_TIMERS=0. */
+ *  …) are on by default with the orchestrator; disable with PAPERCUSP_DBOS_TIMERS=0.
+ *
+ *  Also requires DBOS itself to be LAUNCHED (PAPERCUSP_DBOS_ENABLE=1 — the
+ *  host-bootstrap launch gate, default OFF). The legacy fallbacks (push-cred
+ *  refresher, harness-status sweep) stand down on this predicate, so without
+ *  the ENABLE check a non-DBOS host reported timers "active" for a DBOS that
+ *  never started — BOTH sides off, violating the no-gap guarantee above.
+ *  (Found on staging :3170, which sets PAPERCUSP_DBOS_ENABLE=0: push
+ *  credentials were never minted, so server-originated FCM pushes silently
+ *  skipped — mobile-apps-revival D-004 close-out.) */
 export function dbosTimersActive(env: DbosEnv = process.env): boolean {
-  return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_TIMERS !== '0';
+  return (
+    env.PAPERCUSP_DBOS_ENABLE === '1' &&
+    dbosOrchestratorActive(env) &&
+    env.PAPERCUSP_DBOS_TIMERS !== '0'
+  );
 }
 
 /**

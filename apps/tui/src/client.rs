@@ -8,17 +8,17 @@
 
 use crate::http::HttpClient;
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
-use crate::models::{
-    ActivityRecentPayload, ActivityRow, AttentionItem, AttentionResponse,
-    ConvDetail, ConvListResponse, ConvSummary,
-    ConversationLoad, CoordInboxResponse, CuratedSignal, CurationFeedPayload,
-    CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
-    HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, Notif,
-    AgentConfigResponse, OperatorConfig, PlanItemStates, PlanSummary,
-    PlansResponse, ProjectsResponse, RosterEntry, RosterResponse, TestingDomain, TestingResponse,
-    ToastsResponse, TuiPanesPayload, TurnsPage, ViewState, ViewStateResponse, WorkItem, WorkItemsPayload,
-};
 use crate::models;
+use crate::models::{
+    ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
+    ConvDetail, ConvListResponse, ConvSummary, ConversationLoad, CoordInboxResponse, CoordMsg,
+    CrewMember, CrewRow, CrewSummary, CrewsResponse, CuratedSignal, CurationFeedPayload,
+    DocsResponse, FeaturesPayload, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef,
+    IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, Notif, OperatorConfig,
+    PlanItemStates, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
+    TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload, TurnsPage, ViewState,
+    ViewStateResponse, WorkItem, WorkItemsPayload,
+};
 use crate::sse::{parse_sse_frames, SseFrame};
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
@@ -91,7 +91,9 @@ impl Transport {
 /// Drain an IPC streaming call's `sse-chunk` frames into a uniform `SseFrame`
 /// channel — the shared pipe for both GET (`subscribe_sse`) and streaming-POST
 /// (`subscribe_sse_post`) over the `sys:http` bridge.
-fn ipc_sse_pipe(mut frames: mpsc::UnboundedReceiver<CallFrame>) -> mpsc::UnboundedReceiver<SseFrame> {
+fn ipc_sse_pipe(
+    mut frames: mpsc::UnboundedReceiver<CallFrame>,
+) -> mpsc::UnboundedReceiver<SseFrame> {
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut buf = String::new();
@@ -349,7 +351,9 @@ impl OperatorClient {
     }
 
     pub async fn issues_for(&self, slug: &str) -> Result<Vec<HarnessIssue>> {
-        let v = self.get_json(&format!("/api/harness/{slug}/issues")).await?;
+        let v = self
+            .get_json(&format!("/api/harness/{slug}/issues"))
+            .await?;
         Ok(serde_json::from_value::<IssuesResponse>(v)
             .context("decode issues")?
             .issues)
@@ -377,7 +381,10 @@ impl OperatorClient {
             }
         }
         let env = self
-            .post_json("/api/agent-tools/conversations/list", serde_json::Value::Object(body))
+            .post_json(
+                "/api/agent-tools/conversations/list",
+                serde_json::Value::Object(body),
+            )
             .await?;
         let text = env
             .get("content")
@@ -425,7 +432,10 @@ impl OperatorClient {
             .context("conversations:promote: missing content[0].text")?;
         let v: serde_json::Value = serde_json::from_str(text).context("parse promote result")?;
         if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
-            let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("promote_failed");
+            let reason = v
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("promote_failed");
             return Err(anyhow!("promote failed: {reason}"));
         }
         Ok(v.get("issue")
@@ -466,13 +476,22 @@ impl OperatorClient {
         let title_trunc: String = title.chars().take(120).collect();
         payload.insert("title".into(), serde_json::json!(title_trunc));
         let v = self
-            .post_json("/api/admin/coord/message-agent", serde_json::Value::Object(payload))
+            .post_json(
+                "/api/admin/coord/message-agent",
+                serde_json::Value::Object(payload),
+            )
             .await?;
         if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
-            let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("message_failed");
+            let err = v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("message_failed");
             return Err(anyhow!("message owner failed: {err}"));
         }
-        Ok(v.get("conversation_id").and_then(|c| c.as_str()).unwrap_or("").to_string())
+        Ok(v.get("conversation_id")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     pub async fn harnesses(&self) -> Result<Vec<HarnessRef>> {
@@ -555,7 +574,10 @@ impl OperatorClient {
             Err(_) => None,
         };
         let providers = match self
-            .post_json("/api/agent-tools/operator/credentials_status", serde_json::json!({}))
+            .post_json(
+                "/api/agent-tools/operator/credentials_status",
+                serde_json::json!({}),
+            )
             .await
         {
             Ok(env) => {
@@ -600,7 +622,11 @@ impl OperatorClient {
     /// Recent worker-activity rows via the `activity:recent` agent-tool (worker-
     /// integration; the pull-side companion to the /api/activity/stream SSE; MCP
     /// envelope unwrapped). `kind` scopes to tool|lifecycle|todos; None → all.
-    pub async fn activity_recent(&self, kind: Option<&str>, limit: u32) -> Result<Vec<ActivityRow>> {
+    pub async fn activity_recent(
+        &self,
+        kind: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ActivityRow>> {
         let mut body = serde_json::json!({ "limit": limit });
         if let Some(k) = kind {
             body["kind"] = serde_json::Value::String(k.to_string());
@@ -780,9 +806,15 @@ impl OperatorClient {
     }
 
     /// Subscribe to this pui's agent-intent SSE stream (P12b / tui:dispatch).
-    pub async fn subscribe_intents(&self, owner: &str) -> Result<mpsc::UnboundedReceiver<SseFrame>> {
-        self.subscribe_sse(&format!("/api/tui/intents/stream?client_id={}", urlencode(owner)))
-            .await
+    pub async fn subscribe_intents(
+        &self,
+        owner: &str,
+    ) -> Result<mpsc::UnboundedReceiver<SseFrame>> {
+        self.subscribe_sse(&format!(
+            "/api/tui/intents/stream?client_id={}",
+            urlencode(owner)
+        ))
+        .await
     }
 
     /// POST an applied agent-intent result back (P12b / tui:dispatch). `result_json`
@@ -879,7 +911,9 @@ impl OperatorClient {
         } else {
             anyhow::bail!(
                 "put claude-settings: {}",
-                v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error")
+                v.get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown error")
             )
         }
     }
@@ -896,11 +930,7 @@ impl OperatorClient {
     }
 
     /// One plugin's saved per-harness config (D-014). Empty object when unset.
-    pub async fn plugin_config(
-        &self,
-        harness: &str,
-        plugin: &str,
-    ) -> Result<serde_json::Value> {
+    pub async fn plugin_config(&self, harness: &str, plugin: &str) -> Result<serde_json::Value> {
         let v = self
             .get_json(&format!(
                 "/api/plugins/config?harness={}&plugin={}",
@@ -933,7 +963,9 @@ impl OperatorClient {
         } else {
             anyhow::bail!(
                 "put plugin config: {}",
-                v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error")
+                v.get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown error")
             )
         }
     }
@@ -969,7 +1001,9 @@ impl OperatorClient {
         if let Some(h) = harness {
             body["harness_slug"] = serde_json::Value::String(h.to_string());
         }
-        let env = self.post_json("/api/agent-tools/memory/search", body).await?;
+        let env = self
+            .post_json("/api/agent-tools/memory/search", body)
+            .await?;
         let text = env
             .get("content")
             .and_then(|c| c.get(0))
@@ -1008,10 +1042,17 @@ impl OperatorClient {
             )
             .await?;
         if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
-            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("stt failed");
+            let err = v
+                .get("error")
+                .and_then(|x| x.as_str())
+                .unwrap_or("stt failed");
             return Err(anyhow!("{err}"));
         }
-        Ok(v.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string())
+        Ok(v.get("text")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string())
     }
 
     /// Synthesize `text` to speech via the operator TTS proxy
@@ -1027,7 +1068,10 @@ impl OperatorClient {
             )
             .await?;
         if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
-            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("tts failed");
+            let err = v
+                .get("error")
+                .and_then(|x| x.as_str())
+                .unwrap_or("tts failed");
             return Err(anyhow!("{err}"));
         }
         let b64 = v
@@ -1041,7 +1085,9 @@ impl OperatorClient {
 
     /// Recent toast-log entries → notification history (P8).
     pub async fn recent_toasts(&self, limit: u32) -> Result<Vec<Notif>> {
-        let v = self.get_json(&format!("/api/toast-log?limit={limit}")).await?;
+        let v = self
+            .get_json(&format!("/api/toast-log?limit={limit}"))
+            .await?;
         let toasts = serde_json::from_value::<ToastsResponse>(v)
             .context("decode toast-log")?
             .toasts;
@@ -1089,7 +1135,8 @@ impl OperatorClient {
                 serde_json::json!({ "github_remote": github_remote }),
             )
             .await?;
-        serde_json::from_value::<models::BindingResolveResponse>(v).context("decode binding resolve")
+        serde_json::from_value::<models::BindingResolveResponse>(v)
+            .context("decode binding resolve")
     }
 
     /// Finalize sharing a pot (`POST /api/harness/:slug/share/finalize`):
@@ -1135,9 +1182,11 @@ impl OperatorClient {
             path.push_str(&format!("&q={}", urlencode(q)));
         }
         let v = self.get_json(&path).await?;
-        Ok(serde_json::from_value::<models::CupboardListingsResponse>(v)
-            .context("decode cupboard listings")?
-            .listings)
+        Ok(
+            serde_json::from_value::<models::CupboardListingsResponse>(v)
+                .context("decode cupboard listings")?
+                .listings,
+        )
     }
 
     /// Install a plugin listing (`POST /api/cupboard/install-plugin`).

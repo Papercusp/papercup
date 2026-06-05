@@ -37,7 +37,12 @@ impl HttpClient {
         format!("{}{}", self.base, path)
     }
 
-    async fn send(&self, method: &str, path: &str, body: Option<String>) -> Result<reqwest::Response> {
+    async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<String>,
+    ) -> Result<reqwest::Response> {
         let mut req = match method {
             "GET" => self.http.get(self.url(path)),
             "POST" => self.http.post(self.url(path)),
@@ -54,7 +59,12 @@ impl HttpClient {
     }
 
     /// `/api/*` request; returns the body bytes, erroring on non-2xx/3xx.
-    pub async fn sys_http(&self, method: &str, path: &str, body: Option<String>) -> Result<Vec<u8>> {
+    pub async fn sys_http(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<String>,
+    ) -> Result<Vec<u8>> {
         let resp = self.send(method, path, body).await?;
         let status = resp.status();
         let bytes = resp.bytes().await.context("read body")?;
@@ -144,7 +154,10 @@ fn discover_operator() -> Result<(String, Option<String>)> {
         .and_then(|x| x.as_str())
         .context("operator.json missing httpUrl")?
         .to_string();
-    let token = v.get("token").and_then(|x| x.as_str()).map(|s| s.to_string());
+    let token = v
+        .get("token")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
     Ok((base, token))
 }
 
@@ -194,21 +207,32 @@ mod tests {
 
     #[tokio::test]
     async fn sys_http_get_sends_bearer_and_returns_body() {
-        let (addr, req_rx) = spawn_http("200 OK", "Content-Type: application/json\r\n", r#"{"ok":true}"#).await;
+        let (addr, req_rx) = spawn_http(
+            "200 OK",
+            "Content-Type: application/json\r\n",
+            r#"{"ok":true}"#,
+        )
+        .await;
         let client = HttpClient::new(addr, Some("secret-token".into()));
         let bytes = client.sys_http("GET", "/api/x", None).await.unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["ok"], serde_json::json!(true));
         let req = req_rx.await.unwrap();
         assert!(req.starts_with("GET /api/x "));
-        assert!(req.contains("authorization: Bearer secret-token") || req.contains("Authorization: Bearer secret-token"));
+        assert!(
+            req.contains("authorization: Bearer secret-token")
+                || req.contains("Authorization: Bearer secret-token")
+        );
     }
 
     #[tokio::test]
     async fn sys_http_errors_on_non_2xx() {
         let (addr, _r) = spawn_http("404 Not Found", "", "nope").await;
         let client = HttpClient::new(addr, None);
-        let err = client.sys_http("GET", "/api/missing", None).await.unwrap_err();
+        let err = client
+            .sys_http("GET", "/api/missing", None)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("404"));
     }
 

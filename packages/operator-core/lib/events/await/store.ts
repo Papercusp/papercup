@@ -369,6 +369,28 @@ export async function expireLapsedAwaits(workspaceId?: string): Promise<number> 
   return rows.length;
 }
 
+/**
+ * Acknowledge one of MY undelivered wakes (subscriber-scoped): "I saw the
+ * parked nudge and acted — do not resume me." Settles the row as delivered
+ * via the inbox channel (which is how it actually reached the acker). The
+ * D-007 cost saver: an acked wake never burns a resume turn.
+ */
+export async function ackDelivery(input: {
+  deliveryId: number;
+  subscriberId: string;
+}): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    UPDATE harness_shared.event_wake_deliveries
+       SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
+           last_error = 'acked by subscriber while awake'
+     WHERE id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+       AND status IN ('pending', 'parked', 'delivering')
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
 /** Recent deliveries for a subscriber (events:status). */
 export async function listRecentDeliveries(subscriberId: string, limit = 10): Promise<DeliveryRow[]> {
   const { sql } = getOrgPg();

@@ -20,9 +20,11 @@ A running list of prompt rewrites **deferred until their underlying surface land
 
 5. **harness-blueprint discovery (the Pot/operator + SU agents need the catalog).** Agents won't spin up harnesses unless they know **which blueprints are available + what each does**. The operator (Pot) + SU prompts must point at a way to **discover the available harness blueprints** — a `blueprints:list` / `harness:available-blueprints` tool returning each blueprint's `id` + purpose/capabilities (coding / research / scan / review / migration / deliberation / gym / …) — so the agent/operator can choose which harness to create via the create-harness tool, and so the operator's generic "figure out what to do" instruction has the menu to choose from. — *Gate:* the from-scratch autoloop / Pot-operator work exposes the harness-blueprint catalog + the `harness:create-from-blueprint` tool. Owner 2026-06-05.
 
+6. **query-first fleet-state reflex: `fleet:assignments` for "who's on what"; the inbox is for messages addressed to you.** The PostToolUse hook surfaces `[coord] N new messages` after every tool call, so the reflex for "who's running / what is X doing / is anyone on plan P" drifts to scanning the inbox — even though that's queryable STATE, not chat. The rewrite (both SU prompts' *Coordination* + the operator scanner/persona): (a) fleet-state questions → **`fleet:assignments`** (`{ agent }` = what is X doing; `{ plan }` = who's on P; surfaces `orphaned` claims = live lease + dead holder, and `declaredUnclaimed` smells) or `coord:presence` — one query over the canonical `harness_shared.fleet_assignment` view (migration 165), never inbox-replay; (b) the inbox is explicitly *for messages addressed to you* (the unpredictable residual — questions, handoffs, design calls); (c) machine change-awareness subscribes the `fleet_assignment` NOTIFY feed (`lib/fleet-assignment-bus.ts`), not the message stream. — *Gate:* `state-not-chat-fleet-state-2026-06-05` (D-004) live on :3070 via the release gate + adoption wanted (the item-2 D-005 precedent: do NOT rewrite until the surface is live). Recorded 2026-06-05.
+
 ## Role personas — `libs/papercusp/packages/harness/prompts/<role>.md`
 
 *(append role-prompt updates here as roles/blueprints change — e.g. new demo-blueprint personas, the scanner→`scan`-blueprint persona, etc.)*
 
 ---
-*Append new deferred prompt updates above. Last updated 2026-06-04.*
+*Append new deferred prompt updates above. Last updated 2026-06-05.*

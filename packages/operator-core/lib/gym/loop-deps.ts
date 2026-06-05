@@ -23,6 +23,7 @@ import { judgeGymRun, type JudgeLlmCall } from './judge';
 import { proposeCandidate, type WorstTrace } from './proposer';
 import { insertCycle } from './store';
 import { runWithRatePause } from './rate-pause';
+import { ratePauseEventHooks } from './rate-pause-events';
 import { GYM_JUDGE_RUBRIC_V1, type GymJudgeRubric } from './judge-scoring';
 import type { GymRunnerPorts } from './gym-runner';
 import type { LoopDeps, EvaluateResult, LoopProposalRecord } from './loop';
@@ -160,7 +161,9 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
               { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric },
               { llmCall: cfg.judgeCall },
             ),
-          { now, sleep },
+          // P-010 (await-event): pauses emit rate-limit:paused/reset:gym-judge —
+          // awaitable + on the wake meter instead of an invisible in-process sleep.
+          { now, sleep, ...ratePauseEventHooks('gym-judge') },
         );
         await ab.store.recordScore(runId, score);
         const sig = (rawSignals ?? {}) as Record<string, unknown>;

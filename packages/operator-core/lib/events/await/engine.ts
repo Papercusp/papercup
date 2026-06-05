@@ -214,7 +214,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             await sendMessage(emitterIdentity('await-event', d.workspaceId), {
               to: [d.subscriberId],
               summary: `[await-event] ${d.eventKey} fired — wake parked (${outcome.reason})`,
-              body: d.summary ?? undefined,
+              body: `${d.summary ?? ''}\nIf you act on this now, ack it with events:cancel { delivery_id: ${d.id} } so you are not also resumed for it later.`.trim(),
               category: 'event',
               extra: { auto: true, event_key: d.eventKey, wake_delivery_id: d.id },
             });
