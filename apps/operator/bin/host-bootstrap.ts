@@ -16,7 +16,6 @@
  * so even an accidental double-call from a different bootstrap path is safe.
  */
 import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
-import { startAutoLoopOnce } from '@papercusp/operator-core/lib/autoloop';
 import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
@@ -138,8 +137,9 @@ export function runBootstrap(): void {
       console.warn('[plugin-mount] unexpected rejection:', e);
     });
 
-  // AutoLoop ticker — periodic fires of harnesses with autoLoop=true. Idempotent.
-  startAutoLoopOnce();
+  // The legacy in-process AutoLoop ticker is RETIRED (autoloop-pot-operator-
+  // rebuild P-010 / D-009) — scheduled decider fires ride the durable routines
+  // engine (blueprint triggers.schedule → system:blueprint-run).
   startMobileVoiceWs();
   startPushCredentialRefresher();
   // device-intervention-watcher (60s poll) retired (P-021) — escalation /

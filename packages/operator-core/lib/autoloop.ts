@@ -1,281 +1,181 @@
 /**
- * AutoLoop ticker — periodic firing of harness directors based on each
- * harness's director-config.json.
+ * Autoloop fire-state + error-backoff — autoloop-pot-operator-rebuild-2026-06-05
+ * P-009/P-010 (D-009).
  *
- * Polls every TICK_INTERVAL_MS (default 30s):
- *   1. Enumerate registered harnesses (via /api/harness/projects)
- *   2. For each, read .papercusp/director-config.json
- *   3. If autoLoop=true and (now - last_fired_at) >= autoIntervalSeconds:
- *      POST /api/harness/<slug>/invoke?role=director (fire-and-forget)
- *      Persist last_fired_at to harness_shared.autoloop_state
+ * The two duplicate director-cadence loops are GONE:
+ *   - the legacy in-process `setInterval` ticker that lived here, and
+ *   - its DBOS twin (`dbos/autoloop-workflow.ts`) — both read
+ *     `.papercusp/director-config.json` (`autoLoop:true`), an enablement
+ *     surface nothing wrote (last fired 34 days before the rebuild).
  *
- * State table is in PG so a process restart picks up where it left off
- * (within at most one tick interval of slop). The actual ticker is in-process
- * — when the operator restarts, the ticker dies, but a new one starts on
- * boot and resumes from the persisted state.
+ * The surviving cadence loop is the BLUEPRINT path: a harness's blueprint
+ * declares `triggers.schedule`, `harness:create` materializes them into
+ * `harness_shared.routines`, and the durable DBOS `routinesTick` fires
+ * `system:blueprint-run` (→ the blueprint's `spine.decider`) or an agent-role
+ * routine directly. Enablement = the Pot creates a harness whose blueprint
+ * carries its own autoloop — no `autoLoop:true` flag, no director-config.
  *
- * Operator startup wires the ticker via `startAutoLoopOnce()`. Idempotent.
+ * What REMAINS here is the per-(workspace, harness, role) fire-state on
+ * `harness_shared.autoloop_state` — and the previously written-but-never-read
+ * `consecutive_errors` is now READ (D-009): `evaluateFireGate` applies
+ * exponential backoff to a repeatedly-failing role fire and opens the circuit
+ * past a threshold, so a broken director can't be re-fired at full cadence
+ * forever. The gate is consulted by the blueprint-run decider fire and the
+ * role-routine fire (the live paths); `autoloop:control { op:'reset-errors' }`
+ * closes the circuit by hand.
  */
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
-import { dbosAutoloopActive } from './dbos/dbos-flags';
-import { loopbackFetch } from './loopback-fetch';
+import { activeWorkspaceId } from './workspace-registry';
 
 const at = generated.autoloopStateInHarnessShared;
-import { activeWorkspaceId } from './workspace-registry';
-import { promises as fs, existsSync } from 'node:fs';
-import { join } from 'node:path';
 
-const TICK_INTERVAL_MS = Number(process.env.PAPERCUSP_AUTOLOOP_TICK_MS ?? 30_000);
-const FIRE_TIMEOUT_MS = Number(process.env.PAPERCUSP_AUTOLOOP_FIRE_TIMEOUT_MS ?? 120_000);
-
-interface DirectorConfig {
-  autoLoop?: boolean;
-  autoIntervalSeconds?: number;
+/** Backoff doubles from this base per consecutive error. */
+export function backoffBaseSec(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_BACKOFF_BASE_SEC ?? 60);
+  return Number.isFinite(n) && n > 0 ? n : 60;
 }
 
-interface HarnessRow {
-  slug: string;
-  path: string;
-  parent_slug?: string | null;
-  hasState?: boolean;
+/** Backoff never exceeds this cap (also the circuit-open retry window). */
+export function backoffCapSec(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_BACKOFF_CAP_SEC ?? 3600);
+  return Number.isFinite(n) && n > 0 ? n : 3600;
 }
 
-let started = false;
-let stopped = false;
-let timer: NodeJS.Timeout | null = null;
-
-export async function listHarnesses(operatorBase: string, workspaceId?: string): Promise<HarnessRow[]> {
-  try {
-    // /projects/lite returns slug+path+harnessDir without the per-project
-    // PG hits we don't need here (autoloop only checks director-config.json
-    // on disk). Cuts the hot-path autoloop tick from ~5s to <50ms.
-    // Phase E (P-020): scope to a workspace via `?ws=` (the workspace middleware
-    // reads the query param — loopbackFetch can't set the header). Omitted → the
-    // operator resolves its global active workspace (today's behavior).
-    const url = workspaceId
-      ? `${operatorBase}/api/harness/projects/lite?ws=${encodeURIComponent(workspaceId)}`
-      : `${operatorBase}/api/harness/projects/lite`;
-    const r = await loopbackFetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!r.ok) return [];
-    const d: any = await r.json();
-    return Array.isArray(d?.projects) ? d.projects : [];
-  } catch {
-    return [];
-  }
+/** Consecutive errors at which the circuit OPENS (fires only once per cap window). */
+export function circuitThreshold(): number {
+  const n = Number(process.env.PAPERCUSP_AUTOLOOP_CIRCUIT_THRESHOLD ?? 8);
+  return Number.isFinite(n) && n >= 1 ? n : 8;
 }
 
-export async function readDirectorConfig(harnessPath: string): Promise<DirectorConfig | null> {
-  const cfg = join(harnessPath, '.papercusp', 'director-config.json');
-  if (!existsSync(cfg)) return null;
-  try {
-    return JSON.parse(await fs.readFile(cfg, 'utf8')) as DirectorConfig;
-  } catch {
-    return null;
-  }
+export interface FireState {
+  lastFiredAt: Date | null;
+  consecutiveErrors: number;
 }
 
-export async function shouldFire(slug: string, role: string, intervalSeconds: number): Promise<boolean> {
+export interface FireGateVerdict {
+  allow: boolean;
+  /** Why a fire was withheld. */
+  reason?: 'backoff' | 'circuit-open';
+  consecutiveErrors: number;
+  /** Seconds until the next allowed attempt (when withheld). */
+  retryAfterSec?: number;
+}
+
+/**
+ * The pure backoff decision (D-009). No errors ⇒ allow. With N consecutive
+ * errors, a re-fire is allowed only after `base * 2^(N-1)` seconds (capped);
+ * at ≥ the circuit threshold the circuit is OPEN — one attempt per cap window
+ * (a half-open probe), so a persistently-broken role degrades to ~hourly
+ * probes instead of full cadence. A success (`recordFire 'ok'`) closes it.
+ */
+export function evaluateFireGate(state: FireState | null, now: Date = new Date()): FireGateVerdict {
+  const errors = state?.consecutiveErrors ?? 0;
+  if (!state || errors <= 0) return { allow: true, consecutiveErrors: errors };
+  const open = errors >= circuitThreshold();
+  const requiredSec = open
+    ? backoffCapSec()
+    : Math.min(backoffBaseSec() * 2 ** (errors - 1), backoffCapSec());
+  const lastMs = state.lastFiredAt ? state.lastFiredAt.getTime() : 0;
+  const elapsedSec = (now.getTime() - lastMs) / 1000;
+  if (elapsedSec >= requiredSec) return { allow: true, consecutiveErrors: errors };
+  return {
+    allow: false,
+    reason: open ? 'circuit-open' : 'backoff',
+    consecutiveErrors: errors,
+    retryAfterSec: Math.ceil(requiredSec - elapsedSec),
+  };
+}
+
+/** Read the fire-state row for (active workspace, slug, role), or null. */
+export async function readFireState(slug: string, role: string): Promise<FireState | null> {
   const { db } = getOrgPg();
-  // Phase E (P-020): fire-state is per-(workspace, slug, role). Scope by the
-  // current workspace (set by the tick's runWithWorkspace, else the global) so
-  // the same slug in two workspaces fires independently.
   const ws = activeWorkspaceId();
   const rows = await db
-    .select({ last_fired_at: at.lastFiredAt })
+    .select({ last_fired_at: at.lastFiredAt, consecutive_errors: at.consecutiveErrors })
     .from(at)
     .where(and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role)));
-  if (rows.length === 0) return true; // never fired for this (workspace, role)
-  const elapsed = (Date.now() - new Date(rows[0].last_fired_at).getTime()) / 1000;
-  return elapsed >= intervalSeconds;
+  if (rows.length === 0) return null;
+  return {
+    lastFiredAt: rows[0].last_fired_at ? new Date(rows[0].last_fired_at) : null,
+    consecutiveErrors: Number(rows[0].consecutive_errors ?? 0),
+  };
 }
 
-export async function recordFire(slug: string, role: string, status: string, errorBumped: boolean): Promise<void> {
+/** Read + evaluate in one call — the gate the live fire paths consult. */
+export async function checkFireGate(slug: string, role: string, now: Date = new Date()): Promise<FireGateVerdict> {
+  try {
+    return evaluateFireGate(await readFireState(slug, role), now);
+  } catch (e) {
+    // Fail OPEN (allow): the gate is a protection, not a dependency — a PG
+    // hiccup must not stop the fleet's scheduled fires.
+    console.warn(`[autoloop] fire-gate read failed (${slug}/${role}) — allowing:`, e instanceof Error ? e.message : e);
+    return { allow: true, consecutiveErrors: 0 };
+  }
+}
+
+/**
+ * Record a fire-path event for (active workspace, slug, role).
+ *
+ * `outcome` semantics (P-009 — fixes the old write path where the pre-fire
+ * `'firing'` record RESET the counter, so consecutive_errors could never
+ * exceed 1):
+ *   - 'attempt' — a fire was dispatched; status updated, counter PRESERVED.
+ *   - 'ok'      — the fire succeeded; counter reset to 0 (closes the circuit).
+ *   - 'error'   — the fire failed; counter incremented.
+ */
+export async function recordFire(
+  slug: string,
+  role: string,
+  status: string,
+  outcome: 'attempt' | 'ok' | 'error',
+): Promise<void> {
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  if (errorBumped) {
-    await db
-      .insert(at)
-      .values({
-        harnessSlug: slug,
-        role,
-        lastFiredAt: dsql`now()` as any,
-        lastStatus: status,
-        consecutiveErrors: 1,
-        workspaceId: ws,
-      })
-      .onConflictDoUpdate({
-        target: [at.workspaceId, at.harnessSlug, at.role],
-        set: {
-          lastFiredAt: dsql`now()`,
-          lastStatus: dsql`EXCLUDED.last_status`,
-          consecutiveErrors: dsql`${at.consecutiveErrors} + 1`,
-          workspaceId: dsql`EXCLUDED.workspace_id`,
-        },
-      });
-  } else {
-    await db
-      .insert(at)
-      .values({
-        harnessSlug: slug,
-        role,
-        lastFiredAt: dsql`now()` as any,
-        lastStatus: status,
-        consecutiveErrors: 0,
-        workspaceId: ws,
-      })
-      .onConflictDoUpdate({
-        target: [at.workspaceId, at.harnessSlug, at.role],
-        set: {
-          lastFiredAt: dsql`now()`,
-          lastStatus: dsql`EXCLUDED.last_status`,
-          consecutiveErrors: 0,
-          workspaceId: dsql`EXCLUDED.workspace_id`,
-        },
-      });
-  }
-}
-
-interface RoleConfig {
-  cadence?: number;
-}
-
-interface HarnessConfig {
-  roles?: Record<string, RoleConfig>;
-}
-
-export async function readHarnessConfig(harnessPath: string): Promise<HarnessConfig | null> {
-  const cfg = join(harnessPath, '.papercusp', 'config.json');
-  if (!existsSync(cfg)) return null;
-  try {
-    return JSON.parse(await fs.readFile(cfg, 'utf8')) as HarnessConfig;
-  } catch {
-    return null;
-  }
-}
-
-export async function fireDirector(operatorBase: string, slug: string, role: string): Promise<{ ok: boolean; detail?: string }> {
-  try {
-    // Phase E (P-020): resolve the harness in the CURRENT workspace (set by the
-    // tick's runWithWorkspace, else the global) via `?ws=` — loopbackFetch can't
-    // set the header, and without it the invoke would resolve the slug in the
-    // operator's global workspace (wrong one under the shared operator).
-    const ws = encodeURIComponent(activeWorkspaceId());
-    const r = await loopbackFetch(`${operatorBase}/api/harness/${encodeURIComponent(slug)}/invoke?role=${encodeURIComponent(role)}&ws=${ws}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ timeoutMs: FIRE_TIMEOUT_MS }),
-      signal: AbortSignal.timeout(FIRE_TIMEOUT_MS + 30_000),
+  const insertErrors = outcome === 'error' ? 1 : 0;
+  const onUpdateErrors =
+    outcome === 'error'
+      ? dsql`${at.consecutiveErrors} + 1`
+      : outcome === 'ok'
+        ? dsql`0`
+        : dsql`${at.consecutiveErrors}`; // attempt: preserve
+  await db
+    .insert(at)
+    .values({
+      harnessSlug: slug,
+      role,
+      lastFiredAt: dsql`now()` as any,
+      lastStatus: status,
+      consecutiveErrors: insertErrors,
+      workspaceId: ws,
+    })
+    .onConflictDoUpdate({
+      target: [at.workspaceId, at.harnessSlug, at.role],
+      set: {
+        lastFiredAt: dsql`now()`,
+        lastStatus: dsql`EXCLUDED.last_status`,
+        consecutiveErrors: onUpdateErrors,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
+      },
     });
-    if (r.ok) return { ok: true };
-    const text = await r.text().catch(() => '');
-    return { ok: false, detail: `HTTP ${r.status}: ${text.slice(0, 200)}` };
-  } catch (e: any) {
-    return { ok: false, detail: String(e?.message ?? e).slice(0, 200) };
-  }
 }
 
-async function tickOnce(operatorBase: string): Promise<void> {
-  const harnesses = await listHarnesses(operatorBase);
-  for (const h of harnesses) {
-    if (stopped) return;
-    const dirCfg = await readDirectorConfig(h.path);
-    if (!dirCfg?.autoLoop) continue;
-    const harnessCfg = await readHarnessConfig(h.path);
-    const baseInterval = Math.max(30, Number(dirCfg.autoIntervalSeconds ?? 60)); // hard floor 30s
-
-    // Roles to consider: always 'director' (using director-config.autoIntervalSeconds);
-    // also coordinator + auditor IF declared in roles config with a `cadence` field.
-    const rolesToFire: { role: string; intervalSeconds: number }[] = [
-      { role: 'director', intervalSeconds: baseInterval },
-    ];
-    const allRoles = harnessCfg?.roles ?? {};
-    for (const r of ['coordinator', 'auditor']) {
-      const cad = Number(allRoles[r]?.cadence ?? 0);
-      if (cad >= 30) rolesToFire.push({ role: r, intervalSeconds: cad });
-    }
-
-    for (const { role, intervalSeconds } of rolesToFire) {
-      if (stopped) return;
-      const due = await shouldFire(h.slug, role, intervalSeconds);
-      if (!due) continue;
-
-      // eslint-disable-next-line no-console
-      console.log(`[autoloop] firing ${h.slug} → ${role} (interval=${intervalSeconds}s)`);
-      await recordFire(h.slug, role, 'firing', false);
-      fireDirector(operatorBase, h.slug, role).then(
-        (r) => {
-          if (!r.ok) {
-            // eslint-disable-next-line no-console
-            console.warn(`[autoloop] ${h.slug}/${role} fire FAILED: ${r.detail}`);
-            recordFire(h.slug, role, `error: ${r.detail}`, true).catch(() => { /* ignore */ });
-          } else {
-            recordFire(h.slug, role, 'ok', false).catch(() => { /* ignore */ });
-          }
-        },
-        (err) => {
-          // eslint-disable-next-line no-console
-          console.warn(`[autoloop] ${h.slug}/${role} fire threw: ${err}`);
-          recordFire(h.slug, role, `throw: ${err}`, true).catch(() => { /* ignore */ });
-        },
-      );
-    }
-  }
+/** Close the circuit by hand: zero the error counters for a harness (all roles,
+ *  or one). The `autoloop:control { op:'reset-errors' }` target. */
+export async function resetFireErrors(slug: string, role?: string): Promise<number> {
+  const { db } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const where = role
+    ? and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug), eq(at.role, role))
+    : and(eq(at.workspaceId, ws), eq(at.harnessSlug, slug));
+  const res = await db
+    .update(at)
+    .set({ consecutiveErrors: 0, lastStatus: 'errors-reset' })
+    .where(where);
+  return Number((res as unknown as { count?: number }).count ?? 0);
 }
 
-// Backoff state lives on globalThis so HMR (which creates a fresh module
-// instance) doesn't reset it and re-fire bootstrap on every page load.
-const BOOTSTRAP_BACKOFF_MS = Number(process.env.PAPERCUSP_AUTOLOOP_BACKOFF_MS ?? 60_000);
-function bootstrapState(): { lastAttempt: number; armed: boolean } {
-  const g = globalThis as any;
-  if (!g.__papercuspAutoLoop) g.__papercuspAutoLoop = { lastAttempt: 0, armed: false };
-  return g.__papercuspAutoLoop;
-}
-
-export function startAutoLoopOnce(): void {
-  // The legacy in-process ticker stands down EXACTLY when the DBOS autoloop is
-  // active (Option 2: default-on with the orchestrator) — same predicate as the
-  // bootstrap registration, so exactly one fires (no gap, no double-fire). It runs
-  // when the DBOS autoloop is disabled: PAPERCUSP_DBOS_AUTOLOOP=0 (just the autoloop)
-  // or PAPERCUSP_DBOS_ORCHESTRATOR=0 (full legacy revert).
-  if (dbosAutoloopActive()) return;
-  if (started) return;
-  started = true;
-  const state = bootstrapState();
-  if (state.armed) return;
-  // Skip if a recent bootstrap attempt is still within the backoff window —
-  // prevents per-request retry storms when Postgres is connection-saturated.
-  const since = Date.now() - state.lastAttempt;
-  if (state.lastAttempt > 0 && since < BOOTSTRAP_BACKOFF_MS) return;
-  state.lastAttempt = Date.now();
-
-  const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
-
-  // The autoloop_state table is defined by the migration baseline now — no
-  // runtime DDL to await before arming the ticker.
-  state.armed = true;
-  // eslint-disable-next-line no-console
-  console.log(`[autoloop] armed (tick=${TICK_INTERVAL_MS}ms, op=${operatorBase})`);
-  const tick = async () => {
-    if (stopped) return;
-    try { await tickOnce(operatorBase); } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[autoloop] tick error:', e);
-    }
-    if (!stopped) timer = setTimeout(tick, TICK_INTERVAL_MS);
-  };
-  timer = setTimeout(tick, 5_000); // first tick after 5s warmup
-}
-
-export function stopAutoLoop(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = null;
-  (globalThis as any).__papercuspAutoLoop = { lastAttempt: 0, armed: false };
-  started = false;
-}
-
-/** Test/diagnostic: read current state for a harness (all roles). */
+/** Diagnostic read for a harness (all roles) — the autoloop:status surface. */
 export async function getAutoLoopState(slug: string): Promise<any[] | null> {
   const { db } = getOrgPg();
   const rows = await db

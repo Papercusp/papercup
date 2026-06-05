@@ -78,4 +78,20 @@ describe('work_items:complete', () => {
     const out = await call({ id: 'F-12', completion: { summary: 's' } });
     expect(out.completion.workItem).toBe('F-12');
   });
+
+  it('a FAILED state write never loses the completion (EI-24): ok + completion + stateError', async () => {
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue' });
+    setWorkItemState.mockRejectedValue(
+      new Error("work_item 'WI-8' (kind=task) cannot take state 'bogus' — valid: open, resolved, closed, done, dropped, todo"),
+    );
+    const out = await call({
+      id: 'WI-8',
+      state: 'bogus',
+      completion: { summary: 'work landed; state vocab wrong' },
+    });
+    expect(out.ok).toBe(true); // the completion is recorded + emitted regardless
+    expect(out.completion.summary).toBe('work landed; state vocab wrong');
+    expect(out.stateError).toMatch(/valid: open, resolved, closed/);
+    expect(out.workItem.id).toBe('WI-8'); // falls back to the pre-transition item
+  });
 });

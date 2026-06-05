@@ -36,6 +36,7 @@ import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/bl
 import { resolveProjectDir } from '../spawn-config';
 import { loopbackFetch } from '../loopback-fetch';
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
+import { checkFireGate, recordFire } from '../autoloop';
 import { getEffectiveBlueprint } from './project-to-pg';
 import { fireLaunchBlueprint } from './launch-blueprint';
 
@@ -65,13 +66,25 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
   // scheduled run must NOT block the durable step on the whole agent lifetime — the next
   // due tick re-fires (the routine cadence model). Mirrors routines-workflow.ts's
   // role-routine branch + the git-sync merge-resolver dispatch.
+  //
+  // P-009 (D-009): the dispatch + its eventual settle are recorded into
+  // harness_shared.autoloop_state, so consecutive_errors feeds the fire gate —
+  // a repeatedly-failing decider backs off instead of re-firing at full cadence.
+  void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {});
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ kickoff }),
-  }).catch((e) =>
-    console.warn(`[blueprint-run] decider fire failed (${installSlug}/${role}): ${e instanceof Error ? e.message : e}`),
-  );
+  })
+    .then(
+      (r) => recordFire(installSlug, role, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error'),
+      (e) => {
+        const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
+        console.warn(`[blueprint-run] decider fire failed (${installSlug}/${role}): ${detail}`);
+        return recordFire(installSlug, role, `error: ${detail}`, 'error');
+      },
+    )
+    .catch(() => {});
 };
 
 /** Lazily-loaded built-in `coding` blueprint — the fallback when a harness has no blueprint
@@ -211,6 +224,17 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
   }
   // mode === 'run' (default): start a blueprint run by firing the declared decider.
   const role = bp.spine.decider;
+  // P-009 (D-009): the error-backoff fire gate — a decider with accumulating
+  // consecutive_errors is re-fired on an exponential backoff (circuit-open past
+  // the threshold ⇒ ~one probe per cap window), not at full cadence.
+  const gate = await checkFireGate(installSlug, role);
+  if (!gate.allow) {
+    console.warn(
+      `[blueprint-run] ${installSlug}: decider '${role}' fire WITHHELD (${gate.reason}, ` +
+        `consecutive_errors=${gate.consecutiveErrors}, retry in ~${gate.retryAfterSec}s)`,
+    );
+    return;
+  }
   const fire = _fire ?? defaultFire;
   await fire({
     installSlug,

@@ -17,11 +17,10 @@ export function dbosOrchestratorActive(env: DbosEnv = process.env): boolean {
   return env.PAPERCUSP_DBOS_ORCHESTRATOR !== '0';
 }
 
-/** The DBOS autoloop (per-harness director/coordinator/auditor firing) is on by
- *  default with the orchestrator; disable with PAPERCUSP_DBOS_AUTOLOOP=0. */
-export function dbosAutoloopActive(env: DbosEnv = process.env): boolean {
-  return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_AUTOLOOP !== '0';
-}
+// dbosAutoloopActive is GONE (autoloop-pot-operator-rebuild P-010 / D-009): the
+// director-cadence autoloop (legacy ticker + its DBOS twin) is retired — the
+// routines engine (blueprint triggers.schedule → system:blueprint-run) is the
+// scheduled-fire loop, gated by dbosRoutinesActive below.
 
 /** The DBOS periodic timers (telemetry flush, GC, embed backfill, backup cadence,
  *  …) are on by default with the orchestrator; disable with PAPERCUSP_DBOS_TIMERS=0. */

@@ -29,7 +29,6 @@
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import {
   dbosOrchestratorActive,
-  dbosAutoloopActive,
   dbosTimersActive,
   dbosProvisionActive,
   dbosBackupActive,
@@ -88,13 +87,11 @@ export async function startDbos(): Promise<void> {
 
   // Register workflows BEFORE launch so recovery + the scheduler can bind them.
   await import('./hello-workflow');
-  if (dbosAutoloopActive()) {
-    // Phase 1 (default-on with the orchestrator): AutoLoop as a scheduled workflow
-    // + dedup-keyed fire queue — fires per-harness director/coordinator/auditor
-    // durably. The legacy setInterval ticker stands down (same condition). Disable
-    // with PAPERCUSP_DBOS_AUTOLOOP=0.
-    await import('./autoloop-workflow');
-  }
+  // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-
+  // rebuild-2026-06-05 P-010 / D-009): it read `.papercusp/director-config.json`,
+  // an enablement surface nothing wrote. Scheduled decider fires are the routines
+  // engine's job — blueprint `triggers.schedule` → `system:blueprint-run` — with
+  // the consecutive_errors backoff gate in lib/autoloop.ts protecting the fires.
   if (dbosTimersActive()) {
     // Phase 2 (default-on with the orchestrator): periodic timers (telemetry flush,
     // scratch GC, memory cleanup, completion-ref verify, embed backfill, backup

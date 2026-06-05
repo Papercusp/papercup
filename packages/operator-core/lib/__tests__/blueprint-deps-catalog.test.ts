@@ -154,6 +154,25 @@ describe('blueprint dependencies vs the static tool catalog', () => {
     expect(BLUEPRINT_IDS.length).toBeGreaterThanOrEqual(14);
   });
 
+  it('every built-in (except the abstract `base`) declares a dependencies block', () => {
+    // The end-state guard for official-blueprints-cupboard-publish P-002: 13
+    // built-ins declare concrete deps, `audit` may be explicit-empty, and only
+    // `base` (the abstract parent — extends-merge REPLACES arrays, so a base
+    // block would be wiped by every child anyway) goes without one. A NEW
+    // built-in must ship with its dependencies declared.
+    const undeclared = BLUEPRINT_IDS.filter((id) => {
+      if (id === 'base') return false;
+      const raw = parseYaml(readFileSync(join(BLUEPRINTS_ROOT, id, 'blueprint.yaml'), 'utf8')) as
+        | Record<string, unknown>
+        | null;
+      return raw?.dependencies === undefined;
+    });
+    expect(
+      undeclared,
+      `built-ins missing a dependencies block (declare one — explicit-empty is fine): ${undeclared.join(', ')}`,
+    ).toEqual([]);
+  });
+
   it('dep-validator fails loud on an unknown tool and a missing plugin dep', () => {
     const v = validateBlueprintDependencies(
       { tools: ['no:such-tool'], plugins: ['ghost-plugin'] },

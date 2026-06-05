@@ -31,6 +31,7 @@ import {
 } from './judge-scoring';
 import { regressionsFromTests, plantedBugCaught, type TestResult } from './signals';
 import type { PlantedBug } from './probe-generator';
+import { resolveChildBlueprint } from '@papercusp/orchestrator/blueprint';
 
 // ───────────────────────────── signal registry ─────────────────────────────
 

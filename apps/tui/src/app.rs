@@ -863,7 +863,7 @@ impl App {
         self.testing_focus = TestingFocus::Domains;
         self.testing_files_loading = false;
         self.test_run = None;
-        self.config.clear();
+        self.config = EffectiveClaudeSettings::default();
         self.panes.clear();
         self.pane_sel = 0;
         if let Ok(mut g) = self.active_doc.lock() {
@@ -3391,6 +3391,85 @@ mod tests {
         a.palette_open = true;
         a.palette_input = "nope".to_string();
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+    }
+
+    #[test]
+    fn parses_config_palette_commands() {
+        // D-013: `:set <key.path> <value>` / `:unset <key.path>`.
+        assert_eq!(
+            parse_palette_command(":set permissions.defaultMode plan"),
+            Some(PaletteCommand::ConfigSet {
+                key: "permissions.defaultMode".into(),
+                value: "plan".into()
+            })
+        );
+        assert_eq!(
+            parse_palette_command("set cleanupPeriodDays 60"),
+            Some(PaletteCommand::ConfigSet { key: "cleanupPeriodDays".into(), value: "60".into() })
+        );
+        // Value with spaces survives (splitn 2 on the key).
+        assert_eq!(
+            parse_palette_command(r#":set env.NAME some value"#),
+            Some(PaletteCommand::ConfigSet { key: "env.NAME".into(), value: "some value".into() })
+        );
+        assert_eq!(parse_palette_command(":set model"), None); // value required
+        assert_eq!(
+            parse_palette_command(":unset env.FOO"),
+            Some(PaletteCommand::ConfigUnset { key: "env.FOO".into() })
+        );
+        assert_eq!(parse_palette_command(":unset"), None);
+    }
+
+    #[test]
+    fn palette_enter_dispatches_config_edit() {
+        let mut a = App::new();
+        a.harness = "papercup".to_string();
+        a.palette_open = true;
+        a.palette_input = ":set model opus".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::ConfigEdit {
+                harness: "papercup".into(),
+                key: "model".into(),
+                value: Some("opus".into())
+            }
+        );
+        a.palette_open = true;
+        a.palette_input = ":unset model".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::ConfigEdit { harness: "papercup".into(), key: "model".into(), value: None }
+        );
+    }
+
+    #[test]
+    fn config_value_parses_json_else_string() {
+        assert_eq!(parse_config_value("60"), json!(60));
+        assert_eq!(parse_config_value("true"), json!(true));
+        assert_eq!(parse_config_value("null"), json!(null));
+        assert_eq!(parse_config_value(r#"["a","b"]"#), json!(["a", "b"]));
+        assert_eq!(parse_config_value(r#"{"x":1}"#), json!({ "x": 1 }));
+        assert_eq!(parse_config_value("claude-opus-4-8"), json!("claude-opus-4-8"));
+        // A quoted JSON string stays a string (unquoted).
+        assert_eq!(parse_config_value(r#""sixty""#), json!("sixty"));
+    }
+
+    #[test]
+    fn edit_json_path_sets_and_unsets() {
+        let mut v = json!({});
+        edit_json_path(&mut v, "permissions.defaultMode", Some(json!("plan"))).unwrap();
+        assert_eq!(v, json!({ "permissions": { "defaultMode": "plan" } }));
+        edit_json_path(&mut v, "model", Some(json!("opus"))).unwrap();
+        edit_json_path(&mut v, "permissions.defaultMode", None).unwrap();
+        assert_eq!(v, json!({ "permissions": {}, "model": "opus" }));
+        // :unset of a missing path is a no-op, not an error.
+        edit_json_path(&mut v, "a.b.c", None).unwrap();
+        // Setting THROUGH a scalar errors instead of clobbering it.
+        let err = edit_json_path(&mut v, "model.sub", Some(json!(1))).unwrap_err();
+        assert!(err.contains("not an object"), "{err}");
+        // Empty path errors.
+        assert!(edit_json_path(&mut v, "", Some(json!(1))).is_err());
+        assert!(edit_json_path(&mut v, "..", Some(json!(1))).is_err());
     }
 
     #[test]

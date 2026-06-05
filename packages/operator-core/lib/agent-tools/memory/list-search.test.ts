@@ -1,0 +1,128 @@
+/**
+ * memory:list / memory:search — the BYTE-STABLE wire envelope
+ * (generalize-memory-backend-swappable P-003).
+ *
+ * The TUI Memory tab (apps/tui/src/models.rs MemoriesPayload/MemoryEntry)
+ * deserializes exactly `{ ok, reason?, results: [{ id, memory, metadata?,
+ * score? }] }` from these tools and reads `kind` from `metadata.kind`.
+ * These tests pin that contract over the neutral-backend refactor:
+ *  • neutral Entry.text → wire `memory`;
+ *  • Entry.kind is materialized into `metadata.kind` (claude-file carries
+ *    kind only at the entry level — without this the TUI shows no kind);
+ *  • unavailable backends → `{ ok:false, reason, results: [] }`;
+ *  • search slices the merged result to the global limit.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../memory/backend', () => ({
+  getMemoryBackend: vi.fn(),
+}));
+vi.mock('../../auth', () => ({
+  getSessionUserOrDefault: vi.fn(),
+}));
+vi.mock('@papercusp/agent-mcp', () => ({
+  defineTool: (def: unknown) => def,
+}));
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercup' }] })),
+}));
+
+import list from './list';
+import search from './search';
+import { getMemoryBackend } from '../../memory/backend';
+import { getSessionUserOrDefault } from '../../auth';
+
+type Entry = {
+  id: string; text: string; kind?: string; scope: string;
+  score?: number; metadata?: Record<string, unknown>;
+};
+
+const fakeBackend = (entries: Entry[], ok = true) => ({
+  name: 'fake',
+  available: vi.fn(async () => (ok ? { ok: true } : { ok: false, reason: 'memory_backend_disabled' })),
+  list: vi.fn(async () => entries),
+  search: vi.fn(async () => entries),
+});
+
+const useBackend = (b: ReturnType<typeof fakeBackend>): void => {
+  vi.mocked(getMemoryBackend).mockReturnValue(b as unknown as ReturnType<typeof getMemoryBackend>);
+};
+
+const ctx = { workspaceId: 'ws-test' } as unknown as Parameters<typeof search.handler>[1];
+
+const parse = (res: unknown): { ok: boolean; reason?: string; results: Array<Record<string, unknown>> } =>
+  JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+beforeEach(() => {
+  vi.mocked(getSessionUserOrDefault).mockResolvedValue({
+    id: 'user-1',
+    display_name: 'Test User',
+  } as unknown as Awaited<ReturnType<typeof getSessionUserOrDefault>>);
+});
+
+describe('the byte-stable wire envelope (TUI Memory tab contract)', () => {
+  it('memory:list maps neutral entries to {id, memory, metadata, score} rows', async () => {
+    const b = fakeBackend([
+      { id: 'm1', text: 'prefers rust', kind: 'preference', scope: 'user-1', metadata: { kind: 'preference', a: 1 } },
+      { id: 'm2', text: 'tz is ET', scope: 'user-1' },
+    ]);
+    useBackend(b);
+    const out = parse(await list.handler({}, ctx));
+
+    expect(out.ok).toBe(true);
+    expect(out.results).toEqual([
+      { id: 'm1', memory: 'prefers rust', metadata: { kind: 'preference', a: 1 } },
+      { id: 'm2', memory: 'tz is ET' },
+    ]);
+  });
+
+  it('materializes entry-level kind into metadata.kind (claude-file shape)', async () => {
+    // A backend that carries kind ONLY at the entry level (no metadata.kind).
+    const b = fakeBackend([
+      { id: 'c1', text: 'topic fact', kind: 'project', scope: 'user-1', metadata: { source: 'topic-file' } },
+    ]);
+    useBackend(b);
+    const out = parse(await list.handler({}, ctx));
+    expect(out.results[0].metadata).toEqual({ source: 'topic-file', kind: 'project' });
+  });
+
+  it('memory:list scopes user + requested harness pool and forwards kind', async () => {
+    const b = fakeBackend([]);
+    useBackend(b);
+    await list.handler({ harness_slug: 'sheets', kind: 'project' }, ctx);
+    expect(b.list).toHaveBeenCalledWith({
+      scope: ['user-1', 'harness:sheets'],
+      kind: 'project',
+    });
+  });
+
+  it('memory:search fans user + workspace harnesses, slices to the global limit', async () => {
+    const entries: Entry[] = Array.from({ length: 5 }, (_, i) => ({
+      id: `m${i}`, text: `t${i}`, scope: 'user-1', score: (9 - i) / 10,
+    }));
+    const b = fakeBackend(entries);
+    useBackend(b);
+    const out = parse(await search.handler({ query: 'q', limit: 3 }, ctx));
+
+    expect(b.search).toHaveBeenCalledWith('q', {
+      scope: ['user-1', 'harness:papercup'],
+      limit: 3,
+    });
+    expect(out.results).toHaveLength(3);
+    expect(out.results.map((r) => r.id)).toEqual(['m0', 'm1', 'm2']);
+    expect(out.results[0]).toEqual({ id: 'm0', memory: 't0', score: 0.9 });
+  });
+
+  it('unavailable backend → { ok:false, reason, results: [] } on both tools', async () => {
+    const b = fakeBackend([], false);
+    useBackend(b);
+    expect(parse(await list.handler({}, ctx))).toEqual({
+      ok: false, reason: 'memory_backend_disabled', results: [],
+    });
+    expect(parse(await search.handler({ query: 'q' }, ctx))).toEqual({
+      ok: false, reason: 'memory_backend_disabled', results: [],
+    });
+    expect(b.list).not.toHaveBeenCalled();
+    expect(b.search).not.toHaveBeenCalled();
+  });
+});

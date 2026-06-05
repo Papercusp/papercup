@@ -574,6 +574,9 @@ async fn execute_workbench_command(
                 }
             }
         }
+        // Config-tab commands (D-013) are routed to Action::ConfigEdit in the
+        // reducer and never reach the workbench executor — defensive no-op.
+        P::ConfigSet { .. } | P::ConfigUnset { .. } => {}
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {

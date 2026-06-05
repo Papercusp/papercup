@@ -115,3 +115,18 @@ describe('rubricFromBlueprintGym', () => {
     expect(r.dimensions.d1.length).toBeGreaterThan(0);
   });
 });
+
+describe('resolveGymChildBlueprint (D-008 — the $target binding)', () => {
+  it('binds the gym blueprint\'s declared $target to the blueprint under optimization', async () => {
+    const { resolveGymChildBlueprint } = await import('../primitives');
+    const gymBp = { id: 'gym', recursion: { childBlueprint: '$target' } };
+    expect(resolveGymChildBlueprint(gymBp, 'coding')).toBe('coding');
+    expect(resolveGymChildBlueprint(gymBp, 'research')).toBe('research');
+  });
+
+  it('fails closed when the target is missing (no silent self-fallback)', async () => {
+    const { resolveGymChildBlueprint } = await import('../primitives');
+    const gymBp = { id: 'gym', recursion: { childBlueprint: '$target' } };
+    expect(() => resolveGymChildBlueprint(gymBp, '')).toThrow(/bound no "target" param/);
+  });
+});

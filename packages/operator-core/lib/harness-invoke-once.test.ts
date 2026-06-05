@@ -7,7 +7,7 @@
  *     (an empty value reaching the agent reads as "no PG DSN" and breaks spawn-mcp)
  *   - PAPERCUSP_USE_PG_STATE uses `??` so an explicit '0' override survives
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./harness-paths', () => ({
   tsxBin: () => '/bin/tsx-cli',
@@ -202,6 +202,14 @@ describe('applyRoleModel — committed ROLE_MODEL_DEFAULTS floor (EI-7)', () => 
 });
 
 describe('resolveSpawnBackendModel — governor bucket key for a pipeline spawn (RB-012)', () => {
+  beforeEach(() => {
+    // Hermetic baseline: the dev box's .env.local carries a real AGENT_MODELS
+    // map (with a `worker` entry) — without this stub, applyRoleModel overrides
+    // the AGENT_CMD model these tests assert (broke the green-checkpoint run,
+    // which inherits the operator host's env).
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+  });
+
   it("default `omp -p` → omp backend (self-pacing), no model", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);

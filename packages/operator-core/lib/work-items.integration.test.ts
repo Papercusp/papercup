@@ -111,6 +111,29 @@ beforeEach(async () => {
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
 });
 
+describe('per-family state normalization (EI-24)', () => {
+  it("issue-family takes the canonical vocabulary: 'done'→resolved, 'dropped'→closed, 'todo'→open", async () => {
+    const task = await wi.createWorkItem({ kind: 'task', title: 't', harness: 'papercup' });
+    expect((await wi.setWorkItemState(task.id, 'done'))?.state).toBe('resolved');
+    expect((await wi.setWorkItemState(task.id, 'todo'))?.state).toBe('open');
+    expect((await wi.setWorkItemState(task.id, 'dropped'))?.state).toBe('closed');
+  });
+
+  it('an unmappable issue-family state is a TYPED refusal naming the valid set — never a raw PG CHECK error', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup' });
+    await expect(wi.setWorkItemState(bug.id, 'validating')).rejects.toThrow(
+      /cannot take state 'validating' — valid: open, resolved, closed, done, dropped, todo/,
+    );
+  });
+
+  it("feature-family maps 'done'→passed / 'dropped'→deprecated and passes pipeline states through", async () => {
+    const f = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup' });
+    expect((await wi.setWorkItemState(f.id, 'done', { harness: 'papercup' }))?.state).toBe('passed');
+    expect((await wi.setWorkItemState(f.id, 'validating', { harness: 'papercup' }))?.state).toBe('validating');
+    expect((await wi.setWorkItemState(f.id, 'dropped', { harness: 'papercup' }))?.state).toBe('deprecated');
+  });
+});
+
 describe('unified work_items surface (real PG)', () => {
   it('create dispatches by kind + mints kind-INDEPENDENT WI ids (D-002/D-008)', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'shop freezes', summary: 'in firefox', severity: 'major', harness: 'papercup', createdBy: 'agA' });
