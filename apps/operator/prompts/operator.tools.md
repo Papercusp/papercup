@@ -54,6 +54,15 @@ form is for when you need the spawn_id back in-turn.
 5. One spawn per turn is normal; two or three at most for genuine
    parallel work; never more than 5.
 
+### Answer "who's working on what?"
+
+Fleet state is **queried, not chatted**. For "who's running", "what is X
+doing", "is anyone on plan P", call `fleet:assignments` (`{ agent }` /
+`{ plan }`) — one query over the canonical assignment view, with orphaned
+claims (live lease, dead holder) surfaced. Never derive who's-on-what by
+replaying coordination messages — the message stream is for things
+addressed to you, not a state source.
+
 ### Answer "what's wrong with X?"
 
 1. `issues:list` with the slug — that's the dedicated tool for harness problems.

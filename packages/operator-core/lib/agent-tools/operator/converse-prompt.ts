@@ -44,6 +44,12 @@ export interface ConverseInput {
   /** The pui's workbench owner key (its tui:dispatch client_id), passed through
    *  on TUI turns so the affordance block can name the exact target. */
   uiClientId?: string;
+  /** The shared PG conversation this turn belongs to. When present (desktop /
+   *  device / TUI surfaces all send it) and the workspace runs in 'compaction'
+   *  context mode, the prompt gains the rolling summary of every turn older
+   *  than the verbatim window (operator-context-compaction-2026-06-05).
+   *  Absent (legacy voice ask_operator, llm-testing) ⇒ window-only behavior. */
+  conversationId?: string;
 }
 
 export interface ConverseSessionUser {
@@ -76,6 +82,27 @@ export async function buildOperatorPrompt(
     ),
     budget,
   );
+
+  // Rolling conversation summary (operator-context-compaction-2026-06-05).
+  // In 'compaction' mode (the default) the verbatim window above stays the
+  // recency floor and the PG-stored summary of everything older rides as a
+  // separate section — so the brain remembers the gist of the WHOLE
+  // conversation. Best-effort: no conversationId / no summary yet / a read
+  // failure all degrade to exactly the legacy window behavior.
+  const contextMode = prefs?.operatorContextMode ?? 'compaction';
+  let compactedSummary: string | null = null;
+  if (contextMode === 'compaction' && input.conversationId) {
+    try {
+      const { readConversationSummary } = await import('../../operator-conversations');
+      const s = await readConversationSummary(input.conversationId);
+      if (s?.summaryText && s.summaryText.trim()) compactedSummary = s.summaryText.trim();
+    } catch (err) {
+      console.warn(
+        '[converse-prompt] summary read failed (window fallback):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
   const modality: 'voice' | 'text' = input.modality === 'voice' ? 'voice' : 'text';
   const trigger = input.trigger ?? 'user_message';
   const mayAskActive = !!input.mayAskActive;
@@ -137,6 +164,16 @@ export async function buildOperatorPrompt(
 
   // USER sections (this turn's context — sent as the positional message)
   const userSections: string[] = [];
+
+  if (compactedSummary) {
+    userSections.push(
+      `## Earlier conversation (compacted)\n\n` +
+        `The verbatim transcript below covers only recent turns. Everything ` +
+        `earlier was compacted into this rolling summary — treat it as your ` +
+        `memory of the older conversation (decisions, preferences, named ` +
+        `artifacts, open threads):\n\n${compactedSummary}`,
+    );
+  }
 
   if (messages.length > 0) {
     const transcript = messages

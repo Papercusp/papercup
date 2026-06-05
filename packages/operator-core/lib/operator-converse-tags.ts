@@ -27,48 +27,19 @@
  * crash the loop. Telemetry on parse failures is the next layer's job.
  */
 
+import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
+
 export type OperatorMode = 'active' | 'passive';
 
 /**
- * One item inside a `<report>` plan block. `status` is an optional free
- * string (rendered through a glyph map with a neutral fallback) — known
- * tokens are todo|wip|blocked|done|dropped|passed|failing|needs-human,
- * but an unknown status degrades gracefully rather than dropping the row.
+ * The `<report>` payload schema is THE shared structured-block schema of the
+ * card system — it lives in `@papercusp/chat-protocol` as `ReportBlock`
+ * (one schema for `<report>`, `CardSpec.report`, and attention items; see
+ * report-cards-inbox-reconciliation-2026-06-05 D-001). `ParsedReport` is the
+ * operator-converse-facing alias, kept so the parse surface reads naturally.
  */
-export interface ReportItem {
-  /** Item id (e.g. `P-003`, `F-12`), optional. */
-  id?: string;
-  /** The item's one-line text. Required — an item with no text is dropped. */
-  text: string;
-  /** Free-string status; mapped to a glyph by the renderer. */
-  status?: string;
-}
-
-/** One plan (the outer tier) inside a `<report>`. */
-export interface ReportPlan {
-  /** Plan slug, optional (links the block to a plan). */
-  slug?: string;
-  /** Plan title / label. Falls back to `slug` when omitted; a block with neither is dropped. */
-  title: string;
-  /** Free-string status (draft|ready|active|shipped|blocked|…); glyph-mapped. */
-  status?: string;
-  /** Optional one-line summary shown under the title. */
-  summary?: string;
-  /** The plan's items (the inner tier). Omitted/empty when the block is just a header. */
-  items?: ReportItem[];
-}
-
-/**
- * Parsed `<report>` payload — structured per-plan/per-item status the
- * operator emits alongside `<say>`. Rendered as a card on desktop and a
- * two-tiered plan→item list in the TUI. See structured-report-protocol-2026-06-05.
- */
-export interface ParsedReport {
-  /** Optional overall heading for the report. */
-  title?: string;
-  /** The plan blocks (≥1 — a report with no valid plan is dropped to null). */
-  plans: ReportPlan[];
-}
+export type { ReportItem, ReportPlan } from '@papercusp/chat-protocol';
+export type ParsedReport = ReportBlock;
 
 export interface SpawnRequest {
   role: string;
@@ -132,22 +103,14 @@ const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
 const REPORT_RE = /<report>([\s\S]*?)<\/report>/i;
 const REPORT_STRIP_RE = /<report>[\s\S]*?<\/report>/gi;
 
-/** Trim + drop empties: a non-blank string, or undefined. */
-function reportStr(v: unknown): string | undefined {
-  if (typeof v !== 'string') return undefined;
-  const t = v.trim();
-  return t.length > 0 ? t : undefined;
-}
-
 /**
  * Validate a raw `<report>` JSON body into a `ParsedReport`, or null when
  * it's malformed / empty. Defensive like `parseAttrs` — never throws; a
  * bad payload is dropped (the caller warns) rather than crashing the turn.
  *
- * Shape: `{ title?, plans: [{ slug?, title, status?, summary?, items?: [{ id?, text, status? }] }] }`.
- * A plan block needs at least a `title` (or `slug` as fallback); an item
- * needs at least `text` (or `id` as fallback). Blocks/items missing both
- * are skipped. Returns null when no valid plan survives.
+ * Thin wrapper: JSON-parse here, then delegate shape validation/normalization
+ * to the shared `parseReportBlock` in `@papercusp/chat-protocol` (the one
+ * schema — see report-cards-inbox-reconciliation-2026-06-05 D-001).
  */
 export function parseReportBody(jsonBody: string): ParsedReport | null {
   let data: unknown;
@@ -156,44 +119,7 @@ export function parseReportBody(jsonBody: string): ParsedReport | null {
   } catch {
     return null;
   }
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
-  const rawPlans = (data as { plans?: unknown }).plans;
-  if (!Array.isArray(rawPlans)) return null;
-
-  const plans: ReportPlan[] = [];
-  for (const p of rawPlans) {
-    if (!p || typeof p !== 'object') continue;
-    const rec = p as Record<string, unknown>;
-    const slug = reportStr(rec.slug);
-    const title = reportStr(rec.title) ?? slug;
-    if (!title) continue; // a plan block needs a label
-
-    const items: ReportItem[] = [];
-    if (Array.isArray(rec.items)) {
-      for (const it of rec.items) {
-        if (!it || typeof it !== 'object') continue;
-        const irec = it as Record<string, unknown>;
-        const id = reportStr(irec.id);
-        const text = reportStr(irec.text) ?? id;
-        if (!text) continue; // an item needs text
-        items.push({ id, text, status: reportStr(irec.status) });
-      }
-    }
-
-    plans.push({
-      slug,
-      title,
-      status: reportStr(rec.status),
-      summary: reportStr(rec.summary),
-      items: items.length > 0 ? items : undefined,
-    });
-  }
-
-  if (plans.length === 0) return null;
-  const out: ParsedReport = { plans };
-  const topTitle = reportStr((data as Record<string, unknown>).title);
-  if (topTitle) out.title = topTitle;
-  return out;
+  return parseReportBlock(data);
 }
 
 /**

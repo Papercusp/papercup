@@ -36,7 +36,10 @@ creates + supervises **harnesses** (work-pipelines each shaped by a
   (`autoloop-pot-operator-rebuild`, shipping).
 - **Blueprint** — a harness's declarative shape (`base`/`coding`/`research`/
   `gym`/`review`/…) — work-item kind + roles + spine + triggers + gates +
-  `dispatch:`. `blueprint:validate`/`extend`; `harness:create` instantiates one.
+  `dispatch:`. **`blueprint:catalog` lists what's available** (id, tier, roles,
+  spine, triggers — pick by fit); `blueprint:validate`/`extend` author;
+  `harness:create` instantiates one. To TEST a blueprint, instantiate a
+  throwaway harness from it — cheap and disposable by design.
 - **Harness** — one managed work-pipeline, slug-identified, instantiated from a
   blueprint. Your session may be scoped to one (`ctx.harnessSlug`) or sit at
   workspace level.
@@ -130,20 +133,40 @@ consequences:
 Codex) runs a hook that, before each `Edit`/`Write`/`apply_patch`, locks
 the target file and **blocks the edit when another agent holds it**,
 releasing after. You don't hand-lock single edits. When blocked, the result
-names the holder + intent + expiry — **pivot** (best default), **retry**,
-or **yield to the user** with both intents. **Never route around a block**
+names the holder + intent + expiry — **pivot to other useful work** if you
+have any; otherwise **don't poll, retry, or sit blocked**: re-queue with
+`locks:acquire { paths, intent, wake_on_grant: true }` and **END YOUR
+TURN** — you're re-invoked when the grant cascade reaches your ticket, and
+the wake turn carries the granted `lock_id` with its TTL already running
+(`await-event-primitive-2026-06-05`). **Never route around a block**
 (rename, copy, `--force`) — that lock is the other agent's in-flight work.
 Hand-call `locks:acquire` only for the one case the hook can't cover — a
-deliberate change across several files held across multiple edits **and**
-the commit:
+deliberate change across several files held across multiple edits:
 
 ```
-locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wait: { max_sec: 300 } }
+locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wake_on_grant: true }
 ```
 
-then edit → `locks:release { lock_id }`. The hook **fails open**
+then edit → `locks:release { lock_id }`. The legacy blocking
+`wait: { max_sec }` (≤300) is only for a lock you need within THIS turn;
+`wake_on_grant` never holds a turn. The hook **fails open**
 (operator unreachable → edit allowed + flagged at `/coord`), so an infra
 blip never wedges you.
+
+**Blocked on anything announced? `events:await` and sleep — never poll.**
+`events:await { event, note, on_timeout: 'wake' }` registers a one-shot
+wake on an exact event key and re-invokes you when it fires → END YOUR
+TURN. Use it for anything a source or peer announces
+(`plan-run:finished:<id>`, `work-item:done:<id>`,
+`conversation:answered:<id>`, `escalation:resolved:<id>`, or a custom key a
+peer will `events:emit` — pair-emit the key a peer told you they await).
+A rate-limit `retryAfterMs` is a wake-at-reset (`events:await { event:
+'rate-limit:reset:<scope>', timeout_sec: ceil(ms/1000), on_timeout:
+'wake' }`). A parked wake that reaches you as an inbox nudge while still
+awake → ack with `events:cancel { delivery_id }`; `events:status
+{ meter: true }` detects wake-storms. **notify ≠ wake** — `topics:subscribe`
+never wakes you, and a wake costs a whole turn: await only what genuinely
+blocks you. (`await-event-primitive-2026-06-05`.)
 
 **You don't commit or push — git-sync owns it.** A background **git-sync**
 routine commits the whole shared tree (yours *and* every peer's) and
@@ -302,8 +325,18 @@ so you see what's happening in your areas and others see what you discover:
   (`coord-lifecycle-automation`): a `work_item` reaching `done`/`passed` emits its
   completion *from structured fields* (record it on the work_item via
   `work_items:set_state`/`complete`, not a prose "DONE + tested…" send); claim
-  emits "taking X"; `declare-intent` emits focus. Reserve free-text `coord:send`
-  for the genuinely unpredictable (design calls, nuanced reasoning).
+  emits "taking X"; `declare-intent` emits focus. Auto-emits are
+  **subscription-scoped** — they reach that item's watchers, not the whole fleet
+  (`coord-emit-subscription-scoping-2026-06-05`). **Don't narrate the
+  predictable**; reserve free-text `coord:send` for the genuinely unpredictable
+  (design calls, nuanced reasoning).
+- **Fleet state is queried, not chatted.** "Who's running / what is X doing /
+  is anyone on plan P" is queryable STATE: one **`fleet:assignments`** call
+  (`{ agent }` / `{ plan }`; surfaces orphaned claims = live lease + dead
+  holder) or `coord:presence` for the live roster — **never replay the inbox**
+  to derive who's-on-what. The inbox is for messages *addressed to you*
+  (questions, handoffs, design calls).
+  (`state-not-chat-fleet-state-2026-06-05` D-004.)
 
 Tag topics on what you create, claim before fixing, and check your topic-feed.
 

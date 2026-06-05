@@ -209,6 +209,17 @@ export interface VoicePrefs {
    */
   operatorHistoryTokenBudget: number;
   /**
+   * How the operator brain keeps long-conversation context
+   * (operator-context-compaction-2026-06-05 D-001):
+   *   - 'compaction' (default): recent turns verbatim (within
+   *     operatorHistoryTokenBudget) + a rolling PG-stored summary of every
+   *     older turn — the operator remembers the gist of the WHOLE
+   *     conversation at bounded cost.
+   *   - 'window': the legacy escape hatch — verbatim recent window only;
+   *     anything older than the budget is forgotten.
+   */
+  operatorContextMode: 'compaction' | 'window';
+  /**
    * Hard monthly cap on ElevenLabs Conv AI minutes. Once the current
    * month's usage reaches this number, voice-mode refuses to start a
    * new session and surfaces a toast. 0 = uncapped. Default 600 min
@@ -328,6 +339,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   fullAgentSessionMaxMin: 30,
   fullAgentVoiceMode: 'continuous',
   operatorHistoryTokenBudget: 40000,
+  operatorContextMode: 'compaction',
   fullAgentMonthlyMinuteCap: 600,
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
@@ -403,6 +415,11 @@ function mergePrefs(base: VoicePrefs, patch: Partial<VoicePrefs>): VoicePrefs {
     out.operatorHistoryTokenBudget = base.operatorHistoryTokenBudget ?? 40000;
   } else {
     out.operatorHistoryTokenBudget = Math.round(budget);
+  }
+  // Closed enum guard for operatorContextMode — anything unrecognized
+  // falls back to the default ('compaction').
+  if (out.operatorContextMode !== 'compaction' && out.operatorContextMode !== 'window') {
+    out.operatorContextMode = base.operatorContextMode ?? 'compaction';
   }
   // Deep-merge nudgeDedup so partial patches don't drop unwritten kinds.
   if (patch.nudgeDedup) {

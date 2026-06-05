@@ -961,6 +961,74 @@ mod tests {
         assert!(!text.contains("What matters"));
     }
 
+    /// Brief 27 / P-010: buffer-level width safety. Render the Fleet view
+    /// (agent roster + work-item rollup + curated signals) at 80 and 120 cols
+    /// and assert (a) no double-width symbol appears anywhere in the frame
+    /// outside the header-only set (`glyph::header::SET` — Block-title emoji),
+    /// and (b) the roster labels align in a single column across rows (a wide
+    /// glyph upstream of a label would shift it right by one cell).
+    #[test]
+    fn fleet_render_width_safe_and_aligned_at_80_and_120() {
+        use ratatui::{backend::TestBackend, Terminal};
+        use unicode_width::UnicodeWidthStr;
+
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.set_roster(vec![
+            roster_entry("su-alpha", false),
+            roster_entry("su-bee", true),
+            roster_entry("su-much-longer-name", false),
+        ]);
+        app.fleet.set_work_items(vec![
+            wi("feature", "feature", "passed"),
+            wi("feature", "feature", "todo"),
+            wi("bug", "issue", "open"),
+        ]);
+        app.fleet.set_curated_signals(vec![
+            curated("e1", "escalation", "needs a human", "papercup", true),
+            curated("b1", "blocker", "blocked on X", "papercup", false),
+        ]);
+
+        for &(w, h) in &[(80u16, 30u16), (120, 30)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| crate::ui::draw(f, &app)).unwrap();
+            let buf = term.backend().buffer().clone();
+
+            // (a) No wide symbol outside the header set, anywhere in the frame.
+            let mut rows: Vec<String> = Vec::with_capacity(h as usize);
+            for y in 0..h {
+                let mut row = String::with_capacity(w as usize);
+                for x in 0..w {
+                    let sym = buf.cell((x, y)).unwrap().symbol();
+                    if UnicodeWidthStr::width(sym) > 1 {
+                        assert!(
+                            glyph::header::SET.contains(&sym),
+                            "width-2 symbol {sym:?} leaked into row content at ({x},{y}) \
+                             width {w} — only glyph::header::* may be wide"
+                        );
+                    }
+                    row.push_str(sym);
+                }
+                rows.push(row);
+            }
+
+            // (b) Roster rows: every agent label starts at the same column.
+            let cols: Vec<usize> = rows
+                .iter()
+                .filter_map(|r| r.find("su · su-"))
+                .collect();
+            assert!(
+                cols.len() >= 2,
+                "expected at least 2 roster rows in the {w}-col render"
+            );
+            assert!(
+                cols.windows(2).all(|p| p[0] == p[1]),
+                "roster label column drifted at width {w}: {cols:?}"
+            );
+        }
+    }
+
     #[test]
     fn curation_feed_payload_parses() {
         // The inner JSON of the curation:feed MCP envelope.

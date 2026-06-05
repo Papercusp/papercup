@@ -167,7 +167,9 @@ MCP `tools/list`. Don't trust any enumeration here to be complete.
 
 Built-in groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`,
 `work_items:*` (the unified work surface — `features:*`/`issues:*` are legacy
-per-kind views), `blueprint:*` (validate/extend/create), `harness:*`, `docs:*`,
+per-kind views), `blueprint:*` (catalog/validate/extend/create), `events:*`
+(await/emit/cancel/status — the no-polling wake primitive), `fleet:*`
+(assignments/tree/…), `harness:*`, `docs:*`,
 `search:*` (fulltext + semantic), `memory:*`, `messages:*`, `audit:*`,
 `agents:*`, `tasks:*`, `goals:*`, `cross_harness:*`, `artifacts:*`,
 `agent_chats:*`, `ui:*` (UI control), `chat:*` (ask_choice). Plus **MCP resources**
@@ -199,14 +201,17 @@ your activity is visible, just not blocked
   (`coord:presence`); their completions **push** to your `coord:inbox` via
   subscribe→inject — no poll. (The old `delegates:list` / `delegates:inbox` verbs
   collapsed into this — plan `collapse-delegate-into-workitems-2026-06-04`.)
-- **`blueprint:validate` / `blueprint:extend` + `harness:create`** — the blueprint
-  surface. Inspect the available harness blueprints (`base`/`coding`/`research`/
-  `gym`/`review`/`migration`/`deliberate`/`scan`/…), author a child via `extend`
-  (override a built-in's knobs/roles/spine), and instantiate a harness from one.
-  This is how you (and the operator) spin up a harness for a piece of work — pick
-  the blueprint whose shape fits: decomposable features → `coding`, investigation
-  → `research`, optimize another blueprint → `gym`, parallel codemod →
-  `migration`, a decision → `deliberate`.
+- **`blueprint:catalog` → `blueprint:validate`/`extend` → `harness:create`** —
+  the blueprint surface. **Discovery first**: `blueprint:catalog` lists every
+  instantiable blueprint (built-in + Cupboard-installed) with its shape — id,
+  tier, roles, spine model, triggers, dispatch — so you (and the operator)
+  pick by fit: decomposable features → `coding`, investigation → `research`,
+  optimize another blueprint → `gym`, parallel codemod → `migration`, a
+  decision → `deliberate`/`vote`. Author a child via `extend` (override a
+  built-in's knobs/roles/spine), `validate` it, then `harness:create
+  { blueprintId }` instantiates it. **To TEST a blueprint, instantiate a
+  throwaway harness from it** and feed it one work item — don't dry-run the
+  spine in your head; a harness is cheap and disposable by design.
 - **`autoloop:control` / `autoloop:status`** — pause/resume the operator's
   background harness loop. This is the tool for "pause the loop." (Being rebuilt
   around the Pot-operator — `autoloop-pot-operator-rebuild`, shipping.)
@@ -241,22 +246,50 @@ all share **one checkout, kept on `main`**. Three consequences:
 before each `Edit`/`Write`/`apply_patch`, locks the target file and
 **blocks the edit when another agent holds it**, releasing after the edit.
 You don't hand-lock single edits. When blocked, the result names the holder
-+ intent + expiry — **pivot** (best default), **retry**, or **yield to the
-user** with both intents. **Never route around a block** (rename, copy,
-`--force`) — that lock is the other agent's in-flight work. Hand-call
-`locks:acquire` only for the one case the hook can't cover — a deliberate
-change across several files held across multiple edits (git-sync commits +
-pushes for you; you just keep peers off the set while you edit it):
++ intent + expiry — **pivot to other useful work** if you have any;
+otherwise **don't poll, retry, or sit blocked**: re-queue with
+`locks:acquire { paths, intent, wake_on_grant: true }` and **END YOUR
+TURN**. You're re-invoked when the grant cascade reaches your ticket; the
+wake turn carries the granted `lock_id` with its TTL already running
+(`await-event-primitive-2026-06-05` D-005). **Never route around a block**
+(rename, copy, `--force`) — that lock is the other agent's in-flight work.
+Hand-call `locks:acquire` only for the one case the hook can't cover — a
+deliberate change across several files held across multiple edits (git-sync
+commits + pushes for you; you just keep peers off the set while you edit it):
 ```
-locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wait: { max_sec: 300 } }
+locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wake_on_grant: true }
 ```
 then edit → `locks:release { lock_id }` (`locks:heartbeat` at the
-halfway mark if held >15 min). Corners: `ok:false` busy → retry/pivot/yield;
-`waiter_cap_exceeded` → your wait loop is wrong, audit `locks:queue { owner }`;
+halfway mark if held >15 min). The legacy blocking `wait: { max_sec }`
+(≤300) is only for a lock you need within THIS turn while the holder is
+about to finish; `wake_on_grant` takes precedence and never holds a turn.
+Corners: `ok:false` busy without a queued wake → re-queue with
+`wake_on_grant` or pivot; retract a queued wake with `locks:cancel_wait`;
 on session end / context loss, `locks:release { all_mine: true }`;
 `locks:queue` is public (see who holds what). The hook **fails open** — if
 the operator's unreachable it allows the edit + records it (surfaced at
 `/coord`), so an infra blip never wedges you.
+
+**Blocked on anything announced? `events:await` and sleep — never poll,
+never hold a turn.** The await-event primitive
+(`await-event-primitive-2026-06-05`) registers a one-shot wake on an exact
+event key and re-invokes you when it fires: `events:await { event, note,
+on_timeout: 'wake' }` → END YOUR TURN; the wake turn carries the event +
+payload. Use it for anything a source or peer announces:
+`plan-run:finished:<id>`, `work-item:done:<id>` /
+`work-item:unblocked:<id>`, `conversation:answered:<id>`, `release:green` /
+`release:deployed`, `escalation:resolved:<id>`, `handoff:accepted:<id>`, or
+any custom key a collaborator will `events:emit` — **pair-emit**: tell the
+emitter the key you're awaiting, and emit the key a peer told you they
+await when you deliver. A rate-limit `retryAfterMs` is a wake-at-reset:
+`events:await { event: 'rate-limit:reset:<scope>', timeout_sec:
+ceil(ms/1000), on_timeout: 'wake' }` — the deadline IS the reset wake.
+Corners: a parked wake that reaches you as an inbox nudge while you're
+still awake → ack it with `events:cancel { delivery_id }` so you're not
+also resumed; `events:status { meter: true }` is the wake-storm detector.
+**notify ≠ wake** — `topics:subscribe` never wakes you (D-002), and a wake
+costs a whole turn (D-007): await only what genuinely blocks you; ambient
+interest stays a subscription.
 
 **Declare a real intent so your locks explain themselves.** A peer blocked
 on your file sees your *declared* coord intent, not the lock's own label —
@@ -514,9 +547,26 @@ areas and others see what you discover. The loop:
   completion (summary · what-landed · migrations · tests · deferred) on the
   work_item (`work_items:set_state`/`complete`), **not** a prose "DONE + tested…"
   `coord:send`; a claim emits "taking X"; `coord:declare-intent` emits your focus;
-  resource/restart auto-broadcast. Don't hand-call `coord:emit` (it's the system's
-  channel). **Reserve free-text `coord:send` for the genuinely unpredictable** —
-  design calls, nuanced reasoning, novel coordination.
+  resource/restart auto-broadcast. Auto-emits are **subscription-scoped** — they
+  reach the watchers of that item/plan, not the whole fleet
+  (`coord-emit-subscription-scoping-2026-06-05`) — so the typed op is both
+  cheaper and quieter than a broadcast send. Don't hand-call `coord:emit` (it's
+  the system's channel). **Don't narrate the predictable; reserve free-text
+  `coord:send` for the genuinely unpredictable** — design calls, nuanced
+  reasoning, novel coordination.
+
+- **Fleet state is queried, not chatted — the query-first reflex.** "Who's
+  running / what is X doing / is anyone on plan P / is that claim actually
+  being worked?" is queryable STATE, not chat: one **`fleet:assignments`**
+  call (`{ agent }` = what X is doing; `{ plan }` = who's on P) over the
+  canonical `harness_shared.fleet_assignment` view — it also surfaces
+  **orphaned claims** (live lease, dead holder = abandoned work) and
+  declared-but-unclaimed intents — or `coord:presence` for the simple live
+  roster. **Never replay the inbox to derive who's-on-what**; the inbox is
+  for messages *addressed to you* (the unpredictable residual — questions,
+  handoffs, design calls). Machine change-awareness subscribes the
+  `fleet_assignment` NOTIFY feed (`lib/fleet-assignment-bus.ts`), not the
+  message stream. (`state-not-chat-fleet-state-2026-06-05` D-004.)
 
 **Tag topics on everything you create, claim before fixing, and check your
 topic-feed for your areas** — that discipline is what makes the substrate worth

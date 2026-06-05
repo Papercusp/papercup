@@ -83,6 +83,11 @@ const ArgsSchema = z.object({
    *  differ (tui-operator-surface D-001/D-003). */
   surface: z.union([z.literal('desktop'), z.literal('tui')]).optional(),
   uiClientId: z.string().optional(),
+  /** The shared PG conversation this turn belongs to. Enables the rolling-
+   *  summary context (compaction mode) + the post-turn compaction pass
+   *  (operator-context-compaction-2026-06-05). Optional: callers without a
+   *  conversation (llm-testing, legacy voice paths) get window-only context. */
+  conversationId: z.string().optional(),
   /** Session user resolved from cookies by the HTTP route; null
    *  acceptable on the IPC path or unauthenticated calls. */
   sessionUser: SessionUserSchema.nullable().optional(),
@@ -185,6 +190,7 @@ export default defineTool({
         audienceMode: input.audienceMode,
         surface: input.surface,
         uiClientId: input.uiClientId,
+        conversationId: input.conversationId,
       } satisfies OperatorConverseInput,
       sessionUser,
     );
@@ -367,6 +373,24 @@ export default defineTool({
     // Post-stream side-effects. All fire-and-forget so transient
     // failures don't fail the user-visible response.
     void recordSpend(totalCost);
+
+    // Rolling-summary compaction pass (operator-context-compaction-2026-06-05):
+    // fold turns that aged out of the verbatim window into the conversation's
+    // PG summary so the NEXT turn still remembers them. Single-flighted +
+    // threshold-gated inside; no-op without a conversationId.
+    if (input.conversationId) {
+      void (async () => {
+        const { maybeCompactConversation } = await import(
+          '../../operator-conversation-compaction'
+        );
+        await maybeCompactConversation(input.conversationId!);
+      })().catch((err) => {
+        console.warn(
+          '[operator-converse] compaction pass failed:',
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+    }
 
     if (sessionUser) {
       void (async () => {

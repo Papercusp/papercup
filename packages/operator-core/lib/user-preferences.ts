@@ -104,6 +104,7 @@ export const VOICE_USER_OVERRIDE_KEYS = [
   'fullAgentIdleTimeoutMin',
   'fullAgentSessionMaxMin',
   'operatorHistoryTokenBudget',
+  'operatorContextMode',
   'operatorActiveOnStartup',
   'voicePrivacyMode',
   'speakSuggestions',

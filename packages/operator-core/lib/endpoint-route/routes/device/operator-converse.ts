@@ -204,6 +204,9 @@ const converse = defineTool({
               trigger: body.trigger ?? 'user_message',
               modality,
               sessionUser,
+              // Rolling-summary context + post-turn compaction
+              // (operator-context-compaction-2026-06-05).
+              conversationId: conversation.id,
             },
             ctxBase,
             {},

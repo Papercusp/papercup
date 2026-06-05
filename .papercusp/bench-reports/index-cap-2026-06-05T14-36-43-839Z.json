@@ -1,0 +1,72 @@
+{
+  "corpusSize": 114,
+  "sizes": [
+    114,
+    1000,
+    10000
+  ],
+  "points": [
+    {
+      "size": 114,
+      "totalFiles": 114,
+      "indexed": 113,
+      "indexBytes": 26962,
+      "archivedStale": 0,
+      "archivedOverflow": 1,
+      "durableIndexed": 113,
+      "projectIndexed": 0,
+      "overSoftCap": true,
+      "overHardCap": true,
+      "indexedFraction": 0.9912280701754386,
+      "searchableAfterCompaction": 113,
+      "realProjector": {
+        "indexed": 113,
+        "indexKb": 26.3
+      }
+    },
+    {
+      "size": 1000,
+      "totalFiles": 1000,
+      "indexed": 113,
+      "indexBytes": 26962,
+      "archivedStale": 0,
+      "archivedOverflow": 887,
+      "durableIndexed": 113,
+      "projectIndexed": 0,
+      "overSoftCap": true,
+      "overHardCap": true,
+      "indexedFraction": 0.113,
+      "searchableAfterCompaction": 113,
+      "realProjector": {
+        "indexed": 113,
+        "indexKb": 26.3
+      }
+    },
+    {
+      "size": 10000,
+      "totalFiles": 10000,
+      "indexed": 113,
+      "indexBytes": 26962,
+      "archivedStale": 0,
+      "archivedOverflow": 9887,
+      "durableIndexed": 113,
+      "projectIndexed": 0,
+      "overSoftCap": true,
+      "overHardCap": true,
+      "indexedFraction": 0.0113,
+      "searchableAfterCompaction": 113,
+      "realProjector": {
+        "indexed": 113,
+        "indexKb": 26.3
+      }
+    }
+  ],
+  "notes": [
+    "index caps (memory-compact.mjs defaults): soft 20 KB (projector evicts to fit), hard ~24.4 KB (native Claude limit — past it the tail is silently dropped).",
+    "durable types (user/feedback/reference) are never auto-evicted; only project entries are shed (oldest first).",
+    "a real (non-dry-run) compaction PHYSICALLY ARCHIVES evicted files — they leave the backend's searchable store, so the cap bounds recall, not just session-start visibility.",
+    "at 10000 entries only 113 (1.1%) fit the index; 9887 would be archived by one compaction pass.",
+    "the durable set alone exceeds the soft cap at some sizes — nothing mechanical left to shed (the projector emits its near-limit hygiene notice; the real store already hit this once)."
+  ],
+  "markdown": "| store size | indexed | index KB | indexed % | archived by compaction | over soft cap | over hard cap | real projector |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| 114 | 113 (113 durable + 0 project) | 26.3 | 99.1% | 1 | YES | YES | 113 @ 26.3 KB |\n| 1000 | 113 (113 durable + 0 project) | 26.3 | 11.3% | 887 | YES | YES | 113 @ 26.3 KB |\n| 10000 | 113 (113 durable + 0 project) | 26.3 | 1.1% | 9887 | YES | YES | 113 @ 26.3 KB |\n\n- index caps (memory-compact.mjs defaults): soft 20 KB (projector evicts to fit), hard ~24.4 KB (native Claude limit — past it the tail is silently dropped).\n- durable types (user/feedback/reference) are never auto-evicted; only project entries are shed (oldest first).\n- a real (non-dry-run) compaction PHYSICALLY ARCHIVES evicted files — they leave the backend's searchable store, so the cap bounds recall, not just session-start visibility.\n- at 10000 entries only 113 (1.1%) fit the index; 9887 would be archived by one compaction pass.\n- the durable set alone exceeds the soft cap at some sizes — nothing mechanical left to shed (the projector emits its near-limit hygiene notice; the real store already hit this once)."
+}

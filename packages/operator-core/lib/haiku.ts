@@ -23,6 +23,75 @@ import { runAgentChat } from './agent-chat-stream';
 
 const HAIKU_MODEL = process.env.PAPERCUSP_HAIKU_MODEL ?? 'claude-haiku-4-5';
 
+export interface HaikuTurnResult {
+  text: string;
+  /** Model id the call ran on (for provenance columns). */
+  model: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+/**
+ * Run the haiku model on a single prompt via Meridian, returning the text
+ * AND the call's usage (cost + tokens) so callers that must meter spend —
+ * e.g. the conversation compactor's `recordSpend` — can. Returns `null` on
+ * any failure; never throws. Same bounds + transport as `runHaiku` (which
+ * is now a thin wrapper). The meridian path already rides the shared
+ * governor and reports usage telemetry; this just surfaces the numbers to
+ * the caller too.
+ *
+ * `timeoutMs` is overridable: the default 15s suits one-line summaries;
+ * the conversation compactor's bigger prompt/output gets more headroom.
+ */
+export async function runHaikuTurn(
+  prompt: string,
+  opts: { maxTokens?: number; timeoutMs?: number } = {},
+): Promise<HaikuTurnResult | null> {
+  const ac = new AbortController();
+  const killer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 15_000);
+  let out = '';
+  let costUsd = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
+  let failed = false;
+  try {
+    for await (const ev of runAgentChat({
+      backend: 'meridian',
+      promptText: prompt,
+      model: HAIKU_MODEL,
+      maxTokens: opts.maxTokens ?? 200,
+      signal: ac.signal,
+    })) {
+      // meridian backend emits a single `delta` with the full final
+      // text (non-streaming round-trip), then a `result` with the
+      // same text. Overwrite — don't accumulate, or you'll double it.
+      if (ev.type === 'delta') out = ev.text;
+      else if (ev.type === 'result') {
+        out = ev.finalText || out;
+        costUsd = ev.costUsd ?? 0;
+        tokensIn = ev.tokensIn ?? 0;
+        tokensOut = ev.tokensOut ?? 0;
+      } else if (ev.type === 'error') {
+        failed = true;
+        console.warn(
+          `[haiku] failed:`,
+          (ev.stderr ?? ev.message).slice(0, 300),
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('[haiku] threw:', (err as Error).message);
+    return null;
+  } finally {
+    clearTimeout(killer);
+  }
+  if (failed) return null;
+  const text = out.trim();
+  if (!text) return null;
+  return { text, model: HAIKU_MODEL, costUsd, tokensIn, tokensOut };
+}
+
 /**
  * Run the haiku model on a single prompt via Meridian. Returns the
  * trimmed text, or `null` on any failure — this is best-effort and
@@ -38,37 +107,6 @@ export async function runHaiku(
   prompt: string,
   maxTokens = 200,
 ): Promise<string | null> {
-  const ac = new AbortController();
-  const killer = setTimeout(() => ac.abort(), 15_000);
-  let out = '';
-  let failed = false;
-  try {
-    for await (const ev of runAgentChat({
-      backend: 'meridian',
-      promptText: prompt,
-      model: HAIKU_MODEL,
-      maxTokens,
-      signal: ac.signal,
-    })) {
-      // meridian backend emits a single `delta` with the full final
-      // text (non-streaming round-trip), then a `result` with the
-      // same text. Overwrite — don't accumulate, or you'll double it.
-      if (ev.type === 'delta') out = ev.text;
-      else if (ev.type === 'result') out = ev.finalText || out;
-      else if (ev.type === 'error') {
-        failed = true;
-        console.warn(
-          `[haiku] failed:`,
-          (ev.stderr ?? ev.message).slice(0, 300),
-        );
-      }
-    }
-  } catch (err) {
-    console.warn('[haiku] threw:', (err as Error).message);
-    return null;
-  } finally {
-    clearTimeout(killer);
-  }
-  if (failed) return null;
-  return out.trim() || null;
+  const r = await runHaikuTurn(prompt, { maxTokens });
+  return r ? r.text : null;
 }

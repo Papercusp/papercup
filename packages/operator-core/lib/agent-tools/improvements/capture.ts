@@ -30,7 +30,13 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // `scanner` (the scan launch blueprint's role, unify-agent-launches D-005):
+  // capturing findings into the self-improvement backlog IS its output
+  // contract — the P-009 live smoke proved the role allowlist (not the
+  // capability gate) was what kept the spawned scanner from landing its
+  // findings (it has coord:write via BLUEPRINT_ROLE_CAPS, but wasn't in
+  // this list, so the tool never appeared in its projected surface).
+  agentRoles: [...COORD_ROLES, 'scanner'],
   args: z.object({
     title: z.string().min(1).max(180).describe('one-line summary (do NOT include a [kind] prefix — pass kind separately)'),
     kind: z.enum(['bug', 'change', 'feature']).describe('bug = something broken (auto-eligible); change = a desired improvement; feature = net-new (both human-gated)'),

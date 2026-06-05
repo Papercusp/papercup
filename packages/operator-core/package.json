@@ -19,6 +19,7 @@
   "dependencies": {
     "@papercusp/activity-bridge": "*",
     "@papercusp/blueprint-distribution": "*",
+    "@papercusp/chat-protocol": "*",
     "@papercusp/event-reaction": "*",
     "@papercusp/rules": "*",
     "@papercusp/step-program": "*",

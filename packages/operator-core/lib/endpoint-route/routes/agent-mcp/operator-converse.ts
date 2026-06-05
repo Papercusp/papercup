@@ -138,6 +138,9 @@ export default defineTool({
               modality: body.modality,
               surface: body.surface,
               uiClientId: body.uiClientId,
+              // Enables rolling-summary context + the post-turn compaction
+              // pass (operator-context-compaction-2026-06-05).
+              conversationId: body.conversationId,
               sessionUser,
             },
             ctxBase,

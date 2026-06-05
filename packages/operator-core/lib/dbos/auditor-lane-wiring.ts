@@ -173,7 +173,11 @@ export const realCreateEscalation: CreateEscalationFn = async ({
         `**Reasons:** ${reasons}\n\n` +
         `**Actions:**\n` +
         `- **Override → admit**: call \`coord:resolve\` with choice \`admit\` if you have reviewed the feature and it is safe.\n` +
-        `- **Confirm reject**: call \`coord:resolve\` with choice \`reject\` to confirm the feature stays quarantined.\n\n` +
+        `- **Confirm reject**: call \`coord:resolve\` with choice \`reject\` to confirm the feature stays quarantined.\n` +
+        `- **Want a deeper look first?** Run the \`review\` blueprint on the quarantined feature — its ` +
+        `dimension-reviewer → adversarial-verifier → synthesizer loop produces a full report to inform ` +
+        `your decision (unify-agent-launches D-011: the deep multi-dimension review runs AFTER quarantine, ` +
+        `never at the blocking gate).\n\n` +
         `The feature will remain quarantined (not auto-picked) until a human resolves this escalation.`,
       options: [
         { id: 'admit', label: 'Override → admit (I reviewed it and it is safe)' },

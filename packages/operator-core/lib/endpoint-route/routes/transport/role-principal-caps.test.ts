@@ -28,6 +28,20 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('coord:write')).toBe(true);
   });
 
+  test("scanner's OUTPUT CONTRACT is reachable: caps grant coord:write AND improvements:capture allowlists the role (P-009 smoke regression)", async () => {
+    // The capability half: the scan launch blueprint's scanner gets coord:write
+    // (improvements:capture's declared capability) from BLUEPRINT_ROLE_CAPS.
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'scanner');
+    expect(caps.has('coord:write')).toBe(true);
+    expect(caps.has('harness:read')).toBe(true);
+    // The ALLOWLIST half — the one the live smoke caught missing: capability
+    // alone is not enough; the tool's per-role allowlist must include scanner
+    // or the tool never appears in its projected surface and findings can't
+    // land as work_items (the D-005 output contract).
+    const { default: capture } = await import('../../../agent-tools/improvements/capture.js');
+    expect(capture.agentRoles).toContain('scanner');
+  });
+
   test('scanner (launch-blueprint role) gets coord:write + the read caps it scans with', async () => {
     // unify-agent-launches-as-blueprints D-005: the scan blueprint's scanner reads
     // harness/plans/search state and captures findings via improvements:capture

@@ -62,6 +62,8 @@ pub mod severity {
     pub const WARN: &str = "▲";
     pub const ERROR: &str = "⊘";
     pub const CRITICAL: &str = "◆";
+    /// Inbox "alert" tier marker (ASCII on purpose — reads as urgency).
+    pub const ALERT: &str = "!";
     /// Decision-owed signal (curator `decision` kind).
     pub const DECISION: &str = "?";
     /// Routine bullet (curator `progress`/default kind).
@@ -89,6 +91,20 @@ pub mod nav {
     pub const PANES: &str = "▦";
 }
 
+/// Voice-pipeline phase markers (the PTT / realtime composer badges).
+pub mod voice {
+    /// Reply being synthesized / played back.
+    pub const SPEAKING: &str = "♪";
+}
+
+/// Binary on/off markers (focus dots, radio/selection state). Shares the
+/// circle-fill family with `liveness`/`status` (D-004) but named for what
+/// the call site means: "is this thing on?".
+pub mod toggle {
+    pub const ON: &str = "●";
+    pub const OFF: &str = "○";
+}
+
 /// Double-width glyphs — permitted ONLY in `Block` titles (header context),
 /// NEVER in row content. The `width_safety` test asserts this is the only
 /// namespace allowed to hold a width-2 glyph.
@@ -96,6 +112,11 @@ pub mod header {
     pub const BOLT: &str = "⚡";
     pub const BELL: &str = "🔔";
     pub const SCROLL: &str = "📜";
+
+    /// The full header-only set — the ONLY glyphs allowed to be double-width
+    /// in a rendered frame. Buffer-level alignment tests use this as the
+    /// exception list when asserting no wide symbol leaked into row content.
+    pub const SET: &[&str] = &[BOLT, BELL, SCROLL];
 }
 
 /// Fold a free-string status token (work-item / plan-item / report status)
@@ -191,6 +212,7 @@ mod tests {
         severity::CRITICAL,
         severity::DECISION,
         severity::ROUTINE,
+        severity::ALERT,
         action::EDIT,
         action::RUN,
         nav::CURSOR,
@@ -198,6 +220,9 @@ mod tests {
         nav::COLLAPSED,
         nav::FLEET,
         nav::PANES,
+        toggle::ON,
+        toggle::OFF,
+        voice::SPEAKING,
     ];
 
     /// Header glyphs are allowed to be double-width (Block titles only).

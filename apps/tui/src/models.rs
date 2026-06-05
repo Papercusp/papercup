@@ -138,12 +138,14 @@ pub fn tier_label(tier: &str) -> &'static str {
 }
 
 /// Single-width, alignment-safe marker glyph for a tier (TUI in-line use).
+/// Glyphs come from the shared vocabulary (`crate::glyph`, Brief 27) so a
+/// vocabulary swap propagates here automatically.
 pub fn tier_glyph(tier: &str) -> &'static str {
     match tier {
-        "decision" => "◆",
-        "handled" => "✓",
-        "alert" => "!",
-        _ => "·",
+        "decision" => crate::glyph::status::NEEDS_HUMAN,
+        "handled" => crate::glyph::status::DONE,
+        "alert" => crate::glyph::severity::ALERT,
+        _ => crate::glyph::severity::INFO,
     }
 }
 

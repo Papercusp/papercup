@@ -34,8 +34,30 @@ export interface SharedTableFilter {
    * schema get updated in the same transaction. See §15.6 step 7e.
    */
   forkPrefixIds?: boolean;
-  /** Foreign-key columns in *per-harness* tables that reference this table's `id`. */
+  /**
+   * Foreign-key columns in *per-harness* tables that reference this table's
+   * `id`. May be explicitly empty for forkPrefixIds tables nothing in the
+   * per-harness schema references (the empty list is the audit record).
+   */
   fkRefsInPerHarness?: { table: string; column: string }[];
+  /**
+   * Column holding the captured harness slug. At restore time every row
+   * whose value equals the snapshot's original slug is rewritten to the
+   * fork slug — without this, restored rows stay keyed to the publisher's
+   * slug: orphaned on a cross-machine fork, or silently BLED INTO the
+   * source harness on a local fork (the §15.6 step-7e corruption class,
+   * slug edition).
+   */
+  slugColumn?: string;
+  /**
+   * Table-specific row shaping at restore, applied after the slugColumn
+   * rewrite and before forkPrefixIds. For transforms the declarative knobs
+   * can't express (e.g. work_items' issue-family id suffixing).
+   */
+  restoreRowTransform?: (
+    row: Record<string, unknown>,
+    ctx: { originalSlug: string; newSlug: string; forkSuffix: string },
+  ) => Record<string, unknown>;
   /**
    * Either INCLUDE-with-filter (default) or EXCLUDE entirely.
    * Trigger-maintained mirrors are excluded on capture; they get rebuilt
@@ -104,16 +126,26 @@ export const SHARED_TABLE_FILTERS: SharedTableFilter[] = [
     table: 'pending_events',
     mode: 'include',
     filter: (slug) => `install_slug = '${slug}'`,
+    slugColumn: 'install_slug',
+    // PK is the bare `id` (workspace-global): a LOCAL fork re-inserts the
+    // exact captured ids → PK collision → whole restore tx rolls back.
+    // Nothing per-harness references the id, hence the explicit empty list.
+    forkPrefixIds: true,
+    fkRefsInPerHarness: [],
   },
   {
     table: 'routines',
     mode: 'include',
     filter: (slug) => `install_slug = '${slug}'`,
+    slugColumn: 'install_slug',
+    forkPrefixIds: true, // same bare-`id` PK as pending_events
+    fkRefsInPerHarness: [],
   },
   {
     table: 'goals',
     mode: 'include',
     filter: (slug) => `install_slug = '${slug}'`,
+    slugColumn: 'install_slug',
     forkPrefixIds: true,
     fkRefsInPerHarness: [{ table: 'harness_features', column: 'goal_id' }],
   },
@@ -146,25 +178,45 @@ export const SHARED_TABLE_FILTERS: SharedTableFilter[] = [
       'operator-local discovery index for portable export-state snapshots (hybrid FS+PG home — distribution P-006/D-010); not portable per-harness state',
   },
   {
-    // work_items landed (orchestration mig 135) as a VIEW over
-    // harness_features_consolidated, with the D-013 discriminator `item_kind`
-    // (default 'feature') + `payload`. Capture ONLY the NON-feature work-items
-    // (research-task etc.): they live solely in the shared base, so they'd be
-    // lost on capture. Feature-kind rows ride the per-harness capture+rebuild
-    // path (harness_features_consolidated is an `exclude`), so a blanket include
-    // would duplicate them. Slug column confirmed `harness_slug` (NOT
-    // install_slug) against the landed schema. The to_regclass guard in
-    // pg-dump.ts copyFilteredSharedTables makes this safe if the view is absent.
-    // (su-4b6ce P-005 spec, 2026-06-04; distribution P-005 / orchestration D-013.)
-    // NOTE: restore-side slug-rewrite for captured non-feature rows (the
-    // consolidated base is slug-keyed) is the P-005/restore follow-on owned by
-    // su-4b6ce — no non-feature rows exist yet, so this captures a header-only
-    // CSV today (a no-op through restore's empty-CSV skip).
+    // work_items is the cross-kind UNION view (mig 159, unify-work-items
+    // D-010=(b)): harness_features_consolidated (feature|research-task|chunk)
+    // ∪ engineer_issues (bug|change|task) in the feature column space, with
+    // INSTEAD OF triggers routing writes by item_kind. Capture ONLY the
+    // NON-feature work-items: feature-kind rows ride the per-harness
+    // capture+rebuild path (harness_features_consolidated is an `exclude`),
+    // so a blanket include would duplicate them. The to_regclass guard in
+    // pg-dump.ts copyFilteredSharedTables makes this safe if the view is
+    // absent. (su-4b6ce P-005 spec, 2026-06-04; distribution P-005.)
+    //
+    // Restore (the P-005 follow-on, built 2026-06-05 — distribution item 3):
+    //   • slugColumn rewrites harness_slug → the fork slug; the INSTEAD OF
+    //     trigger then derives scope 'harness:<newSlug>' for issue-family rows
+    //     and the fresh (harness_slug, feature_id) PK for hfc-family rows.
+    //   • Issue-family ids (bug|change|task → engineer_issues, PK
+    //     (workspace_id, issue_id) — workspace-GLOBAL) get the `_fork_<suffix>`
+    //     suffix, same precedent as projects.forkPrefixIds, to avoid colliding
+    //     with the consumer's own WI-NNN sequence. hfc-family ids stay intact
+    //     (slug-scoped PK; preserves intra-fork F-NNN/WI-NNN references).
+    //   Known limit: WI-NNN cross-references inside `payload` JSON are NOT
+    //   rewritten (same posture as slug-rewrite.ts's structured-contexts-only
+    //   rule — better a stale ref than a corrupted payload).
     table: 'work_items',
     mode: 'include',
     filter: (slug) => `harness_slug = '${slug}' AND item_kind <> 'feature'`,
+    slugColumn: 'harness_slug',
+    restoreRowTransform: (row, { forkSuffix }) =>
+      ISSUE_FAMILY_KINDS.has(String(row.item_kind))
+        ? { ...row, feature_id: `${String(row.feature_id)}_fork_${forkSuffix}` }
+        : row,
   },
 ];
+
+/**
+ * The issue-family discriminators — rows the work_items view routes to
+ * engineer_issues (mig 159's trigger). Must stay in lockstep with
+ * harness_shared.work_items_view_dml.
+ */
+export const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
 
 export function findSharedTableFilter(table: string): SharedTableFilter | undefined {
   return SHARED_TABLE_FILTERS.find((f) => f.table === table);
