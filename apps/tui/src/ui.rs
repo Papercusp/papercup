@@ -25,15 +25,19 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, root[0]);
 
     // Operator dock (operator-always-visible-2026-06-05, Brief 24): the operator
-    // chat, docked on the RIGHT of every tab EXCEPT the Operator tab (where the
-    // whole tab already IS the chat). Reuses `draw_operator_dock`/`draw_chat` and
-    // the shared `chat_*` state — one conversation, two render sites — so the
-    // operator is usable on any tab via the `o` summon/focus key. Default-closed;
-    // width-gated so narrow terminals keep the tab full-width (the operator is
-    // reached via the Operator tab there). Carved off root[1] BEFORE the presence
-    // and plans-filter splits so the three panes never overlap.
+    // chat, docked on the RIGHT of every tab EXCEPT the tabs that already host the
+    // operator themselves — the Operator tab (the whole tab IS the chat) and the
+    // Overview tab (its draw_overview renders draw_operator_dock as the always-on
+    // bottom strip, Brief 23; a right-dock there would show the chat twice).
+    // Reuses `draw_operator_dock`/`draw_chat` and the shared `chat_*` state — one
+    // conversation, multiple render sites — so the operator is usable on any tab
+    // via the `o` summon/focus key. Default-closed; width-gated so narrow
+    // terminals keep the tab full-width (the operator is reached via the Operator
+    // tab there). Carved off root[1] BEFORE the presence and plans-filter splits
+    // so the panes never overlap.
     let (work, op_dock) = if app.operator_dock_open
         && app.tab != Tab::Operator
+        && app.tab != Tab::Overview
         && root[1].width >= 100
     {
         let cols = Layout::default()
@@ -3529,5 +3533,24 @@ mod tests {
         app.tab = Tab::Plans; // not the Operator tab, dock closed by default
         let text = render(&app, 120, 20);
         assert!(text.contains("o:operator"), "status bar advertises the dock when closed");
+    }
+
+    #[test]
+    fn operator_dock_right_carve_suppressed_on_overview() {
+        // P-008: the Overview tab already hosts the operator (draw_overview
+        // renders draw_operator_dock as its bottom strip, Brief 23), so the
+        // right-dock carve must NOT also fire there — the chat renders exactly
+        // once even with the dock explicitly opened.
+        let mut app = App::new(); // Overview is the default landing (Brief 23)
+        assert_eq!(app.tab, Tab::Overview);
+        app.operator_dock_open = true; // user-opened right-dock…
+        let text = render(&app, 120, 30);
+        // …still exactly ONE unfocused dock marker (the strip's); a second one
+        // would mean the right-dock double-rendered the conversation.
+        assert_eq!(
+            text.matches("○ o").count(),
+            1,
+            "operator must render exactly once on Overview"
+        );
     }
 }

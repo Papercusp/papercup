@@ -299,6 +299,9 @@ import './fleet/governor';
 // (Brief 4, agent-briefs-2026-06-05): chat <spawn> tags, the operator brain's
 // tool call, and the admin HTTP trigger all land in spawnAgentInHarness.
 import './fleet/spawn';
+// fleet:assignments — the canonical "who's on what" state query over the
+// fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
+import './fleet/assignments';
 
 // Coordination ops as blueprint primitives — the dual-surface decision tools
 // (coordination-ops-as-blueprint-primitives-2026-06-04 D-001). coord:vote /

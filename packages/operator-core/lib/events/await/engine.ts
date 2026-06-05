@@ -17,8 +17,10 @@
  * meter (per-agent attribution + channel; events:status reads it).
  */
 
+import { getOrgPg } from '@papercusp/db-org';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { admitSpawn } from '../../fleet/governor';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   claimDueDeliveries,
@@ -173,6 +175,24 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         await markDeliveryDeferred(d.id, DEFER_MS);
         stats.deferred++;
         continue;
+      }
+
+      // D-007: a wake-resume is an agent spawn — pass it through the fleet
+      // governor's admission (role 'await-wake'; default-open until a bucket/
+      // credit is configured, then fleet-wide pacing applies). Fail-open: a
+      // governor-store hiccup must never strand a wake.
+      if (needsSpawnLikely) {
+        try {
+          const verdict = await admitSpawn(getOrgPg().sql, { workspaceId: ws, role: 'await-wake' });
+          if (!verdict.admitted) {
+            await markDeliveryDeferred(d.id, DEFER_MS);
+            stats.deferred++;
+            log(`wake #${d.id} deferred by the fleet governor (${JSON.stringify(verdict)})`);
+            continue;
+          }
+        } catch {
+          /* fail-open */
+        }
       }
 
       seenSubscriber.add(d.subscriberId);

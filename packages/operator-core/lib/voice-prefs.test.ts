@@ -1,4 +1,5 @@
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_VOICE_PREFS } from './voice-prefs';
 
 // voice-prefs.ts moved from `<papercuspRoot>/system/operator/voice-prefs.json`
 // to `harness_shared.operator_voice_prefs` (PG, migration 020) so the
@@ -14,5 +15,27 @@ import { describe, it } from 'vitest';
 describe('voice-prefs (PG-backed)', () => {
   it.skip('migrated to PG — see operator-state-pg.ts smoke tests', () => {
     // intentionally empty — see comment above.
+  });
+});
+
+// P2P voice-channel settings (holepunch-voice-channels-2026-06-05 P-016/D-008):
+// the defaults ARE the contract the Voice Settings views render before any user
+// write — pin them so a rename/retype breaks loudly here, not in a UI.
+describe('voice-channel settings defaults (P-016)', () => {
+  it('ships complete channel-voice defaults', () => {
+    expect(DEFAULT_VOICE_PREFS).toMatchObject({
+      voiceInputDevice: null,
+      voiceOutputDevice: null,
+      voiceInputMode: 'ptt',
+      voicePttKey: 'v',
+      voiceAec: true,
+      voiceNoiseSuppression: true,
+      voiceInputGain: 1,
+      voiceOutputVolume: 1,
+    });
+  });
+
+  it('keeps PTT (not open-mic) as the default — open-mic requires AEC hardening (P-010)', () => {
+    expect(DEFAULT_VOICE_PREFS.voiceInputMode).toBe('ptt');
   });
 });

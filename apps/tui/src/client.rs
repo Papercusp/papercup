@@ -289,6 +289,26 @@ impl OperatorClient {
         Ok(groups.into_iter().flat_map(|g| g.items).collect())
     }
 
+    /// Fleet rate/usage read-model for the Overview top-bar (Brief 23 P-005;
+    /// rate-limit-layer-v2 P-013). The `status` half of
+    /// GET `/api/operator/rate-limit-config`.
+    pub async fn fleet_rate_status(&self) -> Result<models::FleetRateStatus> {
+        let v = self.get_json("/api/operator/rate-limit-config").await?;
+        let status = v.get("status").cloned().unwrap_or(serde_json::Value::Null);
+        serde_json::from_value(status).context("decode fleet rate status")
+    }
+
+    /// Edit the user-editable hard cap (`maxSimultaneousAgents`) — persists to
+    /// PG and propagates live to the governor + dispatcher (no restart).
+    pub async fn set_max_agents(&self, n: u32) -> Result<()> {
+        self.put_json(
+            "/api/operator/rate-limit-config",
+            serde_json::json!({ "maxSimultaneousAgents": n }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Features via the `list_features` agent-tool (MCP envelope unwrapped).
     pub async fn features_for(&self, slug: &str) -> Result<Vec<HarnessFeature>> {
         let env = self
@@ -498,6 +518,27 @@ impl OperatorClient {
     ) -> Result<serde_json::Value> {
         self.post_json(
             "/api/tui/plan-item-convert",
+            serde_json::json!({ "owner": owner, "harness": harness, "plan": plan, "item": item }),
+        )
+        .await
+    }
+
+    /// Put a picked-up plan item back (P-005b release half — the `:pickup`
+    /// inverse). POSTs /api/tui/plan-item-release, which releases the
+    /// converted work_item via `work_items:release` (server-side reflect rules
+    /// flip the item back to todo + drop the lease) or, with no live execution
+    /// record, drops the bare plan-item lease via `plan_items:release`.
+    /// Returns the tool's JSON payload stamped with `via`:
+    /// `{ ok, via, workItem?, released?, note?, … }`.
+    pub async fn plan_item_release(
+        &self,
+        owner: &str,
+        harness: &str,
+        plan: &str,
+        item: &str,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/tui/plan-item-release",
             serde_json::json!({ "owner": owner, "harness": harness, "plan": plan, "item": item }),
         )
         .await

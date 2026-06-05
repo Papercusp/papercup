@@ -8,9 +8,9 @@
 
 use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConvDetail, ConvSummary, CuratedSignal,
-    DocsResponse, EffectiveClaudeSettings, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef,
-    Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
-    TuiPaneContribution, ViewState, WorkItem,
+    DocsResponse, EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature,
+    HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
+    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -30,6 +30,8 @@ pub enum Event {
     Roster(Vec<RosterEntry>),
     /// Fresh inbox (attention) items from the backend poller.
     Inbox(Vec<AttentionItem>),
+    /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).
+    FleetRate(FleetRateStatus),
     /// Fresh features for the active harness.
     Features(Vec<HarnessFeature>),
     /// Fresh issues for the active harness.

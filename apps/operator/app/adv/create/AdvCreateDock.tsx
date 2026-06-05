@@ -62,9 +62,17 @@ export default function AdvCreateDock() {
     };
   }, []);
 
+  // Outer wrapper: flex-fill + position:relative so the absolute-inset
+  // inner div resolves against THIS box, not <main data-route-transition-page>
+  // (position:relative in globals.css) — a bare absolute wrapper here
+  // overlaid the whole route and painted over AdvShell's header + tab strip.
+  // The inner absolute fill stays: DockviewReact needs a definite box, and
+  // WebKitGTK collapses height:100% chains under flex:1 (see HarnessesDock).
   return (
-    <div className="pc-adv-create pc-adv-dock" style={{ position: 'absolute', inset: 0 }}>
-      <HarnessDock layoutName="adv-create2" className="dockview-theme-dark" />
+    <div className="pc-adv-create pc-adv-dock" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div style={{ position: 'absolute', inset: 0 }}>
+        <HarnessDock layoutName="adv-create2" className="dockview-theme-dark" />
+      </div>
     </div>
   );
 }

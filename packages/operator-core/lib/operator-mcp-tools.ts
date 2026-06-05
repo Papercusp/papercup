@@ -73,6 +73,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__fleet:spawn',
   'mcp__agentmcp__fleet:tree',
   'mcp__agentmcp__fleet:cancel',
+  // The canonical "who's on what" state query (state-not-chat-fleet-state):
+  // presence + claims unified, orphaned-claim signal included.
+  'mcp__agentmcp__fleet:assignments',
 
   // Tool introspection — answers "what can I call?". Companion to
   // tools/list with role+capability+quota metadata that the standard

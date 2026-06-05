@@ -7,9 +7,9 @@ use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, CuratedSignal,
-    DocsResponse, EffectiveClaudeSettings, FlagsResponse, HarnessFeature, HarnessIssue,
-    HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
-    TuiPaneContribution, ViewState, WorkItem,
+    DocsResponse, EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature,
+    HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
+    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -58,6 +58,10 @@ pub enum Action {
     /// is the message text (the reducer has already appended it + a streaming
     /// assistant bubble before returning this).
     SendChat(String),
+    /// Edit the fleet's hard cap from the Overview top-bar (Brief 23 P-005) —
+    /// the run loop PUTs `/api/operator/rate-limit-config` then refetches the
+    /// read-model (the reducer already updated the local copy optimistically).
+    SetMaxAgents(u32),
     /// Focus a worker's zellij pane via the companion (tui-operator-surface P2 —
     /// the `focus_pane` tui:dispatch intent). The run loop drives the companion
     /// and POSTs the intent result back.
@@ -512,6 +516,10 @@ pub struct App {
     /// 0 Plans · 1 Needs-you · 2 Agents · 3 Activity. j/k cycle; Enter opens
     /// the tile's full tab (D-007).
     pub overview_sel: usize,
+    /// Fleet rate/usage read-model for the Overview top-bar (P-005;
+    /// rate-limit-layer-v2). None until the first fetch lands (or when the
+    /// host predates the route) — the top-bar renders dashes then.
+    pub fleet_rate: Option<FleetRateStatus>,
     /// Harnesses tab: the harness list + selection + the active harness's data.
     pub harnesses: Vec<HarnessRef>,
     pub harness_sel: usize,
@@ -766,6 +774,7 @@ impl App {
             inbox: Vec::new(),
             inbox_sel: 0,
             overview_sel: 0,
+            fleet_rate: None,
             harnesses: Vec::new(),
             harness_sel: 0,
             harness: "papercup".to_string(),
@@ -1935,6 +1944,10 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::FleetRate(s) => {
+                self.fleet_rate = Some(s);
+                Action::Render
+            }
             Event::Inbox(i) => {
                 self.set_inbox(i);
                 self.last_error = None;
@@ -2770,6 +2783,12 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('r') if self.tab == Tab::Conversations => self.refetch_conversations(),
+            // Overview top-bar max-agents editor (P-005): `+` (or unshifted
+            // `=`) raises and `-` lowers the hard cap, clamped 1..=64.
+            KeyCode::Char('+') | KeyCode::Char('=') if self.tab == Tab::Overview => {
+                self.nudge_max_agents(1)
+            }
+            KeyCode::Char('-') if self.tab == Tab::Overview => self.nudge_max_agents(-1),
             KeyCode::Enter if self.tab == Tab::Overview => self.overview_activate(),
             KeyCode::Enter if self.tab == Tab::Conversations => self.conv_open_detail(),
             KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
@@ -3133,6 +3152,24 @@ impl App {
         let target = Self::overview_tile_target(self.overview_sel);
         self.switch_to(target);
         Action::Render
+    }
+
+    /// Nudge the editable hard cap (`maxSimultaneousAgents`) from the Overview
+    /// top-bar (P-005). No-op until the read-model has loaded — you can't edit
+    /// what you can't see. Optimistic: the local copy updates immediately; the
+    /// run loop PUTs + refetches truth (a failed PUT is corrected by the next
+    /// poll, the same contract as the desktop control).
+    fn nudge_max_agents(&mut self, delta: i64) -> Action {
+        let Some(s) = self.fleet_rate.as_mut() else {
+            return Action::None;
+        };
+        let next = (i64::from(s.config.max_simultaneous_agents) + delta).clamp(1, 64) as u32;
+        if next == s.config.max_simultaneous_agents {
+            return Action::None;
+        }
+        s.config.max_simultaneous_agents = next;
+        s.fleet.cap = next;
+        Action::SetMaxAgents(next)
     }
 
     fn move_sel(&mut self, delta: isize) {
@@ -4832,6 +4869,34 @@ mod tests {
         assert_eq!(b.tab, Tab::Overview);
         b.update(key('1', KeyModifiers::NONE));
         assert_eq!(b.tab, Tab::Operator);
+    }
+
+    #[test]
+    fn overview_max_agents_nudge_clamps_and_emits_put() {
+        let mut a = App::new();
+        assert_eq!(a.tab, Tab::Overview);
+        // No read-model yet → the editor keys are a no-op (can't edit what we
+        // can't see; the host may predate the route).
+        assert_eq!(a.update(key('+', KeyModifiers::NONE)), Action::None);
+        // Seed the read-model (as the poller would).
+        let mut s = crate::models::FleetRateStatus::default();
+        s.config.max_simultaneous_agents = 4;
+        s.fleet.cap = 4;
+        a.update(Event::FleetRate(s));
+        // '+' raises optimistically + emits the PUT action; cap follows.
+        assert_eq!(a.update(key('+', KeyModifiers::NONE)), Action::SetMaxAgents(5));
+        let fr = a.fleet_rate.as_ref().unwrap();
+        assert_eq!(fr.config.max_simultaneous_agents, 5);
+        assert_eq!(fr.fleet.cap, 5);
+        // '=' (unshifted '+') raises too; '-' lowers.
+        assert_eq!(a.update(key('=', KeyModifiers::NONE)), Action::SetMaxAgents(6));
+        assert_eq!(a.update(key('-', KeyModifiers::NONE)), Action::SetMaxAgents(5));
+        // Clamp floor at 1 — no redundant PUT.
+        a.fleet_rate.as_mut().unwrap().config.max_simultaneous_agents = 1;
+        assert_eq!(a.update(key('-', KeyModifiers::NONE)), Action::None);
+        // The editor only lives on the Overview tab.
+        a.tab = Tab::Plans;
+        assert_eq!(a.update(key('+', KeyModifiers::NONE)), Action::None);
     }
 
     #[test]

@@ -30,6 +30,20 @@ import type {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+/** jsonb arrives parsed OR as text depending on the postgres-js client config
+ *  (the repo's known sql.json quirk) — tolerate both. */
+function parseJsonb<T>(v: unknown): T | null {
+  if (v == null) return null;
+  if (typeof v === 'string') {
+    try {
+      return JSON.parse(v) as T;
+    } catch {
+      return null;
+    }
+  }
+  return v as T;
+}
+
 function mapAwait(r: any): AwaitRow {
   return {
     id: Number(r.id),
@@ -38,7 +52,7 @@ function mapAwait(r: any): AwaitRow {
     eventKey: r.event_key,
     policy: r.policy,
     note: r.note ?? null,
-    wakeHandle: (r.wake_handle as WakeHandle | null) ?? null,
+    wakeHandle: parseJsonb<WakeHandle>(r.wake_handle),
     timeoutBehavior: r.timeout_behavior,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
     createdAt: new Date(r.created_at).toISOString(),
@@ -55,7 +69,7 @@ function mapDelivery(r: any): DeliveryRow {
     awaitId: Number(r.await_id),
     subscriberId: r.subscriber_id,
     eventKey: r.event_key,
-    payload: r.payload ?? null,
+    payload: parseJsonb(r.payload),
     summary: r.summary ?? null,
     status: r.status,
     channel: (r.channel as WakeChannel | null) ?? null,
@@ -70,7 +84,7 @@ function mapDelivery(r: any): DeliveryRow {
 function mapWork(r: any): DeliveryWork {
   return {
     ...mapDelivery(r),
-    wakeHandle: (r.wake_handle as WakeHandle | null) ?? null,
+    wakeHandle: parseJsonb<WakeHandle>(r.wake_handle),
     note: r.await_note ?? null,
   };
 }
@@ -95,7 +109,11 @@ export async function registerAwait(input: {
       (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
        ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::jsonb,
        ${input.timeoutBehavior ?? 'expire'},
-       ${input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000) : null})
+       ${
+         // ISO text, not a raw Date — the live org postgres-js client throws on
+         // Date binding (the repo's known quirk); PG casts text→timestamptz.
+         input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null
+       })
     RETURNING *
   `;
   return mapAwait(rows[0]);

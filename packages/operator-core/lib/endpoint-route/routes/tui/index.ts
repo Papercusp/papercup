@@ -26,6 +26,7 @@ import intentsStream from './intents-stream';
 import intentResult from './intent-result';
 import planItemStates from './plan-item-states';
 import planItemConvert from './plan-item-convert';
+import planItemRelease from './plan-item-release';
 import {
   getViewState,
   putViewState,
@@ -201,4 +202,5 @@ export default [
   intentResult,
   planItemStates,
   planItemConvert,
+  planItemRelease,
 ];

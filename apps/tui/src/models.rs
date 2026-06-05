@@ -1307,6 +1307,143 @@ pub struct ConvDetail {
     pub subscriber_count: i64,
 }
 
+/// Fleet rate/usage read-model (rate-limit-layer-v2 P-013/D-004): the `status`
+/// half of GET `/api/operator/rate-limit-config` (`buildFleetRateStatus`).
+/// Rendered in the Overview top-bar (overview-dashboard Brief 23 P-005);
+/// `config.max_simultaneous_agents` is the user-editable hard cap (`+`/`-`
+/// on the Overview tab → PUT).
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetRateStatus {
+    #[serde(default)]
+    pub config: FleetRateConfig,
+    #[serde(default)]
+    pub fleet: FleetRateFleet,
+    #[serde(default)]
+    pub buckets: Vec<FleetRateBucket>,
+    #[serde(default)]
+    pub usage: FleetRateUsage,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetRateConfig {
+    #[serde(default)]
+    pub max_simultaneous_agents: u32,
+    #[serde(default)]
+    pub concurrency_floor: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetRateFleet {
+    #[serde(default)]
+    pub cap: u32,
+    #[serde(default)]
+    pub in_flight: u32,
+    #[serde(default)]
+    pub effective: u32,
+    #[serde(default)]
+    pub floor: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetRateBucket {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetRateUsage {
+    #[serde(default)]
+    pub spend_usd: f64,
+    #[serde(default)]
+    pub calls: u64,
+    #[serde(default)]
+    pub buckets: Vec<FleetRateUsageBucket>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetRateUsageBucket {
+    #[serde(default)]
+    pub key: String,
+    /// Bucket usage 0..100; None when the provider exposes no ceiling
+    /// (subscription paths) — never fabricated (rate-limit v2 D-002).
+    #[serde(default)]
+    pub usage_pct: Option<f64>,
+}
+
+impl FleetRateStatus {
+    /// Headline usage%: the WORST known bucket. None when no bucket exposes a
+    /// ceiling — render a dash, never fabricate. Mirrors the desktop's
+    /// `headlineUsagePct`.
+    pub fn headline_usage_pct(&self) -> Option<f64> {
+        self.usage
+            .buckets
+            .iter()
+            .filter_map(|b| b.usage_pct)
+            .filter(|p| p.is_finite())
+            .fold(None, |worst: Option<f64>, p| {
+                Some(match worst {
+                    Some(w) if w >= p => w,
+                    _ => p,
+                })
+            })
+    }
+    /// Count of currently rate-limit-paused governor buckets.
+    pub fn paused_count(&self) -> usize {
+        self.buckets.iter().filter(|b| b.paused).count()
+    }
+}
+
+#[cfg(test)]
+mod fleet_rate_tests {
+    use super::*;
+
+    #[test]
+    fn fleet_rate_status_decodes_wire_and_derives() {
+        let json = r#"{
+          "config": {"maxSimultaneousAgents": 6, "concurrencyFloor": 1},
+          "fleet": {"cap": 6, "inFlight": 3, "effective": 4, "floor": 1},
+          "buckets": [
+            {"key":"anthropic:big","paused":true,"pausedUntil":null},
+            {"key":"openai:big","paused":false}
+          ],
+          "usage": {"spendUsd": 1.234, "calls": 42, "buckets":[
+            {"key":"a","usagePct":37.5},
+            {"key":"b","usagePct":null},
+            {"key":"c","usagePct":80.0}
+          ]}
+        }"#;
+        let s: FleetRateStatus = serde_json::from_str(json).unwrap();
+        assert_eq!(s.config.max_simultaneous_agents, 6);
+        assert_eq!(s.fleet.in_flight, 3);
+        assert_eq!(s.fleet.effective, 4);
+        assert_eq!(s.paused_count(), 1);
+        // Headline = the WORST known bucket; null-ceiling buckets ignored.
+        assert_eq!(s.headline_usage_pct(), Some(80.0));
+    }
+
+    #[test]
+    fn fleet_rate_headline_is_none_when_no_ceiling_known() {
+        // Subscription paths expose no ceiling → None, never fabricated.
+        let s: FleetRateStatus = serde_json::from_str(
+            r#"{"usage":{"buckets":[{"key":"x","usagePct":null}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(s.headline_usage_pct(), None);
+        // And a fully-empty payload decodes via defaults.
+        let empty: FleetRateStatus = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.paused_count(), 0);
+        assert_eq!(empty.headline_usage_pct(), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

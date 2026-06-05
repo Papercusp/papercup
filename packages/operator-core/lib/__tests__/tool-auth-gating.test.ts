@@ -46,9 +46,10 @@ describe('auth gating (missing bearer/workspace class)', () => {
       const t = lookupByMcpName(name) as ProjFn | undefined;
       expect(t, `${name} present in registry`).toBeTruthy();
       // The projected wrapper checks principal+tx BEFORE validating args, so an
-      // empty ctx surfaces the auth error (not invalid_args) and never runs the
-      // handler — safe to call.
-      await expect(t!.fn({}, {})).rejects.toThrow(/requires authenticated request/);
+      // empty ctx surfaces the gating error (not invalid_args) and never runs the
+      // handler — safe to call. (Message reworded by EI-30: a missing principal/tx
+      // is almost always a workspace-SCOPING gap, not an auth failure.)
+      await expect(t!.fn({}, {})).rejects.toThrow(/requires a workspace-scoped call/);
     }
   });
 

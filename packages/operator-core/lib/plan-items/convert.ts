@@ -59,8 +59,10 @@ export interface PlanItemStamp {
 }
 
 /** Work-item states that mean "this execution record is finished" — a re-pickup
- *  of the plan item mints a FRESH work_item rather than resuming a closed one. */
-const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'resolved', 'closed', 'done', 'deprecated', 'dropped']);
+ *  of the plan item mints a FRESH work_item rather than resuming a closed one
+ *  (and a release of one falls back to the bare plan-item lease — there is no
+ *  live execution record to release). Exported for the TUI release route. */
+export const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'resolved', 'closed', 'done', 'deprecated', 'dropped']);
 
 export interface ConvertPlanItemOpts {
   workspaceId: string;

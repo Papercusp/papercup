@@ -27,6 +27,7 @@ mod theme;
 mod tutorial;
 mod ui;
 mod voice;
+mod voice_stream;
 mod workbench;
 
 use anyhow::Result;
@@ -238,6 +239,13 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::SetMaxAgents(n) => {
+                // Overview top-bar cap edit (Brief 23 P-005): PUT the new
+                // `maxSimultaneousAgents` then refetch the read-model so the
+                // optimistic local value reconciles with truth.
+                tokio::spawn(set_max_agents(n, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FocusPane { intent_id, pane_id } => {
                 // Operator pane-driving affordance (P2): drive the companion to
                 // focus the pane, then POST the intent result back.
@@ -435,6 +443,27 @@ async fn search_memory(query: String, harness: String, tx: UnboundedSender<Event
             let _ = tx.send(Event::Error(format!("memory search: {e}")));
             let _ = tx.send(Event::MemoryHits { query, results: Vec::new() });
         }
+    }
+}
+
+/// Overview top-bar cap edit (Brief 23 P-005): PUT the new
+/// `maxSimultaneousAgents`, then refetch the fleet-rate read-model so the
+/// reducer's optimistic value reconciles with what the backend persisted. A
+/// failed PUT surfaces in the status bar; the refetch (or the next poll)
+/// restores truth either way.
+async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("max agents: {e}")));
+            return;
+        }
+    };
+    if let Err(e) = client.set_max_agents(n).await {
+        let _ = tx.send(Event::Error(format!("max agents: {e}")));
+    }
+    if let Ok(s) = client.fleet_rate_status().await {
+        let _ = tx.send(Event::FleetRate(s));
     }
 }
 
@@ -742,6 +771,53 @@ async fn execute_workbench_command(
                 }
                 Err(e) => {
                     let _ = tx.send(Event::Error(format!("pickup: {e}")));
+                }
+            }
+        }
+        // `:release [<plan>] <item>` — the `:pickup` inverse (P-005b release
+        // half): POST /api/tui/plan-item-release releases the converted
+        // work_item (server-side reflect rules flip the item back to todo +
+        // drop the lease) or just the bare lease when nothing live exists.
+        // Refetch the item states right after, same as pickup.
+        P::ReleasePlanItem { harness, plan, item } => {
+            let harness = harness.unwrap_or_else(|| "all".to_string());
+            let Some(plan) = plan else {
+                let _ = tx.send(Event::Error("release: no plan selected".to_string()));
+                return;
+            };
+            match client.plan_item_release(&owner, &harness, &plan, &item).await {
+                Ok(v) => {
+                    let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+                    if ok {
+                        let msg = match v.pointer("/workItem/id").and_then(|s| s.as_str()) {
+                            // Released the live execution record — the reflect
+                            // rules put the plan item back in the pool.
+                            Some(wi) => format!("release {item}: {wi} released (back to pool)"),
+                            // Bare-lease path: `released:false` = polite no-op
+                            // (the caller held no claim).
+                            None => {
+                                if v.get("released").and_then(|b| b.as_bool()).unwrap_or(true) {
+                                    format!("release {item}: lease released")
+                                } else {
+                                    format!("release {item}: no claim held")
+                                }
+                            }
+                        };
+                        let _ = tx.send(toast(msg));
+                    } else {
+                        let why = v
+                            .get("note")
+                            .or_else(|| v.get("error"))
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("refused");
+                        let _ = tx.send(Event::Error(format!("release {item}: {why}")));
+                    }
+                    if let Ok(s) = client.plan_item_states(&harness, &plan).await {
+                        let _ = tx.send(Event::PlanItemStates(s));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("release: {e}")));
                 }
             }
         }
@@ -1835,6 +1911,12 @@ async fn refetch_all(
         Err(e) => {
             let _ = tx.send(Event::Error(format!("roster: {e}")));
         }
+    }
+    // Fleet rate/usage read-model (Overview top-bar, Brief 23 P-005). Quietly
+    // optional: a host predating rate-limit-layer-v2 has no route — the
+    // top-bar renders dashes rather than the status bar toasting every poll.
+    if let Ok(s) = client.fleet_rate_status().await {
+        let _ = tx.send(Event::FleetRate(s));
     }
     match client.attention_typed().await {
         Ok(i) => {
