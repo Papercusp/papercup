@@ -2,7 +2,7 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
-use crate::models::{contribution_count, contribution_names, Notif};
+use crate::models::{contribution_count, contribution_names, tier_glyph, tier_label, Notif, INBOX_TIERS};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -136,9 +136,17 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             // The switch shortcut: digit (1-9, 0) for the first 10 tabs, a letter
             // for appended tabs — each tab owns its key via `Tab::switch_key`.
             let k = t.switch_key();
-            // Inbox carries a notification badge when items need attention (P8).
-            if *t == Tab::Inbox && app.unseen_notifs > 0 {
-                Line::from(format!(" {}:{} ({}) ", k, t.title(), app.unseen_notifs))
+            // Inbox badge = the Decisions count (inbox-tiering D-006) — the only
+            // tier that demands the user. Falls back to the unseen-notification
+            // count when nothing is in the Decisions tier.
+            if *t == Tab::Inbox {
+                let decisions = app.visible_inbox().iter().filter(|it| it.tier_rank() == 0).count();
+                let badge = if decisions > 0 { decisions } else { app.unseen_notifs };
+                if badge > 0 {
+                    Line::from(format!(" {}:{} ({}) ", k, t.title(), badge))
+                } else {
+                    Line::from(format!(" {}:{} ", k, t.title()))
+                }
             } else {
                 Line::from(format!(" {}:{} ", k, t.title()))
             }
@@ -375,58 +383,96 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // The pot-scope-filtered inbox (D-003) — `inbox_sel` indexes THIS list.
+    // Items are rendered in four tier SECTIONS (inbox-tiering D-006): Decisions ▸
+    // Handled ▸ Alerts ▸ Activity. Each tier gets a header row + its items; the
+    // selected item (by id) is highlighted at its display position so selection
+    // survives the regrouping regardless of the underlying list order.
     let inbox = app.visible_inbox();
-    let items: Vec<ListItem> = inbox
-        .iter()
-        .map(|it| {
+    let mut counts = [0usize; 4];
+    for it in &inbox {
+        counts[it.tier_rank() as usize] += 1;
+    }
+    let sel_id = app.selected_inbox().map(|it| it.id.clone());
+    let mut list_items: Vec<ListItem> = Vec::new();
+    let mut sel_display: Option<usize> = None;
+    for tier in INBOX_TIERS {
+        let tier_items: Vec<&&crate::models::AttentionItem> =
+            inbox.iter().filter(|it| it.tier_str() == tier).collect();
+        if tier_items.is_empty() {
+            continue;
+        }
+        list_items.push(ListItem::new(Line::from(Span::styled(
+            format!("{} {} ({})", tier_glyph(tier), tier_label(tier), tier_items.len()),
+            Theme::header(),
+        ))));
+        for it in tier_items {
+            if sel_id.as_deref() == Some(it.id.as_str()) {
+                sel_display = Some(list_items.len());
+            }
             let loc = it
                 .plan_slug
                 .clone()
                 .or_else(|| it.harness_slug.clone())
                 .unwrap_or_default();
             let r = it.item_ref.clone().unwrap_or_default();
-            let flag = if it.needs_human { "!" } else { " " };
-            ListItem::new(Line::from(format!(
-                "{}{:<11} {:<26} {}",
-                flag,
-                trunc(&it.status, 11),
-                trunc(&format!("{loc}/{r}"), 26),
-                trunc(&it.title, 38),
-            )))
-        })
-        .collect();
-    let mut state = ListState::default();
-    if !inbox.is_empty() {
-        state.select(Some(app.inbox_sel.min(inbox.len() - 1)));
+            list_items.push(ListItem::new(Line::from(format!(
+                "  {} {:<10} {:<22} {}",
+                tier_glyph(tier),
+                trunc(&it.status, 10),
+                trunc(&format!("{loc}/{r}"), 22),
+                trunc(&it.title, 32),
+            ))));
+        }
     }
-    // The plans-filter badge (D-009) keeps an active-but-hidden rail visible.
-    let title = if app.plan_filter.is_empty() {
-        format!(" Inbox ({}) ", inbox.len())
-    } else {
-        format!(" Inbox ({}) · F:plans({}) ", inbox.len(), app.plan_filter.len())
-    };
+    let mut state = ListState::default();
+    state.select(sel_display);
+    // Title carries the per-tier counts; Decisions is the headline (what
+    // actually demands the user). The plans-filter badge (D-009) stays visible.
+    let mut title = format!(
+        " Inbox  ◆{} ✓{} !{} ·{} ",
+        counts[0], counts[1], counts[2], counts[3]
+    );
+    if !app.plan_filter.is_empty() {
+        title.push_str(&format!("· F:plans({}) ", app.plan_filter.len()));
+    }
     let body_area = block_with_header(
         f,
         cols[0],
         Block::default().borders(Borders::ALL).title(Line::from(title)),
-        &format!("   {:<12}{:<27}{}", "status", "plan/ref", "title"),
+        "  ◆ Decisions · ✓ Handled · ! Alerts · · Activity",
     );
-    let list = List::new(items)
+    let list = List::new(list_items)
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
     f.render_stateful_widget(list, body_area, &mut state);
 
     let preview = match app.selected_inbox() {
-        Some(it) => format!(
-            "{}\n\nkind:   {}\nstatus: {}\nplan:   {}\nref:    {}\nneedsHuman: {}\n\n{}",
-            it.title,
-            it.kind,
-            it.status,
-            it.plan_slug.clone().unwrap_or_default(),
-            it.item_ref.clone().unwrap_or_default(),
-            it.needs_human,
-            it.body.clone().unwrap_or_default(),
-        ),
+        Some(it) => {
+            let owner = it
+                .owner_label
+                .clone()
+                .or_else(|| it.owner_agent_id.clone())
+                .unwrap_or_else(|| "—".to_string());
+            let triage = match (it.triage_state.as_deref(), it.triage_note.as_deref()) {
+                (Some(s), Some(n)) if s != "untriaged" => format!("\ntriage: {s} — {n}"),
+                (Some(s), None) if s != "untriaged" => format!("\ntriage: {s}"),
+                _ => String::new(),
+            };
+            format!(
+                "{}\n\ntier:   {} ({})\nkind:   {}\nstatus: {}\nplan:   {}\nref:    {}\nowner:  {}\nneedsHuman: {}{}\n\n{}\n\n[m] message owner",
+                it.title,
+                tier_label(it.tier_str()),
+                it.tier_str(),
+                it.kind,
+                it.status,
+                it.plan_slug.clone().unwrap_or_default(),
+                it.item_ref.clone().unwrap_or_default(),
+                owner,
+                it.needs_human,
+                triage,
+                it.body.clone().unwrap_or_default(),
+            )
+        }
         None => "Inbox empty — nothing needs attention.".to_string(),
     };
     let para = Paragraph::new(preview)
@@ -2042,6 +2088,11 @@ mod tests {
             status: "needs-human".into(),
             importance: Some(9.0),
             needs_human: true,
+            tier: Some("decision".into()),
+            owner_agent_id: None,
+            owner_label: None,
+            triage_state: None,
+            triage_note: None,
         }]);
         let text = render(&app, 100, 14);
         assert!(text.contains("Inbox (1)"));

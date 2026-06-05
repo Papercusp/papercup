@@ -415,6 +415,38 @@ impl OperatorClient {
             .to_string())
     }
 
+    /// "Message owner" (inbox-tiering D-004): open a work-item-scoped conversation
+    /// with an attention item's owning agent via the /api/admin/coord proxy
+    /// (coord:message-agent). The admin proxy unwraps the MCP envelope, so the
+    /// response is the plain `{ ok, conversation_id, … }`. Returns the new
+    /// conversation id (browsable in the Conversations tab).
+    pub async fn message_agent(&self, item: &AttentionItem, body: &str) -> Result<String> {
+        let mut payload = serde_json::Map::new();
+        if let Some(to) = item.owner_agent_id.as_deref() {
+            payload.insert("to".into(), serde_json::json!(to));
+        }
+        payload.insert("body".into(), serde_json::json!(body));
+        if let Some(h) = item.harness_slug.as_deref() {
+            payload.insert("harness".into(), serde_json::json!(h));
+        }
+        if let Some(p) = item.plan_slug.as_deref() {
+            payload.insert("plan_slug".into(), serde_json::json!(p));
+        }
+        if let Some(r) = item.item_ref.as_deref() {
+            payload.insert("item_ref".into(), serde_json::json!(r));
+        }
+        let title: String = item.title.chars().take(120).collect();
+        payload.insert("title".into(), serde_json::json!(title));
+        let v = self
+            .post_json("/api/admin/coord/message-agent", serde_json::Value::Object(payload))
+            .await?;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+            let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("message_failed");
+            return Err(anyhow!("message owner failed: {err}"));
+        }
+        Ok(v.get("conversation_id").and_then(|c| c.as_str()).unwrap_or("").to_string())
+    }
+
     pub async fn harnesses(&self) -> Result<Vec<HarnessRef>> {
         let v = self.get_json("/api/harness/projects/lite").await?;
         Ok(serde_json::from_value::<ProjectsResponse>(v)

@@ -123,6 +123,46 @@ pub struct AttentionItem {
     pub triage_note: Option<String>,
 }
 
+/// The four inbox tiers (inbox-tiering-and-message-agent D-006), in display
+/// order: Decisions ▸ Handled-by-operator ▸ Alerts ▸ Activity.
+pub const INBOX_TIERS: [&str; 4] = ["decision", "handled", "alert", "activity"];
+
+/// Human label for a tier string.
+pub fn tier_label(tier: &str) -> &'static str {
+    match tier {
+        "decision" => "Decisions",
+        "handled" => "Handled by operator",
+        "alert" => "Alerts",
+        _ => "Activity",
+    }
+}
+
+/// Single-width, alignment-safe marker glyph for a tier (TUI in-line use).
+pub fn tier_glyph(tier: &str) -> &'static str {
+    match tier {
+        "decision" => "◆",
+        "handled" => "✓",
+        "alert" => "!",
+        _ => "·",
+    }
+}
+
+impl AttentionItem {
+    /// Effective tier (older payloads without a tier read as activity).
+    pub fn tier_str(&self) -> &str {
+        self.tier.as_deref().unwrap_or("activity")
+    }
+    /// Sort rank — decision(0) ▸ handled(1) ▸ alert(2) ▸ activity(3).
+    pub fn tier_rank(&self) -> u8 {
+        match self.tier_str() {
+            "decision" => 0,
+            "handled" => 1,
+            "alert" => 2,
+            _ => 3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttentionGroup {
