@@ -167,39 +167,44 @@ if (xiKey && agentId) {
 }
 
 // ─── 4. PG schema + audit tables ────────────────────────────────────
+// NOTE: the legacy `delegates` table (and its `transcript` JSONB, old check
+// #12) is RETIRED — delegated tasks are work_items (kind='task') and the
+// transcript lives in the work_item's coord thread (see
+// packages/operator-core/lib/delegated-tasks.ts; plan
+// collapse-delegate-into-workitems-2026-06-04). The checks below test the
+// surfaces the CURRENT voice stack actually writes.
 let sql;
 try {
   sql = postgres(PG_URL);
   const tables = await sql`
     SELECT tablename FROM pg_tables
     WHERE schemaname = 'harness_shared'
-      AND tablename IN ('agent_actions', 'agent_queries', 'voice_utterances', 'el_conv_calls', 'delegates')
+      AND tablename IN ('agent_actions', 'agent_queries', 'voice_utterances', 'el_conv_calls')
   `;
   const got = new Set(tables.map((t) => t.tablename));
-  const want = ['agent_actions', 'agent_queries', 'voice_utterances', 'el_conv_calls', 'delegates'];
+  const want = ['agent_actions', 'agent_queries', 'voice_utterances', 'el_conv_calls'];
   const missing = want.filter((t) => !got.has(t));
   if (missing.length) {
-    fail('11. PG audit/delegate tables', `missing: ${missing.join(',')} — apply migrations 001-007`);
+    fail('11. PG voice/audit tables', `missing: ${missing.join(',')}`);
   } else {
-    pass('11. PG audit/delegate tables', `${want.length}/${want.length} present`);
+    pass('11. PG voice/audit tables', `${want.length}/${want.length} present`);
   }
 } catch (e) {
-  fail('11. PG audit/delegate tables', `connect failed: ${e?.message ?? e}`);
+  fail('11. PG voice/audit tables', `connect failed: ${e?.message ?? e}`);
 }
 
-// Verify the transcript column landed (migration 007).
+// Delegated-task home: the work_items surface that replaced delegates.*.
 if (sql) {
   try {
-    const cols = await sql`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_schema = 'harness_shared'
-        AND table_name = 'delegates'
-        AND column_name = 'transcript'
+    const rel = await sql`
+      SELECT c.relname FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'harness_shared' AND c.relname = 'work_items'
     `;
-    cols.length
-      ? pass('12. delegates.transcript column', '')
-      : fail('12. delegates.transcript column', 'missing — apply migration 007');
-  } catch (e) { fail('12. delegates.transcript column', e?.message ?? String(e)); }
+    rel.length
+      ? pass('12. work_items surface (delegated tasks)', '')
+      : fail('12. work_items surface (delegated tasks)', 'harness_shared.work_items missing');
+  } catch (e) { fail('12. work_items surface (delegated tasks)', e?.message ?? String(e)); }
 }
 
 // ─── 5. Round-trip writes through public endpoints ──────────────────

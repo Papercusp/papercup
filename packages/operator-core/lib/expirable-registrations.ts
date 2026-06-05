@@ -19,11 +19,8 @@ export function registerAllExpirables(): void {
   if (_registered) return;
   _registered = true;
 
-  // Operator scan locks — 60s TTL per LOCK_TTL_MS in operator-scan-lock.ts.
-  // Lazy-deletion happened on lock-acquire; the registry now sweeps actively.
-  registerExpirable({
-    table: 'harness_shared.operator_scan_locks',
-  });
+  // (The operator_scan_locks sweeper was removed with the scanner teardown —
+  // unify-agent-launches D-005; the table is dropped by its migration.)
 
   // (The provision operator_claims sweeper was removed in P-002 — the
   // hand-rolled claim/heartbeat machinery was deleted once DBOS provisioning

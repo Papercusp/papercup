@@ -20,21 +20,16 @@
  */
 
 import './operator/stats';
-import './operator/last_scan';
-import './operator/scan';
 import './operator/converse';
 import './operator/delegate';
 import './architect/chat';
 import './oracle/chat';
 import './agent_chats/chat';
-import './operator/scans_list';
 import './operator/audit';
 import './operator/nudge';
-import './operator/dismissed';
 import './operator/standing_approvals_list';
 import './operator/standing_approvals_decide';
 import './operator/standing_approval_mark_shown';
-import './operator/scanner_reset';
 import './operator/voice_utterance_log';
 import './operator/voice_debug';
 import './operator/voice_prefs';
@@ -75,7 +70,6 @@ import './memory/update';
 import './autoloop/status';
 import './autoloop/control';
 import './operator/dedup_check';
-import './operator/parse_suggestions';
 import './wiki/backlinks';
 import './harness/plan_reviews';
 import './harness/phase_path';
@@ -98,7 +92,6 @@ import './operator/notifications_recent';
 import './snapshots/list';
 import './snapshots/get';
 import './operator/preview_prompt';
-import './operator/scanner_bootstrap';
 import './operator/decisions';
 import './agents/list';
 import './operator/budget';

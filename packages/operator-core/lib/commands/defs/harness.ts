@@ -133,73 +133,9 @@ const harnessListFeatures: QueryDef<z.infer<typeof ListFeaturesArgs>> = {
   },
 };
 
-const LastScanArgs = z.object({
-  slug: z.string().min(1).describe('Harness slug.'),
-});
-
-const harnessLastScan: QueryDef<z.infer<typeof LastScanArgs>> = {
-  id: 'harness.last-scan',
-  kind: 'query',
-  description: 'Get the cached most-recent Papercup scan summary for a harness.',
-  promptDescription:
-    'Returns the cached summary from the last Papercup scan (the same summary ' +
-    'that lives in the panel after a scan completes). Cheap; does NOT trigger a ' +
-    'fresh scan. Use to answer "what did the operator find?" without burning a ' +
-    'Claude call.',
-  schema: LastScanArgs,
-  agents: ['oracle', 'operator', 'pi'],
-  audit: 'sample',
-  tier: 'fast-query',
-  handler: async ({ slug }) => {
-    const r = await fetch(
-      `${baseUrl()}/api/agent-mcp/operator-last-scan?slug=${encodeURIComponent(slug)}`,
-    );
-    if (!r.ok) {
-      if (r.status === 404) return { slug, summary: null, hasContent: false };
-      throw new Error(`harness.last-scan failed: HTTP ${r.status}`);
-    }
-    const d = await r.json();
-    return {
-      slug,
-      summary: d?.summary ?? d?.text ?? null,
-      hasContent: !!(d?.summary ?? d?.text),
-      ts: d?.ts ?? null,
-    };
-  },
-};
-
-const RecentSuggestionsArgs = z.object({
-  slug: z.string().min(1).describe('Harness slug.'),
-  limit: z.number().int().min(1).max(50).default(10).describe('Max suggestions (default 10, cap 50).'),
-});
-
-const harnessRecentSuggestions: QueryDef<z.infer<typeof RecentSuggestionsArgs>> = {
-  id: 'harness.recent-suggestions',
-  kind: 'query',
-  description: 'List recent Papercup-panel suggestions for a harness (cached).',
-  promptDescription:
-    'Returns the last N suggestion cards Papercup surfaced for this harness. ' +
-    'Each suggestion has a title, kind (auto/needs-input/etc), and a one-line ' +
-    'preview. Use after the user asks "what was the operator suggesting?"',
-  schema: RecentSuggestionsArgs,
-  agents: ['oracle', 'operator', 'pi'],
-  audit: 'sample',
-  tier: 'fast-query',
-  handler: async ({ slug, limit }) => {
-    // Reuses the existing dismissed-cache endpoint that holds recent
-    // suggestion fingerprints alongside their parsed shape.
-    const r = await fetch(
-      `${baseUrl()}/api/agent-mcp/operator-last-scan?slug=${encodeURIComponent(slug)}&include=suggestions`,
-    );
-    if (!r.ok) {
-      if (r.status === 404) return { slug, count: 0, suggestions: [] };
-      throw new Error(`harness.recent-suggestions failed: HTTP ${r.status}`);
-    }
-    const d = await r.json();
-    const suggestions: any[] = Array.isArray(d?.suggestions) ? d.suggestions : [];
-    return { slug, count: suggestions.length, suggestions: suggestions.slice(0, limit) };
-  },
-};
+// (`harness.last-scan` / `harness.recent-suggestions` were removed with the
+// scanner card stream — unify-agent-launches D-005. "What did the operator
+// find?" now reads the self-improvement backlog: improvements:digest.)
 
 // ─── New voice tools (audit unlock 2026-05-07) ─────────────────────
 
@@ -332,8 +268,6 @@ const harnessHealth: QueryDef<z.infer<typeof HealthArgs>> = {
 register(harnessStatus);
 register(harnessList);
 register(harnessListFeatures);
-register(harnessLastScan);
-register(harnessRecentSuggestions);
 register(issuesList);
 register(escalationsGet);
 register(pendingReviewsList);

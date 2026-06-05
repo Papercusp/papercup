@@ -35,10 +35,11 @@ import { configureCallTool, type ToolResolution } from './call-tool';
  */
 const TOOL_ROUTES: Record<string, string> = {
   'oracle:chat': '/api/oracle/chat',
-  'operator:scan': '/api/agent-mcp/operator-scan',
   'operator:converse': '/api/agent-mcp/operator-converse',
   'operator:delegate': '/api/agent-mcp/delegate-chat',
 };
+// ('operator:scan' was removed with the scanner card stream —
+// unify-agent-launches D-005; scans now fire the `scan` launch blueprint.)
 
 /**
  * Phase E — tools eligible for DIRECT in-process dispatch on desktop (endpoint
@@ -48,7 +49,6 @@ const TOOL_ROUTES: Record<string, string> = {
  * dispatch skips the route. This set is exactly the documented self-contained,
  * NON-parameterized streaming tools, and it mirrors the server-side IPC
  * allowlist (`expose: { ipc: true }`) locked by ipc-allowlist.test.ts:
- *   - operator:scan      — "Self-contained — safe to call from any transport"
  *   - operator:converse  — prompt+budget+spend+mem0 in the handler
  *   - operator:delegate  — resolves session + writes turns/title internally
  * EXCLUDED: oracle:chat / agent_chats:chat (route-dependent — the closed
@@ -63,7 +63,6 @@ const TOOL_ROUTES: Record<string, string> = {
  * call-site migration of each tool (verifies handler-via-direct == handler-via-route).
  */
 const DIRECT_ELIGIBLE = new Set<string>([
-  'operator:scan',
   'operator:converse',
   'operator:delegate',
 ]);

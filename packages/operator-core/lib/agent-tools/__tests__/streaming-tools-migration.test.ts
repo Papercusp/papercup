@@ -1,6 +1,6 @@
 /**
- * Phase 3 pilot+fold-in regression test — verifies the five migrated
- * streaming tools (architect:chat, brainstorm:chat, operator:scan,
+ * Phase 3 pilot+fold-in regression test — verifies the migrated
+ * streaming tools (architect:chat, brainstorm:chat,
  * operator:converse, operator:delegate) emit the expected event
  * sequence and declare the wire-classification their consumers
  * already depend on.
@@ -134,54 +134,22 @@ describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
   });
 });
 
-describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
+describe('operator:converse / delegate (JSON-delta wire)', () => {
+  // (operator:scan was removed with the scanner card stream —
+  // unify-agent-launches D-005; scans fire the `scan` launch blueprint.)
   it('declares delta as object so wire is JSON', async () => {
     vi.doMock('../../agent-chat-stream', () => ({
       runAgentChat: () => mockAgentChat([]),
     }));
-    await import('../operator/scan');
     await import('../operator/converse');
     await import('../operator/delegate');
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
-    for (const name of ['operator:scan', 'operator:converse', 'operator:delegate']) {
+    for (const name of ['operator:converse', 'operator:delegate']) {
       const tool = lookupByMcpName(name);
       expect(tool, `${name} registered`).toBeTruthy();
       expect(tool!.eventWireKinds?.delta).toBe('json');
     }
-  });
-
-  it('operator:scan tool registers with the expected args shape', async () => {
-    // Post-refactor (PR for IPC allowlist eligibility), operator:scan
-    // is self-contained: budget check, scan lock, scan tracker, plugin
-    // merge, snapshot, session bump all run inside the handler. A
-    // unit test that mocked away all those side-effects would test
-    // nothing meaningful — the real coverage now lives in integration
-    // tests with a real PG fixture (out of scope for this branch).
-    //
-    // What's still verifiable at unit level: the registry has the
-    // tool, its args schema matches the new shape, and it's role-gated
-    // on 'operator'.
-    const { default: scan } = await import('../operator/scan');
-    expect(scan.name).toBe('operator:scan');
-    expect(scan.agentRoles).toEqual(['operator']);
-    // New args shape: { requestText, background, userId, superuserToken }
-    // (old args 'promptText' / 'scannerSessionId' / 'preferencesJson'
-    // are no longer the tool's surface — they're built inside).
-    const argsParse = scan.args.safeParse({
-      requestText: 'scan',
-      background: false,
-      userId: 'anonymous',
-      superuserToken: null,
-    });
-    expect(argsParse.success).toBe(true);
-    const stalePayload = scan.args.safeParse({
-      promptText: 'scan',  // old arg name
-      preferencesJson: '{}',
-      scannerSessionId: null,
-      superuserToken: null,
-    });
-    expect(stalePayload.success).toBe(false);
   });
 
   it('operator:delegate emits error as JSON object (not raw string)', async () => {
@@ -244,20 +212,18 @@ describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
   });
 });
 
-describe('All five tools — common framework integration', () => {
+describe('All four tools — common framework integration', () => {
   it('register with idleTimeoutSec + timeoutSec set (catches deadlocked-child)', async () => {
     vi.doMock('../../agent-chat-stream', () => ({
       runAgentChat: () => mockAgentChat([]),
     }));
     const { architectChat, brainstormChat } = await import('../architect/chat');
-    const { default: scan } = await import('../operator/scan');
     const { default: converse } = await import('../operator/converse');
     const { default: delegate } = await import('../operator/delegate');
 
     for (const [name, tool] of [
       ['architect:chat', architectChat],
       ['brainstorm:chat', brainstormChat],
-      ['operator:scan', scan],
       ['operator:converse', converse],
       ['operator:delegate', delegate],
     ] as const) {

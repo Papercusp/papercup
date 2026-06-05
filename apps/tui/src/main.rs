@@ -27,6 +27,7 @@ mod theme;
 mod tutorial;
 mod ui;
 mod voice;
+mod voice_convai;
 mod voice_stream;
 mod workbench;
 
@@ -148,6 +149,10 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // arm + a Tick-driven mic-meter pump.
     let voice_player = voice::Player::spawn();
     let mut voice_capture: Option<voice::CaptureSession> = None;
+    // Realtime operator voice (voice-realtime-tui-2026-06-05): the run loop
+    // owns the session handle too. A handle whose task already ended is inert
+    // (stop() goes nowhere), so Start always replaces.
+    let mut convai_session: Option<voice_convai::ConvAiHandle> = None;
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
@@ -251,6 +256,25 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 // `maxSimultaneousAgents` then refetch the read-model so the
                 // optimistic local value reconciles with truth.
                 tokio::spawn(set_max_agents(n, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::VoiceSessionStart => {
+                // Realtime operator voice (voice-realtime-tui P-007): replace
+                // any prior (possibly already-ended) session outright.
+                if let Some(h) = convai_session.take() {
+                    h.stop();
+                }
+                convai_session = Some(voice_convai::start_session(
+                    workbench::workbench_owner(),
+                    voice_player.clone(),
+                    tx.clone(),
+                ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::VoiceSessionStop => {
+                if let Some(h) = convai_session.take() {
+                    h.stop();
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FocusPane { intent_id, pane_id } => {

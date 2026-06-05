@@ -32,6 +32,8 @@ pub enum Event {
     Inbox(Vec<AttentionItem>),
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).
     FleetRate(FleetRateStatus),
+    /// Realtime operator voice session updates (voice-realtime-tui-2026-06-05).
+    ConvAi(crate::voice_convai::ConvAiUpdate),
     /// Fresh features for the active harness.
     Features(Vec<HarnessFeature>),
     /// Fresh issues for the active harness.

@@ -136,18 +136,24 @@ export default function VoiceSettingsPage() {
       window.speechSynthesis.addEventListener?.('voiceschanged', onVoicesChanged);
     }
 
-    void Promise.all([
-      fetch('/api/agent-mcp/operator-voice-prefs').then((r) => r.ok ? r.json() : null),
-      fetch('/api/agent-mcp/operator-credentials').then((r) => r.ok ? r.json() : null),
-      fetch('/api/agent-mcp/operator-tts-spend').then((r) => r.ok ? r.json() : null),
-      fetch('/api/agent-mcp/operator-stt-spend').then((r) => r.ok ? r.json() : null),
-    ]).then(([p, c, s, ss]) => {
-      if (p) setPrefs(p as VoicePrefs);
-      if (c?.elevenlabs) setCredentials(c.elevenlabs);
-      if (c) setAllCreds(c as CloudCredentialsSnapshot);
-      if (s) setSpend(s as TtsSpendState);
-      if (ss) setSttSpend(ss as SttSpendState);
+    // Four INDEPENDENT fetches — deliberately not Promise.all. Each section
+    // renders as its data lands, so one slow/starved request (the shell's
+    // SSE streams can monopolize the per-origin HTTP/1.1 socket budget)
+    // delays only its own widget instead of holding back the whole page.
+    const load = (url: string, apply: (v: unknown) => void) => {
+      void fetch(url)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((v) => { if (v) apply(v); })
+        .catch(() => { /* section stays in its empty state */ });
+    };
+    load('/api/agent-mcp/operator-voice-prefs', (p) => setPrefs(p as VoicePrefs));
+    load('/api/agent-mcp/operator-credentials', (c) => {
+      const snap = c as CloudCredentialsSnapshot & { elevenlabs?: ElevenLabsKeyState };
+      if (snap.elevenlabs) setCredentials(snap.elevenlabs);
+      setAllCreds(snap);
     });
+    load('/api/agent-mcp/operator-tts-spend', (s) => setSpend(s as TtsSpendState));
+    load('/api/agent-mcp/operator-stt-spend', (ss) => setSttSpend(ss as SttSpendState));
 
     return () => {
       stopped = true;

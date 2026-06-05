@@ -21,5 +21,4 @@ import './delegation';
 import './operator';
 import './agents';
 import './agent-dispatch';
-import './scans';
 import './recent-activity';

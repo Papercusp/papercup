@@ -318,6 +318,189 @@ fn capture_thread(
     }
 }
 
+// ───────────────── continuous capture (realtime voice, P-004) ─────────────────
+
+/// Convert a drained interleaved f32 window into 16 kHz mono PCM16 LE bytes —
+/// the exact `pcm_16000` chunk shape EL's `user_audio_chunk` wants
+/// (voice-realtime-tui-2026-06-05 D-006). Pure — unit-tested.
+pub fn f32_chunk_to_pcm16le(raw: &[f32], channels: u16, src_rate: u32) -> Vec<u8> {
+    let mono = mix_to_mono(raw, channels);
+    let s16k = resample_to_16k(&mono, src_rate);
+    let mut out = Vec::with_capacity(s16k.len() * 2);
+    for s in s16k {
+        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// Continuous mic capture: the same device pipeline as the PTT path, but
+/// streaming ~`chunk_ms` windows of 16 kHz mono PCM16 LE to a channel instead
+/// of accumulating one WAV. `stop()` (or drop) ends the stream; the chunk
+/// channel closes with the capture thread so consumers unblock naturally.
+/// Per-window resampling introduces sub-sample boundary seams — inaudible for
+/// speech and irrelevant to EL's VAD/STT (the PTT path resamples whole clips).
+pub struct StreamCapture {
+    stop: Arc<AtomicBool>,
+    level_bits: Arc<AtomicU32>,
+    chunks_rx: Option<smpsc::Receiver<Vec<u8>>>,
+}
+
+impl StreamCapture {
+    /// Take the chunk receiver (once) — it moves to the outbound pump.
+    pub fn take_chunks(&mut self) -> Option<smpsc::Receiver<Vec<u8>>> {
+        self.chunks_rx.take()
+    }
+    /// Live mic RMS (the same meter the PTT composer shows).
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.level_bits.load(Ordering::Relaxed))
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for StreamCapture {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+pub fn start_stream_capture(chunk_ms: u32) -> Result<StreamCapture> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let level_bits = Arc::new(AtomicU32::new(0));
+    let (chunks_tx, chunks_rx) = smpsc::channel::<Vec<u8>>();
+    let (ready_tx, ready_rx) = smpsc::channel::<Result<()>>();
+    {
+        let stop = stop.clone();
+        let level_bits = level_bits.clone();
+        std::thread::Builder::new()
+            .name("pui-voice-stream-capture".into())
+            .spawn(move || stream_capture_thread(stop, level_bits, chunks_tx, ready_tx, chunk_ms))
+            .context("spawn stream capture thread")?;
+    }
+    match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(StreamCapture {
+            stop,
+            level_bits,
+            chunks_rx: Some(chunks_rx),
+        }),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(anyhow!("stream capture thread did not signal readiness")),
+    }
+}
+
+fn stream_capture_thread(
+    stop: Arc<AtomicBool>,
+    level_bits: Arc<AtomicU32>,
+    chunks_tx: smpsc::Sender<Vec<u8>>,
+    ready_tx: smpsc::Sender<Result<()>>,
+    chunk_ms: u32,
+) {
+    // Same device setup as the PTT capture_thread (PUI_VOICE_INPUT honored).
+    let setup = (|| -> Result<(cpal::Device, cpal::SupportedStreamConfig, String)> {
+        let host = cpal::default_host();
+        let device = pick_device(
+            host.input_devices().context("enumerate input devices")?,
+            host.default_input_device(),
+            std::env::var("PUI_VOICE_INPUT").ok().as_deref(),
+        )
+        .ok_or_else(|| anyhow!("no input (mic) device available"))?;
+        let name = device.name().unwrap_or_else(|_| "<unknown>".into());
+        let config = device
+            .default_input_config()
+            .with_context(|| format!("default input config for {name}"))?;
+        Ok((device, config, name))
+    })();
+    let (device, config, name) = match setup {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = ready_tx.send(Err(e));
+            return;
+        }
+    };
+
+    let src_rate = config.sample_rate().0;
+    let channels = config.channels();
+    let buf: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let stream = {
+        let buf = buf.clone();
+        let level = level_bits.clone();
+        let on_err = |e: cpal::StreamError| {
+            eprintln!("pui voice stream-capture error: {e}");
+        };
+        let push = move |chunk: Vec<f32>| {
+            level.store(rms(&chunk).to_bits(), Ordering::Relaxed);
+            if let Ok(mut b) = buf.lock() {
+                b.extend_from_slice(&chunk);
+            }
+        };
+        match config.sample_format() {
+            cpal::SampleFormat::F32 => device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[f32], _| push(data.to_vec()),
+                on_err,
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[i16], _| push(data.iter().map(|&s| s as f32 / 32768.0).collect()),
+                on_err,
+                None,
+            ),
+            cpal::SampleFormat::U16 => device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[u16], _| {
+                    push(
+                        data.iter()
+                            .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                            .collect(),
+                    )
+                },
+                on_err,
+                None,
+            ),
+            other => {
+                let _ = ready_tx.send(Err(anyhow!("unsupported sample format {other:?}")));
+                return;
+            }
+        }
+    };
+    let stream = match stream {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = ready_tx.send(Err(anyhow!("open input stream on {name}: {e}")));
+            return;
+        }
+    };
+    if let Err(e) = stream.play() {
+        let _ = ready_tx.send(Err(anyhow!("start input stream on {name}: {e}")));
+        return;
+    }
+    let _ = ready_tx.send(Ok(()));
+
+    let tick = Duration::from_millis(u64::from(chunk_ms.max(50)));
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(tick);
+        let raw: Vec<f32> = match buf.lock() {
+            Ok(mut b) => std::mem::take(&mut *b),
+            Err(_) => break,
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        let bytes = f32_chunk_to_pcm16le(&raw, channels, src_rate);
+        if bytes.is_empty() {
+            continue;
+        }
+        if chunks_tx.send(bytes).is_err() {
+            break; // consumer gone — session over
+        }
+    }
+    drop(stream); // close the device; the chunks channel closes with us
+}
+
 /// Pick a device: name-substring override first (case-insensitive), else the
 /// host default. Shared by capture (input) and playback (output).
 fn pick_device<I>(
@@ -569,6 +752,41 @@ fn player_thread(
 }
 
 // ────────────────────────────────── tests ──────────────────────────────────
+
+#[cfg(test)]
+mod stream_chunk_tests {
+    use super::*;
+
+    #[test]
+    fn f32_chunk_to_pcm16le_downmixes_resamples_and_packs_le() {
+        // 100 ms of stereo 32 kHz: L = 0.5, R = -0.5 → mono 0.0 everywhere…
+        let frames = 3200;
+        let mut raw = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            raw.push(0.5);
+            raw.push(-0.5);
+        }
+        let bytes = f32_chunk_to_pcm16le(&raw, 2, 32_000);
+        // …16 kHz mono = half the frames, 2 bytes each.
+        assert_eq!(bytes.len(), frames / 2 * 2);
+        assert!(bytes.iter().all(|&b| b == 0), "L/R cancel to silence");
+
+        // Mono constant 0.5 at 16 kHz passes through; LE packing of +0.5.
+        let bytes = f32_chunk_to_pcm16le(&[0.5; 160], 1, 16_000);
+        assert_eq!(bytes.len(), 320);
+        let v = i16::from_le_bytes([bytes[0], bytes[1]]);
+        assert!((v - 16383).abs() <= 1, "0.5 → ~16383, got {v}");
+
+        // Clamp: ±2.0 saturates instead of wrapping.
+        let bytes = f32_chunk_to_pcm16le(&[2.0, -2.0], 1, 16_000);
+        let hi = i16::from_le_bytes([bytes[0], bytes[1]]);
+        let lo = i16::from_le_bytes([bytes[2], bytes[3]]);
+        assert_eq!((hi, lo), (32767, -32767));
+
+        // Empty in → empty out (the pump skips it).
+        assert!(f32_chunk_to_pcm16le(&[], 2, 48_000).is_empty());
+    }
+}
 
 #[cfg(test)]
 mod tests {

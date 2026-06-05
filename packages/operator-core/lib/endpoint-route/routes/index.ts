@@ -15,7 +15,6 @@ import type { ZodTypeAny } from 'zod';
 import type { RouteDefinition } from '../define-route';
 
 import desktopVersion from './desktop/version';
-import operatorDismissed from './agent-mcp/operator-dismissed';
 import flagsWebhook from './flags/webhook';
 import flagsBootstrap from './flags/bootstrap';
 import flagsStream from './flags/stream';
@@ -212,7 +211,6 @@ import agentMcp_operatorElevenlabsWsInit from './agent-mcp/operator-elevenlabs-w
 import agentMcp_operatorElevenlabsTest from './agent-mcp/operator-elevenlabs-test';
 import agentMcp_operatorElSpend from './agent-mcp/operator-el-spend';
 import agentMcp_operatorElSubscription from './agent-mcp/operator-el-subscription';
-import agentMcp_operatorLastScan from './agent-mcp/operator-last-scan';
 import agentMcp_operatorMessageStatus from './agent-mcp/operator-message-status';
 import agentMcp_operatorMultiWorkspace from './agent-mcp/operator-multi-workspace';
 import agentMcp_operatorNudge from './agent-mcp/operator-nudge';
@@ -221,9 +219,6 @@ import agentMcp_operatorPauseFlag from './agent-mcp/operator-pause-flag';
 import agentMcp_operatorPicovoiceBootstrap from './agent-mcp/operator-picovoice-bootstrap';
 import agentMcp_operatorPreferences from './agent-mcp/operator-preferences';
 import agentMcp_operatorRealtimeBootstrap from './agent-mcp/operator-realtime-bootstrap';
-import agentMcp_operatorScannerReset from './agent-mcp/operator-scanner-reset';
-import agentMcp_operatorScans from './agent-mcp/operator-scans';
-import agentMcp_operatorScan from './agent-mcp/operator-scan';
 import agentMcp_operatorStandingApprovals from './agent-mcp/operator-standing-approvals';
 import agentMcp_operatorStats from './agent-mcp/operator-stats';
 import agentMcp_operatorStt from './agent-mcp/operator-stt';
@@ -400,7 +395,6 @@ function flatten(entry: AnyRoute | AnyRoute[]): AnyRoute[] {
 /** Every registered route, flattened. The order here is the mount order. */
 export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopVersion as AnyRoute | AnyRoute[]),
-  ...flatten(operatorDismissed as AnyRoute),
   ...flatten(agentMcp_agents as AnyRoute),
   ...flatten(agentMcp_consoleLaunch as AnyRoute[]),
   ...flatten(agentMcp_consoleResolve as AnyRoute),
@@ -428,7 +422,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorElevenlabsTest as AnyRoute),
   ...flatten(agentMcp_operatorElSpend as AnyRoute),
   ...flatten(agentMcp_operatorElSubscription as AnyRoute),
-  ...flatten(agentMcp_operatorLastScan as AnyRoute),
   ...flatten(agentMcp_operatorMessageStatus as AnyRoute),
   ...flatten(agentMcp_operatorMultiWorkspace as AnyRoute),
   ...flatten(agentMcp_operatorNudge as AnyRoute),
@@ -437,9 +430,6 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorPicovoiceBootstrap as AnyRoute),
   ...flatten(agentMcp_operatorPreferences as AnyRoute[]),
   ...flatten(agentMcp_operatorRealtimeBootstrap as AnyRoute),
-  ...flatten(agentMcp_operatorScannerReset as AnyRoute),
-  ...flatten(agentMcp_operatorScans as AnyRoute),
-  ...flatten(agentMcp_operatorScan as AnyRoute),
   ...flatten(agentMcp_operatorStandingApprovals as AnyRoute[]),
   ...flatten(agentMcp_operatorStats as AnyRoute),
   ...flatten(agentMcp_operatorStt as AnyRoute),

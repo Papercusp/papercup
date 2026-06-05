@@ -1,6 +1,6 @@
 /**
- * operator:* misc tools — decisions, notes, dedup_check,
- * parse_suggestions, preview_prompt.
+ * operator:* misc tools — decisions, notes, dedup_check, preview_prompt.
+ * (parse_suggestions was removed with the scanner card stream — D-005.)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -27,7 +27,6 @@ afterEach(() => {
   vi.doUnmock('../../../workspace-registry');
   vi.doUnmock('../../../operator-notes');
   vi.doUnmock('../../../operator-fuzzy-dedup');
-  vi.doUnmock('../../../operator-suggestion-parser');
   vi.doUnmock('../../../operator-preferences');
   vi.doUnmock('../../../operator-prompt');
   vi.doUnmock('drizzle-orm/postgres-js');

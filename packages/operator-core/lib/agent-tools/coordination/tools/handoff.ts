@@ -57,6 +57,18 @@ export default defineTool({
           isError: true,
         };
       }
+      // await-event-primitive-2026-06-05 P-015: a sleeping offerer wakes on
+      // `handoff:accepted:<msg_id>`; the accept message already covers notify.
+      void import('../../../events/await/engine')
+        .then(({ emitAwaitedEvent }) =>
+          emitAwaitedEvent({
+            key: `handoff:accepted:${args.accept_msg_id}`,
+            summary: `handoff ${args.accept_msg_id} accepted by ${identity.ownerId}`,
+            payload: { msg_id: args.accept_msg_id, acceptor: identity.ownerId },
+            source: identity.ownerId,
+          }),
+        )
+        .catch(() => {});
       return {
         content: [
           { type: 'text' as const, text: JSON.stringify({ ok: true, accepted: rec }) },

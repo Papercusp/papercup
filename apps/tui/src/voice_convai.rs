@@ -288,8 +288,8 @@ async fn session_task(
     )));
 
     // Continuous mic → user_audio_chunk frames. The capture handle stops the
-    // cpal stream on drop/stop; the bridge thread ends with the channel.
-    let capture = match voice::start_stream_capture(MIC_CHUNK_MS) {
+    // cpal stream on drop/stop; the bridge thread ends when its channel closes.
+    let mut capture = match voice::start_stream_capture(MIC_CHUNK_MS) {
         Ok(c) => c,
         Err(e) => {
             let _ = out_tx.send(Message::Close(None));
@@ -299,9 +299,8 @@ async fn session_task(
             return;
         }
     };
-    {
+    if let Some(chunks) = capture.take_chunks() {
         let out_tx = out_tx.clone();
-        let chunks = capture.chunks();
         // std mpsc → tokio bridge on a blocking thread (cpal callbacks are sync).
         tokio::task::spawn_blocking(move || {
             while let Ok(chunk) = chunks.recv() {

@@ -24,6 +24,16 @@ test.describe('voice settings', () => {
     });
   });
 
+  // The settings page shows "Loading your voice settings…" until its
+  // prefs/spend/credentials fetches resolve. Under suite load on a shared
+  // dev box those fetches contend with the shell's SSE streams for the
+  // per-origin HTTP/1.1 socket budget and can take well over the 5s expect
+  // default — wait the loading state out explicitly before any assertion.
+  async function awaitVoiceSettingsLoaded(page: import('@playwright/test').Page) {
+    await page.goto('/settings/voice');
+    await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
+  }
+
   test('renders all 5 TTS engines + 3 STT engines', async ({ page }) => {
     // PRECONDITION: the STT/TTS selects are deliberately DISABLED while a
     // full-agent engine is active ("overridden by full-agent" — see
@@ -62,12 +72,13 @@ test.describe('voice settings', () => {
     const original = before.fullAgentEngine ?? 'off';
     await putEngine('off');
     try {
-      await page.goto('/settings/voice');
+      await awaitVoiceSettingsLoaded(page);
 
       // STT/TTS are custom Radix Selects (not native <select>) — options live in a
       // portal mounted on open, with role="option". Open each by its trigger's
       // accessible name, then assert the engine options are present.
       const stt = page.getByRole('combobox', { name: 'STT engine' });
+      await expect(stt).toBeEnabled({ timeout: 20_000 });
       await stt.click();
       await expect(page.getByRole('option', { name: /Voicemode/ })).toBeVisible();
       await expect(page.getByRole('option', { name: /Web Speech/ })).toBeVisible();
@@ -87,21 +98,17 @@ test.describe('voice settings', () => {
     }
   });
 
-  // The spend widgets render only after the page's spend/prefs fetches
-  // resolve, and those fetches share the shell's HTTP/1.1 socket budget with
-  // its SSE streams — give the data-dependent guard a longer leash than the
-  // 5s default (the assertion itself is unchanged).
   test('STT spend widget renders alongside TTS spend', async ({ page }) => {
-    await page.goto('/settings/voice');
-    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible({ timeout: 20_000 });
+    await awaitVoiceSettingsLoaded(page);
+    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Voicemode (local Whisper) and Web Speech are free')).toBeVisible();
   });
 
   test('settings/voice has no serious or critical a11y violations', async ({ page }) => {
-    await page.goto('/settings/voice');
-    // Same data-dependent guard as above — wait for the page to be fully
-    // rendered before the axe sweep so it audits the real surface.
-    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible({ timeout: 20_000 });
+    await awaitVoiceSettingsLoaded(page);
+    // Wait for the data-dependent widget so the axe sweep audits the real,
+    // fully-rendered surface.
+    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible({ timeout: 10_000 });
     await expectNoA11yViolations(page);
   });
 

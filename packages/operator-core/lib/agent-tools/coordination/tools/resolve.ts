@@ -72,6 +72,19 @@ export default defineTool({
     // inbox resolution resumes the agent. No-op when unlinked (flag-off) or the
     // card already resolved; the escalation is resolved regardless.
     unblockLinkedCard(out, args.choice);
+    // await-event-primitive-2026-06-05 P-015: a SLEEPING escalator (no live
+    // askUser card) wakes on `escalation:resolved:<msg_id>` (events:await).
+    // The resolution event above already covers the inbox/notify half.
+    void import('../../../events/await/engine')
+      .then(({ emitAwaitedEvent }) =>
+        emitAwaitedEvent({
+          key: `escalation:resolved:${args.msg_id}`,
+          summary: `escalation resolved → ${args.choice}${args.note ? ` — ${args.note}` : ''}`,
+          payload: { msg_id: args.msg_id, choice: args.choice, resolver: identity.ownerId },
+          source: identity.ownerId,
+        }),
+      )
+      .catch(() => {});
     return {
       content: [
         {

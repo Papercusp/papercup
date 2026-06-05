@@ -1,0 +1,86 @@
+/**
+ * Bench host wiring (memory-backend-benchmark-2026-06-05 P-006, D-009):
+ * the live benchmark runs with its OWN `configureMemory` host — the
+ * operator's seams (admin URL, credentials, embedder cascade) reused
+ * verbatim, but the memory tables pointed at an isolated `bench_memory`
+ * schema so `harness_shared.memory_*` is never touched, and the SQLite
+ * event-history forced in-memory so nothing lands under ~/.papercusp.
+ *
+ * The bench is its OWN process — `configureMemory` is process-global,
+ * so this never affects the running operator.
+ *
+ * Exported as reusable pieces (not just the runner's internals) so the
+ * scale tier (P-010) and any future bench rides the same wiring.
+ */
+import { Client } from 'pg';
+
+import { configureMemory, memoryHost, pgClientFields } from '@papercusp/memory';
+// Side-effect import: wires the operator host (admin URL, credentials,
+// embedder cascade) that we then override schema-wise below.
+import '../configure';
+
+export const BENCH_SCHEMA = 'bench_memory';
+
+/**
+ * Re-point the memory host at the bench schema. Returns the previous
+ * host so a caller can restore it (tests).
+ */
+export function setupBenchMemoryHost(): void {
+  const base = memoryHost(); // the operator host '../configure' just wired
+  configureMemory({
+    ...base,
+    schema: BENCH_SCHEMA,
+    localStoreDir: null, // in-memory mem0 history — nothing under ~/.papercusp
+    backend: 'mem0', // the bench constructs backends directly; keep the default sane
+  });
+}
+
+/** Open a pg client against the same DB the memory host resolves. */
+export async function benchPgClient(): Promise<Client> {
+  const fields = await pgClientFields();
+  const client = new Client(fields);
+  await client.connect();
+  return client;
+}
+
+/**
+ * Create the bench schema + the memory tables in migration 081's shape
+ * (mirrored from the live `harness_shared` definitions). Idempotent.
+ */
+export async function ensureBenchSchema(client: Client): Promise<void> {
+  await client.query(`CREATE SCHEMA IF NOT EXISTS ${BENCH_SCHEMA}`);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ${BENCH_SCHEMA}.memory_canonical (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      last_validated_at timestamptz,
+      last_surfaced_at timestamptz,
+      state text NOT NULL DEFAULT 'active'
+        CHECK (state IN ('active','broken_anchor','superseded','contradicted','forgotten'))
+    )
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS memory_canonical_user_id_idx
+      ON ${BENCH_SCHEMA}.memory_canonical ((payload->>'user_id'))
+  `);
+  for (const vec of ['memory_vec_openai', 'memory_vec_local']) {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ${BENCH_SCHEMA}.${vec} (
+        memory_id uuid PRIMARY KEY REFERENCES ${BENCH_SCHEMA}.memory_canonical(id) ON DELETE CASCADE,
+        vector vector(384) NOT NULL,
+        embedded_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS ${vec}_hnsw_idx
+        ON ${BENCH_SCHEMA}.${vec} USING hnsw (vector vector_cosine_ops)
+    `);
+  }
+}
+
+/** Drop the bench schema entirely (the run's cleanup). */
+export async function dropBenchSchema(client: Client): Promise<void> {
+  await client.query(`DROP SCHEMA IF EXISTS ${BENCH_SCHEMA} CASCADE`);
+}

@@ -62,6 +62,11 @@ pub enum Action {
     /// the run loop PUTs `/api/operator/rate-limit-config` then refetches the
     /// read-model (the reducer already updated the local copy optimistically).
     SetMaxAgents(u32),
+    /// Start the realtime EL Conv-AI voice session (voice-realtime-tui P-007)
+    /// — the run loop spawns the session task and owns the handle.
+    VoiceSessionStart,
+    /// Tear the realtime voice session down (user toggle).
+    VoiceSessionStop,
     /// Focus a worker's zellij pane via the companion (tui-operator-surface P2 —
     /// the `focus_pane` tui:dispatch intent). The run loop drives the companion
     /// and POSTs the intent result back.
@@ -810,6 +815,33 @@ pub struct App {
     /// The last voice-pipeline error (STT/converse/TTS), shown until the next
     /// turn starts.
     pub voice_error: Option<String>,
+    // ─── Realtime operator voice (voice-realtime-tui-2026-06-05 P-007) ───
+    /// The continuous EL Conv-AI session phase. `V` toggles; transcripts ride
+    /// the shared operator chat; the session task lives in the run loop.
+    pub convai_phase: ConvAiPhase,
+}
+
+/// Realtime Conv-AI session phase (distinct from the PTT `VoicePhase` — both
+/// can exist, but `V` refuses to start while a PTT turn is in flight).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConvAiPhase {
+    #[default]
+    Off,
+    /// ws-init + connect in flight.
+    Connecting,
+    /// Session live — mic streaming, agent audible.
+    Live,
+}
+
+impl ConvAiPhase {
+    /// A one-glyph + label badge for the Operator title/status line.
+    pub fn badge(self) -> &'static str {
+        match self {
+            ConvAiPhase::Off => "",
+            ConvAiPhase::Connecting => "◐ voice…",
+            ConvAiPhase::Live => "● voice",
+        }
+    }
 }
 
 /// The voice PTT pipeline phase (voice-mode-tui-port-2026-06-05). Linear:
@@ -953,6 +985,7 @@ impl App {
             operator_dock_open: false,
             operator_dock_focused: false,
             voice_phase: VoicePhase::Idle,
+            convai_phase: ConvAiPhase::Off,
             voice_level: 0.0,
             voice_error: None,
         }
@@ -2039,6 +2072,61 @@ impl App {
                 self.fleet_rate = Some(s);
                 Action::Render
             }
+            // Realtime operator voice (voice-realtime-tui-2026-06-05): session
+            // updates land in the SHARED operator chat (D-007) + phase badges.
+            Event::ConvAi(u) => {
+                use crate::voice_convai::ConvAiUpdate as U;
+                match u {
+                    U::Connected { .. } => {
+                        self.convai_phase = ConvAiPhase::Live;
+                        self.push_notif(Notif {
+                            level: "info".into(),
+                            message: "voice live — talk to the operator (V stops)".into(),
+                            harness: None,
+                            ts: None,
+                        });
+                    }
+                    U::UserTranscript(t) => {
+                        self.chat_messages.push(ChatMessage::user(&t));
+                        self.chat_scroll = 0; // snap to latest
+                    }
+                    U::AgentText(raw) => {
+                        // The agent already SPOKE this; render the clean text
+                        // (and any <report>) in the transcript, surface a
+                        // <set_mode> as a toast (the mode itself is a
+                        // desktop-session concept — operator-converse-voice).
+                        if let Some(mode) = crate::voice_convai::utterance_set_mode(&raw) {
+                            self.push_notif(Notif {
+                                level: "info".into(),
+                                message: format!("operator mode → {mode}"),
+                                harness: None,
+                                ts: None,
+                            });
+                        }
+                        let display = crate::chat_tags::finalize(&raw);
+                        if !display.trim().is_empty() {
+                            let mut m = ChatMessage::assistant(&display);
+                            m.report = crate::chat_tags::extract_report(&raw);
+                            self.chat_messages.push(m);
+                            self.chat_scroll = 0;
+                        }
+                    }
+                    U::Ended { reason } => {
+                        self.convai_phase = ConvAiPhase::Off;
+                        self.push_notif(Notif {
+                            level: "attention".into(),
+                            message: reason,
+                            harness: None,
+                            ts: None,
+                        });
+                    }
+                    U::Error(e) => {
+                        self.convai_phase = ConvAiPhase::Off;
+                        self.last_error = Some(e);
+                    }
+                }
+                Action::Render
+            }
             Event::Inbox(i) => {
                 self.set_inbox(i);
                 self.last_error = None;
@@ -2924,6 +3012,24 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('r') if self.tab == Tab::Conversations => self.refetch_conversations(),
+            // Realtime operator voice toggle (voice-realtime-tui-2026-06-05
+            // P-007): `V` (shift) starts/stops the continuous Conv-AI session
+            // on ANY tab; lowercase `v` stays the PTT turn. Refused mid-PTT so
+            // the two pipelines never fight over the mic.
+            KeyCode::Char('V') => {
+                if self.convai_phase == ConvAiPhase::Off {
+                    if self.voice_phase.is_active() {
+                        self.voice_error = Some("finish the PTT turn first (v)".into());
+                        Action::Render
+                    } else {
+                        self.convai_phase = ConvAiPhase::Connecting;
+                        Action::VoiceSessionStart
+                    }
+                } else {
+                    self.convai_phase = ConvAiPhase::Off;
+                    Action::VoiceSessionStop
+                }
+            }
             // Overview top-bar max-agents editor (P-005): `+` (or unshifted
             // `=`) raises and `-` lowers the hard cap, clamped 1..=64.
             KeyCode::Char('+') | KeyCode::Char('=') if self.tab == Tab::Overview => {
@@ -5162,6 +5268,56 @@ mod tests {
         assert_eq!(b.tab, Tab::Overview);
         b.update(key('1', KeyModifiers::NONE));
         assert_eq!(b.tab, Tab::Operator);
+    }
+
+    #[test]
+    fn realtime_voice_toggle_and_phase_lifecycle() {
+        use crate::voice_convai::ConvAiUpdate as U;
+        let mut a = App::new();
+        assert_eq!(a.convai_phase, ConvAiPhase::Off);
+        // V starts: optimistic Connecting + the run-loop action.
+        assert_eq!(a.update(key('V', KeyModifiers::SHIFT)), Action::VoiceSessionStart);
+        assert_eq!(a.convai_phase, ConvAiPhase::Connecting);
+        // Session connects → Live (+ a toast).
+        a.update(Event::ConvAi(U::Connected { conversation_id: "conv_1".into() }));
+        assert_eq!(a.convai_phase, ConvAiPhase::Live);
+        // V again stops.
+        assert_eq!(a.update(key('V', KeyModifiers::SHIFT)), Action::VoiceSessionStop);
+        assert_eq!(a.convai_phase, ConvAiPhase::Off);
+        // A session error lands in the status line + resets the phase.
+        a.update(key('V', KeyModifiers::SHIFT));
+        a.update(Event::ConvAi(U::Error("voice init: 409".into())));
+        assert_eq!(a.convai_phase, ConvAiPhase::Off);
+        assert!(a.last_error.as_deref().unwrap_or("").contains("409"));
+        // Mid-PTT the realtime toggle refuses (one mic owner at a time).
+        let mut b = App::new();
+        b.voice_phase = VoicePhase::Recording;
+        assert_eq!(b.update(key('V', KeyModifiers::SHIFT)), Action::Render);
+        assert_eq!(b.convai_phase, ConvAiPhase::Off);
+        assert!(b.voice_error.as_deref().unwrap_or("").contains("PTT"));
+    }
+
+    #[test]
+    fn convai_transcripts_land_in_shared_chat_with_tags_stripped() {
+        use crate::voice_convai::ConvAiUpdate as U;
+        let mut a = App::new();
+        a.update(Event::ConvAi(U::UserTranscript("how is the fleet".into())));
+        assert_eq!(a.chat_messages.last().unwrap().role, "user");
+        assert_eq!(a.chat_messages.last().unwrap().content, "how is the fleet");
+        // Agent utterance: <say> renders clean, <set_mode> becomes a toast,
+        // raw tags never reach the transcript.
+        a.update(Event::ConvAi(U::AgentText(
+            "<say>all green</say><set_mode>passive</set_mode>".into(),
+        )));
+        let last = a.chat_messages.last().unwrap();
+        assert_eq!(last.role, "assistant");
+        assert_eq!(last.content, "all green");
+        assert!(!last.content.contains("set_mode"));
+        assert!(a.notifs.iter().any(|n| n.message.contains("passive")));
+        // Ended resets the phase + toasts the reason.
+        a.update(Event::ConvAi(U::Ended { reason: "voice session closed".into() }));
+        assert_eq!(a.convai_phase, ConvAiPhase::Off);
+        assert!(a.notifs.iter().any(|n| n.message.contains("closed")));
     }
 
     #[test]
