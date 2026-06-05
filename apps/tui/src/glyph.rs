@@ -80,8 +80,9 @@ pub mod nav {
     pub const CURSOR: &str = "▸";
     pub const EXPANDED: &str = "▾";
     pub const COLLAPSED: &str = "▸";
-    /// The Brew (fleet) identity marker.
-    pub const BREW: &str = "⚑";
+    /// The Fleet identity marker (label is "Fleet" — the Brew rename was
+    /// reversed by the owner 2026-06-05; Pot/Cup naming unchanged).
+    pub const FLEET: &str = "⚑";
     /// Workbench / tiled-panes indicator (the companion HUD). Single-width
     /// replacement for the old inline `⚡`, which is double-width and broke
     /// the right-aligned status-bar HUD sizing (it counts chars, not columns).
@@ -195,7 +196,8 @@ mod tests {
         nav::CURSOR,
         nav::EXPANDED,
         nav::COLLAPSED,
-        nav::BREW,
+        nav::FLEET,
+        nav::PANES,
     ];
 
     /// Header glyphs are allowed to be double-width (Block titles only).

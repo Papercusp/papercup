@@ -301,7 +301,8 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
     let line = Line::from(vec![
-        Span::styled(format!(" {} Brew ", glyph::nav::BREW), Theme::selected()),
+        // Label is "Fleet" — the Brew rename was reversed by the owner (2026-06-05).
+        Span::styled(format!(" {} Fleet ", glyph::nav::FLEET), Theme::selected()),
         Span::raw(format!(
             " {}/{} online · plans {}/{} items ({} active) · work-items {}/{} done ({} open) · ",
             agg.agents_online,

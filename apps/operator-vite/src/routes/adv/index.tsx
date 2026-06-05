@@ -19,7 +19,9 @@ export const Route = createFileRoute('/adv/')({
 function AdvIndexPage() {
   const [activeTab] = useQueryState(
     'tab',
-    parseAsStringEnum<AdvTabId>(ADV_TAB_IDS).withDefault('brainstorm'),
+    // Overview is the default landing surface (Brief 23 /
+    // overview-dashboard-2026-06-05 D-001). Keep in sync with AdvShell.
+    parseAsStringEnum<AdvTabId>(ADV_TAB_IDS).withDefault('overview'),
   );
   const title = getAdvTitle(activeTab);
 

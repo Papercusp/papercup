@@ -79,7 +79,10 @@ export default function AdvShell({
 }) {
   const [activeTab, setActiveTab] = useQueryState(
     'tab',
-    parseAsStringEnum<AdvTabId>([...ADV_TAB_IDS]).withDefault('brainstorm'),
+    // Overview is the default landing surface (Brief 23 /
+    // overview-dashboard-2026-06-05 D-001). Keep in sync with the
+    // parser in routes/adv/index.tsx.
+    parseAsStringEnum<AdvTabId>([...ADV_TAB_IDS]).withDefault('overview'),
   );
   // Tab strip overflows on narrow viewports. Only scroll into view when
   // the active tab is actually clipped — otherwise we'd scroll AWAY from
