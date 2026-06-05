@@ -107,6 +107,20 @@ pub struct AttentionItem {
     pub importance: Option<f64>,
     #[serde(default)]
     pub needs_human: bool,
+    /// Inbox tier (inbox-tiering-and-message-agent D-006): decision | handled |
+    /// alert | activity. Optional for back-compat with older payloads.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// The owning agent (drives "Message owner").
+    #[serde(default)]
+    pub owner_agent_id: Option<String>,
+    #[serde(default)]
+    pub owner_label: Option<String>,
+    /// Operator-triage overlay.
+    #[serde(default)]
+    pub triage_state: Option<String>,
+    #[serde(default)]
+    pub triage_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

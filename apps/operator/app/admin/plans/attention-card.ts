@@ -32,6 +32,7 @@ import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskC
  *  component handles these; `resolveAttentionAction` ignores them. */
 export const NAVIGATE_ACTION_IDS: ReadonlySet<AttentionActionId> = new Set<AttentionActionId>([
   'chat',
+  'message-owner',
   'answer',
   'view-log',
   'open',

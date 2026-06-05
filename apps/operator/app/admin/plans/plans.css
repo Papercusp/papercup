@@ -222,6 +222,131 @@
   text-align: center;
 }
 
+/* ── Inbox tier bar (inbox-tiering-and-message-agent D-006): Decisions ▸
+   Handled ▸ Alerts ▸ Activity. Mirrors the facet pills, one accent per tier;
+   only Decisions reads "loud". ── */
+.pc-inbox__tiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px 4px;
+}
+.pc-inbox__tier {
+  --pc-view-accent: #38bdf8;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--pc-view-accent), transparent 72%);
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 93%);
+  color: var(--fg-dim, #b9d4e8);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+.pc-inbox__tier--decision { --pc-view-accent: #f87171; }
+.pc-inbox__tier--handled  { --pc-view-accent: #34d399; }
+.pc-inbox__tier--alert    { --pc-view-accent: #fbbf24; }
+.pc-inbox__tier--activity { --pc-view-accent: #64748b; }
+.pc-inbox__tier--all      { --pc-view-accent: #38bdf8; }
+.pc-inbox__tier:hover {
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 80%);
+  border-color: color-mix(in oklab, var(--pc-view-accent), transparent 30%);
+  color: var(--fg, #e7f7ff);
+}
+.pc-inbox__tier.is-active {
+  background: color-mix(in oklab, var(--pc-view-accent), transparent 46%);
+  border-color: var(--pc-view-accent);
+  color: var(--fg, #e7f7ff);
+  font-weight: 800;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--pc-view-accent), transparent 55%);
+}
+.pc-inbox__tier-count {
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* Per-item tier badge (rows + detail toolbar). */
+.pc-tier {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: capitalize;
+  border: 1px solid transparent;
+}
+.pc-tier--decision { background: rgba(248, 113, 113, 0.18); color: #fecaca; border-color: rgba(248, 113, 113, 0.4); }
+.pc-tier--handled  { background: rgba(52, 211, 153, 0.16);  color: #a7f3d0; border-color: rgba(52, 211, 153, 0.4); }
+.pc-tier--alert    { background: rgba(251, 191, 36, 0.16);  color: #fde68a; border-color: rgba(251, 191, 36, 0.4); }
+.pc-tier--activity { background: rgba(100, 116, 139, 0.16); color: #cbd5e1; border-color: rgba(100, 116, 139, 0.35); }
+
+/* Operator-triage audit line ("Handled by operator" — what + why). */
+.pc-items__triage-audit {
+  margin: 4px 14px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.pc-items__triage-state { font-weight: 700; color: #a7f3d0; text-transform: capitalize; }
+.pc-items__triage-by { color: var(--fg-dim, #94a3b8); }
+
+/* "Message owner" inline compose + thread. */
+.pc-msgowner {
+  margin: 10px 14px 4px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--accent-strong, #38bdf8), transparent 80%);
+  background: color-mix(in oklab, var(--bg, #0b1220), transparent 4%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pc-msgowner__head { display: flex; align-items: center; justify-content: space-between; }
+.pc-msgowner__label { font-size: 12px; font-weight: 700; color: var(--fg, #e7f7ff); }
+.pc-msgowner__scope { color: var(--fg-dim, #94a3b8); font-weight: 500; }
+.pc-msgowner__input {
+  width: 100%;
+  resize: vertical;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--fg, #e7f7ff);
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+}
+.pc-msgowner__actions { display: flex; justify-content: flex-end; gap: 8px; }
+.pc-msgowner__posts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.pc-msgowner__post { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.03); }
+.pc-msgowner__author { font-size: 11px; font-weight: 700; color: #93c5fd; }
+.pc-msgowner__body { font-size: 13px; color: var(--fg, #e7f7ff); white-space: pre-wrap; }
+.pc-btn {
+  padding: 6px 13px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--fg, #e7f7ff);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pc-btn:disabled { opacity: 0.5; cursor: default; }
+.pc-btn--primary { background: color-mix(in oklab, #38bdf8, transparent 60%); border-color: #38bdf8; }
+.pc-btn--ghost { background: transparent; }
+
 /* Active view (Plans / Inbox header buttons) — brighter ring in the
    button's own accent. Stays lit while that view is selected (even with a
    plan open). */

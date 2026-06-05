@@ -37,7 +37,14 @@ function item(overrides: Partial<AttentionItem>): AttentionItem {
     body: 'Body text',
     status: 'needs-human',
     importance: 'normal',
+    tier: 'decision',
     needsHuman: true,
+    ownerAgentId: null,
+    ownerLabel: null,
+    triageState: 'untriaged',
+    triageNote: null,
+    triagedBy: null,
+    triagedAt: null,
     actions: [],
     ref: { kind: 'plan-item' },
     ...overrides,
@@ -119,6 +126,20 @@ describe('attentionItemToCardSpec (P-010)', () => {
     expect(byId(spec, 'view-log').terminal).toBe(false);
   });
 
+  it('message-owner is a navigate option (opens the thread, never commits)', () => {
+    const withMsgOwner = item({
+      actions: [
+        { id: 'mark-done', label: 'Resolve', primary: true },
+        { id: 'chat', label: 'Chat' },
+        { id: 'message-owner', label: 'Message owner' },
+      ],
+      ref: { kind: 'plan-item', slug: 'p', itemId: 'P-7' },
+    });
+    const spec = attentionItemToCardSpec(withMsgOwner);
+    expect(ids(spec)).toContain('message-owner');
+    expect(byId(spec, 'message-owner').terminal).toBe(false); // navigate — component handles it
+  });
+
   it('question prefers body, falls back to title', () => {
     expect(attentionItemToCardSpec(needsHuman).question).toBe('Body text');
     expect(attentionItemToCardSpec(item({ body: '   ', title: 'Just a title' })).question).toBe('Just a title');
@@ -162,6 +183,12 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     expect(r.resolved).toBe(false);
     expect(setItemStatus).not.toHaveBeenCalled();
     expect(resolveEscalation).not.toHaveBeenCalled();
+  });
+
+  it('message-owner is a navigate id — not dispatched here (the thread component owns it)', async () => {
+    const r = await resolveAttentionAction(needsHuman, 'message-owner');
+    expect(r.resolved).toBe(false);
+    expect(setItemStatus).not.toHaveBeenCalled();
   });
 });
 

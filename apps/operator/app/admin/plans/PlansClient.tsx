@@ -47,10 +47,13 @@ import {
   usePlanSearch,
   bucketOf,
   PLAN_BUCKETS,
+  ATTENTION_TIERS,
+  TIER_LABEL,
   type PlanListRow,
   type PlanStatus,
   type PlanBucket,
   type PlanItemRow,
+  type AttentionTier,
 } from './plans-api';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
@@ -84,6 +87,17 @@ const ITEM_STATUS_IDS = [
 // the plans:attention reader (the "Other" surfaces, now split out).
 const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'plan-review'] as const;
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
+
+/** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
+type InboxTierFilter = AttentionTier | 'all';
+const INBOX_TIER_FILTERS = ['all', ...ATTENTION_TIERS] as const;
+
+/** Map a plan-item status category to its inbox tier (D-006): needs-human → a
+ *  Decision, blocked → an Alert, an actionable todo → Activity. Plan items don't
+ *  carry the operator-only 'handled' tier on the plans:items path. */
+function tierOfPlanCategory(c: 'needs-human' | 'todo' | 'blocked'): AttentionTier {
+  return c === 'needs-human' ? 'decision' : c === 'blocked' ? 'alert' : 'activity';
+}
 
 /** Item-status filter toggles — the "Items" group. */
 const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }> = [
@@ -161,6 +175,12 @@ export default function PlansClient() {
   const [view, setView] = useQueryState(
     'view',
     parseAsStringEnum<'plans' | 'inbox' | 'sessions'>(['plans', 'inbox', 'sessions']).withDefault('plans'),
+  );
+  // Inbox tier filter (D-006) — Decisions ▸ Handled ▸ Alerts ▸ Activity (or all).
+  // Only the Decisions tier demands the user; this lets them focus on it.
+  const [inboxTier, setInboxTier] = useQueryState(
+    'inboxTier',
+    parseAsStringEnum<InboxTierFilter>([...INBOX_TIER_FILTERS]).withDefault('all'),
   );
   // Inbox shared-preview selection: a plan-item (`?item=`, "<plan>::<id>") or
   // an Other attention item (`?other=`). The two list sections each set their
@@ -333,9 +353,15 @@ export default function PlansClient() {
         .filter(
           (e) => pBuckets.length === 0 || pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft'),
         )
+        // Inbox tier filter (D-006): plan-item tier derives from its category.
+        .filter(
+          (e) =>
+            inboxTier === 'all' ||
+            tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked') === inboxTier,
+        )
         .map((e) => e.row),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [taggedItems, istatusKey, pBucketsKey, planBucketBySlug],
+    [taggedItems, istatusKey, pBucketsKey, planBucketBySlug, inboxTier],
   );
 
   // Per-status counts for the item-status chips — scoped by the active
@@ -368,6 +394,20 @@ export default function PlansClient() {
     () => Object.values(itemStatusCounts).reduce((a, b) => a + b, 0),
     [itemStatusCounts],
   );
+
+  // Per-tier counts for the tier bar (D-006): plan-items by category→tier
+  // (respecting the plan-bucket facet, like itemStatusCounts) + other items by
+  // their (triage-overlaid) tier. The Decisions count is the headline badge.
+  const tierCounts = useMemo(() => {
+    const acc: Record<AttentionTier, number> = { decision: 0, handled: 0, alert: 0, activity: 0 };
+    for (const e of taggedItems) {
+      if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;
+      acc[tierOfPlanCategory(e.category as 'needs-human' | 'todo' | 'blocked')] += 1;
+    }
+    for (const it of otherItems) acc[it.tier] += 1;
+    return acc;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taggedItems, pBucketsKey, planBucketBySlug, otherItems]);
 
   // The rail is normally an item-navigator: it lists the plans that have
   // matching items (+ a per-plan itemPlan filter for the item list). BUT when
@@ -737,6 +777,38 @@ export default function PlansClient() {
                   />
                 ) : view === 'inbox' ? (
                   <div className="pc-inbox__list">
+                    {/* Tier bar (D-006): Decisions ▸ Handled ▸ Alerts ▸ Activity.
+                        Only Decisions demands the user; the rest declutter into
+                        their own tiers. */}
+                    <nav className="pc-inbox__tiers" aria-label="Inbox tiers">
+                      {INBOX_TIER_FILTERS.map((t) => {
+                        const active = inboxTier === t;
+                        const label = t === 'all' ? 'All' : TIER_LABEL[t];
+                        const count =
+                          t === 'all'
+                            ? Object.values(tierCounts).reduce((a, b) => a + b, 0)
+                            : tierCounts[t];
+                        return (
+                          <button
+                            key={t}
+                            type="button"
+                            className={`pc-inbox__tier pc-inbox__tier--${t}${active ? ' is-active' : ''}`}
+                            aria-pressed={active}
+                            onClick={() => void setInboxTier(active && t !== 'all' ? 'all' : t)}
+                            title={
+                              t === 'decision'
+                                ? 'Decisions — the only tier that demands you'
+                                : t === 'handled'
+                                  ? 'Handled by the operator (audit: what + why)'
+                                  : label
+                            }
+                          >
+                            <span className="pc-inbox__tier-label">{label}</span>
+                            <span className="pc-inbox__tier-count">{itemsLoading ? '…' : count}</span>
+                          </button>
+                        );
+                      })}
+                    </nav>
                     {/* Item filters, sticky atop the inbox list column. */}
                     <nav className="pc-inbox__filters" aria-label="Inbox item filters">
                       {ITEM_FILTERS.map((f) => {
@@ -768,6 +840,7 @@ export default function PlansClient() {
                           title="Other"
                           kinds={otherFacets}
                           planFilters={itemPlans}
+                          tierFilter={inboxTier}
                         />
                       ) : null}
                       {showPlanItems ? (

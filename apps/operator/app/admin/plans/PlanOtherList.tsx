@@ -25,10 +25,11 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import PlanChat from './PlanChat';
+import MessageOwnerThread from './MessageOwnerThread';
 import { AskChoiceCard, type AskChoiceResponse, type AskChoiceAnswered } from '@/app/_components/chat/AskChoiceCard';
 import { InboxCardActions } from './InboxCardActions';
 import { attentionItemToCardSpec, resolveAttentionAction } from './attention-card';
-import type { AttentionGroup, AttentionItem, AttentionKind } from './plans-api';
+import { TIER_LABEL, type AttentionGroup, type AttentionItem, type AttentionKind, type AttentionTier } from './plans-api';
 
 const KIND_LABEL: Record<AttentionKind, string> = {
   'plan-item': 'item',
@@ -50,15 +51,18 @@ interface Props {
    *  attention items belonging to these plans, so the left sidebar acts as a
    *  filter here too (harness-level alerts with no plan are dropped). */
   planFilters?: string[];
+  /** Inbox tier filter (D-006). 'all' (or undefined) shows every tier. */
+  tierFilter?: AttentionTier | 'all';
 }
 
 /** Keep only the non-plan-item kinds (optionally narrowed to `allow`), and —
- *  when a plan filter is active — only items belonging to those plans; drop
- *  groups left empty. */
+ *  when a plan filter is active — only items belonging to those plans; when a
+ *  tier filter is active — only that tier; drop groups left empty. */
 function otherOnly(
   groups: AttentionGroup[],
   allowKinds: AttentionKind[],
   allowPlans: string[],
+  tier: AttentionTier | 'all',
 ): AttentionGroup[] {
   const allow = allowKinds.length ? new Set(allowKinds) : null;
   const plans = allowPlans.length ? new Set(allowPlans) : null;
@@ -69,13 +73,14 @@ function otherOnly(
         (i) =>
           i.kind !== 'plan-item' &&
           (!allow || allow.has(i.kind)) &&
-          (!plans || (i.planSlug != null && plans.has(i.planSlug))),
+          (!plans || (i.planSlug != null && plans.has(i.planSlug))) &&
+          (tier === 'all' || i.tier === tier),
       ),
     }))
     .filter((g) => g.items.length > 0);
 }
 
-export default function PlanOtherList({ groups, loading, error, refresh, title, kinds, planFilters }: Props) {
+export default function PlanOtherList({ groups, loading, error, refresh, title, kinds, planFilters, tierFilter }: Props) {
   const [selected, setSelected] = useQueryState('other', parseAsString);
   // Inbox shares one preview pane across the Other + item lists; selecting an
   // Other item clears any plan-item selection so the shared pane shows it.
@@ -92,7 +97,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
   );
 
   const planList = planFilters ?? [];
-  const otherGroups = otherOnly(groups, kinds ?? [], planList);
+  const otherGroups = otherOnly(groups, kinds ?? [], planList, tierFilter ?? 'all');
   const allItems = otherGroups.flatMap((g) => g.items);
 
   // Auto-expand the selected item's group (mirrors the Plans tab). The ref
@@ -197,6 +202,11 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
                                     pills follow on the right. */}
                                 <span className="pc-items__text">{it.title}</span>
                                 <span className="pc-items__rowmeta">
+                                  {it.tier !== 'activity' ? (
+                                    <span className={`pc-tier pc-tier--${it.tier}`} title={TIER_LABEL[it.tier]}>
+                                      {it.tier === 'handled' ? '✓ handled' : it.tier}
+                                    </span>
+                                  ) : null}
                                   <span className={`pc-kind pc-kind--${it.kind}`}>{KIND_LABEL[it.kind]}</span>
                                   {it.importance !== 'normal' ? (
                                     <span className={`pc-imp pc-imp--${it.importance}`}>{it.importance}</span>
@@ -220,6 +230,7 @@ export default function PlanOtherList({ groups, loading, error, refresh, title, 
 
 export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; onResolved: () => void }) {
   const [chatOpen, setChatOpen] = useState(false);
+  const [msgOwnerOpen, setMsgOwnerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [answered, setAnswered] = useState<AskChoiceAnswered | undefined>(undefined);
 
@@ -244,6 +255,8 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
     if (resp.action === 'navigate') {
       if (resp.option_id === 'chat') {
         setChatOpen(true);
+      } else if (resp.option_id === 'message-owner') {
+        setMsgOwnerOpen(true);
       } else {
         toast.info(
           `${resp.label}: this ${kindLabel} lives in its harness view${
@@ -275,6 +288,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
   return (
     <aside className="pc-items__detail">
       <div className="pc-items__detail-toolbar">
+        <span className={`pc-tier pc-tier--${item.tier}`} title={TIER_LABEL[item.tier]}>{TIER_LABEL[item.tier]}</span>
         <span className={`pc-kind pc-kind--${item.kind}`}>{kindLabel}</span>
         <span className={`pc-count pc-count--${item.status}`}>{item.status}</span>
         {item.importance !== 'normal' ? (
@@ -289,6 +303,15 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
           onResponse={(r) => void onResponse(r)}
         />
       </div>
+      {/* Operator-triage audit (D-006): a downgraded/handled item shows what the
+          operator did + why — never a silent vanish. */}
+      {item.tier === 'handled' || item.triageState !== 'untriaged' ? (
+        <div className="pc-items__triage-audit" data-testid="triage-audit">
+          <span className="pc-items__triage-state">{item.triageState}</span>
+          {item.triagedBy ? <span className="pc-items__triage-by"> by {item.triagedBy}</span> : null}
+          {item.triageNote ? <span className="pc-items__triage-note"> — {item.triageNote}</span> : null}
+        </div>
+      ) : null}
       <div className="pc-items__detail-body">
         <AskChoiceCard
           args={spec}
@@ -297,6 +320,7 @@ export function OtherDetail({ item, onResolved }: { item: AttentionItem | null; 
           hideOptions
           onResponse={(r) => void onResponse(r)}
         />
+        {msgOwnerOpen ? <MessageOwnerThread item={item} /> : null}
         {chatOpen ? <PlanChat harnessSlug={item.harnessSlug} label={chatLabel} /> : null}
       </div>
     </aside>

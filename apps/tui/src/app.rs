@@ -4672,10 +4672,11 @@ mod tests {
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
         // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
         // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
-        // D-011) letter tabs.
-        assert_eq!(Tab::ALL.len(), 12);
+        // D-011) + Conversations ('d', Brief 25) letter tabs.
+        assert_eq!(Tab::ALL.len(), 13);
         assert_eq!(Tab::Memory.switch_key(), 'm');
         assert_eq!(Tab::Cupboard.switch_key(), 'c');
+        assert_eq!(Tab::Conversations.switch_key(), 'd');
         // `1` returns to it from elsewhere.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));
