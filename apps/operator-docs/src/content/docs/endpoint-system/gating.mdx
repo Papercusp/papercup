@@ -27,7 +27,9 @@ Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProje
 ├────────────────────────────────────────────────┤
 │ 7. Resource authorization (tool.authorize)      │  → authorization_denied (403)
 ├────────────────────────────────────────────────┤
-│ 8. Per-tool timeout (during execution)          │  → timeout (504)
+│ 8. Declarative preconditions (tool.requires)    │  → precondition_failed (412)
+├────────────────────────────────────────────────┤
+│ 9. Per-tool timeout (during execution)          │  → timeout (504)
 └────────────────────────────────────────────────┘
 ```
 
@@ -175,6 +177,49 @@ The framework is the **policy-enforcement point**; it ships the contract (`Authz
 ### Break-glass: `GateBypass.policy`
 
 Unlike the role/capability/quota bypasses, the resource-`authorize` gate is **not** skipped by them — resource ownership is a separate decision a host opts out of explicitly, per call, via `GateBypass.policy` (default off). And even then **the bypass is audited**: skipping the hook still emits an authz audit event recording the bypass. Break-glass best practice is "policy-governed *and* mandatorily logged" — a bypassed check that isn't logged is the silent super-admin the standard forbids.
+
+## Declarative preconditions (gate 8): `requires:`
+
+The **preInvoke mirror of `emits:`** (autoloop-pot-operator-rebuild-2026-06-05 D-006). A tool declares `requires: [ToolRequireSpec, …]` — each spec a declarative condition (a `@papercusp/rules` MatchMap / `all`/`any`/`not` combinator over `{ tool, args, ctx, state }`) that must **hold** for the call to proceed, plus a response when it doesn't:
+
+- `{ error }` — **reject** the call with `precondition_failed`.
+- `{ fire, then: 'retry' }` — **auto-correct, visibly**: fire a corrective tool through the host's injectable `deps.firePrecondition` port (Papercusp wires it to the same dispatch path reactions use — auth-gated, audited, cause-chained), re-resolve state, re-evaluate **once**, and reject if it still fails.
+
+```ts
+defineTool({
+  name: 'autoloop:status',
+  // The former in-handler `if (!slug) throw` guard, lifted (the proof migration):
+  requires: [{
+    id: 'harness-slug',
+    when: { any: [
+      { 'args.harnessSlug': { truthy: true } },
+      { 'ctx.harnessSlug':  { truthy: true } },
+    ]},
+    error: 'autoloop:status — harness slug required (passed or in spawn ctx)',
+  }],
+  // …
+});
+```
+
+Host state enters through the spec's optional `state(args, ctx)` resolver (re-resolved before the retry); conditions are **declarative only** — there is deliberately no JS-predicate hatch here, because inspectability/serializability is the point of the lift. Everything fails **closed**: a throwing resolver, a malformed condition, a missing fire port, or a failed retry all deny. Denials and auto-corrections are audited with `gate: 'precondition'` through the same `deps.auditAuth` sink as gates 4/7 (first-try passes are not audited — they're the overwhelmingly common case).
+
+It runs **after** `authorize` — a corrective fire must only happen for an authorized caller, and a functional gap must not mask an auth denial — and **before** `timeout` (it's a gate; no timers or buffers exist yet on the deny path).
+
+**What belongs in `requires:`:** *functional* preconditions — an arg/scope shape the handler can't proceed without, a resumable resource that a corrective fire can fix (the reject/auto-correct/delete choice is D-006's safety-vs-convenience judgment: auto-correct ergonomic preconditions visibly; reject ones the caller must fix; delete artificial ones instead of migrating them).
+
+### Safety invariants are EXCLUDED by design (D-007)
+
+**`requires:` must never absorb a safety invariant.** The rule (autoloop-pot-operator-rebuild D-007): *the operator proposes, the gate disposes* — an agent gets maximal agency **inside** a small set of hard, coded guardrails it cannot reason past. A safety gate in a declarative rule table is a safety gate an agent (or a rule edit) can weaken; these stay imperative, fail-closed, audited **code**. The inventory (verified 2026-06-05):
+
+| Gate | Where (imperative code) | Audit sink | Bypass |
+|---|---|---|---|
+| **Don't-deploy-on-red** | `apps/operator/lib/release/green-checkpoint.ts` (ready advances only on green) + `deploy-cli.ts` (refuses un-green targets) | coord broadcast per checkpoint/deploy | `--force` / `--deploy-commit` — loudly audited (`🚨 FORCED un-green deploy`) |
+| **Protected-paths** | `packages/operator-core/lib/harness/improvements/policy.ts` `classifyImprovement()` — glob patterns route protected surfaces to the human queue | tier decision in the improvements digest/queue | none (kind-graduation only widens `auto` kinds, never the protected paths) |
+| **Budget / quota caps** | `libs/papercusp/libs/db/src/budget-enforcement.ts` (row-locked atomic budget check, fail-closed) + `orchestrator-loop.ts` `SAFETY_CEILING` (hard constant; blueprint `dispatch.safetyCeiling` may only tighten) + the quota gate (6) above | `tool_invocations` (quota); `BudgetExceededError` carries detail | quota: `GateBypass.quota`; budget/ceiling: none |
+| **Auth perimeter** | gates 0–4 + 7 above (`dispatch-stack.ts`, `tryBuildSpawnContext`) | `harness_shared.tool_authz_log` + `spawn_sig_verification_failures` | per-gate `GateBypass`, `policy` bypass audited |
+| **No-double-allocate** | `work-items.ts` atomic CAS (`UPDATE … WHERE taken_by IS NULL`), `orchestrator/feature-claim.ts` append-only claim log, `authority/lock-authority.ts` | `harness_shared.claim_audit` (won/lost/timeout/error) | none — atomic by construction |
+
+None of the five flows through `@papercusp/rules`, the event-reaction tables, or `requires:` — and that's load-bearing, not an accident. When migrating a hardcoded guard to `requires:` (or a reaction to `emits:`), first ask: *is this gate's failure mode harm?* If yes, it stays code.
 
 ## The authorization audit trail
 

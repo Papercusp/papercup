@@ -60,6 +60,13 @@ describe('buildInvokeOnce — command + core env', () => {
 });
 
 describe('buildInvokeOnce — env-resolution nuances', () => {
+  beforeEach(() => {
+    // Hermetic baseline — the dev box's .env.local carries a real AGENT_MODELS
+    // map whose role entries would append `--model <x>` to these expectations
+    // (see the RB-012 describe below for the same trap).
+    vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
+  });
+
   it("CLAUDE defaults to 'omp -p' when neither AGENT_CMD nor CLAUDE is set", () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('CLAUDE', undefined as unknown as string);

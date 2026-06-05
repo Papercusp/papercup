@@ -29,6 +29,7 @@ import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
 import { claimDueRoutine } from '../harness/routines/claim';
+import { checkFireGate, recordFire } from '../autoloop';
 import { getSystemAction, SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
@@ -68,23 +69,43 @@ async function routineFireImpl(
       );
     } else {
       // Agent-role routine: kick off the role for this harness via the invoke route
-      // (the same autonomous launch path the autoloop's fireDirector + the git-sync
-      // merge-resolver spawn use). Fire-and-forget — the agent runs detached and the
-      // next due tick re-fires; this matches the routine cadence model.
+      // (the same autonomous launch path the git-sync merge-resolver spawn uses).
+      // Fire-and-forget — the agent runs detached and the next due tick re-fires;
+      // this matches the routine cadence model.
       await DBOS.runStep(async () => {
+        // P-009 (D-009): the error-backoff fire gate + outcome recording — a
+        // repeatedly-failing role fire backs off exponentially instead of
+        // re-firing at full cadence (circuit-open ⇒ ~one probe per cap window).
+        const gate = await checkFireGate(installSlug, targetRole);
+        if (!gate.allow) {
+          console.warn(
+            `[routines] ${installSlug}/${targetRole} fire WITHHELD (${gate.reason}, ` +
+              `consecutive_errors=${gate.consecutiveErrors}, retry in ~${gate.retryAfterSec}s)`,
+          );
+          return;
+        }
         const kickoff =
           typeof payloadTemplate?.kickoff === 'string'
             ? payloadTemplate.kickoff
             : `Scheduled routine '${routineId}' (role ${targetRole}).`;
         const ws = encodeURIComponent(workspaceId);
         const url = `${operatorBase()}/api/harness/${encodeURIComponent(installSlug)}/invoke?role=${encodeURIComponent(targetRole)}&ws=${ws}`;
+        void recordFire(installSlug, targetRole, 'firing', 'attempt').catch(() => {});
         void loopbackFetch(url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ kickoff }),
-        }).catch((e) =>
-          console.warn(`[routines] role spawn failed (${installSlug}/${targetRole}): ${e instanceof Error ? e.message : e}`),
-        );
+        })
+          .then(
+            (r) =>
+              recordFire(installSlug, targetRole, r.ok ? 'ok' : `error: HTTP ${r.status}`, r.ok ? 'ok' : 'error'),
+            (e) => {
+              const detail = String(e instanceof Error ? e.message : e).slice(0, 180);
+              console.warn(`[routines] role spawn failed (${installSlug}/${targetRole}): ${detail}`);
+              return recordFire(installSlug, targetRole, `error: ${detail}`, 'error');
+            },
+          )
+          .catch(() => {});
       }, { name: `spawn:${targetRole}` });
     }
   });

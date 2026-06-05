@@ -7,7 +7,8 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getAutoLoopState } from '../../autoloop';
+import { getOrgPg } from '@papercusp/db-org';
+import { evaluateFireGate, getAutoLoopState } from '../../autoloop';
 
 const ALL_ROLES = [
   'scoper',
@@ -56,8 +57,33 @@ export default defineTool({
     // Non-empty by the `harness-slug` precondition above.
     const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
     const rows = await getAutoLoopState(slug);
+    // P-009: surface the backoff verdict per fire-state row so "is the circuit
+    // open?" is answerable here (autoloop:control reset-errors closes it).
+    const gated = (rows ?? []).map((r) => ({
+      ...r,
+      gate: evaluateFireGate({
+        lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at) : null,
+        consecutiveErrors: Number(r.consecutive_errors ?? 0),
+      }),
+    }));
+    // P-010: the autoloop IS the harness's blueprint-scheduled routines now —
+    // show them (the thing autoloop:control pauses/resumes).
+    const { sql } = getOrgPg();
+    const routines = await sql<
+      Array<{ name: string; active: boolean; next_fire_at: Date | null; last_fired_at: Date | null }>
+    >`
+      SELECT name, active, next_fire_at, last_fired_at
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND name LIKE 'bp-schedule-%'
+       ORDER BY name
+    `;
     return {
-      content: [{ type: 'text', text: JSON.stringify({ harnessSlug: slug, rows }) }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ harnessSlug: slug, rows: gated.length > 0 ? gated : null, scheduleRoutines: routines }),
+        },
+      ],
     };
   },
 });

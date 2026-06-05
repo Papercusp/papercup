@@ -1,39 +1,89 @@
 /**
- * autoloop:control — pause or resume the in-process autoloop ticker.
+ * autoloop:control — pause/resume a harness's blueprint-scheduled autoloop, or
+ * reset its error circuit (autoloop-pot-operator-rebuild-2026-06-05 P-010).
  *
- * Process-local: only affects the operator process the tool is called
- * against. Pause clears the global timer + flag; resume calls
- * startAutoLoopOnce() (idempotent — if already running, no-op).
- *
- * Operator-only: pausing the autoloop affects every harness in the
- * workspace, so it's not a per-spawn decision.
+ * The autoloop is no longer a process-local ticker — it is the durable routines
+ * engine firing the harness's blueprint-declared schedule (`bp-schedule-*`
+ * routines, materialized by harness:create). So:
+ *   - pause/resume = flip those routine rows' `active` (durable, cross-process,
+ *     survives restarts — unlike the old in-process timer clear).
+ *   - reset-errors = zero `consecutive_errors` in autoloop_state, closing the
+ *     P-009 backoff circuit so the next scheduled fire goes out immediately.
  */
-
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { startAutoLoopOnce, stopAutoLoop } from '../../autoloop';
+import { getOrgPg } from '@papercusp/db-org';
+import { resetFireErrors } from '../../autoloop';
+
+/** The blueprint-schedule routine-name prefix `materializeBlueprintTriggers` seeds. */
+const BP_SCHEDULE_PREFIX = 'bp-schedule-';
 
 export default defineTool({
   name: 'autoloop:control',
   profile: 'engineer',
   guidance: {
-    when: 'User says "pause the autoloop", "turn it on", "stop autopilot". Toggles enabled/paused for a harness.',
-    notWhen: 'For PAUSING all of the operator (silence-mode-style), use the operator-pause flag in operator-internal tools — autoloop is per-harness, operator pause is global.',
+    when: 'User says "pause the autoloop", "turn autopilot back on", or a circuit-open harness needs its error counter reset after a fix. Per-harness, durable.',
+    notWhen: 'For PAUSING all of the operator (silence-mode-style), use the operator-pause flag — autoloop is per-harness. For pausing git-sync or another non-schedule routine, flip that routine directly.',
+    chaining: 'autoloop:status first to see the schedule routines + circuit state; reset-errors after fixing whatever made the fires fail.',
   },
-  description: 'Pause or resume the operator-process autoloop ticker (process-local; affects every harness in the workspace).',
+  description:
+    "Pause/resume a harness's blueprint-scheduled autoloop (flips its bp-schedule-* routine rows — durable) or reset its error circuit (zeroes consecutive_errors so backoff stops withholding fires).",
   capability: 'autoloop:write',
   requirePrincipal: false,
   agentRoles: ['operator'],
   rolesQuota: { operator: { perRun: 20 } },
   args: z.object({
-    op: z.enum(['pause', 'resume']),
+    op: z.enum(['pause', 'resume', 'reset-errors']),
+    harness: z.string().max(120).optional().describe('Harness slug (or via spawn ctx).'),
+    role: z.string().max(80).optional().describe("reset-errors only: a single role's counter (default: all roles)."),
   }),
-  async handler(args) {
-    if (args.op === 'pause') {
-      stopAutoLoop();
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, op: 'pause' }) }] };
+  // Declarative precondition (D-006): a harness must be named — by arg or ctx.
+  requires: [
+    {
+      id: 'harness-slug',
+      when: {
+        any: [
+          { 'args.harness': { truthy: true } },
+          { 'ctx.harnessSlug': { truthy: true } },
+        ],
+      },
+      error: 'autoloop:control — harness slug required (passed or in spawn ctx)',
+    },
+  ],
+  async handler(args, ctx) {
+    const slug = args.harness ?? ctx.harnessSlug ?? '';
+    const { sql } = getOrgPg();
+
+    if (args.op === 'reset-errors') {
+      const n = await resetFireErrors(slug, args.role);
+      return {
+        content: [
+          { type: 'text', text: JSON.stringify({ ok: true, op: 'reset-errors', harness: slug, rowsReset: n }) },
+        ],
+      };
     }
-    startAutoLoopOnce();
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, op: 'resume' }) }] };
+
+    const active = args.op === 'resume';
+    const rows = await sql<{ name: string }[]>`
+      UPDATE harness_shared.routines
+         SET active = ${active}, updated_at = now()
+       WHERE install_slug = ${slug}
+         AND name LIKE ${BP_SCHEDULE_PREFIX + '%'}
+      RETURNING name
+    `;
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            op: args.op,
+            harness: slug,
+            routines: rows.map((r) => r.name),
+            note: rows.length === 0 ? 'no bp-schedule-* routines for this harness (its blueprint declares no schedule)' : undefined,
+          }),
+        },
+      ],
+    };
   },
 });
