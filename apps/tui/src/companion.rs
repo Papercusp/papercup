@@ -360,6 +360,8 @@ mod tests {
                 pos: 0,
                 name: "papercup".into(),
                 active: true,
+                swap_layout: None,
+                swap_dirty: false,
             }],
             panes: vec![PaneNode {
                 id: 1,

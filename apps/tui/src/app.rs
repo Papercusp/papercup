@@ -2886,6 +2886,80 @@ impl App {
                                 }
                             }
                         }
+                        // ── dockview dock-verbs (Brief 50 / D-008): resolved
+                        // against the live topology here, then driven by the run
+                        // loop (companion or CLI fallback). ──
+                        // `:stack` — gather the work area; needs the companion
+                        // (no topology → no ids → a helpful error, not a no-op).
+                        Some(PaletteCommand::Stack) => {
+                            let ids = self.work_pane_ids();
+                            if ids.len() >= 2 {
+                                Action::Dock(DockCmd::Stack { pane_ids: ids })
+                            } else {
+                                self.push_notif(crate::models::Notif {
+                                    level: "error".to_string(),
+                                    message: if self.topology.is_none() {
+                                        "stack: needs the companion plugin (run inside the workbench)"
+                                            .to_string()
+                                    } else {
+                                        "stack: fewer than 2 work panes to stack".to_string()
+                                    },
+                                    harness: None,
+                                    ts: None,
+                                });
+                                Action::Render
+                            }
+                        }
+                        // `:float [target]` — bare floats the HUD (run loop uses
+                        // hud_pane_id / the focused-pane CLI fallback); an arg
+                        // targets a work pane resolved from topology.
+                        Some(PaletteCommand::Float { target }) => match target {
+                            None => Action::Dock(DockCmd::Float { pane_id: None }),
+                            Some(t) => match self.resolve_pane_target(&t) {
+                                Some(id) => Action::Dock(DockCmd::Float { pane_id: Some(id) }),
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: format!("float: no pane matching '{t}'"),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            },
+                        },
+                        // `:dock <left|right>` — mirrored swap preset.
+                        Some(PaletteCommand::Dock { side }) => {
+                            let name = match side.to_lowercase().as_str() {
+                                "right" | "r" => Some("stacked"),
+                                "left" | "l" => Some("stacked-left"),
+                                _ => None,
+                            };
+                            match name {
+                                Some(n) => Action::Dock(DockCmd::SelectLayout {
+                                    name: n.to_string(),
+                                }),
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: "dock: use :dock left | :dock right".to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
+                        // `:layout <next|prev|name>` — cycle or select a preset.
+                        Some(PaletteCommand::Layout { which }) => {
+                            match which.to_lowercase().as_str() {
+                                "next" | "n" => Action::Dock(DockCmd::CycleLayout { next: true }),
+                                "prev" | "previous" | "p" => {
+                                    Action::Dock(DockCmd::CycleLayout { next: false })
+                                }
+                                _ => Action::Dock(DockCmd::SelectLayout { name: which }),
+                            }
+                        }
                         Some(c) => Action::Workbench(c),
                         None => Action::Render,
                     }
@@ -4485,6 +4559,8 @@ mod tests {
                 pos: 0,
                 name: "papercup".into(),
                 active: true,
+                swap_layout: None,
+                swap_dirty: false,
             }],
             panes: vec![PaneNode {
                 id: 7,
@@ -5204,6 +5280,190 @@ mod tests {
                 value: None
             }
         );
+    }
+
+    // ── dockview dock-verbs (Brief 50 / dockview-workbench D-008) ──
+
+    fn dock_topology() -> pui_companion_proto::Topology {
+        use pui_companion_proto::{PaneNode, TabNode, Topology};
+        let pane = |id, title: &str, cmd: Option<&str>, is_plugin| PaneNode {
+            id,
+            tab: 0,
+            title: title.to_string(),
+            focused: false,
+            is_plugin,
+            exited: false,
+            command: cmd.map(String::from),
+        };
+        Topology {
+            tabs: vec![TabNode {
+                pos: 0,
+                name: "papercup".into(),
+                active: true,
+                swap_layout: Some("stacked".into()),
+                swap_dirty: false,
+            }],
+            panes: vec![
+                pane(10, "tab-bar", None, true), // plugin → not work
+                pane(11, "pui", Some("pui hud"), false), // the HUD → not work
+                pane(12, "claude", Some("psu --agent=claude"), false),
+                pane(13, "codex", Some("psu --agent=codex"), false),
+            ],
+        }
+    }
+
+    #[test]
+    fn parse_dock_verbs() {
+        assert_eq!(parse_palette_command(":stack"), Some(PaletteCommand::Stack));
+        assert_eq!(
+            parse_palette_command("float"),
+            Some(PaletteCommand::Float { target: None })
+        );
+        assert_eq!(
+            parse_palette_command(":float claude"),
+            Some(PaletteCommand::Float {
+                target: Some("claude".into())
+            })
+        );
+        assert_eq!(
+            parse_palette_command("dock left"),
+            Some(PaletteCommand::Dock { side: "left".into() })
+        );
+        assert_eq!(parse_palette_command(":dock"), None); // side required
+        assert_eq!(
+            parse_palette_command("layout next"),
+            Some(PaletteCommand::Layout {
+                which: "next".into()
+            })
+        );
+        assert_eq!(parse_palette_command(":layout"), None); // arg required
+    }
+
+    #[test]
+    fn work_pane_ids_excludes_hud_and_plugins() {
+        let mut a = App::new();
+        a.topology = Some(dock_topology());
+        assert_eq!(a.work_pane_ids(), vec![12, 13]);
+        // No topology (no companion) → empty, so :stack errors helpfully.
+        a.topology = None;
+        assert!(a.work_pane_ids().is_empty());
+    }
+
+    #[test]
+    fn work_pane_ids_respects_hud_pane_id() {
+        // When pui knows its own pane id, that pane is the HUD even if its
+        // command/title didn't match.
+        let mut a = App::new();
+        let mut topo = dock_topology();
+        // Rename the would-be HUD so only the id can identify it.
+        topo.panes[1].title = "shell".into();
+        topo.panes[1].command = Some("bash".into());
+        a.topology = Some(topo);
+        a.hud_pane_id = Some(11);
+        assert_eq!(a.work_pane_ids(), vec![12, 13]);
+    }
+
+    #[test]
+    fn resolve_pane_target_by_id_and_substring() {
+        let mut a = App::new();
+        a.topology = Some(dock_topology());
+        assert_eq!(a.resolve_pane_target("12"), Some(12)); // numeric id
+        assert_eq!(a.resolve_pane_target("codex"), Some(13)); // title substring
+        assert_eq!(a.resolve_pane_target("agent=claude"), Some(12)); // command substring
+        assert_eq!(a.resolve_pane_target("nope"), None);
+    }
+
+    #[test]
+    fn palette_enter_dispatches_stack() {
+        let mut a = App::new();
+        a.topology = Some(dock_topology());
+        a.palette_open = true;
+        a.palette_input = ":stack".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::Stack {
+                pane_ids: vec![12, 13]
+            })
+        );
+    }
+
+    #[test]
+    fn palette_enter_stack_without_companion_errors() {
+        let mut a = App::new();
+        a.topology = None; // no companion link
+        a.palette_open = true;
+        a.palette_input = ":stack".to_string();
+        // Resolves to a no-op Render + an error notif, not a half-dispatch.
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert!(a
+            .notifs
+            .first()
+            .map(|n| n.level == "error" && n.message.contains("companion"))
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn palette_enter_dispatches_float_and_dock_and_layout() {
+        let mut a = App::new();
+        a.topology = Some(dock_topology());
+        // bare :float → HUD (pane_id None; the run loop resolves the HUD).
+        a.palette_open = true;
+        a.palette_input = ":float".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::Float { pane_id: None })
+        );
+        // :float <target> → resolved work pane.
+        a.palette_open = true;
+        a.palette_input = ":float codex".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::Float { pane_id: Some(13) })
+        );
+        // :dock left|right → mirrored preset.
+        a.palette_open = true;
+        a.palette_input = ":dock left".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::SelectLayout {
+                name: "stacked-left".into()
+            })
+        );
+        a.palette_open = true;
+        a.palette_input = ":dock right".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::SelectLayout {
+                name: "stacked".into()
+            })
+        );
+        // :layout next|prev → cycle; :layout <name> → select.
+        a.palette_open = true;
+        a.palette_input = ":layout next".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::CycleLayout { next: true })
+        );
+        a.palette_open = true;
+        a.palette_input = ":layout grid".to_string();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Dock(DockCmd::SelectLayout { name: "grid".into() })
+        );
+    }
+
+    #[test]
+    fn palette_enter_float_unknown_target_errors() {
+        let mut a = App::new();
+        a.topology = Some(dock_topology());
+        a.palette_open = true;
+        a.palette_input = ":float zzz".to_string();
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert!(a
+            .notifs
+            .first()
+            .map(|n| n.level == "error" && n.message.contains("no pane matching"))
+            .unwrap_or(false));
     }
 
     #[test]

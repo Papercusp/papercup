@@ -15,8 +15,7 @@
 //!   * `stacked`      — work stack 60% │ HUD 40%  (the default; best for many agents)
 //!   * `stacked-left` — the mirror (HUD docked left; the `:dock left` target, D-008)
 //!   * `split`        — work area as even rows │ HUD  (good for 2–3 visible at once)
-//!   * `grid`         — work area auto-tiled 2D (no split_direction → zellij BSP;
-//!                      good for 4/6 visible at once)
+//!   * `grid`         — work area auto-tiled 2D, no split_direction → zellij BSP (4/6 visible)
 //!
 //! Each preset's work container holds the single `children` placeholder where
 //! zellij flows the runtime panes. The fixed HUD command pane (`pui hud`) and the

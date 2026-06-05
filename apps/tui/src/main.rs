@@ -43,11 +43,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use app::{Action, App};
+use app::{Action, App, DockCmd};
 use client::OperatorClient;
 use companion::Companion;
 use event::{spawn_input_listener, Event};
-use mux::{Multiplexer, Zellij};
+use mux::{MuxAction, Multiplexer, Zellij};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -112,6 +112,13 @@ fn run_workbench() -> Result<()> {
 async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
+    // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
+    // dock-verbs target this pane. Absent outside zellij (the run loop then uses
+    // focused-pane CLI fallbacks).
+    app.hud_pane_id = std::env::var("ZELLIJ_PANE_ID")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
     // Show the first-run tutorial until this device has dismissed it once (P9).
     app.show_tutorial = !tutorial::seen();
     spawn_input_listener(tx.clone());
@@ -249,6 +256,71 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                     app.launched.clone(),
                     tx.clone(),
                 ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::Dock(cmd) => {
+                // Dockview dock-verbs (Brief 50 / D-008). Prefer the companion
+                // (id-addressed, reliable inside zellij); fall back to focused-
+                // pane / cycle `zellij action` CLI verbs when no companion is
+                // linked. The reducer already resolved ids/preset names + emitted
+                // a friendly error for the cases a fallback can't cover.
+                match cmd {
+                    DockCmd::Stack { pane_ids } => match &companion {
+                        // :stack is id-addressed → companion-only (the reducer
+                        // already error-toasted when there was no topology).
+                        Some(c) => c.stack_panes(pane_ids),
+                        None => {
+                            app.update(Event::Error(
+                                "stack: needs the companion plugin (run inside the workbench)"
+                                    .into(),
+                            ));
+                        }
+                    },
+                    DockCmd::Float { pane_id } => match (&companion, pane_id) {
+                        (Some(c), Some(id)) => c.toggle_float(id),
+                        // Bare :float with a known HUD id → float that pane.
+                        (Some(c), None) if app.hud_pane_id.is_some() => {
+                            c.toggle_float(app.hud_pane_id.unwrap())
+                        }
+                        // Bare :float without a HUD id, or no companion: the
+                        // focused pane in the palette IS the HUD, so the CLI
+                        // focused-pane toggle floats it (D-002).
+                        _ => {
+                            if let Err(e) = Zellij.run_action(&MuxAction::ToggleFloat) {
+                                app.update(Event::Error(format!("float: {e}")));
+                            }
+                        }
+                    },
+                    DockCmd::SelectLayout { name } => match &companion {
+                        Some(c) => c.select_swap_layout(name),
+                        // No companion → no select-by-name primitive; :dock needs
+                        // it. Tell the user (cycling can't reliably hit a target).
+                        None => {
+                            app.update(Event::Error(format!(
+                                "dock/layout {name}: needs the companion plugin (use :layout next/prev without it)"
+                            )));
+                        }
+                    },
+                    DockCmd::CycleLayout { next } => match &companion {
+                        Some(c) => {
+                            if next {
+                                c.next_swap_layout()
+                            } else {
+                                c.prev_swap_layout()
+                            }
+                        }
+                        None => {
+                            let act = if next {
+                                MuxAction::NextSwapLayout
+                            } else {
+                                MuxAction::PrevSwapLayout
+                            };
+                            if let Err(e) = Zellij.run_action(&act) {
+                                app.update(Event::Error(format!("layout: {e}")));
+                            }
+                        }
+                    },
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::SendChat(text) => {
@@ -1089,13 +1161,18 @@ async fn execute_workbench_command(
                 }
             }
         }
-        // Config-tab (D-013) + plugin-settings (D-014) commands are routed to
-        // their own Actions in the reducer and never reach the workbench
-        // executor — defensive no-op.
+        // Config-tab (D-013) + plugin-settings (D-014) commands, and the
+        // dockview dock-verbs (Brief 50 / D-008), are routed to their own
+        // Actions in the reducer and never reach the workbench executor —
+        // defensive no-op.
         P::ConfigSet { .. }
         | P::ConfigUnset { .. }
         | P::PluginSet { .. }
-        | P::PluginUnset { .. } => {}
+        | P::PluginUnset { .. }
+        | P::Stack
+        | P::Float { .. }
+        | P::Dock { .. }
+        | P::Layout { .. } => {}
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {

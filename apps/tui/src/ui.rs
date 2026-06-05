@@ -9,7 +9,7 @@ use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
@@ -2211,7 +2211,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -2367,12 +2367,50 @@ fn draw_pot_picker(f: &mut Frame, app: &App) {
 }
 
 fn draw_palette(f: &mut Frame, app: &App) {
-    let area = centered_rect(60, 18, f.area());
+    // A fixed-height box (input + the command/dock-verb hints), centered — a
+    // percentage height would over-grow on tall terminals and still clip on
+    // short ones. Width tracks the terminal; height is constant.
+    let full = f.area();
+    let h = 9u16.min(full.height);
+    let w = (full.width as u32 * 70 / 100) as u16;
+    let area = Rect {
+        x: full.x + (full.width.saturating_sub(w)) / 2,
+        y: full.y + (full.height.saturating_sub(h)) / 2,
+        width: w.max(1),
+        height: h,
+    };
     f.render_widget(Clear, area);
+    // The active swap-layout preset (Brief 50 / D-008) rides the companion
+    // topology; absent a companion link we just show the cycle from the KDL.
+    let active_preset = app
+        .topology
+        .as_ref()
+        .and_then(|t| t.tabs.iter().find(|x| x.active))
+        .and_then(|x| x.swap_layout.clone());
+    let presets = crate::layout::SWAP_PRESETS.join(" · ");
+    let layout_line = match active_preset {
+        Some(p) => format!("Layout [{p}] of {presets}  (Alt+[ / ] or :layout next|prev|<name>)"),
+        None => format!("Layout presets: {presets}  (Alt+[ / ] or :layout next|prev|<name>)"),
+    };
+    // Input on the first line; the command + dock-verb hints wrap below so they
+    // stay visible (a single long block title would truncate them off, D-008).
+    let body = Text::from(vec![
+        Line::from(Span::styled(format!("> {}", app.palette_input), Theme::input())),
+        Line::from(""),
+        Line::from(Span::styled(
+            "tutorial · layouts · crews · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public]",
+            Theme::dim(),
+        )),
+        Line::from(Span::styled(
+            "dock — :stack · :float [pane] · :dock left|right",
+            Theme::dim(),
+        )),
+        Line::from(Span::styled(layout_line, Theme::dim())),
+    ]);
     f.render_widget(
-        Paragraph::new(format!("> {}", app.palette_input))
-            .style(Theme::input())
-            .block(Theme::popup_block(Line::from(" Command — tutorial · layouts · crews · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] (Esc closes) "))),
+        Paragraph::new(body)
+            .wrap(Wrap { trim: true })
+            .block(Theme::popup_block(Line::from(" Command (Esc closes) "))),
         area,
     );
 }
@@ -3670,6 +3708,40 @@ mod tests {
         let text = render(&app, 80, 20);
         assert!(text.contains("Command"));
         assert!(text.contains("> deploy"));
+    }
+
+    #[test]
+    fn palette_shows_dock_verbs_and_layout_presets() {
+        // The dockview dock-verbs + the swap-preset cycle are discoverable in
+        // the palette (Brief 50 / D-008). Render wide so nothing truncates.
+        let mut app = App::new();
+        app.palette_open = true;
+        let text = render(&app, 120, 22);
+        assert!(text.contains(":stack"), "palette lists :stack");
+        assert!(text.contains(":dock"), "palette lists :dock");
+        // The KDL preset names are surfaced from layout::SWAP_PRESETS.
+        for p in crate::layout::SWAP_PRESETS {
+            assert!(text.contains(p), "palette lists preset {p}");
+        }
+    }
+
+    #[test]
+    fn palette_shows_active_swap_preset_when_known() {
+        use pui_companion_proto::{TabNode, Topology};
+        let mut app = App::new();
+        app.palette_open = true;
+        app.topology = Some(Topology {
+            tabs: vec![TabNode {
+                pos: 0,
+                name: "papercup".into(),
+                active: true,
+                swap_layout: Some("grid".into()),
+                swap_dirty: false,
+            }],
+            panes: vec![],
+        });
+        let text = render(&app, 120, 22);
+        assert!(text.contains("[grid]"), "palette shows the active preset");
     }
 
     // --- Fleet status view (pui-fleet-status-view-2026-06-04) ---
