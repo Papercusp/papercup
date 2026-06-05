@@ -1,0 +1,83 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { getSystemAction, listSystemActions, type SystemActionCtx } from '../harness/routines/system-actions';
+import {
+  handleBlueprintRun,
+  setBlueprintResolver,
+  setBlueprintRunFire,
+  type DeciderFireFn,
+} from './blueprint-run-action';
+import { setLaunchBlueprintFire, type LaunchFireFn } from './launch-blueprint';
+
+const coding = loadBuiltinBlueprint('coding').blueprint;
+const withDecider = (role: string): Blueprint => ({ ...coding, spine: { ...coding.spine, decider: role } });
+
+const ctx = (over: Partial<SystemActionCtx> = {}): SystemActionCtx => ({
+  installSlug: 'demo',
+  workspaceId: 'ws_test',
+  triggerConfig: {},
+  payloadTemplate: null,
+  ...over,
+});
+
+afterEach(() => {
+  setBlueprintResolver(null);
+  setBlueprintRunFire(null);
+  setLaunchBlueprintFire(null);
+});
+
+describe('system:blueprint-run handler (P-021 / D-018)', () => {
+  it('is registered into the system-action registry under "blueprint-run"', () => {
+    // Importing the module (above) ran registerSystemAction — this is the exact fn
+    // routinesTick's routineFireImpl dispatches a `system:blueprint-run` routine to.
+    expect(getSystemAction('blueprint-run')).toBe(handleBlueprintRun);
+    expect(listSystemActions()).toContain('blueprint-run');
+  });
+
+  it("mode='run' (default) fires the blueprint's declared decider", async () => {
+    const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+    setBlueprintResolver(async () => withDecider('auditor'));
+    setBlueprintRunFire((input) => { fired.push(input); });
+
+    await handleBlueprintRun(ctx()); // no mode → default 'run'
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ installSlug: 'demo', workspaceId: 'ws_test', role: 'auditor' });
+    expect(fired[0].kickoff).toContain('demo');
+  });
+
+  it("mode='run' falls back to the coding decider ('director') when no blueprint resolves", async () => {
+    const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+    setBlueprintResolver(async () => null); // harness has no blueprint → coding fallback
+    setBlueprintRunFire((input) => { fired.push(input); });
+
+    await handleBlueprintRun(ctx({ payloadTemplate: { mode: 'run' } }));
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0].role).toBe('director'); // built-in coding spine.decider
+  });
+
+  it("payload.blueprintId fires that STANDALONE launch blueprint's role (unify-launches D-002)", async () => {
+    // The `scan` cadence routine seeds `{ blueprintId: 'scan' }`; the handler must
+    // fire the NAMED launch blueprint via the launch-blueprint primitive (role
+    // resolves from the blueprint), NOT the harness's effective blueprint.
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    // The harness-effective resolver must NOT be consulted on the blueprintId path.
+    setBlueprintResolver(async () => {
+      throw new Error('harness-effective resolver should not run for a named launch blueprint');
+    });
+
+    await handleBlueprintRun(ctx({ payloadTemplate: { blueprintId: 'scan', kickoff: 'sweep now' } }));
+
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ blueprintId: 'scan', role: 'scanner', kickoff: 'sweep now' });
+  });
+
+  // mode='work-item' touches getOrgPg().sql (the work_items base insert), so it is covered
+  // by blueprint-run-action.integration.test.ts against a throwaway DB — exercising it here
+  // would write to whatever PG getOrgPg() resolves to. This unit file stays hermetic: it
+  // only drives the injected resolver + fire seams (no DB).
+});

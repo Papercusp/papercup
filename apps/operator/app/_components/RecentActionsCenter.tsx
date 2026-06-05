@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Activity, X } from 'lucide-react';
 import { OperatorActionLog, prefetchRecentActions } from './OperatorActionLog';

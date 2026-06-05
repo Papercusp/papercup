@@ -1,0 +1,287 @@
+/**
+ * Harness-state table registry — the single source of truth for the two-axis
+ * storage model (plan `harness-state-storage-unification-2026-06-01`, P-002).
+ *
+ * Spec: `/internal/docs/system/storage-policy` § "Two axes". Vocabulary is
+ * deliberate — DO NOT write "canonical"; use these two orthogonal axes:
+ *
+ *   • key  — the runtime store-of-record identity (always PG; D-002):
+ *       'slug-shared'     → keyed by harness_slug; ONE set shared across every
+ *                            workspace that has the harness in its registry
+ *                            (harnesses-across-workspaces D-1: shared results).
+ *       'workspace-owned' → keyed by (workspace, harness, …); per-workspace
+ *                            config / settings / personal state (D-1).
+ *
+ *   • sync — the cross-machine SYNC AUTHORITY (merge + propagation):
+ *       'none'     → local-only; never leaves this install.
+ *       'git'      → committed `.papercusp/state/` files, GitHub-merged
+ *                    (dogfood D-001/D-020 — git over Hyperbee for documents).
+ *       'peer-log' → Hyperbee/Model-B per-peer log, LWW (live shared state).
+ *
+ * PG is the runtime store-of-record for EVERY row regardless of `sync`; the
+ * sync authority is the cross-machine merge point that PG converges to. `git`
+ * and `peer-log` tables are hydrated-from / exported-to their authority; PG is
+ * never a "disposable cache" (see the storage-policy reframe).
+ *
+ * STATUS: P-002 classification COMPLETE — every previously-ambiguous table now
+ * has an explicit call (NEEDS_REVIEW is empty). The DEFAULT covers the large
+ * majority (per-install, slug-keyed result tables that don't sync); only the
+ * EXCEPTIONS are declared. Live-schema-drift coverage (a NEW table added later
+ * must be classified, not silently DEFAULTed) is asserted by the P-003
+ * projection engine at boot via `classifyInventory()` against the live schema.
+ */
+
+export type TableKey = 'slug-shared' | 'workspace-owned';
+export type SyncAuthority = 'none' | 'git' | 'peer-log';
+
+export interface TableSpec {
+  /** runtime store-of-record identity (PG is always the store). */
+  key: TableKey;
+  /** cross-machine merge + propagation authority. */
+  sync: SyncAuthority;
+  /** never cross machines under any circumstance (§7.5 SECURITY); forces sync='none'. */
+  security?: boolean;
+  /** legacy/dead surface (kept for reference; not extended) — D-008 papercup-org. */
+  legacy?: boolean;
+  /** why this differs from DEFAULT / where it came from. */
+  note?: string;
+}
+
+/** Fall-through for the large majority: a per-install, slug-keyed result table. */
+export const DEFAULT_SPEC: TableSpec = { key: 'slug-shared', sync: 'none' };
+
+/**
+ * GIT sync authority — document-shaped shared state (dogfood §7.2 GIT bucket).
+ * key=slug-shared; PG hydrates from / exports to `.papercusp/state/<…>`.
+ */
+const GIT_DOCS = [
+  'harness_decisions', 'harness_summaries', 'harness_escalations',
+  'harness_design_artifacts', 'harness_text_artifacts', 'harness_chunk_plans',
+  'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
+  'harness_tests',
+  // NB: llm_test_fixtures / llm_test_claims / llm_test_findings are NOT git docs.
+  // They carry neither `harness_slug` nor `workspace_id` (they're GLOBAL operator
+  // evaluation state, keyed by scenario/run — not per-harness), so the harness-keyed
+  // git_export_outbox capture (`harness_slug` NOT NULL) crashed every insert
+  // ("null value in column harness_slug" → persistRunReport failed → a fresh
+  // llm-test run couldn't persist). They are operator runtime state → sync:'none'
+  // (PG store-of-record, no git sync authority). Re-add only behind a workspace/
+  // global git-export path that doesn't require harness_slug.
+  'harness_phases', 'harness_promotions', 'harness_checkpoints',
+  'harness_snapshots',
+  'harness_skills', 'goals', 'harness_proposals_shared', 'snapshot_features',
+  'project_spec_revisions',
+];
+
+/**
+ * NOT git-synced even though once classified as such (P-003b live-boot lesson):
+ *   • `harness_branch_actions` — a LOCAL fs-watcher projection (Mirror 7k: the
+ *     repo's `git log` enrichment) whose `last_check_ms` heartbeat is re-upserted
+ *     on EVERY poll regardless of content. Git-exporting it produced a perpetual
+ *     drain loop (a file rewritten every ~20s with only a timestamp diff). It's
+ *     recomputed locally from git-tracked files, so PG is a derived cache, not a
+ *     document — it falls to DEFAULT (slug-shared / sync:none).
+ *   • `harness_lanes` — the LIVE agent-lane occupancy tracker (`pid`, `started_at`
+ *     of the OS process currently in each phase/role lane). PIDs are machine-local
+ *     ephemeral runtime ids — meaningless to git-sync across machines. Like
+ *     branch_actions it churned (re-upserted per heartbeat) and, for ephemeral
+ *     gym-smoke test harnesses with no drain loop, accumulated 600+ stuck-unexported
+ *     outbox rows. It's operational runtime state, not a document → DEFAULT.
+ *   • `messages` / `directives` / `briefings` / `directive_summaries` — the
+ *     RETIRED papercup-org demo bus (003-papercup-shared.sql, D-008 family). They
+ *     live in the `papercup_shared` schema with NO workspace_id/harness_slug/origin,
+ *     so they cannot fit the per-harness git-export model (keyed by harness root) —
+ *     the engine only attaches to `harness_shared.*` and silently skipped them. The
+ *     bare names also collide with the REAL inter-agent bus (`harness_<slug>.messages`,
+ *     from_slug/to_slug), which was likewise never git-exported (per-harness schema,
+ *     never attached). P-004 consolidated that real bus + supervisor_notes /
+ *     directive_summaries / executed_actions into harness_shared.*_consolidated
+ *     (migrations 119/120); they resolve to DEFAULT (slug-shared / sync:'none' —
+ *     local, never synced), matching their pre-consolidation behavior. config_token
+ *     was retired entirely (token_index is the authoritative workspace-owned token
+ *     store; migration 121).
+ *     Net: removing them makes the registry match reality (they were never synced).
+ * Rule: NEVER sync:'git' — (a) fs-watcher *mirrors* (projections of already-git-
+ * tracked files), (b) operational/runtime state (volatile columns: pid, started_at,
+ * last_check_ms, alive, port — anything machine-local or heartbeat-bumped), and
+ * (c) the retired org-demo schema. Only producer-authored harness_shared DOCUMENT
+ * tables (decisions, summaries, notes, tests, plans, …) are the git set. A
+ * volatile column makes a row "change" every write, so the no-op capture guard
+ * can't save it — the table must simply not be git-synced.
+ */
+
+/**
+ * PEER-LOG sync authority — live cross-machine shared state (§7.1 HYPERBEE +
+ * the Hyperbee/Model-B projection set in apps/operator/lib/sync/hyperbee/projections).
+ */
+const PEER_LOG_LIVE = [
+  'harness_features_consolidated', 'harness_issues_consolidated',
+  'feature_claims', 'feature_queue', 'feature_working_set',
+  'contributors', 'contributor_usage_events', 'harness_feature_prs',
+  'shared_presence',
+];
+
+/**
+ * PEER-LOG sync authority BUT workspace-owned key — the one combination the
+ * slug-shared PEER_LOG_LIVE set above can't express. Plans are keyed by
+ * (workspace_id, harness_slug, plan_slug) — per-workspace, not one-set-across-
+ * workspaces — yet they federate cross-machine over the same peer-log machinery
+ * as papercup-harness content (plans-pg-canonical-migration-2026-06-03 D-004/D-008).
+ * Federation rides the harness swarm; the shared workspace_id is consistent
+ * across the Model-B peers that share that workspace+harness.
+ */
+const PEER_LOG_WORKSPACE_OWNED = [
+  'harness_plans',
+  // distributed-coordination-shared-harness-2026-06-04 (Track A): a HARNESS-SCOPED
+  // conversation federates as harness content over the peer-log. Keyed by
+  // (workspace_id, id); the harness swarm carries the harness-scoped rows
+  // (operator-scope conversations stay LOCAL — the capture trigger filters
+  // scope='harness'). Listed here so it resolves to sync:'peer-log' BEFORE the
+  // `coord_` prefix rule would classify it sync:'none'.
+  'coord_conversations',
+  // distributed-coordination-shared-harness-2026-06-04 (Track A, surface #1):
+  // harness-scoped coord_event_log content (messages/handoffs/escalations)
+  // federates over the peer-log. Keyed by (workspace_id, msg_id); only rows with
+  // harness_slug set + non-fanout (the capture trigger filters) cross. Listed
+  // here so it resolves to sync:'peer-log' BEFORE the `coord_` prefix rule.
+  'coord_event_log',
+  // distributed-coordination-shared-harness-2026-06-04 (Track A): a harness-scoped
+  // conversation's reply timeline — the thread header + its posts — federates.
+  // coord_threads keyed by (workspace_id, thread_id); coord_thread_posts by
+  // (workspace_id, post_msg_id) (the bigserial id is machine-local).
+  'coord_threads',
+  'coord_thread_posts',
+  // plan-item-assignment-claim-liveness-2026-06-04 (D-002): per-plan-item ASSIGNMENT
+  // is durable, low-churn, shared-knowledge → federates as content over the peer-log
+  // (LWW on the small per-item record). Keyed (workspace_id, harness_slug, plan_slug,
+  // item_id), folded to the generated fed_key for capture. The leased CLAIM
+  // (plan_item_claims) is authority-mediated and is NOT here (never federated).
+  'plan_item_assignments',
+];
+
+/**
+ * Workspace-owned config/settings that DON'T match a prefix rule below.
+ * (across-workspaces D-1: "config becomes fully workspace-owned".)
+ */
+const WORKSPACE_OWNED_EXPLICIT = [
+  'harness_prompt_overrides',     // the (workspace,harness,role) 3-tier override — across-workspaces Phase 1b
+  'orchestrator_settings', 'setup_wizard_state', 'workspace_backup_settings',
+  'pr_reviewer_settings', 'insights_first_visit', 'known_schema_versions',
+  'adaptive_telemetry', 'spawned_agents', 'hidden_plugins',  // P-002 review: per-install/per-workspace
+  // P-002 completeness review (classifyInventory over live schema surfaced these per-workspace tables):
+  'harness_registry',          // per-workspace harness membership list (one JSONB row/workspace) — NOT slug-shared
+  'autoloop_state', 'harness_dock_layouts', 'saved_prompts',
+  'harness_brainstorm', 'harness_plan_review', 'plan_revisions', 'plan_runs', 'plan_run_turns', // §7.4 LOCAL Plans = workspace-scoped
+  'engineer_issues', // engineer-issues-2026-06-03: per-workspace agent issue surface; v1 local (federation deferred, D-009)
+];
+
+/**
+ * SECURITY (§7.5) — credentials / tokens / principals. NEVER cross machines
+ * (sync forced to 'none'); workspace-owned.
+ */
+const SECURITY = [
+  'operator_credentials', 'operator_secrets', 'operator_publish_credentials',
+  'operator_search_provider_credentials', 'operator_voice_credentials',
+  'operator_marketplace_token', 'operator_trust_store',
+  'oauth_nonces', 'mobile_pair_tokens', 'mobile_push_tokens', 'token_index',
+  'spawn_sig_verification_failures', 'system_principals',
+  'system_principal_activity', 'trusted_authors',
+  'provision_state', 'provision_audit_log', 'auth_audit_log', 'webhook_audit',
+];
+
+/**
+ * Name-prefix → workspace-owned (operator/user/session/device-personal +
+ * P-002-reviewed per-install operational classes: coord, plugin, backup,
+ * telemetry, mem0, invocations).
+ */
+const WORKSPACE_OWNED_PREFIXES = [
+  'operator_', 'user_', 'users', 'auth_', 'mobile_', 'voice_', 'ui_',
+  'pi_sessions', 'power_user_sessions', 'adv_sessions',
+  'coord_', 'plugin_', 'backup_', 'telemetry_', 'memory_',
+  'tool_invocations', 'route_invocations',
+];
+
+/** Legacy / dead (D-008 papercup-org departments) — classified DEFAULT, not extended. */
+const LEGACY_DEAD = [
+  'org_charter', 'org_decisions', 'org_departments', 'org_inbox',
+  'org_notes', 'org_outbox', 'org_projects',
+];
+
+const GIT_SET = new Set(GIT_DOCS);
+const PEER_SET = new Set(PEER_LOG_LIVE);
+const PEER_WS_SET = new Set(PEER_LOG_WORKSPACE_OWNED);
+const WS_EXPLICIT_SET = new Set(WORKSPACE_OWNED_EXPLICIT);
+const SECURITY_SET = new Set(SECURITY);
+const LEGACY_SET = new Set(LEGACY_DEAD);
+
+/** The registry's sync-authority sets, exported for the projection engine (P-003).
+ *  PEER_LOG_TABLES is the full federated set regardless of key axis — both the
+ *  slug-shared live tables and the workspace-owned plans table. */
+export const PEER_LOG_TABLES: readonly string[] = [...PEER_LOG_LIVE, ...PEER_LOG_WORKSPACE_OWNED];
+export const GIT_TABLES: readonly string[] = GIT_DOCS;
+
+/**
+ * Remaining genuine judgment calls — EMPTY as of P-002 close. New entries here
+ * mark a table whose classification an owner must confirm before it ships.
+ */
+export const NEEDS_REVIEW: Record<string, string> = {};
+
+/**
+ * Resolve a table's two-axis spec. Order: security → git → peer-log →
+ * workspace-explicit → legacy → workspace-prefix → DEFAULT. Strip a
+ * `harness_shared.` / `papercup_shared.` schema qualifier before calling.
+ */
+export function resolveTableSpec(table: string): TableSpec {
+  const t = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
+  if (SECURITY_SET.has(t)) return { key: 'workspace-owned', sync: 'none', security: true, note: '§7.5 SECURITY' };
+  if (GIT_SET.has(t)) return { key: 'slug-shared', sync: 'git', note: '§7.2 GIT document' };
+  if (PEER_SET.has(t)) return { key: 'slug-shared', sync: 'peer-log', note: '§7.1 live shared' };
+  if (PEER_WS_SET.has(t)) return { key: 'workspace-owned', sync: 'peer-log', note: 'plans: workspace-owned + federated (D-004)' };
+  if (WS_EXPLICIT_SET.has(t)) return { key: 'workspace-owned', sync: 'none', note: 'config/settings (D-1)' };
+  if (LEGACY_SET.has(t)) return { ...DEFAULT_SPEC, legacy: true, note: 'legacy/dead — D-008 papercup-org' };
+  for (const p of WORKSPACE_OWNED_PREFIXES) {
+    if (t === p || t.startsWith(p)) return { key: 'workspace-owned', sync: 'none', note: `prefix:${p}` };
+  }
+  return { ...DEFAULT_SPEC };
+}
+
+/** True if the table's classification is still a pending judgment call. */
+export function needsReview(table: string): boolean {
+  const t = table.includes('.') ? table.slice(table.indexOf('.') + 1) : table;
+  return t in NEEDS_REVIEW;
+}
+
+export interface InventoryClassification {
+  total: number;
+  /** count per `${key}/${sync}` bucket. */
+  byBucket: Record<string, number>;
+  /** tables that fell through to DEFAULT (slug-shared/none) — intentional, but reviewable. */
+  defaulted: string[];
+  /** tables still flagged NEEDS_REVIEW (should be empty at/after P-002 close). */
+  unreviewed: string[];
+}
+
+/**
+ * Classify a full list of live tables (P-003 engine boot passes the live
+ * `information_schema` set here). Surfaces the DEFAULT fall-through set + any
+ * still-unreviewed table so a NEW table can never silently inherit DEFAULT
+ * without someone seeing it.
+ */
+export function classifyInventory(tables: string[]): InventoryClassification {
+  const byBucket: Record<string, number> = {};
+  const defaulted: string[] = [];
+  const unreviewed: string[] = [];
+  for (const raw of tables) {
+    const t = raw.includes('.') ? raw.slice(raw.indexOf('.') + 1) : raw;
+    const spec = resolveTableSpec(t);
+    const bucket = `${spec.key}/${spec.sync}${spec.security ? '/sec' : ''}${spec.legacy ? '/legacy' : ''}`;
+    byBucket[bucket] = (byBucket[bucket] ?? 0) + 1;
+    const isExplicit =
+      SECURITY_SET.has(t) || GIT_SET.has(t) || PEER_SET.has(t) || PEER_WS_SET.has(t) ||
+      WS_EXPLICIT_SET.has(t) || LEGACY_SET.has(t) ||
+      WORKSPACE_OWNED_PREFIXES.some((p) => t === p || t.startsWith(p));
+    if (!isExplicit) defaulted.push(t);
+    if (needsReview(t)) unreviewed.push(t);
+  }
+  return { total: tables.length, byBucket, defaulted, unreviewed };
+}

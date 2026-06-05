@@ -70,11 +70,27 @@ jobs:
         working-directory: apps/operator
         run: npm run lint:tests
 
-      # The /adv Tests-tab contract (.harness/testing-domains.json) is GENERATED
+      # The /adv Tests-tab contract (.papercusp/testing-domains.json) is GENERATED
       # from testing-domains-registry.ts. Fail if it drifted (edit the registry,
       # then `npm run gen:contract`).
       - name: Check testing-domains contract is in sync
         run: npm run gen:contract:check
+
+      # BORROWABLE.md is GENERATED from scripts/gen-borrowable-catalog.mjs (the
+      # curated libs/generic membership + .gitmodules). Fail if it drifted — every
+      # code-derived surface is CI-gated so it can't go stale
+      # (docs-and-memory-as-projections-2026-06-05 D-002).
+      - name: Check BORROWABLE catalog is in sync
+        run: npm run gen:borrowable:check
+
+      # Generic-first guard (generalize-libs-to-generic-2026-06-05 D-005): nudge a
+      # zero-coupling, concept-naming algorithm file that landed in the app toward
+      # libs/generic. Heuristic, so INFORMATIONAL — does not gate (like lint:knip).
+      # Diff-scoped against origin/main; surfaces candidates in the CI log.
+      - name: Generic-first lint (informational — does not gate)
+        if: always()
+        continue-on-error: true
+        run: npm run lint:generic-first
 
       # @restart retirement guard: the shared libs were renamed @restart/* ->
       # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails
@@ -99,6 +115,7 @@ jobs:
         if: always()
         continue-on-error: true
         run: node libs/zero-harness/scripts/drizzle-zero-cross-check.mjs
+
 
       - name: Knip (informational — does not gate)
         if: always()

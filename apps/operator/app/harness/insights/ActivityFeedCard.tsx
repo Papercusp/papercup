@@ -20,13 +20,11 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
-
-export type ActivityKind =
-  | 'feature_shipped'
-  | 'pr_merged'
-  | 'contributor_joined'
-  | 'decision_added'
-  | 'escalation_opened';
+import type {
+  ActivityKind,
+  ActivityFeedEvent,
+  ActivityFeedCardProps,
+} from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const TIER_BY_KIND: Record<ActivityKind, 'A' | 'B' | 'C'> = {
   pr_merged: 'A',
@@ -129,39 +127,7 @@ const EMPTY: CSSProperties = {
   color: 'var(--fg-dim, #888)',
 };
 
-export interface ActivityFeedEvent {
-  id: string;
-  kind: ActivityKind;
-  /** Short prose, e.g. `'shipped F-DOGFOOD-001'`. */
-  text: string;
-  /** GitHub login of the actor. */
-  actorLogin: string;
-  /** Display string, e.g. `'3m ago'`. */
-  whenLabel: string;
-  /** Click target. Optional — if absent, row is non-clickable. */
-  href?: string | null;
-  /**
-   * Source timestamp (epoch ms). Used by the loader to sort + interleave
-   * events across sources (PG + GitHub) recency-correctly, and to dedupe.
-   * Not rendered (the card shows `whenLabel`). Optional so older callers
-   * that only set `whenLabel` keep working.
-   */
-  tsEpoch?: number;
-  /**
-   * Stable dedupe key for cross-source merges. Two events with the same
-   * key are the same real-world event surfaced by different sources (e.g.
-   * a merged PR seen both via the local `auto_review_audit` ledger and the
-   * GitHub API) — the merge keeps one. Optional; events without a key are
-   * never deduped against each other.
-   */
-  dedupKey?: string | null;
-}
-
-export interface ActivityFeedCardProps {
-  events: ActivityFeedEvent[];
-  /** Truncate to N. Default 20. */
-  maxRows?: number;
-}
+export type { ActivityKind, ActivityFeedEvent, ActivityFeedCardProps };
 
 export function ActivityFeedCard(
   props: ActivityFeedCardProps,

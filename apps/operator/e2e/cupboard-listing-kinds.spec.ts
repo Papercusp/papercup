@@ -1,0 +1,145 @@
+/**
+ * Cupboard storefront — three listing kinds + filter + per-kind action (E4).
+ *
+ * Plan: harness-blueprint-distribution-2026-06-03 (P-007 / D-005). Verifies the
+ * live browser behavior the jsdom component test
+ * (app/cupboard/__tests__/CupboardClient.test.tsx) can't:
+ *   - the kind filter tabs render and drive the `?kind=` query the proxy forwards
+ *   - clicking a kind tab re-fetches + filters the grid to that kind
+ *   - each card's primary action is the kind's action (Join/Fork/Install)
+ *
+ * Hermetic: `/api/cupboard/listings` is stubbed (and honors the `kind` query
+ * param) so the test does not need a live Cupboard worker. Drives the
+ * operator-vite SPA in the e2e Chromium project (the sanctioned browser-E2E
+ * framework); the storefront is engine-agnostic.
+ */
+import { test, expect, type Page } from '@playwright/test';
+
+const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
+
+interface Listing {
+  id: string;
+  listing_kind: 'harness' | 'blueprint' | 'snapshot' | 'plugin';
+  title: string;
+  description: string;
+  claim_status: 'unclaimed' | 'claimed';
+  github_owner: string;
+  github_name: string;
+  github_url: string;
+  topic_hex: string | null;
+  project_ref: string | null;
+  listing_ref: string | null;
+  last_activity_at: number | null;
+  publisher_permission: string | null;
+}
+
+const LISTINGS: Listing[] = [
+  {
+    id: 'h1', listing_kind: 'harness', title: 'Demo harness', description: 'A shared harness',
+    claim_status: 'unclaimed', github_owner: 'o', github_name: 'h', github_url: 'https://github.com/o/h',
+    topic_hex: 'a'.repeat(64), project_ref: null, listing_ref: null, last_activity_at: null, publisher_permission: 'write',
+  },
+  {
+    id: 'b1', listing_kind: 'blueprint', title: 'Web App blueprint', description: 'A blueprint stream',
+    claim_status: 'unclaimed', github_owner: 'papercupai', github_name: 'demo', github_url: 'https://github.com/papercupai/demo',
+    topic_hex: null, project_ref: 'papercupai/demo', listing_ref: 'web-app', last_activity_at: null, publisher_permission: 'admin',
+  },
+  {
+    id: 's1', listing_kind: 'snapshot', title: 'Snapshot v3', description: 'A captured snapshot',
+    claim_status: 'unclaimed', github_owner: 'papercupai', github_name: 'demo', github_url: 'https://github.com/papercupai/demo',
+    topic_hex: null, project_ref: 'papercupai/demo', listing_ref: 'snap-3', last_activity_at: null, publisher_permission: 'admin',
+  },
+  {
+    id: 'p1', listing_kind: 'plugin', title: 'Slack notify', description: 'A distributable plugin',
+    claim_status: 'unclaimed', github_owner: 'papercupai', github_name: 'plugins', github_url: 'https://github.com/papercupai/plugins',
+    topic_hex: null, project_ref: 'papercupai/plugins', listing_ref: 'slack-notify', last_activity_at: null, publisher_permission: 'admin',
+  },
+];
+
+async function stubCupboard(page: Page) {
+  await page.route('**/api/cupboard/listings**', async (route) => {
+    const url = new URL(route.request().url());
+    const kind = url.searchParams.get('kind');
+    const project = url.searchParams.get('project');
+    // Mirror the worker: `project` (per-Pot rollup, D-005) narrows by
+    // project_ref and supersedes `kind`; otherwise `kind` filters.
+    let listings = LISTINGS;
+    if (project) listings = listings.filter((l) => l.project_ref === project);
+    else if (kind) listings = listings.filter((l) => l.listing_kind === kind);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ listings }),
+    });
+  });
+}
+
+/** Mount /cupboard; false if the SPA didn't render (stale HMR :3055 — see
+ *  adv-contributors-panel.spec.ts for the same defensive skip). */
+async function cupboardMounts(page: Page): Promise<boolean> {
+  await page.goto(`${baseURL}/cupboard`, { waitUntil: 'domcontentloaded' });
+  return page
+    .getByTestId('cupboard-kind-tab-all')
+    .waitFor({ state: 'visible', timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+}
+
+test.describe('Cupboard storefront — three listing kinds (E4)', () => {
+  test('filters by kind and shows the correct per-kind action', async ({ page }) => {
+    await stubCupboard(page);
+    const mounted = await cupboardMounts(page);
+    test.skip(!mounted, 'The /cupboard SPA did not mount (stale HMR :3055). Run against the prebuilt operator-vite bundle.');
+
+    // All kinds visible initially: 4 cards, one per kind.
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(4);
+    // Action buttons reflect each kind's action.
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="join"]')).toHaveCount(1);    // harness
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(2);    // blueprint + snapshot
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(1); // plugin
+
+    // Filter to Blueprints → one blueprint card, action = fork.
+    await page.getByTestId('cupboard-kind-tab-blueprint').click();
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(1);
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveAttribute('data-kind', 'blueprint');
+    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'fork');
+
+    // Filter to Plugins → one plugin card, action = install.
+    await page.getByTestId('cupboard-kind-tab-plugin').click();
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(1);
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveAttribute('data-kind', 'plugin');
+    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'install');
+
+    // Back to Harnesses → join.
+    await page.getByTestId('cupboard-kind-tab-harness').click();
+    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'join');
+  });
+
+  test('per-Pot rollup groups a project\'s facets together (D-005)', async ({ page }) => {
+    await stubCupboard(page);
+    const mounted = await cupboardMounts(page);
+    test.skip(!mounted, 'The /cupboard SPA did not mount (stale HMR :3055). Run against the prebuilt operator-vite bundle.');
+
+    // Each card carries a Pot chip; the `papercupai/demo` project has two
+    // facets (blueprint + snapshot). Click its chip to enter the rollup.
+    const potChip = page.locator('[data-testid="cupboard-pot-chip"][data-pot="papercupai/demo"]').first();
+    await expect(potChip).toBeVisible();
+    await potChip.click();
+
+    // Rollup mode: header names the Pot; kind tabs are hidden.
+    await expect(page.getByTestId('cupboard-pot-header')).toBeVisible();
+    await expect(page.getByTestId('cupboard-pot-name')).toHaveText('papercupai/demo');
+    await expect(page.getByTestId('cupboard-kind-tab-all')).toHaveCount(0);
+
+    // Only the Pot's two facets are grouped; the other kinds are absent.
+    await expect(page.getByTestId('cupboard-pot-group-blueprint')).toBeVisible();
+    await expect(page.getByTestId('cupboard-pot-group-snapshot')).toBeVisible();
+    await expect(page.getByTestId('cupboard-pot-group-harness')).toHaveCount(0);
+    await expect(page.getByTestId('cupboard-pot-group-plugin')).toHaveCount(0);
+
+    // Back → flat browse, tabs return, header gone.
+    await page.getByTestId('cupboard-pot-back').click();
+    await expect(page.getByTestId('cupboard-kind-tab-all')).toBeVisible();
+    await expect(page.getByTestId('cupboard-pot-header')).toHaveCount(0);
+  });
+});

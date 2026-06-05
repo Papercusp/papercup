@@ -20,7 +20,7 @@ A template is a directory containing:
 ```
 my-template/
 ├── papercusp.json              # manifest: name, version, kind: 'template', ...
-├── .harness/
+├── .papercusp/
 │   ├── config.json             # default config (primaryRole, smokeTest, …)
 │   ├── prompts/                # role prompt templates (orchestrator.md, worker.md, validator.md)
 │   ├── features.json.template  # optional: starter feature set
@@ -66,8 +66,8 @@ those plugins automatically as part of `papercusp install <template>`.
 # 1. Scaffold a new template from one of the reference templates.
 papercusp template scaffold @you/my-template --from coding
 
-# 2. Edit. Customize prompts in .harness/prompts/, set defaults in
-#    .harness/config.json, write SPEC.md.template.
+# 2. Edit. Customize prompts in .papercusp/prompts/, set defaults in
+#    .papercusp/config.json, write SPEC.md.template.
 
 # 3. Iterate locally — install your in-progress template into a test
 #    project and run a mission against it.
@@ -114,7 +114,7 @@ After publish:
   shouldn't have to manually enable plugins after install.
 - **Test against `papercusp doctor`**. If your template needs `ffmpeg`
   or `gh` or any other binary, declare it in
-  `.harness/config.json#requires.binaries` so the operator surfaces a
+  `.papercusp/config.json#requires.binaries` so the operator surfaces a
   pre-flight warning.
 - **Version conservatively**. Per the [migration story](http://localhost:3055/docs/spec/plugin-migration),
   a major bump means you've broken existing harnesses on this template.

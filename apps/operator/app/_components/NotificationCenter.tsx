@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Bell, X, Trash2 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';

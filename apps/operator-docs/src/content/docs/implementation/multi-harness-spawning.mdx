@@ -67,7 +67,7 @@ Autonomy (routine ticker, coordinator dispatch, auditor cadence) is a **separate
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Per-harness shared secret | `harness_<slug>.config_token` (random 256-bit, base64url) generated at scaffold time, written to `.harness/config.json` mode 0600 | Cryptographic identity binding; token serves as both authn and authz |
+| Per-harness shared secret | `harness_<slug>.config_token` (random 256-bit, base64url) generated at scaffold time, written to `.papercusp/config.json` mode 0600 | Cryptographic identity binding; token serves as both authn and authz |
 | Auth header | `Authorization: Bearer <token>` on every executeAction request | Standard, simple |
 | Identity derivation | Executor looks up token in `harness_shared.token_index` to find which harness slug owns it. **`callingHarness` in the request body is REJECTED if it doesn't match the derived identity.** | Body fields are forgeable; token binding is not |
 | `parent_slug` sealing | `parent_slug = <derivedCallingHarness>` on `scaffold_harness`; never read from body | Real seal, not security theater |
@@ -94,9 +94,9 @@ Autonomy (routine ticker, coordinator dispatch, auditor cadence) is a **separate
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Parent/child relationship | Optional `parent_slug` column on `harness_shared.projects`, mirrored to `.harness/config.json.parent_slug` | Structural fact at the registry level; substrate code reads it |
+| Parent/child relationship | Optional `parent_slug` column on `harness_shared.projects`, mirrored to `.papercusp/config.json.parent_slug` | Structural fact at the registry level; substrate code reads it |
 | Completion-reporting hook | Default `afterDone.sh` ships in `libs/papercusp/packages/harness/hooks/builtins/` and fires when the harness has `parent_slug` set | One canonical impl, opt-in by config |
-| Hook resolution chain | `<harness-dir>/.harness/hooks/<name>.sh` → `<libs>/packages/harness/hooks/builtins/<name>.sh`. **Resolver scans `builtins/` generically; afterDone is the only v1 builtin shipped.** | New builtins (e.g. `onPostValidator.sh`) are then a one-file PR in v1.5+ |
+| Hook resolution chain | `<harness-dir>/.papercusp/hooks/<name>.sh` → `<libs>/packages/harness/hooks/builtins/<name>.sh`. **Resolver scans `builtins/` generically; afterDone is the only v1 builtin shipped.** | New builtins (e.g. `onPostValidator.sh`) are then a one-file PR in v1.5+ |
 | User-supplied per-harness hook | Wins over builtin | Standard hook resolution; backward compatible |
 
 ### Marketplace contract
@@ -146,7 +146,7 @@ Single 2–3 page document at `apps/operator/app/api/_hono/execute-action.contra
 
 **Auth model:**
 
-- Per-harness token: 256-bit random, base64url, generated at scaffold time, stored at `.harness/config.json:harness_token` mode 0600
+- Per-harness token: 256-bit random, base64url, generated at scaffold time, stored at `.papercusp/config.json:harness_token` mode 0600
 - Auth header: `Authorization: Bearer <token>` required on every request
 - Identity derivation: server queries `harness_shared.token_index` to derive `<derivedCallingHarness>`; if no match → 401
 - Body's `callingHarness`: must equal `<derivedCallingHarness>` or be omitted; mismatch → 403
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS harness_shared.token_index (
 - For each row in `harness_shared.projects`:
   - If the project path doesn't exist on disk → log "skip (orphaned registry row)" and continue
   - Else: provision new tables in `harness_<slug>` (idempotent via `IF NOT EXISTS`)
-  - Generate a fresh token, write to `<project_path>/.harness/config.json` (chmod 0600), insert into both `harness_<slug>.config_token` and `harness_shared.token_index`
+  - Generate a fresh token, write to `<project_path>/.papercusp/config.json` (chmod 0600), insert into both `harness_<slug>.config_token` and `harness_shared.token_index`
 - At end, print summary: `provisioned: N, skipped: M (broken rows), errors: K`
 
 **Verify:** apply against an existing harness; confirm tables; re-run; confirm idempotent. Apply against the 7 currently-broken `papercup-org*` rows; confirm "skipped: 7."
@@ -284,8 +284,8 @@ New file `apps/operator/app/api/admin/execute-action/route.ts`.
 - Look up `template` in the spawnable catalog. If not present or `spawnable` field absent, reject with `validation_error: 'template not spawnable'`.
 - Check slug uniqueness: query `harness_shared.projects WHERE slug = $1`. If exists → 409 `slug already in use`.
 - Shell out to `papercusp init <projectSlug> --from <template>` with **5-minute** timeout.
-- After init succeeds, atomically merge `parent_slug: <derivedCallingHarness>` into the new harness's `.harness/config.json`.
-- Generate `harness_token`, write to the new harness's `.harness/config.json` (chmod 0600).
+- After init succeeds, atomically merge `parent_slug: <derivedCallingHarness>` into the new harness's `.papercusp/config.json`.
+- Generate `harness_token`, write to the new harness's `.papercusp/config.json` (chmod 0600).
 - Call internal harness-projects registration with `parent_slug` (which provisions the per-harness PG schema, including the new `config_token` + `token_index` rows).
 - On partial scaffold (init succeeded, register failed): error response includes the partially-created path so retry with same `actionId` cleans up + retries. Idempotency check on `executed_actions` short-circuits before any FS work.
 - On `papercusp init` failure: rollback any partial directory creation, return `internal` error with stderr.
@@ -421,11 +421,11 @@ Every role's prompt also includes its own inbox bounded to last 20 pending messa
 `libs/papercusp/packages/orchestrator/src/actions-block.ts`:
 - Default `apiUrl` from env `PAPERCUSP_OPERATOR_BASE` (default `http://localhost:3055`).
 - Endpoint: `/api/admin/execute-action` (slug-less per locked decision).
-- Body includes `actionId: randomUUID()`. Bearer token read from harness's own `.harness/config.json:harness_token`.
+- Body includes `actionId: randomUUID()`. Bearer token read from harness's own `.papercusp/config.json:harness_token`.
 - `callingHarness` field omitted from body (server derives it).
 
 `libs/papercusp/packages/harness/run.sh` (the `process_actions_block` curl):
-- Same retarget. Generate UUID inline (`uuidgen`). Read token via `jq -r .harness_token .harness/config.json`. Send as `Authorization: Bearer <token>`.
+- Same retarget. Generate UUID inline (`uuidgen`). Read token via `jq -r .harness_token .papercusp/config.json`. Send as `Authorization: Bearer <token>`.
 
 Bump the `libs/papercusp` submodule pin in `papercup/`.
 
@@ -438,16 +438,16 @@ New file `libs/papercusp/packages/harness/hooks/builtins/afterDone.sh`:
 ```bash
 #!/bin/bash
 # Built-in: notify parent harness on mission completion.
-# Fires only when this harness has parent_slug set in .harness/config.json.
-# User-supplied .harness/hooks/afterDone.sh overrides this entirely.
+# Fires only when this harness has parent_slug set in .papercusp/config.json.
+# User-supplied .papercusp/hooks/afterDone.sh overrides this entirely.
 set -e
-PARENT_SLUG="$(jq -r '.parent_slug // empty' .harness/config.json 2>/dev/null)"
+PARENT_SLUG="$(jq -r '.parent_slug // empty' .papercusp/config.json 2>/dev/null)"
 [ -z "$PARENT_SLUG" ] && exit 0  # no parent, silent success
 
-TOKEN="$(jq -r '.harness_token // empty' .harness/config.json 2>/dev/null)"
+TOKEN="$(jq -r '.harness_token // empty' .papercusp/config.json 2>/dev/null)"
 [ -z "$TOKEN" ] && { echo "afterDone: no harness_token in config; skipping" >&2; exit 0; }
 
-SELF_SLUG="$(jq -r '.slug // empty' .harness/config.json 2>/dev/null)"
+SELF_SLUG="$(jq -r '.slug // empty' .papercusp/config.json 2>/dev/null)"
 [ -z "$SELF_SLUG" ] && SELF_SLUG="$(basename "$PWD")"
 
 ACTION_ID="$(uuidgen)"
@@ -491,14 +491,14 @@ Build the missing `parent/` directory:
 parent/
   SPEC.md
   papercusp.json                           ← optional manifest
-  .harness/
+  .papercusp/
     config.json                            ← roles config (below)
     mandate.md
     validation-contract.md
     director-config.json                   ← {autoLoop: false, autoIntervalSeconds: 60}
 ```
 
-Org parent's `.harness/config.json`:
+Org parent's `.papercusp/config.json`:
 
 ```json
 {
@@ -583,7 +583,7 @@ Confirm `GET /api/harness/projects` no longer lists them. Add a UI affordance in
 
 `papercusp install papercup-org@0.1.1` from the rebuilt marketplace bundle.
 
-Verify all 7 directories exist with non-empty SPEC.md / config.json / mandate.md / validation-contract.md, the registry has 7 fresh rows pointing at real paths, the parent's role config declares the three roles correctly, and every harness has a `harness_token` in its `.harness/config.json`.
+Verify all 7 directories exist with non-empty SPEC.md / config.json / mandate.md / validation-contract.md, the registry has 7 fresh rows pointing at real paths, the parent's role config declares the three roles correctly, and every harness has a `harness_token` in its `.papercusp/config.json`.
 
 ### Step 6 — Four integration smokes *(\~2d)*
 
@@ -620,7 +620,7 @@ Verify all 7 directories exist with non-empty SPEC.md / config.json / mandate.md
 ```
 1. Create a fresh harness "test-spawner-org" via:
    papercusp init test-spawner-org --target /tmp/test-spawner-org.
-2. Hand-edit .harness/config.json to set:
+2. Hand-edit .papercusp/config.json to set:
      harness_kind: 'org'
      roles.director.allowedActions = ["scaffold_harness", "send_message"]
 3. Drop a directive into its inbox via curl.
@@ -713,7 +713,7 @@ If Smoke B passes without any code referencing "papercup-org" by name, the subst
 | Routine substrate is in-process; no v2 autonomy path is viable | High for v2, none for this plan | Step 0 surfaces this early |
 | Existing templates don't have `spawnable` field; `scaffold_harness` can't find anything to spawn | High | Step 5b explicitly re-publishes; Smoke A validates |
 | `inspect_harness` capability isn't actually wired; Tier 3 is dead text | High | Step 0.5 verifies; Step 2.5 wires if needed; gate before Step 3 |
-| `claude -p` doesn't preserve auth tokens cleanly across invocations (env leak risk) | Med | Tokens from `.harness/config.json`, mode 0600, never logged; verify in Smoke D |
+| `claude -p` doesn't preserve auth tokens cleanly across invocations (env leak risk) | Med | Tokens from `.papercusp/config.json`, mode 0600, never logged; verify in Smoke D |
 | Tier 2 neighbor view explodes for orgs with 15+ children | Med | Smoke C asserts \<2000 tokens for 6 children; if violated, paginate |
 | `scaffold_harness` shell-out flakes (init fails halfway) | Med | Idempotency on `actionId` + rollback of partial scaffold + 5-min timeout with SIGTERM/SIGKILL |
 | Paperclip stomps the new files | Med | 2-day buffer; commit fast; monitor `pgrep -af paperclip` |

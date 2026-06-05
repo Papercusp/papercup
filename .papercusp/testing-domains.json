@@ -1,0 +1,1263 @@
+{
+  "_comment": "Harness-owned test-domain contract for the papercup dogfood harness. GENERATED from testing-domains-registry.ts by scripts/gen-testing-domains-contract.ts — do not hand-edit. Run `npx tsx scripts/gen-testing-domains-contract.ts` after changing domains.",
+  "domains": [
+    {
+      "id": "test-runs",
+      "label": "Test Runs",
+      "description": "Suite orchestrator: start / poll / cancel named suites.",
+      "tier": "universal",
+      "sections": [
+        {
+          "id": "all",
+          "label": "Suites",
+          "description": "All admin-test-suite runs.",
+          "runners": [
+            {
+              "kind": "admin-suite",
+              "suiteId": "desktop-health"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "routes",
+      "label": "Routes",
+      "description": "Endpoint test surface — the project’s HTTP/RPC route tests.",
+      "tier": "universal",
+      "sections": [
+        {
+          "id": "endpoint-tests",
+          "label": "Endpoint tests",
+          "globs": [
+            "packages/operator-core/lib/endpoint-route/__tests__/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vitals",
+      "label": "Live metrics",
+      "description": "Operator desktop vitals: interactions, console, layout, unhandled errors.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "all",
+          "label": "Observers",
+          "globs": [
+            "apps/operator/app/admin/testing/_lib/vitals-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "chaos-desktop",
+      "label": "Chaos (desktop)",
+      "description": "In-app perf-recorder clicker that drives the Tauri shell looking for crashes.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "host",
+          "label": "Recorder host",
+          "globs": [
+            "apps/operator/app/admin/testing/_lib/chaos-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ai-explore",
+      "label": "AI Explore",
+      "description": "Stagehand LLM walk over admin routes.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "prompts",
+          "label": "Prompts",
+          "runners": [
+            {
+              "kind": "admin-suite",
+              "suiteId": "ai-explore-prompts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "label": "Memory",
+      "description": "mem0 pgvector round-trip + memory-core suite + CRUD probe.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "core",
+          "label": "Health",
+          "globs": [
+            "packages/operator-core/lib/memory/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packaged",
+      "label": "Packaged build",
+      "description": "wdio + tauri-driver against the packaged binary.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "wdio",
+          "label": "WebdriverIO",
+          "runners": [
+            {
+              "kind": "admin-suite",
+              "suiteId": "packaged-readiness"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "label": "LLM",
+      "description": "Scenario-driven LLM evaluations (Runs / Scenarios / Targets / Findings).",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "core",
+          "label": "Core",
+          "globs": [
+            "packages/operator-core/lib/llm-testing/__tests__/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "harness",
+      "label": "Harness",
+      "description": "Harness UI: dock, layouts, fs-watcher, status sweep, branch actions.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "dock",
+          "label": "Dock",
+          "globs": [
+            "apps/operator/app/harness/dock/**/*.test.*"
+          ]
+        },
+        {
+          "id": "layout",
+          "label": "Layout",
+          "globs": [
+            "packages/operator-core/lib/dock-layouts.test.ts",
+            "packages/operator-core/lib/dock-layout-migrators.test.ts"
+          ]
+        },
+        {
+          "id": "fs-watcher",
+          "label": "FS watcher",
+          "globs": [
+            "packages/operator-core/lib/harness-fs-watcher.test.ts"
+          ]
+        },
+        {
+          "id": "status-sweep",
+          "label": "Status sweep",
+          "globs": [
+            "packages/operator-core/lib/harness-status-sweep.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/harness-*.test.ts",
+            "packages/operator-core/lib/harness/**/*.test.ts",
+            "packages/operator-core/lib/harness-insights/**/*.test.ts",
+            "packages/operator-core/lib/harness-state/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "app",
+          "label": "App UI",
+          "globs": [
+            "apps/operator/app/harness/**/*.test.*"
+          ]
+        },
+        {
+          "id": "e2e",
+          "label": "E2E",
+          "globs": [
+            "apps/operator/e2e/harness-*.spec.ts",
+            "apps/operator/e2e/dock.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "voice",
+      "label": "Voice",
+      "description": "Voice stack: runtime/capture, cards, engines, persona, spend.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "runtime",
+          "label": "Runtime",
+          "globs": [
+            "apps/operator/app/_components/voice/**/*.test.*"
+          ]
+        },
+        {
+          "id": "cards",
+          "label": "Cards",
+          "globs": [
+            "packages/operator-core/lib/voice-cards/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "engines",
+          "label": "Engines",
+          "globs": [
+            "packages/operator-core/lib/voice-engines/**/*.test.ts",
+            "packages/operator-core/lib/voice-engines.test.ts",
+            "packages/operator-core/lib/voice-engine-health.test.ts"
+          ]
+        },
+        {
+          "id": "persona",
+          "label": "Persona",
+          "globs": [
+            "packages/operator-core/lib/op-backstory*.test.ts",
+            "packages/operator-core/lib/op-narration-policy.test.ts",
+            "packages/operator-core/lib/operator-persona.test.ts",
+            "packages/operator-core/lib/classify-utterance-mode.test.ts"
+          ]
+        },
+        {
+          "id": "spend",
+          "label": "Spend",
+          "globs": [
+            "packages/operator-core/lib/stt-spend.test.ts",
+            "packages/operator-core/lib/tts-spend.test.ts",
+            "packages/operator-core/lib/elevenlabs-webhook-auth.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/voice-*.test.ts",
+            "packages/operator-core/lib/voice/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "smoke",
+          "label": "Smoke",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/el-suite-test.mjs"
+              ],
+              "label": "el-suite"
+            },
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/voice-stack-check.mjs"
+              ],
+              "label": "voice-stack-check"
+            },
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/el-connect-test.mjs"
+              ],
+              "label": "el-connect (live EL creds)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "papercusp-su",
+      "label": "Papercusp-SU",
+      "description": "Superuser surface: coordination, file locking, identity, tools.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "coordination",
+          "label": "Coordination",
+          "description": "Messages, plan-events, watermarks, subscriptions, escalations, handoffs, promote.",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/coordination/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/agent_chats/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "file-locking",
+          "label": "File Locking",
+          "description": "locks:* tools, file-lock-queue, su-locks integration.",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/locks/**/*.test.ts",
+            "packages/operator-core/lib/endpoint-route/__tests__/su-locks*.test.ts",
+            "apps/operator/scripts/hooks/omp/__tests__/su-locks-omp.integration.test.ts"
+          ]
+        },
+        {
+          "id": "identity",
+          "label": "Identity",
+          "description": "Auth principals, device JWT, OAuth, audit, rate-limit, power-user.",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/coordination/identity*.test.ts",
+            "packages/operator-core/lib/agent-tools/locks/identity*.test.ts",
+            "packages/operator-core/lib/auth.test.ts",
+            "packages/operator-core/lib/auth-*.test.ts",
+            "packages/operator-core/lib/device-jwt*.test.ts",
+            "packages/operator-core/lib/power-user-token*.test.ts",
+            "packages/operator-core/lib/oauth/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "tools",
+          "label": "Tools",
+          "description": "agent-tools surface + agent-mcp dispatch/projection/define-tool. coordination/locks live in their own sections above.",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/__tests__/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/agent_chats/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/agents/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/agent_tools/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/architect/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/autoloop/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/backup/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/chat/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/cross_harness/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/delegates/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/dev/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/docs/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/flags/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/harness/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/hooks/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/memory/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/messages/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/omp/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/operator/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/oracle/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/plugins/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/processes/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/projects/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/roles/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/search/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/snapshots/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/tasks/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/ui/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/wiki/**/*.test.ts",
+            "packages/agent-mcp/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "backup",
+      "label": "Backup",
+      "description": "Kopia backup integration: settings, policy, snapshot, self-exclusion.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "core",
+          "label": "Core",
+          "globs": [
+            "packages/operator-core/lib/backup/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "e2e",
+          "label": "E2E",
+          "globs": [
+            "apps/operator/e2e/backups.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "plans",
+      "label": "Plans",
+      "description": "Plan-tracking surface: authoring, runs, revisions, concurrency, UI.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "authoring",
+          "label": "Authoring",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/add-*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/set-*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/new.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/lint.test.ts"
+          ]
+        },
+        {
+          "id": "runs",
+          "label": "Runs",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/runs.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/launch*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/resume*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/context-bundle.test.ts"
+          ]
+        },
+        {
+          "id": "revisions",
+          "label": "Revisions",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/revision-*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/diff.test.ts"
+          ]
+        },
+        {
+          "id": "concurrency",
+          "label": "Concurrency",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/concurrency*.test.ts",
+            "packages/operator-core/lib/agent-tools/plans/__tests__/e2e.test.ts"
+          ]
+        },
+        {
+          "id": "tools",
+          "label": "Tools",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/plans/__tests__/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "app",
+          "label": "App UI",
+          "globs": [
+            "apps/operator/app/admin/plans/**/*.test.*"
+          ]
+        },
+        {
+          "id": "ui",
+          "label": "UI",
+          "globs": [
+            "apps/operator/app/admin/plans/**/*.test.*",
+            "packages/operator-core/lib/__tests__/client-navigation.test.ts",
+            "packages/operator-core/lib/__tests__/desktop-static-host.test.ts",
+            "packages/operator-core/lib/__tests__/desktop-ui-intents.test.ts",
+            "packages/operator-core/lib/__tests__/operator-vite-dev-mode.test.ts",
+            "packages/operator-core/lib/__tests__/lazy-with-retry.test.ts",
+            "packages/operator-core/lib/__tests__/navigation-progress-helpers.test.ts",
+            "apps/operator/app/admin/testing/_lib/recorder-start-params.test.ts",
+            "apps/operator/app/_components/__tests__/SupportChatButton.test.tsx",
+            "apps/operator/app/_components/__tests__/ChatwootWidget.test.tsx",
+            "apps/operator/app/_components/__tests__/UiPresenceProvider.test.tsx",
+            "apps/operator/app/_components/__tests__/OperatorChatSidebar.test.ts",
+            "apps/operator/app/_components/__tests__/UserPicker.test.tsx",
+            "packages/operator-core/lib/__tests__/PluginIframe.test.tsx",
+            "packages/operator-core/lib/__tests__/notify.test.ts",
+            "packages/operator-core/lib/__tests__/workspaces-tauri.test.ts",
+            "apps/operator/app/_components/__tests__/routePending.test.ts",
+            "apps/operator/app/_components/__tests__/RouteLink.test.ts",
+            "apps/operator/app/_components/__tests__/RouteProgressProvider.test.ts",
+            "apps/operator/app/_components/__tests__/ChromeShellNav.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "operator",
+      "label": "Operator",
+      "description": "Operator brain: converse, scan, suggestions, audit, persona, state.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "brain",
+          "label": "Brain",
+          "globs": [
+            "packages/operator-core/lib/operator-converse*.test.ts"
+          ]
+        },
+        {
+          "id": "cards",
+          "label": "Cards",
+          "globs": [
+            "packages/operator-core/lib/operator-card*.test.ts"
+          ]
+        },
+        {
+          "id": "suggestions",
+          "label": "Suggestions",
+          "globs": [
+            "packages/operator-core/lib/operator-suggest*.test.ts",
+            "packages/operator-core/lib/operator-scan*.test.ts"
+          ]
+        },
+        {
+          "id": "audit",
+          "label": "Audit",
+          "globs": [
+            "packages/operator-core/lib/operator-audit*.test.ts"
+          ]
+        },
+        {
+          "id": "persona",
+          "label": "Persona",
+          "globs": [
+            "packages/operator-core/lib/operator-persona*.test.ts",
+            "packages/operator-core/lib/operator-prompt*.test.ts"
+          ]
+        },
+        {
+          "id": "state",
+          "label": "State",
+          "globs": [
+            "packages/operator-core/lib/operator-state*.test.ts",
+            "packages/operator-core/lib/operator-trigger*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/operator-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "design",
+      "label": "Design",
+      "description": "Design phase: IR, adapters, spec, tokens, phase flow.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "ir",
+          "label": "IR",
+          "globs": [
+            "packages/operator-core/lib/design-ir*.test.ts"
+          ]
+        },
+        {
+          "id": "adapters",
+          "label": "Adapters",
+          "globs": [
+            "packages/operator-core/lib/design-adapter*.test.ts"
+          ]
+        },
+        {
+          "id": "spec",
+          "label": "Spec",
+          "globs": [
+            "packages/operator-core/lib/design-spec/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "phase-flow",
+          "label": "Phase flow",
+          "globs": [
+            "packages/operator-core/lib/design-phase*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/design-*.test.ts",
+            "packages/operator-core/lib/design/**/*.test.ts",
+            "design-tokens/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "smoke",
+          "label": "Smoke",
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/design-loop-smoke.mjs"
+              ],
+              "label": "design-loop (live operator)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "plugins",
+      "label": "Plugins",
+      "description": "Plugin runtime: loader, SDK, WIT, grants, lifecycle, host-shim.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "loader",
+          "label": "Loader",
+          "globs": [
+            "packages/plugin-loader/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "sdk",
+          "label": "SDK",
+          "globs": [
+            "packages/plugin-sdk/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "wit",
+          "label": "WIT",
+          "globs": [
+            "packages/plugin-wit/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "grants",
+          "label": "Grants",
+          "globs": [
+            "packages/operator-core/lib/plugin-grants*.test.ts"
+          ]
+        },
+        {
+          "id": "lifecycle",
+          "label": "Lifecycle",
+          "globs": [
+            "packages/operator-core/lib/plugin-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "transport",
+      "label": "Transport",
+      "description": "SSE / IPC / adapters / sync-resolver.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "sse",
+          "label": "SSE",
+          "globs": [
+            "libs/generic/sse/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "ipc",
+          "label": "IPC",
+          "globs": [
+            "packages/operator-core/lib/endpoint-ipc/**/*.test.ts",
+            "libs/generic/ipc-endpoint-server/**/*.test.ts",
+            "libs/generic/ipc-framing/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "adapters",
+          "label": "Adapters",
+          "globs": [
+            "libs/generic/desktop-ipc/src/**/*.test.ts",
+            "packages/operator-core/lib/transport-adapters/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "snapshots",
+      "label": "Snapshots",
+      "description": "Snapshot shape, locks, fork, export-state, routes.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "shape",
+          "label": "Shape",
+          "globs": [
+            "packages/operator-core/lib/snapshot-shape*.test.ts"
+          ]
+        },
+        {
+          "id": "locks",
+          "label": "Locks",
+          "globs": [
+            "packages/operator-core/lib/snapshot-lock*.test.ts"
+          ]
+        },
+        {
+          "id": "fork",
+          "label": "Fork",
+          "globs": [
+            "packages/operator-core/lib/snapshot-fork*.test.ts"
+          ]
+        },
+        {
+          "id": "export-state",
+          "label": "Export-state",
+          "globs": [
+            "libs/papercusp-export-state/src/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "routes",
+          "label": "Routes",
+          "globs": [
+            "packages/operator-core/lib/endpoint-route/__tests__/snapshot*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mobile",
+      "label": "Mobile",
+      "description": "Paired-device flow: pair, JWT, feeds, actions, voice init.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "pair",
+          "label": "Pair",
+          "globs": [
+            "packages/operator-core/lib/device-pair*.test.ts"
+          ]
+        },
+        {
+          "id": "jwt",
+          "label": "JWT",
+          "globs": [
+            "packages/operator-core/lib/device-jwt*.test.ts"
+          ]
+        },
+        {
+          "id": "feeds",
+          "label": "Feeds",
+          "globs": [
+            "packages/operator-core/lib/device-feed*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/device-*.test.ts",
+            "packages/operator-core/lib/mobile-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "provisioning",
+      "label": "Provisioning",
+      "description": "Workspace provisioning: runner, sandbox, trust-store, templates, network.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "runner",
+          "label": "Runner",
+          "globs": [
+            "packages/operator-core/lib/provision/runner*.test.ts"
+          ]
+        },
+        {
+          "id": "sandbox",
+          "label": "Sandbox",
+          "globs": [
+            "packages/operator-core/lib/provision/sandbox*.test.ts"
+          ]
+        },
+        {
+          "id": "trust-store",
+          "label": "Trust store",
+          "globs": [
+            "packages/operator-core/lib/provision/trust*.test.ts"
+          ]
+        },
+        {
+          "id": "network",
+          "label": "Network",
+          "globs": [
+            "packages/operator-core/lib/provision/network*.test.ts"
+          ]
+        },
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/provision/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "label": "Docs",
+      "description": "Docs engine: outline, search, adapters.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "engine",
+          "label": "Engine",
+          "globs": [
+            "packages/docs-engine/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "outline",
+          "label": "Outline",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/docs/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "search",
+          "label": "Search",
+          "globs": [
+            "packages/operator-core/lib/search/**/*.test.ts",
+            "packages/operator-core/lib/agent-tools/search/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "adapters",
+          "label": "Adapters",
+          "globs": [
+            "packages/operator-core/lib/agent-tools/cross_harness/docs*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dogfood",
+      "label": "Dogfood",
+      "description": "Shared-harness collaborative substrate: Model-B sync, identity/binding, federation, claims, PR lifecycle, Cupboard.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "substrate",
+          "label": "Substrate",
+          "description": "Model-B per-peer signed logs + LWW read-merge + projections + boot/swarm.",
+          "globs": [
+            "packages/operator-core/lib/sync/hyperbee/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "identity-binding",
+          "label": "Identity & binding",
+          "description": "Device keychain, Ed25519 signing, two-channel binding, attestation.",
+          "globs": [
+            "packages/operator-core/lib/identity/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "federation",
+          "label": "Federation",
+          "description": "Join/share, user-branch, binding publish, tree classifier, clone, register.",
+          "globs": [
+            "packages/operator-core/lib/harness/__tests__/**/*.test.ts",
+            "packages/operator-core/lib/harness/classify-tree.test.ts",
+            "packages/operator-core/lib/harness/clone-github.test.ts",
+            "packages/operator-core/lib/harness/register-papercup.test.ts",
+            "packages/operator-core/lib/harness/papercusp-workspace.test.ts",
+            "packages/operator-core/lib/harness/contributor-row-types.test.ts",
+            "packages/operator-core/lib/harness/contributor-usage-event-types.test.ts",
+            "packages/operator-core/lib/harness/feature-queue-row-types.test.ts"
+          ]
+        },
+        {
+          "id": "claim",
+          "label": "Claim",
+          "description": "Orchestrator distributed/advisory feature claim + audit + multi-harness spawning smoke.",
+          "globs": [
+            "packages/operator-core/lib/orchestrator/**/*.test.ts"
+          ],
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "bin/smoke-multi-harness-spawning.sh"
+              ],
+              "label": "multi-harness spawning (live)"
+            }
+          ]
+        },
+        {
+          "id": "pr-lifecycle",
+          "label": "PR lifecycle",
+          "description": "PrHost, poll daemon + retry, auto-approve/merge, reviewer settings.",
+          "globs": [
+            "packages/operator-core/lib/pr-host/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "completion-ref",
+          "label": "Completion ref",
+          "description": "completion_ref writer + background ls-remote verifier.",
+          "globs": [
+            "packages/operator-core/lib/harness/completion-ref-*.test.ts"
+          ]
+        },
+        {
+          "id": "reactivity",
+          "label": "Reactivity",
+          "description": "sync-resolver query registry + sync-sse bridge + emit-change-notify trigger sentinel.",
+          "globs": [
+            "packages/operator-core/lib/sync-resolver/**/*.test.ts",
+            "packages/operator-core/lib/sync-sse.test.ts"
+          ],
+          "runners": [
+            {
+              "kind": "node",
+              "cmd": "node",
+              "args": [
+                "apps/operator/scripts/verify-trigger-consolidation.mjs"
+              ],
+              "label": "emit-change-notify sentinel"
+            }
+          ]
+        },
+        {
+          "id": "revocation",
+          "label": "Revocation",
+          "description": "Self-device + contributor revocation, enforcement, re-verify, MCP tools.",
+          "globs": [
+            "packages/operator-core/lib/sync/hyperbee/__tests__/revoke-*.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/revocation-enforcement.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/reverify-admitted.test.ts",
+            "packages/operator-core/lib/sync/hyperbee/__tests__/boot-revoke-production-path.test.ts",
+            "packages/operator-core/lib/agent-tools/substrate/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "cupboard",
+          "label": "Cupboard",
+          "description": "Public harness-discovery API (operator-public).",
+          "globs": [
+            "apps/operator-public/src/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "ui",
+          "label": "UI",
+          "description": "Create/Share/Join, PRs, Insights cards, claim/contributor/binding badges.",
+          "globs": [
+            "apps/operator/app/harness/__tests__/**/*.test.tsx",
+            "apps/operator/app/harness/insights/__tests__/**/*.test.tsx",
+            "apps/operator/app/harness/PrsTab.component.test.tsx",
+            "apps/operator/app/_components/__tests__/ContributorBadge.test.tsx",
+            "apps/operator/app/_components/__tests__/ClaimStatusBadge.test.tsx",
+            "apps/operator/app/_components/__tests__/HarnessClaimHeader.test.tsx",
+            "apps/operator/app/_components/__tests__/BindingStatusBadge.test.tsx",
+            "apps/operator/app/users/github/[id]/__tests__/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "routes",
+          "label": "Routes",
+          "description": "Substrate revoke, join/share/feature-queue/discord, user-profile endpoints.",
+          "globs": [
+            "packages/operator-core/lib/endpoint-route/routes/admin/__tests__/substrate-*.test.ts",
+            "packages/operator-core/lib/endpoint-route/routes/admin/__tests__/dogfood-substrate-*.test.ts",
+            "packages/operator-core/lib/endpoint-route/routes/harness/__tests__/**/*.test.ts",
+            "packages/operator-core/lib/endpoint-route/routes/users/__tests__/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "e2e",
+          "label": "E2E",
+          "description": "Browser collaboration flows (Playwright).",
+          "globs": [
+            "apps/operator/e2e/collab-*.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gym",
+      "label": "Gym",
+      "description": "Agent gym / eval harness.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/gym/**/*.test.ts",
+            "packages/operator-core/lib/gym/**/*.test.tsx",
+            "packages/operator-core/lib/gym-*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dbos",
+      "label": "DBOS",
+      "description": "Durable workflow engine: steps, crash-replay, sweep glue.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/dbos/**/*.test.ts",
+            "packages/operator-core/lib/dbos-*.test.ts"
+          ]
+        },
+        {
+          "id": "integration",
+          "label": "Integration",
+          "globs": [
+            "apps/operator/test/dbos-*.integration.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workspace",
+      "label": "Workspace",
+      "description": "Workspace registry, multi-workspace context, per-window scoping.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib",
+          "label": "Lib",
+          "globs": [
+            "packages/operator-core/lib/workspace-*.test.ts",
+            "packages/operator-core/lib/workspaces-*.test.ts",
+            "packages/operator-core/lib/workspace/**/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "adv",
+      "label": "ADV Shell",
+      "description": "The /adv operator shell: dock panels, sessions, contributors, Vite SPA.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "panels",
+          "label": "Panels",
+          "globs": [
+            "apps/operator/app/adv/**/*.test.ts",
+            "apps/operator/app/adv/**/*.test.tsx",
+            "packages/operator-core/lib/adv-*.test.ts"
+          ]
+        },
+        {
+          "id": "vite",
+          "label": "Vite SPA",
+          "globs": [
+            "apps/operator-vite/src/**/*.test.ts",
+            "apps/operator-vite/src/**/*.test.tsx",
+            "apps/operator-vite/*.test.ts",
+            "apps/operator-vite/*.test.tsx"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "operator-core",
+      "label": "Operator (core & misc)",
+      "description": "Flat catch-all for the operator app: every lib/app/bin/script/integration test, so nothing is invisible. Files here may also appear under a more specific domain — overlap is intentional.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "lib-root",
+          "label": "lib (root)",
+          "globs": [
+            "packages/operator-core/lib/*.test.ts",
+            "packages/operator-core/lib/*.test.tsx"
+          ]
+        },
+        {
+          "id": "lib-subdirs",
+          "label": "lib (subdirs)",
+          "globs": [
+            "packages/operator-core/lib/*/*.test.ts",
+            "packages/operator-core/lib/*/*.test.tsx",
+            "packages/operator-core/lib/*/__tests__/**/*.test.ts",
+            "packages/operator-core/lib/*/__tests__/**/*.test.tsx",
+            "packages/operator-core/lib/endpoint-route/routes/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "lib-tests",
+          "label": "lib/__tests__",
+          "globs": [
+            "packages/operator-core/lib/__tests__/**/*.test.ts",
+            "packages/operator-core/lib/__tests__/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "app",
+          "label": "app",
+          "globs": [
+            "apps/operator/app/**/*.test.ts",
+            "apps/operator/app/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "bin-scripts",
+          "label": "bin / scripts",
+          "globs": [
+            "apps/operator/bin/**/*.test.ts",
+            "apps/operator/scripts/**/*.test.ts",
+            "apps/operator/scripts/**/*.test.mjs"
+          ]
+        },
+        {
+          "id": "integration",
+          "label": "Integration (test/)",
+          "globs": [
+            "apps/operator/test/**/*.test.ts",
+            "apps/operator/__tests__/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "e2e",
+          "label": "E2E (all specs)",
+          "globs": [
+            "apps/operator/e2e/*.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "operator-ui-lib",
+      "label": "Operator UI lib",
+      "description": "UI-tier lib kept in apps/operator after the operator-core carve (router-compat, flag-hooks, plugin UI, forms, chat-cards, theme/notify/visual-effects hooks + the operator-vite/script/bin-composition tests).",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "all",
+          "label": "UI lib",
+          "globs": [
+            "apps/operator/lib/**/*.test.ts",
+            "apps/operator/lib/**/*.test.tsx"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "libraries",
+      "label": "Libraries",
+      "description": "Shared libs + packages the operator depends on (libs/*, packages/*, tools/*).",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "generic",
+          "label": "libs/generic",
+          "globs": [
+            "libs/generic/**/*.test.ts",
+            "libs/generic/**/*.test.tsx",
+            "libs/generic/**/*.spec.ts"
+          ]
+        },
+        {
+          "id": "papercusp",
+          "label": "libs/papercusp",
+          "globs": [
+            "libs/papercusp/packages/**/*.test.ts",
+            "libs/papercusp/packages/**/*.test.tsx",
+            "libs/papercusp/packages/**/*.spec.ts",
+            "libs/papercusp/libs/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "operator-libs",
+          "label": "operator libs",
+          "globs": [
+            "libs/papercup-shared/src/**/*.test.ts",
+            "libs/papercup-shared/src/**/*.test.tsx",
+            "libs/papercusp-export-state/src/**/*.test.ts",
+            "libs/papercusp-publish-auth/src/**/*.test.ts",
+            "libs/host-platform/src/**/*.test.ts",
+            "libs/flags/src/**/*.test.ts",
+            "libs/test-config/src/**/*.test.ts",
+            "libs/testing-shell/src/**/*.test.ts",
+            "libs/testing-shell/src/**/*.test.tsx",
+            "apps/papercusp-publish/src/**/*.test.ts"
+          ]
+        },
+        {
+          "id": "ui-libs",
+          "label": "UI libs",
+          "globs": [
+            "libs/marketplace-public-ui/src/**/*.test.ts",
+            "libs/marketplace-public-ui/src/**/*.test.tsx",
+            "libs/agent-chat/src/**/*.test.ts",
+            "libs/agent-chat/src/**/*.test.tsx"
+          ]
+        },
+        {
+          "id": "packages",
+          "label": "packages",
+          "globs": [
+            "packages/**/*.test.ts",
+            "packages/**/*.test.tsx",
+            "packages/**/*.spec.ts"
+          ]
+        },
+        {
+          "id": "tools",
+          "label": "tools",
+          "globs": [
+            "tools/**/*.test.ts",
+            "tools/**/*.test.mjs",
+            "tools/**/*.spec.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "harness-framework",
+      "label": "Harness Framework",
+      "description": "libs/papercusp framework end-to-end smokes (bash). Live — drive real services; surfaced as shell runners, not Vitest.",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "smokes",
+          "label": "Smokes",
+          "description": "Full-stack, planner, and service-gate smokes for the Papercusp harness framework.",
+          "runners": [
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "libs/papercusp/bin/papercusp-smoketest.sh"
+              ],
+              "label": "framework full-stack"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "libs/papercusp/packages/harness/bin/smoke-test.sh"
+              ],
+              "label": "planner smoke"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "libs/papercusp/packages/harness/bin/service-smoke-test.sh"
+              ],
+              "label": "service gate (run.sh DONE)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "acceptance",
+      "label": "Acceptance",
+      "description": "VAL-covering tests written by the tester (from .papercusp/tests.json).",
+      "tier": "project",
+      "sections": [
+        {
+          "id": "all",
+          "label": "All VALs"
+        }
+      ]
+    }
+  ],
+  "tierLabels": {
+    "universal": "Universal",
+    "project": "This Harness"
+  }
+}

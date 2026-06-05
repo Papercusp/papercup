@@ -1,0 +1,133 @@
+/**
+ * plan-items-tools.integration.test.ts — invokes the plan_items:* TOOL HANDLERS
+ * (not just the stores) end-to-end against real PG, to verify the dispatch glue:
+ * identity resolution (resolveAgentIdentity(ctx)), scope resolution, the store call,
+ * and the JSON response shape. The stores' own logic is covered by
+ * ../../plan-items/plan-items.integration.test.ts.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
+const readMigration = (f: string) =>
+  readFileSync(resolve(SQL_DIR, f), 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*\\/.test(l) && !/\bGRANT\b/.test(l) && !/^\s*(BEGIN|COMMIT);\s*$/.test(l))
+    .join('\n');
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('../plans/source', () => ({
+  resolvePlanScope: async (opts?: { workspaceId?: string; harnessSlug?: string }) => ({
+    workspaceId: opts?.workspaceId ?? 'default',
+    harnessSlug: opts?.harnessSlug ?? 'papercup',
+  }),
+  readPlanBySlug: async (slug: string) =>
+    slug === 'demo-plan'
+      ? { archived: false, parsed: { items: [{ id: 'P-001', storedStatus: 'todo' }, { id: 'P-002', storedStatus: 'todo' }] }, row: { items: [{ id: 'P-001', status: 'todo' }, { id: 'P-002', status: 'todo' }] } }
+      : null,
+}));
+
+// Tool default exports.
+const adoptName = (await import('./adopt-name')).default;
+const assign = (await import('./assign')).default;
+const myItems = (await import('./my-items')).default;
+const claim = (await import('./claim')).default;
+const heartbeat = (await import('./heartbeat')).default;
+const status = (await import('./status')).default;
+const release = (await import('./release')).default;
+
+// Minimal ctx the tool handlers + resolveAgentIdentity read.
+const ctxA = { isSuperuser: true, uiClientId: 'sess-A', workspaceId: 'default' };
+const ctxB = { isSuperuser: true, uiClientId: 'sess-B', workspaceId: 'default' };
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function call(tool: any, args: unknown, ctx: unknown): Promise<any> {
+  const res = await tool.handler(args, ctx);
+  return JSON.parse(res.content[0].text);
+}
+
+let db: FreshPgDb;
+
+beforeAll(async () => {
+  db = await createFreshPgDb('pi-tools');
+  h.sql = db.sql;
+  await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
+  await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
+}, 90_000);
+
+afterAll(async () => {
+  await db.cleanup();
+});
+
+beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.plan_item_assignments, harness_shared.agent_names,
+                       harness_shared.agent_name_sessions, harness_shared.plan_item_claims,
+                       harness_shared.plan_work_group_members`;
+});
+
+describe('plan_items:* tool handlers (real PG, through dispatch glue)', () => {
+  it('full flow: adopt → assign → my_items → claim → heartbeat → status → release', async () => {
+    const adopted = await call(adoptName, { name: 'builder-1' }, ctxA);
+    expect(adopted.ok).toBe(true);
+    expect(adopted.adopted.agentName).toBe('builder-1');
+
+    const assigned = await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-1' }, ctxA);
+    expect(assigned.ok).toBe(true);
+    expect(assigned.assignment.assigneeName).toBe('builder-1');
+
+    const mine = await call(myItems, {}, ctxA);
+    expect(mine.ok).toBe(true);
+    expect(mine.agent_name).toBe('builder-1');
+    expect(mine.items.map((m: { assignment: { itemId: string } }) => m.assignment.itemId)).toContain('P-001');
+
+    const claimed = await call(claim, { plan: 'demo-plan', item: 'P-001' }, ctxA);
+    expect(claimed.ok).toBe(true);
+    expect(claimed.result.status).toBe('claimed');
+
+    const hb = await call(heartbeat, { plan: 'demo-plan', item: 'P-001', kind: 'activity' }, ctxA);
+    expect(hb.held).toBe(true);
+
+    const st = await call(status, { plan: 'demo-plan' }, ctxA);
+    const p1 = st.items.find((i: { itemId: string }) => i.itemId === 'P-001');
+    expect(p1.disposition).toBe('active');
+
+    const rel = await call(release, { plan: 'demo-plan', item: 'P-001' }, ctxA);
+    expect(rel.released).toBe(true);
+  });
+
+  it('assign validates the item exists in the plan', async () => {
+    await expect(call(assign, { plan: 'demo-plan', item: 'P-999', assignee: 'builder-1' }, ctxA)).rejects.toThrow(/not found/);
+  });
+
+  it('a different session cannot claim another name’s assigned item (policy via dispatch)', async () => {
+    await call(adoptName, { name: 'builder-1' }, ctxA);
+    await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-1' }, ctxA);
+    // ctxB has not adopted builder-1 → refused.
+    const refused = await call(claim, { plan: 'demo-plan', item: 'P-001' }, ctxB);
+    expect(refused.ok).toBe(false);
+    expect(refused.result.status).toBe('refused');
+  });
+
+  it('my_items without an adopted name (and no explicit) errors clearly', async () => {
+    await expect(call(myItems, {}, ctxB)).rejects.toThrow(/no agent-name/);
+  });
+
+  it('cross-user assign to another user’s name is refused (D-005 pull-only)', async () => {
+    // ctxA registers builder-1 under user sess-A by adopting+assigning.
+    await call(adoptName, { name: 'builder-1' }, ctxA);
+    await call(assign, { plan: 'demo-plan', item: 'P-001', assignee: 'builder-1' }, ctxA);
+    // ctxB (a different user) tries to assign to builder-1 → refused.
+    const refused = await call(assign, { plan: 'demo-plan', item: 'P-002', assignee: 'builder-1' }, ctxB);
+    expect(refused.ok).toBe(false);
+    expect(String(refused.refused)).toMatch(/another user/);
+  });
+});

@@ -25,7 +25,7 @@
 
 import { type ReactElement, createElement } from 'react';
 import { toast as sonnerToast } from 'sonner';
-import { navigateClient } from './client-navigation';
+import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 
 export type NotifyLevel = 'message' | 'info' | 'success' | 'warning' | 'error';
 

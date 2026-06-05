@@ -42,8 +42,8 @@ vi.mock('./voice-mode', () => ({
 }));
 vi.mock('./useMicLevel', () => ({ useMicLevel: () => ({ ref: { current: null } }) }));
 vi.mock('sonner', () => ({ toast: { error: h.toastError, warning: h.toastWarning } }));
-vi.mock('@/lib/client-navigation', () => ({ navigateClient: h.navigateClient }));
-vi.mock('@/lib/browser-workspace', () => ({ wsLocalKey: (k: string) => k, getBrowserWorkspaceId: () => 'default' }));
+vi.mock('@papercusp/operator-core/lib/client-navigation', () => ({ navigateClient: h.navigateClient }));
+vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({ wsLocalKey: (k: string) => k, getBrowserWorkspaceId: () => 'default' }));
 vi.mock('../../harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => children }));
 
 import { VoiceButton } from './VoiceButton';

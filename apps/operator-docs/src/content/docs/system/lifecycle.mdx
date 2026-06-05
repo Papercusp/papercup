@@ -14,7 +14,7 @@ may be out of date; trust this one and the code references it cites.
 ## Mental model in one paragraph
 
 The user has an idea. They turn it into a `SPEC.md` (the single source of intent).
-A **harness** wraps that project — a per-project Postgres schema + a `.harness/`
+A **harness** wraps that project — a per-project Postgres schema + a `.papercusp/`
 directory + a registered slug. When they hit "start", the harness driver (`run.sh` by default; the
 TS port at `libs/papercusp/packages/orchestrator/` runs instead when
 `PAPERCUSP_USE_TS_ORCHESTRATOR=1`) boots an
@@ -40,7 +40,7 @@ explore it before committing to a SPEC.md:
 
 | Surface | URL | What it does | Persists to |
 |---|---|---|---|
-| **Brainstorm chat** | `/harness/<slug>?panel=brainstorm` | Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit `\`\`\`promote:spec\`\`\`` / `\`\`\`promote:feature\`\`\`` / `\`\`\`promote:issue\`\`\`` action blocks. | Brainstorm scratchpad **PG-canonical** in `harness_shared.harness_brainstorm` (Migration 033), with `.harness/brainstorm.{md,canvas.json,mindmap.json}` as a dual-written file mirror so the orchestrator subprocess can read it. |
+| **Brainstorm chat** | `/harness/<slug>?panel=brainstorm` | Conversational LLM partner that explores, suggests analogues, challenges assumptions. Can emit `\`\`\`promote:spec\`\`\`` / `\`\`\`promote:feature\`\`\`` / `\`\`\`promote:issue\`\`\`` action blocks. | Brainstorm scratchpad **PG-canonical** in `harness_shared.harness_brainstorm` (Migration 033), with `.papercusp/brainstorm.{md,canvas.json,mindmap.json}` as a dual-written file mirror so the orchestrator subprocess can read it. |
 | **Architect chat** | `/harness/<slug>` — embedded inside the **Inbox panel** of the dashboard via `<ArchitectInbox><ArchitectChat>` | More structured — Socratic clarifying questions, proposes concrete `proposal:SPEC.md` or `proposal:contract` diff blocks the user can accept. | On accept: writes `harness_shared.harness_project_files` (Migration 034) for SPEC.md / validation-contract.md / config.json (PG-canonical, file-mirror) via `POST /:slug/architect/apply`. |
 
 Both are backed by `runClaudeChat` (`apps/operator/lib/claude-chat-stream.ts`),
@@ -49,9 +49,9 @@ which spawns the configured agent CLI (`claude -p` or `omp -p` per `AGENT_BACKEN
 The `promote:*` action-block parser lives at `apps/operator/app/api/_hono/harness.ts:5556`
 in `harness.post('/:slug/brainstorm/promote', ...)`. It routes:
 
-- `target: 'feature'` → appends to `.harness/features.json` as `F-IDEA-<NNN>` — note: this is the **one writer that hasn't been migrated** to the API yet. Per Stage 2.5, scoper + validator now POST to `/api/harness/<slug>/features/import`; brainstorm/promote still writes the file directly. PG ingestion of those F-IDEA entries happens via run.sh's import shim on the next launch.
+- `target: 'feature'` → appends to `.papercusp/features.json` as `F-IDEA-<NNN>` — note: this is the **one writer that hasn't been migrated** to the API yet. Per Stage 2.5, scoper + validator now POST to `/api/harness/<slug>/features/import`; brainstorm/promote still writes the file directly. PG ingestion of those F-IDEA entries happens via run.sh's import shim on the next launch.
 - `target: 'spec'` → updates `SPEC.md` via `harness_shared.harness_project_files` (Migration 034); the file mirror is dual-written for editor convenience.
-- `target: 'issue'` → appends to `.harness/issues.json` (file-canonical; mirrored to per-harness `harness_issues` PG via `syncIssuesToPg`).
+- `target: 'issue'` → appends to `.papercusp/issues.json` (file-canonical; mirrored to per-harness `harness_issues` PG via `syncIssuesToPg`).
 
 **Output of Stage 0:** a `SPEC.md` in the project root. The operator's
 `POST /:slug/launch` route requires this — without it, the run aborts with a 400.
@@ -87,16 +87,16 @@ User clicks **"Start"** in the operator dashboard or runs `~/autonomous-harness/
 spawns `bash -c "nohup <run.sh> >> /tmp/harness-<slug>.log 2>&1 &"`. The script's
 own preflight (run.sh:start) does:
 
-1. **Resolve env** — `HARNESS_DIR` / `PROJECT_DIR` / `STATE_DIR=$PROJECT_DIR/.harness` / `LOG_DIR=$STATE_DIR/logs`. Reads `phase` from `.harness/config.json` (defaults `staging`). Picks `$AGENT_CMD` (or legacy `$CLAUDE`) and `$AGENT_BACKEND` (claude-code or omp; auto-inferred from binary name).
+1. **Resolve env** — `HARNESS_DIR` / `PROJECT_DIR` / `STATE_DIR=$PROJECT_DIR/.papercusp` / `LOG_DIR=$STATE_DIR/logs`. Reads `phase` from `.papercusp/config.json` (defaults `staging`). Picks `$AGENT_CMD` (or legacy `$CLAUDE`) and `$AGENT_BACKEND` (claude-code or omp; auto-inferred from binary name).
 2. **Ensure directories** — at startup, `mkdir -p $STATE_DIR $LOG_DIR` (run.sh:138). Other subdirectories (`memory/`, `proposals/`, `experts/`, `worktrees/`, `screenshots/`, `archives/`, `debug/`, `logs/hooks/`) are created **lazily on first use**, not all up front.
-3. **Pre-loop gate** (`pre-loop.ts:runPreLoop` in TS, run.sh:1574-1601 in bash): if `.harness/validation-contract.md` is missing OR no features exist, invoke the **scoper** with `MODE=initial`. The scoper reads `SPEC.md` (canonical in `harness_shared.harness_project_files`, Migration 034; file mirror at project root) and writes:
-   - `.harness/validation-contract.md` — the acceptance bar (markdown-formatted invariants the validator will enforce). PG-canonical in `harness_shared.harness_project_files.contract` (Migration 034); the file is a dual-written mirror.
-   - `.harness/features.json` — array of `{id, title, status:'todo', attempts:0, claims:[]}` features (transient staging file; see Stage 2.5)
+3. **Pre-loop gate** (`pre-loop.ts:runPreLoop` in TS, run.sh:1574-1601 in bash): if `.papercusp/validation-contract.md` is missing OR no features exist, invoke the **scoper** with `MODE=initial`. The scoper reads `SPEC.md` (canonical in `harness_shared.harness_project_files`, Migration 034; file mirror at project root) and writes:
+   - `.papercusp/validation-contract.md` — the acceptance bar (markdown-formatted invariants the validator will enforce). PG-canonical in `harness_shared.harness_project_files.contract` (Migration 034); the file is a dual-written mirror.
+   - `.papercusp/features.json` — array of `{id, title, status:'todo', attempts:0, claims:[]}` features (transient staging file; see Stage 2.5)
 
    *Backend divergence: bash `features_exist()` (run.sh:1083) checks `harness_features` PG via `psql`; TS `state.ts:featuresExist` (line 32) checks `features.json` on disk. Re-running an already-scoped harness in TS mode without features.json present will re-fire the scoper.*
-4. **Plan-review gate** (formerly "plan-gate"): invoke the **reviewer** with `MODE=plan`. Reviewer reads SPEC.md + scoper output and writes `.harness/plan-review.md` with `VERDICT: accept | accept-with-notes | reject | unknown`. The file is mirrored to `harness_shared.harness_plan_review` by the operator's fs-watcher; both the operator prompt builder (`loadHarnessPlanReviews`) and the mobile-intervention watcher read PG, not the file. On `reject`, run.sh exits 7 — no work begins. On `accept-with-notes`, the loop proceeds and the `PlanReviewBanner` (operator UI) surfaces the notes for the human to act on.
+4. **Plan-review gate** (formerly "plan-gate"): invoke the **reviewer** with `MODE=plan`. Reviewer reads SPEC.md + scoper output and writes `.papercusp/plan-review.md` with `VERDICT: accept | accept-with-notes | reject | unknown`. The file is mirrored to `harness_shared.harness_plan_review` by the operator's fs-watcher; both the operator prompt builder (`loadHarnessPlanReviews`) and the mobile-intervention watcher read PG, not the file. On `reject`, run.sh exits 7 — no work begins. On `accept-with-notes`, the loop proceeds and the `PlanReviewBanner` (operator UI) surfaces the notes for the human to act on.
 5. **Ensure docs** (`bin/ensure-docs.sh`): scaffold the per-harness docs dir if missing.
-6. **Auto-checkpoints**: per `config.checkpoints.types`, write `.harness/checkpoint-<name>.md` markers so the orchestrator can pause for human approval on configured boundaries.
+6. **Auto-checkpoints**: per `config.checkpoints.types`, write `.papercusp/checkpoint-<name>.md` markers so the orchestrator can pause for human approval on configured boundaries.
 7. **Worktree prune**: if `branchIsolation.useWorktrees`, garbage-collect stale per-feature git worktrees from previous runs.
 
 **Output of Stage 2:** mission state ready — SPEC.md + validation-contract.md + features (in features.json AND mirrored to `harness_features` PG via the run.sh import shim) + plan-review.md verdict + (optional) checkpoint markers.
@@ -109,7 +109,7 @@ The scoper prompt was migrated 2026-05-01 (see the migration note at the top of
 semantics. The validator prompt is also migrated and explicitly says
 "never write to features.json directly".
 
-A **legacy fallback** still exists: if an agent writes `.harness/features.json`
+A **legacy fallback** still exists: if an agent writes `.papercusp/features.json`
 anyway, run.sh has a shim that imports it to PG. But the preferred (and now
 default-prompted) path is the API endpoint. Treat features.json as essentially
 retired in agent flow; the file may still be created by the scoper for snapshot
@@ -137,7 +137,7 @@ for iteration in 1..MAX_ITERATIONS:
                         its decision (per orchestrator.md §E); the
                         handler only logs.
     CHECKPOINT <name> [message] → handleCheckpoint(); writes
-                                  .harness/checkpoint-<name>.md and
+                                  .papercusp/checkpoint-<name>.md and
                                   EXITS the loop with code 8. To
                                   resume: `touch checkpoint-<name>.md.granted`
                                   + re-run. Not a pause — it's a
@@ -150,7 +150,7 @@ for iteration in 1..MAX_ITERATIONS:
                         like lane mode; N>1 acts like competition. ALSO fires
                         the debugger BEFORE the worker if
                         attempts >= debugger.threshold (default 3)
-                        AND .harness/debug/<fid>.md doesn't exist yet
+                        AND .papercusp/debug/<fid>.md doesn't exist yet
     NEXT_WORKER_CEO_MODE → CEO-mode worker (self-prompt expansion)
     NEXT_VALIDATOR <fid> → handleNextValidator() — drains lanes, runs validator,
                            updates feature status. Does NOT fire the debugger.
@@ -212,7 +212,7 @@ A **mission** is the entire `runMainLoopBody` execution; an **iteration** is one
 
 An agent emitting `NEXT_EXPERT` works in bash but is ignored by TS. One emitting `NEXT_PROJECT_MANAGER` is exit-4'd by TS and treated as unparsed by bash.
 
-**Important**: `NEXT_DEBUGGER` is **not** a decision verb. The debugger role is invoked from inside the **`NEXT_WORKER` handler** (`handleNextWorker` in main-loop.ts:438–456 — the comment in code reads "Optional debugger before the worker.") when a feature has hit the `debugger.threshold` attempts AND `.harness/debug/<fid>.md` doesn't exist yet. The flow is: validator returns failing → orchestrator decides `NEXT_WORKER F-001` again → handleNextWorker runs the debugger first, then re-runs the worker. Don't expect the orchestrator agent to emit `NEXT_DEBUGGER` directly, and don't look for the debugger fire-point inside handleNextValidator — it isn't there.
+**Important**: `NEXT_DEBUGGER` is **not** a decision verb. The debugger role is invoked from inside the **`NEXT_WORKER` handler** (`handleNextWorker` in main-loop.ts:438–456 — the comment in code reads "Optional debugger before the worker.") when a feature has hit the `debugger.threshold` attempts AND `.papercusp/debug/<fid>.md` doesn't exist yet. The flow is: validator returns failing → orchestrator decides `NEXT_WORKER F-001` again → handleNextWorker runs the debugger first, then re-runs the worker. Don't expect the orchestrator agent to emit `NEXT_DEBUGGER` directly, and don't look for the debugger fire-point inside handleNextValidator — it isn't there.
 
 ### How an agent runs (`invoke()`)
 
@@ -225,9 +225,9 @@ For each role invocation:
    - **Substrate context** — Tier 1 (this harness's slug + parent harness if any) + Tier 2 (sibling harnesses) + Tier 3 (templates available) + bounded supervisor inbox. Fetched via `fetchSubstrateContext` in invoke.ts:362; goes BEFORE the role prompt so role instructions can refer to "the parent harness above". Empty string on fetch failure.
    - Base prompt content (the resolved `<role>.md` file)
    - User-edited prompt overrides (`config.json#promptOverrides.<role>`)
-   - `.harness/memory/summary.md` (curated cross-iteration learnings — populated by the curator). PG-canonical in `harness_shared.harness_text_artifacts` (Migration 035); the file is a dual-written mirror so the orchestrator subprocess can read it. **Skipped for the curator role** to avoid feedback loop.
+   - `.papercusp/memory/summary.md` (curated cross-iteration learnings — populated by the curator). PG-canonical in `harness_shared.harness_text_artifacts` (Migration 035); the file is a dual-written mirror so the orchestrator subprocess can read it. **Skipped for the curator role** to avoid feedback loop.
    - Per-role identity at `<harness-package>/identity/<role>.md` (cross-mission patterns the curator maintains). PG-mirrored in `harness_shared.identity_files` (Migration 041) by the operator's `identity-files-watcher`; the operator UI's IdentityPanel reads PG, but the orchestrator subprocess still reads the file at prompt-build time.
-   - Runtime-context footer: extras (e.g. `FEATURE_ID=F-001`, `MODE=initial`), cwd (or worktree path), project root, state dir, run ID, and a memory-discipline reminder telling the role to append a one-line observation to `.harness/memory/raw.md` if it learned anything actionable. The file is dual-written from `harness_shared.harness_text_artifacts` (Migration 035) when written via the operator UI; subprocess writes (LLM Edit/Write tool) update the file directly and the fs-watcher catches up. **The memory-discipline reminder is omitted for the curator role.**
+   - Runtime-context footer: extras (e.g. `FEATURE_ID=F-001`, `MODE=initial`), cwd (or worktree path), project root, state dir, run ID, and a memory-discipline reminder telling the role to append a one-line observation to `.papercusp/memory/raw.md` if it learned anything actionable. The file is dual-written from `harness_shared.harness_text_artifacts` (Migration 035) when written via the operator UI; subprocess writes (LLM Edit/Write tool) update the file directly and the fs-watcher catches up. **The memory-discipline reminder is omitted for the curator role.**
 3. **Run ID:** `<unix-ts>-<role>[-<featureId>]`
 4. **CWD:** project root, OR a per-feature git worktree if branch-isolation + worktrees are enabled (avoids workers stomping each other).
 5. **Spawn** the agent CLI with backend-specific flags:
@@ -257,8 +257,8 @@ Typical happy path for one feature:
 1. **orchestrator** → emits `NEXT_WORKER F-001`
 2. **worker** runs. First, `handleNextWorker` flips status to `in_progress` and bumps `attempts` (main-loop.ts:476). The worker then reads SPEC.md + claim list for F-001 + recent issues, writes code, and at completion sets status to **`validating`** (per `prompts/worker.md` "Definition of done", via `PATCH /api/harness/<slug>/features/<id>`). The `in_progress` write is the orchestrator's; the `validating` write is the worker's.
 3. **orchestrator** → emits `NEXT_VALIDATOR F-001`
-4. **validator** runs → executes acceptance scripts from `validation-contract.md`, writes pass/fail. On fail: appends to `.harness/issues.md` + sets feature status `failing`
-5. If `failing`: orchestrator → `NEXT_WORKER F-001` again → `handleNextWorker` first fires the **debugger** (when `attempts >= config.debugger.threshold` (default 3) and no `.harness/debug/<fid>.md` exists yet), then re-invokes the worker
+4. **validator** runs → executes acceptance scripts from `validation-contract.md`, writes pass/fail. On fail: appends to `.papercusp/issues.md` + sets feature status `failing`
+5. If `failing`: orchestrator → `NEXT_WORKER F-001` again → `handleNextWorker` first fires the **debugger** (when `attempts >= config.debugger.threshold` (default 3) and no `.papercusp/debug/<fid>.md` exists yet), then re-invokes the worker
 6. If still failing after debugger: orchestrator escalates → `NEXT_ARCHITECT F-001` for re-plan, or eventually `ESCALATE`
 7. On pass: orchestrator picks next feature
 
@@ -274,14 +274,14 @@ Prompt files at `libs/papercusp/packages/harness/prompts/`. The "When invoked" c
 
 | Role | When invoked | Reads | Writes |
 |---|---|---|---|
-| **scoper** | pre-loop step 1 (`MODE=initial`) when contract or features missing; also on `POST /:slug/replan` | SPEC.md | POSTs `/api/harness/<slug>/features/import` (PG); writes `.harness/validation-contract.md` (PG-mirrored to `harness_project_files.contract`) |
-| **reviewer** | pre-loop step 1.5 (`MODE=plan`) — **only here**, not on completion | scoper output, SPEC.md | `.harness/plan-review.md` (`VERDICT: …`) — PG-mirrored to `harness_shared.harness_plan_review` by fs-watcher |
-| **orchestrator** | every loop iteration | `.harness/` state, recent run.log, memory | last-line decision verb (one of 19 in `DECISION_VERBS`) |
+| **scoper** | pre-loop step 1 (`MODE=initial`) when contract or features missing; also on `POST /:slug/replan` | SPEC.md | POSTs `/api/harness/<slug>/features/import` (PG); writes `.papercusp/validation-contract.md` (PG-mirrored to `harness_project_files.contract`) |
+| **reviewer** | pre-loop step 1.5 (`MODE=plan`) — **only here**, not on completion | scoper output, SPEC.md | `.papercusp/plan-review.md` (`VERDICT: …`) — PG-mirrored to `harness_shared.harness_plan_review` by fs-watcher |
+| **orchestrator** | every loop iteration | `.papercusp/` state, recent run.log, memory | last-line decision verb (one of 19 in `DECISION_VERBS`) |
 | **worker** | `NEXT_WORKER` (single / parallel-lanes / competition path) | SPEC.md, feature claims, recent issues | project code; PATCHes `/api/harness/<slug>/features/<id>` for status changes |
-| **validator** | `NEXT_VALIDATOR` | validation-contract.md, feature claims | `harness_features.status` via PATCH; `.harness/issues.md` (PG-canonical in `harness_text_artifacts`, Migration 035; file mirror); POSTs `/api/harness/<slug>/issues/append-pending` per finding |
-| **debugger** | invoked inline by the **`NEXT_WORKER` handler** (`handleNextWorker` in main-loop.ts:438–456) BEFORE the worker runs, when `attempts ≥ debugger.threshold` (default 3) AND `.harness/debug/<fid>.md` doesn't exist (one-shot per feature) | failing feature's issues, recent worker output | code (fix attempts), `.harness/debug/<fid>.md` marker |
-| **architect** | `NEXT_ARCHITECT` decision (in-loop) | SPEC.md, contract, features, issues | proposals — emits fenced `proposal:contract` / `proposal:SPEC.md` blocks in stdout (parsed per `prompts/architect.md` line 55+); the orchestrator extracts those blocks and writes `.harness/proposals/<id>.md`; `apps/operator/lib/harness-fs-watcher.ts` then mirrors the file into `harness_shared.harness_proposals_shared`. There is **no** `POST /api/harness/<slug>/proposals` endpoint — only `GET /:slug/proposals`, `GET /:slug/proposals/:id`, and `POST /:slug/proposals/:id/accept` / `…/reject` (harness.ts:3189–3290) |
-| **curator** | on `DONE` (`TRIGGER=done`) and on `ESCALATE` (`TRIGGER=escalate`) | `.harness/memory/raw.md` (PG-canonical, Migration 035 dual-write) | `memory/summary.md`, `memory/MEMORY.md` (both PG-canonical via Migration 035), role identity files (PG-mirrored via Migration 041) |
+| **validator** | `NEXT_VALIDATOR` | validation-contract.md, feature claims | `harness_features.status` via PATCH; `.papercusp/issues.md` (PG-canonical in `harness_text_artifacts`, Migration 035; file mirror); POSTs `/api/harness/<slug>/issues/append-pending` per finding |
+| **debugger** | invoked inline by the **`NEXT_WORKER` handler** (`handleNextWorker` in main-loop.ts:438–456) BEFORE the worker runs, when `attempts ≥ debugger.threshold` (default 3) AND `.papercusp/debug/<fid>.md` doesn't exist (one-shot per feature) | failing feature's issues, recent worker output | code (fix attempts), `.papercusp/debug/<fid>.md` marker |
+| **architect** | `NEXT_ARCHITECT` decision (in-loop) | SPEC.md, contract, features, issues | proposals — emits fenced `proposal:contract` / `proposal:SPEC.md` blocks in stdout (parsed per `prompts/architect.md` line 55+); the orchestrator extracts those blocks and writes `.papercusp/proposals/<id>.md`; `apps/operator/lib/harness-fs-watcher.ts` then mirrors the file into `harness_shared.harness_proposals_shared`. There is **no** `POST /api/harness/<slug>/proposals` endpoint — only `GET /:slug/proposals`, `GET /:slug/proposals/:id`, and `POST /:slug/proposals/:id/accept` / `…/reject` (harness.ts:3189–3290) |
+| **curator** | on `DONE` (`TRIGGER=done`) and on `ESCALATE` (`TRIGGER=escalate`) | `.papercusp/memory/raw.md` (PG-canonical, Migration 035 dual-write) | `memory/summary.md`, `memory/MEMORY.md` (both PG-canonical via Migration 035), role identity files (PG-mirrored via Migration 041) |
 | **documenter** | on `DONE` (`TRIGGER=done`) | feature docs, issues, summary | per-harness docs dir |
 | **ui-qa** | invoked **automatically by run.sh:2105** post-worker, when feature has any `VAL-UI-*` claim AND `verdict` CLI is on PATH (NOT via `NEXT_TESTER`) | `auto_screenshot_post_worker` output | `UIQA_PASS`/`UIQA_FAIL` line; on fail, run.sh sets feature status `failing` |
 | **crosscheck** | invoked from run.sh:2040 inside the validator handler when `config.crosscheck.enabled = true` (currently bash-only — TS port doesn't fire it) | feature claims | second-opinion verdict line |
@@ -316,7 +316,7 @@ While the loop runs, the operator UI surfaces live state:
 | UI surface | Code | Data source |
 |---|---|---|
 | **HarnessDashboard** at `/harness/<slug>` | `app/harness/HarnessDashboard.tsx` | Six Zero subscriptions: `features<HarnessName>.all` (e.g. `featuresSheets.all`) for the work queue, `agentRuns<HarnessName>.all` (reads per-harness `agent_runs`), `proposalsShared.byHarness` (cross-harness `harness_shared.harness_proposals_shared`), `harnessStatus.byHarness`, `pendingReviews.byHarness`, `harnessLanes.byHarness`. Sub-components subscribe further (IssuesList → `issues<HarnessName>.all`, SnapshotsPanel → `snapshots<HarnessName>.all`). |
-| **Run log tail** | rendered inside `HarnessDashboard.tsx` (~line 2509) | SSE: `GET /api/harness/:slug/log/stream?phase=…&tail=500` (route at `harness.ts:1809`) — streams structured events from `.harness/logs/run.log.jsonl`. (A separate `GET /:slug/stream` at `harness.ts:1654` tails the plain `run.log` text — used by other surfaces, not the dashboard.) |
+| **Run log tail** | rendered inside `HarnessDashboard.tsx` (~line 2509) | SSE: `GET /api/harness/:slug/log/stream?phase=…&tail=500` (route at `harness.ts:1809`) — streams structured events from `.papercusp/logs/run.log.jsonl`. (A separate `GET /:slug/stream` at `harness.ts:1654` tails the plain `run.log` text — used by other surfaces, not the dashboard.) |
 | **Plan review banner** | `app/harness/PlanReviewBanner.tsx` | `GET /:slug/plan-review` (file content) + `GET /:slug/plan-review/sse` for change events |
 | **Proposals panel** | `app/harness/ProposalsPanel.tsx` | Zero query `proposalsShared.byHarness` reading `harness_shared.harness_proposals_shared` (cross-harness shared table — NOT per-harness). Accept/reject via `POST /:slug/proposals/:id/accept` and `POST /:slug/proposals/:id/reject` |
 | **Issues list** | `app/harness/issues/IssuesList.tsx` | Zero query `issues<HarnessName>.all` (camelCase per-harness, e.g. `issuesSheets.all`, `issuesOrgRd.all`) |
@@ -351,7 +351,7 @@ The orchestrator emits `DONE` when every feature in `harness_features` has statu
 2. **Curator** — `invoke('curator', TRIGGER=done)` — distils the run's `memory/raw.md` into `memory/summary.md` and updates per-role `identity/<role>.md` cross-mission notes.
 3. **Documenter** — `invoke('documenter', TRIGGER=done, FEATURE_ID=-)` — generates user-facing docs for the project.
 4. **(Optional, bash only) Scoper in proposal mode** — if `config.proposals.enabled` AND `config.proposals.afterDone` (or legacy `product.enabled` / `product.triggerOnDone`): `invoke('scoper', MODE=proposal)` to propose next-phase features. Reviewer can auto-approve via `proposals.autoApply` (default true). The TS port skips this — see `main-loop.ts:390` ("Skipping optional scoper-on-done + archive-on-done — minor polish.").
-5. **(Optional, bash only) Archive-on-done** — if `config.archiveOnDone=true`: `tar czf .harness/archives/<unix-ts>-done.tar.gz -C $STATE_DIR --exclude=archives .`. TS port skips this.
+5. **(Optional, bash only) Archive-on-done** — if `config.archiveOnDone=true`: `tar czf .papercusp/archives/<unix-ts>-done.tar.gz -C $STATE_DIR --exclude=archives .`. TS port skips this.
 6. **Plugin lifecycle** — `firePluginHook({hookName: 'afterDone', ...})` shells out to `papercusp-fire-hook` CLI; iterates installed plugins, invokes any with an `afterDone` hook. Plugins can also subscribe to the `mission-done` event-bus event via the `events:listen:mission-done` capability.
 
    Live plugin set in `libs/papercusp/plugins/` and their event subscriptions:
@@ -384,8 +384,8 @@ Any of these can short-circuit the happy path:
 |---|---|---|
 | **Plan rejected** | reviewer writes `VERDICT: reject` in plan-review.md | Pre-loop exits 7 with reason "plan-rejected"; user must edit SPEC.md and re-launch |
 | **Stuck feature** | feature `attempts >= debugger.threshold` (default 3); after debugger fires once, further failures lead to architect/escalate | Orchestrator emits `NEXT_ARCHITECT` for replan, or eventually `ESCALATE` |
-| **ESCALATE** | orchestrator decision after exhausting options | LLM writes `.harness/escalation.md` (per orchestrator.md §E), then prints `ESCALATE <reason>`. handleEscalate fires `on-escalate` hook, runs curator (`TRIGGER=escalate`), notify_event, exits 3. The **supervisor cron** (`bin/supervisor.sh`, suggested `0 */6 * * *`; user owns the actual crontab) wakes periodically, reads escalation.md + recent logs, decides: unblock / expand spec / ping human. *Note: escalation.md is also written system-side by run.sh:1620 / pre-loop.ts:87 on plan-reviewer reject — that path exits 7, not 3.* |
-| **Cost cap exceeded** | `cost-cap.ts` (or `run.sh:check_cost_cap`) sums each `.jsonl`'s last `total_cost_usd` per iteration; exceeds `config.maxCostUsd` | Clean **exit 6** (not SIGTERM); `notify_event cost-cap` fires. Soft warn at `config.maxCostUsdWarnThreshold` * cap (default 0.8, dedup'd by `.harness/.cost-warn-fired` sentinel). Optional `config.maxCostUsdAutoPause=true` SIGSTOPs the process at warn threshold; `/api/harness/<slug>/unpause` SIGCONTs it. |
+| **ESCALATE** | orchestrator decision after exhausting options | LLM writes `.papercusp/escalation.md` (per orchestrator.md §E), then prints `ESCALATE <reason>`. handleEscalate fires `on-escalate` hook, runs curator (`TRIGGER=escalate`), notify_event, exits 3. The **supervisor cron** (`bin/supervisor.sh`, suggested `0 */6 * * *`; user owns the actual crontab) wakes periodically, reads escalation.md + recent logs, decides: unblock / expand spec / ping human. *Note: escalation.md is also written system-side by run.sh:1620 / pre-loop.ts:87 on plan-reviewer reject — that path exits 7, not 3.* |
+| **Cost cap exceeded** | `cost-cap.ts` (or `run.sh:check_cost_cap`) sums each `.jsonl`'s last `total_cost_usd` per iteration; exceeds `config.maxCostUsd` | Clean **exit 6** (not SIGTERM); `notify_event cost-cap` fires. Soft warn at `config.maxCostUsdWarnThreshold` * cap (default 0.8, dedup'd by `.papercusp/.cost-warn-fired` sentinel). Optional `config.maxCostUsdAutoPause=true` SIGSTOPs the process at warn threshold; `/api/harness/<slug>/unpause` SIGCONTs it. |
 | **Timeout** | per-role `config.timeouts.<role>` exceeded | invoke() returns rc=124; orchestrator treats as failure |
 | **Smoke test fails on done** | `smokeTest.onDone` script exits non-zero | Feature reopens, loop continues |
 | **Manual stop** | user kills the process or hits "Stop" in UI | `POST /:slug/stop` walks `/proc`, matches processes whose cwd starts with `project.path` AND whose cmdline contains `autonomous-harness/run.sh` or `/harness/run.sh`, then SIGTERMs each |
@@ -430,7 +430,7 @@ Most per-project text/structured artifacts have been pulled into Postgres. The o
 
 **Storage policy reference:** `/docs/system/storage-policy` documents the PG-by-default rule and the dual-write pattern.
 
-`.harness/` per-project — by category:
+`.papercusp/` per-project — by category:
 
 **PG-canonical, file mirror (operator UI reads PG; orchestrator/curator subprocess reads the file):**
 
@@ -445,7 +445,7 @@ Most per-project text/structured artifacts have been pulled into Postgres. The o
 | `supervisor-notes.md` | `harness_shared.harness_text_artifacts` (Migration 035, round 18 dual-write fix). Also mirrored to `harness_shared.harness_escalations.supervisor_notes` column by `harness-fs-watcher.ts` for the operator's escalations panel (legacy view). | 035 |
 | `prompts/<role>.md`, `worker-log.md`, etc. (any free-form text artifact) | `harness_shared.harness_text_artifacts` | 035 |
 
-The `.harness/config.json` notes the phase/dept/models/timeouts/smokeTest/branchIsolation/checkpoints/autoScreenshot/debugger-threshold/cost-cap settings. **Plugin enables are NOT here** — those live at `~/.papercusp/harnesses/<slug>/enabled-plugins.json` (CLI-authoritative) and mirror to `harness_shared.plugin_enables` via `plugin-enables-pg.ts`.
+The `.papercusp/config.json` notes the phase/dept/models/timeouts/smokeTest/branchIsolation/checkpoints/autoScreenshot/debugger-threshold/cost-cap settings. **Plugin enables are NOT here** — those live at `~/.papercusp/harnesses/<slug>/enabled-plugins.json` (CLI-authoritative) and mirror to `harness_shared.plugin_enables` via `plugin-enables-pg.ts`.
 
 **File-canonical, PG-mirrored (the file is the source of truth for the worker; PG mirror serves operator UI):**
 
@@ -468,13 +468,13 @@ The `.harness/config.json` notes the phase/dept/models/timeouts/smokeTest/branch
 - `logs/run.log` — plain-text append-only iteration log written by `log()` in both run.sh + orchestrator's `log.ts`. The legacy SSE `/:slug/stream` endpoint tails this; the dashboard does not.
 - `logs/run.log.jsonl` — structured-event log written by run.sh (path defined at run.sh:143 as `LOG_JSONL`). The dashboard's run-log panel tails this via `/:slug/log/stream` (harness.ts:1809). Rotated to `run.log.jsonl.<N>.gz` at `PAPERCUSP_LOG_ROTATE_BYTES` threshold.
 - `logs/<runId>.{jsonl,out,err,prompt.md}` — per-invocation stream-json log, extracted final assistant text (parsed by orchestrator for next decision), stderr capture, and (omp only) the assembled prompt.
-- `snapshots/<id>.tar.gz` — snapshot tarballs (paths.ts:38-46). Read via `readManifestFromTarball` (snapshot-discovery.ts:101). Per-capture scratch at `.harness/snapshot-staging/`. Metadata in `harness_snapshots` PG table.
+- `snapshots/<id>.tar.gz` — snapshot tarballs (paths.ts:38-46). Read via `readManifestFromTarball` (snapshot-discovery.ts:101). Per-capture scratch at `.papercusp/snapshot-staging/`. Metadata in `harness_snapshots` PG table.
 - `archives/<ts>-done.tar.gz` — `.tar.gz` of state-dir snapshots created on `archiveOnDone` (run.sh:1820); read by the operator's archives panel.
 - `screenshots/<feature-id>-<unix-ts>.png` — auto-captured by `auto_screenshot_post_worker` (run.sh:848-868) when `config.autoScreenshot.enabled=true` AND `autoScreenshot.url` is set AND `verdict` CLI is on PATH. Keyed on feature ID + timestamp.
 - `worktrees/<feature-id>/` — per-feature git worktrees if branch-iso enabled.
 - `debug/<fid>.md` — debugger one-shot marker; presence prevents the debugger from re-firing on the same feature.
 
-`SPEC.md` lives at the project root, not in `.harness/`. It's the user-authored intent file. Now PG-canonical in `harness_shared.harness_project_files.spec` (Migration 034); the file mirror is dual-written for editor convenience and so the worker subprocess can read it.
+`SPEC.md` lives at the project root, not in `.papercusp/`. It's the user-authored intent file. Now PG-canonical in `harness_shared.harness_project_files.spec` (Migration 034); the file mirror is dual-written for editor convenience and so the worker subprocess can read it.
 
 ### User registry + global config
 

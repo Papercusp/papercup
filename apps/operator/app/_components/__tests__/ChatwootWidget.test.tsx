@@ -7,8 +7,8 @@ import { cleanup, render } from '@testing-library/react';
 
 const shouldEnableSupportWidget = vi.fn();
 
-vi.mock('../../../lib/ui/desktop-static-host', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../../lib/ui/desktop-static-host')>();
+vi.mock('@papercusp/operator-core/lib/ui/desktop-static-host', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/operator-core/lib/ui/desktop-static-host')>();
   return {
     ...actual,
     shouldEnableSupportWidget: (...args: unknown[]) => shouldEnableSupportWidget(...args),

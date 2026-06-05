@@ -13,7 +13,7 @@
 
 import { Component, Suspense, type ReactNode } from 'react';
 import { resolveComponent } from './plugin-runtime';
-import { makeBrowserApi } from './browser-papercusp-api';
+import { makeBrowserApi } from '@papercusp/operator-core/lib/browser-papercusp-api';
 
 interface Props {
   pluginName: string;

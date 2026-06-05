@@ -1,5 +1,6 @@
 {
   "name": "@papercusp/flags",
+  "type": "module",
   "version": "0.0.1",
   "private": true,
   "description": "Feature flags for Papercusp. Server-side evaluation via PostHog with file-only fallback. Clients never load PostHog SDK - they fetch resolved booleans from the backend.",

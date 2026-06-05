@@ -19,7 +19,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 // Stub the profile read so the pre-paint prefs injection has a deterministic
 // value without a live PG connection.
-vi.mock('../lib/session', () => ({
+vi.mock('@papercusp/operator-core/lib/session', () => ({
   readProfile: vi.fn(async () => ({ theme_id: 'black', visual_effects_mode: 'minimal' })),
 }));
 

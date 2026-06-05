@@ -3,7 +3,7 @@
 # installed harness:
 #   - per-harness messages, supervisor_notes, executed_actions, config_token
 #   - generates a harness_token if missing, mirrors to harness_shared.token_index
-#   - merges harness_token into <project_path>/.harness/config.json (mode 0600)
+#   - merges harness_token into <project_path>/.papercusp/config.json (mode 0600)
 #
 # Skips registry rows whose project path doesn't exist on disk (orphaned).
 # Logs a summary at the end: provisioned: N, skipped: M, errors: K.
@@ -64,7 +64,7 @@ provision_one() {
   rm -f "$rendered"
 
   # 2. Token: read from filesystem if present, else generate + persist.
-  local config_path="$path/.harness/config.json"
+  local config_path="$path/.papercusp/config.json"
   local existing_token=""
   if [[ -f "$config_path" ]]; then
     existing_token="$(jq -r '.harness_token // empty' "$config_path" 2>/dev/null || true)"
@@ -81,7 +81,7 @@ provision_one() {
       jq --arg t "$token" '. + {harness_token: $t}' "$config_path" > "$tmp"
       mv "$tmp" "$config_path"
     else
-      mkdir -p "$path/.harness"
+      mkdir -p "$path/.papercusp"
       echo "{\"harness_token\":\"$token\"}" > "$config_path"
     fi
     chmod 0600 "$config_path"

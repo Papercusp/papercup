@@ -1,29 +1,76 @@
 'use client';
 
 /**
- * CupboardClient — Phase 9 P-052.
+ * CupboardClient — the storefront for the Cupboard registry.
  *
- * Card grid for the Cupboard harness registry.
- * Fetches from ${NEXT_PUBLIC_CUPBOARD_URL}/api/harnesses (or the
- * operator's /api/cupboard/listings proxy when the env is unset).
+ * ONE storefront, three listing kinds (distribution plan D-005), each with its
+ * own consumer action:
+ *   harness   → join     (shared-harness via the Hypercore topic)
+ *   blueprint → fork     (a blueprint stream within a project)
+ *   snapshot  → fork     (a captured snapshot)
+ *   plugin    → install  (a distributable plugin)
  *
- * P-052a: navbar item + /cupboard route (done via Next.js routing).
- * P-052b: card grid with tier-A stats (contributor count, last-activity, languages).
- * P-052c: search + filter by claimed/unclaimed.
- * P-052d: detail view is in ./[id]/page.tsx.
- * P-052e: "Install this harness" triggers Phase 1b P-009 Entry 4 flow.
+ * - Kind filter is URL-backed (nuqs `?kind=`), forwarded to the worker via the
+ *   `/api/cupboard/listings` proxy.
+ * - The per-kind action button label comes from `listingAction()`. `harness`
+ *   joins inline (the working join flow); `blueprint`/`snapshot`/`plugin` route
+ *   to the listing detail where the fork/install is confirmed (the fork/install
+ *   EXECUTION engine is owned by E1/E2 `init --from` + the plugin-host
+ *   install-consent path — the storefront surfaces the listing + routes to it).
+ * - Rendering reads either the live-worker row shape or the aspirational
+ *   HarnessListing shape via the `listing*` helpers in cupboard/types.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
-import { useQueryState, parseAsString } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle } from 'lucide-react';
-import type { HarnessListing } from '@/lib/cupboard/types';
-import { isPubliclyVisible } from '@/lib/cupboard/types';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, GitFork, Plug, Boxes, LogIn, Camera, Package, ArrowLeft } from 'lucide-react';
+import type { HarnessListing, ListingKind } from '@papercusp/operator-core/lib/cupboard/types';
+import {
+  isPubliclyVisible,
+  listingAction,
+  listingKindOf,
+  listingRepoSlug,
+  listingContributorCount,
+  listingTopLanguage,
+  listingPotRef,
+  groupListingsByKind,
+  buildHarnessJoinLink,
+  LISTING_ACTION_LABEL,
+} from '@papercusp/operator-core/lib/cupboard/types';
 import { COLORS, FONTS, RADIUS, SIZES } from '../harness/theme';
 import { ClaimStatusBadge } from '../_components/ClaimStatusBadge';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
+type KindFilter = 'all' | ListingKind;
+
+const KIND_FILTERS: KindFilter[] = ['all', 'harness', 'blueprint', 'snapshot', 'plugin'];
+const KIND_FILTER_LABEL: Record<KindFilter, string> = {
+  all: 'All',
+  harness: 'Pots',
+  blueprint: 'Blueprints',
+  snapshot: 'Snapshots',
+  plugin: 'Plugins',
+};
+
+/** Per-kind icon for the card badge + action button. */
+function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
+  switch (kind) {
+    case 'harness': return <Globe size={size} />;
+    case 'blueprint': return <Boxes size={size} />;
+    case 'snapshot': return <Camera size={size} />;
+    case 'plugin': return <Plug size={size} />;
+  }
+}
+
+/** Icon for a listing's action button (join/fork/install). */
+function ActionIcon({ kind, size = 13 }: { kind: ListingKind; size?: number }) {
+  switch (listingAction(kind)) {
+    case 'join': return <LogIn size={size} />;
+    case 'fork': return <GitFork size={size} />;
+    case 'install': return <Plug size={size} />;
+  }
+}
 
 export default function CupboardClient() {
   const router = useRouter();
@@ -36,6 +83,15 @@ export default function CupboardClient() {
       serialize: (v) => v,
     },
   );
+  const [kindFilter, setKindFilter] = useQueryState<KindFilter>(
+    'kind',
+    parseAsStringEnum<KindFilter>(KIND_FILTERS).withDefault('all'),
+  );
+  // Per-Pot rollup (D-005): when set, the storefront narrows to one project
+  // ("Pot") and presents its recipe/snapshot/plugin/harness facets grouped by
+  // kind. `null` = normal flat browse. A Pot is identified by `project_ref`
+  // (or the repo slug for legacy rows) — see `listingPotRef`.
+  const [pot, setPot] = useQueryState('pot', parseAsString);
   const [listings, setListings] = useState<HarnessListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +107,15 @@ export default function CupboardClient() {
       const params = new URLSearchParams();
       if (q) params.set('q', q);
       if (claimFilter !== 'all') params.set('claim_status', claimFilter);
+      if (pot) {
+        // Pot rollup: fetch every kind for this project (the worker's
+        // server-side `project` filter, forwarded by the proxy) so the rollup
+        // can present all facets grouped. The kind tabs are hidden in this
+        // mode, so `kind` is intentionally not forwarded.
+        params.set('project', pot);
+      } else if (kindFilter !== 'all') {
+        params.set('kind', kindFilter);
+      }
       const res = await fetch(`/api/cupboard/listings?${params}`, { signal: ctrl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { listings: HarnessListing[] };
@@ -64,17 +129,38 @@ export default function CupboardClient() {
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [q, claimFilter]);
+  }, [q, claimFilter, kindFilter, pot]);
 
   useEffect(() => {
     void fetchListings();
   }, [fetchListings]);
 
-  const handleInstall = useCallback(
+  // Pot rollup: client-side safety filter (the server `project` filter only
+  // matches rows that actually carry `project_ref`; this keeps the grouping
+  // correct regardless) + group by kind. Empty unless `pot` is set.
+  const potListings = pot ? listings.filter((l) => listingPotRef(l) === pot) : [];
+  const potGroups = pot ? groupListingsByKind(potListings) : [];
+
+  const gridStyle: React.CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+    gap: SIZES.md,
+  };
+
+  // Per-kind primary action. harness joins inline (the working join flow);
+  // blueprint/snapshot/plugin open the listing detail where the fork/install
+  // is confirmed + executed (the engine is E1/E2 / plugin-host — see file head).
+  const handleAction = useCallback(
     (listing: HarnessListing) => {
-      // Encode the harness_link and navigate to the join flow.
-      const encoded = encodeURIComponent(listing.harness_link);
-      router.push(`/harness?join=${encoded}`);
+      const kind = listingKindOf(listing);
+      if (listingAction(kind) === 'join') {
+        const link = buildHarnessJoinLink(listing);
+        if (link) router.push(`/harness?join=${encodeURIComponent(link)}`);
+        else router.push(`/cupboard/${listing.id}`);
+        return;
+      }
+      // fork / install → the listing detail (act-on surface).
+      router.push(`/cupboard/${listing.id}`);
     },
     [router],
   );
@@ -88,11 +174,74 @@ export default function CupboardClient() {
           Cupboard
         </h1>
         <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted, marginTop: 4 }}>
-          Discover and join shared Papercusp harnesses.
+          Discover and install shared harnesses, blueprints, snapshots, and plugins.
         </p>
       </div>
 
-      {/* Search + filter bar */}
+      {/* Kind filter tabs — hidden in Pot rollup mode (the rollup shows all kinds, grouped) */}
+      {!pot && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: SIZES.md, flexWrap: 'wrap' }}>
+          {KIND_FILTERS.map((k) => (
+            <button
+              key={k}
+              onClick={() => void setKindFilter(k === 'all' ? null : k)}
+              data-testid={`cupboard-kind-tab-${k}`}
+              aria-pressed={kindFilter === k}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                background: kindFilter === k ? COLORS.accent : COLORS.surface,
+                color: kindFilter === k ? '#fff' : COLORS.textMuted,
+                border: `1px solid ${kindFilter === k ? COLORS.accent : COLORS.border}`,
+                borderRadius: RADIUS.md,
+                padding: '6px 12px',
+                cursor: 'pointer',
+                fontSize: 12,
+                fontFamily: FONTS.ui,
+              }}
+            >
+              {k !== 'all' && <KindIcon kind={k} />}
+              {KIND_FILTER_LABEL[k]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Pot rollup header — "this Pot and its facets together" (D-005) */}
+      {pot && (
+        <div
+          data-testid="cupboard-pot-header"
+          style={{ display: 'flex', alignItems: 'center', gap: SIZES.sm, marginBottom: SIZES.md, flexWrap: 'wrap' }}
+        >
+          <button
+            onClick={() => void setPot(null)}
+            data-testid="cupboard-pot-back"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              background: COLORS.surface,
+              color: COLORS.textMuted,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: RADIUS.md,
+              padding: '6px 12px',
+              cursor: 'pointer',
+              fontSize: 12,
+              fontFamily: FONTS.ui,
+            }}
+          >
+            <ArrowLeft size={13} /> All listings
+          </button>
+          <span
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontFamily: FONTS.ui, fontSize: 13, color: COLORS.text,
+            }}
+          >
+            <Package size={14} /> Pot:{' '}
+            <strong style={{ fontFamily: FONTS.mono }} data-testid="cupboard-pot-name">{pot}</strong>
+          </span>
+        </div>
+      )}
+
+      {/* Search + claim filter bar */}
       <div style={{ display: 'flex', gap: SIZES.sm, marginBottom: SIZES.lg, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
           <Search
@@ -102,7 +251,7 @@ export default function CupboardClient() {
           <input
             value={q}
             onChange={(e) => void setQ(e.target.value || null)}
-            placeholder="Search harnesses…"
+            placeholder="Search the Cupboard…"
             style={{
               width: '100%',
               boxSizing: 'border-box',
@@ -164,49 +313,95 @@ export default function CupboardClient() {
       {error && !loading && (
         <div style={{ color: '#f87171', fontSize: 12, marginBottom: SIZES.md }}>
           {error === 'HTTP 503' || error.includes('fetch')
-            ? 'Cupboard server unreachable. Is NEXT_PUBLIC_CUPBOARD_URL configured?'
+            ? 'Cupboard server unreachable. Is PAPERCUSP_CUPBOARD_URL configured?'
             : error}
         </div>
       )}
 
-      {/* Card grid */}
-      {!loading && !error && listings.length === 0 && (
+      {/* Results — empty state (kind-aware in flat mode, Pot-aware in rollup mode) */}
+      {!loading && !error && (pot ? potGroups.length === 0 : listings.length === 0) && (
         <div style={{ color: COLORS.textMuted, fontSize: 12, textAlign: 'center', paddingTop: 40 }}>
-          No harnesses found{q ? ` matching "${q}"` : ''}.
+          {pot
+            ? `No listings found for Pot "${pot}"${q ? ` matching "${q}"` : ''}.`
+            : `No ${kindFilter === 'all' ? 'listings' : KIND_FILTER_LABEL[kindFilter].toLowerCase()} found${q ? ` matching "${q}"` : ''}.`}
         </div>
       )}
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-          gap: SIZES.md,
-        }}
-      >
-        {listings.map((listing) => (
-          <HarnessCard
-            key={listing.id}
-            listing={listing}
-            onInstall={() => handleInstall(listing)}
-            onDetail={() => router.push(`/cupboard/${listing.id}`)}
-          />
-        ))}
-      </div>
+      {pot ? (
+        /* Pot rollup — the Pot's facets grouped by kind (D-005) */
+        <div data-testid="cupboard-pot-rollup">
+          {potGroups.map((group) => (
+            <section
+              key={group.kind}
+              data-testid={`cupboard-pot-group-${group.kind}`}
+              style={{ marginBottom: SIZES.lg }}
+            >
+              <h2
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  fontFamily: FONTS.ui, fontWeight: 600, fontSize: 14, color: COLORS.text,
+                  margin: `0 0 ${SIZES.sm}px`,
+                }}
+              >
+                <KindIcon kind={group.kind} size={13} />
+                {KIND_FILTER_LABEL[group.kind]}
+                <span style={{ color: COLORS.textMuted, fontWeight: 400, fontSize: 12 }}>
+                  {group.listings.length}
+                </span>
+              </h2>
+              <div style={gridStyle}>
+                {group.listings.map((listing) => (
+                  <ListingCard
+                    key={listing.id}
+                    listing={listing}
+                    onAction={() => handleAction(listing)}
+                    onDetail={() => router.push(`/cupboard/${listing.id}`)}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        /* Flat browse — each card links to its Pot via the Pot chip */
+        <div style={gridStyle}>
+          {listings.map((listing) => (
+            <ListingCard
+              key={listing.id}
+              listing={listing}
+              potRef={listingPotRef(listing)}
+              onPot={() => void setPot(listingPotRef(listing))}
+              onAction={() => handleAction(listing)}
+              onDetail={() => router.push(`/cupboard/${listing.id}`)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── HarnessCard ─────────────────────────────────────────────────
+// ─── ListingCard ─────────────────────────────────────────────────
 
-export function HarnessCard({
+export function ListingCard({
   listing,
-  onInstall,
+  onAction,
   onDetail,
+  potRef,
+  onPot,
 }: {
   listing: HarnessListing;
-  onInstall: () => void;
+  onAction: () => void;
   onDetail: () => void;
+  /** The Pot (project) this listing belongs to. When set with `onPot`, renders
+   *  a clickable chip that enters the per-Pot rollup. Omit in rollup mode. */
+  potRef?: string;
+  onPot?: () => void;
 }) {
+  const kind = listingKindOf(listing);
+  const repoSlug = listingRepoSlug(listing);
+  const contributors = listingContributorCount(listing);
+  const language = listingTopLanguage(listing);
   return (
     <div
       style={{
@@ -220,7 +415,7 @@ export function HarnessCard({
         cursor: 'default',
       }}
     >
-      {/* Title + claim badge */}
+      {/* Title + kind + claim badge */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <button
           onClick={onDetail}
@@ -236,15 +431,10 @@ export function HarnessCard({
             textAlign: 'left',
           }}
         >
-          {listing.title || listing.slug}
+          {listing.title || listing.slug || repoSlug || 'Untitled'}
         </button>
-        {/* Claim badge — canonical ClaimStatusBadge for ALL states so an
-            `unclaimed` (provisional) listing surfaces a tag too, not just
-            claimed ones. Provisional listings are exactly the ones a viewer
-            most needs flagged; previously they rendered unlabeled. The
-            `HarnessListing` wire shape carries no claimant login, so a
-            claimed listing shows the bare "Claimed" label. */}
-        <span style={{ flexShrink: 0 }}>
+        <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <KindBadge kind={kind} />
           <ClaimStatusBadge status={listing.claim_status} />
         </span>
       </div>
@@ -269,8 +459,8 @@ export function HarnessCard({
 
       {/* Tier-A stats (P-076) */}
       <div style={{ display: 'flex', gap: SIZES.md, flexWrap: 'wrap' }}>
-        {listing.contributor_count_estimate > 0 && (
-          <Stat icon={<Users size={11} />} label={`${listing.contributor_count_estimate} contributors`} />
+        {contributors > 0 && (
+          <Stat icon={<Users size={11} />} label={`${contributors} contributors`} />
         )}
         {listing.last_activity_at != null && (
           <Stat
@@ -278,19 +468,47 @@ export function HarnessCard({
             label={formatRelativeTime(listing.last_activity_at)}
           />
         )}
-        {listing.language && (
-          <Stat icon={<GitBranch size={11} />} label={listing.language} />
+        {language && (
+          <Stat icon={<GitBranch size={11} />} label={language} />
         )}
       </div>
 
       <PublisherSignal permission={listing.publisher_permission} />
 
-      {/* Footer */}
+      {/* Pot chip — enters the per-Pot rollup (D-005). Hidden when ungroupable
+          (no project identity) or in rollup mode (no onPot passed). */}
+      {potRef && onPot && (
+        <button
+          onClick={onPot}
+          data-testid="cupboard-pot-chip"
+          data-pot={potRef}
+          title={`View all of ${potRef}'s listings`}
+          style={{
+            alignSelf: 'flex-start',
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            background: COLORS.surfaceRaised,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: RADIUS.sm,
+            padding: '2px 7px',
+            cursor: 'pointer',
+            fontSize: 10,
+            fontFamily: FONTS.mono,
+            color: COLORS.textMuted,
+          }}
+        >
+          <Package size={10} /> {potRef}
+        </button>
+      )}
+
+      {/* Footer — per-kind action */}
       <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 4 }}>
         <button
-          onClick={onInstall}
+          onClick={onAction}
+          data-testid="cupboard-action"
+          data-action={listingAction(kind)}
           style={{
             flex: 1,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
             background: COLORS.accent,
             color: '#fff',
             border: 'none',
@@ -301,28 +519,53 @@ export function HarnessCard({
             fontSize: 12,
           }}
         >
-          Install
+          <ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[listingAction(kind)]}
         </button>
-        <a
-          href={`https://github.com/${listing.github_repo}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '6px 10px',
-            background: COLORS.surfaceRaised,
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: RADIUS.md,
-            color: COLORS.textMuted,
-          }}
-          title={`github.com/${listing.github_repo}`}
-        >
-          <ExternalLink size={13} />
-        </a>
+        {repoSlug && (
+          <a
+            href={`https://github.com/${repoSlug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '6px 10px',
+              background: COLORS.surfaceRaised,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: RADIUS.md,
+              color: COLORS.textMuted,
+            }}
+            title={`github.com/${repoSlug}`}
+          >
+            <ExternalLink size={13} />
+          </a>
+        )}
       </div>
     </div>
+  );
+}
+
+/** Small kind tag on a card. */
+function KindBadge({ kind }: { kind: ListingKind }) {
+  return (
+    <span
+      data-testid="cupboard-kind-badge"
+      data-kind={kind}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        background: COLORS.surfaceRaised,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: RADIUS.sm,
+        padding: '2px 7px',
+        fontSize: 10,
+        fontFamily: FONTS.ui,
+        color: COLORS.textMuted,
+        textTransform: 'capitalize',
+      }}
+    >
+      <KindIcon kind={kind} size={10} /> {kind}
+    </span>
   );
 }
 

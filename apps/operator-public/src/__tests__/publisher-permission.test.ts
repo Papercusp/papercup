@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { derivePublisherPermission } from '../routes/harnesses.ts';
+import { derivePublisherPermission } from '../routes/listings.ts';
 
 describe('derivePublisherPermission', () => {
   it('returns the highest applicable role', () => {

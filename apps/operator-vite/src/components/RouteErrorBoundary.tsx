@@ -1,6 +1,6 @@
 import { Component, type CSSProperties, type ErrorInfo, type ReactNode } from 'react';
 import { useLocation } from '@tanstack/react-router';
-import { hardReload } from '@/lib/hard-reload';
+import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 
 /**
  * Error boundary around the route content (`<Outlet/>`).

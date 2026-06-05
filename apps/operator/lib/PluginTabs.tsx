@@ -22,7 +22,7 @@ import {
   resolveComponent,
   type DashboardTabContribution,
 } from './plugin-runtime';
-import { makeBrowserApi } from './browser-papercusp-api';
+import { makeBrowserApi } from '@papercusp/operator-core/lib/browser-papercusp-api';
 
 interface PluginTabsProps {
   slug: string;

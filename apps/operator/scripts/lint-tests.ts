@@ -12,7 +12,7 @@
  *      (debt counter `lint-tests-debt.json` accepts pre-existing).
  *   2. No NEW `-smoke.ts` under `apps/operator/scripts/`.
  *   3. COVERAGE: every canonical `*.test.ts(x)` / `*.spec.ts` matches at
- *      least one registry glob (`.harness/testing-domains.json`), so it
+ *      least one registry glob (`.papercusp/testing-domains.json`), so it
  *      shows up in the /adv Tests tab. An orphaned test is invisible —
  *      this is the failure the audit fixed (614 of 1168 were orphaned).
  *      Fix by widening a domain in testing-domains-registry.ts, then
@@ -151,7 +151,7 @@ async function walkAll(dir: string, base = ''): Promise<string[]> {
 
 /** Load every glob declared in the harness testing contract. */
 async function loadContractGlobs(): Promise<string[]> {
-  const raw = await readFile(join(REPO_ROOT, '.harness/testing-domains.json'), 'utf8');
+  const raw = await readFile(join(REPO_ROOT, '.papercusp/testing-domains.json'), 'utf8');
   const parsed = JSON.parse(raw) as { domains?: { sections?: { globs?: string[] }[] }[] };
   const globs: string[] = [];
   for (const d of parsed.domains ?? []) {

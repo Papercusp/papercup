@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { EntryHarnessLinkForm } from '../EntryHarnessLinkForm';
-import { JOIN_STEP_IDS } from '../../../lib/harness/join-shared-harness';
+import { JOIN_STEP_IDS } from '@papercusp/operator-core/lib/harness/join-shared-harness';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 

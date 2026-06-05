@@ -15,15 +15,15 @@
  * idempotent (per their existing comments about Next dev module re-eval),
  * so even an accidental double-call from a different bootstrap path is safe.
  */
-import { mountPluginApiRoutes } from '../lib/plugin-api-mount';
-import { startAutoLoopOnce } from '../lib/autoloop';
-import { ensureHarnessFsWatcher } from '../lib/harness-fs-watcher';
-import { ensureHarnessStatusSweep } from '../lib/harness-status-sweep';
+import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
+import { startAutoLoopOnce } from '@papercusp/operator-core/lib/autoloop';
+import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
+import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
-import { registerAllExpirables } from '../lib/expirable-registrations';
-import { startMobileVoiceWs } from '../lib/device-voice-ws';
-import { startPushCredentialRefresher } from '../lib/device-push-credentials';
+import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
+import { startMobileVoiceWs } from '@papercusp/operator-core/lib/device-voice-ws';
+import { startPushCredentialRefresher } from '@papercusp/operator-core/lib/device-push-credentials';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -70,14 +70,14 @@ export function runBootstrap(): void {
           { listAllProjectedTools },
           { writeEndpointIpcDiscovery },
         ] = await Promise.all([
-          import('../lib/endpoint-ipc/server'),
-          import('../lib/projected-tool-deps'),
+          import('@papercusp/operator-core/lib/endpoint-ipc/server'),
+          import('@papercusp/operator-core/lib/projected-tool-deps'),
           import('@papercusp/tooldef'),
-          import('../lib/endpoint-ipc-discovery'),
+          import('@papercusp/operator-core/lib/endpoint-ipc-discovery'),
         ]);
         // Populate the projection registry (defineTool side-effects) before
         // reading expose.ipc off it.
-        await import('../lib/agent-tools');
+        await import('@papercusp/operator-core/lib/agent-tools');
         // Registry-driven IPC allowlist: a tool is IPC-eligible iff it declares
         // `expose: { ipc: true }` (must be self-contained — every safety check
         // + persistence side-effect in the tool, not the route). `sys:http` —
@@ -110,7 +110,7 @@ export function runBootstrap(): void {
   // first /adv launch pays 5+ seconds of bootstrap synchronously on
   // the response path; with it, the work happens during startup and
   // the first user click is fast like every subsequent click.
-  import('../lib/ensure-omp-su')
+  import('@papercusp/operator-core/lib/ensure-omp-su')
     .then(({ ensureOmpSuInstalled }) =>
       ensureOmpSuInstalled().catch((e) =>
         console.warn('[ensure-omp-su] prewarm failed (non-fatal):', e),
@@ -146,7 +146,7 @@ export function runBootstrap(): void {
   // smoke-fail / plan-review now push at the source via notifyAttention from
   // their /api/internal/*-event producers; needs-human≥high from set-status.
 
-  // Harness FS watcher — mirrors .harness/{summary.md,pending-reviews,proposals}
+  // Harness FS watcher — mirrors .papercusp/{summary.md,pending-reviews,proposals}
   // to PG so panels can read via Zero push instead of polling. Idempotent;
   // pinned to globalThis to survive Next dev module re-evaluation.
   try {
@@ -191,7 +191,7 @@ export function runBootstrap(): void {
   if (process.env.PAPERCUSP_DEV_PLUGIN_WATCH === '1') {
     // Lazy import so the watcher's fs.watch handle isn't held in tests
     // that don't import this module's bootstrap code.
-    import('../lib/plugin-host-runtime')
+    import('@papercusp/operator-core/lib/plugin-host-runtime')
       .then(({ watchPluginsForReload }) => watchPluginsForReload())
       .catch((e) => console.warn('[plugin-host-watch] failed to arm:', e));
   }
@@ -207,7 +207,7 @@ export function runBootstrap(): void {
   // unset, so dev users still use the shell script explicitly per the
   // unchanged dev workflow.
   if (process.env.PAPERCUSP_DESKTOP === '1') {
-    import('../lib/desktop-install/papercusp-files')
+    import('@papercusp/operator-core/lib/desktop-install/papercusp-files')
       .then(({ installPapercuspFiles }) => installPapercuspFiles())
       .then((r) => {
         const minted = [
@@ -233,16 +233,27 @@ export function runBootstrap(): void {
   // defensive — a swarm/identity failure leaves it local-only).
   void (async () => {
     try {
-      // The dogfood PG schema + change-notify/capture triggers are now defined
-      // entirely by migrations (000-baseline + 107/108), applied at host boot
-      // before this block runs — so there is no runtime schema-ensure to do
-      // here anymore. Just flip the boot-gate so the substrate can start.
+      // [A1 handoff-coordination-dx-followups] Apply pending sql/*.sql to the
+      // operator DB on boot. Embedded-pg applies them when ITS server boots, but
+      // the native :5432 dev box has no such runner — so without this, a
+      // migration added since the last restart stays unapplied (the silent
+      // "missing column" gap). Log-and-continue: a broken peer migration is
+      // logged + coord-broadcast and left pending, never wedges boot. Awaited
+      // here so migrations are in place BEFORE the boot-gate flips + the
+      // substrate (which reads those tables) starts.
+      const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
+      await applyPendingMigrationsAtBoot();
+
+      // The dogfood PG schema + change-notify/capture triggers are defined
+      // entirely by migrations (000-baseline + 107/108), now applied above (or
+      // by the embedded-pg boot) — no runtime schema-ensure here. Flip the
+      // boot-gate so the substrate can start.
       const { markSqlMigrationsComplete, markRuntimeEnsureComplete } =
-        await import('../lib/sync/hyperbee/boot-gate');
+        await import('@papercusp/operator-core/lib/sync/hyperbee/boot-gate');
       markSqlMigrationsComplete();
       markRuntimeEnsureComplete();
       const { bootAllHarnessesForActiveWorkspace } = await import(
-        '../lib/sync/hyperbee/boot-all'
+        '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
       );
       const t0 = Date.now();
       const result = await bootAllHarnessesForActiveWorkspace({
@@ -277,10 +288,10 @@ export function runBootstrap(): void {
   void (async () => {
     try {
       const { routeProjection, checkInventoryCoverage } = await import(
-        '../lib/harness-state/projection-engine'
+        '@papercusp/operator-core/lib/harness-state/projection-engine'
       );
       const { REGISTERED_PROJECTION_TAGS } = await import(
-        '../lib/sync/hyperbee/projections/register-all'
+        '@papercusp/operator-core/lib/sync/hyperbee/projections/register-all'
       );
       const { getOrgPg } = await import('@papercusp/db-org');
       const { sql } = getOrgPg();
@@ -318,18 +329,18 @@ export function runBootstrap(): void {
   // harnesses / 16 git tables / 15 drain loops). Per workspace's harnesses:
   // ensure the git_export_outbox + reconcile capture triggers on the sync:'git'
   // tables (attach current set, DROP stale ones for tables removed from
-  // GIT_TABLES), hydrate each from `.harness/state/` (clone-and-go), then start
+  // GIT_TABLES), hydrate each from `.papercusp/state/` (clone-and-go), then start
   // its autonomous PG→file drain loop. Non-fatal: a failure leaves harnesses on
   // their existing PG-only behaviour (git-export simply doesn't run). The drain's
-  // auto-commit (git-committer.ts) is real + scoped to `.harness/state` only and
+  // auto-commit (git-committer.ts) is real + scoped to `.papercusp/state` only and
   // never pushes, but FLAG-GATED OFF by default (PAPERCUSP_GIT_EXPORT_COMMIT=1 to
   // enable); until then the files are written + visible but left uncommitted.
   void (async () => {
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
-      const { readRegistry } = await import('../lib/workspace-registry');
-      const { loadHarnessRegistry } = await import('../lib/harness-registry');
-      const { bootGitExportForHarnesses } = await import('../lib/harness-state/git-export/boot');
+      const { readRegistry } = await import('@papercusp/operator-core/lib/workspace-registry');
+      const { loadHarnessRegistry } = await import('@papercusp/operator-core/lib/harness-registry');
+      const { bootGitExportForHarnesses } = await import('@papercusp/operator-core/lib/harness-state/git-export/boot');
       const { sql } = getOrgPg();
       const harnesses: { workspaceId: string; harnessSlug: string; harnessRoot: string }[] = [];
       for (const ws of readRegistry().workspaces) {
@@ -363,7 +374,7 @@ export function runBootstrap(): void {
   if (process.env.PAPERCUSP_DBOS_ENABLE === '1') {
     void (async () => {
       try {
-        const { startDbos } = await import('../lib/dbos/bootstrap');
+        const { startDbos } = await import('@papercusp/operator-core/lib/dbos/bootstrap');
         await startDbos();
       } catch (err) {
         console.warn('[dbos] boot failed (non-fatal):', err instanceof Error ? err.message : err);

@@ -20,8 +20,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
-import { reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { OperatorChat } from './OperatorChat';

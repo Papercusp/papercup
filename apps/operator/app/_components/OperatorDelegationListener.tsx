@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { NarrationHandle } from '@/lib/voice-narration';
+import type { NarrationHandle } from '@papercusp/operator-core/lib/voice-narration';
 
 export default function OperatorDelegationListener() {
   const narrationHandle = useRef<NarrationHandle | null>(null);
@@ -26,7 +26,7 @@ export default function OperatorDelegationListener() {
       // kickoff but schedules the mid-narration timers.
       narrationHandle.current?.cancel();
       try {
-        const { announceOpStart } = await import('@/lib/voice-narration');
+        const { announceOpStart } = await import('@papercusp/operator-core/lib/voice-narration');
         narrationHandle.current = announceOpStart('delegate');
       } catch { /* best-effort */ }
     };
@@ -48,7 +48,7 @@ export default function OperatorDelegationListener() {
       } catch { /* default true */ }
 
       try {
-        const { setOperatorState } = await import('./operator-shared-state');
+        const { setOperatorState } = await import('@papercusp/operator-core/lib/operator-shared-state');
         // Stash the latest delegation result on the shared state so the
         // panel can render it. We extend the state object with a
         // best-effort structural cast — older readers ignore unknown keys.
@@ -72,7 +72,7 @@ export default function OperatorDelegationListener() {
       // The handle from operator:delegation-start carries the pending
       // mid-narration timers — pass it so they get cancelled cleanly.
       try {
-        const { announceOpEnd } = await import('@/lib/voice-narration');
+        const { announceOpEnd } = await import('@papercusp/operator-core/lib/voice-narration');
         announceOpEnd('delegate', { outcome: 'ok' }, narrationHandle.current ?? undefined);
         narrationHandle.current = null;
       } catch { /* narration is best-effort */ }
@@ -101,12 +101,13 @@ export default function OperatorDelegationListener() {
         delivered = sendSystemToActiveSession(headline);
       } catch { /* voice-mode not loaded; treat as undelivered */ }
       if (!delivered) {
-        // No live EL session — stash for the next one.
+        // No live EL session — stash on the operator's coord-inbox hindsight channel
+        // (collapse-delegate D-003) for the next "[While you were away]" briefing.
         try {
-          await fetch('/api/agent-mcp/delegate-inbox', {
+          await fetch('/api/agent-mcp/operator-hindsight', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ headline, agentSessionId: detail.agentSessionId ?? null }),
+            body: JSON.stringify({ headline, kind: 'delegate-complete' }),
           });
         } catch { /* best-effort; panel still has the result */ }
       }
@@ -141,7 +142,7 @@ export default function OperatorDelegationListener() {
       } catch { /* voice-mode not loaded */ }
       if (!delivered) {
         try {
-          await fetch('/api/agent-mcp/delegate-inbox', {
+          await fetch('/api/agent-mcp/operator-hindsight', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ headline, kind: 'scan-complete' }),

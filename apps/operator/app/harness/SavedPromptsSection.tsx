@@ -8,7 +8,7 @@ import {
   saveSavedPrompt,
   deleteSavedPrompt,
   type SavedPrompt,
-} from '@/lib/saved-prompts-client';
+} from '@papercusp/operator-core/lib/saved-prompts-client';
 
 /**
  * Saved-prompts settings module — the same component on the harness-settings

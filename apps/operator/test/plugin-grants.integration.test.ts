@@ -17,7 +17,7 @@ import {
   revokeCapabilities,
   getGrantsForPluginInHarness,
   backfillGrantsFromEnabledPluginsAndLegacyFile,
-} from '../lib/plugin-grants';
+} from '@papercusp/operator-core/lib/plugin-grants';
 
 let sql: postgres.Sql;
 let baseUri: string;

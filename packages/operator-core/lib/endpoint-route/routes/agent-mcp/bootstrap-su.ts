@@ -1,0 +1,415 @@
+/**
+ * POST / OPTIONS /api/agent-mcp/console/bootstrap-su
+ *
+ * Bootstraps a tracked superuser engineer session for one of the three
+ * `*-su` wrappers (claude-su / omp-su / codex-su). Called by the
+ * plan-tracked launcher after the user picks a harness + plan; the
+ * launcher cd's to `cwd`, exports `envelopeEnv`, and exec's `wrapperBin`.
+ *
+ * Per `psu-wrappers-and-plan-tracked-launch-2026-05-30` (P-006), pivoted
+ * onto the shipped `*-su` wrappers + reconciled against the data model:
+ *   - the session is an `adv_sessions` row (NOT a plan_run/spawn — those
+ *     are the autonomous-execution surface). plan_slug set → plan-bound;
+ *     null → a "No plan" row (D-005). Both appear in /adv Sessions.
+ *   - the `*-su` wrappers already inject the playbook + skip-permissions
+ *     + MCP auth (codex-su via a dedicated CODEX_HOME), so this returns
+ *     only WHICH wrapper to exec + the tracking env — no cliFlags, no
+ *     token handling.
+ *
+ * Principal-gated; CORS-open (operator binds loopback-only). `auth:
+ * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
+ */
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspace-registry';
+import { buildConsoleEnvelope } from '../../../console-launcher';
+import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
+import { recordAdvSession } from '../../../adv-sessions';
+import { isSuAgent, type SuAgent } from '../../../su-agents';
+import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
+import { buildLaunchSpec } from '../../../role-launch-spec';
+import { writeSuCodexHome } from '../../../role-codex-home';
+import {
+  materializeCodexPrompts,
+  materializeWorkspacePrompts,
+  materializeHarnessPrompts,
+} from '../../../saved-prompts-materialize';
+import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
+import { readSuperuserToken } from '../../../superuser-token';
+import { homedir } from 'node:os';
+
+const CORS_HEADERS: Record<string, string> = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': 'content-type, accept, authorization',
+};
+
+function jsonRes(body: unknown, init?: number | ResponseInit): Response {
+  const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) r.headers.set(k, v);
+  return r;
+}
+
+async function gatePrincipal(headers: Headers): Promise<Response | null> {
+  try {
+    await requirePrincipal(headers);
+    return null;
+  } catch (err) {
+    if (err instanceof PrincipalCheckError) {
+      return jsonRes({ status: 'error', error: err.reason }, err.status);
+    }
+    throw err;
+  }
+}
+
+export interface BootstrapSuResult {
+  status: 'ok';
+  /** adv_sessions row id; null if the insert failed (best-effort). */
+  sessionId: number | null;
+  /** The agent's NATIVE session id the launcher must force on the CLI so the
+   *  session is resumable + recognizable by id. claude → a forced UUID
+   *  (`claude --session-id`); omp/codex → null (they don't take a forced id). */
+  nativeSessionId: string | null;
+  agent: SuAgent;
+  /** Workspace the harness + session belong to. */
+  workspaceId: string;
+  /** Working directory the launcher should exec the agent in. */
+  cwd: string;
+  harnessSlug: string | null;
+  planSlug: string | null;
+  /**
+   * File holding the engineer playbook + per-launch scope/plan addendum —
+   * the launcher feeds it as the system prompt. claude/omp: a launch-context
+   * `.md` (--append-system-prompt[-file]). codex: the CODEX_HOME AGENTS.md.
+   */
+  promptFile: string;
+  /**
+   * Per-session CODEX_HOME for a codex su session (AGENTS.md = playbook,
+   * config.toml = superuser MCP, settings.json = lock hooks, auth symlink).
+   * null for claude/omp (their MCP + hooks are user-level). Also surfaced in
+   * `envelopeEnv.CODEX_HOME`.
+   */
+  codexHome: string | null;
+  /**
+   * The omp coordination extension path (`~/.papercusp/papercusp-coord.ts`)
+   * the launcher loads via `-e` for lock enforcement, or null if not
+   * installed. Ignored for claude (hooks are user-level) + codex (home).
+   */
+  coordExtPath: string | null;
+  /**
+   * Env the launcher exports into the CHILD process (the raw CLI). Carries
+   * the MCP/context vars + PAPERCUSP_AGENT + PAPERCUSP_SID (per-session
+   * coord/lock owner) + PAPERCUSP_ADV_SESSION_ID + CODEX_HOME (codex). No
+   * secrets — the superuser bearer is read from the 0600 token file by the
+   * launcher, never sent over HTTP.
+   */
+  envelopeEnv: Record<string, string>;
+}
+
+const options = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+const optionsForOptions = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/options',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+/**
+ * GET /api/agent-mcp/console/bootstrap-su/options
+ *
+ * Picker data for the `psu` launcher (and the /adv "Launch SU" modal).
+ * Harnesses are workspace-scoped, so the picker walks workspace → harness
+ * → plan:
+ *   - no query                   → { activeWorkspace, workspace, workspaces:
+ *                                    [{ id, name }], harnesses: [{ slug, path, status }] }
+ *   - ?workspace=<id>            → harnesses for that workspace
+ *   - ?workspace=<id>&harness=<slug> → { plans: [{ slug }] } (non-archived)
+ * `workspace` defaults to the active workspace when omitted.
+ */
+const optionsGet = defineTool({
+  method: 'GET',
+  path: '/agent-mcp/console/bootstrap-su/options',
+  auth: 'public',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+
+    const url = new URL(req.url);
+    const workspace = url.searchParams.get('workspace')?.trim() || activeWorkspaceId();
+    const harness = url.searchParams.get('harness')?.trim() || null;
+    const wantFeatures = url.searchParams.get('features') === '1';
+
+    // ?harness=X&features=1 → feature list (for the psu --role feature picker).
+    if (harness && wantFeatures) {
+      try {
+        const { listFeaturesForHarness } = await import('../../../harness-readers');
+        const r = await listFeaturesForHarness(harness, 'staging');
+        const features = r.ok
+          ? (r.data.features as Array<{ id?: string; feature_id?: string; title?: string; description?: string; status?: string }>).map((f) => ({
+              id: f.id ?? f.feature_id ?? '',
+              title: f.title ?? f.description ?? '',
+              status: f.status ?? null,
+            })).filter((f) => f.id)
+          : [];
+        return jsonRes({ status: 'ok', workspace, harness, features });
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: e?.message ?? 'features listing failed' }, 400);
+      }
+    }
+
+    if (harness) {
+      try {
+        const { resolveHarnessPlansDir, listPlanFiles } = await import('../../../agent-tools/plans/source');
+        const resolved = await resolveHarnessPlansDir(harness, { workspaceId: workspace });
+        const entries = await listPlanFiles({ harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
+        return jsonRes({
+          status: 'ok',
+          workspace,
+          harness,
+          plans: entries.filter((e) => !e.archived).map((e) => ({ slug: e.slug })),
+        });
+      } catch (e: any) {
+        return jsonRes({ status: 'error', error: e?.message ?? 'plans listing failed' }, 400);
+      }
+    }
+
+    const { listHarnessesFor } = await import('../../../device-harnesses');
+    const harnesses = (await listHarnessesFor(workspace)).map((h) => ({
+      slug: h.slug,
+      path: h.path,
+      status: h.status,
+    }));
+    const workspaces = readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name }));
+    // Roles + their consumes (feature/plan needs) for the psu --role picker.
+    const { getKnownRoles } = await import('../../../known-roles');
+    const { roleConsumes } = await import('../../../role-registry');
+    const roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
+    return jsonRes({ status: 'ok', activeWorkspace: activeWorkspaceId(), workspace, workspaces, harnesses, roles });
+  },
+});
+
+const post = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su',
+  auth: 'public',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+
+    let body: {
+      agent?: string;
+      workspace?: string | null;
+      harness_slug?: string | null;
+      plan_slug?: string | null;
+      label?: string | null;
+      /** Playbook profile (engineer|power), assembled per-launch (P-023).
+       *  Omitted/invalid → 'engineer'. */
+      profile?: string | null;
+      /** The launcher's own cwd — used for no-harness launches so the
+       *  agent's cwd-scoped session resume works from the user's terminal. */
+      cwd?: string | null;
+    } = {};
+    try {
+      const text = await req.text();
+      if (text.trim()) body = JSON.parse(text);
+    } catch {
+      return jsonRes({ status: 'error', error: 'invalid JSON body' }, 400);
+    }
+
+    if (!isSuAgent(body.agent)) {
+      return jsonRes(
+        { status: 'error', error: `agent must be one of claude|omp|codex (got ${String(body.agent).slice(0, 24)})` },
+        400,
+      );
+    }
+    const agent: SuAgent = body.agent;
+    const workspace = body.workspace?.trim() || activeWorkspaceId();
+    if (body.workspace?.trim() && !workspaceById(workspace)) {
+      return jsonRes({ status: 'error', error: `unknown workspace: ${workspace.slice(0, 48)}` }, 400);
+    }
+    const harnessSlug = body.harness_slug?.trim() || null;
+    const planSlug = body.plan_slug?.trim() || null;
+    const callerCwd = body.cwd?.trim() || null;
+    // P-023: playbook profile. Only 'engineer' | 'power' are valid base
+    // playbooks (prompts/papercusp-su-<profile>.tools.md); anything else → 400
+    // so a typo doesn't silently fall back. Omitted → engineer.
+    const profileRaw = body.profile?.trim() || null;
+    if (profileRaw && profileRaw !== 'engineer' && profileRaw !== 'power') {
+      return jsonRes({ status: 'error', error: `profile must be engineer|power (got ${profileRaw.slice(0, 24)})` }, 400);
+    }
+    const profile = profileRaw ?? 'engineer';
+
+    // Resolve cwd + context env from the existing console envelope builder
+    // (shell mode), scoped to the chosen workspace. We use its env + cwd;
+    // the prompt + MCP come from buildLaunchSpec(su) below.
+    let envelope;
+    try {
+      envelope = await buildConsoleEnvelope({
+        workspaceId: workspace,
+        slug: harnessSlug,
+        operatorBaseUrl: new URL(req.url).origin,
+        mode: 'shell',
+      });
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);
+    }
+
+    // cwd: a harness launch runs in the harness repo (envelope.cwd). A
+    // no-harness launch prefers the launcher's own cwd (the user's
+    // terminal) over the internal .papercusp dir — agents scope their
+    // resumable sessions by cwd, so this makes `--resume` work from where
+    // the user is. Recorded + returned + exec'd consistently.
+    const cwd = harnessSlug ? envelope.cwd : (callerCwd || envelope.cwd);
+
+    // Fetch the bound plan's `## Now` + title for the launch-context addendum
+    // (best-effort — buildLaunchSpec composes the addendum from these).
+    let planNow: { state: string; next: string } | null = null;
+    let planTitle: string | null = null;
+    if (planSlug && harnessSlug) {
+      try {
+        const { resolveHarnessPlansDir, readPlanBySlug } = await import('../../../agent-tools/plans/source');
+        const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
+        const found = await readPlanBySlug(planSlug, { harnessSlug: resolved.harnessSlug, workspaceId: resolved.workspaceId });
+        if (found) {
+          planNow = found.parsed.now;
+          planTitle = found.parsed.frontmatter?.title ?? null;
+        }
+      } catch {
+        // plan context is optional — proceed without it
+      }
+    }
+
+    // Build the su launch spec: engineer playbook + per-launch scope/plan
+    // addendum (promptText) + the superuser MCP url (codex consumes it). The
+    // SAME builder roles use, at the superuser tier (D-001).
+    let spec;
+    try {
+      spec = await buildLaunchSpec({
+        kind: 'su',
+        agent,
+        workspaceId: workspace,
+        operatorBaseUrl: new URL(req.url).origin,
+        harnessSlug,
+        profile,
+        planSlug,
+        planTitle,
+        planNow,
+      });
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);
+    }
+
+    // Per-session coord/lock owner (P-022). Replaces the wrapper's SID
+    // minting: claude's user-level papercusp-su url env-expands ${PAPERCUSP_SID}
+    // and the lock hooks read the same var, so a session's interactive calls
+    // and its hooks share ONE owner — and two concurrent psu sessions get
+    // distinct owners (the collapse the per-session id fixes). Minted BEFORE the
+    // adv_sessions row so it's recorded as coord_owner_id — the live-roster join
+    // key to coord_presence.owner_id (adv-sessions-live-roster P-001).
+    const sid = `su-${randomUUID()}`;
+
+    // The agent's NATIVE session id. claude lets us FORCE it (`--session-id`),
+    // so we mint it here, record it, and the launcher passes it through — that's
+    // the only way `psu --resume <native-uuid>` can later correlate this exact
+    // session back to its adv row (without it, resume-by-uuid falls through to
+    // the false "not started by psu" path). omp's native handle is the
+    // omp_thread_id (linked post-launch); codex resumes via its per-session
+    // CODEX_HOME and can't have its rollout id forced — so both stay null.
+    const nativeSessionId = agent === 'claude' ? randomUUID() : null;
+
+    // Record the tracked session first so the prompt/home files key off its id.
+    const sessionId = await recordAdvSession({
+      planSlug,
+      agent,
+      workspaceId: workspace,
+      mode: agent === 'omp' ? 'omp' : 'console',
+      cwd,
+      label: body.label?.trim() || null,
+      coordOwnerId: sid,
+      sessionId: nativeSessionId,
+    });
+
+    const sessionKey = sessionId ?? `t-${randomUUID()}`;
+
+    // Materialize the launch artifacts. codex (no --mcp-config/-prompt flags)
+    // gets a per-session CODEX_HOME (P-030); claude/omp get a launch-context
+    // prompt file and rely on their USER-LEVEL papercusp-su MCP (it survives
+    // a raw launch — no per-launch .mcp.json needed for su).
+    let promptFile = '';
+    let codexHome: string | null = null;
+    try {
+      if (agent === 'codex') {
+        // D-006: the superuser bearer is baked into the home's config.toml
+        // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
+        // Read it server-side — it never transits the bootstrap HTTP response.
+        const ch = writeSuCodexHome({ sessionKey, mcpUrl: spec.mcpUrl, promptText: spec.promptText, sid, token: readSuperuserToken() });
+        codexHome = ch.codexHome;
+        promptFile = ch.agentsPath; // AGENTS.md — diagnostics
+      } else {
+        promptFile = launchContextPathFor(sessionKey);
+        mkdirSync(launchContextDir(), { recursive: true });
+        writeFileSync(promptFile, spec.promptText, { mode: 0o600 });
+      }
+    } catch (e: any) {
+      return jsonRes({ status: 'error', error: `write su launch artifacts: ${e?.message}` }, 500);
+    }
+
+    // Materialize saved prompts so the session starts with the workspace's
+    // `/name` commands (+ the harness's, when this su session is harness-
+    // scoped) available in this client (plan saved-prompts-cross-client).
+    // Codex needs them in its ephemeral home; claude/omp read .claude/commands.
+    // Best-effort — never block a launch.
+    try {
+      if (agent === 'codex' && codexHome) {
+        await materializeCodexPrompts(codexHome, workspace, harnessSlug);
+      } else {
+        await materializeWorkspacePrompts(workspace);
+        if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
+      }
+    } catch (e: any) {
+      // stderr (not console.*) so the vitest fail-on-console guard stays green.
+      process.stderr.write(`[bootstrap-su] saved-prompts materialize failed (non-fatal): ${e?.message}\n`);
+    }
+
+    // omp loads the coordination extension via -e for lock enforcement.
+    const coordExt = resolveInstallPaths(homedir()).extensionPath;
+    const coordExtPath = existsSync(coordExt) ? coordExt : null;
+
+    const envelopeEnv: Record<string, string> = {
+      ...envelope.env,
+      PAPERCUSP_AGENT: agent,
+      PAPERCUSP_SID: sid,
+      ...(codexHome ? { CODEX_HOME: codexHome } : {}),
+      ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
+    };
+
+    const result: BootstrapSuResult = {
+      status: 'ok',
+      sessionId,
+      nativeSessionId,
+      agent,
+      workspaceId: workspace,
+      cwd,
+      harnessSlug,
+      planSlug,
+      promptFile,
+      codexHome,
+      coordExtPath,
+      envelopeEnv,
+    };
+    return jsonRes(result);
+  },
+});
+
+export default [options, optionsForOptions, post, optionsGet];

@@ -153,6 +153,26 @@ location is transparent. When you make a lib generic — or notice domain
 coupling leaking into one — add/adjust it in the generator and re-run. See
 `papercusp-systems-abstraction-2026-05-29`.
 
+**Generic-first — write it in `libs/generic` from the start, don't migrate it later.**
+A genuinely domain-free algorithm (a textbook concurrency / distributed-systems /
+data-structure core: a supervision tree, fencing tokens, a topological sort, a
+token-bucket rate limiter, φ-accrual, a saga…) **must START as `libs/generic/<name>`
+behind a `configure*()`/port seam** — not written inside `packages/operator-core/lib`
+to be extracted in a later pass. The 2026-06-05 audit (`generalize-libs-to-generic-2026-06-05`)
+found a large batch of exactly that debt and had to migrate ~12 cores out of the app;
+the discipline below stops it re-accruing:
+
+- **`npm run lint:generic-first`** (advisory; `:all` for a full-tree sweep) flags a
+  *substantial, zero-coupling* file that *names a generic CS concept* and landed in
+  `operator-core/lib` / `apps/operator/lib`, and nudges it toward `libs/generic`. It's
+  informational by default (like `lint:knip` — it advises, never gates), since the
+  signal is a heuristic. Both signals are required on purpose: structural decoupling
+  alone flags ~200 files, so the concept name is the precision filter.
+- A genuinely app-local file whose concept keyword is incidental (e.g. "backpressure"
+  describing browser audio buffering) goes in the `ALLOW` set in
+  `scripts/check-generic-first.mjs` — don't silence the whole lint.
+- The seam pattern itself: `/internal/docs/agent-insights/generalizing-a-lib-host-seam-pattern`.
+
 ## This app is in testing — there are no users yet
 
 There is no production. **Don't defer fixes for "let's see how it fares in production first"** — there's nothing to fare in. That gives us the luxury to break things continuously until the app is right. Pick the right fix *now*; don't ship awkward compromises to preserve compatibility with a future you haven't built yet.
@@ -354,9 +374,9 @@ Practical implications when writing code today:
   (`~/.papercusp-workspaces/registry.json`, `db-encryption-key`).
 - Postgres's own data files (`pglite-data/`, `embedded-pg-data/`).
 - Code, scripts, templates, snapshots — files that ARE the spec.
-- Harness contract artifacts in `<harness>/.harness/*` — read by tools
+- Harness contract artifacts in `<harness>/.papercusp/*` — read by tools
   running inside the harness; the file IS the contract surface.
-- Append-only logs at high volume (`.harness/action-runs/<run>.log`)
+- Append-only logs at high volume (`.papercusp/action-runs/<run>.log`)
   where SQL log tables would dwarf the actual state.
 - Per-process locks via O_EXCL semantics (legitimate FS atomicity).
 - Plugin-sandbox storage (the plugin host exposes a virtual FS to plugins
@@ -561,7 +581,7 @@ area needs no registry edit.
 test matches no registry glob (i.e. would be invisible in the tab). If it
 fires for a brand-new subsystem, widen a domain (or add one) in
 `apps/operator/lib/testing-domains-registry.ts`, then **`npm run
-gen:contract`** to regenerate `.harness/testing-domains.json` (the `/adv`
+gen:contract`** to regenerate `.papercusp/testing-domains.json` (the `/adv`
 tab's contract — generated from the registry, never hand-edited;
 `gen:contract:check` gates it in CI). Live smokes that need a running
 operator are surfaced as `node`/`shell` runners on a domain section, not

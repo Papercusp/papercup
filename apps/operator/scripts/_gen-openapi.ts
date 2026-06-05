@@ -5,8 +5,8 @@
  */
 import { writeFileSync } from 'node:fs';
 import { assembleOpenApiDocument, listAllProjectedTools } from '@papercusp/agent-mcp';
-import { allRouteFragments } from '../lib/endpoint-route/openapi.ts';
-import '../lib/agent-tools/index.ts';
+import { allRouteFragments } from '@papercusp/operator-core/lib/endpoint-route/openapi.ts';
+import '@papercusp/operator-core/lib/agent-tools/index.ts';
 
 const doc = assembleOpenApiDocument(listAllProjectedTools(), {
   title: 'Papercusp API',

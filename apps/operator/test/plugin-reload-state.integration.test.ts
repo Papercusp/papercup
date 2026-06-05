@@ -9,7 +9,7 @@ import {
   popPluginReloadState,
   clearPluginReloadState,
   MAX_STATE_BYTES,
-} from '../lib/plugin-reload-state';
+} from '@papercusp/operator-core/lib/plugin-reload-state';
 
 let sql: postgres.Sql;
 

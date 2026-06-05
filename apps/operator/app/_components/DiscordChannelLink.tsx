@@ -4,7 +4,7 @@
  * DiscordChannelLink — Phase 9 P-054a.
  *
  * Renders a Discord deep-link button when the harness has a
- * `discord_channel_url` set in .harness/config.json.
+ * `discord_channel_url` set in .papercusp/config.json.
  *
  * Click → discord:// deep-link; falls back to HTTPS in a new tab
  * if the deep-link protocol is not registered (detected via

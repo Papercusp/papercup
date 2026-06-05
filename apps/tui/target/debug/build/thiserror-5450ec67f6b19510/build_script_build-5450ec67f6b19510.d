@@ -1,5 +1,0 @@
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/debug/build/thiserror-5450ec67f6b19510/build_script_build-5450ec67f6b19510.d: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/build.rs
-
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/debug/build/thiserror-5450ec67f6b19510/build_script_build-5450ec67f6b19510: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/build.rs
-
-/home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/build.rs:

@@ -9,6 +9,10 @@ export interface Env {
   // Bindings
   DB: D1Database;
   COUNTERS: KVNamespace;
+  /** Snapshot tarball blob store (revive-cupboard-distribution, snapshot facet).
+   *  Content-addressed objects at `snapshots/<sha256>.tar.gz`; the D1 listing row
+   *  is metadata-only and points here via tarball_r2_key. */
+  SNAPSHOTS: R2Bucket;
 
   // Secrets
   GITHUB_CLIENT_ID: string;

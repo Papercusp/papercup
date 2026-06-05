@@ -13,7 +13,7 @@ import {
   makePluginKv,
   DEFAULT_MAX_BYTES_PER_KEY,
   DEFAULT_MAX_BYTES_PER_PLUGIN,
-} from '../lib/plugin-kv';
+} from '@papercusp/operator-core/lib/plugin-kv';
 import { KvQuotaError } from '@papercusp/plugin-sdk';
 
 let sql: postgres.Sql;

@@ -1,0 +1,204 @@
+/**
+ * Cupboard proxy routes (Phase 9 P-052 browse + D-002 operator moderation).
+ *
+ * Thin proxy from the operator to the external Cupboard server.
+ * URL resolved from NEXT_PUBLIC_CUPBOARD_URL env (falls back to
+ * PAPERCUSP_CUPBOARD_URL). When unset, returns empty list / 503.
+ *
+ *   GET  /api/cupboard/listings                      — list + search (public)
+ *   GET  /api/cupboard/listings/:id                  — detail (public)
+ *   GET  /api/cupboard/admin/reports                 — operator: list reports
+ *   POST /api/cupboard/admin/reports/:id/resolve     — operator: resolve a report
+ *   POST /api/cupboard/admin/harnesses/:id/unlist    — operator: takedown
+ *
+ * The /admin/* routes add the maintainer's gh-token server-side (the browser
+ * never holds it), exactly like the publish proxy — the Cupboard worker then
+ * gates on its CUPBOARD_OPERATOR_GITHUB_IDS allowlist.
+ */
+
+import { defineTool } from '@papercusp/agent-mcp';
+import { getGhAuthToken } from '../../identity/gh-token';
+import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
+
+// Base URL for the external Cupboard worker. Single source of truth is
+// resolveCupboardBaseUrl() (PAPERCUSP_CUPBOARD_URL or the canonical default) —
+// the same resolver the publish + admin proxies use. NOTE: the systemd dev unit
+// sources .env.local, NOT ~/.papercusp/env, so reading process.env directly here
+// (the old behavior) yielded an empty URL and a silently-empty listing
+// (`cupboard_url_missing`); the resolver's hardcoded default fixes that.
+
+// ─── GET /cupboard/listings ───────────────────────────────────────
+
+const listCupboardListings = defineTool({
+  method: 'GET',
+  path: '/cupboard/listings',
+  auth: 'public',
+  async handler(req) {
+    const url = new URL(req.url);
+    // The Cupboard worker serves the generalized /listings surface (kind-aware,
+    // migration 004) and returns { results, next_cursor }. We forward all query
+    // params verbatim — incl. `kind` (harness|blueprint|snapshot|plugin|all) and
+    // `project` (project_ref) — plus q / claim / cursor / limit.
+    const base = resolveCupboardBaseUrl();
+    const upstream = new URL(`${base}/listings`);
+    url.searchParams.forEach((v, k) => upstream.searchParams.set(k, v));
+
+    try {
+      let res = await fetch(upstream.toString(), {
+        headers: { 'User-Agent': 'papercusp-operator/1' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      // Transitional: a worker not yet on migration 004 has no /listings — fall
+      // back to /harnesses (harness-kind only). Self-heals once the worker ships
+      // /listings; until then, non-harness kinds simply return empty (none exist
+      // on the old worker anyway).
+      if (res.status === 404) {
+        const fallback = new URL(`${base}/harnesses`);
+        url.searchParams.forEach((v, k) => {
+          if (k !== 'kind' && k !== 'project') fallback.searchParams.set(k, v);
+        });
+        res = await fetch(fallback.toString(), {
+          headers: { 'User-Agent': 'papercusp-operator/1' },
+          signal: AbortSignal.timeout(10_000),
+        });
+      }
+      if (!res.ok) {
+        return Response.json(
+          { error: `cupboard: HTTP ${res.status}` },
+          { status: res.status },
+        );
+      }
+      const data = await res.json();
+      // Worker shape is { results: [...] }; tolerate legacy { harnesses }/{ listings }.
+      const listings = data?.results ?? data?.harnesses ?? data?.listings ?? [];
+      return Response.json({ listings });
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 503 });
+    }
+  },
+});
+
+// ─── GET /cupboard/listings/:id ──────────────────────────────────
+
+const getCupboardListing = defineTool({
+  method: 'GET',
+  path: '/cupboard/listings/:id',
+  auth: 'public',
+  async handler(_req, ctx) {
+    const id = ctx.params.id as string;
+    const base = resolveCupboardBaseUrl();
+    try {
+      let res = await fetch(`${base}/listings/${encodeURIComponent(id)}`, {
+        headers: { 'User-Agent': 'papercusp-operator/1' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      // Transitional fallback for a pre-migration-004 worker (see list handler).
+      if (res.status === 404) {
+        res = await fetch(`${base}/harnesses/${encodeURIComponent(id)}`, {
+          headers: { 'User-Agent': 'papercusp-operator/1' },
+          signal: AbortSignal.timeout(10_000),
+        });
+      }
+      if (!res.ok) {
+        return Response.json({ error: `cupboard: HTTP ${res.status}` }, { status: res.status });
+      }
+      const data = await res.json();
+      // Worker returns the bare listing row; tolerate { harness }/{ listing } wrappers.
+      const listing = data?.harness ?? data?.listing ?? data;
+      return Response.json({ listing });
+    } catch (err) {
+      return Response.json({ error: String(err) }, { status: 503 });
+    }
+  },
+});
+
+// ─── Operator moderation proxy (/cupboard/admin/*) ───────────────────
+// Adds the maintainer's gh-token server-side (browser never holds it), like
+// the publish proxy; the Cupboard worker enforces the operator allowlist.
+
+async function forwardToCupboardAdmin(
+  pathAndQuery: string,
+  init: { method: 'GET' | 'POST'; body?: string },
+): Promise<Response> {
+  const tokenRes = await getGhAuthToken();
+  if (tokenRes.kind !== 'ok') {
+    return Response.json({ error: 'gh_auth_required', detail: tokenRes.error.kind }, { status: 401 });
+  }
+  const url = `${resolveCupboardBaseUrl()}${pathAndQuery}`;
+  let upstream: Response;
+  try {
+    upstream = await fetch(url, {
+      method: init.method,
+      headers: {
+        Authorization: `Bearer ${tokenRes.token}`,
+        'User-Agent': 'papercusp-operator-cupboard-proxy',
+        ...(init.body != null ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: init.body,
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (e) {
+    return Response.json(
+      { error: 'cupboard_unreachable', detail: (e as Error).message.slice(0, 200) },
+      { status: 502 },
+    );
+  }
+  const text = await upstream.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return Response.json(
+      { error: 'cupboard_bad_response', detail: text.slice(0, 200), upstream_status: upstream.status },
+      { status: 502 },
+    );
+  }
+  return Response.json(parsed, { status: upstream.status });
+}
+
+const listCupboardReports = defineTool({
+  method: 'GET',
+  path: '/cupboard/admin/reports',
+  auth: 'public',
+  async handler(req) {
+    const status = new URL(req.url).searchParams.get('status');
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return forwardToCupboardAdmin(`/admin/reports${qs}`, { method: 'GET' });
+  },
+});
+
+const resolveCupboardReport = defineTool({
+  method: 'POST',
+  path: '/cupboard/admin/reports/:id/resolve',
+  auth: 'public',
+  async handler(req, ctx) {
+    const id = ctx.params.id as string;
+    const body = await req.text();
+    return forwardToCupboardAdmin(`/admin/reports/${encodeURIComponent(id)}/resolve`, {
+      method: 'POST',
+      body: body || '{}',
+    });
+  },
+});
+
+const unlistCupboardHarness = defineTool({
+  method: 'POST',
+  path: '/cupboard/admin/harnesses/:id/unlist',
+  auth: 'public',
+  async handler(req, ctx) {
+    const id = ctx.params.id as string;
+    const body = await req.text();
+    return forwardToCupboardAdmin(`/admin/harnesses/${encodeURIComponent(id)}/unlist`, {
+      method: 'POST',
+      body: body || '{}',
+    });
+  },
+});
+
+export default [
+  listCupboardListings,
+  getCupboardListing,
+  listCupboardReports,
+  resolveCupboardReport,
+  unlistCupboardHarness,
+];

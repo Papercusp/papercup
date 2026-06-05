@@ -1,0 +1,661 @@
+/**
+ * work-items — the UNIFIED work-item surface (plan unify-work-items-2026-06-04).
+ *
+ * One `work_item` TYPE discriminated by `kind` (D-001). This module is the canonical
+ * code-level interface (D-007: "the type is the API, the table is an implementation
+ * detail"); it is a facade over the two per-kind tables the codebase already has
+ * (D-010=(b) — per-kind tables behind a unifying surface):
+ *
+ *   feature-family kinds {feature, research-task, chunk} → harness_features_consolidated
+ *   issue-family    kinds {bug, change}                   → engineer_issues
+ *
+ * Reads MERGE across both tables; writes DISPATCH by kind. New ids are the
+ * kind-independent WI-NNN scheme (D-008, allocated from harness_shared.work_item_seq
+ * via next_work_item_id()); existing F-NNN / EI-NNN rows keep their ids (the bulk
+ * in-place re-id is a supervised, pipeline-drained follow-on — see the plan Risks).
+ *
+ * Capabilities (D-003) ride the same coord substrate stores issues use — but keyed
+ * on the per-family ObjectRef so the unified surface operates on the SAME coord rows
+ * as features:* / issues:* (a true facade, not a parallel store):
+ *   - issue-family  → ObjectRef {kind:'issue',   ref: id}                  (issues-engineer.ts)
+ *   - feature-family→ ObjectRef {kind:'feature',  ref:'<harness>#<id>'}     (issue-blocks-merge.featureRef)
+ * Cross-kind blocking (a bug blocks a feature) is a plain coord_links rel='blocks'
+ * edge between the two ObjectRefs (D-003) — the substrate keys on (kind, ref), not
+ * the physical table, so it works across kinds for free.
+ *
+ * Fan-out: issue-family writes fan out synchronously via issues-engineer.deliver();
+ * feature-family writes fan out + federate via the hfc capture_substrate_outbox CDC
+ * trigger (already wired) — so neither path needs an extra fan-out call here.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  PgTaggableStore,
+  PgThreadStore,
+  PgEntitySubscriptionStore,
+  PgLinkStore,
+  type ObjectRef,
+  type DeliveryMode,
+  type ThreadPostRow,
+} from '@papercusp/coordination/capabilities';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { activeWorkspaceId } from './workspace-registry';
+import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
+import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
+import { fanoutForObject } from './sync/hyperbee/fanout-projection';
+import {
+  ISSUE_KIND,
+  type IssueKind,
+  type IssueStoreKind,
+  type IssueState,
+  type IssueSeverity,
+  createIssue,
+  getIssue,
+  getIssueDetail,
+  listIssues,
+  setIssueState,
+  claimIssue,
+  releaseIssue,
+  linkIssue,
+  unlinkIssue,
+  tagIssue,
+  untagIssue,
+  subscribeIssue,
+  commentIssue,
+  searchIssues,
+  promoteIssue,
+  type EngineerIssue,
+} from './issues-engineer';
+
+// ── Kinds ───────────────────────────────────────────────────────────────────────
+export type FeatureFamilyKind = 'feature' | 'research-task' | 'chunk';
+export type WorkItemKind = FeatureFamilyKind | IssueStoreKind;
+export type WorkItemFamily = 'feature' | 'issue';
+
+export const FEATURE_FAMILY_KINDS: readonly FeatureFamilyKind[] = ['feature', 'research-task', 'chunk'];
+// `task` (collapse-delegate D-001) is an issue-family work_item kind — the operator's
+// delegated-work record. It lives in engineer_issues alongside bug|change but is
+// excluded from the issues:* surface (listIssues default).
+export const ISSUE_FAMILY_KINDS: readonly IssueStoreKind[] = ['bug', 'change', 'task'];
+export const WORK_ITEM_KINDS: readonly WorkItemKind[] = [...FEATURE_FAMILY_KINDS, ...ISSUE_FAMILY_KINDS];
+
+export function familyOf(kind: string): WorkItemFamily {
+  return kind === 'bug' || kind === 'change' || kind === 'task' ? 'issue' : 'feature';
+}
+export function isWorkItemKind(k: string): k is WorkItemKind {
+  return (WORK_ITEM_KINDS as readonly string[]).includes(k);
+}
+
+// ── Unified shape ─────────────────────────────────────────────────────────────────
+export interface WorkItem {
+  id: string;
+  kind: WorkItemKind;
+  family: WorkItemFamily;
+  harness: string | null;
+  title: string;
+  summary: string;
+  /** Kind-specific lifecycle state (feature: status; issue: open|resolved|closed). */
+  state: string;
+  /** Claimable (D-003): feature → taken_by; issue → assignee. */
+  assignee: string | null;
+  /** Durable delegator (collapse-delegate D-002): who created+assigned it.
+   *  Issue-family only today (feature-family has no assigned_by column). */
+  assignedBy: string | null;
+  /** Issue-family only. */
+  severity: string | null;
+  /** Parent work-item id (a chunk's parent, D-004). */
+  parent: string | null;
+  payload: unknown | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ── Capability stores (shared coord workspace, mirrors issues-engineer) ────────────
+const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, workspaceId: DEFAULT_COORD_WORKSPACE };
+const tags = new PgTaggableStore(coordOpts);
+const threads = new PgThreadStore(coordOpts);
+const subs = new PgEntitySubscriptionStore(coordOpts);
+const links = new PgLinkStore(coordOpts);
+
+/** The ObjectRef a work-item presents to the coord substrate (per family). */
+export function workItemObjectRef(wi: Pick<WorkItem, 'family' | 'harness' | 'id'>): ObjectRef {
+  if (wi.family === 'issue') return { kind: ISSUE_KIND, ref: wi.id };
+  // feature-family: harness-qualified ref (a bare id is not unique across harnesses).
+  return { kind: FEATURE_KIND, ref: featureRef(wi.harness ?? '', wi.id) };
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+function tsIso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'number') return new Date(v).toISOString();
+  return String(v ?? '');
+}
+
+/** Allocate the next kind-independent WI-NNN id (D-008). */
+export async function nextWorkItemId(): Promise<string> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: string }[]>`SELECT harness_shared.next_work_item_id() AS id`;
+  return rows[0].id;
+}
+
+function issueToWorkItem(i: EngineerIssue): WorkItem {
+  return {
+    id: i.id,
+    kind: i.kind,
+    family: 'issue',
+    harness: i.scope.startsWith('harness:') ? i.scope.slice('harness:'.length) : null,
+    title: i.title,
+    summary: i.body,
+    state: i.state,
+    assignee: i.assignee,
+    assignedBy: i.assignedBy,
+    severity: i.severity,
+    parent: null,
+    payload: i.payload ?? null,
+    createdAt: i.createdAt,
+    updatedAt: i.updatedAt,
+  };
+}
+
+interface FeatureRowDb {
+  feature_id: string;
+  item_kind: string | null;
+  harness_slug: string;
+  title: string | null;
+  summary: string | null;
+  status: string | null;
+  taken_by: string | null;
+  parent_id: string | null;
+  payload: unknown;
+  created_ts: unknown;
+  updated_ts: unknown;
+}
+function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
+  return {
+    id: r.feature_id,
+    kind: (r.item_kind as FeatureFamilyKind) || 'feature',
+    family: 'feature',
+    harness: r.harness_slug,
+    title: r.title ?? '',
+    summary: r.summary ?? '',
+    state: r.status ?? 'todo',
+    assignee: r.taken_by,
+    assignedBy: null, // feature-family has no assigned_by column (collapse-delegate D-002)
+    severity: null,
+    parent: r.parent_id,
+    payload: r.payload ?? null,
+    createdAt: tsIso(r.created_ts),
+    updatedAt: tsIso(r.updated_ts),
+  };
+}
+
+const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
+  parent_id, payload, created_ts, updated_ts`;
+
+// ── Reads ─────────────────────────────────────────────────────────────────────────
+export interface ListWorkItemsFilter {
+  harness?: string;
+  kind?: WorkItemKind;
+  state?: string;
+  /** Filter to items assigned to this agent (feature → taken_by; issue → assignee). */
+  assignee?: string;
+  /** Filter to items this owner delegated (collapse-delegate D-002). Issue-family only. */
+  assignedBy?: string;
+  /** Return children of this parent id (a chunk listing). Default: top-level only. */
+  parent?: string;
+  /** Include child items (chunks) in the default list. Default false (D-004). */
+  includeChildren?: boolean;
+  limit?: number;
+}
+
+/** Cross-kind list. Default = top-level items only (chunks surface under their parent, D-004). */
+export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
+  const { sql } = getOrgPg();
+  const limit = Math.min(filter.limit ?? 100, 500);
+  // assignedBy is an issue-family-only concept, so it excludes all feature rows.
+  const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
+  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const out: WorkItem[] = [];
+
+  if (wantFeature) {
+    const ws = activeWorkspaceId();
+    const rows = await sql<FeatureRowDb[]>`
+      SELECT ${sql.unsafe(FEATURE_COLS)}
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind IN ('feature', 'research-task', 'chunk')
+         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`workspace_id = ${ws}`}
+         AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
+         AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
+         AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
+         AND ${
+           filter.parent
+             ? sql`parent_id = ${filter.parent}`
+             : filter.includeChildren
+               ? sql`TRUE`
+               : sql`(parent_id IS NULL OR parent_id = '')`
+         }
+       ORDER BY updated_ts DESC NULLS LAST
+       LIMIT ${limit}`;
+    out.push(...rows.map(featureRowToWorkItem));
+  }
+
+  // Issues are always top-level (no parent edge today), so a `parent` filter excludes them.
+  if (wantIssue && !filter.parent) {
+    const issues = await listIssues({
+      // A specific issue-family kind, else ALL issue-family kinds (incl. `task`) — the
+      // unified surface includes delegated tasks; the issues:* surface (its own default)
+      // does not.
+      kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
+      kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
+      scope: filter.harness ? `harness:${filter.harness}` : undefined,
+      state: (filter.state as IssueState) || undefined,
+      assignee: filter.assignee,
+      assignedBy: filter.assignedBy,
+      limit,
+    });
+    out.push(...issues.map(issueToWorkItem));
+  }
+
+  out.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+  return out.slice(0, limit);
+}
+
+/** Resolve one work-item by id, searching both kind-tables (ids are disjoint across families). */
+export async function getWorkItem(id: string, harness?: string): Promise<WorkItem | null> {
+  // Issue-family ids (EI-* or a WI-* that lives in engineer_issues) are globally unique.
+  const issue = await getIssue(id);
+  if (issue) return issueToWorkItem(issue);
+
+  const { sql } = getOrgPg();
+  const rows = await sql<FeatureRowDb[]>`
+    SELECT ${sql.unsafe(FEATURE_COLS)}
+      FROM harness_shared.harness_features_consolidated
+     WHERE feature_id = ${id}
+       AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
+     ORDER BY updated_ts DESC NULLS LAST
+     LIMIT 1`;
+  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+export interface WorkItemDetail extends WorkItem {
+  topics: string[];
+  posts: ThreadPostRow[];
+  /** Edges OUT of this work-item (e.g. blocks → feature|plan_item), excluding tag edges. */
+  links: { rel: string; dst: ObjectRef }[];
+}
+
+/** A work-item plus its coord-substrate detail (topics, thread posts, outgoing links). */
+export async function getWorkItemDetail(id: string, harness?: string): Promise<WorkItemDetail | null> {
+  const wi = await getWorkItem(id, harness);
+  if (!wi) return null;
+  if (wi.family === 'issue') {
+    const d = await getIssueDetail(id);
+    return { ...wi, topics: d?.topics ?? [], posts: d?.posts ?? [], links: d?.links ?? [] };
+  }
+  const ref = workItemObjectRef(wi);
+  const topics = await tags.listTags(ref);
+  const thread = await threads.getThreadByParent(ref);
+  const posts = thread ? await threads.listPosts(thread.thread_id) : [];
+  const out = await links.listOut(ref);
+  return { ...wi, topics, posts, links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })) };
+}
+
+/** Cross-kind full-text search over both kind-tables (parity with issues:search). */
+export async function searchWorkItems(query: string, opts: { harness?: string; kind?: WorkItemKind; limit?: number } = {}): Promise<WorkItem[]> {
+  const limit = Math.min(opts.limit ?? 50, 200);
+  const wantFeature = !opts.kind || familyOf(opts.kind) === 'feature';
+  const wantIssue = !opts.kind || familyOf(opts.kind) === 'issue';
+  const out: WorkItem[] = [];
+
+  if (wantIssue) {
+    let issues = (await searchIssues(query, limit)).map(issueToWorkItem);
+    if (opts.harness) issues = issues.filter((w) => w.harness === opts.harness);
+    if (opts.kind && familyOf(opts.kind) === 'issue') issues = issues.filter((w) => w.kind === opts.kind);
+    out.push(...issues);
+  }
+
+  if (wantFeature) {
+    const { sql } = getOrgPg();
+    const rows = await sql<FeatureRowDb[]>`
+      SELECT ${sql.unsafe(FEATURE_COLS)}
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind IN ('feature', 'research-task', 'chunk')
+         AND _search @@ websearch_to_tsquery('english', ${query})
+         AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`workspace_id = ${activeWorkspaceId()}`}
+         AND ${opts.kind && familyOf(opts.kind) === 'feature' ? sql`item_kind = ${opts.kind}` : sql`TRUE`}
+       ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
+       LIMIT ${limit}`;
+    out.push(...rows.map(featureRowToWorkItem));
+  }
+
+  return out.slice(0, limit);
+}
+
+// ── Writes ─────────────────────────────────────────────────────────────────────────
+export interface CreateWorkItemInput {
+  kind: WorkItemKind;
+  title: string;
+  /** Free-text body/summary (issue body, feature summary). */
+  summary?: string;
+  harness?: string;
+  severity?: IssueSeverity; // issue-family
+  parent?: string; // feature-family (a chunk's parent)
+  payload?: unknown; // kind-specific data (feature-family + issue-family `task`)
+  topics?: string[];
+  createdBy?: string;
+  /** Assign at creation (issue-family). collapse-delegate: the delegate session. */
+  assignee?: string;
+  /** Durable delegator (collapse-delegate D-002). Issue-family. */
+  assignedBy?: string;
+}
+
+/** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
+export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
+  if (!isWorkItemKind(input.kind)) throw new Error(`unknown work_item kind '${input.kind}'`);
+  const id = await nextWorkItemId();
+
+  if (familyOf(input.kind) === 'issue') {
+    const issue = await createIssue({
+      id,
+      kind: input.kind as IssueStoreKind,
+      title: input.title,
+      body: input.summary ?? '',
+      severity: input.severity,
+      scope: input.harness ? `harness:${input.harness}` : 'operator',
+      topics: input.topics,
+      createdBy: input.createdBy,
+      assignee: input.assignee,
+      assignedBy: input.assignedBy,
+      payload: input.payload,
+    });
+    return issueToWorkItem(issue);
+  }
+
+  // feature-family — harness-scoped row in harness_features_consolidated.
+  if (!input.harness) throw new Error(`work_item kind '${input.kind}' requires a harness`);
+  const { sql } = getOrgPg();
+  const now = Date.now();
+  // workspace_id is intentionally omitted: the BEFORE-INSERT fill_ws_features trigger
+  // fills it from the harness's project row (fallback 'default'). Positional $N::jsonb
+  // is the operator's proven jsonb write on the org pool (prepare:false mis-binds sql.json()).
+  await sql.unsafe(
+    `INSERT INTO harness_shared.harness_features_consolidated (
+       harness_slug, feature_id, title, summary, status, attempts,
+       item_kind, payload, parent_id, needs_design, needs_human_review, ts, created_ts, updated_ts
+     ) VALUES (
+       $1, $2, $3, $4, 'todo', 0,
+       $5, $6::jsonb, $7, FALSE, FALSE, $8, $9, $10
+     )
+     ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
+    [
+      input.harness,
+      id,
+      input.title,
+      input.summary ?? null,
+      input.kind,
+      input.payload != null ? JSON.stringify(input.payload) : null,
+      input.parent ?? null,
+      now,
+      now,
+      now,
+    ],
+  );
+  const wi: WorkItem = {
+    id,
+    kind: input.kind,
+    family: 'feature',
+    harness: input.harness,
+    title: input.title,
+    summary: input.summary ?? '',
+    state: 'todo',
+    assignee: null,
+    assignedBy: null,
+    severity: null,
+    parent: input.parent ?? null,
+    payload: input.payload ?? null,
+    createdAt: tsIso(now),
+    updatedAt: tsIso(now),
+  };
+  // Capabilities: tag topics + auto-subscribe the creator (the hfc CDC trigger handles
+  // the change fan-out + federation, so no explicit deliver() here).
+  for (const topic of input.topics ?? []) {
+    await tags.addTag(workItemObjectRef(wi), topic, { created_by: input.createdBy, created_ts: nowIso() });
+  }
+  if (input.createdBy) {
+    await subs.subscribe({
+      subscriber_id: input.createdBy,
+      target_kind: 'object',
+      target_ref: `${FEATURE_KIND}:${workItemObjectRef(wi).ref}`,
+      delivery_mode: 'full',
+      created_ts: nowIso(),
+    });
+  }
+  return wi;
+}
+
+/** Lifecycle.setState — feature → status; issue → state. */
+export async function setWorkItemState(id: string, state: string, opts: { harness?: string; by?: string } = {}): Promise<WorkItem | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family === 'issue') {
+    const updated = await setIssueState(id, state as IssueState, opts.by);
+    return updated ? issueToWorkItem(updated) : null;
+  }
+  const { sql } = getOrgPg();
+  const rows = await sql<FeatureRowDb[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET status = ${state}, updated_ts = ${Date.now()}
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+/**
+ * Claimable.claim — the tuple-space atomic `in` for a SPECIFIC item (feature → taken_by;
+ * issue → assignee). Atomic compare-and-claim (fleet-as-supervised-blackboard D-004):
+ * the feature-family UPDATE only succeeds when the item is unclaimed OR already held by
+ * this same assignee (idempotent). A competing claim on a held item gets null — exactly
+ * one agent wins, instead of the old last-write-wins overwrite where both "won".
+ */
+export async function claimWorkItem(id: string, assignee: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family === 'issue') {
+    const updated = await claimIssue(id, assignee);
+    return updated ? issueToWorkItem(updated) : null;
+  }
+  const { sql } = getOrgPg();
+  const rows = await sql<FeatureRowDb[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET taken_by = ${assignee}, taken_at = now(), updated_ts = ${Date.now()}
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+       AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee})
+    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+export interface ClaimNextFilter {
+  harness: string;
+  assignee: string;
+  /** Restrict to one feature-family kind (default: any feature-family). */
+  kind?: FeatureFamilyKind;
+  /** Claimable states (default ['todo']). */
+  states?: string[];
+}
+
+/**
+ * The tuple-space associative `in` (D-004) + work-stealing claim (D-007): atomically
+ * claim the OLDEST unclaimed feature-family work-item matching the template, via
+ * `SELECT … FOR UPDATE SKIP LOCKED`. Competing consumers each grab a DIFFERENT row
+ * (skip-locked, no blocking, no double-claim); ordering by created_ts ASC steals the
+ * most-starved tail of the queue, which balances load AND prevents old-item starvation.
+ * Returns the claimed item, or null when nothing matches.
+ */
+export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkItem | null> {
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const states = filter.states ?? ['todo'];
+  const rows = await sql<FeatureRowDb[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET taken_by = ${filter.assignee}, taken_at = now(), updated_ts = ${Date.now()}
+     WHERE (harness_slug, feature_id) = (
+       SELECT harness_slug, feature_id
+         FROM harness_shared.harness_features_consolidated
+        WHERE harness_slug = ${filter.harness}
+          AND workspace_id = ${ws}
+          AND item_kind IN ('feature', 'research-task', 'chunk')
+          AND ${filter.kind ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
+          AND (taken_by IS NULL OR taken_by = '')
+          AND status = ANY(${states}::text[])
+        ORDER BY created_ts ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+     )
+    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+export interface WorkItemObservation {
+  item: WorkItem;
+  /** Unclaimed and so available to claim. */
+  available: boolean;
+  claimedBy: string | null;
+}
+
+/**
+ * The tuple-space `rd` (D-004): OBSERVE a work-item without claiming it — the read
+ * primitive, kept DISTINCT from the `in` of claim. Reports claimability so a self-
+ * selecting agent can decide before taking. (list/get are the bulk rd surface; this is
+ * the explicit single-item observe-with-claimability.)
+ */
+export async function observeWorkItem(id: string, opts: { harness?: string } = {}): Promise<WorkItemObservation | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  return { item: wi, available: !wi.assignee, claimedBy: wi.assignee };
+}
+
+export async function releaseWorkItem(id: string, opts: { harness?: string } = {}): Promise<WorkItem | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  if (wi.family === 'issue') {
+    const updated = await releaseIssue(id);
+    return updated ? issueToWorkItem(updated) : null;
+  }
+  const { sql } = getOrgPg();
+  const rows = await sql<FeatureRowDb[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET taken_by = NULL, taken_at = NULL, updated_ts = ${Date.now()}
+     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+}
+
+/** Linkable.link — an edge from this work-item to a target ObjectRef (rel blocks|relates|duplicates|fixes|…). */
+export async function linkWorkItem(id: string, dst: ObjectRef, rel: string, opts: { harness?: string; by?: string } = {}): Promise<{ ok: true } | { error: string }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (dst.kind === FEATURE_KIND && !isQualifiedFeatureRef(dst.ref)) {
+    return { error: `feature target ref must be '<harness>#<id>' (got '${dst.ref}')` };
+  }
+  if (wi.family === 'issue') {
+    await linkIssue(id, dst, rel, opts.by);
+  } else {
+    await links.link(workItemObjectRef(wi), dst, rel, { created_by: opts.by, created_ts: nowIso() });
+  }
+  return { ok: true };
+}
+
+export async function unlinkWorkItem(id: string, dst: ObjectRef, rel: string, opts: { harness?: string } = {}): Promise<{ ok: true } | { error: string }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (wi.family === 'issue') await unlinkIssue(id, dst, rel);
+  else await links.unlink(workItemObjectRef(wi), dst, rel);
+  return { ok: true };
+}
+
+/** Resolve a target work-item id to its coord ObjectRef (for cross-kind linking). */
+export async function resolveWorkItemRef(targetId: string, harness?: string): Promise<ObjectRef | null> {
+  const wi = await getWorkItem(targetId, harness);
+  return wi ? workItemObjectRef(wi) : null;
+}
+
+/** Taggable.addTag / removeTag (topic tags via coord_links rel='tagged'). */
+export async function tagWorkItem(id: string, topic: string, opts: { harness?: string; by?: string } = {}): Promise<{ ok: true } | { error: string }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (wi.family === 'issue') await tagIssue(id, topic, opts.by);
+  else await tags.addTag(workItemObjectRef(wi), topic, { created_by: opts.by, created_ts: nowIso() });
+  return { ok: true };
+}
+export async function untagWorkItem(id: string, topic: string, opts: { harness?: string } = {}): Promise<{ ok: true } | { error: string }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (wi.family === 'issue') await untagIssue(id, topic);
+  else await tags.removeTag(workItemObjectRef(wi), topic);
+  return { ok: true };
+}
+
+/** Subscribable.subscribe. */
+export async function subscribeWorkItem(subscriberId: string, id: string, mode: DeliveryMode = 'full', opts: { harness?: string } = {}): Promise<{ ok: true } | { error: string }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (wi.family === 'issue') {
+    await subscribeIssue(subscriberId, id, mode);
+  } else {
+    await subs.subscribe({
+      subscriber_id: subscriberId,
+      target_kind: 'object',
+      target_ref: `${FEATURE_KIND}:${workItemObjectRef(wi).ref}`,
+      delivery_mode: mode,
+      created_ts: nowIso(),
+    });
+  }
+  return { ok: true };
+}
+
+/** Threadable.addPost (D-003) — comment on a work-item (creates the thread on first post). */
+export async function commentWorkItem(id: string, body: string, authorId?: string, opts: { harness?: string } = {}): Promise<ThreadPostRow | null> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return null;
+  // issue-family: commentIssue already creates the thread + fires the issue_commented fan-out.
+  if (wi.family === 'issue') return commentIssue(id, body, authorId);
+  // feature-family: thread on the feature ObjectRef + fan out to the work-item's subscribers.
+  const ref = workItemObjectRef(wi);
+  const thread = await threads.getOrCreateThread(ref, {
+    thread_id: `work-item-thread-${id}`,
+    title: wi.title,
+    created_by: authorId ?? undefined,
+    created_ts: wi.createdAt,
+  });
+  const post = await threads.addPost({ thread_id: thread.thread_id, author_id: authorId, body, created_ts: nowIso() });
+  const ev: InjectEvent = {
+    from: authorId ?? 'substrate',
+    subject: `${FEATURE_KIND}:${ref.ref}`,
+    summary: `work_item ${id} — new comment${authorId ? ` from ${authorId}` : ''}`,
+    notify_kind: 'work_item_commented',
+  };
+  await fanoutForObject(ref, ev, { excludeId: authorId });
+  return post;
+}
+
+export interface PromoteToPipelineResult {
+  workItem: WorkItem;
+  feature: { id: string; title: string };
+}
+
+/**
+ * promote-to-pipeline — give a non-pipeline work-item (a filed bug/change) a feature
+ * pipeline run, by minting an F-FIX feature (reusing issues:promote's mintFixFeatureRow)
+ * and linking it. A feature-family work-item already IS a pipeline item — no-op.
+ */
+export async function promoteToPipeline(id: string, opts: { harness?: string; actor?: string } = {}): Promise<PromoteToPipelineResult | { error: string }> {
+  const wi = await getWorkItem(id, opts.harness);
+  if (!wi) return { error: `work_item '${id}' not found` };
+  if (wi.family === 'feature') {
+    return { error: `work_item '${id}' (kind=${wi.kind}) is already a pipeline work-item` };
+  }
+  const res = await promoteIssue(id, { harness: opts.harness, actor: opts.actor });
+  if ('error' in res) return res;
+  return { workItem: issueToWorkItem(res.issue), feature: res.feature };
+}

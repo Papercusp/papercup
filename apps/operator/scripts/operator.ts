@@ -21,8 +21,8 @@
 import {
   listPreferenceEntries,
   removePreferenceEntry,
-} from '../lib/operator-preferences';
-import { OPERATOR_SUBSTRATE_PROMPT } from '../lib/operator-prompt-system';
+} from '@papercusp/operator-core/lib/operator-preferences';
+import { OPERATOR_SUBSTRATE_PROMPT } from '@papercusp/operator-core/lib/operator-prompt-system';
 
 const BASE = process.env.OPERATOR_BASE_URL ?? 'http://localhost:3055';
 
@@ -102,7 +102,7 @@ async function scanCmd(args: string[]) {
 async function pauseCmd(paused: boolean) {
   // Pause state is held in harness_shared.operator_paused (PG, migration 029).
   // The background scanner polls /api/agent-mcp/operator-pause-flag.
-  const { setPaused, setResumed } = await import('../lib/device-operator-actions');
+  const { setPaused, setResumed } = await import('@papercusp/operator-core/lib/device-operator-actions');
   if (paused) {
     await setPaused('cli');
     console.log('paused — background scans will stop on next poll');
@@ -129,7 +129,7 @@ async function budgetCmd(args: string[]) {
 
 async function dismissClearCmd() {
   const { existsSync, rmSync } = await import('node:fs');
-  const { papercuspPath } = await import('../lib/papercusp-root');
+  const { papercuspPath } = await import('@papercusp/operator-core/lib/papercusp-root');
   const p = papercuspPath('system', 'operator', 'dismissed.json');
   if (existsSync(p)) {
     rmSync(p);

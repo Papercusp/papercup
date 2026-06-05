@@ -5,7 +5,7 @@ import { use } from 'react';
 import { toast } from 'sonner';
 import RouteLink from '../../../../_components/RouteLink';
 import { Checkbox } from '../../../../harness/Checkbox';
-import { explainCapability, tierBadgeColor } from '@/lib/capability-explain';
+import { explainCapability, tierBadgeColor } from '@papercusp/operator-core/lib/capability-explain';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 
 interface ManifestResp {

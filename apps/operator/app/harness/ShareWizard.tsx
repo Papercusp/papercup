@@ -16,7 +16,7 @@
  *   - Step 3 binding creation calls the same endpoint with create=true.
  *   - Step 8 PG→Hyperbee backfill calls the Phase 5a P-031 projection
  *     seeder when wired; UI stub for now.
- *   - Step 9 .harness/shared.json write goes through a thin
+ *   - Step 9 .papercusp/shared.json write goes through a thin
  *     `/api/harness/:slug/share/finalize` endpoint (also follow-up);
  *     UI surfaces the link + clipboard regardless.
  *
@@ -47,13 +47,13 @@ import {
   flipToPrivateShare,
   type ShareWizardStep,
   type ShareWizardState,
-} from '@/lib/harness/share-wizard-step-types';
+} from '@papercusp/operator-core/lib/harness/share-wizard-step-types';
 import {
   HARNESS_SHARED_PRIVACY_LEVELS,
   buildFreshConfig,
   type HarnessSharedPrivacy,
-} from '@/lib/harness/harness-shared-config-types';
-import { formatHarnessLink } from '@/lib/harness/harness-link-types';
+} from '@papercusp/operator-core/lib/harness/harness-shared-config-types';
+import { formatHarnessLink } from '@papercusp/operator-core/lib/harness/harness-link-types';
 
 // ── Props ─────────────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ export interface ShareWizardProps {
    */
   runBackfill?: (state: ShareWizardState) => Promise<void>;
   /**
-   * .harness/shared.json finalize injection point. Defaults to the
+   * .papercusp/shared.json finalize injection point. Defaults to the
    * follow-up API route; tests pass a stub.
    */
   writeSharedJson?: (slug: string, state: ShareWizardState) => Promise<void>;
@@ -664,7 +664,7 @@ export function ShareWizard(props: ShareWizardProps): ReactNode {
         <div style={cardStyle}>
           {!finalized && !state.harness_link && (
             <>
-              <p style={{ marginTop: 0 }}>Ready to finalize. This writes <code>.harness/shared.json</code> (committed to git) and registers the binding.</p>
+              <p style={{ marginTop: 0 }}>Ready to finalize. This writes <code>.papercusp/shared.json</code> (committed to git) and registers the binding.</p>
               <button style={buttonPrimary} disabled={busy || !finalLink} onClick={() => void finalizeShared()}>
                 {busy ? 'Finalizing…' : 'Finalize + share'}
               </button>

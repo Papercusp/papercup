@@ -537,7 +537,7 @@ function SourcePill({ source }: { source: 'user' | 'scoper' }) {
   );
 }
 
-import { formatRelativeUpdated } from '@/lib/format/relative-time';
+import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 
 /**
  * Thin wrapper kept for call-site stability inside this file. The

@@ -3,7 +3,7 @@
 // contracts the Detail pane uses. Callers own the toast + busy state so
 // they can attach row context.
 
-import type { IssueStatus } from '../../harness/issues/types';
+import type { IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 
 async function post(path: string, body?: unknown): Promise<void> {
   const res = await fetch(path, {

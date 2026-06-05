@@ -18,7 +18,7 @@ vi.mock('../../../lib/ui/intent-dispatcher', () => ({
   UiIntentDispatcher: () => UiIntentDispatcher(),
 }));
 
-vi.mock('../../../lib/ui/desktop-ui-intents', () => ({
+vi.mock('@papercusp/operator-core/lib/ui/desktop-ui-intents', () => ({
   shouldMountRemoteUiControl: (...args: unknown[]) => shouldMountRemoteUiControl(...args),
 }));
 

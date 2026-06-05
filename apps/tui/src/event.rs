@@ -7,10 +7,12 @@
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
 use crate::models::{
-    ActivityEvent, AttentionItem, DocsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif,
-    PlanSummary, RosterEntry, TestingDomain,
+    ActivityEvent, ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CuratedSignal,
+    DocsResponse, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig,
+    PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
+use pui_companion_proto::Topology;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -39,14 +41,84 @@ pub enum Event {
     Activity(Vec<ActivityEvent>),
     /// Testing domains for the active harness.
     Testing(Vec<TestingDomain>),
+    /// Plugin-contributed TUI panes for the active harness (D-002).
+    TuiPanes(Vec<TuiPaneContribution>),
     /// Claude-settings file content for the active harness (read-only).
     Config(String),
+    /// Feature flags + values for the read-only Settings tab (P10).
+    Flags(FlagsResponse),
+    /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a) —
+    /// rendered in the Plans detail pane.
+    PlanItemStates(PlanItemStates),
+    /// Read-only operator-config overview (P10b) for the Settings tab — AI backend
+    /// + per-role models + connected speech providers.
+    OperatorConfig(OperatorConfig),
+    /// Fleet-wide work items (work_items:list) for the Fleet tab (P0).
+    WorkItems(Vec<WorkItem>),
+    /// Activity backfill (activity:recent, newest-first) seeding the Fleet feed (P1).
+    ActivitySeed(Vec<ActivityRow>),
+    /// A dedicated todos backfill (activity:recent kind=todos) for the per-agent
+    /// todo map (P2) — keeps todos current even when they fall outside the feed.
+    ActivityTodos(Vec<ActivityRow>),
+    /// One live activity row from /api/activity/stream — prepended to the feed (P1).
+    ActivityLive(ActivityRow),
+    /// The curator's salience-ranked "what matters" signals (curation:feed) for
+    /// the Fleet curated mode (P3 — wire curated view to the curator-operator).
+    CuratedSignals(Vec<CuratedSignal>),
     /// A live `attention.notify` event (P8) — raise a toast + OS notification.
     Notify(Notif),
     /// Backfilled notification history from `/api/toast-log` (P8).
     ToastHistory(Vec<Notif>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
+    /// The persisted workbench view-state loaded on startup (P12 / D-002) —
+    /// restore the active tab/selections/scroll where the user left off.
+    ViewStateLoaded(ViewState),
+    /// An agent control intent (P12b / D-002 A6 — tui:dispatch) arrived over the
+    /// `/api/tui/intents/stream` SSE. Applied to AppState; the result is POSTed
+    /// back to `/api/tui/intents/:id/result`.
+    TuiIntent {
+        id: i64,
+        intent: String,
+        args: serde_json::Value,
+    },
+    // --- Operator chat pane (tui-operator-surface-2026-06-04) ---
+    /// The operator conversation loaded on open (GET /api/operator/conversations):
+    /// the conversation id + recent turns (oldest first) + whether older history
+    /// exists. Seeds the transcript.
+    ChatHistory {
+        conversation_id: String,
+        messages: Vec<ChatMessage>,
+        has_more_earlier: bool,
+        /// Lowest `seq` in this page — the load-earlier cursor. `None` if empty.
+        oldest_seq: Option<i64>,
+    },
+    /// An older page of turns (load-earlier / infinite scroll-back) — prepended
+    /// to the transcript. Carries the new oldest cursor + whether more remain.
+    ChatEarlier {
+        messages: Vec<ChatMessage>,
+        has_more_earlier: bool,
+        oldest_seq: Option<i64>,
+    },
+    /// A streamed `delta` chunk of the in-flight operator turn — appended to the
+    /// streaming assistant bubble's raw buffer.
+    ChatDelta(String),
+    /// A `tool_call` the operator made mid-turn — a chip on the streaming bubble.
+    ChatToolCall(ChatToolCall),
+    /// The in-flight operator turn finished (`done`) — finalize the bubble.
+    ChatDone,
+    /// The operator converse stream errored (`error`, or transport failure).
+    ChatError(String),
+    // --- Companion zellij plugin (P-004 / D-008): the in-zellij vantage point.
+    // Sourced from the `zellij pipe` child's stdout, not the backend. ---
+    /// The companion plugin linked up (carries its version).
+    CompanionReady(String),
+    /// Fresh live workbench topology (tabs + panes) from the companion plugin.
+    Topology(Topology),
+    /// A command pane's command exited — the crash/finish signal (offer relaunch).
+    PaneExited { pane_id: u32, exit_code: Option<i32> },
+    /// A pane was fully closed in the live session.
+    PaneClosed { pane_id: u32 },
 }
 
 /// Spawn the blocking input reader. Emits `Key` on input and `Tick` otherwise,

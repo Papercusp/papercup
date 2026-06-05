@@ -81,9 +81,10 @@ export function SetupWizard({ mode }: Props) {
     }).catch(() => null);
 
     if (mode === 'first-run') {
-      // Land on /marketplace when the workspace is empty — landing on
-      // /harness with no harnesses is a confusing dead-end. Once at
-      // least one template is installed, /harness is the right home.
+      // Land on /cupboard (the storefront) when the workspace is empty —
+      // landing on /harness with no harnesses is a confusing dead-end. Once at
+      // least one harness exists, /harness is the right home. (The legacy
+      // /marketplace was retired — revive-cupboard-distribution D-004.)
       let dest = '/harness';
       try {
         const controller = new AbortController();
@@ -96,7 +97,7 @@ export function SetupWizard({ mode }: Props) {
           if (r.ok) {
             const j = (await r.json()) as { projects?: unknown[] };
             const count = Array.isArray(j.projects) ? j.projects.length : 0;
-            if (count === 0) dest = '/marketplace';
+            if (count === 0) dest = '/cupboard';
           }
         } finally {
           clearTimeout(timeout);
@@ -142,8 +143,8 @@ export function SetupWizard({ mode }: Props) {
               className="pc-btn pc-btn--primary"
               onClick={() => router.push(recap.dest)}
             >
-              {recap.dest === '/marketplace'
-                ? 'Continue to marketplace →'
+              {recap.dest === '/cupboard'
+                ? 'Continue to the Cupboard →'
                 : 'Continue to harness →'}
             </button>
           </div>

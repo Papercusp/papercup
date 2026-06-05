@@ -15,7 +15,7 @@ Generated at scaffold time:
 
 - 256-bit random, base64url-encoded (no padding)
 - Written to **three places**, all together:
-  1. `<harnessDir>/.harness/config.json:harness_token` (mode 0600)
+  1. `<harnessDir>/.papercusp/config.json:harness_token` (mode 0600)
   2. `harness_<slug>.config_token` (one row per harness)
   3. `harness_shared.token_index` (token → harness_slug, O(1) lookup)
 
@@ -60,7 +60,7 @@ This is **not a network-attacker model** — the operator is local-only by defau
 
 What it does **NOT** protect against:
 
-- A harness whose `.harness/config.json` is read-leaked to another process — the token is then full-permission for that harness. Mode 0600 mitigates; OS-level isolation would be the v2 hardening.
+- A harness whose `.papercusp/config.json` is read-leaked to another process — the token is then full-permission for that harness. Mode 0600 mitigates; OS-level isolation would be the v2 hardening.
 - A compromised operator process — the operator has the source of truth; if it's malicious, all bets are off.
 
 ## Compromised harness recovery (manual, v1)

@@ -26,7 +26,7 @@ import { getTestPg, teardownTestPg } from '@papercusp/test-config';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 
 let DBOS: typeof DBOSType;
-let startFeaturePipeline: typeof import('../lib/dbos/orchestrator-workflow').startFeaturePipeline;
+let startFeaturePipeline: typeof import('@papercusp/operator-core/lib/dbos/orchestrator-workflow').startFeaturePipeline;
 let adminUri: string;
 let dbName: string;
 
@@ -56,7 +56,7 @@ beforeAll(async () => {
     runAdminServer: false,
   });
 
-  const wf = await import('../lib/dbos/orchestrator-workflow');
+  const wf = await import('@papercusp/operator-core/lib/dbos/orchestrator-workflow');
   startFeaturePipeline = wf.startFeaturePipeline;
 
   // Fake runner: director drives turn0→NEXT_WORKER, turn1→DONE, but THROWS once

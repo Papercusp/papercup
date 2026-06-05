@@ -10,17 +10,37 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-## TL;DR
+## TL;DR — use `::text::jsonb` (it works EVERYWHERE)
 
-To write a JS object/array into a **JSONB** column through the operator runtime
-client (`getOrgPg().sql`, `libs/papercusp/libs/db/connection.ts`), bind it as:
+To write a JS object/array into a **JSONB** column, bind it as
+`${JSON.stringify(value)}::text::jsonb` (keep a `== null` guard for nullable
+columns):
 
 ```ts
-await sql`INSERT INTO t (payload) VALUES (${value == null ? null : JSON.stringify(value)}::jsonb)`;
+// CANONICAL — stores a real jsonb object under EVERY client (2026-06-04):
+await sql`INSERT INTO t (payload) VALUES (${value == null ? null : JSON.stringify(value)}::text::jsonb)`;
 ```
 
-**Do NOT** use `sql.json(value)` and **do NOT** pass a bare object `${value}` —
-both THROW under `getOrgPg`:
+The explicit **`::text`** cast forces postgres-js to bind the JSON as a plain
+text param, so it parses **once** server-side (`text → jsonb`) and stores a real
+jsonb **object** under *both* the operator runtime client (`getOrgPg().sql`) AND
+a fresh / testcontainer `postgres()` pool. This sidesteps the whole
+runtime-vs-test divergence below — **prefer it for all new code** and when
+touching an existing jsonb write. Empirically verified against the live native
+`:5432` host + a fresh pool 2026-06-04 (both → `jsonb_typeof='object'`); it is
+the fix that un-broke `insertFanoutNotify` (which had landed **0** rows in prod
+because `getOrgPg().sql.json()` threw on every call).
+
+## The divergence (why bare `::jsonb` and `sql.json` are client-dependent)
+
+Bare `${JSON.stringify(value)}::jsonb` (no `::text`) is **correct under
+`getOrgPg`** but **double-encodes** (stores a jsonb *string*) under a fresh /
+testcontainer pool — and `sql.json(value)` / a bare object `${value}` is the
+exact inverse. So the *old* per-client rules still hold for existing code, but
+`::text::jsonb` makes them moot.
+
+Under `getOrgPg` specifically, `sql.json(value)` and a bare object `${value}`
+**THROW**:
 
 ```
 TypeError [ERR_INVALID_ARG_TYPE]: The "string" argument must be of type string
@@ -41,9 +61,10 @@ runtime client — despite *identical* postgres-js config (`prepare:false`, same
 
 | form | `getOrgPg` (runtime / production) | `_pg-helpers` (testcontainer) |
 |---|---|---|
+| `${JSON.stringify(obj)}::text::jsonb` | **jsonb object** ✓ | **jsonb object** ✓ ← **USE THIS** |
 | `sql.json(obj)` | **throws** | works (jsonb object) |
 | `${obj}` (bare) | **throws** | works (jsonb object) |
-| `${JSON.stringify(obj)}::jsonb` | **jsonb object** ✓ | double-encodes → jsonb **string** |
+| `${JSON.stringify(obj)}::jsonb` | jsonb object ✓ | double-encodes → jsonb **string** |
 
 The root cause of the divergence is unexplained (configs match); it is likely a
 postgres-js protocol/connection nuance. The practical consequences:
@@ -59,8 +80,20 @@ operator's DB), not the testcontainer. Assert only client-agnostic things
 
 ## Status of affected files
 
-**Fixed 2026-06-03** — every getOrgPg-client jsonb write now binds via
-`${JSON.stringify(x)}::jsonb`:
+**Swept 2026-06-04 (handoff-coordination-dx-followups §A2)** — every bare
+`${...}::jsonb` in production code under `packages/operator-core/lib`,
+`packages/coordination/src`, and `libs/papercusp/libs/db/src` (38 files) was
+converted to the universal **`${...}::text::jsonb`** form, and an ESLint rule
+**`papercusp/no-bare-jsonb-cast`** (`tools/eslint-rules/`, wired in
+`eslint.config.mjs`, RuleTester-tested) now flags + autofixes a bare
+`${x}::jsonb` → `${x}::text::jsonb` (it skips the `sql.json()`/`pgJson()` helper
+forms + `::jsonb[]`). The federation round-trip test stays green because
+`::text::jsonb` stores a real object under both clients, so the per-client
+sections below are now historical context — **new code should use
+`::text::jsonb`** and the lint rule enforces it.
+
+**Fixed 2026-06-03 (superseded by the sweep above)** — every getOrgPg-client
+jsonb write bound via `${JSON.stringify(x)}::jsonb`:
 
 - `apps/operator/lib/sync/hyperbee/projections/issues.ts` (`notes`)
 - `apps/operator/lib/sync/hyperbee/projections/contributors.ts` (`device_attestations`)

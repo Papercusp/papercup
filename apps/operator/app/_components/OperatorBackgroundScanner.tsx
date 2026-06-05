@@ -23,7 +23,7 @@ import { useEffect, useRef } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { isAutoAcceptedByThreshold, pushAutoAcceptEvent, sharedState, subscribeOperatorState } from './operator-shared-state';
+import { isAutoAcceptedByThreshold, pushAutoAcceptEvent, sharedState, subscribeOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
 import { speak, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { loadVoicePrefsClient } from './voice/voice-prefs-client';

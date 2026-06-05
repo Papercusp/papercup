@@ -220,7 +220,7 @@ const SCANS = [
 
 const STREAM: StreamLine[] = [
   { ts: '0:08', text: 'scanning workspace · 8 harnesses' },
-  { ts: '0:14', text: 'reading sheets/.harness/plan-review.md' },
+  { ts: '0:14', text: 'reading sheets/.papercusp/plan-review.md' },
   { ts: '0:22', text: 'reading sheets/features.json' },
   { ts: '0:31', text: 'classifier: F-HOME-001 → medium tier' },
   { ts: '0:38', text: 'classifier: 4 fixing-state issues → medium tier' },

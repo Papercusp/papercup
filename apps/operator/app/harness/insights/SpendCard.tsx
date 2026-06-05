@@ -17,6 +17,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import type { SpendCardProps } from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const CARD: CSSProperties = {
   border: '1px solid var(--border, #2a2a2a)',
@@ -98,14 +99,7 @@ const BANNER_LINK: CSSProperties = {
   textDecoration: 'none',
 };
 
-export interface SpendCardProps {
-  /** Total spend this week across all contributors on the harness, USD. */
-  harnessTotalUsdThisWeek: number;
-  /** Viewer's own spend this week, USD. */
-  viewerUsdThisWeek: number;
-  /** Optional href explaining the proxy-witness deferral plan. */
-  proxyWitnessExplainerHref?: string | null;
-}
+export type { SpendCardProps };
 
 function formatUsd(n: number): string {
   return n < 1

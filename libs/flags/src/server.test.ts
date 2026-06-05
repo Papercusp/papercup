@@ -18,13 +18,12 @@ describe('flag backend in offline-only mode', () => {
     setFlagOverridesForTest(null);
   });
 
-  it('returns FLAG_DEFAULTS (all false) when no backend is configured', async () => {
+  it('returns FLAG_DEFAULTS when no backend is configured (V1 ship-state)', async () => {
     expect(isBackendConfigured()).toBe(false);
     const payload = await getAllFlags('any-distinct');
     expect(payload.source).toBe('defaults');
     for (const key of ALL_FLAG_KEYS) {
       expect(payload.flags[key]).toBe(FLAG_DEFAULTS[key]);
-      expect(payload.flags[key]).toBe(false);
     }
   });
 
@@ -55,22 +54,23 @@ describe('setFlagOverridesForTest', () => {
   it('overrides resolve to the supplied values, defaults fill the rest', async () => {
     setFlagOverridesForTest({
       [FLAGS.SNAPSHOTS]: true,
-      [FLAGS.MARKETPLACE]: true,
+      [FLAGS.ORACLE]: true,
     });
     const payload = await getAllFlags('test-user');
     expect(payload.source).toBe('override');
     expect(payload.flags[FLAGS.SNAPSHOTS]).toBe(true);
-    expect(payload.flags[FLAGS.MARKETPLACE]).toBe(true);
-    expect(payload.flags[FLAGS.TEMPLATES]).toBe(false);
+    expect(payload.flags[FLAGS.ORACLE]).toBe(true);
     expect(payload.flags[FLAGS.DESIGN]).toBe(false);
   });
 
   it('null override clears back to defaults', async () => {
-    setFlagOverridesForTest({ [FLAGS.SNAPSHOTS]: true });
-    expect((await getAllFlags('x')).flags[FLAGS.SNAPSHOTS]).toBe(true);
+    // Use ORACLE (default-false) so clearing the override is observable — the
+    // SNAPSHOTS default is now true (revive-cupboard-distribution P1).
+    setFlagOverridesForTest({ [FLAGS.ORACLE]: true });
+    expect((await getAllFlags('x')).flags[FLAGS.ORACLE]).toBe(true);
 
     setFlagOverridesForTest(null);
-    expect((await getAllFlags('x')).flags[FLAGS.SNAPSHOTS]).toBe(false);
+    expect((await getAllFlags('x')).flags[FLAGS.ORACLE]).toBe(FLAG_DEFAULTS[FLAGS.ORACLE]);
     expect((await getAllFlags('x')).source).toBe('defaults');
   });
 
@@ -80,7 +80,7 @@ describe('setFlagOverridesForTest', () => {
     expect(payload.flags[FLAGS.DESIGN]).toBe(true);
     for (const key of ALL_FLAG_KEYS) {
       if (key === FLAGS.DESIGN) continue;
-      expect(payload.flags[key]).toBe(false);
+      expect(payload.flags[key]).toBe(FLAG_DEFAULTS[key]);
     }
   });
 });

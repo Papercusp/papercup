@@ -7,7 +7,7 @@ import RouteLink from '@/app/_components/RouteLink';
 import {
   type AdminTestCheckResult,
   type AdminTestRunSnapshot,
-} from '@/lib/admin-test-suites-shared';
+} from '@papercusp/operator-core/lib/admin-test-suites-shared';
 
 interface HealthPayload {
   pgvector: boolean;

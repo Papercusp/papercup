@@ -499,6 +499,8 @@ export async function onSessionStart(ctx?: unknown): Promise<void> {
   if (_mode === 'attached') {
     await linkAdvSessionFromContext(ctx);
     await callMcpTool('coord:declare-intent', { intent: 'OMP session started' });
+    // Activity bridge: a "worker appeared" lifecycle marker for the fleet view.
+    void reportLifecycle('start');
   }
 }
 
@@ -516,6 +518,8 @@ export async function onSessionStart(ctx?: unknown): Promise<void> {
  */
 export async function onSessionShutdown(): Promise<void> {
   acquiredLocks.clear();
+  // Activity bridge: a "worker left" lifecycle marker, then the lock backstop.
+  await reportLifecycle('shutdown');
   await callMcpTool('locks:release', { all_mine: true });
 }
 
@@ -1120,6 +1124,79 @@ export function formatBusyRefusal(busy: BusyEntry[]): string {
   return lines.join('\n');
 }
 
+// ── Activity bridge: the OMP in-process port (papercusp-worker-integration-2026-06-04,
+//    D-002/D-003) ─────────────────────────────────────────────────────
+//
+// The cross-CLI counterpart of the shared `posttooluse-activity-report.sh` shell
+// hook (Claude+Codex). OMP has no PostToolUse shell contract, so its activity report
+// rides this in-process tool_call hook and calls the SAME `activity:report` MCP tool.
+// Reports at tool_call (phase 'pre') — the OMP tool_result event carries no input, but
+// tool_call has toolName + input, which is what the server needs. The display summary
+// is derived SERVER-SIDE (one shared formatter), so this forwards RAW fields.
+
+/** Cap a worker's native tool input so a giant Write `content` / patch body never
+ *  bloats the report (mirrors the shell hook's cap). */
+const ACTIVITY_STR_CAP = 500;
+function capActivityInput(input: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(input ?? {})) {
+    if (typeof v === 'string') out[k] = v.length > ACTIVITY_STR_CAP ? v.slice(0, ACTIVITY_STR_CAP) + '…' : v;
+    else if (Array.isArray(v)) out[k] = `[${v.length} items]`;
+    else if (v && typeof v === 'object') out[k] = '[object]';
+    else out[k] = v;
+  }
+  return out;
+}
+
+const ACTIVITY_TODO_TOOLS = new Set(['todo_write', 'todowrite', 'taskcreate', 'taskupdate']);
+
+/**
+ * Build the `activity:report` args from an OMP tool_call event. A todo tool forwards
+ * its list (uncapped, sliced) so the server summarises it as kind=todos; every other
+ * tool forwards a string-capped input. Pure — exported for tests.
+ */
+export function buildActivityArgs(event: ToolCallEvent): Record<string, unknown> {
+  const lower = event.toolName.toLowerCase();
+  const args: Record<string, unknown> = {
+    owner: hookOwnerId(),
+    agent: 'omp',
+    phase: 'pre',
+    tool_name: event.toolName,
+    tool_use_id: event.toolCallId,
+  };
+  const todos = (event.input as Record<string, unknown> | undefined)?.todos;
+  if (ACTIVITY_TODO_TOOLS.has(lower) && Array.isArray(todos)) {
+    args.todos = todos.slice(0, 100);
+  } else {
+    args.tool_input = capActivityInput(event.input);
+  }
+  return args;
+}
+
+/**
+ * Fire-and-forget activity report. Never blocks or throws — callMcpTool swallows all
+ * errors + returns null, so a `void reportActivity(event)` is safe (no unhandled
+ * rejection) and adds no latency to the tool call.
+ */
+export async function reportActivity(event: ToolCallEvent): Promise<void> {
+  await callMcpTool('activity:report', buildActivityArgs(event));
+}
+
+/**
+ * Report a session LIFECYCLE transition (kind='lifecycle') into the activity bridge —
+ * the OMP counterpart of the Claude/Codex SessionStart/Stop lifecycle hook. Gives the
+ * fleet view a crisp "worker appeared / left" marker rather than inferring it from
+ * activity silence. Fire-and-forget; callMcpTool fails open when detached.
+ */
+export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void> {
+  await callMcpTool('activity:report', {
+    owner: hookOwnerId(),
+    agent: 'omp',
+    kind: 'lifecycle',
+    summary: phase === 'start' ? '▶ session started' : '■ session ended',
+  });
+}
+
 export async function onToolCall(
   event: ToolCallEvent,
 ): Promise<{ block?: boolean; reason?: string }> {
@@ -1131,6 +1208,11 @@ export async function onToolCall(
         'Do not use Claude task-panel or subagent Task tools in OMP. Use todo_write for task tracking instead.',
     };
   }
+
+  // Mirror this non-blocked tool call into the cross-CLI activity bridge (the pui
+  // fleet view + curator). Fire-and-forget so it never delays the edit/lock path.
+  void reportActivity(event);
+
   const targets = extractLockTargets(event.toolName, event.input);
   if (targets.length === 0) return {};
 

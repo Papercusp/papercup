@@ -13,7 +13,7 @@
  * source the server roster endpoint uses), so client + server can't drift.
  */
 
-import { deriveLiveness, type Liveness } from '@/lib/liveness';
+import { deriveLiveness, type Liveness } from '@papercusp/operator-core/lib/liveness';
 
 export type { Liveness };
 

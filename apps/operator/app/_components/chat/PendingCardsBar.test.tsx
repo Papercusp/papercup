@@ -9,14 +9,14 @@ import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/re
 vi.mock('@/lib/use-state-snapshots', () => ({
   useStateSnapshots: vi.fn(),
 }));
-vi.mock('@/lib/post-card-response', () => ({
+vi.mock('@papercusp/operator-core/lib/post-card-response', () => ({
   postCardResponse: vi.fn(),
   postRunCancel: vi.fn(),
 }));
 
 import { PendingCardsBar } from './PendingCardsBar';
 import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
-import { postCardResponse, postRunCancel } from '@/lib/post-card-response';
+import { postCardResponse, postRunCancel } from '@papercusp/operator-core/lib/post-card-response';
 
 afterEach(() => cleanup());
 

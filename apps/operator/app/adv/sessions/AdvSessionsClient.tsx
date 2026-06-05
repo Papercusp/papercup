@@ -9,8 +9,8 @@ import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
-import { launchAgent } from '@/lib/launch-agent';
-import { formatRelativeUpdated } from '@/lib/format/relative-time';
+import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
+import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
 
 interface ServerRowSummary {

@@ -148,7 +148,7 @@ Returns the last 2 KB of the child's stdout. Truncated by design — the full st
 
 | Thing | Why | When |
 |---|---|---|
-| The child agent's full stdout | We only persist the last 2 KB | Read the per-spawn `.jsonl` directly: `<projectDir>/.harness/logs/<runId>-<spawnId>.jsonl` |
+| The child agent's full stdout | We only persist the last 2 KB | Read the per-spawn `.jsonl` directly: `<projectDir>/.papercusp/logs/<runId>-<spawnId>.jsonl` |
 | Per-spawn token cost | Not persisted on `spawned_agents` | Available in `harness_shared.agent_runs_consolidated` joined by `runId` |
 | Cancellation reason | Plugin-side cancel just sets `status='cancelled'` | Acceptable today; future enhancement |
 | Cross-restart cancel — did the OS process actually die? | We have no way to confirm | The `reaped` status flags this honestly |

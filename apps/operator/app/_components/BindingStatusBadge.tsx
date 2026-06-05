@@ -23,7 +23,8 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 
-export type BindingStatus = 'verified' | 'pending' | 'unverified';
+import type { BindingStatus } from '@papercusp/operator-core/lib/identity/binding-verifier-types';
+export type { BindingStatus };
 
 export interface BindingStatusBadgeProps {
   status: BindingStatus;

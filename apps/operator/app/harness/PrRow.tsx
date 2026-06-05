@@ -11,22 +11,8 @@ import React from 'react';
 import { ExternalLink, CheckCircle, XCircle, Clock, AlertCircle, ShieldCheck } from 'lucide-react';
 import { COLORS, FONTS, RADIUS } from './theme';
 
-export interface PrRowData {
-  remote: string;
-  number: number;
-  title: string;
-  author_login: string;
-  author_github_id: number;
-  html_url: string;
-  state: 'open' | 'merged' | 'closed' | 'gone';
-  review_decision: 'none' | 'approved' | 'changes_requested' | 'commented' | 'dismissed';
-  /** null = no CI configured; 'success' | 'failure' | 'pending' | etc. */
-  check_conclusion: string | null;
-  /** Whether this author is in the viewer's trust list. */
-  trusted: boolean;
-  /** Whether pr_reviewer_role_enabled for this harness. */
-  reviewerRoleEnabled: boolean;
-}
+import type { PrRowData } from '@papercusp/operator-core/lib/pr-host/pr-row-data';
+export type { PrRowData };
 
 interface Props {
   pr: PrRowData;

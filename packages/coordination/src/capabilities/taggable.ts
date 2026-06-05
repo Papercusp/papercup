@@ -1,41 +1,7 @@
 /**
- * capabilities/taggable.ts — Taggable rides Linkable. A topic tag on an object
- * IS a polymorphic edge `object →tagged→ {kind:'topic', ref:<slug>}`. Modelling
- * tags as links keeps the substrate DRY (one edge table) and makes the fan-out's
- * subscriber resolution a plain reverse-edge lookup. This generic implementation
- * works over ANY LinkableStore, so PG and in-memory both get Taggable for free.
+ * capabilities/taggable.ts — Taggable rides Linkable. The generic implementation
+ * now lives in @papercusp/linkable-edges (generalize-libs-to-generic D-003 #7);
+ * re-exported here so existing imports from '@papercusp/coordination/capabilities'
+ * — and the pg-stores PgTaggableStore subclass — keep resolving unchanged.
  */
-
-import { type LinkableStore, type ObjectRef, type TaggableStore, TAG_REL } from './types';
-
-const TOPIC_KIND = 'topic';
-
-export class LinkBackedTaggable implements TaggableStore {
-  constructor(
-    private readonly links: LinkableStore,
-    /** Host clock — a thunk so the construction site stays clock-free like the
-     *  sibling seams. Defaults to wall-clock ISO. */
-    private readonly now: () => string = () => new Date().toISOString(),
-  ) {}
-
-  async addTag(object: ObjectRef, topicSlug: string, opts: { created_by?: string; created_ts: string }): Promise<void> {
-    await this.links.link(object, { kind: TOPIC_KIND, ref: topicSlug }, TAG_REL, {
-      created_by: opts.created_by,
-      created_ts: opts.created_ts,
-    });
-  }
-
-  async removeTag(object: ObjectRef, topicSlug: string): Promise<void> {
-    await this.links.unlink(object, { kind: TOPIC_KIND, ref: topicSlug }, TAG_REL);
-  }
-
-  async listTags(object: ObjectRef): Promise<string[]> {
-    const out = await this.links.listOut(object, { rel: TAG_REL });
-    return out.filter((l) => l.dst.kind === TOPIC_KIND).map((l) => l.dst.ref);
-  }
-
-  async listTagged(topicSlug: string): Promise<ObjectRef[]> {
-    const into = await this.links.listIn({ kind: TOPIC_KIND, ref: topicSlug }, { rel: TAG_REL });
-    return into.map((l) => l.src);
-  }
-}
+export { LinkBackedTaggable } from '@papercusp/linkable-edges';

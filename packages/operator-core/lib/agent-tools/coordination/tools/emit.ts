@@ -1,0 +1,78 @@
+/**
+ * coord:emit — the canonical LIFECYCLE-emission endpoint
+ * (coord-lifecycle-automation-2026-06-04).
+ *
+ * This is the fire-target the auto-emit event rules invoke (D-003/D-004): a
+ * work_item completing, a claim, a coordination-window opening — each transition
+ * fires `coord:emit` with the already-rendered `{ summary, body }` from the
+ * pure lifecycle render layer (../../coord-lifecycle/render). Agents do NOT
+ * author these; the system reacts and emits them, so an agent spends zero
+ * tokens narrating predictable lifecycle.
+ *
+ * It is a sibling of `coord:send`, deliberately SEPARATE:
+ *   - `coord:send` carries the genuinely-contextual ~5% an agent writes by hand.
+ *   - `coord:emit` carries the predictable lifecycle the engine emits.
+ * Every emission is stamped `auto: true` + `lifecycle: '<category>'` on the
+ * envelope so `coord:inbox` can treat lifecycle as signal (group / format it)
+ * distinctly from human-authored coord traffic — the "inbox becomes signal,
+ * not noise" goal (D-005). NOT marked as an ambient `category` (which would
+ * exclude it from the inbox) — lifecycle IS the signal.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../identity';
+import { sendMessage } from '../messages';
+import { COORD_ROLES } from '../roles';
+
+export default defineTool({
+  name: 'coord:emit',
+  description:
+    'Emit a structured LIFECYCLE coordination notification (completion / claim / window / handoff / finding). The system fires this automatically from lifecycle events; agents rarely call it directly — use coord:send for unpredictable, contextual messages.',
+  guidance: {
+    when: 'Almost never directly — the event-reaction rules fire coord:emit automatically when a work_item completes/claims, a coordination-window opens/closes, etc. Call it by hand ONLY to emit a recognized-shape lifecycle event the rules do not yet cover.',
+    notWhen: 'For a genuinely contextual message (a finding\'s nuance, a design call, a question, a hand-written status), use coord:send — that is the unpredictable residual coord:emit deliberately does NOT carry.',
+    chaining: 'The lifecycle rules render the payload via the coord-lifecycle render layer, then fire this. Pair with coord:inbox to see emitted lifecycle.',
+  },
+  capability: 'coord:write',
+  requirePrincipal: false,
+  agentRoles: [...COORD_ROLES],
+  args: z.object({
+    /** Lifecycle category — 'completion'|'claim'|'window'|'handoff'|'finding' by
+     *  convention (open for the P3 long-tail). Stamped on the envelope. */
+    category: z.string().min(1),
+    /** The rendered one-line summary (the inbox headline). */
+    summary: z.string().min(1),
+    /** The rendered detail body. */
+    body: z.string().optional(),
+    /** Recipients — defaults to broadcast ['*'], like the prose it replaces. */
+    to: z.array(z.string().min(1)).min(1).default(['*']),
+    plan_slug: z.string().optional(),
+    /** Chain to a prior message (e.g. a window 'done' referencing its 'open'). */
+    related_msg_id: z.string().optional(),
+  }),
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
+    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const harnessSlug =
+      typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+    const env = await sendMessage(identity, {
+      to: args.to,
+      summary: args.summary,
+      body: args.body,
+      plan_slug: args.plan_slug,
+      related_msg_id: args.related_msg_id,
+      ...(harnessSlug ? { harnessSlug } : {}),
+      // The lifecycle markers — visible signal, not an excluded ambient category.
+      extra: { auto: true, lifecycle: args.category },
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({ ok: true, msg_id: env.msg_id, ts: env.ts, lifecycle: args.category }),
+        },
+      ],
+    };
+  },
+});

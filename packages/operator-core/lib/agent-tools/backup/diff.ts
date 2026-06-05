@@ -1,0 +1,69 @@
+/**
+ * backup:diff — show the file-level diff between two snapshots.
+ * Useful for "what did the agent change in the last hour" — pick two
+ * snapshot ids and read the tree-diff back.
+ */
+
+import { z } from 'zod';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
+import { defineTool } from '@papercusp/agent-mcp';
+import { deriveRepoPassword } from '../../backup';
+import { activeWorkspaceId, workspacesRoot } from '../../workspace-registry';
+
+const ALL_ROLES = [
+  'scoper', 'architect', 'worker', 'validator',
+  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
+] as const;
+
+const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
+
+export default defineTool({
+  name: 'backup:diff',
+  profile: 'engineer',
+  description: 'Diff two kopia snapshots — list files added/changed/removed.',
+  capability: 'backup:read',
+  guidance: {
+    when: `Diff current state vs a backup snapshot — what would change if we restored. Read-only.`,
+    notWhen: `For applying the diff, use \`backup:restore\`. diff is the dry-run view.`,
+  },
+  requirePrincipal: false,
+  agentRoles: [...ALL_ROLES],
+  args: z.object({
+    fromSnapshotId: z.string().min(1),
+    toSnapshotId: z.string().min(1),
+  }),
+  async handler(args) {
+    const workspaceId = activeWorkspaceId();
+    const backupsDir = join(workspacesRoot(), workspaceId, 'backups');
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      KOPIA_PASSWORD: await deriveRepoPassword(workspaceId),
+      KOPIA_CONFIG_PATH: join(backupsDir, 'repository.config'),
+      KOPIA_LOG_DIR: join(backupsDir, 'logs'),
+      KOPIA_CACHE_DIRECTORY: join(backupsDir, 'cache'),
+    };
+    const out = await runKopia(
+      ['diff', args.fromSnapshotId, args.toSnapshotId],
+      env,
+    );
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ diff: out }) }],
+    };
+  },
+});
+
+function runKopia(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(KOPIA_BIN, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on('data', (d) => out.push(d));
+    child.stderr.on('data', (d) => err.push(d));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(Buffer.concat(out).toString('utf8'));
+      else reject(new Error(`kopia ${args.join(' ')} exited ${code}: ${Buffer.concat(err).toString('utf8')}`));
+    });
+  });
+}

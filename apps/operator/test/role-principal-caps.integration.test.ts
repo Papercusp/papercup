@@ -19,7 +19,7 @@ import {
   loadRoleCapabilities,
   dispatchNeedsTx,
   synthesizeDispatchPrincipal,
-} from '../lib/endpoint-route/routes/transport/role-principal-caps';
+} from '@papercusp/operator-core/lib/endpoint-route/routes/transport/role-principal-caps';
 
 let sql: postgres.Sql;
 let dbName: string;

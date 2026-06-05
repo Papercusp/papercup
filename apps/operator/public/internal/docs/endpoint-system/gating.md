@@ -103,7 +103,7 @@ Every denial emits an authorization audit event (see below).
 
 ## Harness-required gate (gate 5)
 
-A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. This gate **fails closed even for privileged callers** — `GateBypass.harness` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler.
+A tool declaring `harness: 'required'` (a ctx-only harness-scoped tool — one with no slug arg, so `ctx.harnessSlug` is its only harness source) is rejected with `harness_required` (400) when no harness is in scope. This gate **fails closed even for privileged callers** — `GateBypass.papercusp` is deliberately *not* set by the superuser/power-user mapping, because a `harness: 'required'` tool genuinely can't function without a harness; the point is to return the uniform "harness required" hint rather than push the failure into the handler.
 
 ## Per-window quota (gate 6)
 

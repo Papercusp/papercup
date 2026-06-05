@@ -16,7 +16,7 @@ import {
   type AutoAcceptLevel,
   type IconState,
   type OperatorState,
-} from './operator-shared-state';
+} from '@papercusp/operator-core/lib/operator-shared-state';
 
 export function OperatorButton(): ReactElement {
   const [state, setState] = useState<OperatorState>(sharedState);

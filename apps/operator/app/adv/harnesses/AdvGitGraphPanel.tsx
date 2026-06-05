@@ -36,7 +36,7 @@ import {
   type Worktree,
 } from '@papercusp/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import { crossOriginUrl } from '@/lib/cross-origin-url';
+import { crossOriginUrl } from '@papercusp/operator-core/lib/cross-origin-url';
 
 const LIMITS = [100, 300, 500, 1000] as const;
 type GitFilter = 'all' | 'refs' | 'merges' | 'bookmarked';

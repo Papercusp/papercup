@@ -21,8 +21,8 @@ import type { PromptResult } from '@papercusp/tooldef';
 function findScannerMd(): { path: string; text: string } | null {
   const platform = getHostPlatform();
   const candidates = [
-    resolve(__dirname, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
-    resolve(__dirname, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+    resolve(import.meta.dirname, '../../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
+    resolve(import.meta.dirname, '../../../../libs/papercusp/packages/harness/prompts/scanner.md'),
     resolve(process.cwd(), 'libs/papercusp/packages/harness/prompts/scanner.md'),
   ];
   for (const path of candidates) {

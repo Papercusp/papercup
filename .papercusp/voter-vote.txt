@@ -1,0 +1,6 @@
+From the correctness lens: `const` is objectively correct for a binding that is never reassigned. It enforces the constraint, prevents accidental reassignment bugs, and accurately represents the binding's intent. Using `let` creates a semantic mismatch with actual usage.
+
+```vote
+option: const
+confidence: 0.95
+```

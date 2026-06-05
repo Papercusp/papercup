@@ -5,18 +5,22 @@
 //! Option/defaulted so a shape drift never hard-fails a deserialize.
 #![allow(dead_code)] // DTOs mirror the full API shape; not every field is displayed yet.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// One row of `/api/admin/plans/list` → `{ plans: [...] }`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanSummary {
     pub slug: String,
-    #[serde(default)]
+    // title / status / updated are non-Option strings, but the wire sends them as
+    // `string | null` for legacy plans — tolerate null → "" (a plain
+    // `#[serde(default)]` only covers an ABSENT key, so a null would otherwise sink
+    // the whole plans decode and blank the Plans + Fleet tabs).
+    #[serde(default, deserialize_with = "null_as_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub status: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub updated: String,
     #[serde(default)]
     pub owner: Option<String>,
@@ -26,6 +30,16 @@ pub struct PlanSummary {
     pub archived: bool,
     #[serde(default)]
     pub next_action: Option<String>,
+    /// Item counts by effectiveStatus (`itemCounts`) — the fleet view aggregates
+    /// these into plan progress (done/total). The wire sends `object | null`
+    /// (legacy/empty plans report `null`), so tolerate null → all-zero default
+    /// (a plain `#[serde(default)]` only covers an ABSENT key, NOT explicit null,
+    /// and a null would otherwise hard-fail the whole plans decode).
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub item_counts: ItemCounts,
+    /// Plan priority (higher first); the fleet view orders active plans by it.
+    #[serde(default)]
+    pub priority: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -250,6 +264,58 @@ pub struct ToastsResponse {
     pub toasts: Vec<ToastRow>,
 }
 
+/// One pane the `plugins:tui_panes` agent-tool contributes (D-002, revive-plugin-
+/// system-2026-06-04). `command` is the argv to run in a zellij pane (command[0]
+/// is a PATH basename, e.g. `["sh","render.sh"]`); `cwd` is the dir to run it in.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TuiPaneContribution {
+    #[serde(default)]
+    pub plugin_name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub cwd: String,
+}
+
+/// Inner JSON of the `plugins:tui_panes` MCP envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TuiPanesPayload {
+    #[serde(default)]
+    pub panes: Vec<TuiPaneContribution>,
+}
+
+/// One human-facing entry from `GET /api/coord/inbox` (P-002 / D-003b) — the
+/// coord messages/escalations/handoffs addressed to the human. Field names match
+/// the route's `HistoryItem` JSON (snake_case).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoordMsg {
+    #[serde(default)]
+    pub ts: String,
+    #[serde(default)]
+    pub msg_id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CoordInboxResponse {
+    #[serde(default)]
+    pub items: Vec<CoordMsg>,
+}
+
 /// An in-app notification (P8), built from either a live `attention.notify` SSE
 /// event or a `/api/toast-log` history row. Not deserialized directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,9 +328,539 @@ pub struct Notif {
     pub ts: Option<String>,
 }
 
+// ─── Workbench persistence (P12 / D-002): tui_view_state / tui_layouts / tui_crews ───
+
+/// The quiet UI/nav state the workbench persists + restores (one row per user,
+/// `harness_shared.tui_view_state`). Every field defaults so an older/newer
+/// shape never hard-fails a load. Round-trips both ways (sent on PUT, read on
+/// GET); the empty `{}` the server returns when nothing's saved deserializes to
+/// `ViewState::default()`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewState {
+    /// Active tab by its title ("Plans", "Sessions", …) — title not index so a
+    /// tab reorder doesn't move the user to the wrong place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    /// Active harness slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Which Harnesses column had focus ("features" | "issues").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_focus: Option<String>,
+    #[serde(default)]
+    pub plan_sel: usize,
+    #[serde(default)]
+    pub inbox_sel: usize,
+    #[serde(default)]
+    pub harness_sel: usize,
+    #[serde(default)]
+    pub feat_sel: usize,
+    #[serde(default)]
+    pub issue_sel: usize,
+    #[serde(default)]
+    pub doc_sel: usize,
+    #[serde(default)]
+    pub doc_scroll: u16,
+    #[serde(default)]
+    pub activity_sel: usize,
+    #[serde(default)]
+    pub testing_sel: usize,
+    #[serde(default)]
+    pub pane_sel: usize,
+    #[serde(default)]
+    pub show_presence: bool,
+    /// Fleet tab (pui-fleet-status-view): the selected agent + the view mode
+    /// ("curated" | "mirror"), so the dashboard restores where it was left.
+    #[serde(default)]
+    pub fleet_agent_sel: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_mode: Option<String>,
+}
+
+/// `GET /api/tui/view-state` → `{ state: {...} }`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ViewStateResponse {
+    #[serde(default)]
+    pub state: ViewState,
+}
+
+/// One saved agent session inside a crew (`tui_crews.members[]`). All optional —
+/// a pane may be a bare shell with no bound agent/harness/plan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrewMember {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// A layout list row (`GET /api/tui/layouts` — summary, no kdl).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LayoutSummary {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LayoutsResponse {
+    #[serde(default)]
+    pub layouts: Vec<LayoutSummary>,
+}
+
+/// A full layout (`GET /api/tui/layouts/:name`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LayoutRow {
+    pub name: String,
+    #[serde(default)]
+    pub kdl: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// A crew list row (`GET /api/tui/crews` — summary, no members).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrewSummary {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    #[serde(default)]
+    pub member_count: u32,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CrewsResponse {
+    #[serde(default)]
+    pub crews: Vec<CrewSummary>,
+}
+
+/// A full crew (`GET /api/tui/crews/:name`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CrewRow {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    #[serde(default)]
+    pub members: Vec<CrewMember>,
+}
+
+/// `GET /api/flags/bootstrap` → `{ flags: {key: bool}, source, evaluatedAt }`.
+/// The read-only Settings tab (P10) renders these. BTreeMap keeps the display
+/// order stable (and tests deterministic).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FlagsResponse {
+    #[serde(default)]
+    pub flags: std::collections::BTreeMap<String, bool>,
+    #[serde(default)]
+    pub source: String,
+}
+
+// ─── Plan-item assignment / claim / liveness (P-005a, tui-workbench-ratatui) ───
+//
+// `GET /api/tui/plan-item-states?harness=&plan=` → the merged per-item disposition
+// from plan-item-assignment-claim-liveness-2026-06-04 (assignment ⋈ live claim).
+// Read-only surface: who a plan item is assigned to + who holds the live lease +
+// whether the harness leases on availability (LOCAL) or activity (SHARED). camelCase
+// wire (the operator DTO's field names).
+
+/// One plan item's merged assignment+claim disposition.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanItemState {
+    pub item_id: String,
+    /// The plan item's effective status (todo/wip/…); null for an orphan record.
+    #[serde(default)]
+    pub item_status: Option<String>,
+    #[serde(default)]
+    pub in_plan: bool,
+    /// pooled | assigned-idle | active | claimed-pooled | claimed-mismatch.
+    #[serde(default)]
+    pub disposition: String,
+    /// Durable assignment (the stable agent-NAME the item belongs to), or null.
+    #[serde(default)]
+    pub assignee_name: Option<String>,
+    /// Live claim holder's display label (ownerLabel ?? owner), or null.
+    #[serde(default)]
+    pub claim_owner: Option<String>,
+    /// Live claim holder's agent-NAME, or null.
+    #[serde(default)]
+    pub claim_owner_name: Option<String>,
+    /// Live claim's declared intent, or null.
+    #[serde(default)]
+    pub claim_intent: Option<String>,
+    /// availability (LOCAL) | activity (SHARED), or null if no live claim.
+    #[serde(default)]
+    pub claim_liveness_mode: Option<String>,
+    /// Live claim's lease expiry (ISO), or null.
+    #[serde(default)]
+    pub claim_expires_ts: Option<String>,
+}
+
+/// `GET /api/tui/plan-item-states` → `{ harness, plan, harnessLivenessMode, items }`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanItemStates {
+    #[serde(default)]
+    pub harness: String,
+    #[serde(default)]
+    pub plan: String,
+    /// availability (LOCAL) | activity (SHARED) — the harness's claim-liveness split.
+    #[serde(default)]
+    pub harness_liveness_mode: String,
+    #[serde(default)]
+    pub items: Vec<PlanItemState>,
+}
+
+// ─── Operator config overview (P10b — read-only slice of the settings port) ───
+//
+// The Settings tab surfaces a READ-ONLY view of the operator's running config: the
+// AI backend + per-role model routing (/api/agent-config) and which speech providers
+// are connected (operator:credentials_status — booleans only, never secret values).
+// The write-side settings (credential entry, OAuth sign-in, device pairing, wake-word)
+// are interactive/desktop-native and intentionally NOT ported to the TUI.
+
+/// The inner `config` of `/api/agent-config`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfigInner {
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub cmd: String,
+    /// Per-pipeline-role model overrides (worker → opus, merge-resolver → opus:xhigh).
+    #[serde(default)]
+    pub models: std::collections::BTreeMap<String, String>,
+    /// Per-chat-surface model (operator → sonnet).
+    #[serde(default)]
+    pub surface_models: std::collections::BTreeMap<String, String>,
+}
+
+/// `GET /api/agent-config` → `{ config: {...}, effectiveBackend, binaries, envOverrides }`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConfigResponse {
+    #[serde(default)]
+    pub config: AgentConfigInner,
+    #[serde(default)]
+    pub effective_backend: String,
+}
+
+/// One provider's credential status from `operator:credentials_status` — whether a
+/// key is set. `masked` is a display hint, never the secret itself.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CredStatus {
+    #[serde(default)]
+    pub set: bool,
+    #[serde(default)]
+    pub masked: Option<String>,
+}
+
+/// The assembled operator-config overview the Settings tab renders. Built in the
+/// client from the agent-config GET + the credentials-status tool (NOT one wire
+/// shape); `providers` is sorted (name, set) for a stable display.
+#[derive(Debug, Clone, Default)]
+pub struct OperatorConfig {
+    pub agent: Option<AgentConfigResponse>,
+    pub providers: Vec<(String, bool)>,
+}
+
+// ─── Fleet status view (pui-fleet-status-view-2026-06-04) ───────────────────────
+//
+// The Fleet tab is a unified, fleet-wide dashboard: plan/work_item progress +
+// subagent status + a live activity overlay (the worker-integration bridge). The
+// DTOs below back it; the view state + render live in `fleet.rs`.
+
+/// Deserialize a possibly-`null` field as its `Default`. serde's
+/// `#[serde(default)]` only fills an ABSENT key — an explicit `null` would still
+/// hard-fail. Used for `itemCounts` (`object | null` on the wire).
+fn null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+/// Per-plan item counts by effectiveStatus, from `/api/admin/plans/list`'s
+/// `itemCounts`. All optional — an empty plan reports `{}` → all-zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ItemCounts {
+    #[serde(default)]
+    pub todo: u32,
+    #[serde(default)]
+    pub wip: u32,
+    #[serde(default)]
+    pub blocked: u32,
+    #[serde(default, rename = "needs-human")]
+    pub needs_human: u32,
+    #[serde(default)]
+    pub done: u32,
+    #[serde(default)]
+    pub dropped: u32,
+    #[serde(default)]
+    pub unknown: u32,
+}
+
+impl ItemCounts {
+    /// All items across every status.
+    pub fn total(&self) -> u32 {
+        self.todo + self.wip + self.blocked + self.needs_human + self.done + self.dropped + self.unknown
+    }
+    /// Items still to do (everything that isn't done or dropped).
+    pub fn remaining(&self) -> u32 {
+        self.total().saturating_sub(self.done + self.dropped)
+    }
+}
+
+/// One row of `work_items:list` (unify-work-items-2026-06-04). The tool wraps
+/// `{ ok, count, items: [...] }` in an MCP envelope (`content[0].text`); the
+/// client unwraps it. Only the fields the fleet view renders are kept.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkItem {
+    pub id: String,
+    /// feature | research-task | chunk | bug | change.
+    #[serde(default)]
+    pub kind: String,
+    /// feature | issue.
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub harness: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    /// Kind-specific lifecycle state (feature: status; issue: open|resolved|closed).
+    #[serde(default)]
+    pub state: String,
+    /// Claimable owner (feature → taken_by; issue → assignee).
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+}
+
+/// Inner JSON of the `work_items:list` envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkItemsPayload {
+    #[serde(default)]
+    pub items: Vec<WorkItem>,
+}
+
+/// One worker-activity row (papercusp-worker-integration-2026-06-04). Emitted by
+/// both `activity:recent` (`{activity:[...]}`) and the `/api/activity/stream` SSE
+/// (`event: activity`). The wire is snake_case; `summary` is already server-side
+/// enriched (e.g. `✎ generated.ts`, `▶ npm test`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityRow {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    /// tool | lifecycle | todos.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    /// JSONB detail — for a `kind:"todos"` row this is `{count,done,todos:[...]}`.
+    #[serde(default)]
+    pub detail: Option<serde_json::Value>,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityRecentPayload {
+    #[serde(default)]
+    pub activity: Vec<ActivityRow>,
+}
+
+/// One todo from a worker's TodoWrite/TaskCreate snapshot (D-004 worker-todo
+/// mirroring), stored in `agent_activity.detail.todos` for a `kind:"todos"` row.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct TodoItem {
+    #[serde(default)]
+    pub content: String,
+    /// pending | in_progress | completed | …
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// A worker's todo snapshot (the `detail` of a `kind:"todos"` activity row).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TodoSnapshot {
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default)]
+    pub done: u32,
+    #[serde(default)]
+    pub todos: Vec<TodoItem>,
+}
+
+/// One salience-ranked fleet signal from the curator's `curation:feed` tool
+/// (curator-operator-2026-06-04). The Fleet **curated** mode renders these as
+/// "what matters across the fleet" (D-006). `disposition` is surface|batch|
+/// suppress; `urgent` marks escalations/blockers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CuratedSignal {
+    #[serde(default)]
+    pub id: String,
+    /// escalation | blocker | decision | completion | progress.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub harness: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub disposition: String,
+    #[serde(default)]
+    pub urgent: bool,
+    #[serde(default)]
+    pub ts: String,
+}
+
+/// Inner JSON of the `curation:feed` MCP envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CurationFeedPayload {
+    #[serde(default)]
+    pub signals: Vec<CuratedSignal>,
+}
+
+// ─── Operator chat pane (tui-operator-surface-2026-06-04) ───
+
+/// A tool the operator called mid-turn — rendered as a chip under its message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatToolCall {
+    pub name: String,
+}
+
+/// One rendered chat message in the operator pane. Built from a persisted turn
+/// (history load) or live during a turn — NOT deserialized directly. While an
+/// assistant message is `streaming`, `content` holds the raw accumulated delta
+/// text (rendered through `chat_tags::live_preview`); once the turn finalizes it
+/// holds the user-visible `<say>` body (`chat_tags::finalize`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    pub tools: Vec<ChatToolCall>,
+    pub streaming: bool,
+}
+
+impl ChatMessage {
+    pub fn user(text: &str) -> Self {
+        Self { role: "user".into(), content: text.into(), tools: Vec::new(), streaming: false }
+    }
+    pub fn assistant(text: &str) -> Self {
+        Self { role: "assistant".into(), content: text.into(), tools: Vec::new(), streaming: false }
+    }
+    /// The in-flight assistant bubble — empty, `streaming`, accumulates deltas.
+    pub fn streaming_assistant() -> Self {
+        Self { role: "assistant".into(), content: String::new(), tools: Vec::new(), streaming: true }
+    }
+}
+
+/// `GET /api/operator/conversations?limit=N` → the workspace's active operator
+/// conversation + recent turns (oldest first). Only the fields the pane needs;
+/// the rest of the conversation/turn shape is ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationLoad {
+    pub conversation: ConversationRef,
+    #[serde(default)]
+    pub turns: Vec<TurnDto>,
+    #[serde(default)]
+    pub has_more_earlier: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConversationRef {
+    pub id: String,
+}
+
+/// One persisted operator turn (`operator_turns`). seq/role/text/tools are what
+/// the pane renders; el_conv_id/audio_url/created_at/source are ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TurnDto {
+    #[serde(default)]
+    pub seq: i64,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub tools: Option<Vec<TurnToolDto>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TurnToolDto {
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `GET /api/operator/conversations/:id/turns?beforeSeq=N&limit=M` → an older
+/// page of turns (oldest first within the page) + whether more exist before it.
+/// The chat pane's load-earlier cursor reads `turns` + `has_more_earlier`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnsPage {
+    #[serde(default)]
+    pub turns: Vec<TurnDto>,
+    #[serde(default)]
+    pub has_more_earlier: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_coord_inbox_shape() {
+        // Trimmed from the /api/coord/inbox HistoryItem shape (snake_case).
+        let j = r#"{"items":[
+            {"ts":"2026-06-04T16:00:00Z","msg_id":"m-1","source":"message","kind":"message",
+             "from":"su-30a41","to":["human"],"plan_slug":null,"harness_slug":"papercup",
+             "summary":"please review the carve","payload":{}},
+            {"ts":"2026-06-04T15:00:00Z","msg_id":"m-2","source":"escalation","kind":"coord-escalation",
+             "from":"su-9e6b8","to":["human"],"summary":"needs a decision","payload":{}}
+        ]}"#;
+        let r: CoordInboxResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.items.len(), 2);
+        assert_eq!(r.items[0].msg_id, "m-1");
+        assert_eq!(r.items[0].from.as_deref(), Some("su-30a41"));
+        assert_eq!(r.items[0].harness_slug.as_deref(), Some("papercup"));
+        assert_eq!(r.items[1].kind, "coord-escalation");
+    }
 
     #[test]
     fn parses_toast_log_shape() {
@@ -359,6 +955,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_tui_panes_payload() {
+        // Mirrors the documented `plugins:tui_panes` inner JSON (camelCase wire).
+        let j = r#"{"panes":[
+            {"pluginName":"my-plugin","slug":"papercup","label":"Logs","icon":"📜",
+             "command":["sh","render.sh"],"cwd":"/repo/papercup"},
+            {"pluginName":"other","slug":"papercup","label":"Watch",
+             "command":["watch","-n1","ls"],"cwd":"/tmp"}
+        ]}"#;
+        let r: TuiPanesPayload = serde_json::from_str(j).unwrap();
+        assert_eq!(r.panes.len(), 2);
+        let p = &r.panes[0];
+        assert_eq!(p.plugin_name, "my-plugin");
+        assert_eq!(p.slug, "papercup");
+        assert_eq!(p.label, "Logs");
+        assert_eq!(p.icon.as_deref(), Some("📜"));
+        assert_eq!(p.command, vec!["sh", "render.sh"]);
+        assert_eq!(p.cwd, "/repo/papercup");
+        // icon is optional; absent → None.
+        assert_eq!(r.panes[1].icon, None);
+        assert_eq!(r.panes[1].command, vec!["watch", "-n1", "ls"]);
+    }
+
+    #[test]
     fn parses_issues_shape() {
         let j = r#"{"issues":[{"id":"I-1","title":"Bug","severity":"major","source":"validator",
             "foundAt":"t","foundDuring":"F-3","status":"open","linkedFeatureId":"F-FIX-1",
@@ -437,5 +1056,324 @@ mod tests {
             serde_json::from_str::<RosterResponse>("{}").unwrap().active.len(),
             0
         );
+    }
+
+    #[test]
+    fn view_state_empty_object_is_default() {
+        // The server returns { state: {} } when nothing's saved.
+        let r: ViewStateResponse = serde_json::from_str(r#"{"state":{}}"#).unwrap();
+        assert_eq!(r.state, ViewState::default());
+        // A missing `state` key also defaults.
+        let r2: ViewStateResponse = serde_json::from_str("{}").unwrap();
+        assert_eq!(r2.state, ViewState::default());
+    }
+
+    #[test]
+    fn view_state_round_trips_and_skips_none() {
+        let vs = ViewState {
+            tab: Some("Sessions".into()),
+            harness: Some("papercup".into()),
+            harness_focus: Some("issues".into()),
+            plan_sel: 2,
+            doc_scroll: 7,
+            show_presence: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&vs).unwrap();
+        // None fields are omitted; defaulted scalars round-trip.
+        assert!(!json.contains("\"harness_focus\":null") || json.contains("issues"));
+        let back: ViewState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, vs);
+    }
+
+    #[test]
+    fn parses_layouts_crews_shapes() {
+        let l: LayoutsResponse = serde_json::from_str(
+            r#"{"layouts":[{"name":"main","description":"my main","updated_at":"2026-06-04T16:00:00Z"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(l.layouts.len(), 1);
+        assert_eq!(l.layouts[0].name, "main");
+
+        let lr: LayoutRow =
+            serde_json::from_str(r#"{"name":"main","kdl":"layout {}","description":null,"updated_at":"t"}"#).unwrap();
+        assert_eq!(lr.kdl, "layout {}");
+
+        let c: CrewsResponse = serde_json::from_str(
+            r#"{"crews":[{"name":"morning","description":null,"layout_name":"main","member_count":2,"updated_at":"t"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(c.crews[0].member_count, 2);
+        assert_eq!(c.crews[0].layout_name.as_deref(), Some("main"));
+
+        let cr: CrewRow = serde_json::from_str(
+            r#"{"name":"morning","layout_name":"main","members":[{"slot":0,"agent":"claude","resume_id":"r1","harness":"papercup"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(cr.members.len(), 1);
+        assert_eq!(cr.members[0].agent.as_deref(), Some("claude"));
+        assert_eq!(cr.members[0].plan, None);
+    }
+
+    #[test]
+    fn empty_crew_members_default() {
+        let cr: CrewRow = serde_json::from_str(r#"{"name":"empty"}"#).unwrap();
+        assert!(cr.members.is_empty());
+        assert_eq!(cr.layout_name, None);
+    }
+
+    #[test]
+    fn parses_flags_bootstrap_shape() {
+        let f: FlagsResponse = serde_json::from_str(
+            r#"{"flags":{"papercusp-oracle":false,"papercusp-snapshots":true},"evaluatedAt":1,"source":"defaults"}"#,
+        )
+        .unwrap();
+        assert_eq!(f.source, "defaults");
+        assert_eq!(f.flags.get("papercusp-snapshots"), Some(&true));
+        assert_eq!(f.flags.get("papercusp-oracle"), Some(&false));
+        // Missing flags map defaults to empty.
+        assert!(serde_json::from_str::<FlagsResponse>("{}").unwrap().flags.is_empty());
+    }
+
+    #[test]
+    fn parses_plan_item_states_shape() {
+        // Mirrors the /api/tui/plan-item-states DTO (camelCase wire): one pooled
+        // item (no assignment/claim) + one active (assigned + live claim by the
+        // assignee, with a liveness mode + intent).
+        let j = r#"{"harness":"papercup","plan":"my-plan","harnessLivenessMode":"availability","items":[
+            {"itemId":"P-001","itemStatus":"todo","inPlan":true,"disposition":"pooled",
+             "assigneeName":null,"claimOwner":null,"claimOwnerName":null,"claimIntent":null,
+             "claimLivenessMode":null,"claimExpiresTs":null},
+            {"itemId":"P-002","itemStatus":"wip","inPlan":true,"disposition":"active",
+             "assigneeName":"builder-1","claimOwner":"su · abc","claimOwnerName":"builder-1",
+             "claimIntent":"building","claimLivenessMode":"activity","claimExpiresTs":"2026-06-04T00:20:00Z"}
+        ]}"#;
+        let r: PlanItemStates = serde_json::from_str(j).unwrap();
+        assert_eq!(r.harness, "papercup");
+        assert_eq!(r.harness_liveness_mode, "availability");
+        assert_eq!(r.items.len(), 2);
+        assert_eq!(r.items[0].item_id, "P-001");
+        assert_eq!(r.items[0].disposition, "pooled");
+        assert_eq!(r.items[0].assignee_name, None);
+        assert_eq!(r.items[1].disposition, "active");
+        assert_eq!(r.items[1].assignee_name.as_deref(), Some("builder-1"));
+        assert_eq!(r.items[1].claim_owner_name.as_deref(), Some("builder-1"));
+        assert_eq!(r.items[1].claim_liveness_mode.as_deref(), Some("activity"));
+        // Missing keys default cleanly (no hard-fail).
+        let e: PlanItemStates = serde_json::from_str("{}").unwrap();
+        assert!(e.items.is_empty());
+    }
+
+    #[test]
+    fn parses_agent_config_shape() {
+        // Trimmed from the live /api/agent-config probe.
+        let j = r#"{"config":{"backend":"claude-code","cmd":"claude -p --model haiku",
+            "models":{"worker":"opus","merge-resolver":"opus:xhigh"},"backends":{},
+            "surfaceModels":{"operator":"sonnet"}},"binaries":{"claude":"/x/claude"},
+            "effectiveBackend":"claude-code","envOverrides":{"AGENT_BACKEND":"claude-code"}}"#;
+        let r: AgentConfigResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.config.backend, "claude-code");
+        assert_eq!(r.effective_backend, "claude-code");
+        assert_eq!(r.config.cmd, "claude -p --model haiku");
+        assert_eq!(r.config.models.get("worker").map(String::as_str), Some("opus"));
+        assert_eq!(r.config.models.get("merge-resolver").map(String::as_str), Some("opus:xhigh"));
+        assert_eq!(r.config.surface_models.get("operator").map(String::as_str), Some("sonnet"));
+        // Empty shape defaults cleanly.
+        assert!(serde_json::from_str::<AgentConfigResponse>("{}").unwrap().config.backend.is_empty());
+    }
+
+    #[test]
+    fn parses_credentials_status_shape() {
+        // Inner JSON of the operator:credentials_status envelope (no secret values).
+        let j = r#"{"openai":{"set":true,"masked":"sk-…abc"},"elevenlabs":{"set":false,"masked":null}}"#;
+        let m: std::collections::BTreeMap<String, CredStatus> = serde_json::from_str(j).unwrap();
+        assert!(m.get("openai").unwrap().set);
+        assert!(!m.get("elevenlabs").unwrap().set);
+        assert_eq!(m.get("openai").unwrap().masked.as_deref(), Some("sk-…abc"));
+        assert_eq!(m.get("elevenlabs").unwrap().masked, None);
+    }
+
+    // --- Fleet status view (pui-fleet-status-view-2026-06-04) ---
+
+    #[test]
+    fn parses_work_items_list_shape() {
+        // Trimmed from the live work_items:list envelope inner JSON.
+        let j = r#"{"ok":true,"count":2,"items":[
+            {"id":"EI-7","kind":"bug","family":"issue","harness":null,"title":"role pin",
+             "summary":"found while…","state":"open","assignee":null,"severity":"major",
+             "parent":null,"payload":null,"createdAt":"2026-06-04T00:00:00Z","updatedAt":"t"},
+            {"id":"F-9","kind":"feature","family":"feature","harness":"papercup","title":"A",
+             "summary":"","state":"passed","assignee":"su-x","severity":null,
+             "createdAt":"t","updatedAt":"t"}
+        ]}"#;
+        let r: WorkItemsPayload = serde_json::from_str(j).unwrap();
+        assert_eq!(r.items.len(), 2);
+        assert_eq!(r.items[0].family, "issue");
+        assert_eq!(r.items[0].state, "open");
+        assert_eq!(r.items[0].severity.as_deref(), Some("major"));
+        assert!(r.items[0].harness.is_none());
+        assert_eq!(r.items[1].family, "feature");
+        assert_eq!(r.items[1].state, "passed");
+        assert_eq!(r.items[1].assignee.as_deref(), Some("su-x"));
+        assert_eq!(r.items[1].harness.as_deref(), Some("papercup"));
+    }
+
+    #[test]
+    fn parses_activity_recent_shape() {
+        // Trimmed from the live activity:recent envelope inner JSON (snake_case);
+        // extra fields (session_id/phase/tool_use_id) are ignored.
+        let j = r#"{"activity":[
+            {"id":"9","owner_id":"su-c8ca5-smoke","agent":"claude","session_id":"live-1",
+             "harness_slug":"papercup","kind":"tool","tool_name":"Bash","phase":"post",
+             "tool_use_id":null,"summary":"▶ npm run test:affected","status":"ok",
+             "detail":{"command":"npm run test:affected"},"cwd":null,
+             "created_at":"2026-06-04 18:53:58.46-04"},
+            {"id":"8","owner_id":"omp-x","agent":"omp","kind":"tool","tool_name":"write",
+             "phase":"pre","summary":"✎ x.ts","detail":null,"created_at":"t"}
+        ],"count":2}"#;
+        let r: ActivityRecentPayload = serde_json::from_str(j).unwrap();
+        assert_eq!(r.activity.len(), 2);
+        assert_eq!(r.activity[0].owner_id, "su-c8ca5-smoke");
+        assert_eq!(r.activity[0].agent.as_deref(), Some("claude"));
+        assert_eq!(r.activity[0].kind, "tool");
+        assert_eq!(r.activity[0].summary.as_deref(), Some("▶ npm run test:affected"));
+        assert!(r.activity[0].detail.is_some());
+        assert_eq!(r.activity[1].agent.as_deref(), Some("omp"));
+    }
+
+    #[test]
+    fn parses_todos_snapshot_detail() {
+        let j = r#"{"count":3,"done":1,"todos":[
+            {"content":"build fleet.rs","status":"in_progress"},
+            {"content":"wire pollers","status":"pending"}
+        ]}"#;
+        let s: TodoSnapshot = serde_json::from_str(j).unwrap();
+        assert_eq!(s.count, 3);
+        assert_eq!(s.done, 1);
+        assert_eq!(s.todos.len(), 2);
+        assert_eq!(s.todos[0].content, "build fleet.rs");
+        assert_eq!(s.todos[0].status.as_deref(), Some("in_progress"));
+    }
+
+    #[test]
+    fn item_counts_total_and_remaining() {
+        let c = ItemCounts {
+            todo: 3,
+            wip: 1,
+            blocked: 0,
+            needs_human: 1,
+            done: 2,
+            dropped: 0,
+            unknown: 0,
+        };
+        assert_eq!(c.total(), 7);
+        assert_eq!(c.remaining(), 5); // total - (done + dropped)
+        // An empty `{}` (a plan with no items) → all-zero.
+        let empty: ItemCounts = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.total(), 0);
+        assert_eq!(empty.remaining(), 0);
+    }
+
+    #[test]
+    fn plan_summary_parses_item_counts_and_priority() {
+        // The plans:list row carries itemCounts (camelCase) + priority; the
+        // `needs-human` key maps to `needs_human`.
+        let j = r#"{"slug":"p","title":"P","status":"active","updated":"t","archived":false,
+            "nextAction":"do","harness":"papercup","priority":5,
+            "itemCounts":{"todo":2,"done":3,"needs-human":1}}"#;
+        let p: PlanSummary = serde_json::from_str(j).unwrap();
+        assert_eq!(p.priority, Some(5));
+        assert_eq!(p.item_counts.done, 3);
+        assert_eq!(p.item_counts.needs_human, 1);
+        assert_eq!(p.item_counts.total(), 6);
+        // A plan list row without itemCounts defaults to all-zero.
+        let q: PlanSummary =
+            serde_json::from_str(r#"{"slug":"q","status":"draft"}"#).unwrap();
+        assert_eq!(q.item_counts.total(), 0);
+        assert_eq!(q.priority, None);
+    }
+
+    #[test]
+    fn plan_summary_tolerates_null_legacy_fields() {
+        // The EXACT live legacy-plan shape that broke plans_typed: title / updated
+        // / itemCounts all null. A non-Option field with only #[serde(default)]
+        // chokes on explicit null and sinks the WHOLE plans list → the Plans +
+        // Fleet tabs blank on real data. Must decode to all-empty defaults.
+        let p: PlanSummary = serde_json::from_str(
+            r#"{"archived":false,"harness":"papercup","isLegacy":true,"itemCounts":null,
+                "nextAction":null,"owner":null,"priority":null,"slug":"legacy-plan",
+                "startStatus":null,"status":"draft","title":null,"updated":null}"#,
+        )
+        .unwrap();
+        assert_eq!(p.slug, "legacy-plan");
+        assert_eq!(p.title, "");
+        assert_eq!(p.updated, "");
+        assert_eq!(p.status, "draft");
+        assert_eq!(p.item_counts.total(), 0);
+        assert_eq!(p.priority, None);
+        // A list mixing null + object itemCounts decodes fully (no row sinks it).
+        let r: PlansResponse = serde_json::from_str(
+            r#"{"plans":[
+                {"slug":"a","status":"active","itemCounts":null},
+                {"slug":"b","status":"active","itemCounts":{"todo":1,"done":2}}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.plans.len(), 2);
+        assert_eq!(r.plans[0].item_counts.total(), 0);
+        assert_eq!(r.plans[1].item_counts.done, 2);
+    }
+
+    #[test]
+    fn parses_conversation_load_shape() {
+        // Trimmed from GET /api/operator/conversations (conversation = ConversationRow,
+        // turns = TurnRow[]; both camelCase, hasMoreEarlier camelCase).
+        let j = r#"{
+            "conversation": {"id":"conv-1","workspaceId":"ws","harnessSlug":null,
+                "title":null,"status":"active","startedAt":1,"endedAt":null,
+                "elConversationIds":[],"hasAudio":false},
+            "turns": [
+                {"id":"t1","conversationId":"conv-1","seq":0,"role":"user","text":"hi",
+                 "source":"text_typed","elConvId":null,"audioUrl":null,"createdAt":1,"tools":null},
+                {"id":"t2","conversationId":"conv-1","seq":1,"role":"assistant","text":"hello there",
+                 "source":"text_typed","createdAt":2,
+                 "tools":[{"name":"harness:list","input":{}}]}
+            ],
+            "hasMoreEarlier": true
+        }"#;
+        let r: ConversationLoad = serde_json::from_str(j).unwrap();
+        assert_eq!(r.conversation.id, "conv-1");
+        assert!(r.has_more_earlier);
+        assert_eq!(r.turns.len(), 2);
+        assert_eq!(r.turns[0].role, "user");
+        assert_eq!(r.turns[1].text, "hello there");
+        assert_eq!(
+            r.turns[1].tools.as_ref().unwrap()[0].name,
+            "harness:list"
+        );
+        assert!(r.turns[0].tools.is_none());
+        // Empty shape (force-created conversation, no turns) still decodes.
+        let e: ConversationLoad =
+            serde_json::from_str(r#"{"conversation":{"id":"c2"},"turns":[]}"#).unwrap();
+        assert_eq!(e.conversation.id, "c2");
+        assert!(!e.has_more_earlier);
+        assert!(e.turns.is_empty());
+    }
+
+    #[test]
+    fn parses_turns_page_shape() {
+        // GET /api/operator/conversations/:id/turns?beforeSeq=N → TurnsPage.
+        let j = r#"{"turns":[
+            {"id":"t","conversationId":"c","seq":3,"role":"user","text":"older","createdAt":1,"tools":null}
+        ],"hasMoreEarlier":true}"#;
+        let p: TurnsPage = serde_json::from_str(j).unwrap();
+        assert!(p.has_more_earlier);
+        assert_eq!(p.turns.len(), 1);
+        assert_eq!(p.turns[0].seq, 3);
+        assert_eq!(p.turns[0].text, "older");
+        // Empty page (tail reached) decodes to defaults.
+        let e: TurnsPage = serde_json::from_str("{}").unwrap();
+        assert!(e.turns.is_empty());
+        assert!(!e.has_more_earlier);
     }
 }

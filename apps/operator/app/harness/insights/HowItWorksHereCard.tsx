@@ -25,6 +25,11 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import type {
+  BranchPolicy,
+  HowItWorksHereConfig,
+  HowItWorksHereCardProps,
+} from '@papercusp/operator-core/lib/harness-insights/card-types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -110,32 +115,7 @@ const README_BODY: CSSProperties = {
   wordBreak: 'break-word',
 };
 
-export type BranchPolicy =
-  | 'feature-branch'
-  | 'main-fast-forward'
-  | 'release-branch';
-
-export interface HowItWorksHereConfig {
-  has_orchestrator: boolean;
-  pr_reviewer_role_enabled: boolean;
-  auto_review: boolean;
-  auto_merge: boolean;
-  merge_method: 'squash' | 'merge' | 'rebase';
-  branch_policy: BranchPolicy;
-}
-
-export interface HowItWorksHereCardProps {
-  harnessName: string;
-  config: HowItWorksHereConfig;
-  /** Optional override of the templated intro paragraph. */
-  customWelcome?: string | null;
-  /**
-   * The repo's README markdown (tier-A — fetched from GitHub), rendered
-   * read-only below the workflow steps for new-joiner orientation (P-004).
-   * Omitted/null → the README section doesn't render.
-   */
-  readme?: string | null;
-}
+export type { BranchPolicy, HowItWorksHereConfig, HowItWorksHereCardProps };
 
 function describeClaim(cfg: HowItWorksHereConfig): string {
   if (cfg.has_orchestrator) {

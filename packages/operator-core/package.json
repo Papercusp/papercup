@@ -1,0 +1,32 @@
+{
+  "name": "@papercusp/operator-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless operator backend — agent-tools, endpoint-route handlers, harness logic, host composition. Zero UI/React dependency; consumed by apps/operator (the UI package) and the desktop sidecar. Carved from apps/operator in SP1 C4 (plan operator-core-headless-serve-2026-06-04). Resolution is via the consumer's tsconfig path / vite alias (source-only, no build); internal imports are relative.",
+  "main": "./lib/index.ts",
+  "types": "./lib/index.ts",
+  "exports": {
+    ".": "./lib/index.ts",
+    "./lib/*": "./lib/*.ts",
+    "./lib/*.ts": "./lib/*.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@papercusp/activity-bridge": "*",
+    "@papercusp/blueprint-distribution": "*",
+    "@papercusp/event-reaction": "*",
+    "@papercusp/rules": "*",
+    "@papercusp/step-program": "*",
+    "@papercusp/locks-core": "*",
+    "@papercusp/structured-concurrency": "*"
+  },
+  "devDependencies": {
+    "@papercusp/test-config": "*",
+    "vitest": "^4.1.4"
+  }
+}

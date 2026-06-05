@@ -22,6 +22,12 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@papercusp/operator-core": [
+        "../../packages/operator-core/lib/index.ts"
+      ],
+      "@papercusp/operator-core/*": [
+        "../../packages/operator-core/*"
       ]
     }
   },

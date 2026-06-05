@@ -1,8 +1,8 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
-import { injectedPref, reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { injectedPref, reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 
 export type VisualEffectsMode = 'system' | 'full' | 'minimal';
 export type EffectiveVisualEffects = 'full' | 'minimal';

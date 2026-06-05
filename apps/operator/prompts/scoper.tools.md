@@ -48,7 +48,7 @@ After scoping, you may delegate validation:
 
 ### Emit a scope proposal as a plan draft (OUTPUT_MODE=plan)
 
-When run.sh passes `OUTPUT_MODE=plan` (set via `.harness/config.json → scoper.outputMode: "plan"`), write proposals through the `plans:*` MCP instead of a filesystem `.md` file.
+When run.sh passes `OUTPUT_MODE=plan` (set via `.papercusp/config.json → scoper.outputMode: "plan"`), write proposals through the `plans:*` MCP instead of a filesystem `.md` file.
 
 1. `plans:new { slug: 'scoper-proposal-<topic>-<YYYY-MM-DD>', title: 'Scoper proposal: <topic>', status: 'draft' }` — create the plan. Topic is ≤3 kebab-case words summarizing the gap.
 2. `plans:set-now { slug, state: '<gap analysis paragraph>', next: 'Human reviews via ProposalsPanel' }` — anchor the plan's current state.
@@ -68,7 +68,7 @@ The plan draft surfaces in the ProposalsPanel UI with `source: scoper`. On accep
 
 When torn between two, pick the higher — but never inflate a routine item to `urgent`; crying wolf trains the human to ignore the signal. Re-rank later with `plans:set-importance`.
 
-Do NOT write `.harness/proposals/<ISO-timestamp>.md` in this mode — the plan draft is the only artifact. Stdout is still `PROPOSE <N>` (N = number of items added).
+Do NOT write `.papercusp/proposals/<ISO-timestamp>.md` in this mode — the plan draft is the only artifact. Stdout is still `PROPOSE <N>` (N = number of items added).
 
 ## Coordination — subscribe, ask, file
 

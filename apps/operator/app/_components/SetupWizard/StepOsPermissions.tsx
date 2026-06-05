@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isTauri, wslStatus, type WslStatus } from '@/lib/wsl-tauri';
+import { isTauri, wslStatus, type WslStatus } from '@papercusp/operator-core/lib/wsl-tauri';
 import { Select } from '@/app/harness/Select';
 
 type PermState = 'unknown' | 'granted' | 'denied' | 'prompt' | 'unsupported';

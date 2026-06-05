@@ -7,7 +7,7 @@
  * + CREATE TABLE IF NOT EXISTS throughout.
  */
 
-import { scaffoldHarnessSchema } from '../lib/scaffold-harness-schema';
+import { scaffoldHarnessSchema } from '@papercusp/operator-core/lib/scaffold-harness-schema';
 
 async function main(): Promise<void> {
   console.log('[scaffold] papercup schema...');

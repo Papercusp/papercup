@@ -27,23 +27,31 @@ done, keep scope tight.
 
 ## Orientation: the nouns you'll navigate
 
-Papercusp manages each project as a **harness** — a repo plus a queue of
-work. The nouns you'll touch:
+Papercusp manages each project as a **Pot** — run by an **operator** that
+creates + supervises **harnesses** (work-pipelines each shaped by a
+**blueprint**). The nouns you'll touch:
 
-- **Harness** — one managed project, identified by a **slug**. Your session
-  may be scoped to one (`ctx.harnessSlug`) or sit at workspace level.
-- **Feature** — a unit of requested work (`F-NNN`-shaped) with a status
-  (`todo`/`validating`/`passed`/`failing`/`deprecated`) + acceptance
-  criteria. `features:get` / `features:search` read them.
-- **Issue** — a known problem in a project (severity + status), a surface
-  separate from feature status. `issues:list`.
-- **Plan** — project history + design intent as markdown under the
-  harness's `docs/plans/`. `plans:*` reads and writes them.
+- **Pot** — a project, run by an operator (the user's single surface); it
+  creates harnesses from blueprints + curates reports
+  (`autoloop-pot-operator-rebuild`, shipping).
+- **Blueprint** — a harness's declarative shape (`base`/`coding`/`research`/
+  `gym`/`review`/…) — work-item kind + roles + spine + triggers + gates +
+  `dispatch:`. `blueprint:validate`/`extend`; `harness:create` instantiates one.
+- **Harness** — one managed work-pipeline, slug-identified, instantiated from a
+  blueprint. Your session may be scoped to one (`ctx.harnessSlug`) or sit at
+  workspace level.
+- **Work item** — the unified unit of work (`work_items:*`), `kind`:
+  **`feature`** (`F-NNN`-shaped, the pipeline's unit) · **`bug`**/**`change`**
+  (formerly *issues*) · `research-task` · `chunk`. Status + acceptance.
+  `features:*`/`issues:*` are legacy per-kind views (`unify-work-items`).
+- **Plan** — project history + design intent, **PG-canonical** (`harness_plans`;
+  the old `docs/plans/*.md` files were removed). `plans:*` reads/writes;
+  `harness:'all'` for Papercusp's own plans.
 - **Doc** — project documentation. `docs:outline` / `get` / `search`.
 
-Feature *state* moves through Papercusp's own pipeline (scoper → architect
-→ worker → validator → reviewer → …); you read it, you don't hand-mutate it
-(see *Where not to go*).
+A `coding` harness's feature *state* moves through its pipeline (scoper →
+architect → worker → validator → reviewer → …); you read it, you don't
+hand-mutate it (see *Where not to go*). Other blueprints have different shapes.
 
 ## Scope: which harness a tool acts on
 
@@ -99,7 +107,7 @@ feature-scoped messages, e.g. `messages:send`).
   before hand-rolling UI, check tokens + the component registry.
 - **`repomix.pack`** — pack a repo (or subset) into one LLM-friendly
   document when you need a holistic view. Inline for small output, else a
-  `.harness/scratch/` path. (Works out of the box.)
+  `.papercusp/scratch/` path. (Works out of the box.)
 - **`notifications:recent`** — the app's recent toast/error stream; first
   stop for "why did the app just error?"
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway OS process by PID to
@@ -216,6 +224,14 @@ when a restart is the unblock.
 Three layers, three jobs — never confuse them. **mem0 = what I know; coord
 = what's happening; insights = how things work.**
 
+> **⚠ mem0 is currently unpopulated — don't rely on it for recall (2026-06-05).**
+> `harness_shared.memory_canonical` is empty (the embedder never ran; stillborn
+> since it replaced PLUR), so `memory:search` returns nothing. The owner
+> **deferred the mem0 integration** ([[docs-and-memory-as-projections-2026-06-05]]
+> D-008) — your durable memory is your **client-native store** (Claude/OMP/Codex
+> file memory) **+ coord + insights**. The mem0 guidance below is the *intended*
+> model, retained for revival; until then treat `memory:*` as a no-op for recall.
+
 **mem0 — semantic memory** (stable curated facts: user prefs, conventions,
 decisions). `memory:remember/search/list/forget/update`. Pass `harness_slug`
 for project facts, omit for personal ones. Write when the user says
@@ -239,7 +255,7 @@ PR-reviewed. Write one short page when you hit something non-obvious that
 would save the next agent an hour. Short factual rules go in mem0;
 ephemeral state in coord. Spec: `papercusp-su-memory-2026-05-25`.
 
-## Coordination: subscribe → ask → file → promote
+## Coordination: subscribe → ask → file
 
 A live **subscribe→inject** substrate routes work across agents by **topic** —
 so you see what's happening in your areas and others see what you discover:
@@ -258,8 +274,26 @@ so you see what's happening in your areas and others see what you discover:
   severity, topics }` (never drop it); `topics:tag` routes any object to an
   area; `issues:claim` before fixing; `issues:close`/`issues:promote { harness }`
   on resolution.
-- **Promote up the chain:** conversation → issue → feature; capture the answer
-  on resolve so the next asker gets a knowledge-first hit.
+- **Papercusp friction → `improvements:capture { kind, title }`** (the
+  self-improvement loop): search-firsts + tags `papercusp-improvement`; `kind=bug`
+  (broken → auto-implement-eligible) vs `change`/`feature` (human-reviewed).
+  `improvements:digest` triages the backlog. (Managed-harness problems still use
+  `issues:create` with that scope.)
+- **Inline-first; escalate only when warranted:** strategy is emergent — do
+  discovered work inline by default; file an issue when out of scope; `issues:promote`
+  an issue to a feature only when it warrants tracked pipeline work (a tool you
+  reach for, not a mandatory chain). Capture the answer on resolve for the next asker.
+
+- **Working a plan item = convert it to a `work_item` first** — a plan item is the
+  *request*, a work_item the *execution unit* (kind + claim/lease + lifecycle).
+  Convert before working; `self`/inline vs a blueprint is just *how*
+  (`unify-work-items` / RFC D-015).
+- **Don't narrate lifecycle in `coord:send`** — it auto-emits
+  (`coord-lifecycle-automation`): a `work_item` reaching `done`/`passed` emits its
+  completion *from structured fields* (record it on the work_item via
+  `work_items:set_state`/`complete`, not a prose "DONE + tested…" send); claim
+  emits "taking X"; `declare-intent` emits focus. Reserve free-text `coord:send`
+  for the genuinely unpredictable (design calls, nuanced reasoning).
 
 Tag topics on what you create, claim before fixing, and check your topic-feed.
 
@@ -319,11 +353,12 @@ BM25) → `search:semantic` if paraphrased → read code at the cited paths
   workspace; attempts to reach others are rejected.
 - **Don't edit Papercusp's source code.** Your workspace's projects are
   your subject of work — not the Papercusp codebase itself.
-- **Don't raw-SQL `harness_features` or other schema-canonical tables.**
-  Feature *state* flows through the pipeline (validator/reviewer/…), not a
-  direct write — `features:*` tools are read-only; the agent-facing write is
-  `messages:send`. The documented verbs emit audit rows + sync
-  invalidation; raw SQL doesn't.
+- **Don't raw-SQL `harness_features` / `engineer_issues` or other
+  schema-canonical tables.** Work-item state flows through the `work_items:*`
+  verbs (`set_state`/`claim`/…); *feature-pipeline* state advances through the
+  pipeline roles (validator/reviewer/…), not a direct write (hand-off is
+  `messages:send`). The documented verbs emit audit rows + sync invalidation;
+  raw SQL doesn't.
 - **Don't default to polling for live updates — push.** When the app must
   push events, default to a push transport keyed to the deployment: **IPC
   events on desktop** (co-located app↔sidecar) and **SSE on web**. Polling

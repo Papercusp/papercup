@@ -275,10 +275,27 @@ interface ConvRow {
   title: string | null;
   state: string;
 }
+interface ConvPost {
+  id: number;
+  author_id: string | null;
+  body: string;
+  created_ts?: string;
+}
 interface ConvDetailT extends ConvRow {
-  topics?: string[];
-  posts?: { id: number; author_id: string | null; body: string }[];
+  body?: string;
+  asker_id?: string;
   accepted_answer?: string | null;
+  topics: string[];
+  posts: ConvPost[];
+  subscriber_count: number;
+}
+// su-9fd2d's conversations:get returns the conversation fields PLUS topics / posts
+// / subscriber_count as TOP-LEVEL siblings (not nested in `conversation`).
+interface ConvGetResponse {
+  conversation?: Omit<ConvDetailT, 'topics' | 'posts' | 'subscriber_count'>;
+  topics?: string[];
+  posts?: ConvPost[];
+  subscriber_count?: number;
 }
 
 function ConversationsPanel() {
@@ -301,7 +318,13 @@ function ConversationsPanel() {
       setDetail(null);
       return;
     }
-    void coord<{ conversation?: ConvDetailT }>('conversations/get', { id: sel }).then((r) => setDetail(r.conversation ?? null));
+    void coord<ConvGetResponse>('conversations/get', { conversation_id: sel }).then((r) =>
+      setDetail(
+        r.conversation
+          ? { ...r.conversation, topics: r.topics ?? [], posts: r.posts ?? [], subscriber_count: r.subscriber_count ?? 0 }
+          : null,
+      ),
+    );
   }, [sel]);
 
   return (
@@ -328,19 +351,26 @@ function ConversationsPanel() {
           <article className="pc-coord__card">
             <header>
               <h2>{detail.title ?? detail.id}</h2>
-              <p className="pc-coord__row-meta">{detail.kind} · {detail.state}</p>
+              <p className="pc-coord__row-meta">
+                {detail.kind} · {detail.state} · {detail.subscriber_count} follower(s)
+                {detail.asker_id ? ` · asked by ${detail.asker_id}` : ''}
+              </p>
             </header>
+            {detail.topics.length > 0 && (
+              <p className="pc-coord__tags">{detail.topics.map((t) => <span key={t} className="pc-coord__tag">#{t}</span>)}</p>
+            )}
+            {detail.body && <p className="pc-coord__body">{detail.body}</p>}
             {detail.accepted_answer && (
               <p className="pc-coord__body"><strong>Accepted:</strong> {detail.accepted_answer}</p>
             )}
             <ol className="pc-coord__thread">
-              {(detail.posts ?? []).map((p) => (
+              {detail.posts.map((p) => (
                 <li key={p.id}>
                   <span className="pc-coord__row-meta">{p.author_id ?? 'unknown'}</span>
                   <p>{p.body}</p>
                 </li>
               ))}
-              {(detail.posts ?? []).length === 0 && <li className="pc-coord__empty">No posts.</li>}
+              {detail.posts.length === 0 && <li className="pc-coord__empty">No posts.</li>}
             </ol>
           </article>
         )}

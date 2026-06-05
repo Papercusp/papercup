@@ -17,9 +17,9 @@
 
 import { useEffect } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
-import { getOrCreateClientId } from './client-id';
-import { lookupIntent } from './intent-registry';
-import { registerBuiltInIntents } from './built-in-intents';
+import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
+import { lookupIntent } from '@papercusp/operator-core/lib/ui/intent-registry';
+import { registerBuiltInIntents } from '@papercusp/operator-core/lib/ui/built-in-intents';
 
 interface IntentMessage {
   id: number;

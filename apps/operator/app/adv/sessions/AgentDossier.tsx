@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { formatRelativeUpdated } from '@/lib/format/relative-time';
+import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import type { RosterEntry } from './SessionsRosterView';
 

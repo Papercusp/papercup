@@ -12,7 +12,7 @@ import {
   type AdminTestStatus,
   type AdminTestSuiteDone,
   type AdminTestSuiteId,
-} from '@/lib/admin-test-suites-shared';
+} from '@papercusp/operator-core/lib/admin-test-suites-shared';
 
 type RunSelection = AdminTestSuiteId | 'all-safe';
 

@@ -108,6 +108,19 @@ CC_POST_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-locks-release.sh"
 # (psu sessions only). Independent of the lock hooks, wired under its own
 # settings.json entry so the two never collide.
 CC_COORD_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-coord-inbox.sh"
+# Separate PostToolUse hook: mirror every native tool call into the cross-CLI
+# ACTIVITY BRIDGE (papercusp-worker-integration-2026-06-04) → the pui fleet view
+# + curator. psu sessions only (scopes itself via PAPERCUSP_SID). Fire-and-forget
+# + detached, so it adds no latency; its own settings.json entry, matcher "*".
+CC_ACTIVITY_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-activity-report.sh"
+# SessionStart/SessionEnd hook: report a worker's session LIFECYCLE (appeared/left)
+# into the activity bridge — a kind='lifecycle' marker for the fleet view.
+CC_LIFECYCLE_HOOK="${CC_HOOK_DEST_DIR}/lifecycle-report.sh"
+# Claude-only progressive enhancement (papercusp-worker-integration D-005): a
+# statusline rendering the cross-CLI fleet glance from the activity bridge.
+# Registered NON-destructively (only when the user has no existing statusLine) so
+# it never clobbers a personal statusline; trivially removable.
+CC_STATUSLINE="${CC_HOOK_DEST_DIR}/statusline-fleet.sh"
 # PreToolUse Bash gate: refuse a raw destructive command (systemctl restart /
 # psql -f / …) that collides with an in-flight EXCLUSIVE hold on a registered
 # named resource (plan named-resource-locks-drain, P-026). Its own settings
@@ -201,6 +214,122 @@ arr = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
 arr.append({'matcher': '*',
             'hooks': [{'type': 'command', 'command': cmd}]})
 hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the activity-report PostToolUse hook as its OWN entry (matcher "*" —
+# every tool, so each native tool call is mirrored into the activity bridge).
+# Idempotent: drops any prior entry pointing at our script, preserves all other
+# hooks, then appends fresh. The hook scopes itself to psu sessions via
+# PAPERCUSP_SID + is fire-and-forget, so it's inert/cheap outside a psu session.
+#   $1 = settings.json path
+merge_activity_hook() {
+  python3 - "$1" "$CC_ACTIVITY_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, activity = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {activity, os.path.basename(activity)}
+
+def is_ours(entry):
+    for h in (entry.get('hooks') or []):
+        if any(o in h.get('command', '') for o in ours):
+            return True
+    return False
+
+# The hook reads PAPERCUSP_SID + cwd from the session env (Claude passes the
+# session env to hooks), so no baking is needed — just the script path.
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in hooks.get('PostToolUse', []) if not is_ours(e)]
+arr.append({'matcher': '*',
+            'hooks': [{'type': 'command', 'command': activity}]})
+hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Merge the lifecycle hook as SessionStart + SessionEnd entries (no tool matcher —
+# these are session events). Idempotent: drops any prior entry pointing at our
+# script, preserves all others. The hook self-gates on PAPERCUSP_SID + reads the
+# event name from stdin, so one script serves both events.
+#   $1 = settings.json path
+merge_lifecycle_hooks() {
+  python3 - "$1" "$CC_LIFECYCLE_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, lifecycle = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {lifecycle, os.path.basename(lifecycle)}
+
+def is_ours(entry):
+    for h in (entry.get('hooks') or []):
+        if any(o in h.get('command', '') for o in ours):
+            return True
+    return False
+
+hooks = cfg.setdefault('hooks', {})
+for event in ('SessionStart', 'SessionEnd'):
+    arr = [e for e in hooks.get(event, []) if not is_ours(e)]
+    arr.append({'hooks': [{'type': 'command', 'command': lifecycle}]})
+    hooks[event] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
+# Register the fleet statusline NON-destructively: set cfg['statusLine'] only when
+# the user has no existing statusLine (never clobber a personal one). Idempotent: a
+# prior install of OUR statusline is overwritten in place; a foreign one is left
+# untouched. Progressive — the baseline never depends on it.
+#   $1 = settings.json path
+merge_statusline() {
+  python3 - "$1" "$CC_STATUSLINE" <<'PYEOF'
+import json, os, sys, time
+path, statusline = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+existing = cfg.get('statusLine')
+mine = isinstance(existing, dict) and statusline in str(existing.get('command', ''))
+if existing and not mine:
+    # A personal/foreign statusLine — leave it; the bridge degrades gracefully.
+    sys.exit(0)
+cfg['statusLine'] = {'type': 'command', 'command': statusline}
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, 'w') as f:
@@ -528,6 +657,18 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/posttooluse-coord-inbox.sh" "$CC_COORD_HOOK"
     chmod 755 "$CC_COORD_HOOK"
   fi
+  if [ -f "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" "$CC_ACTIVITY_HOOK"
+    chmod 755 "$CC_ACTIVITY_HOOK"
+  fi
+  if [ -f "${CC_HOOK_SRC_DIR}/lifecycle-report.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/lifecycle-report.sh" "$CC_LIFECYCLE_HOOK"
+    chmod 755 "$CC_LIFECYCLE_HOOK"
+  fi
+  if [ -f "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/statusline-fleet.sh" "$CC_STATUSLINE"
+    chmod 755 "$CC_STATUSLINE"
+  fi
   if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/pretooluse-bash-resource-gate.sh" "$CC_BASH_GATE_HOOK"
     chmod 755 "$CC_BASH_GATE_HOOK"
@@ -546,9 +687,12 @@ if [ -x "$CC_PRE_HOOK" ]; then
   CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
   merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit"
   [ -x "$CC_COORD_HOOK" ] && merge_coord_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_LIFECYCLE_HOOK" ] && merge_lifecycle_hooks "$CLAUDE_SETTINGS"
+  [ -x "$CC_STATUSLINE" ] && merge_statusline "$CLAUDE_SETTINGS"
   [ -x "$CC_BASH_GATE_HOOK" ] && merge_bash_gate_hook "$CLAUDE_SETTINGS"
   chmod 600 "$CLAUDE_SETTINGS"
-  echo "✓ Merged SU-locks + coord PostToolUse hooks into $CLAUDE_SETTINGS"
+  echo "✓ Merged SU-locks + coord + activity hooks (+ fleet statusline) into $CLAUDE_SETTINGS"
 else
   echo "· Claude lock hooks not installed (no $CC_PRE_HOOK) — skipping settings merge"
 fi

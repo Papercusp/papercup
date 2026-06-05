@@ -16,10 +16,10 @@
  * via the public methods.
  */
 
-import { stripWakeWordAndPrefix } from '../../../lib/wake-word';
-import { getBrowserWorkspaceId, wsLocalKey } from '@/lib/browser-workspace';
-import { createOperatorVoiceTagObserver } from '../../../lib/operator-converse-voice';
-import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-client';
+import { stripWakeWordAndPrefix } from '@papercusp/operator-core/lib/wake-word';
+import { getBrowserWorkspaceId, wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { createOperatorVoiceTagObserver } from '@papercusp/operator-core/lib/operator-converse-voice';
+import { persistOperatorVoiceTurn } from '@papercusp/operator-core/lib/operator-conversation-client';
 // Statically imported — neither sibling imports voice-mode, so there is no
 // cycle. (Were CJS require()s, which are undefined in the Vite browser bundle.)
 import { loadVoicePrefsClient } from './voice-prefs-client';
@@ -37,7 +37,7 @@ import {
   type PttRawCaptureResult,
 } from './ptt-capture';
 import { f32ToWav } from './f32-to-wav';
-import { transcribeChunk } from '../../../lib/voice-engines/whisper';
+import { transcribeChunk } from '@papercusp/operator-core/lib/voice-engines/whisper';
 import { startEnergyVadCapture } from './energy-vad-capture';
 
 /**
@@ -831,14 +831,15 @@ export function nudgeFullAgentIdle(): void {
 }
 
 /**
- * Drain the delegate-inbox into the live EL session. Folds all pending
- * notifications into a single contextual update so the agent gets one
+ * Drain the operator's coord-inbox hindsight channel into the live EL session
+ * (collapse-delegate D-003 — replaced the bespoke delegate-inbox poll). Folds all
+ * pending notifications into a single contextual update so the agent gets one
  * compact briefing, not a flood. No-op if nothing pending or no session.
  */
-async function drainDelegateInboxOnConnect(): Promise<void> {
+async function drainHindsightOnConnect(): Promise<void> {
   if (!realtimeSession?.sendSystem) return;
   try {
-    const r = await fetch('/api/agent-mcp/delegate-inbox?drain=1');
+    const r = await fetch('/api/agent-mcp/operator-hindsight?drain=1');
     if (!r.ok) return;
     const data = await r.json();
     const items: Array<{ headline: string }> = data?.items ?? [];
@@ -916,7 +917,7 @@ async function startWakeWordGate(prefs: any): Promise<boolean> {
       }
       const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
       if (!apiKey) return false;
-      const { startWakeWordDetection } = await import('../../../lib/voice-engines/porcupine');
+      const { startWakeWordDetection } = await import('@papercusp/operator-core/lib/voice-engines/porcupine');
       wakeGateHandle = await startWakeWordDetection({
         accessKey: apiKey,
         keyword: prefs.porcupineKeyword ?? 'Computer',
@@ -924,7 +925,7 @@ async function startWakeWordGate(prefs: any): Promise<boolean> {
         onError: (err) => console.warn('[wake-gate]', err),
       });
     } else if (engine === 'openwakeword') {
-      const { startOpenWakeWordDetection } = await import('../../../lib/voice-engines/openwakeword');
+      const { startOpenWakeWordDetection } = await import('@papercusp/operator-core/lib/voice-engines/openwakeword');
       wakeGateHandle = await startOpenWakeWordDetection({
         keyword: prefs.openwakewordKeyword ?? 'hey_jarvis',
         threshold: 0.5,
@@ -1094,7 +1095,7 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
       return false;
     }
     stage = 'connect';
-    const { startRealtimeSession } = await import('../../../lib/voice-engines/openai-realtime');
+    const { startRealtimeSession } = await import('@papercusp/operator-core/lib/voice-engines/openai-realtime');
     // Same tag observer as the EL Conv AI path — operator can flip
     // mode / set sleep timer via tags emitted in either voice engine.
     const realtimeTagObserver = createOperatorVoiceTagObserver();
@@ -1250,7 +1251,7 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         return false;
       }
     }
-    const { startElevenLabsConv } = await import('../../../lib/voice-engines/elevenlabs-conv');
+    const { startElevenLabsConv } = await import('@papercusp/operator-core/lib/voice-engines/elevenlabs-conv');
     const tabId = getOrAssignTabId();
     // Voice-side bridge to the operator-converse tag dispatcher. When
     // the agent emits a turn that contains <set_mode>/<sleep> tags
@@ -1293,7 +1294,7 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         // arrived while no session was live. Done after a small delay so
         // the SDK is past the "first turn" handshake before we shove a
         // contextual update in.
-        setTimeout(() => { void drainDelegateInboxOnConnect(); }, 1500);
+        setTimeout(() => { void drainHindsightOnConnect(); }, 1500);
       },
       onDisconnect: () => {
         const aliveMs = elConnectedAt > 0 ? Date.now() - elConnectedAt : 0;
@@ -1487,8 +1488,8 @@ if (typeof window !== 'undefined') {
       // the elected leader for the workspace. Cross-process callers
       // (Oracle MCP, EL webhook, Pi) deliver 'browser:required' commands
       // through this bridge. See plan §3.3.
-      const { startLeaderBridge } = await import('../../../lib/commands/leader-bridge');
-      await import('../../../lib/commands/defs');
+      const { startLeaderBridge } = await import('@papercusp/operator-core/lib/commands/leader-bridge');
+      await import('@papercusp/operator-core/lib/commands/defs');
       let teardown: (() => void) | null = null;
       const leaderListeners = new Set<() => void>();
       const bridgeOpts = {
@@ -1540,7 +1541,7 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
     const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
     if (!apiKey) return false;
     try {
-      const { startWakeWordDetection } = await import('../../../lib/voice-engines/porcupine');
+      const { startWakeWordDetection } = await import('@papercusp/operator-core/lib/voice-engines/porcupine');
       porcupineHandle = await startWakeWordDetection({
         accessKey: apiKey,
         keyword: prefs.porcupineKeyword ?? 'Computer',
@@ -1560,7 +1561,7 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
   if (engine === 'openwakeword') {
     // No key required — Apache 2.0, models downloaded from upstream release.
     try {
-      const { startOpenWakeWordDetection } = await import('../../../lib/voice-engines/openwakeword');
+      const { startOpenWakeWordDetection } = await import('@papercusp/operator-core/lib/voice-engines/openwakeword');
       porcupineHandle = await startOpenWakeWordDetection({
         keyword: prefs.openwakewordKeyword ?? 'hey_jarvis',
         threshold: 0.5,
@@ -1643,7 +1644,7 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
       if (!bootR?.ok) { startWakeWordListening(); return; }
       const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
       if (!apiKey) { startWakeWordListening(); return; }
-      const { startDeepgramStream } = await import('../../../lib/voice-engines/deepgram');
+      const { startDeepgramStream } = await import('@papercusp/operator-core/lib/voice-engines/deepgram');
       whisperCapture = await startDeepgramStream({
         apiKey,
         onFinal: (text) => {
@@ -1991,7 +1992,7 @@ async function maybeStartCaptureForPtt(): Promise<void> {
     if (apiKey) {
       // Hand the mic from the raw capture over to Deepgram's own stream.
       if (pttRawCapture) { try { pttRawCapture.stop(); } catch { /* ignore */ } pttRawCapture = null; }
-      const { startDeepgramStream } = await import('../../../lib/voice-engines/deepgram');
+      const { startDeepgramStream } = await import('@papercusp/operator-core/lib/voice-engines/deepgram');
       whisperCapture = await startDeepgramStream({
         apiKey,
         onFinal: (text) => { setState({ lastTranscript: text }); onUtteranceFinal(text); },

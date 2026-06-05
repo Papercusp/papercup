@@ -1,5 +1,8 @@
-// First import, before any route module or dependency evaluates: install
-// the `Buffer` global that Vite (unlike Next's webpack) does not provide.
+// First imports, before any route module or dependency evaluates: install the
+// Node globals that Vite (unlike Next's webpack) does not provide — `process`
+// (operator code reads `process.env.*` at module-eval; see process-polyfill.ts)
+// and `Buffer`.
+import './process-polyfill';
 import './buffer-polyfill';
 // Inject Papercup's grid palette before any grid renders (grid-core went
 // brand-agnostic; see grid-colors.ts).

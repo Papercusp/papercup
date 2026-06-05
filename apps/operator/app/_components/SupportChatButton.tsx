@@ -8,8 +8,8 @@
  */
 
 import type { ReactNode } from 'react';
-import { shouldFallbackToSupportRoute } from '../../lib/ui/desktop-static-host';
-import { navigateClient } from '../../lib/client-navigation';
+import { shouldFallbackToSupportRoute } from '@papercusp/operator-core/lib/ui/desktop-static-host';
+import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 
 interface Props {
   children?: ReactNode;

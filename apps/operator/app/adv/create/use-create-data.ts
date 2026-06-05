@@ -34,7 +34,7 @@ import {
   type HarnessNodeForScope,
   HARNESS_SCOPE_MODES,
   type HarnessScopeMode,
-} from '@/lib/harness/scope';
+} from '@papercusp/operator-core/lib/harness/scope';
 
 /* ── Item-status filter facets (mirror PlansClient) ──────────────────── */
 

@@ -146,7 +146,7 @@ export default function ManifestSpecEditor({
         {/* Section tabs: Settings / Memory / Prompts.
             Restored 2026-05-01: Memory + Prompts disappeared when this template-driven
             editor took over from <SpecEditor> for harnesses that ship configFiles. The
-            underlying state files (.harness/memory/*, .harness/prompts/<role>.md) are
+            underlying state files (.papercusp/memory/*, .papercusp/prompts/<role>.md) are
             still actively read/written by the substrate; only the UI was missing. */}
         <div className="h-manifest-section-tabs" style={{ display: 'flex', gap: '0.35rem', padding: 0, borderBottom: 'none', background: 'transparent' }}>
           {SECTIONS.map((s) => {

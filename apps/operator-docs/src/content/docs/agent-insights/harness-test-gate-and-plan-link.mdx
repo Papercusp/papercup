@@ -24,11 +24,11 @@ the only thing that links plans, features, tests, and the validator:
   `Evidence:` / `Status:` / optional `RequiresTest:`). `plans:promote` parses
   them (`lib/agent-tools/plans/val-assertions.ts`) and writes them to PG.
 - **Feature** carries them in `claims[]` (set by `plans:promote`).
-- **Test** declares `coversVALs[]` in `.harness/tests.json`.
+- **Test** declares `coversVALs[]` in `.papercusp/tests.json`.
 - **Validator** resolves them by id to decide pass/fail.
 
 <Aside type="caution" title="VALs live in harness_plan_assertions">
-Do **not** read `.harness/validation-contract.md` (retired by
+Do **not** read `.papercusp/validation-contract.md` (retired by
 plans-central-harness-ux-2026-05-26 D-005) and do **not** add a
 `validation_criteria` table (the original plan proposed one; it was dropped).
 The canonical store is `harness_shared.harness_plan_assertions`, keyed by
@@ -48,7 +48,7 @@ on tests:
    `packages/orchestrator/src/main-loop.ts` dispatches the `tester` role; bash
    `run.sh` is retired. The prompt just needed to start emitting it.)
 2. The **tester** (`staging/tester.md`) writes one black-box test per VAL,
-   registers it in `.harness/tests.json` with `coversVALs`, exits.
+   registers it in `.papercusp/tests.json` with `coversVALs`, exits.
 3. Once every test-requiring VAL has a passing test, the orchestrator sends the
    feature to the **validator** (`staging/validator.md` V2), whose primary gate
    is **running** the VAL-covering tests. An untested required claim is a FAIL.

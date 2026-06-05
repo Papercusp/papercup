@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { shouldEnableSupportWidget } from '../../lib/ui/desktop-static-host';
+import { shouldEnableSupportWidget } from '@papercusp/operator-core/lib/ui/desktop-static-host';
 
 declare global {
   interface Window {

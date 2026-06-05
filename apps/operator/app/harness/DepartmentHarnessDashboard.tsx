@@ -81,10 +81,10 @@ export default function DepartmentHarnessDashboard({ harnessSlug, departmentSlug
   //   <org-root>/charter.md          → org_charter
   //   <org-root>/departments.json    → org_departments
   //   <org-root>/projects.json       → org_projects
-  //   <dept>/.harness/inbox-view.jsonl   → org_inbox  (per dept_slug)
-  //   <dept>/.harness/outbox-view.jsonl  → org_outbox (per dept_slug)
-  //   <dept>/.harness/director-notes.md  → org_notes
-  //   <dept>/.harness/decision-log.md    → org_decisions
+  //   <dept>/.papercusp/inbox-view.jsonl   → org_inbox  (per dept_slug)
+  //   <dept>/.papercusp/outbox-view.jsonl  → org_outbox (per dept_slug)
+  //   <dept>/.papercusp/director-notes.md  → org_notes
+  //   <dept>/.papercusp/decision-log.md    → org_decisions
   // The 30s setInterval is gone.
   const { data: charterRows } = useSyncQuery<{ content: string }>({
     queryName: 'orgCharter.byOrg',

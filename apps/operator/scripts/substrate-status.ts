@@ -22,7 +22,7 @@
  * thin fetch + print wrapper.
  */
 
-import { formatSubstrateStatus } from '../lib/sync/hyperbee/format-cli';
+import { formatSubstrateStatus } from '@papercusp/operator-core/lib/sync/hyperbee/format-cli';
 
 const baseUrl = (process.env.PAPERCUSP_API_BASE ?? 'http://127.0.0.1:3070').replace(
   /\/$/,

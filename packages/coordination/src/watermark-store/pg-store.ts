@@ -21,9 +21,9 @@ import {
   mergeWatermark,
   normaliseWatermark,
   type Watermark,
-} from '../core/watermark';
+} from '@papercusp/pubsub-substrate/core';
 import { DEFAULT_COORD_WORKSPACE } from '../event-log/pg-log';
-import type { WatermarkStore } from './types';
+import type { WatermarkStore } from '@papercusp/pubsub-substrate/watermark-store';
 
 export interface PgWatermarkStoreOptions {
   /** The org Postgres handle (postgres-js tagged template). Called per use. */
@@ -89,7 +89,7 @@ export class PgWatermarkStore implements WatermarkStore {
     const next = mergeWatermark(await this.read(ownerId), patch);
     await sql`
       INSERT INTO harness_shared.coord_watermarks (workspace_id, owner_id, surfaces, updated_at)
-      VALUES (${this.ws}, ${ownerId}, ${JSON.stringify(next)}::jsonb, now())
+      VALUES (${this.ws}, ${ownerId}, ${JSON.stringify(next)}::text::jsonb, now())
       ON CONFLICT (workspace_id, owner_id)
       DO UPDATE SET surfaces = EXCLUDED.surfaces, updated_at = now()
     `;

@@ -7,7 +7,7 @@
  *   P-029a: nine-step flow renders sequentially; back preserves state.
  *   P-029b: step 2 existing-binding → "Join existing" alert.
  *   P-029c: step 7 privacy confirm-modal copy matches v5 §5 verbatim.
- *   P-029e: step 9 .harness/shared.json + harness link + clipboard.
+ *   P-029e: step 9 .papercusp/shared.json + harness link + clipboard.
  *
  * Uses @testing-library/react + vitest only (no jest-dom).
  *
@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ShareWizard, type BindingResolveResult } from '../ShareWizard';
-import type { ShareWizardState } from '@/lib/harness/share-wizard-step-types';
+import type { ShareWizardState } from '@papercusp/operator-core/lib/harness/share-wizard-step-types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -370,7 +370,7 @@ describe('P-029c — privacy confirm copy', () => {
   });
 });
 
-// ── P-029e — finalize: link + clipboard + .harness/shared.json write ─────
+// ── P-029e — finalize: link + clipboard + .papercusp/shared.json write ─────
 
 describe('P-029e — finalize step', () => {
   it('finalize writes shared.json, builds the harness link, copies on demand', async () => {

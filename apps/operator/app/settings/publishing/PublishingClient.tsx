@@ -91,7 +91,7 @@ export default function PublishingClient() {
       {!registered && (
         <div className="pc-callout pc-callout-info">
           <strong>Not yet registered.</strong> Open a coding harness, enable the{' '}
-          <code>@papercupai/cloudflare-pages-hosted</code> plugin, and click
+          <code>@papercupai/cloudflare-pages</code> plugin, and click
           Publish. The substrate will register a tenant automatically.
         </div>
       )}
@@ -148,7 +148,7 @@ export default function PublishingClient() {
             and <code>byoCloudflareAccountId</code>. When both are set, the
             substrate publishes directly to your own Cloudflare account and{' '}
             <strong>does not</strong> contact <code>{creds?.publishHost ?? 'publish.papercuspai.com'}</code>.
-            See <code>libs/papercusp/plugins/cloudflare-pages-hosted/README.md</code>.
+            See <code>libs/papercusp/plugins/cloudflare-pages/README.md</code>.
           </p>
         </Collapsible.Content>
       </Collapsible.Root>

@@ -7,20 +7,40 @@
 
 import type { Env } from './env.ts';
 
+/** The four storefront listing kinds (migration 004 / D-005). */
+export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin'] as const;
+export type ListingKind = (typeof LISTING_KINDS)[number];
+
+export function isListingKind(v: unknown): v is ListingKind {
+  return typeof v === 'string' && (LISTING_KINDS as readonly string[]).includes(v);
+}
+
 export interface HarnessRow {
   id: string;
+  /** Storefront kind (migration 004). Default 'harness' for pre-004 rows. */
+  listing_kind: ListingKind;
+  /** Papercupai project remote id this listing belongs to (D-008). null = legacy/standalone. */
+  project_ref: string | null;
+  /** Within-project discriminator (blueprint stream / snapshot id / plugin slug). null for the canonical harness listing. */
+  listing_ref: string | null;
   github_repository_id: number;
   github_owner: string;
   github_name: string;
   github_url: string;
   title: string;
   description: string | null;
-  topic_hex: string;
+  topic_hex: string | null;              // join topic; required only for kind='harness' (migration 004 made it nullable)
   publisher_github_user_id: number;
   publisher_github_login: string;
   publisher_permission: string | null;   // GitHub perm at publish: admin|maintain|write|triage|read|none; null = legacy/unknown
   publisher_device_pubkey: string | null;        // channel-2 device Ed25519 pubkey (base64); null = none provided
   publisher_attestation_gist_id: string | null;  // gist binding device_pubkey ↔ login; verified/revoked by the indexer
+  // Snapshot tarball blob pointer (migration 005). NULL for non-snapshot kinds
+  // and snapshot listings without a blob. The tarball lives in R2 (binding
+  // SNAPSHOTS), content-addressed; the fork side fetches + verifies against the hash.
+  tarball_r2_key: string | null;          // R2 object key, `snapshots/<sha256>.tar.gz`
+  tarball_content_hash: string | null;    // sha256 of the tarball (hex)
+  tarball_bytes: number | null;           // tarball size in bytes
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
   claimant_github_user_id: number | null;
   claimant_github_login: string | null;
@@ -51,18 +71,29 @@ export interface ReportRow {
 
 export interface NewHarnessInput {
   id: string;
+  /** Storefront kind (migration 004). Defaults to 'harness' when omitted. */
+  listing_kind?: ListingKind;
+  /** Papercupai project remote id (D-008). */
+  project_ref?: string | null;
+  /** Within-project discriminator (blueprint stream / snapshot id / plugin slug). */
+  listing_ref?: string | null;
   github_repository_id: number;
   github_owner: string;
   github_name: string;
   github_url: string;
   title: string;
   description: string | null;
-  topic_hex: string;
+  /** Required only for kind='harness'; null for the fork/install kinds. */
+  topic_hex: string | null;
   publisher_github_user_id: number;
   publisher_github_login: string;
   publisher_permission?: string | null;
   publisher_device_pubkey?: string | null;
   publisher_attestation_gist_id?: string | null;
+  /** Snapshot tarball blob pointer (migration 005); snapshot kind only. */
+  tarball_r2_key?: string | null;
+  tarball_content_hash?: string | null;
+  tarball_bytes?: number | null;
   created_at: number;
 }
 
@@ -70,16 +101,21 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
   await db
     .prepare(
       `INSERT INTO harnesses
-         (id, github_repository_id, github_owner, github_name, github_url,
+         (id, listing_kind, project_ref, listing_ref,
+          github_repository_id, github_owner, github_name, github_url,
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
+          tarball_r2_key, tarball_content_hash, tarball_bytes,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
+      h.listing_kind ?? 'harness',
+      h.project_ref ?? null,
+      h.listing_ref ?? null,
       h.github_repository_id,
       h.github_owner,
       h.github_name,
@@ -92,6 +128,9 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.publisher_permission ?? null,
       h.publisher_device_pubkey ?? null,
       h.publisher_attestation_gist_id ?? null,
+      h.tarball_r2_key ?? null,
+      h.tarball_content_hash ?? null,
+      h.tarball_bytes ?? null,
       h.created_at,
       h.created_at,
     )
@@ -106,12 +145,24 @@ export async function getHarnessById(db: D1Database, id: string): Promise<Harnes
   return row ?? null;
 }
 
+/**
+ * Look up the shared-HARNESS listing bound to a repo. Scoped to
+ * listing_kind='harness' because, post-migration-004, the same project-remote
+ * repo id can host N non-harness listings (blueprints/snapshots/plugins) — but
+ * the "one shared-harness per repo" 1:1 invariant (binding lookup + harness
+ * publish dedup) still holds. An active (listed) row wins over an unlisted one.
+ */
 export async function getHarnessByGithubRepoId(
   db: D1Database,
   github_repository_id: number,
 ): Promise<HarnessRow | null> {
   const row = await db
-    .prepare('SELECT * FROM harnesses WHERE github_repository_id = ?')
+    .prepare(
+      `SELECT * FROM harnesses
+         WHERE github_repository_id = ? AND listing_kind = 'harness'
+         ORDER BY (unlisted_at IS NULL) DESC
+         LIMIT 1`,
+    )
     .bind(github_repository_id)
     .first<HarnessRow>();
   return row ?? null;
@@ -122,6 +173,10 @@ export interface ListOpts {
   cursor?: number | null;          // pagination by last_activity_at DESC, secondary id
   search?: string;
   claim_status?: 'unclaimed' | 'claimed';
+  /** Filter to one storefront kind (migration 004). Omit for all kinds. */
+  kind?: ListingKind;
+  /** Filter to one project remote (D-008 project rollup). */
+  project_ref?: string;
 }
 
 export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<HarnessRow[]> {
@@ -129,6 +184,14 @@ export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<Har
   // Static SQL avoids D1's prepared-statement string concat tax; we filter unlisted always.
   const where: string[] = ['unlisted_at IS NULL'];
   const binds: unknown[] = [];
+  if (opts.kind) {
+    where.push('listing_kind = ?');
+    binds.push(opts.kind);
+  }
+  if (opts.project_ref) {
+    where.push('project_ref = ?');
+    binds.push(opts.project_ref);
+  }
   if (opts.cursor != null) {
     where.push('(last_activity_at IS NULL OR last_activity_at < ?)');
     binds.push(opts.cursor);
@@ -149,6 +212,54 @@ export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<Har
   const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(...binds);
   const res = await bound.all<HarnessRow>();
   return res.results ?? [];
+}
+
+/**
+ * Dedup lookup for a non-harness listing: the active row matching
+ * (repo, kind, listing_ref) — the uniqueness key of
+ * `harnesses_active_listing_unique`. (Harness-kind dedup keeps using
+ * getHarnessByGithubRepoId, which matches the 1:1 harness-repo index.)
+ */
+export async function getActiveListingByRefs(
+  db: D1Database,
+  github_repository_id: number,
+  listing_kind: ListingKind,
+  listing_ref: string,
+): Promise<HarnessRow | null> {
+  const row = await db
+    .prepare(
+      `SELECT * FROM harnesses
+         WHERE github_repository_id = ? AND listing_kind = ? AND listing_ref = ?
+           AND unlisted_at IS NULL
+         LIMIT 1`,
+    )
+    .bind(github_repository_id, listing_kind, listing_ref)
+    .first<HarnessRow>();
+  return row ?? null;
+}
+
+/**
+ * Count active (listed) listings that reference an R2 snapshot tarball key.
+ * Two callers, both R2 blob-lifecycle (migration 005):
+ *   - the blob GET visibility gate — serve the tarball only if a LIVE listing
+ *     points at it (so unlisting a snapshot also makes its bytes unreachable);
+ *   - the unlist blob-GC — after marking a listing unlisted, delete the R2 blob
+ *     iff this returns 0 (no remaining active listing references the key). The
+ *     key is content-addressed, so two listings of the same tarball share it;
+ *     the refcount keeps a sibling's blob alive.
+ */
+export async function countActiveListingsByTarballKey(
+  db: D1Database,
+  tarballKey: string,
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM harnesses
+         WHERE tarball_r2_key = ? AND unlisted_at IS NULL`,
+    )
+    .bind(tarballKey)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
 }
 
 export async function markHarnessUnlisted(

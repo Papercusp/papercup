@@ -4,7 +4,7 @@
  * Throwaway. Delete after P5 triage closes.
  */
 import { writeFileSync } from 'node:fs';
-import { buildOperatorPrompt } from '@/lib/agent-tools/operator/converse-prompt';
+import { buildOperatorPrompt } from '@papercusp/operator-core/lib/agent-tools/operator/converse-prompt';
 
 async function main() {
   const { systemPromptText, userPromptText } = await buildOperatorPrompt(

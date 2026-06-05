@@ -4,7 +4,7 @@ import dynamic from '@/lib/router-compat/dynamic';
 import { parseAsString, useQueryState } from 'nuqs';
 import { CommitDetail } from '@papercusp/git-graph';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import { crossOriginUrl } from '@/lib/cross-origin-url';
+import { crossOriginUrl } from '@papercusp/operator-core/lib/cross-origin-url';
 
 const GitGraphPanelLib = dynamic(
   () => import('@papercusp/git-graph').then((m) => ({ default: m.GitGraphPanel })),

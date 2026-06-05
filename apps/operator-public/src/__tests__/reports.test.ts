@@ -76,7 +76,7 @@ describe('POST /reports', () => {
     const { env } = makeEnv([]);
     const res = await post(env, { harness_id: 'h1', reason: 'spam' }, {});
     expect(res.status).toBe(401);
-    expect((await res.json()).reason).toBe('missing_bearer');
+    expect((await res.json() as { reason: string }).reason).toBe('missing_bearer');
   });
 
   it('401 when GitHub rejects the token', async () => {
@@ -104,7 +104,7 @@ describe('POST /reports', () => {
     const { env, reports, audits } = makeEnv([{ id: 'h1' }]);
     const res = await post(env, { harness_id: 'h1', reason: '  abusive  ' });
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await res.json() as { ok: boolean; id: string };
     expect(body.ok).toBe(true);
     expect(typeof body.id).toBe('string');
     expect(reports).toHaveLength(1);

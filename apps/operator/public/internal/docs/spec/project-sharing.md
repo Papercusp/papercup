@@ -41,7 +41,7 @@ two top-right buttons: **Save snapshot** (this spec) and **Publish website**
 * §15.4: `.git/` excluded by default; substrate-controlled
   `git-filter-repo` invocation on a copy when user opts in (operators
   never directly run filter-repo themselves)
-* §15.4: `agent_chats.transcript` and `.harness/notes/*` defaults aligned
+* §15.4: `agent_chats.transcript` and `.papercusp/notes/*` defaults aligned
   (both excluded by default; opt-in triggers second-tier scan)
 * §15.4: 1GB hard cap / 200MB soft cap pre-tarball, checked at staging
   walk before tarball composition
@@ -122,7 +122,7 @@ Without this, sharing in-progress work requires a manual `pg_dump` + tarball
 * One click from the harness header → published snapshot in the marketplace.
 * One click from a snapshot's marketplace listing → fork installed locally.
 * The fork captures **everything** needed to continue the mission: source
-  code, git history, harness-state DB rows, `.harness/` operator artifacts,
+  code, git history, harness-state DB rows, `.papercusp/` operator artifacts,
   curated PM specs, plugin enablement, model preferences.
 * Default-private; explicit opt-in to publish publicly.
 * Pre-publish secret redaction is mandatory and visible.
@@ -233,7 +233,7 @@ snapshot-<slug>-<short-hash>.tar.gz
 │   ├── shared-pending_events.csv
 │   ├── shared-routines.csv
 │   ├── db.sql.gz              ← pg_dump of harness_<slug>.* only
-│   └── harness/               ← .harness/ subset
+│   └── harness/               ← .papercusp/ subset
 │       ├── notes/             ← operator notes per feature
 │       ├── memory/            ← curator output
 │       ├── proposals/         ← scope-expansion proposals
@@ -265,7 +265,7 @@ Notably **excluded** by default:
   (transcripts often contain user-typed secrets — pasted API keys in
   natural-language messages — that trufflehog's verifier patterns won't
   catch).
-* **`.harness/notes/*` — excluded by default. Opt-in to include.** Same
+* **`.papercusp/notes/*` — excluded by default. Opt-in to include.** Same
   reasoning as transcripts; same opt-in flow + second-tier scan.
 * Plugin grants from `~/.papercusp/granted-capabilities.json` — consumer
   re-consents fresh
@@ -339,7 +339,7 @@ order; no pluggable actions in v1.
    explicitly accepted it. Consumer's restore pass refuses to install
    a `partial=true` snapshot without explicit `--accept-partial` flag.
 
-2. **Stage directory.** Create `<projectDir>/.harness/snapshot-staging/`.
+2. **Stage directory.** Create `<projectDir>/.papercusp/snapshot-staging/`.
 
 3. **DB capture — per-harness schema.**
    ```bash
@@ -624,7 +624,7 @@ captured state. Hardcoded sequence; mirrors Discourse's `Restorer#run`.
    See §15.11 for full schema-migration model.
 
 9. **Slug rewrite pass over text artifacts (structured contexts only).**
-   Walk `.harness/notes/`, `.harness/memory/`, prompts,
+   Walk `.papercusp/notes/`, `.papercusp/memory/`, prompts,
    validation-contract.md, etc. Naive substring rewrite would re-introduce
    the same bug ALTER SCHEMA was designed to avoid (slug `sheet` inside
    words like `worksheet`, `cheatsheet`, `spreadsheet` would corrupt).
@@ -648,9 +648,9 @@ captured state. Hardcoded sequence; mirrors Discourse's `Restorer#run`.
 
    ```text
    Found 7 ambiguous matches of 'sheets' in unstructured text:
-     .harness/memory/raw.md:142 — code fence quoting "harness_sheets"
+     .papercusp/memory/raw.md:142 — code fence quoting "harness_sheets"
        as documentation example. Rewrite? [y/N]
-     .harness/notes/F-FIX-016.md:23 — prose: "the sheets harness has..."
+     .papercusp/notes/F-FIX-016.md:23 — prose: "the sheets harness has..."
        Rewrite? [y/N]
      ...
    [ Skip all ]   [ Review individually ]
@@ -881,7 +881,7 @@ Two-tier scan:
 * `id_rsa*`, `id_ed25519*`
 * `~/.aws/`, `~/.ssh/`, `~/.config/`
 * `agent_chats.transcript` (potentially user-typed secrets; opt-out by default)
-* `.harness/notes/*` (operator-typed; opt-in inclusion)
+* `.papercusp/notes/*` (operator-typed; opt-in inclusion)
 
 **Pre-publish diff view**. Before the upload starts, the substrate shows:
 
@@ -960,7 +960,7 @@ JSON Schema validation.
   "excluded": [
     { "path": ".env", "reason": "denylist" },
     { "path": "node_modules/", "reason": "denylist" },
-    { "path": ".harness/notes/F-FIX-016.md", "reason": "user-removed (contained API key)" }
+    { "path": ".papercusp/notes/F-FIX-016.md", "reason": "user-removed (contained API key)" }
   ],
   "files": [
     { "path": "source/apps/web/src/App.tsx", "sha256": "deadbeef...", "bytes": 1247 }
@@ -1124,18 +1124,18 @@ a year shouldn't find their work archived without warning):
 Two sibling features. Same auth fabric, same redaction pipeline, same
 audit log. Different artifact, different audience, different lifecycle.
 
-| Concern                  | Publishing (§16)                              | Snapshots (this spec)                      |
-| ------------------------ | --------------------------------------------- | ------------------------------------------ |
-| Artifact                 | Built site (HTML/CSS/JS in `out/`)            | Source + DB rows + .harness/ + git history |
-| Audience                 | Anyone with the URL — non-technical end users | Operators with substrate installed         |
-| Consumed how             | Browser request → CF Pages                    | `papercusp install --from-snapshot`        |
-| Hosting                  | Cloudflare Pages                              | Gitea OCI registry                         |
-| Lifecycle                | Latest replaces in-place                      | Versioned + immutable                      |
-| Default visibility       | Public                                        | Private                                    |
-| Build step required      | Yes (`npm run build`)                         | No                                         |
-| Restore pass on consumer | None (browser request)                        | Heavy (DB + plugins + caps)                |
-| Forking                  | "View source" only                            | Real fork = independent harness            |
-| Size                     | 1-25 MB                                       | 50-500 MB                                  |
+| Concern                  | Publishing (§16)                              | Snapshots (this spec)                        |
+| ------------------------ | --------------------------------------------- | -------------------------------------------- |
+| Artifact                 | Built site (HTML/CSS/JS in `out/`)            | Source + DB rows + .papercusp/ + git history |
+| Audience                 | Anyone with the URL — non-technical end users | Operators with substrate installed           |
+| Consumed how             | Browser request → CF Pages                    | `papercusp install --from-snapshot`          |
+| Hosting                  | Cloudflare Pages                              | Gitea OCI registry                           |
+| Lifecycle                | Latest replaces in-place                      | Versioned + immutable                        |
+| Default visibility       | Public                                        | Private                                      |
+| Build step required      | Yes (`npm run build`)                         | No                                           |
+| Restore pass on consumer | None (browser request)                        | Heavy (DB + plugins + caps)                  |
+| Forking                  | "View source" only                            | Real fork = independent harness              |
+| Size                     | 1-25 MB                                       | 50-500 MB                                    |
 
 **Shared infrastructure** (the `papercusp-publish-auth` library — see
 §15.21):
@@ -1605,7 +1605,7 @@ Located at `libs/papercusp-export-build/`.
 Used by §15 Snapshots only (this spec). Ships:
 
 * Whole-harness file selection with denylist
-* Heavy redaction policy (source + .harness/ + agent transcripts)
+* Heavy redaction policy (source + .papercusp/ + agent transcripts)
 * pg\_dump + filter-registry-driven shared-table CSV exports
 * Tarball composition for 50-500 MB snapshots
 * ALTER SCHEMA-based restore flow
@@ -1620,7 +1620,7 @@ Looking at the divergence:
 | Concern              | Publishing                                  | Snapshot                                 |
 | -------------------- | ------------------------------------------- | ---------------------------------------- |
 | File selection       | `<exportDir>/` only                         | Whole harness, sans denylist             |
-| Redaction aggression | Light (build artifacts rarely leak secrets) | Heavy (source + .harness/)               |
+| Redaction aggression | Light (build artifacts rarely leak secrets) | Heavy (source + .papercusp/)             |
 | Artifact format      | Tarball of files                            | Tarball of files + DB dump + shared CSVs |
 | Size target          | 5-25 MB                                     | 50-500 MB                                |
 | Auth                 | JWT against `publish.papercuspai.com`       | JWT against `papercuspai.com/snapshots`  |
@@ -1740,7 +1740,7 @@ calls anywhere a captured-artifact path is involved:
 * Direct shell-out to anything in `<projectDir>/.git/hooks/`
 
 Any match in code paths that touch the snapshot staging dir, restore
-artifacts, or `<projectDir>/.harness/` fails the build with a clear
+artifacts, or `<projectDir>/.papercusp/` fails the build with a clear
 "deserialize captured data through safe path only — see §15.24."
 
 ```yaml
@@ -2009,14 +2009,14 @@ block (mirroring the shared-table-filter registry pattern from §15.5):
       },
       {
         "kind": "file-glob",
-        "pattern": "<projectDir>/.harness/plugins/vscode/config.json",
+        "pattern": "<projectDir>/.papercusp/plugins/vscode/config.json",
         "comment": "Per-harness vscode config; small, JSON, safe"
       }
     ],
     "exclude": [
       {
         "kind": "file-glob",
-        "pattern": "<projectDir>/.harness/plugins/vscode/cache/",
+        "pattern": "<projectDir>/.papercusp/plugins/vscode/cache/",
         "comment": "Re-derivable on first run"
       }
     ]

@@ -102,6 +102,7 @@
     "@papercusp/rate-limit": "file:../../libs/generic/rate-limit",
     "@papercusp/rerank": "file:../../libs/generic/rerank",
     "@papercusp/rrf": "file:../../libs/generic/rrf",
+    "@papercusp/rules": "file:../../libs/generic/rules",
     "@papercusp/search": "file:../../libs/generic/search",
     "@papercusp/search-core": "file:../../libs/generic/search-core",
     "@picovoice/koala-web": "^3.0.0",
@@ -208,7 +209,8 @@
     "vditor": "^3.11.2",
     "verdict-cli": "^0.1.1",
     "ws": "^8.18.0",
-    "zod": "^4.4.2"
+    "zod": "^4.4.2",
+    "@papercusp/operator-core": "file:../../packages/operator-core"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",

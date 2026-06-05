@@ -6,7 +6,7 @@ import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import RouteLink from '../_components/RouteLink';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';
-import { navigateClient } from '../../lib/client-navigation';
+import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 
 interface PublishRecord {
   slug: string;

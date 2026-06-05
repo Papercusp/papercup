@@ -1,9 +1,9 @@
 import RouteLink from '@/app/_components/RouteLink';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 
-const SEARCH_DIRS = ['.harness', '', '.claude/skills'] as const;
+const SEARCH_DIRS = ['.papercusp', '', '.claude/skills'] as const;
 
 function listMarkdownFiles(projectPath: string): string[] {
   const out: string[] = [];

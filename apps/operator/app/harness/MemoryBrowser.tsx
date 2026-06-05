@@ -105,8 +105,8 @@ export default function MemoryBrowser({ slug, alive }: Props) {
   // text-artifacts table (knowledge.md/mcp.json/etc. until Phase 0d).
   useEffect(() => {
     if (!active) return;
-    // Strip leading `.harness/` to match text-artifacts key convention.
-    const key = active.replace(/^\.harness\//, '');
+    // Strip leading `.papercusp/` to match text-artifacts key convention.
+    const key = active.replace(/^\.papercusp\//, '');
     if (contentByPath.has(key)) {
       const content = contentByPath.get(key) ?? '';
       setOriginal(content);

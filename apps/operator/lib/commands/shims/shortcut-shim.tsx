@@ -8,9 +8,9 @@
  * for shortcuts whose components aren't mounted on the current route.
  */
 import { useEffect } from 'react';
-import { SHORTCUTS } from '../../shortcut-registry';
+import { SHORTCUTS } from '@papercusp/operator-core/lib/shortcut-registry';
 import { useShortcutAction } from '../../hotkeys';
-import { runCommand } from '../registry';
+import { runCommand } from '@papercusp/operator-core/lib/commands/registry';
 
 const REGISTRY_BOUND = SHORTCUTS.filter((s) => !!s.command);
 
@@ -39,7 +39,7 @@ function ShortcutBinding({ id, commandId }: { id: string; commandId: string }) {
 export function RegistryShortcuts() {
   // Side-effect: load all command defs so runCommand can resolve them.
   useEffect(() => {
-    void import('../defs');
+    void import('@papercusp/operator-core/lib/commands/defs');
   }, []);
   return (
     <>

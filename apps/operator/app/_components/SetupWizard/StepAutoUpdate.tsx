@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { commands } from '@/lib/tauri-bindings';
+import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
 import { isTauri } from './tauri-detect';
 
 type Channel = 'alpha' | 'beta' | 'stable';

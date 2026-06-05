@@ -1,0 +1,141 @@
+/**
+ * curation-pg.integration.test.ts
+ *
+ * Proves, against a real Postgres (testcontainer) with migration 151 applied,
+ * that the curator-operator's PG modules round-trip:
+ *   - operator_curation_log: recordSurfaced → loadRecentSurfaced (+ the time
+ *     window predicate + the idempotent PK upsert).
+ *   - operator_curation_state: default read, write, and partial-update COALESCE.
+ *
+ * Mirrors the testcontainer setup of harness-issues.integration.test.ts — mocks
+ * `@papercusp/db-org` withWorkspace + `workspace-registry` activeWorkspaceId to
+ * point at the per-test connection.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { getTestPg } from '@papercusp/test-config';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
+const readMigration = (f: string) =>
+  readFileSync(resolve(SQL_DIR, f), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*\\/.test(line))
+    .join('\n');
+
+const WS = 'ws-curtest';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => WS };
+});
+
+const { recordSurfaced, loadRecentSurfaced, listRecentCuration } = await import('./curation-log');
+const { readCurationState, writeCurationState } = await import('./curation-state');
+const { BASE_INTERVAL_SECONDS } = await import('./curation-loop');
+
+let rootSql: postgres.Sql;
+let dbName: string;
+
+beforeAll(async () => {
+  const adminUri = await getTestPg();
+  dbName = `cur_${randomBytes(5).toString('hex')}`;
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  const u = new URL(adminUri);
+  u.pathname = `/${dbName}`;
+  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
+  // The migration GRANTs to harness_app/harness_zero (141 idiom); create them so
+  // the bare testcontainer applies 151 cleanly (the dev box / embedded-pg has them).
+  await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await rootSql.unsafe(`DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;`);
+  await rootSql.unsafe(readMigration('151-operator-curation.sql')).simple();
+  h.sql = rootSql;
+}, 90_000);
+
+afterAll(async () => {
+  await rootSql?.end({ timeout: 5 });
+});
+
+describe('operator_curation_log', () => {
+  it('records + loads surfaced ids', async () => {
+    await recordSurfaced([{ id: 'escalation:e1', kind: 'escalation' }, { id: 'progress:p1', kind: 'progress' }], 'curator-v1');
+    const recent = await loadRecentSurfaced();
+    expect(recent.has('escalation:e1')).toBe(true);
+    expect(recent.has('progress:p1')).toBe(true);
+    expect(recent.has('nope')).toBe(false);
+  });
+
+  it('the time-window predicate excludes rows older than the window', async () => {
+    // Insert a 2-day-old row directly; a fresh one via the API.
+    await rootSql`
+      INSERT INTO harness_shared.operator_curation_log (workspace_id, signal_id, kind, policy_version, surfaced_at)
+      VALUES (${WS}, 'old:1', 'progress', 'curator-v1', now() - interval '2 days')
+    `;
+    await recordSurfaced([{ id: 'fresh:1', kind: 'completion' }], 'curator-v1');
+    const within24h = await loadRecentSurfaced(24 * 60 * 60 * 1000);
+    expect(within24h.has('fresh:1')).toBe(true);
+    expect(within24h.has('old:1')).toBe(false);
+  });
+
+  it('upsert is idempotent on (workspace, signal_id)', async () => {
+    await recordSurfaced([{ id: 'dup:1', kind: 'escalation' }], 'curator-v1');
+    await recordSurfaced([{ id: 'dup:1', kind: 'escalation' }], 'curator-v2');
+    const rows = await rootSql<{ n: string }[]>`
+      SELECT count(*)::text AS n FROM harness_shared.operator_curation_log
+       WHERE workspace_id = ${WS} AND signal_id = 'dup:1'
+    `;
+    expect(rows[0].n).toBe('1');
+    const audit = await listRecentCuration(100);
+    expect(audit.find((r) => r.id === 'dup:1')?.policyVersion).toBe('curator-v2');
+  });
+
+  it('recordSurfaced with no entries is a no-op', async () => {
+    await expect(recordSurfaced([], 'curator-v1')).resolves.toBeUndefined();
+  });
+});
+
+describe('operator_curation_state', () => {
+  it('reads defaults when no row exists', async () => {
+    const state = await readCurationState();
+    expect(state.currentIntervalSeconds).toBe(BASE_INTERVAL_SECONDS);
+    expect(state.lastRunAtMs).toBeNull();
+    expect(state.lastDigestAtMs).toBeNull();
+    expect(state.consecutiveQuiet).toBe(0);
+  });
+
+  it('writes + reads back state', async () => {
+    const t = 1_780_000_000_000;
+    await writeCurationState({ lastRunAtMs: t, currentIntervalSeconds: 300, consecutiveQuiet: 2, lastSurfacedCount: 4 });
+    const state = await readCurationState();
+    expect(state.lastRunAtMs).toBe(t);
+    expect(state.currentIntervalSeconds).toBe(300);
+    expect(state.consecutiveQuiet).toBe(2);
+    expect(state.lastSurfacedCount).toBe(4);
+  });
+
+  it('partial update preserves untouched fields (COALESCE)', async () => {
+    const digestT = 1_780_000_500_000;
+    await writeCurationState({ lastDigestAtMs: digestT });
+    const state = await readCurationState();
+    expect(state.lastDigestAtMs).toBe(digestT);
+    // interval/quiet/surfaced from the previous test are preserved.
+    expect(state.currentIntervalSeconds).toBe(300);
+    expect(state.consecutiveQuiet).toBe(2);
+    expect(state.lastSurfacedCount).toBe(4);
+  });
+});

@@ -18,5 +18,6 @@ module.exports = {
   rules: {
     'no-bare-db-in-tx': require('./no-bare-db-in-tx.js'),
     'no-raw-route-handlers': require('./no-raw-route-handlers.js'),
+    'no-bare-jsonb-cast': require('./no-bare-jsonb-cast.js'),
   },
 };

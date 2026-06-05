@@ -1,8 +1,8 @@
 /**
  * Filesystem layout for snapshot artifacts on the substrate machine.
  *
- *   <projectDir>/.harness/snapshots/<id>.tar.gz       finished tarballs
- *   <projectDir>/.harness/snapshot-staging/           per-capture scratch dir
+ *   <projectDir>/.papercusp/snapshots/<id>.tar.gz       finished tarballs
+ *   <projectDir>/.papercusp/snapshot-staging/           per-capture scratch dir
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -36,7 +36,7 @@ export function papercuspPath(...parts: string[]): string {
 }
 
 export function snapshotsDir(projectDir: string): string {
-  return join(projectDir, '.harness', 'snapshots');
+  return join(projectDir, '.papercusp', 'snapshots');
 }
 
 export function snapshotPath(projectDir: string, id: string): string {
@@ -44,5 +44,5 @@ export function snapshotPath(projectDir: string, id: string): string {
 }
 
 export function stagingDir(projectDir: string): string {
-  return join(projectDir, '.harness', 'snapshot-staging');
+  return join(projectDir, '.papercusp', 'snapshot-staging');
 }

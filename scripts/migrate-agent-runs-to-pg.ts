@@ -1,5 +1,5 @@
 /**
- * One-shot: scan each project's `.harness/logs/*.jsonl` and load metadata
+ * One-shot: scan each project's `.papercusp/logs/*.jsonl` and load metadata
  * into `harness_<slug>.agent_runs`.
  *
  * Body (.out + .jsonl) stays on disk; PG holds the queryable metadata
@@ -72,7 +72,7 @@ function probeRunLiveness(jsonlPath: string, now: number): { running: boolean; l
 }
 
 function scanRuns(projectPath: string): AgentRun[] {
-  const logDir = join(projectPath, '.harness', 'logs');
+  const logDir = join(projectPath, '.papercusp', 'logs');
   if (!existsSync(logDir)) return [];
   const now = Date.now();
   const out: AgentRun[] = [];

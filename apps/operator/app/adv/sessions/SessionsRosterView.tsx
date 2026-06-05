@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useMemo } from 'react';
-import { formatRelativeUpdated } from '@/lib/format/relative-time';
+import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot, type Liveness } from '@/app/coord/presence-ui';
 import { Select } from '@/app/harness/Select';
 import AgentDossier from './AgentDossier';

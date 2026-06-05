@@ -15,7 +15,7 @@ import type {
   RetentionPolicy,
   RetentionPreset,
   SnapshotTriggerReason,
-} from '@/lib/backup';
+} from '@papercusp/operator-core/lib/backup';
 
 const RETENTION_PRESETS: Record<Exclude<RetentionPreset, 'custom'>, RetentionPolicy> = {
   aggressive:   { keepLatest: 100, keepHourly: 24, keepDaily: 7,   keepWeekly: 4,  keepMonthly: 3  },

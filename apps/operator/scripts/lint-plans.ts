@@ -8,8 +8,8 @@
  * Run as: cd apps/operator && npx tsx scripts/lint-plans.ts
  */
 
-import { lintPlan, type PlanLintReport } from '../lib/agent-tools/plans/lint';
-import { listPlanFiles } from '../lib/agent-tools/plans/source';
+import { lintPlan, type PlanLintReport } from '@papercusp/operator-core/lib/agent-tools/plans/lint';
+import { listPlanFiles } from '@papercusp/operator-core/lib/agent-tools/plans/source';
 
 async function main(): Promise<void> {
   const entries = await listPlanFiles({ includeArchived: true });

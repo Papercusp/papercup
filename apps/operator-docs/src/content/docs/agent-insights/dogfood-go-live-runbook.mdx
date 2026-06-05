@@ -37,7 +37,7 @@ off to a human.
    `curl -s http://localhost:3070/api/harness/projects/lite | jq '.projects[] | select(.slug=="papercup")'`.
 3. **F-DOGFOOD-001/002/003 exist in queue**: check via
    `curl -s http://localhost:3070/api/harness/papercup/features | jq '.[] | .id'`.
-4. **Director config is set**: `papercup/.harness/director-config.json`
+4. **Director config is set**: `papercup/.papercusp/director-config.json`
    should have `autoLoop: true` + `autoIntervalSeconds: 60` (or
    shorter for the run).
 

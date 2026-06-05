@@ -17,7 +17,39 @@
 import { serve } from '@hono/node-server';
 import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
-import { workspacePinWarning } from '../lib/workspace-pin-guard';
+import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
+
+// Resilience guard: when an MCP/SSE client disconnects mid-stream, the
+// `mcp-handler` dependency's response adapter enqueues onto an already-closed
+// ReadableStream controller → `ERR_INVALID_STATE: Controller is already closed`,
+// surfacing as an unhandled rejection that (Node ≥15) terminates the WHOLE host —
+// so one agent dropping a connection crash-loops :3070 for the entire fleet. That
+// client is already gone; the only casualty should be its one request. Swallow
+// ONLY this known-benign stream-close class; preserve fail-fast (exit) for
+// everything else so real bugs still surface.
+function isBenignStreamClose(e: unknown): boolean {
+  const x = e as { code?: string; message?: string } | null;
+  return (
+    !!x &&
+    (x.code === 'ERR_INVALID_STATE' || /Controller is already closed/i.test(x.message ?? ''))
+  );
+}
+process.on('unhandledRejection', (reason) => {
+  if (isBenignStreamClose(reason)) {
+    console.warn('[hono-host] ignored benign stream-close (client disconnected mid-MCP/SSE):', (reason as Error)?.message);
+    return;
+  }
+  console.error('[hono-host] fatal unhandledRejection — exiting:', reason);
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  if (isBenignStreamClose(err)) {
+    console.warn('[hono-host] ignored benign stream-close (uncaught):', err.message);
+    return;
+  }
+  console.error('[hono-host] fatal uncaughtException — exiting:', err);
+  process.exit(1);
+});
 
 runBootstrap();
 

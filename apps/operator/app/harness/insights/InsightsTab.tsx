@@ -25,6 +25,7 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import type { InsightsTabProps } from '@papercusp/operator-core/lib/harness-insights/card-types';
 import { ProjectCard, type ProjectCardProps } from './ProjectCard';
 import {
   ActivityFeedCard,
@@ -57,14 +58,7 @@ const ONE_COL: CSSProperties = {
   gap: 16,
 };
 
-export interface InsightsTabProps {
-  project: ProjectCardProps;
-  activity: ActivityFeedCardProps;
-  people: PeopleCardProps;
-  yourPlace: YourPlaceCardProps;
-  howItWorks: HowItWorksHereCardProps;
-  spend: SpendCardProps;
-}
+export type { InsightsTabProps };
 
 export function InsightsTab(props: InsightsTabProps): ReactNode {
   const { project, activity, people, yourPlace, howItWorks, spend } = props;

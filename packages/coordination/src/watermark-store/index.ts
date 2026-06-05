@@ -1,18 +1,14 @@
 /**
- * @papercusp/coordination/watermark-store — the per-agent "last-read"
- * cursor seam (PG by default, in-memory double). Separate from the event
- * log by design (D-009): a watermark is mutable single-row-per-owner state,
- * not an append-only channel. The value shape + pure merge live in
- * `@papercusp/coordination/core`; this is only the persistence.
+ * @papercusp/coordination/watermark-store — the Postgres tie-in adapter over
+ * the generic WatermarkStore seam. `PgWatermarkStore` binds the per-agent
+ * read-cursor to `harness_shared.coord_watermarks`; the seam + in-memory double
+ * are re-exported from @papercusp/pubsub-substrate/watermark-store, so the
+ * public surface is unchanged.
  */
 
-export type { WatermarkStore } from './types';
-export { InMemoryWatermarkStore } from './memory-store';
+export * from '@papercusp/pubsub-substrate/watermark-store';
 export {
   PgWatermarkStore,
   ensureCoordWatermarksTable,
   type PgWatermarkStoreOptions,
 } from './pg-store';
-// NOTE: conformance imports `vitest`, so it is NOT re-exported here (this
-// barrel is imported by production code). Test code imports it from the
-// dedicated `@papercusp/coordination/watermark-store/conformance` subpath.

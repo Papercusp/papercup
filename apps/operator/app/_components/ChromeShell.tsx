@@ -1,14 +1,14 @@
 'use client';
 
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { lazyWithRetry as lazy } from '../../lib/lazy-with-retry';
+import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { usePathname } from '@/lib/router-compat/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { reconcileActiveTheme } from '@/lib/theme';
-import { reconcileShortcutOverrides } from '@/lib/shortcut-registry';
+import { reconcileShortcutOverrides } from '@papercusp/operator-core/lib/shortcut-registry';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
 import { BrainMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
@@ -97,7 +97,6 @@ export default function ChromeShell() {
   // non-link span with `is-current` styling).
   const onAdv = isChromeShellNavActive(pathname, '/adv');
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
-  const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
   const oracleFlag = useFlag(FLAGS.ORACLE);
   const testingFlag = useFlag(FLAGS.TESTING);
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
@@ -196,9 +195,6 @@ export default function ChromeShell() {
           {testingFlag ? <OperatorAutoScanToggle /> : null}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
-          {marketplaceFlag ? (
-            <RouteLink href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</RouteLink>
-          ) : null}
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           ) : null}

@@ -20,7 +20,7 @@ import { join } from 'node:path';
 
 let pgAvailable = false;
 try {
-  const { getTxPool } = await import('../../../../lib/agent-tools/locks/su-lock-store');
+  const { getTxPool } = await import('@papercusp/operator-core/lib/agent-tools/locks/su-lock-store');
   const sql = getTxPool();
   await sql`SELECT 1`;
   pgAvailable = true;
@@ -35,15 +35,15 @@ describe('su-locks OMP two-agent coordination', () => {
   let ownerA: string;
   let ownerB: string;
   let lockIdA: string;
-  let store: typeof import('../../../../lib/agent-tools/locks/su-lock-store');
-  let inWorkspaceTxn: typeof import('../../../../lib/agent-tools/locks/in-workspace-txn')['inWorkspaceTxn'];
+  let store: typeof import('@papercusp/operator-core/lib/agent-tools/locks/su-lock-store');
+  let inWorkspaceTxn: typeof import('@papercusp/operator-core/lib/agent-tools/locks/in-workspace-txn')['inWorkspaceTxn'];
   let hook: typeof import('../coord-hook');
 
   beforeAll(async () => {
     if (!pgAvailable) return;
 
-    store = await import('../../../../lib/agent-tools/locks/su-lock-store');
-    const txn = await import('../../../../lib/agent-tools/locks/in-workspace-txn');
+    store = await import('@papercusp/operator-core/lib/agent-tools/locks/su-lock-store');
+    const txn = await import('@papercusp/operator-core/lib/agent-tools/locks/in-workspace-txn');
     inWorkspaceTxn = txn.inWorkspaceTxn;
     hook = await import('../coord-hook');
 

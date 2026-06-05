@@ -125,7 +125,7 @@ for (const [toolName, def] of operatorDefsByToolName) {
   if (syncClientNames.has(toolName)) continue;
   // Only flag commands+queries that look like reasonable agent tools —
   // skip aliases (nav.harness duplicates navigate, etc.).
-  if (def.id === 'nav.harness') continue;
+  if (def.id === 'nav.papercusp') continue;
   warnings.push(
     `${toolName} (${def.id} in ${def.file}): registry def is operator-tagged but missing from TOOLS list. ` +
     'EL agent can\'t call it. Add to TOOLS if intended.',

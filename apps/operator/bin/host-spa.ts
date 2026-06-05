@@ -24,11 +24,11 @@ import { Hono } from 'hono';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { getAllFlags, isBackendConfigured } from '@papercusp/flags/server';
-import { activeWorkspaceId } from '../lib/workspace-registry';
-import { readProfile } from '../lib/session';
-import { resolveDistinctId } from '../lib/flag-distinct-id';
-import { reinitFlagBackend } from '../lib/flag-bus';
-import { isTestingFeaturesEnabled } from '../lib/posthog-config';
+import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
+import { readProfile } from '@papercusp/operator-core/lib/session';
+import { resolveDistinctId } from '@papercusp/operator-core/lib/flag-distinct-id';
+import { reinitFlagBackend } from '@papercusp/operator-core/lib/flag-bus';
+import { isTestingFeaturesEnabled } from '@papercusp/operator-core/lib/posthog-config';
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this

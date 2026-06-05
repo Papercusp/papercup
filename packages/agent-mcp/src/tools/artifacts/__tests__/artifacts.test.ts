@@ -87,12 +87,12 @@ describe('artifacts:load', () => {
     expect(payload.updated_at).toBe(1234567);
   });
 
-  it('strips a leading .harness/ prefix from rel_path', async () => {
+  it('strips a leading .papercusp/ prefix from rel_path', async () => {
     const tool = lookupByMcpName('artifacts:load')!;
     const r = await dispatchProjectedTool(
       tool,
       'artifacts:load',
-      { slug: 'test', rel_path: '.harness/memory/raw.md' },
+      { slug: 'test', rel_path: '.papercusp/memory/raw.md' },
       MAKE_CTX(),
       {},
     );

@@ -53,6 +53,7 @@ export type Capability =
   | 'ui:dashboard-tab'
   | 'ui:sidebar-item'
   | 'ui:harness-route'         // owns /harness/<install-slug>
+  | 'ui:tui-pane'             // contributes a terminal pane hosted by the pui (D-002)
 
   // Network — manifest declares allowed domains; iframe CSP enforces.
   // Use as: 'http:fetch:youtube.com', 'http:fetch:*.googleapis.com'
@@ -99,7 +100,7 @@ export interface PapercuspContext {
   installSlug: string;
   /** Absolute path to the install's project root. */
   projectDir: string;
-  /** Absolute path to the install's `.harness/` directory (legacy file state). */
+  /** Absolute path to the install's `.papercusp/` directory (legacy file state). */
   stateDir: string;
   /** Plugin-private storage path under `<stateDir>/plugins/<plugin-name>/`. */
   pluginDataDir: string;
@@ -688,6 +689,17 @@ export interface Plugin {
    * explicit can be. See {@link PluginRuntime}.
    */
   runtime?: PluginRuntime;
+  /**
+   * Discovery-time budget (ms) for `getDynamicTools()`. MCP-proxy plugins
+   * (gitnexus, ast-grep) spawn an external child to enumerate tools at load;
+   * the loader bounds that probe so a hung child can't wedge host startup.
+   * The default is 10s — generous for a cached binary, but a cold start
+   * (first `npx` fetch, a large code-graph index loading) can exceed it,
+   * tripping the timeout → 0 tools + a load error. Such plugins declare a
+   * larger budget here. Clamped by the loader to a sane ceiling.
+   * (revive-plugin-system-2026-06-04 D-003.)
+   */
+  discoveryTimeoutMs?: number;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
   /**
@@ -973,7 +985,7 @@ export interface ToolContext {
   harnessSlug: string;
   /** Absolute path to the harness's project root. */
   projectDir: string;
-  /** Absolute path to `<projectDir>/.harness/`. */
+  /** Absolute path to `<projectDir>/.papercusp/`. */
   stateDir: string;
   /** Calling agent role. */
   role: AgentRole;
@@ -1215,10 +1227,17 @@ export interface PluginRuntime {
   concurrency?: 'serial' | 'parallel';
 }
 
-export type UiSurfaceType = 'react' | 'iframe';
+export type UiSurfaceType = 'react' | 'iframe' | 'tui-pane';
 
 export interface UiSurfaceManifestEntry {
-  /** v1 default: 'react'. 'iframe' opts into the sandboxed iframe loader (Batch H). */
+  /**
+   * v1 default: 'react'. 'iframe' opts into the sandboxed iframe loader (Batch H).
+   * 'tui-pane' is the terminal UI target (revive-plugin-system-2026-06-04 D-002):
+   * the pui (apps/tui) hosts it by allocating a zellij pane it manages and running
+   * `command` in it — the plugin renders its own content (ratatui or any TUI).
+   * Zellij stays the pui's swappable layout engine, NOT the plugin contract.
+   * Desktop targets (dashboard-tab/harness-route) are deferred with desktop.
+   */
   type?: UiSurfaceType;
   slug: string;
   label: string;
@@ -1227,6 +1246,14 @@ export interface UiSurfaceManifestEntry {
   iframeEntry?: string;
   /** Origins the iframe can top-navigate to (Batch H5 — `iframe:navigate:<origin>` cap). */
   iframeNavigateOrigins?: string[];
+  /**
+   * Required when type='tui-pane'. argv to run in the zellij pane. `command[0]`
+   * is a PATH-resolvable basename (or absolute path) the plugin must hold
+   * `compute:exec:<command[0]>` for — same exec-gate as ctx.spawn. The process
+   * runs with cwd = the plugin's install dir, so it can invoke a shipped render
+   * script by relative path (e.g. ["sh", "render.sh"]).
+   */
+  command?: string[];
 }
 
 /** Default WASM memory budget in MiB when manifest omits the field. */
@@ -1235,6 +1262,11 @@ export const DEFAULT_WASM_MEMORY_BUDGET_MB = 64;
 /** True if the entry opts into the iframe runtime. Treats omitted type as 'react'. */
 export function isIframeSurface(entry: Pick<UiSurfaceManifestEntry, 'type'>): boolean {
   return entry.type === 'iframe';
+}
+
+/** True if the entry is a TUI pane (terminal render target). */
+export function isTuiPaneSurface(entry: Pick<UiSurfaceManifestEntry, 'type'>): boolean {
+  return entry.type === 'tui-pane';
 }
 
 /** True when the runtime is WASM. Defaults JS when descriptor missing. */

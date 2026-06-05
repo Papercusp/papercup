@@ -14,7 +14,7 @@
 
 import { useUiPresence } from '@/lib/ui/use-ui-presence';
 import { UiIntentDispatcher } from '@/lib/ui/intent-dispatcher';
-import { shouldMountRemoteUiControl } from '@/lib/ui/desktop-ui-intents';
+import { shouldMountRemoteUiControl } from '@papercusp/operator-core/lib/ui/desktop-ui-intents';
 
 export function UiPresenceProvider(): React.ReactElement | null {
   const enableRemoteUi = typeof window === 'undefined'

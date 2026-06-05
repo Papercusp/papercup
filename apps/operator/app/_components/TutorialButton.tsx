@@ -1,7 +1,7 @@
 'use client';
 
 import { OracleLogoMark } from './OracleLogoMark';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { Tooltip } from '../harness/Tooltip';
 
 // OracleDock is lazy-loaded behind a `ready` gate in ChromeShell, so a click

@@ -19,7 +19,7 @@ import {
   type PresenceInput,
   type PresenceRecord,
   type PresenceStore,
-} from './types';
+} from '@papercusp/pubsub-substrate/presence';
 
 export interface PgPresenceStoreOptions {
   /** The org Postgres handle (postgres-js tagged template). Called per use. */
@@ -99,7 +99,7 @@ export class PgPresenceStore implements PresenceStore {
         ${identity.ownerId}, ${identity.ownerLabel},
         ${identity.workspaceId ?? 'default'}, ${identity.source},
         ${input.intent ?? ''}, ${input.currentPlanSlug ?? null},
-        ${JSON.stringify(input.currentFiles ?? [])}::jsonb,
+        ${JSON.stringify(input.currentFiles ?? [])}::text::jsonb,
         ${input.host ?? ''}, ${input.pid ?? null}, now()
       )
       ON CONFLICT (owner_id) DO UPDATE SET
@@ -187,5 +187,20 @@ export class PgPresenceStore implements PresenceStore {
        WHERE cp.owner_id = ${ownerId}
     `;
     return rows.length > 0 ? toRecord(rows[0], Date.now()) : null;
+  }
+
+  async sweepStale(maxAgeMs: number): Promise<number> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const secs = Math.max(1, Math.floor(maxAgeMs / 1000));
+    // Interval bound as a text param + cast — the getOrgPg client serializes
+    // jsonb/object params oppositely to a fresh pool, but a plain text interval
+    // is safe either way.
+    const rows = await sql<{ owner_id: string }[]>`
+      DELETE FROM harness_shared.coord_presence
+       WHERE heartbeat_at < now() - ${`${secs} seconds`}::interval
+      RETURNING owner_id
+    `;
+    return rows.length;
   }
 }

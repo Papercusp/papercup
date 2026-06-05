@@ -15,7 +15,7 @@
 import {
   listPreferenceEntries,
   removePreferenceEntry,
-} from '../lib/operator-preferences';
+} from '@papercusp/operator-core/lib/operator-preferences';
 
 const [, , cmd, ...rest] = process.argv;
 

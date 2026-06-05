@@ -300,7 +300,7 @@ function ActionRow({ action: a, now }: { action: UserAction; now: number }) {
   const meta = parseSummaryMeta(a.summary);
   // Filter out detail URLs we can't actually open in the browser.
   // Some legacy rows wrote a filesystem path like
-  // `/home/.../.harness/runs/foo.log` — the browser treats that as a
+  // `/home/.../.papercusp/runs/foo.log` — the browser treats that as a
   // same-origin URL and 404s.
   const detailHref = isOpenableHref(a.detailUrl) ? a.detailUrl : null;
   // If parsing didn't find a duration but the row has timing info,

@@ -4,7 +4,7 @@ description: Frozen tarballs of harness state — capture, restore, share, retra
 ---
 
 A **harness snapshot** is the frozen state of one specific harness at a
-moment in time: the project files, the `.harness/` directory, the
+moment in time: the project files, the `.papercusp/` directory, the
 plugin enablement set with their (redacted) configs, and the database
 rows that belong to this harness. Snapshots are how you save your work,
 share a working setup with someone else, or roll back a mission to a
@@ -31,7 +31,7 @@ Five buttons on the snapshots page (`/snapshots` in the operator UI):
 
 | Button | What it does |
 |---|---|
-| **save snapshot** | Capture the current harness's state to a `.tar.gz` in `<project>/.harness/snapshots/`. Surfaced from the harness toolbar. |
+| **save snapshot** | Capture the current harness's state to a `.tar.gz` in `<project>/.papercusp/snapshots/`. Surfaced from the harness toolbar. |
 | **Instantiate** | Fork a snapshot into a new project directory. Slug-rewrites the harness name to avoid collision. |
 | **Publish** | Upload the tarball to the marketplace under a chosen slug + version. |
 | **Retract** | Pull a published version back: `deprecate` (warn), `withdraw` (refuse new installs), or `yank` (specific version only). |
@@ -46,7 +46,7 @@ The capture pipeline tars these by default:
 
 ```
 <project-root>/
-├── .harness/                       (everything except logs/, pi-sessions/, screenshots/)
+├── .papercusp/                       (everything except logs/, pi-sessions/, screenshots/)
 ├── source/                         (project source — .git excluded unless --include-git)
 └── state/
     ├── db.sql.gz                   (Postgres dump scoped to this harness)

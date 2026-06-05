@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { ArrowUpRight } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { openFeatureChat } from '@papercusp/papercup-shared';
-import type { Issue, IssueNote } from '../../harness/issues/types';
+import type { Issue, IssueNote } from '@papercusp/operator-core/lib/harness/issue-types';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { StatusPill, SeverityPill, IssueStatusPill } from '../../harness/primitives';
 import { SEVERITY, type HarnessStatus, type IssueSeverityKey } from '../../harness/theme';
@@ -227,7 +227,7 @@ function FeatureDetail({
   const [steerNote, setSteerNote] = useState('');
   const { confirm, element: confirmEl } = useConfirmDialog();
 
-  // Add a steer note for the worker — POSTs a block to .harness/notes/<id>.md
+  // Add a steer note for the worker — POSTs a block to .papercusp/notes/<id>.md
   // (the OperatorNoteForm contract). Optimistically appends to the local list.
   const addSteerNote = useCallback(async () => {
     const content = steerNote.trim();

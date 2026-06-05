@@ -1,5 +1,5 @@
 /**
- * One-shot: scan each project's `.harness/snapshots/<id>/` directories and
+ * One-shot: scan each project's `.papercusp/snapshots/<id>/` directories and
  * load metadata into `harness_<slug>.harness_snapshots`.
  *
  * The directory contents (config.json, features.json, supervisor-notes.md,
@@ -44,7 +44,7 @@ interface SnapMeta {
 }
 
 function scanSnapshots(projectPath: string): SnapMeta[] {
-  const snapDir = join(projectPath, '.harness', 'snapshots');
+  const snapDir = join(projectPath, '.papercusp', 'snapshots');
   if (!existsSync(snapDir)) return [];
   const out: SnapMeta[] = [];
   for (const ent of readdirSync(snapDir, { withFileTypes: true })) {

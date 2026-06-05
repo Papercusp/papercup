@@ -16,7 +16,7 @@ import { defineTool } from '@papercusp/tooldef';
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 
 function normalizeRelPath(rel: string): string {
-  return rel.replace(/^\.harness\//, '');
+  return rel.replace(/^\.papercusp\//, '');
 }
 
 export default defineTool({

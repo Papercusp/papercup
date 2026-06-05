@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { getBrowserWorkspaceId } from './browser-workspace';
+import { getBrowserWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 
 /**
  * Read the active workspace id — the host-injected `window.__PAPERCUSP_WS__`,

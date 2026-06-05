@@ -17,7 +17,7 @@ import { useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { ClipboardList, Inbox, Plus, Terminal } from 'lucide-react';
 import { toast } from 'sonner';
-import { launchAgent } from '@/lib/launch-agent';
+import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanFilters from '@/app/admin/plans/PlanFilters';
 import PlanBucketTabs from '@/app/admin/plans/PlanBucketTabs';

@@ -129,6 +129,7 @@ export {
   type DispatchProjectedResult,
   type DispatchProjectedErrorCode,
   type DispatchStreamEvent,
+  type PostInvokeEvent,
   type ToolDispatchOverrideFn,
 } from '@papercusp/tooldef';
 // Papercusp's quota windowing policy (plan P-011) — the host impl of

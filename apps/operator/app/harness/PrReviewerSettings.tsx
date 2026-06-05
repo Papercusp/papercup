@@ -19,7 +19,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ShieldCheck, Trash2, ScrollText, GitMerge } from 'lucide-react';
 import { Modal } from './Modal';
-import type { PrMergeMethod } from '@/lib/pr-host/types';
+import type { PrMergeMethod } from '@papercusp/operator-core/lib/pr-host/types';
 
 // ─── Wire shapes (mirror routes/harness/pr-reviewer-settings.ts) ──
 

@@ -20,8 +20,6 @@ import { toast } from 'sonner';
 
 const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.SNAPSHOTS]: 'Snapshots',
-  [FLAGS.TEMPLATES]: 'Templates',
-  [FLAGS.MARKETPLACE]: 'Marketplace',
   [FLAGS.CLOUDFLARE_PUBLISH]: 'Cloudflare publishing',
   [FLAGS.ORACLE]: 'Oracle (tutorial)',
   [FLAGS.RUST_PORT_UI]: 'Rust-port surfaces (dev)',
@@ -32,8 +30,6 @@ const FLAG_LABELS: Record<FlagKey, string> = {
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
   [FLAGS.SNAPSHOTS]: 'Save / restore mission state. Cut for V1 ship.',
-  [FLAGS.TEMPLATES]: 'Save / install harness templates. Cut for V1 ship.',
-  [FLAGS.MARKETPLACE]: 'Plugin + snapshot + template marketplace. Cut for V1 ship.',
   [FLAGS.CLOUDFLARE_PUBLISH]: 'Publish-to-Cloudflare flow. Cut for V1 ship.',
   [FLAGS.ORACLE]: 'Always-on tutorial dock + Oracle endpoint. Cut for V1 ship.',
   [FLAGS.RUST_PORT_UI]: 'Reserved for Tauri build-time gating (no operator UI surface yet).',

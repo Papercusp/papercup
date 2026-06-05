@@ -160,8 +160,8 @@ export default function NotFound() {
               <RouteLink href="/harness" className="pc-button primary">
                 Return to Mission Control
               </RouteLink>
-              <RouteLink href="/marketplace" className="pc-button ghost">
-                Browse Marketplace
+              <RouteLink href="/cupboard" className="pc-button ghost">
+                Browse the Cupboard
               </RouteLink>
               <RouteLink href="/support" className="pc-button ghost">
                 Ask for help

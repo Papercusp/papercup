@@ -1,5 +1,5 @@
 import { redirect } from '@/lib/router-compat/navigation';
-import { readOperatorState } from '@/lib/operator-state-pg';
+import { readOperatorState } from '@papercusp/operator-core/lib/operator-state-pg';
 
 /**
  * Root page — gateways the desktop's first-run experience.

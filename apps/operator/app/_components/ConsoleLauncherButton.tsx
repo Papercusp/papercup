@@ -20,7 +20,7 @@ import { useEffect, useState } from 'react';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 
-import { launchNativeConsole, isConsoleLauncherSupported } from '@/lib/native-console';
+import { launchNativeConsole, isConsoleLauncherSupported } from '@papercusp/operator-core/lib/native-console';
 
 export function ConsoleLauncherButton() {
   const [busy, setBusy] = useState(false);

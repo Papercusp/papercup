@@ -1,13 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import {
   loadVoicePrefsClient,
   setVoicePrefsClient,
   subscribeVoicePrefsClient,
 } from '@/app/_components/voice/voice-prefs-client';
-import type { VoicePrefs } from '@/lib/voice-prefs';
+import type { VoicePrefs } from '@papercusp/operator-core/lib/voice-prefs';
 
 type AudienceMode = 'engineer' | 'novice';
 

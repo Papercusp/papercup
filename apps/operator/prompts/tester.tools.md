@@ -16,7 +16,7 @@ approve it (that's the validator, who runs your test).
   `verify_text` (how to check) + `evidence_text` (what passing looks
   like). Assertions are PG-canonical (`harness_plan_assertions`, authored
   as inline `[VAL-…]` bullets in plan items); never read
-  `.harness/validation-contract.md` (retired).
+  `.papercusp/validation-contract.md` (retired).
 - A `404` means the feature wasn't promoted from a plan with inline
   assertions — emit `TESTER_BLOCKED <VAL_ID> assertion-not-found`; do not
   fabricate a test.
@@ -24,7 +24,7 @@ approve it (that's the validator, who runs your test).
 ### One VAL → one registered test
 
 - Write the test file (playwright / vitest / pytest), named by the VAL id.
-- Append a row to `.harness/tests.json` with `coversVALs: ["<VAL_ID>"]`.
+- Append a row to `.papercusp/tests.json` with `coversVALs: ["<VAL_ID>"]`.
   The orchestrator snapshots it to PG (`harness_tests`); the snapshot
   endpoint quarantines rows whose `coversVALs` reference an unknown
   assertion, so a typo'd id silently drops your test from the gate.
@@ -41,14 +41,14 @@ job.
 ### Cover a VAL (the per-invocation contract)
 
 1. Resolve the assertion (`assertion/$VAL_ID`).
-2. Check `.harness/tests.json` — if a non-`failing` test already covers
+2. Check `.papercusp/tests.json` — if a non-`failing` test already covers
    the VAL, echo its `TEST …` line and exit (no duplicate).
 3. Pick the framework from the assertion's surface (HTTP → pytest /
    playwright `request`; UI → playwright; pure fn → vitest / pytest).
 4. Write the test: read `HARNESS_PORT` from env, assert against
    `verify_text` + `evidence_text`, self-contained fixtures (no staging
    DB-state dependence).
-5. Register in `.harness/tests.json` (`coversVALs:["<VAL_ID>"]`,
+5. Register in `.papercusp/tests.json` (`coversVALs:["<VAL_ID>"]`,
    `status:"not_run"`, `phase:"staging"`, `kind:"contract"`).
 6. Print `TEST <T-ID> <VAL-ID> <framework> <file>`.
 

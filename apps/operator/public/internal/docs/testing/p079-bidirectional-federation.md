@@ -130,20 +130,20 @@ what makes "data crossed the wire" verifiable.
 
 1. **Alice shares the harness.** In Alice's Tauri shell, open the harness's
    **Share** wizard (ShareWizard) and finalize. This writes
-   `.harness/shared.json`, **publishes Alice's attestation gist + contributor file**
+   `.papercusp/shared.json`, **publishes Alice's attestation gist + contributor file**
    (the file via the Contents API, embedding the gist id), boots Alice's substrate (joins the swarm topic derived
    from the repo id) and announces. Note the **join link** the wizard shows
    ("Send this link to contributors…").
 
 2. **Confirm Alice's binding: contributor file + an owned attestation gist
    (channel-2 gate).** On the shared repo, the `user/<alice_id>` branch should now
-   have `.harness/contributors/<alice_login>.json`. That file embeds a
+   have `.papercusp/contributors/<alice_login>.json`. That file embeds a
    `device_attestation_gist_id`; confirm the gist exists and is **owned by Alice's
    account** (the channel-2(c) anchor — no commit-verification is involved):
 
    ```sh
    # gist id from the contributor file
-   gh api repos/<owner>/<repo>/contents/.harness/contributors/<alice_login>.json?ref=user/<alice_id> \
+   gh api repos/<owner>/<repo>/contents/.papercusp/contributors/<alice_login>.json?ref=user/<alice_id> \
      --jq '.content' | base64 -d | jq -r '.device_attestation_gist_id'
    # confirm that gist's owner id === Alice's github user id
    gh api gists/<gist_id> --jq '.owner.id, .owner.login'

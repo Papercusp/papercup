@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import type { Hono as HonoType } from 'hono';
 
-vi.mock('@/lib/endpoint-route/telemetry', () => ({
+vi.mock('../telemetry', () => ({
   recordRouteInvocation: vi.fn(),
 }));
 // `_hono/app.ts` pulls `server-only` transitively; it's a no-op marker in
@@ -29,7 +29,7 @@ vi.mock('@/lib/endpoint-route/telemetry', () => ({
 vi.mock('server-only', () => ({}));
 
 import { Hono } from 'hono';
-import { registerRouteLiterals, registerRouteCatchalls } from '../register';
+import { registerRouteLiterals, registerRouteCatchalls } from '@papercusp/operator-core/lib/endpoint-route/register';
 
 /**
  * Reproduce the `_hono/app.ts` mount order exactly:

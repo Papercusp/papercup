@@ -12,7 +12,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LayoutDoc } from '../../../lib/dock-layouts';
+import type { LayoutDoc } from '@papercusp/operator-core/lib/dock-layouts';
 
 export interface DockLayoutRow {
   workspaceId: string;

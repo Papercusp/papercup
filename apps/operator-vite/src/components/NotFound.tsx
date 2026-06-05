@@ -183,8 +183,8 @@ export default function NotFound() {
               <Link to="/adv" search={{ tab: 'harnesses' }} className="pc-button primary">
                 Return to Mission Control
               </Link>
-              <Link to="/marketplace" className="pc-button ghost">
-                Browse Marketplace
+              <Link to="/cupboard" className="pc-button ghost">
+                Browse the Cupboard
               </Link>
               <Link to="/support" className="pc-button ghost">
                 Ask for help

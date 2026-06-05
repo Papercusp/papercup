@@ -158,6 +158,48 @@ describe('registerPluginTools', () => {
     assert('error' in r, 'expected validate() to catch orphan-decl');
   });
 
+  // D-003 — per-plugin getDynamicTools discovery-timeout override.
+  function fakeDynPlugin(opts: { name: string; delayMs: number; discoveryTimeoutMs?: number }): LoadedPlugin {
+    return {
+      plugin: {
+        kind: 'plugin',
+        name: opts.name,
+        version: '0.1.0',
+        papercusp: '^0.1.0',
+        capabilities: [],
+        ...(opts.discoveryTimeoutMs !== undefined ? { discoveryTimeoutMs: opts.discoveryTimeoutMs } : {}),
+        async getDynamicTools() {
+          await new Promise((res) => setTimeout(res, opts.delayMs));
+          return { definitions: [], handlers: {} };
+        },
+      },
+      path: join(ROOT, opts.name),
+      source: 'global',
+      toolDefinitions: [],
+      runtime: { kind: 'js' },
+    } as unknown as LoadedPlugin;
+  }
+
+  it('honors a per-plugin discoveryTimeoutMs override (short budget → times out)', async () => {
+    const lp = fakeDynPlugin({ name: 'fixture-dyn-timeout', delayMs: 400, discoveryTimeoutMs: 100 });
+    const result = await registerPluginTools([lp]);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0].error, /timed out after 100ms/);
+  });
+
+  it('does not time out a fast getDynamicTools (default budget)', async () => {
+    const lp = fakeDynPlugin({ name: 'fixture-dyn-ok', delayMs: 10 });
+    const result = await registerPluginTools([lp]);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('clamps an over-large discoveryTimeoutMs and still completes fast work', async () => {
+    // 10_000_000ms would never trip; a fast probe completes regardless.
+    const lp = fakeDynPlugin({ name: 'fixture-dyn-clamp', delayMs: 10, discoveryTimeoutMs: 10_000_000 });
+    const result = await registerPluginTools([lp]);
+    assert.deepEqual(result.errors, []);
+  });
+
   it('handles multiple plugins without collision when names differ', async () => {
     const a = await loadPluginFromDir(
       await makeToolPlugin({

@@ -1,7 +1,19 @@
 # postgres-js double-encodes ${JSON.stringify(x)}::jsonb
 URL: /internal/docs/agent-insights/postgres-js-jsonb-double-encoding
 
-Binding a jsonb column with JSON.stringify + ::jsonb wraps the value twice; use sql.json() instead.
+Binding a jsonb column with JSON.stringify + ::jsonb wraps the value twice under a fresh pool — but the operator runtime client (getOrgPg) is the inverse. Use ${JSON.stringify(x)}::text::jsonb, which is correct under BOTH. See postgres-js-jsonb-binding.
+
+import { Aside } from '@astrojs/starlight/components';
+
+This page is **half the picture**. The double-encoding it describes is real **only
+for a fresh `postgres()` pool / the testcontainer client**. Under the operator
+**runtime** client (`getOrgPg().sql`) the behaviour is the *inverse*:
+`${JSON.stringify(x)}::jsonb` stores a correct object and `sql.json(x)` **throws**
+(so the "Fix" below — switch to `sql.json()` — would *break production*, and was
+in fact reverted for the getOrgPg projections). **The form that is correct under
+BOTH clients is `${JSON.stringify(x)}::text::jsonb`** (the explicit `::text` cast
+forces a plain text param → parsed once server-side). Prefer it everywhere. Full
+client-by-client matrix + verification: **[postgres-js-jsonb-binding](/internal/docs/agent-insights/postgres-js-jsonb-binding)**.
 
 ## Symptom
 

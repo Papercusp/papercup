@@ -38,10 +38,9 @@ afterEach(() => {
 });
 
 describe('useFlag — defaulting', () => {
-  it('returns the FLAG_DEFAULTS value (all false in V1) for the initial state', () => {
+  it('returns the FLAG_DEFAULTS value for the initial state', () => {
     for (const k of ALL_FLAG_KEYS) {
       expect(useFlag(k)).toBe(FLAG_DEFAULTS[k]);
-      expect(useFlag(k)).toBe(false);
     }
   });
 

@@ -20,11 +20,11 @@ import {
   openWorkspaceWindow,
   renameWorkspace,
   switchWorkspace,
-} from '../../lib/workspaces-tauri';
+} from '@papercusp/operator-core/lib/workspaces-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 import { usePromptDialog } from '../harness/usePromptDialog';
 import { Tooltip } from '../harness/Tooltip';
-import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '../../lib/browser-workspace';
+import { getBrowserWorkspaceId, resolveActiveWorkspaceId } from '@papercusp/operator-core/lib/browser-workspace';
 
 export default function WorkspaceSwitcher() {
   const [reg, setReg] = useState<WorkspaceRegistry | null>(null);

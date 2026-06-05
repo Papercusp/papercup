@@ -23,11 +23,11 @@ token_for() {
   local slug="$1"
   local cfg
   for cfg in \
-    "/home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/$slug/.harness/config.json" \
-    "/home/marsh-office/.papercusp/projects/$slug/.harness/config.json" \
-    "/home/marsh-office/$slug/.harness/config.json" \
-    "/home/marsh-office/.restart-org/.harness/config.json" \
-    "/home/marsh-office/sheets-clone/.harness/config.json"; do
+    "/home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/$slug/.papercusp/config.json" \
+    "/home/marsh-office/.papercusp/projects/$slug/.papercusp/config.json" \
+    "/home/marsh-office/$slug/.papercusp/config.json" \
+    "/home/marsh-office/.restart-org/.papercusp/config.json" \
+    "/home/marsh-office/sheets-clone/.papercusp/config.json"; do
     if [ -f "$cfg" ]; then
       jq -r '.harness_token // empty' "$cfg" 2>/dev/null && return 0
     fi
@@ -195,7 +195,7 @@ else
     CHILD_PATH=$(curl -sS "$OPERATOR_BASE/api/harness/projects" | jq -r ".projects[] | select(.slug == \"$CHILD_SLUG\") | .path")
     if [ -d "$CHILD_PATH" ]; then
       cd "$CHILD_PATH"
-      PROJECT_DIR="$CHILD_PATH" STATE_DIR="$CHILD_PATH/.harness" PAPERCUSP_OPERATOR_BASE="$OPERATOR_BASE" \
+      PROJECT_DIR="$CHILD_PATH" STATE_DIR="$CHILD_PATH/.papercusp" PAPERCUSP_OPERATOR_BASE="$OPERATOR_BASE" \
         bash /home/marsh-office/papercupai-workspace/papercup/libs/papercusp/packages/harness/hooks/builtins/afterDone.sh
       sleep 1
       DONE=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org/inbox?status=all" | jq -e ".messages[] | select(.from_slug == \"$CHILD_SLUG\" and .kind == \"Completion\")" 2>&1)

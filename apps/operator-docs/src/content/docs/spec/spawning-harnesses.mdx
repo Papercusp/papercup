@@ -9,7 +9,7 @@ A harness is "spawning-capable" if at least one of its roles has `scaffold_harne
 
 ## Role config
 
-Inside `<harness>/.harness/config.json`:
+Inside `<harness>/.papercusp/config.json`:
 
 ```json
 {
@@ -36,7 +36,7 @@ Inside `<harness>/.harness/config.json`:
 
 ## Bearer token & auth
 
-When the harness is scaffolded, a `harness_token` is written into `.harness/config.json` (mode 0600). All `executeAction` calls — whether from the substrate's `process_actions_block` (run.sh) or from a hook script — read the token from this file and send it as `Authorization: Bearer <token>`.
+When the harness is scaffolded, a `harness_token` is written into `.papercusp/config.json` (mode 0600). All `executeAction` calls — whether from the substrate's `process_actions_block` (run.sh) or from a hook script — read the token from this file and send it as `Authorization: Bearer <token>`.
 
 The executor derives the caller identity from the token. **Body-supplied `from` or `callingHarness` fields are rejected on mismatch**; `parent_slug` on `scaffold_harness` is never body-controlled. See [auth-and-identity](/internal/docs/spec/auth-and-identity).
 
@@ -68,4 +68,4 @@ The receiver's prompt-build automatically includes pending messages from its `pa
 
 ## Completion hook
 
-If a harness has `parent_slug` set, the substrate's built-in `afterDone` hook fires automatically when the loop reaches DONE, posting a `kind: "Completion"` message back to the parent. No template authoring needed. Override per-harness by writing your own `<harness>/.harness/hooks/afterDone.sh`.
+If a harness has `parent_slug` set, the substrate's built-in `afterDone` hook fires automatically when the loop reaches DONE, posting a `kind: "Completion"` message back to the parent. No template authoring needed. Override per-harness by writing your own `<harness>/.papercusp/hooks/afterDone.sh`.

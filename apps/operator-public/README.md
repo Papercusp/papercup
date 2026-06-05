@@ -16,17 +16,44 @@ Original plan called for "Cloudflare-fronted Next.js + managed Postgres." This l
 - **D1 (SQLite)** instead of managed Postgres. Cupboard data is moderate-scale + relational + low-cost; D1's free tier covers v1 easily. Reusing the `papercusp-publish` pattern keeps the deploy + auth + rate-limit code shapes consistent.
 - **GitHub bearer auth** (validate `Authorization: Bearer <gh_token>` against `https://api.github.com/user`). Desktop operator passes the same token produced by Phase 1b `lib/identity/gh-token.ts`.
 
+## Listing kinds (migration 004 — one storefront, three kinds)
+
+Per the distribution plan (`harness-blueprint-distribution-2026-06-03`, D-005/D-008)
+the Cupboard is no longer harness-only. It is ONE storefront with three listing
+kinds, each with its own consumer action:
+
+| `listing_kind` | Consumer action | Carries |
+|----------------|-----------------|---------|
+| `harness`   | **join**    | a Hypercore `topic_hex` (the shared-harness swarm) |
+| `blueprint` | **fork**    | a blueprint stream within a project (`project_ref` + `listing_ref`) |
+| `snapshot`  | **fork**    | a captured snapshot (`project_ref` + `listing_ref`) |
+| `plugin`    | **install** | a distributable plugin (`listing_ref` = plugin slug) |
+
+**Project-centric 1:N (D-008):** listings key on the papercupai **project remote**
+(`project_ref`) and a project hosts **N** non-harness listings, discriminated by
+`listing_ref`. `github_repository_id` denotes the project remote's repo id and is
+**no longer unique on its own** — only one *active harness* listing per repo is
+enforced (the old 1:1 invariant, preserved for `kind='harness'`). GitHub-repo-backed
+identity stays for v1, so every kind carries the project remote's github fields and
+the publisher-collaborator trust signal.
+
 ## Endpoints
+
+The canonical surface is `/listings` (kind-aware). `/harnesses*` is the same surface
+pinned to `kind='harness'` — the back-compat view the deployed desktop client +
+operator proxy use today. Once the operator proxy is cut over to `/listings?kind=harness`,
+`/harnesses*` can be dropped (it carries no behavior the generalized surface doesn't).
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET`  | `/healthz` | none | Liveness |
-| `GET`  | `/harnesses` | none | Paginated public listing. Query: `q`, `claim` (`claimed`/`unclaimed`), `limit` (1-100), `cursor` (last_activity_at) |
-| `GET`  | `/harnesses/:id` | none | Single listing detail |
-| `POST` | `/harnesses` | gh-bearer | Publish a new harness (5/hr per user; private GitHub repos rejected) |
-| `DELETE` | `/harnesses/:id` | gh-bearer | Unlist (publisher or claimant only) |
-| `POST` | `/harnesses/:id/claim` | gh-bearer | Claim by `maintain`/`admin` GitHub perm (addendum 1 / Phase 1b §5.1) |
-| `GET`  | `/binding/:github_repository_id` | none | Lookup by repo id (Entry 2 "join existing" alert) |
+| `GET`  | `/listings` | none | Paginated public listing. Query: `kind` (`harness`/`blueprint`/`snapshot`/`plugin`/`all`), `project` (project_ref), `q`, `claim`, `limit` (1-100), `cursor` |
+| `GET`  | `/listings/:id` | none | Single listing detail |
+| `POST` | `/listings` | gh-bearer | Publish (5/hr per user; private GitHub repos rejected). Body `listing_kind` (default `harness`), `project_ref`, `listing_ref` (required for non-harness), `topic_hex` (required for harness) |
+| `DELETE` | `/listings/:id` | gh-bearer | Unlist (publisher or claimant only) |
+| `POST` | `/listings/:id/claim` | gh-bearer | Claim by `maintain`/`admin` GitHub perm |
+| `GET`/`POST`/`DELETE` | `/harnesses*` | as above | Back-compat: `/listings` pinned to `kind='harness'` |
+| `GET`  | `/binding/:github_repository_id` | none | Lookup the harness listing bound to a repo (Entry 2 "join existing" alert) |
 | `POST` | `/reports` | gh-bearer | File abuse report (10/hr per user) |
 
 ## Local dev
@@ -65,10 +92,16 @@ curl -X POST http://127.0.0.1:8787/harnesses \
    ```
    Paste the returned `database_id` + KV `id` into `wrangler.toml`.
 
-2. **Apply schema to remote:**
+2. **Apply schema to remote (migrations run in order):**
    ```bash
-   npm run d1:apply:remote
+   npm run d1:apply:remote          # 001_init.sql
+   # then each incremental, in order:
+   wrangler d1 execute papercusp-cupboard --remote --file migrations/002_add_publisher_permission.sql
+   wrangler d1 execute papercusp-cupboard --remote --file migrations/003_add_publisher_attestation.sql
+   wrangler d1 execute papercusp-cupboard --remote --file migrations/004_listing_kinds_project_centric.sql
    ```
+   ⚠ `004` is a one-shot table rebuild (adds `listing_kind` + project-centric 1:N
+   keying; existing rows preserved as `kind='harness'`). Apply it exactly once.
 
 3. **Install secrets:**
    ```bash

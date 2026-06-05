@@ -31,7 +31,8 @@
 
 import type { CSSProperties, ReactNode } from 'react';
 
-export type ClaimStatus = 'unclaimed' | 'claimed' | 'stale' | 'superseded';
+import type { ClaimStatus } from '@papercusp/operator-core/lib/harness/claim-status-types';
+export type { ClaimStatus };
 
 export interface ClaimStatusBadgeProps {
   status: ClaimStatus;

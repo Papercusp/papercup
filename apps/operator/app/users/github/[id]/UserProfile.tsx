@@ -36,46 +36,14 @@ import type { CSSProperties, ReactNode } from 'react';
 import { ContributorBadgeRow } from '@/app/_components/ContributorBadge';
 import { BindingStatusBadge, type BindingStatus } from '@/app/_components/BindingStatusBadge';
 import { ClaimStatusBadge, type ClaimStatus } from '@/app/_components/ClaimStatusBadge';
+import type {
+  UserProfileData,
+  HarnessBlock,
+  ActivityEntry,
+  ClaimedHarness,
+} from '@papercusp/operator-core/lib/user-profile/types';
 
-export interface UserProfileData {
-  github_user_id: number;
-  github_login: string;
-  display_name: string | null;
-  avatar_url: string | null;
-  /** Aggregate binding state across harnesses (worst case). */
-  binding_status: BindingStatus;
-  /** Per-harness blocks the viewer can see. */
-  harnesses: ReadonlyArray<HarnessBlock>;
-  /** Cross-harness recent activity, capped at ~30 events. */
-  recent_activity: ReadonlyArray<ActivityEntry>;
-  /** Harnesses this user has claimed as a verified maintainer. */
-  claimed_harnesses: ReadonlyArray<ClaimedHarness>;
-}
-
-export interface HarnessBlock {
-  harness_slug: string;
-  display_title: string;
-  href: string;
-  prs_merged: number;
-  features_shipped: number;
-  activity_events: number;
-}
-
-export interface ActivityEntry {
-  id: string;
-  ts: number;
-  kind: string;
-  /** Pre-rendered short label, e.g. "Shipped F-042 in sheets". */
-  label: string;
-  href?: string;
-}
-
-export interface ClaimedHarness {
-  harness_slug: string;
-  display_title: string;
-  href: string;
-  claim_status: ClaimStatus;
-}
+export type { UserProfileData, HarnessBlock, ActivityEntry, ClaimedHarness };
 
 const PAGE_STYLE: CSSProperties = {
   padding: '32px max(24px, calc((100% - 960px) / 2))',

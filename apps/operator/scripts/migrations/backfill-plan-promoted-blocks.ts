@@ -32,9 +32,9 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
-import { listPlanFiles } from '../../lib/agent-tools/plans/source';
-import { upsertPromotedBlock } from '../../lib/agent-tools/coordination/tools/promote';
-import { bumpUpdatedDate } from '../../lib/agent-tools/plans/with-plan-lock';
+import { listPlanFiles } from '@papercusp/operator-core/lib/agent-tools/plans/source';
+import { upsertPromotedBlock } from '@papercusp/operator-core/lib/agent-tools/coordination/tools/promote';
+import { bumpUpdatedDate } from '@papercusp/operator-core/lib/agent-tools/plans/with-plan-lock';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 

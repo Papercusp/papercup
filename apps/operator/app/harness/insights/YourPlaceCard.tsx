@@ -17,6 +17,13 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import type {
+  YourPlaceQueueStats,
+  YourPlaceRoleState,
+  YourPlaceTrustState,
+  YourPlaceSpendState,
+  YourPlaceCardProps,
+} from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const CARD: CSSProperties = {
   border: '1px solid var(--border, #2a2a2a)',
@@ -94,36 +101,13 @@ const SPEND_NOTE: CSSProperties = {
   marginTop: 2,
 };
 
-export interface YourPlaceQueueStats {
-  queued: number;
-  working: number;
-  shipped_this_week: number;
-}
-
-export interface YourPlaceRoleState {
-  pr_reviewer_enabled: boolean;
-  is_provisional_owner: boolean;
-  is_claimant: boolean;
-}
-
-export interface YourPlaceTrustState {
-  trusted_authors_count: number;
-  trusted_by_count: number;
-}
-
-export interface YourPlaceSpendState {
-  /** USD this week. */
-  spent_usd_this_week: number;
-  /** Optional weekly cap; renders as `$x/$y`. */
-  cap_usd?: number | null;
-}
-
-export interface YourPlaceCardProps {
-  queue: YourPlaceQueueStats;
-  role: YourPlaceRoleState;
-  trust: YourPlaceTrustState;
-  spend: YourPlaceSpendState;
-}
+export type {
+  YourPlaceQueueStats,
+  YourPlaceRoleState,
+  YourPlaceTrustState,
+  YourPlaceSpendState,
+  YourPlaceCardProps,
+};
 
 function formatUsd(n: number): string {
   return n < 1

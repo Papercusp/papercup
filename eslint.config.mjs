@@ -27,7 +27,7 @@ export default [
       'packages/agent-mcp/**/*.ts',
       'libs/papercusp/libs/db/src/**/*.ts',
       'apps/operator/app/api/agent-mcp/**/*.ts',
-      'apps/operator/lib/operator-*.ts',
+      'packages/operator-core/lib/operator-*.ts',
     ],
     plugins: {
       papercusp: papercuspRules,
@@ -52,6 +52,25 @@ export default [
     },
     rules: {
       'papercusp/no-raw-route-handlers': 'error',
+    },
+  },
+  {
+    // A bare `${x}::jsonb` is client-dependent — it double-encodes (stores a
+    // jsonb *string*) under a fresh/testcontainer postgres() pool while working
+    // under getOrgPg, so the same code is right in prod + wrong in tests.
+    // Enforce the universal `${x}::text::jsonb`. See
+    // `tools/eslint-rules/no-bare-jsonb-cast.js` + agent-insight
+    // postgres-js-jsonb-binding (handoff-coordination-dx-followups §A2).
+    files: [
+      'packages/operator-core/lib/**/*.ts',
+      'packages/coordination/src/**/*.ts',
+      'libs/papercusp/libs/db/src/**/*.ts',
+    ],
+    plugins: {
+      papercusp: papercuspRules,
+    },
+    rules: {
+      'papercusp/no-bare-jsonb-cast': 'error',
     },
   },
 ];

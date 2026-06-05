@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { hardReload } from '@/lib/hard-reload';
+import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 
 /**
  * Inline fallback when the lazy `import('vditor')` chunk fails to load — which

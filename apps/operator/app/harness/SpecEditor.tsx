@@ -26,12 +26,12 @@ type Section = 'settings' | 'memory' | 'prompts';
 
 const TABS: Array<{ id: Tab; label: string; filename: string; path: (projectPath: string) => string; language: 'markdown' | 'json'; kind: TabKind; sensitivity?: Sensitivity }> = [
   { id: 'agents',          label: 'AGENTS.md',               filename: 'AGENTS.md',            path: (p) => `${p}/AGENTS.md`,                      language: 'markdown', kind: 'file' },
-  { id: 'config',          label: 'config.json',             filename: 'config.json',          path: (p) => `${p}/.harness/config.json`,            language: 'json',    kind: 'file' },
+  { id: 'config',          label: 'config.json',             filename: 'config.json',          path: (p) => `${p}/.papercusp/config.json`,            language: 'json',    kind: 'file' },
   { id: 'mcp',             label: '.mcp.json',               filename: '.mcp.json',            path: (p) => `${p}/.mcp.json`,                       language: 'json',    kind: 'file' },
   { id: 'claudeSettings',  label: '.claude/settings.json',   filename: 'settings.json',        path: (p) => `${p}/.claude/settings.json`,           language: 'json',    kind: 'file', sensitivity: 'warn' },
   { id: 'skills',          label: 'skills',                  filename: '',                     path: (p) => `${p}/.claude/skills/`,                 language: 'markdown', kind: 'collection' },
-  { id: 'supervisor',      label: 'supervisor-notes.md',     filename: 'supervisor-notes.md',  path: (p) => `${p}/.harness/supervisor-notes.md`,    language: 'markdown', kind: 'file' },
-  { id: 'knowledge',       label: 'knowledge.md',            filename: 'knowledge.md',         path: (p) => `${p}/.harness/knowledge.md`,           language: 'markdown', kind: 'file' },
+  { id: 'supervisor',      label: 'supervisor-notes.md',     filename: 'supervisor-notes.md',  path: (p) => `${p}/.papercusp/supervisor-notes.md`,    language: 'markdown', kind: 'file' },
+  { id: 'knowledge',       label: 'knowledge.md',            filename: 'knowledge.md',         path: (p) => `${p}/.papercusp/knowledge.md`,           language: 'markdown', kind: 'file' },
   { id: 'env',             label: '.env',                    filename: '.env',                 path: (p) => `${p}/.env`,                            language: 'markdown', kind: 'file', sensitivity: 'secret' },
 ];
 

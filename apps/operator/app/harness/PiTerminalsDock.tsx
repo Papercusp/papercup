@@ -13,7 +13,7 @@
  * pane spawns a fresh pty).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import {
   DockviewReact,
   type DockviewApi,

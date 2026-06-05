@@ -13,7 +13,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { Select } from '@/app/harness/Select';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
-import type { RepoStats, SnapshotInfo } from '@/lib/backup';
+import type { RepoStats, SnapshotInfo } from '@papercusp/operator-core/lib/backup';
 
 interface ServerInfo { workspaceId: string; port: number; url: string; startedAt: string; }
 interface HealthInfo {

@@ -30,10 +30,10 @@ Harness state has **two orthogonal questions**, and the word "canonical" has bee
 used for both — which is the root of a long-running confusion. This policy retires
 the bare word; always name the axis:
 
-| Axis                   | Term                        | Question                                                             | Values                                                                                                              |
-| ---------------------- | --------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Local store**        | **runtime store-of-record** | What does the operator *on this machine* read/write at runtime?      | **PG** (decided — below)                                                                                            |
-| **Cross-machine sync** | **sync authority**          | What resolves merges & propagates a *shared* table between machines? | `none` (local-only) · `git` (committed `.harness/state/` files, GitHub-merged) · `peer-log` (Hyperbee/Model-B, LWW) |
+| Axis                   | Term                        | Question                                                             | Values                                                                                                                |
+| ---------------------- | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Local store**        | **runtime store-of-record** | What does the operator *on this machine* read/write at runtime?      | **PG** (decided — below)                                                                                              |
+| **Cross-machine sync** | **sync authority**          | What resolves merges & propagates a *shared* table between machines? | `none` (local-only) · `git` (committed `.papercusp/state/` files, GitHub-merged) · `peer-log` (Hyperbee/Model-B, LWW) |
 
 **Decision (`harness-state-storage-unification-2026-06-01`, D-002): the runtime
 store-of-record is PG for every harness table.** Cross-machine sharing is a
@@ -51,7 +51,7 @@ consolidated tables; config/settings are workspace-owned (keyed by
   That decision stands (git is the sync authority for documents); it was never a
   claim about git vs Postgres.
 * **un-hardcode / harnesses-across-workspaces** said "canonical" to mean
-  **PG vs `.harness/state/` files** — a *runtime store-of-record* choice. Under the
+  **PG vs `.papercusp/state/` files** — a *runtime store-of-record* choice. Under the
   decision above, that's PG, uniformly.
 
 ## Default: Postgres
@@ -123,16 +123,16 @@ migration that breaks `empty → head` fails CI loudly — there is no skip-tole
 
 Files are correct for these specific cases:
 
-| Use                                                                     | Example                                                                    |
-| ----------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Bootstrap state needed before a PG connection exists                    | `~/.papercusp-workspaces/registry.json`, `~/.papercusp/db-encryption-key`  |
-| Postgres's own data                                                     | `pglite-data/`, `embedded-pg-data/`                                        |
-| Code, scripts, templates, snapshots                                     | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                      |
-| Harness contract artifacts read by tools running inside the harness     | `<harness>/.harness/config.json`, `SPEC.md`, `supervisor-notes.md`         |
-| Append-only logs at high volume where SQL log tables would dwarf state  | `.harness/action-runs/<runId>.log` (run metadata in PG, log bytes on disk) |
-| Per-process locks via O\_EXCL                                           | `expert-dispatcher.ts` lockfiles                                           |
-| Plugin-sandbox storage (the plugin host exposes a virtual FS by design) | `plugin-host.ts` `read`/`write` API to plugins                             |
-| Per-device UX preferences that should NOT sync across devices           | voice config (per audio stack), one-time UI hint dismissals                |
+| Use                                                                     | Example                                                                      |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Bootstrap state needed before a PG connection exists                    | `~/.papercusp-workspaces/registry.json`, `~/.papercusp/db-encryption-key`    |
+| Postgres's own data                                                     | `pglite-data/`, `embedded-pg-data/`                                          |
+| Code, scripts, templates, snapshots                                     | `provision/runner.ts:RUNTIME_LIB_SH`, plugin tarballs                        |
+| Harness contract artifacts read by tools running inside the harness     | `<harness>/.papercusp/config.json`, `SPEC.md`, `supervisor-notes.md`         |
+| Append-only logs at high volume where SQL log tables would dwarf state  | `.papercusp/action-runs/<runId>.log` (run metadata in PG, log bytes on disk) |
+| Per-process locks via O\_EXCL                                           | `expert-dispatcher.ts` lockfiles                                             |
+| Plugin-sandbox storage (the plugin host exposes a virtual FS by design) | `plugin-host.ts` `read`/`write` API to plugins                               |
+| Per-device UX preferences that should NOT sync across devices           | voice config (per audio stack), one-time UI hint dismissals                  |
 
 ## NOT acceptable
 
@@ -160,7 +160,7 @@ These patterns recur and have all been migrated; please don't reintroduce:
 Some surfaces are **both** operator state (read by the UI) and harness
 contract (read by tools inside the harness process). Feature notes are
 the canonical example: the orchestrator's role prompt directs LLMs to
-write `<projectDir>/.harness/notes/<featureId>.md` so the autonomous
+write `<projectDir>/.papercusp/notes/<featureId>.md` so the autonomous
 worker reads it; the operator UI also reads/writes the same notes for
 human-in-the-loop steering.
 

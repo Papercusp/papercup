@@ -18,7 +18,7 @@
 
 import { useEffect, useRef } from 'react';
 import { speak, getVoiceState } from './voice-mode';
-import { sharedState, subscribeOperatorState } from '../operator-shared-state';
+import { sharedState, subscribeOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
 import { loadVoicePrefsClient } from './voice-prefs-client';
 
 type ScanEvent = { kind: 'scan-start' } | { kind: 'scan-done'; suggestions: number; autoDispatched: number };

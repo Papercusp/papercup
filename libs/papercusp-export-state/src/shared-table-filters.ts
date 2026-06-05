@@ -51,6 +51,37 @@ const ENABLED_FEATURES_PROJECT_IDS = (slug: string) =>
             FROM harness_${slug}.harness_features
            WHERE project_id IS NOT NULL)`;
 
+/**
+ * Identity / membership / trust / credentials tables — NEVER captured into a
+ * portable snapshot. Per RFC `project-centric-harness-rethink-2026-06-04` D-011
+ * (folded into distribution D-011): who-can-collaborate — members, per-user
+ * identity, device pubkeys, GitHub bindings, trust grants — is PG + peer-log
+ * canonical, NOT portable per-harness state. The credential/secret tables are
+ * excluded for that reason *and* the obvious security one: a snapshot handed to
+ * a forker (or published to the Cupboard) must never carry operator secrets.
+ *
+ * All live in `harness_shared` and were already outside the capture set (they
+ * are simply absent from the include list, and the per-harness `harness_<slug>`
+ * dump doesn't reach them). These explicit `exclude` entries make the omission
+ * INTENTIONAL: they surface the tables in the manifest's `excluded[]` with a
+ * cited reason, and `shared-table-filters.test.ts` guards against any future
+ * change silently moving one into capture.
+ */
+export const IDENTITY_TRUST_TABLES = [
+  'contributors',
+  'contributor_usage_events',
+  'identity_files',
+  'mobile_devices',
+  'mobile_pair_tokens',
+  'oauth_nonces',
+  'operator_credentials',
+  'operator_publish_credentials',
+  'operator_search_provider_credentials',
+  'operator_trust_store',
+  'operator_voice_credentials',
+  'trusted_authors',
+] as const;
+
 export const SHARED_TABLE_FILTERS: SharedTableFilter[] = [
   {
     table: 'projects',
@@ -97,6 +128,41 @@ export const SHARED_TABLE_FILTERS: SharedTableFilter[] = [
     mode: 'exclude',
     filter: () => 'FALSE',
     reason: 'cross-harness audit log; not slug-scoped, capturing would leak other harnesses',
+  },
+  ...IDENTITY_TRUST_TABLES.map(
+    (table): SharedTableFilter => ({
+      table,
+      mode: 'exclude',
+      filter: () => 'FALSE',
+      reason:
+        'identity/membership/trust/credentials — PG+peer-log-canonical, never portable per-harness state (RFC project-centric-harness-rethink-2026-06-04 D-011); credential tables are additionally a hard security exclusion',
+    }),
+  ),
+  {
+    table: 'snapshot_index',
+    mode: 'exclude',
+    filter: () => 'FALSE',
+    reason:
+      'operator-local discovery index for portable export-state snapshots (hybrid FS+PG home — distribution P-006/D-010); not portable per-harness state',
+  },
+  {
+    // work_items landed (orchestration mig 135) as a VIEW over
+    // harness_features_consolidated, with the D-013 discriminator `item_kind`
+    // (default 'feature') + `payload`. Capture ONLY the NON-feature work-items
+    // (research-task etc.): they live solely in the shared base, so they'd be
+    // lost on capture. Feature-kind rows ride the per-harness capture+rebuild
+    // path (harness_features_consolidated is an `exclude`), so a blanket include
+    // would duplicate them. Slug column confirmed `harness_slug` (NOT
+    // install_slug) against the landed schema. The to_regclass guard in
+    // pg-dump.ts copyFilteredSharedTables makes this safe if the view is absent.
+    // (su-4b6ce P-005 spec, 2026-06-04; distribution P-005 / orchestration D-013.)
+    // NOTE: restore-side slug-rewrite for captured non-feature rows (the
+    // consolidated base is slug-keyed) is the P-005/restore follow-on owned by
+    // su-4b6ce — no non-feature rows exist yet, so this captures a header-only
+    // CSV today (a no-op through restore's empty-CSV skip).
+    table: 'work_items',
+    mode: 'include',
+    filter: (slug) => `harness_slug = '${slug}' AND item_kind <> 'feature'`,
   },
 ];
 

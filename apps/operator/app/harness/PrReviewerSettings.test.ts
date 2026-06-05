@@ -14,7 +14,7 @@ import {
   auditActionLabel,
   auditActionTone,
 } from './PrReviewerSettings';
-import { PR_MERGE_METHODS } from '@/lib/pr-host/types';
+import { PR_MERGE_METHODS } from '@papercusp/operator-core/lib/pr-host/types';
 
 describe('MERGE_METHOD_OPTIONS', () => {
   it('covers exactly the canonical merge methods, squash first', () => {

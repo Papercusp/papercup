@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@papercusp/artifact-registry": "*",
     "hono": "^4.12.21"
   },
   "devDependencies": {

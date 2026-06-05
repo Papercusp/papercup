@@ -24,9 +24,9 @@ import { Component, Suspense, useMemo, type ReactNode } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useSearchParams } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
-import { lazyWithRetry } from '../../lib/lazy-with-retry';
+import { lazyWithRetry } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { useShortcutAction } from '../../lib/hotkeys';
-import { buildRegistryPaletteItems } from '../../lib/commands/shims/palette-shim';
+import { buildRegistryPaletteItems } from '@papercusp/operator-core/lib/commands/shims/palette-shim';
 import { useServerCapabilityCommands } from './use-server-capabilities';
 import type { Command } from './CommandPalette';
 

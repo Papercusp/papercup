@@ -57,14 +57,14 @@ import {
   writeOperatorModeToSession,
   writeSleepUntilMs,
   type OperatorMode,
-} from '@/lib/operator-converse-tags';
+} from '@papercusp/operator-core/lib/operator-converse-tags';
 import { getVoiceState, speak, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
 import { useStateSnapshots } from '@/lib/use-state-snapshots';
 import { selectFocusedCard } from '@/lib/chat-cards/select-focused-card';
-import { composeAmbiguityPrompt } from '@/lib/voice-cards/compose-ambiguity-prompt';
+import { composeAmbiguityPrompt } from '@papercusp/operator-core/lib/voice-cards/compose-ambiguity-prompt';
 import {
   attachActive as routerAttachActive,
   BUFFER_WINDOW_MS as ROUTER_BUFFER_WINDOW_MS,
@@ -74,14 +74,14 @@ import {
   markPending as routerMarkPending,
   resetRouter,
   routeTranscript,
-} from '@/lib/voice-cards/voice-card-router';
-import { postCardResponse } from '@/lib/post-card-response';
+} from '@papercusp/operator-core/lib/voice-cards/voice-card-router';
+import { postCardResponse } from '@papercusp/operator-core/lib/post-card-response';
 import {
   loadVoicePrefsClient,
   subscribeVoicePrefsClient,
 } from './voice/voice-prefs-client';
-import { getConfiguredWakeWordForDisplay } from '@/lib/voice-cards/wakeword-display';
-import { sharedState as sharedOperatorState } from './operator-shared-state';
+import { getConfiguredWakeWordForDisplay } from '@papercusp/operator-core/lib/voice-cards/wakeword-display';
+import { sharedState as sharedOperatorState } from '@papercusp/operator-core/lib/operator-shared-state';
 
 interface OperatorTurnRow {
   id: string;
@@ -526,7 +526,7 @@ export type GenerationFn = (req: GenerationRequest) => Promise<GenerationStream>
 const defaultGenerationFn: GenerationFn = async (req) => {
   // Lazy import — avoids dragging the sessionStorage path into SSR.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getOrCreateClientId } = require('@/lib/ui/client-id') as typeof import('@/lib/ui/client-id');
+  const { getOrCreateClientId } = require('@papercusp/operator-core/lib/ui/client-id') as typeof import('@papercusp/operator-core/lib/ui/client-id');
   const uiClientId = getOrCreateClientId();
   const res = await fetch('/api/agent-mcp/operator-converse', {
     method: 'POST',

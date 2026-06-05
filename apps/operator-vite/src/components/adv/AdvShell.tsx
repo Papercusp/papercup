@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentType, type CSSProperties } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
-import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import {
@@ -43,7 +43,7 @@ export const ADV_TABS: ReadonlyArray<{
 }> = [
   { id: 'brainstorm', label: 'Brainstorm', icon: Lightbulb, accent: '#38bdf8', accentRgb: '56, 189, 248' },
   { id: 'plans', label: 'Create', icon: ListChecks, accent: '#f59e0b', accentRgb: '245, 158, 11' },
-  { id: 'harnesses', label: 'Harness', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
+  { id: 'harnesses', label: 'Pots', icon: Boxes, accent: '#a78bfa', accentRgb: '167, 139, 250' },
   { id: 'git', label: 'Git', icon: GitBranch, accent: '#22c55e', accentRgb: '34, 197, 94' },
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
@@ -61,7 +61,7 @@ type HarnessProjectLite = {
   // selector can render a tree without paying for /projects.
   parent_slug?: string | null;
   harness_kind?: string | null;
-  // Whether the harness has been shared (a `.harness/shared.json` exists).
+  // Whether the harness has been shared (a `.papercusp/shared.json` exists).
   // Drives the header's Share button → Shared badge swap.
   is_shared?: boolean;
 };
@@ -200,9 +200,9 @@ export default function AdvShell({
             <span className="pc-advshell__kicker">Advanced orchestration</span>
             <h1>{title}</h1>
           </div>
-          {/* Harness label + selector + sub-harness toggle + New + Share — all inline */}
+          {/* Pot label + selector + sub-pot toggle + New + Share — all inline */}
           <div className="pc-advshell__selector">
-            <span className="pc-advshell__selector-label">Harness</span>
+            <span className="pc-advshell__selector-label">Pot</span>
             <Select
               value={allMode ? ALL_HARNESSES_OPTION : (activeSlug ?? '')}
               onChange={async (next) => {
@@ -746,7 +746,7 @@ export function buildHarnessSelectOptions(
   // "All harnesses" always leads the list (when there's anything to span).
   // Selecting it flips ?scope=all rather than ?slug= — see AdvShell.onChange.
   const out: Array<{ value: string; label: string; disabled?: boolean }> = [
-    { value: ALL_HARNESSES_OPTION, label: 'All harnesses' },
+    { value: ALL_HARNESSES_OPTION, label: 'All Pots' },
   ];
   const visited = new Set<string>();
   function emit(node: HarnessProjectLite, depth: number): void {

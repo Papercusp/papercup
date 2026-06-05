@@ -1,10 +1,10 @@
-import { withPlanLock, bumpUpdatedDate } from '../lib/agent-tools/plans/with-plan-lock';
-import { allocateNextItemId, buildItemLine, appendItemToBody } from '../lib/agent-tools/plans/add-item';
-import { allocateNextDecisionId, appendDecisionToBody } from '../lib/agent-tools/plans/add-decision';
-import { flipStatusInBody } from '../lib/agent-tools/plans/set-status';
-import { replaceNowBlock } from '../lib/agent-tools/plans/set-now';
-import { readPlanBySlug } from '../lib/agent-tools/plans/source';
-import { resolveEffectiveStatus } from '../lib/agent-tools/plans/effective-status';
+import { withPlanLock, bumpUpdatedDate } from '@papercusp/operator-core/lib/agent-tools/plans/with-plan-lock';
+import { allocateNextItemId, buildItemLine, appendItemToBody } from '@papercusp/operator-core/lib/agent-tools/plans/add-item';
+import { allocateNextDecisionId, appendDecisionToBody } from '@papercusp/operator-core/lib/agent-tools/plans/add-decision';
+import { flipStatusInBody } from '@papercusp/operator-core/lib/agent-tools/plans/set-status';
+import { replaceNowBlock } from '@papercusp/operator-core/lib/agent-tools/plans/set-now';
+import { readPlanBySlug } from '@papercusp/operator-core/lib/agent-tools/plans/source';
+import { resolveEffectiveStatus } from '@papercusp/operator-core/lib/agent-tools/plans/effective-status';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 

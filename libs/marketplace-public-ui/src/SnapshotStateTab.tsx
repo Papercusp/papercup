@@ -84,8 +84,8 @@ export function SnapshotStateTab({ slug, version, apiBase, snapshot }: Props) {
     }
 
     Promise.all([
-      fetchJson<IssueRow>('source/.harness/issues.json', 'issues'),
-      fetchJson<FeatureRow>('source/.harness/features.json', 'features'),
+      fetchJson<IssueRow>('source/.papercusp/issues.json', 'issues'),
+      fetchJson<FeatureRow>('source/.papercusp/features.json', 'features'),
       fetchText('state/harness/memory/summary.md'),
     ]).then(([is, fs, mem]) => {
       if (cancelled) return;
@@ -207,7 +207,7 @@ export function SnapshotStateTab({ slug, version, apiBase, snapshot }: Props) {
         <section style={{ marginBottom: 32 }}>
           <h3 style={{ marginBottom: 4 }}>Features ({features.length})</h3>
           <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
-            From <code>.harness/features.json</code> at snapshot time.
+            From <code>.papercusp/features.json</code> at snapshot time.
           </p>
           <RowList
             rows={features.slice(0, 50)}
@@ -229,7 +229,7 @@ export function SnapshotStateTab({ slug, version, apiBase, snapshot }: Props) {
         <section style={{ marginBottom: 32 }}>
           <h3 style={{ marginBottom: 4 }}>Issues ({issues.length})</h3>
           <p style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 0 }}>
-            From <code>.harness/issues.json</code> at snapshot time.
+            From <code>.papercusp/issues.json</code> at snapshot time.
           </p>
           <RowList
             rows={issues.slice(0, 50)}

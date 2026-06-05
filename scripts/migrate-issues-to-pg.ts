@@ -1,5 +1,5 @@
 /**
- * One-shot: load each project's `.harness/issues.json` into
+ * One-shot: load each project's `.papercusp/issues.json` into
  * `harness_<slug>.harness_issues` in the papercusp database.
  *
  * Idempotent — uses `ON CONFLICT (harness_slug, issue_id) DO UPDATE`.
@@ -61,7 +61,7 @@ async function migrateOne(
   sql: postgres.Sql,
   project: ProjectEntry,
 ): Promise<{ slug: string; loaded: number; skipped: string | null }> {
-  const file = join(project.path, '.harness', 'issues.json');
+  const file = join(project.path, '.papercusp', 'issues.json');
   let raw: string;
   try {
     raw = await readFile(file, 'utf8');

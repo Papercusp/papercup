@@ -33,7 +33,7 @@ import {
   nextIndex,
   prevIndex,
   formatMatchLabel,
-} from '../../lib/find-in-page/engine';
+} from '@papercusp/operator-core/lib/find-in-page/engine';
 
 const MAIN_SELECTOR = 'main[data-route-transition-page]';
 

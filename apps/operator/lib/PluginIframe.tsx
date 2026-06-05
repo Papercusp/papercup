@@ -26,7 +26,7 @@
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
-import { navigateClient, resolveClientNavigation } from './client-navigation';
+import { navigateClient, resolveClientNavigation } from '@papercusp/operator-core/lib/client-navigation';
 
 interface Props {
   pluginName: string;

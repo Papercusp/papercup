@@ -235,6 +235,20 @@ describe('roleLaunchArgs (interactive role session)', () => {
     expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
   });
 
+  it('omp: loads the coordination extension (-e) when a coordExtPath is supplied (lock + activity bridge)', () => {
+    const { args } = roleLaunchArgs('omp', { ...files, coordExtPath: '/h/.papercusp/papercusp-coord.ts' });
+    expect(args).toEqual([
+      '--approval-mode', 'yolo',
+      '--append-system-prompt', '/lc/session-7.md',
+      '-e', '/h/.papercusp/papercusp-coord.ts',
+    ]);
+  });
+
+  it('omp: omits -e when no coordExtPath is supplied', () => {
+    const { args } = roleLaunchArgs('omp', files);
+    expect(args).not.toContain('-e');
+  });
+
   it('codex: raw codex, hook-trust + approvals/sandbox bypass (CODEX_HOME via envelopeEnv)', () => {
     const { bin, args } = roleLaunchArgs('codex', files);
     expect(bin).toBe('codex');

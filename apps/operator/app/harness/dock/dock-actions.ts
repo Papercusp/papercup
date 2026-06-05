@@ -15,7 +15,7 @@
 import type { DockviewApi } from 'dockview';
 import { toLayoutDoc } from './layout-adapter';
 import { panelRegistry } from './panel-registry';
-import type { LayoutDoc } from '../../../lib/dock-layouts';
+import type { LayoutDoc } from '@papercusp/operator-core/lib/dock-layouts';
 
 // ───────── Module-scoped api binding (singleton, set by HarnessDock) ─────────
 

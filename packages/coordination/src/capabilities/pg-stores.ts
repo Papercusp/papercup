@@ -13,6 +13,7 @@
 
 import type { Sql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '../event-log/pg-log';
+import { newMsgId } from '@papercusp/pubsub-substrate/core';
 import {
   type CreateTopicInput,
   type DeliveryMode,
@@ -96,8 +97,17 @@ export async function ensureCoordCapabilityTables(sql: Sql): Promise<void> {
       created_at   timestamptz NOT NULL DEFAULT now(),
       last_post_at timestamptz,
       post_count   integer NOT NULL DEFAULT 0,
+      harness_slug text,
+      origin       text NOT NULL DEFAULT 'local',
+      author_pubkey text,
       PRIMARY KEY (workspace_id, thread_id)
     )`;
+  // Federation columns (distributed-coordination-shared-harness-2026-06-04 Track A):
+  // idempotently migrate a table that predates them. The federation MIGRATION
+  // (149) adds the same columns + capture triggers + fed indexes on the live DB.
+  await sql`ALTER TABLE harness_shared.coord_threads ADD COLUMN IF NOT EXISTS harness_slug text`;
+  await sql`ALTER TABLE harness_shared.coord_threads ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'local'`;
+  await sql`ALTER TABLE harness_shared.coord_threads ADD COLUMN IF NOT EXISTS author_pubkey text`;
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS coord_threads_parent_uq
       ON harness_shared.coord_threads (workspace_id, parent_kind, parent_ref)`;
@@ -108,8 +118,16 @@ export async function ensureCoordCapabilityTables(sql: Sql): Promise<void> {
       thread_id    text NOT NULL,
       author_id    text,
       body         text NOT NULL DEFAULT '',
-      created_at   timestamptz NOT NULL DEFAULT now()
+      created_at   timestamptz NOT NULL DEFAULT now(),
+      harness_slug text,
+      origin       text NOT NULL DEFAULT 'local',
+      author_pubkey text,
+      post_msg_id  text
     )`;
+  await sql`ALTER TABLE harness_shared.coord_thread_posts ADD COLUMN IF NOT EXISTS harness_slug text`;
+  await sql`ALTER TABLE harness_shared.coord_thread_posts ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'local'`;
+  await sql`ALTER TABLE harness_shared.coord_thread_posts ADD COLUMN IF NOT EXISTS author_pubkey text`;
+  await sql`ALTER TABLE harness_shared.coord_thread_posts ADD COLUMN IF NOT EXISTS post_msg_id text`;
   await sql`
     CREATE INDEX IF NOT EXISTS coord_thread_posts_thread_idx
       ON harness_shared.coord_thread_posts (workspace_id, thread_id, id)`;
@@ -426,14 +444,17 @@ export class PgThreadStore implements ThreadableStore {
 
   async getOrCreateThread(
     parent: ObjectRef,
-    opts: { thread_id: string; title?: string; created_by?: string; created_ts: string },
+    opts: { thread_id: string; title?: string; created_by?: string; created_ts: string; harness_slug?: string },
   ): Promise<ThreadRow> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // harness_slug (federation): set from the parent's harness when the caller is
+    // harness-scoped (a harness conversation); NULL = operator-scope / local
+    // (workspace engineer-issues) → the thread + its posts stay local.
     await sql`
       INSERT INTO harness_shared.coord_threads
-        (workspace_id, thread_id, parent_kind, parent_ref, title, created_by, created_at)
-      VALUES (${this.ws}, ${opts.thread_id}, ${parent.kind}, ${parent.ref}, ${opts.title ?? null}, ${opts.created_by ?? null}, ${opts.created_ts})
+        (workspace_id, thread_id, parent_kind, parent_ref, title, created_by, created_at, harness_slug)
+      VALUES (${this.ws}, ${opts.thread_id}, ${parent.kind}, ${parent.ref}, ${opts.title ?? null}, ${opts.created_by ?? null}, ${opts.created_ts}, ${opts.harness_slug ?? null})
       ON CONFLICT (workspace_id, thread_id) DO NOTHING`;
     const existing = await this.getThreadByParent(parent);
     if (!existing) throw new Error(`coord_threads: failed to read back thread for ${parent.kind}:${parent.ref}`);
@@ -443,9 +464,14 @@ export class PgThreadStore implements ThreadableStore {
   async addPost(input: { thread_id: string; author_id?: string; body: string; created_ts: string }): Promise<ThreadPostRow> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // post_msg_id (federation): a global key — the bigserial id is machine-local.
+    // harness_slug is INHERITED from the post's thread (subquery), so a post on a
+    // harness-scoped thread federates; a post on a local thread stays local.
+    const postMsgId = newMsgId();
     const rows = await sql<{ id: string | number; created_at: unknown }[]>`
-      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, created_at)
-      VALUES (${this.ws}, ${input.thread_id}, ${input.author_id ?? null}, ${input.body}, ${input.created_ts})
+      INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, created_at, post_msg_id, harness_slug)
+      VALUES (${this.ws}, ${input.thread_id}, ${input.author_id ?? null}, ${input.body}, ${input.created_ts}, ${postMsgId},
+        (SELECT harness_slug FROM harness_shared.coord_threads WHERE workspace_id = ${this.ws} AND thread_id = ${input.thread_id}))
       RETURNING id, created_at`;
     await sql`
       UPDATE harness_shared.coord_threads

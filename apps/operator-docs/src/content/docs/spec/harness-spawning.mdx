@@ -26,7 +26,7 @@ Harness spawning is a substrate feature: any harness whose role config grants `s
 2. Slug uniqueness check against `harness_shared.projects` (409 `slug_already_in_use` on collision).
 3. Shells out to `papercusp init <slug> --from <template>` with a 5-minute timeout.
 4. Writes `SPEC.md` from the request body.
-5. Generates a 256-bit `harness_token`, writes it to `<projectDir>/.harness/config.json` (mode 0600), and merges in `parent_slug = <derivedCallingHarness>` and `slug`.
+5. Generates a 256-bit `harness_token`, writes it to `<projectDir>/.papercusp/config.json` (mode 0600), and merges in `parent_slug = <derivedCallingHarness>` and `slug`.
 6. Triggers `bin/scaffold-harness-schema.sh <slug>` to provision the per-harness PG schema (messages, supervisor_notes, executed_actions, config_token, harness_features, etc.).
 7. Inserts the token into `harness_<slug>.config_token` and `harness_shared.token_index` for O(1) bearer→slug resolution.
 8. Updates `harness_shared.projects.parent_slug` for cross-harness lineage queries.

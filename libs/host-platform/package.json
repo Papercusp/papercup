@@ -1,5 +1,6 @@
 {
   "name": "@papercusp/host-platform",
+  "type": "module",
   "version": "0.0.1",
   "private": true,
   "description": "Host-boundary interface — fs / paths / database URL resolution behind one swappable adapter. Desktop impl + server stub.",

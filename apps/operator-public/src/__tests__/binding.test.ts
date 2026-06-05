@@ -28,7 +28,9 @@ function envWith(harnesses: HRow[]): Env {
         bind(...b: unknown[]) {
           return {
             async first<T>(): Promise<T | null> {
-              if (/SELECT \* FROM harnesses WHERE github_repository_id/i.test(sql)) {
+              // Whitespace-tolerant: getHarnessByGithubRepoId is now a
+              // multi-line, harness-kind-scoped lookup (migration 004).
+              if (/FROM harnesses[\s\S]*github_repository_id/i.test(sql)) {
                 const [id] = b as [number];
                 return (harnesses.find((h) => h.github_repository_id === id) ?? null) as T | null;
               }

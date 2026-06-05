@@ -46,7 +46,7 @@ coupling and usually already gone. The **soft** coupling is what hides:
 
 1. **Hardcoded PG schema / db names** in SQL — `harness_shared.*`,
    default db `papercusp`. → inject a `schema` / `defaultDbName`.
-2. **Filesystem paths** — `~/.papercusp`, `.harness/`, `apps/operator/...`.
+2. **Filesystem paths** — `~/.papercusp`, `.papercusp/`, `apps/operator/...`.
    → inject a dir, default to `os.tmpdir()`.
 3. **Branded env-var names** — `PAPERCUSP_*`, `NEXT_PUBLIC_PAPERCUSP_*`.
    → a `configure()` field, or a generic-named env fallback.
@@ -123,3 +123,33 @@ operator resolve fine, but it is **not** the whole job:
 3. **Shared-index commit hazard:** `git commit` commits the whole index — in
    this multi-agent checkout another session may have left files staged.
    **Always `git diff --cached --name-only` before committing.**
+
+## Going-forward: start generic-first (the lint)
+
+Migrating a batch of misfiled cores out of the app is a one-time cleanup; the
+*recurring* failure is writing the next generic core inside the app again. The
+2026-06-05 audit (`generalize-libs-to-generic-2026-06-05`, D-005) added a guard so
+the debt doesn't re-accrue:
+
+* **`npm run lint:generic-first`** (advisory; `:all` for a full-tree sweep,
+  `--strict` to exit non-zero) — `scripts/check-generic-first.mjs`. It flags a
+  *substantial* file in `operator-core/lib` / `apps/operator/lib` that **both**
+  (a) has zero papercusp coupling (no relative import, no domain `@papercusp/*`, no
+  DB/IO client) **and** (b) *names* a textbook CS concept (supervision tree, fencing
+  token, topological sort, token bucket, φ-accrual, saga…). It nudges the file toward
+  `libs/generic/<name>` behind a seam.
+* **Both signals are required on purpose.** Structural decoupling alone flags \~200
+  files (most app code imports little); the concept name is the precision filter that
+  separates a real misfiled algorithm from ordinary decoupled glue. The tradeoff is
+  that a generic algorithm with an unlisted name is a false negative — acceptable for
+  an advisory lint; a 200-candidate cry-wolf is not. Extend `CONCEPT_RE` when a new
+  concept family recurs.
+* **Default mode is diff-scoped** (mirrors `affected-tests.mjs`: added/modified `.ts`
+  since the merge-base with `origin/main`, plus working-tree edits) so it nudges at the
+  point of introduction in a PR. `--all` audits the whole tree.
+* A genuinely app-local file whose concept keyword is incidental (e.g. ElevenLabs MSE
+  "backpressure" = browser audio buffering) goes in the `ALLOW` set in the script — not
+  a blanket suppression.
+
+Informational by default (like `lint:knip` — never gates a merge). The convention it
+guards is the "Borrowable libraries" section of the repo `CLAUDE.md` + `BORROWABLE.md`.

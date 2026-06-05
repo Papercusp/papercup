@@ -45,13 +45,13 @@ Three publishable kinds (`plugin`, `template`, `snapshot`) share one marketplace
 
 ### Template lifecycle
 
-1. **Save** — "Save template" button on harness dashboard → `POST /api/harness/<slug>/save-as-template { slug, version, description?, author? }` forks the recipe (SPEC.md, AGENTS.md, `.harness/config.json`, `.harness/validation-contract.md` + plugin recommendations from `enabled-plugins.json`) into `~/.papercusp/templates/<slug>/<version>/`.
+1. **Save** — "Save template" button on harness dashboard → `POST /api/harness/<slug>/save-as-template { slug, version, description?, author? }` forks the recipe (SPEC.md, AGENTS.md, `.papercusp/config.json`, `.papercusp/validation-contract.md` + plugin recommendations from `enabled-plugins.json`) into `~/.papercusp/templates/<slug>/<version>/`.
 2. **Publish** — `POST /api/templates/<slug>/<version>/publish` tars + signs + uploads to marketplace-api.
 3. **Install** — `POST /api/marketplace/install { slug, projectName, targetPath? }` scaffolds a new project. **Slug-collision recovery (PR #5)**: returns `{ code: 'project_name_taken', suggestedName: '<base>-2' }` on conflict; UI auto-offers via `confirm()`. Partial-init cleanup wipes half-scaffolded dirs on `papercusp init` failure.
 
 ### Snapshot lifecycle
 
-1. **Capture** — `POST /api/snapshots/create` writes a tarball under `<harness>/.harness/snapshots/`.
+1. **Capture** — `POST /api/snapshots/create` writes a tarball under `<harness>/.papercusp/snapshots/`.
 2. **Publish** — `POST /api/snapshots/<id>/publish` uploads to marketplace.
 3. **Fork** — `POST /api/snapshots/<id>/instantiate` (or `papercusp snapshot fork`) creates a new harness with schema rename. **Grants carry over (PR #2)**: `copyGrantsToNewHarness` copies every `(plugin, version, capability)` grant on the source harness to the new fork via `INSERT … SELECT … ON CONFLICT DO NOTHING`.
 4. **Republish** — *pending*. PR-B paused per `@plugin`'s reply on coord, awaiting v1 plan greenlight (Batch G+1 bumps `SNAPSHOT_SCHEMA_VERSION` to 2).

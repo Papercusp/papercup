@@ -21,13 +21,13 @@ import { dirname, join } from 'node:path';
 
 import { runScenario } from '@papercusp/testing-shell/llm';
 
-import { isLlmAvailable } from '../lib/llm-testing/llm-client';
-import { operatorRunnerDeps } from '../lib/llm-testing/deps';
-import { SCENARIOS, getScenario, listScenarioIds } from '../lib/llm-testing/scenarios';
-import { listTargets } from '../lib/llm-testing/targets';
-import { findPromotionCandidates, formatCandidatesReport } from '../lib/llm-testing/promotion/candidates';
-import { promoteShape } from '../lib/llm-testing/promotion/promote';
-import { replayFixture, reEvaluateRun } from '../lib/llm-testing/replay';
+import { isLlmAvailable } from '@papercusp/operator-core/lib/llm-testing/llm-client';
+import { operatorRunnerDeps } from '@papercusp/operator-core/lib/llm-testing/deps';
+import { SCENARIOS, getScenario, listScenarioIds } from '@papercusp/operator-core/lib/llm-testing/scenarios';
+import { listTargets } from '@papercusp/operator-core/lib/llm-testing/targets';
+import { findPromotionCandidates, formatCandidatesReport } from '@papercusp/operator-core/lib/llm-testing/promotion/candidates';
+import { promoteShape } from '@papercusp/operator-core/lib/llm-testing/promotion/promote';
+import { replayFixture, reEvaluateRun } from '@papercusp/operator-core/lib/llm-testing/replay';
 
 type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
 
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
       console.error('export-fixture requires --run <runId> and --as <fixture-slug>.');
       process.exit(2);
     }
-    const { exportFixtureFromRun } = await import('../lib/llm-testing/replay');
+    const { exportFixtureFromRun } = await import('@papercusp/operator-core/lib/llm-testing/replay');
     const result = await exportFixtureFromRun({ runId: args.runId, fixtureId: args.fixtureSlug });
     console.log(`exported run ${args.runId} → fixture '${args.fixtureSlug}'`);
     console.log(`  ${result.ssePath} (${result.bytesSse}B)`);

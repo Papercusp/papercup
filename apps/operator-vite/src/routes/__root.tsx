@@ -14,6 +14,10 @@ import WslOnboardingGate from '@/app/_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from '@/app/_components/GlobalShortcutDispatcher';
 import GlobalNavShortcuts from '@/app/_components/GlobalNavShortcuts';
 import GlobalCommandPalette from '@/app/_components/GlobalCommandPalette';
+// Side effect: register the browser voice controls into operator-core's
+// voice-control bridge so voice.* commands reach the UI voice engine without a
+// core→@/app back-edge (operator-core stays headless/UI-free).
+import '@/lib/commands/voice-controls-entry';
 import GlobalFindInPage from '@/app/_components/GlobalFindInPage';
 import RouteTransitionProvider from '@/app/_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from '@/app/_components/ToasterSelectionFix';

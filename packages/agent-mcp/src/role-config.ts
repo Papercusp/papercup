@@ -58,6 +58,13 @@ export const AGENT_ROLES = [
   // redoes the merge fresh on `main`, resolves, commits, leaves the tree clean, and
   // does NOT push (the next git-sync tick pushes). Not feature-scoped.
   'merge-resolver',
+  // Release manager (release-gate-ready-branch-2026-06-04 D-011). The judgment
+  // half of the deploy chokepoint — Claude Opus 4.8 @ xhigh effort, because the
+  // blast radius is the whole running fleet. Spawned by the `system:release-trigger`
+  // action (or launched interactively); reviews the gathered deploy plan + staged
+  // migrations, makes the go/no-go call, runs the scripted deploy mechanics, then
+  // reads health and decides rollback. The script is the hands; this is the brain.
+  'release-manager',
 ] as const;
 
 /** Union of the built-in role ids. Plugin roles widen `AgentRole` to `string`. */

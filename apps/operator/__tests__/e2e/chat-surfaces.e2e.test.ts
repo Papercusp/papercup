@@ -20,30 +20,30 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fakeRunAgentChat } from '@/lib/test-fixtures/fake-agent-chat';
+import { fakeRunAgentChat } from '@papercusp/operator-core/lib/test-fixtures/fake-agent-chat';
 
 beforeEach(() => {
   vi.resetModules();
 });
 
 afterEach(() => {
-  vi.doUnmock('@/lib/agent-chat-stream');
-  vi.doUnmock('@/lib/agent-tools/architect/prompts');
-  vi.doUnmock('@/lib/agent-tools/oracle/prompts');
-  vi.doUnmock('@/lib/agent-tools/operator/converse-prompt');
-  vi.doUnmock('@/lib/agent-tools/operator/delegate');
-  vi.doUnmock('@/lib/memory/injection');
-  vi.doUnmock('@/lib/system-principal');
-  vi.doUnmock('@/lib/workspace-registry');
-  vi.doUnmock('@/lib/delegates');
-  vi.doUnmock('@/lib/delegate-summary');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-chat-stream');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-tools/architect/prompts');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-tools/oracle/prompts');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-tools/operator/converse-prompt');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-tools/operator/delegate');
+  vi.doUnmock('@papercusp/operator-core/lib/memory/injection');
+  vi.doUnmock('@papercusp/operator-core/lib/system-principal');
+  vi.doUnmock('@papercusp/operator-core/lib/workspace-registry');
+  vi.doUnmock('@papercusp/operator-core/lib/delegated-tasks');
+  vi.doUnmock('@papercusp/operator-core/lib/delegate-summary');
 });
 
 function mockAgentChat() {
-  vi.doMock('@/lib/agent-chat-stream', () => ({
+  vi.doMock('@papercusp/operator-core/lib/agent-chat-stream', () => ({
     runAgentChat: () => fakeRunAgentChat({}),
   }));
-  vi.doMock('@/lib/memory/injection', () => ({
+  vi.doMock('@papercusp/operator-core/lib/memory/injection', () => ({
     buildMemoryContextBlock: async () => null,
   }));
 }
@@ -51,12 +51,12 @@ function mockAgentChat() {
 describe('brainstorm:chat — registry invariants', () => {
   it('registers with replayBufferSize > 0 and exposes the projected entry', async () => {
     mockAgentChat();
-    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
       resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
-    await import('@/lib/agent-tools/architect/chat'); // side-effect: registers both architect + brainstorm
+    await import('@papercusp/operator-core/lib/agent-tools/architect/chat'); // side-effect: registers both architect + brainstorm
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('brainstorm:chat');
@@ -71,7 +71,7 @@ describe('brainstorm:chat — registry invariants', () => {
 describe('oracle:chat — registry invariants', () => {
   it('registers with replayBufferSize > 0', async () => {
     mockAgentChat();
-    await import('@/lib/agent-tools/oracle/chat'); // register
+    await import('@papercusp/operator-core/lib/agent-tools/oracle/chat'); // register
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('oracle:chat');
@@ -84,7 +84,7 @@ describe('oracle:chat — registry invariants', () => {
 describe('operator:converse — registry invariants', () => {
   it('registers with replayBufferSize > 0', async () => {
     mockAgentChat();
-    await import('@/lib/agent-tools/operator/converse'); // register
+    await import('@papercusp/operator-core/lib/agent-tools/operator/converse'); // register
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('operator:converse');
@@ -97,7 +97,7 @@ describe('operator:converse — registry invariants', () => {
 describe('operator:delegate — registry invariants', () => {
   it('registers with replayBufferSize > 0', async () => {
     mockAgentChat();
-    await import('@/lib/agent-tools/operator/delegate'); // register
+    await import('@papercusp/operator-core/lib/agent-tools/operator/delegate'); // register
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('operator:delegate');
@@ -110,16 +110,16 @@ describe('operator:delegate — registry invariants', () => {
 describe('all 5 streaming surfaces declare consistent replay-buffer + modality', () => {
   it('canonical sweep: each surface present in registry with sane invariants', async () => {
     mockAgentChat();
-    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
       resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
     // Register all five.
-    await import('@/lib/agent-tools/architect/chat');
-    await import('@/lib/agent-tools/oracle/chat');
-    await import('@/lib/agent-tools/operator/converse');
-    await import('@/lib/agent-tools/operator/delegate');
+    await import('@papercusp/operator-core/lib/agent-tools/architect/chat');
+    await import('@papercusp/operator-core/lib/agent-tools/oracle/chat');
+    await import('@papercusp/operator-core/lib/agent-tools/operator/converse');
+    await import('@papercusp/operator-core/lib/agent-tools/operator/delegate');
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const surfaces = [

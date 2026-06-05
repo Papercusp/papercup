@@ -24,7 +24,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { isTauriNative } from '@/lib/pty-tauri';
+import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
 import { InlinePtyTerminal } from './SetupWizard/InlinePtyTerminal';
 
 type ProviderId = 'claude' | 'chatgpt';

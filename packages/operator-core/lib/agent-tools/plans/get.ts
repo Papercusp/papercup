@@ -1,0 +1,290 @@
+/**
+ * plans:get — full parsed structure for one plan.
+ *
+ * Per agent-plan-tracking-2026-05-20.md §4.1.
+ * Returns frontmatter, ## Now, items (with both storedStatus AND
+ * effectiveStatus), decisions, and raw prose. Resolves both
+ * docs/plans/ and docs/plans/archive/ — archived doesn't make a plan
+ * unreachable.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { withWorkspace } from '@papercusp/db-org';
+import { readPlanBySlug } from './source';
+import { ctxToPlanSourceOpts, resolveCtxHarnessSlug } from './_ctx-opts';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { resolveEffectiveStatus } from './effective-status';
+import { hashPlanContent } from './content-hash';
+import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
+import { computePlanItemTestStatus, type PlanItemTestStatus } from '../../harness-test-rollup';
+import { overlayIssueBlocksForPlan } from '../../issue-blocks-merge';
+
+const ALL_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+  'promote', // the promote agent reads its plan's `## Promote` policy via plans:get
+] as const;
+
+const argsSchema = z.object({
+  harness: harnessArg,
+  slug: z
+    .string()
+    .min(1)
+    .describe('Plan slug (filename without .md). Resolves both docs/plans/ and docs/plans/archive/.'),
+  mode: z
+    .enum(['meta', 'sections', 'full'])
+    .optional()
+    .describe(
+      "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions, still WITHOUT the full prose/raw markdown. 'full' = everything incl. the whole markdown body (a big blueprint can be 90KB+ — only when you actually need the prose).",
+    ),
+  heading: z
+    .string()
+    .optional()
+    .describe(
+      "Return only the body of the section whose heading matches (case-insensitive), plus meta — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Overrides mode.",
+    ),
+});
+
+interface PlanSection {
+  heading: string;
+  level: number;
+  chars: number;
+}
+
+/** Split a plan's markdown body into level-1/2 sections, tracking fenced code
+ *  blocks so headings inside ``` aren't treated as section breaks. Powers the
+ *  section index (mode meta/sections) + the `heading` narrowing without pulling
+ *  the full prose. */
+function splitSections(md: string): Array<PlanSection & { body: string }> {
+  const lines = md.split('\n');
+  const out: Array<PlanSection & { body: string }> = [];
+  let cur: (PlanSection & { body: string }) | null = null;
+  let buf: string[] = [];
+  let inFence = false;
+  const flush = () => {
+    if (cur) {
+      cur.body = buf.join('\n').trim();
+      cur.chars = cur.body.length;
+      out.push(cur);
+    }
+  };
+  for (const line of lines) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      if (cur) buf.push(line);
+      continue;
+    }
+    const m = !inFence ? /^(#{1,2})\s+(.*)$/.exec(line) : null;
+    if (m) {
+      flush();
+      buf = [];
+      cur = { heading: (m[2] ?? '').trim(), level: (m[1] ?? '').length, chars: 0, body: '' };
+    } else if (cur) {
+      buf.push(line);
+    }
+  }
+  flush();
+  return out;
+}
+
+function findSection(
+  sections: Array<PlanSection & { body: string }>,
+  heading: string,
+): (PlanSection & { body: string }) | null {
+  const want = heading.trim().toLowerCase();
+  return (
+    sections.find((s) => s.heading.toLowerCase() === want) ??
+    sections.find((s) => s.heading.toLowerCase().includes(want)) ??
+    null
+  );
+}
+
+export default defineTool({
+  name: 'plans:get',
+  description:
+    'Fetch the full parsed structure of one plan by slug: frontmatter, ## Now (state + next), items with effectiveStatus, decisions. Resolves archived plans too.',
+  guidance: {
+    when: 'You have a slug from plans:list and need the plan contents.',
+    notWhen:
+      "You don't know the slug — call plans:list first. Item-only queries across plans should use plans:items.",
+    chaining: 'plans:list → plans:get { slug } → optionally plans:items for cross-plan picks.',
+  },
+  capability: 'plans:read',
+  requirePrincipal: false,
+  agentRoles: [...ALL_ROLES],
+  modality: ['text'],
+  args: argsSchema,
+  async handler(args, ctx) {
+    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const opts = await ctxToPlanSourceOpts(sctx);
+    const result = await readPlanBySlug(args.slug, opts);
+    if (!result) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not_found', slug: args.slug }) }],
+        isError: true,
+      };
+    }
+
+    const { parsed, archived, row } = result;
+    ctxAny.metadata?.({ slug: args.slug, archived, legacy: parsed.isLegacy });
+
+    if (parsed.isLegacy) {
+      const sections = splitSections(parsed.prose);
+      const legacyBase = {
+        slug: parsed.slug,
+        archived,
+        legacy: true as const,
+        contentHash: hashPlanContent(parsed.raw),
+        // version is the optimistic-CAS baseline (plans-pg-canonical D-005);
+        // contentHash kept for callers that still pass expectedHash.
+        version: row.version,
+        filename: parsed.filename,
+        sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
+        counts: { sections: sections.length },
+      };
+      let payload: Record<string, unknown> = legacyBase;
+      if (args.heading) {
+        const sec = findSection(sections, args.heading);
+        payload = {
+          ...legacyBase,
+          heading: args.heading,
+          section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
+        };
+      } else if ((args.mode ?? 'sections') === 'full') {
+        // Legacy plans are prose-only — full includes the body; meta/sections omit it.
+        payload = { ...legacyBase, prose: parsed.prose, raw: parsed.raw };
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+    }
+
+    const resolved = resolveEffectiveStatus(parsed);
+
+    // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
+    // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
+    // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
+    // (the closing of the issue unblocks every target atomically). The pure
+    // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
+    const { items: resolvedItems, blockingIssues } = await overlayIssueBlocksForPlan(
+      args.slug,
+      resolved.items,
+    );
+
+    // P-006: Build a map of plan-item-id → { featureId, status } so the UI
+    // can show live feature status badges next to each P-NNN item.
+    const harnessSlug = resolveCtxHarnessSlug(sctx) ?? 'papercup';
+    let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+    try {
+      const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        return tx<{ feature_id: string; status: string; source_plan_item_ids: string[] | null; harness_slug: string }[]>`
+          SELECT feature_id, status, source_plan_item_ids, harness_slug
+            FROM harness_shared.harness_features_consolidated
+           WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
+             AND source_plan_slug = ${args.slug}
+             AND source_plan_item_ids IS NOT NULL
+        `;
+      });
+      for (const row of rows) {
+        for (const itemId of row.source_plan_item_ids ?? []) {
+          linkedFeatures[itemId] = { featureId: row.feature_id, status: row.status, harnessSlug: row.harness_slug };
+        }
+      }
+    } catch {
+      // Non-fatal — UI degrades to no badges.
+    }
+
+    // P-083: per-plan-item test coverage (the plan↔test rollup, through the
+    // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
+    // side by decoratePlanItemTestBadges. Skips the tests query when the plan
+    // has no inline-VAL assertions. Non-fatal.
+    let planItemTests: Record<string, PlanItemTestStatus> = {};
+    try {
+      planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
+        const assertions = await tx<{ val_id: string; item_id: string; requires_test: boolean }[]>`
+          SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
+           WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${args.slug}
+        `;
+        if (assertions.length === 0) return {};
+        const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+          SELECT status, payload FROM harness_shared.harness_tests
+           WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
+        `;
+        return computePlanItemTestStatus(
+          assertions,
+          testRows.map((r) => ({
+            status: r.status,
+            coversVALs: Array.isArray(r.payload?.coversVALs)
+              ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+              : [],
+          })),
+        );
+      });
+    } catch {
+      // Non-fatal — UI degrades to no coverage badges.
+    }
+
+    const sections = splitSections(parsed.prose);
+    // `meta`: frontmatter + ## Now + counts + section index. Never the body.
+    const base = {
+      slug: parsed.frontmatter.slug ?? parsed.slug,
+      archived,
+      legacy: false as const,
+      frontmatter: parsed.frontmatter,
+      now: parsed.now,
+      contentHash: hashPlanContent(parsed.raw),
+      version: row.version,
+      sectionIndex: sections.map((s) => ({ heading: s.heading, level: s.level, chars: s.chars })),
+      counts: {
+        items: resolved.items.length,
+        decisions: parsed.decisions.length,
+        sections: sections.length,
+      },
+    };
+
+    // `heading`: meta + just the requested section's body (overrides mode).
+    if (args.heading) {
+      const sec = findSection(sections, args.heading);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...base,
+              heading: args.heading,
+              section: sec ? { heading: sec.heading, level: sec.level, body: sec.body } : null,
+            }),
+          },
+        ],
+      };
+    }
+
+    const mode = args.mode ?? 'sections';
+    if (mode === 'meta') {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(base) }] };
+    }
+
+    // `sections` (default): structured items/decisions + links — still WITHOUT
+    // the prose/raw blobs (the 90KB overflow). `full` adds them back.
+    const structured = {
+      ...base,
+      items: resolvedItems,
+      decisions: parsed.decisions,
+      missingRefs: resolved.missingRefs,
+      cycleMembers: resolved.cycleMembers,
+      linkedFeatures,
+      planItemTests,
+      blockingIssues,
+    };
+    const payload =
+      mode === 'full' ? { ...structured, prose: parsed.prose, raw: parsed.raw } : structured;
+    return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
+  },
+});

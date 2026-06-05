@@ -20,6 +20,7 @@ layout {
         pane name="work" focus=true size="60%"
         pane name="pui" size="40%" {
             command "pui"
+            args "hud"
         }
     }
     pane size=2 borderless=true {
@@ -62,6 +63,7 @@ mod tests {
     #[test]
     fn kdl_defines_pui_and_work_panes() {
         assert!(WORKBENCH_KDL.contains("command \"pui\""));
+        assert!(WORKBENCH_KDL.contains("args \"hud\"")); // HUD pane runs `pui hud`, never bare `pui` (no nesting)
         assert!(WORKBENCH_KDL.contains("name=\"work\""));
         assert!(WORKBENCH_KDL.contains("name=\"pui\""));
         assert!(WORKBENCH_KDL.contains("layout {"));

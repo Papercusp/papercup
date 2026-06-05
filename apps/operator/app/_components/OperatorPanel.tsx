@@ -31,7 +31,7 @@ import { Select } from '../harness/Select';
 import { usePromptDialog } from '../harness/usePromptDialog';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
-import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
+import { findFuzzyDuplicate } from '@papercusp/operator-core/lib/operator-fuzzy-dedup';
 import RouteLink from './RouteLink';
 import { OperatorReactorCore } from './hud/OperatorReactorCore';
 import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
@@ -283,7 +283,7 @@ import {
   subscribeOperatorState,
   type AutoAcceptLevel,
   type OperatorState,
-} from './operator-shared-state';
+} from '@papercusp/operator-core/lib/operator-shared-state';
 
 gsap.registerPlugin(useGSAP);
 
@@ -453,7 +453,7 @@ function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap
   );
 }
 
-function OperatorAutoAcceptFeed({ events }: { events: readonly import('./operator-shared-state').AutoAcceptEvent[] }): ReactElement | null {
+function OperatorAutoAcceptFeed({ events }: { events: readonly import('@papercusp/operator-core/lib/operator-shared-state').AutoAcceptEvent[] }): ReactElement | null {
   // Tick once per 30s so relative-time labels refresh while the feed is visible.
   const [, forceTick] = useState(0);
   useEffect(() => {
@@ -1319,7 +1319,7 @@ export function OperatorPanel(): ReactElement | null {
       // v4 §2m: tag voice-initiated audit rows. Restore on next macrotask.
       actorMethodRef.current = 'voice';
       try {
-        const { parseVoiceCommand } = await import('../../lib/voice-commands');
+        const { parseVoiceCommand } = await import('@papercusp/operator-core/lib/voice-commands');
         const cmd = parseVoiceCommand(text);
         const orderedPending = suggestionsRef.current.filter((c) => c.status === 'pending');
         const pickByOrdinal = (ord?: number) => {

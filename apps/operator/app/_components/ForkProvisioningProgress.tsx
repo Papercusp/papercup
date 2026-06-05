@@ -17,7 +17,7 @@ import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ProvisionStream } from './ProvisionStream';
 import type { PendingProvisioningEntry } from './ForkCompletionForm';
-import type { NarrationHandle } from '@/lib/voice-narration';
+import type { NarrationHandle } from '@papercusp/operator-core/lib/voice-narration';
 
 interface Props {
   /** New harness slug returned by /instantiate. */
@@ -48,7 +48,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
     setRunStartedAt(undefined);
     // Side-channel narration for the just-completed plugin.
     if (outcome === 'success' || outcome === 'failed') {
-      const { announceOpEnd } = await import('@/lib/voice-narration');
+      const { announceOpEnd } = await import('@papercusp/operator-core/lib/voice-narration');
       announceOpEnd(
         'provision',
         outcome === 'success'
@@ -81,7 +81,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
     // Side-channel kickoff narration. Plugin name is short and stable
     // → fits the slug template ("Provisioning <name>.").
     try {
-      const { announceOpStart } = await import('@/lib/voice-narration');
+      const { announceOpStart } = await import('@papercusp/operator-core/lib/voice-narration');
       narrationHandle.current = announceOpStart('provision', { slug: current.plugin });
     } catch { /* narration is best-effort */ }
     try {

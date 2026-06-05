@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { parseHarnessLink, formatParseError } from '../../lib/harness/harness-link-types';
+import { parseHarnessLink, formatParseError } from '@papercusp/operator-core/lib/harness/harness-link-types';
 // Import the step vocabulary from the dependency-free leaf, NOT join-shared-harness
 // (which pulls node:child_process/fs/os + the identity chain into the SPA bundle).
-import { ALL_STEP_IDS } from '../../lib/harness/join-steps';
-import type { JoinStepState, JoinStepStatus } from '../../lib/harness/join-steps';
+import { ALL_STEP_IDS } from '@papercusp/operator-core/lib/harness/join-steps';
+import type { JoinStepState, JoinStepStatus } from '@papercusp/operator-core/lib/harness/join-steps';
 import { JoinProgress } from './JoinProgress';
 
 interface Props {

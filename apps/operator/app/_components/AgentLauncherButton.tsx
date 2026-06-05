@@ -24,7 +24,7 @@ import { useState } from 'react';
 import { usePathname } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
 
-import { launchAgent } from '@/lib/launch-agent';
+import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 
 const DEFAULT_INSTALL_CMD = 'npm i -g @oh-my-pi/cli @papercusp/omp';
 

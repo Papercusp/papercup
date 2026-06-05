@@ -13,8 +13,8 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { getOrCreateClientId } from './client-id';
-import { callRoute } from '../call-tool';
+import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
+import { callRoute } from '@papercusp/operator-core/lib/call-tool';
 
 const HEARTBEAT_MS = 15_000;
 

@@ -10,9 +10,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  buildActivityArgs,
   callMcpTool,
   collapseDigestNotifies,
   detectSymlinkedPaths,
+  reportLifecycle,
   extractPathsFromToolInput,
   formatBusyRefusal,
   formatInboxDelta,
@@ -452,11 +454,14 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     })) as unknown as typeof fetch;
   }
 
-  it('returns {} when the tool has no claimable path', async () => {
-    let called = false;
-    global.fetch = (async () => {
-      called = true;
-      throw new Error('should not call');
+  it('returns {} + acquires NO lock when the tool has no claimable path', async () => {
+    // The activity bridge now reports EVERY tool call (a fire-and-forget
+    // activity:report), so a non-edit tool DOES reach the operator — but it must
+    // still acquire NO lock. Assert on the lock call, not on "fetch never fired".
+    const names: string[] = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      names.push((JSON.parse(init.body) as { params: { name: string } }).params.name);
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] } }) };
     }) as unknown as typeof fetch;
     const r = await onToolCall({
       type: 'tool_call',
@@ -465,7 +470,9 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
       input: { command: 'ls' },
     });
     expect(r).toEqual({});
-    expect(called).toBe(false);
+    // Let the fire-and-forget activity report settle, then assert no lock was taken.
+    await new Promise((res) => setTimeout(res, 20));
+    expect(names).not.toContain('locks:acquire');
   });
 
   it('blocks Claude task-panel and subagent Task tools and points agents at todo_write', async () => {
@@ -518,17 +525,20 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
       input: { path: join(repo, 'a.ts'), content: 'x' },
     });
     expect(r).toEqual({});
-    expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe('locks:acquire');
+    // The activity bridge also fires a fire-and-forget activity:report on every tool
+    // call, so filter to the lock calls to assert the lock behavior precisely.
+    const lockCalls = () => calls.filter((c) => c.name.startsWith('locks:'));
+    expect(lockCalls()).toHaveLength(1);
+    expect(lockCalls()[0].name).toBe('locks:acquire');
 
     await onToolResult({ type: 'tool_result', toolCallId: 'tc-1' });
-    expect(calls).toHaveLength(2);
-    expect(calls[1].name).toBe('locks:release');
-    expect((calls[1].args as { lock_id: string }).lock_id).toBe('L-1');
+    expect(lockCalls()).toHaveLength(2);
+    expect(lockCalls()[1].name).toBe('locks:release');
+    expect((lockCalls()[1].args as { lock_id: string }).lock_id).toBe('L-1');
 
     // Second release on the same toolCallId is a no-op (cache cleared).
     await onToolResult({ type: 'tool_result', toolCallId: 'tc-1' });
-    expect(calls).toHaveLength(2);
+    expect(lockCalls()).toHaveLength(2);
   });
 
   it('blocks with a formatted reason on busy', async () => {
@@ -1063,9 +1073,13 @@ describe('onSessionShutdown — defensive lock release (file-locking #2)', () =>
       };
     }) as unknown as typeof fetch;
     await onSessionShutdown();
-    expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe('locks:release');
-    expect(calls[0].args).toEqual({ all_mine: true });
+    // Shutdown now ALSO reports a "■ session ended" lifecycle row to the activity
+    // bridge before the lock backstop — assert on the lock call specifically.
+    const release = calls.find((c) => c.name === 'locks:release');
+    expect(release).toBeTruthy();
+    expect(release!.args).toEqual({ all_mine: true });
+    const lifecycle = calls.find((c) => c.name === 'activity:report');
+    expect((lifecycle!.args as { kind: string; summary: string })).toMatchObject({ kind: 'lifecycle', summary: '■ session ended' });
   });
 });
 
@@ -1383,5 +1397,90 @@ describe('formatTurnStartReminder — digest notify coalescing', () => {
     expect(out).toContain('×2');
     // one coalesced notify line, not two
     expect(out.match(/\[notify\]/g) ?? []).toHaveLength(1);
+  });
+});
+
+// ── activity bridge — the OMP in-process port (papercusp-worker-integration) ──
+describe('buildActivityArgs (OMP activity port)', () => {
+  beforeEach(() => _resetHookOwnerIdForTests());
+
+  it('forwards a raw tool call (server derives the summary) with agent=omp + phase=pre', () => {
+    const args = buildActivityArgs({ type: 'tool_call', toolName: 'edit', toolCallId: 'tc1', input: { path: '/repo/a.ts' } });
+    expect(args).toMatchObject({ agent: 'omp', phase: 'pre', tool_name: 'edit', tool_use_id: 'tc1', tool_input: { path: '/repo/a.ts' } });
+    expect(typeof args.owner).toBe('string');
+    expect(String(args.owner)).toMatch(/^omp-/); // hookOwnerId shape
+    expect(args).not.toHaveProperty('todos');
+  });
+
+  it('caps long string inputs + collapses arrays/objects so the report stays small', () => {
+    const args = buildActivityArgs({
+      type: 'tool_call', toolName: 'write', toolCallId: 'tc2',
+      input: { path: '/x', content: 'y'.repeat(900), extra: [1, 2], obj: { a: 1 } },
+    });
+    const ti = args.tool_input as Record<string, unknown>;
+    expect((ti.content as string).length).toBe(501); // 500 + ellipsis
+    expect(ti.extra).toBe('[2 items]');
+    expect(ti.obj).toBe('[object]');
+    expect(ti.path).toBe('/x');
+  });
+
+  it('forwards a todo_write list as `todos` (uncapped, sliced) so the server summarises kind=todos', () => {
+    const args = buildActivityArgs({
+      type: 'tool_call', toolName: 'todo_write', toolCallId: 'tc3',
+      input: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+    });
+    expect(args.todos).toHaveLength(2);
+    expect(args).not.toHaveProperty('tool_input');
+  });
+
+  it('caps a giant todo list to 100 items', () => {
+    const todos = Array.from({ length: 150 }, (_, i) => ({ content: `t${i}`, status: 'pending' }));
+    const args = buildActivityArgs({ type: 'tool_call', toolName: 'todo_write', toolCallId: 'tc4', input: { todos } });
+    expect((args.todos as unknown[]).length).toBe(100);
+  });
+
+  it('a non-todo tool with no input still forwards an empty capped input', () => {
+    const args = buildActivityArgs({ type: 'tool_call', toolName: 'bash', toolCallId: 'tc5', input: {} });
+    expect(args.tool_input).toEqual({});
+    expect(args.tool_name).toBe('bash');
+  });
+});
+
+describe('reportLifecycle (OMP session lifecycle → activity bridge)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  const prevToken = process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN;
+
+  beforeEach(() => {
+    _resetHookOwnerIdForTests();
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = 't';
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL; else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    if (prevToken === undefined) delete process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN; else process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN = prevToken;
+  });
+
+  async function capture(phase: 'start' | 'shutdown') {
+    let posted: { name: string; arguments: Record<string, unknown> } | null = null;
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      posted = (JSON.parse(init.body) as { params: { name: string; arguments: Record<string, unknown> } }).params;
+      return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] } }) };
+    }) as unknown as typeof fetch;
+    await reportLifecycle(phase);
+    return posted as { name: string; arguments: Record<string, unknown> } | null;
+  }
+
+  it('reports a "▶ session started" lifecycle row on start (agent=omp, kind=lifecycle)', async () => {
+    const p = await capture('start');
+    expect(p?.name).toBe('activity:report');
+    expect(p?.arguments).toMatchObject({ agent: 'omp', kind: 'lifecycle', summary: '▶ session started' });
+    expect(String(p?.arguments.owner)).toMatch(/^omp-/);
+  });
+
+  it('reports a "■ session ended" lifecycle row on shutdown', async () => {
+    const p = await capture('shutdown');
+    expect(p?.arguments).toMatchObject({ kind: 'lifecycle', summary: '■ session ended' });
   });
 });

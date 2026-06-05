@@ -20,7 +20,7 @@
  */
 
 import { MicVAD } from '@ricky0123/vad-web';
-import { transcribeChunk } from '../../../lib/voice-engines/whisper';
+import { transcribeChunk } from '@papercusp/operator-core/lib/voice-engines/whisper';
 import { f32ToWav } from './f32-to-wav';
 
 export interface WhisperListener {

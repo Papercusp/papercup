@@ -15,7 +15,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { X, MousePointer2 } from 'lucide-react';
 
 const STORAGE_KEY = 'papercusp:dock-onboarded';

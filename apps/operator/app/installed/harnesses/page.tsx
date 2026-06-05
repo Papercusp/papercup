@@ -173,7 +173,7 @@ export default function InstalledHarnessesPage() {
         <div className="pc-installed-ops-empty pc-installed-harnesses-empty" style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
           <p style={{ color: 'var(--fg-mute)' }}>No harnesses installed yet.</p>
           <p>
-            <RouteLink href="/marketplace/templates" className="pc-button">Browse the marketplace</RouteLink>
+            <RouteLink href="/cupboard" className="pc-button">Browse the Cupboard</RouteLink>
           </p>
         </div>
       )}

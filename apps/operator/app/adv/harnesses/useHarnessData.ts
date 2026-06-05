@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
-import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '../../harness/issues/types';
+import type { Issue, IssueSeverity, IssueSource, IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 
 export type FeatureStatus =
   | 'todo'

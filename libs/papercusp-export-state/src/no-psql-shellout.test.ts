@@ -17,6 +17,7 @@ const ROOTS = [
   // Operator app (runtime; ships in desktop bundle)
   '/home/marsh-office/papercupai-workspace/papercup/apps/operator/app',
   '/home/marsh-office/papercupai-workspace/papercup/apps/operator/lib',
+  '/home/marsh-office/papercupai-workspace/papercup/packages/operator-core/lib',
   // Snapshot subsystem
   '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp-export-state/src',
   // Other shipped libs
@@ -31,7 +32,7 @@ const ROOTS = [
 const ALLOW = new Set<string>([
   'libs/papercusp-export-state/src/pg-dump.ts',
   'libs/papercusp-export-state/src/binaries.ts',
-  'apps/operator/lib/agent-tools/db/migrate.ts',
+  'packages/operator-core/lib/agent-tools/db/migrate.ts',
 ]);
 
 const TS_EXT = /\.(ts|tsx|mts|cts|mjs|cjs|js)$/;

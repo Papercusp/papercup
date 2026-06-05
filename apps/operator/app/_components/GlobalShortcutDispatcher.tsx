@@ -20,8 +20,8 @@
  * (`app/layout.tsx`). It renders nothing.
  */
 import { useEffect } from 'react';
-import { dispatchKeydown, refreshKeymap } from '../../lib/shortcut-bus';
-import { loadOverrides } from '../../lib/shortcut-registry';
+import { dispatchKeydown, refreshKeymap } from '@papercusp/operator-core/lib/shortcut-bus';
+import { loadOverrides } from '@papercusp/operator-core/lib/shortcut-registry';
 
 export default function GlobalShortcutDispatcher() {
   useEffect(() => {

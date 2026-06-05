@@ -114,10 +114,12 @@ function makeEnv(): { env: Env; store: FakeStore } {
 
 function harness(over: Partial<HarnessRow> = {}): HarnessRow {
   return {
-    id: 'h1', github_repository_id: 42, github_owner: 'alice', github_name: 'cool',
+    id: 'h1', listing_kind: 'harness', project_ref: null, listing_ref: null,
+    github_repository_id: 42, github_owner: 'alice', github_name: 'cool',
     github_url: 'https://github.com/alice/cool', title: 'Cool', description: null,
     topic_hex: 'a'.repeat(64), publisher_github_user_id: 1, publisher_github_login: 'alice',
     publisher_permission: null, publisher_device_pubkey: null, publisher_attestation_gist_id: null,
+    tarball_r2_key: null, tarball_content_hash: null, tarball_bytes: null,
     claim_status: 'unclaimed', claimant_github_user_id: null, claimant_github_login: null,
     superseded_by: null, stars: 0, contributor_count: 0, last_activity_at: null,
     languages: null, stats_refreshed_at: null,

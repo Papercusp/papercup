@@ -15,8 +15,8 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { UserProfile } from './UserProfile';
-import { loadUserProfile } from '../../../../lib/user-profile/load';
-import { getSessionUserOrDefault } from '@/lib/auth';
+import { loadUserProfile } from '@papercusp/operator-core/lib/user-profile/load';
+import { getSessionUserOrDefault } from '@papercusp/operator-core/lib/auth';
 
 export const dynamic = 'force-dynamic';
 

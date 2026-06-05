@@ -28,8 +28,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { loadOverrides } from './shortcut-registry';
-import { registerAction, type ActionOptions } from './shortcut-bus';
+import { loadOverrides } from '@papercusp/operator-core/lib/shortcut-registry';
+import { registerAction, type ActionOptions } from '@papercusp/operator-core/lib/shortcut-bus';
 
 export type { ActionOptions };
 

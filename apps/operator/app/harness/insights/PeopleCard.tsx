@@ -14,6 +14,10 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
+import type {
+  PeopleCardPerson,
+  PeopleCardProps,
+} from '@papercusp/operator-core/lib/harness-insights/card-types';
 import { BindingStatusBadge } from '../../_components/BindingStatusBadge';
 
 const CARD: CSSProperties = {
@@ -123,25 +127,7 @@ const EMPTY: CSSProperties = {
   color: 'var(--fg-dim, #888)',
 };
 
-export interface PeopleCardPerson {
-  github_user_id: number;
-  login: string;
-  display_name?: string | null;
-  avatar_url?: string | null;
-  /** Verified binding status — drives the corner badge. */
-  binding_status: 'verified' | 'pending' | 'unverified';
-  /** Tier-A GitHub commit count (verifiable via the GitHub API). */
-  commitCount?: number | null;
-}
-
-export interface PeopleCardProps {
-  /** All visible contributors. */
-  people: PeopleCardPerson[];
-  /** Truncate to N avatars; rest become "+N more". Default 12. */
-  maxAvatars?: number;
-  /** Profile URL builder. Default = `/users/github/${id}`. */
-  buildProfileHref?: (person: PeopleCardPerson) => string;
-}
+export type { PeopleCardPerson, PeopleCardProps };
 
 const DEFAULT_PROFILE_HREF = (p: PeopleCardPerson): string =>
   `/users/github/${p.github_user_id}`;

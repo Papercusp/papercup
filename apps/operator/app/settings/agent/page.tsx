@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
-import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@/lib/agent-config-constants';
+import { SURFACE_KEYS, type SurfaceKey, type AgentBackend } from '@papercusp/operator-core/lib/agent-config-constants';
 
 /** Local select value: a concrete backend, or 'inherit' = omit from the map. */
 type SurfaceChoice = 'inherit' | AgentBackend;
@@ -298,7 +298,7 @@ export default function AgentSettingsPage() {
 
         <FormField
           label="Per-role model overrides (JSON)"
-          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-harness .harness/config.json values still win.`}
+          description={`Shape: { "<role>": "<model-id>" }. Roles: ${ROLE_HINTS.join(', ')}. Use the explicit provider/model form (e.g. "anthropic/claude-opus-4-7"). "operator" sets the chat brain — its default is pinned to Anthropic because the large converse prompt is unreliable on some providers; override at your own risk. Per-harness .papercusp/config.json values still win.`}
         >
           <textarea
             rows={6}

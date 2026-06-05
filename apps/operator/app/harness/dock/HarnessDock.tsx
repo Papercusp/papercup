@@ -35,7 +35,7 @@ import { useLayoutResetShortcut } from './useLayoutResetShortcut';
 import { useRegisterPluginPanels } from './useRegisterPluginPanels';
 import { useFocusedPanelTracker } from './useFocusedPanelTracker';
 import { destroy as destroyIframe } from './iframe-host';
-import { isWellFormedLayout, type LayoutDoc } from '../../../lib/dock-layouts';
+import { isWellFormedLayout, type LayoutDoc } from '@papercusp/operator-core/lib/dock-layouts';
 
 interface HarnessDockProps {
   /**

@@ -70,8 +70,8 @@ Modules that pin a key string shape used by a KV store, URL scheme, or filesyste
 
 **Examples this loop:**
 - `lib/harness/hyperbee-key-types.ts` (9 key shapes for the Hyperbee KV)
-- `lib/identity/contributor-file-types.ts` (path: `.harness/contributors/<login>.json`)
-- `lib/harness/harness-shared-config-types.ts` (path: `.harness/shared.json`)
+- `lib/identity/contributor-file-types.ts` (path: `.papercusp/contributors/<login>.json`)
+- `lib/harness/harness-shared-config-types.ts` (path: `.papercusp/shared.json`)
 - `lib/pr-host/types.ts` (composePrKey / parsePrKey — `<remote>#<number>`)
 
 **Test surface:** composer + parser round-trip coverage, path-escape defense (`../`, embedded slashes), edge cases (numeric overflow, empty segments).
@@ -90,7 +90,7 @@ When shipping a new types-only module, decide which of these you're writing **be
 
 ## When a module spans categories
 
-Some modules naturally span. `contributor-file-types.ts` is **both** a wire type (signed JSON over git) **and** a key format (`.harness/contributors/<login>.json` path). That's fine — split the test file into per-category sections so the predicate-vs-round-trip-vs-edge-case coverage is visible.
+Some modules naturally span. `contributor-file-types.ts` is **both** a wire type (signed JSON over git) **and** a key format (`.papercusp/contributors/<login>.json` path). That's fine — split the test file into per-category sections so the predicate-vs-round-trip-vs-edge-case coverage is visible.
 
 ## The 18 from this loop, categorized
 

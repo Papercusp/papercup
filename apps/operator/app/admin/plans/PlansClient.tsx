@@ -21,7 +21,7 @@
  */
 
 import { useQueryState, parseAsArrayOf, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import PlanRail, { type PlanRailHandle } from './PlanRail';
@@ -52,8 +52,8 @@ import {
   type PlanBucket,
   type PlanItemRow,
 } from './plans-api';
-import { launchAgent } from '@/lib/launch-agent';
-import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@/lib/harness/scope';
+import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
+import { resolveHarnessScope, type HarnessNodeForScope, HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 
 /** localStorage key AdvShell uses for the fallback active-harness slug. */
 const ACTIVE_HARNESS_KEY = 'harness.activeProject';

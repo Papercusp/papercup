@@ -88,36 +88,10 @@ test.describe('plugin uninstall route', () => {
   });
 });
 
-test.describe('marketplace install-plugin route', () => {
-  test('POST returns 404 with feature-disabled when MARKETPLACE flag off', async ({ request }) => {
-    // The marketplace flag is off in dev by default; the gate fires before
-    // body validation, so even garbage bodies surface the flag rejection.
-    const res = await request.post(`${baseURL}/api/marketplace/install-plugin`, { data: {} });
-    expect(res.status()).toBe(404);
-    const body = await res.json();
-    expect(body.ok).toBe(false);
-    expect(body.reason).toBe('feature-disabled');
-    expect(body.flag).toBeTruthy();
-  });
-
-  test('POST with invalid slug still surfaces feature-disabled (gate-first ordering)', async ({
-    request,
-  }) => {
-    const res = await request.post(`${baseURL}/api/marketplace/install-plugin`, {
-      data: { slug: '!!!' },
-    });
-    expect(res.status()).toBe(404);
-    expect((await res.json()).reason).toBe('feature-disabled');
-  });
-
-  test('GET is rejected (POST-only route)', async ({ request }) => {
-    const res = await request.get(`${baseURL}/api/marketplace/install-plugin`);
-    // POST-only. GET is rejected either as 405, or 404 via the `/marketplace/:slug`
-    // param route (which matches `install-plugin` as a slug and finds no such
-    // item). Both prove GET does not perform the install.
-    expect([404, 405]).toContain(res.status());
-  });
-});
+// (The legacy `/api/marketplace/install-plugin` route was RETIRED with the
+// :3057 marketplace — revive-cupboard-distribution D-004. Plugin install now
+// flows through the ungated Cupboard: POST /api/cupboard/install-plugin, covered
+// by packages/operator-core/lib/cupboard/install-plugin-core.test.ts.)
 
 test.describe('plugin enabled (read) route', () => {
   test('GET returns { enabled: { <harness>: [slugs] } }', async ({ request }) => {

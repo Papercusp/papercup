@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { DockOnboarding, _resetDockOnboardingForTests } from './DockOnboarding';
 

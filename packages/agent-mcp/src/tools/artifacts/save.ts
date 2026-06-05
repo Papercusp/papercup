@@ -25,7 +25,7 @@ const WRITE_ROLES = [
 ] as const;
 
 function normalizeRelPath(rel: string): string {
-  return rel.replace(/^\.harness\//, '');
+  return rel.replace(/^\.papercusp\//, '');
 }
 
 export default defineTool({

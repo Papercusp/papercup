@@ -1,16 +1,9 @@
 /**
- * @papercusp/coordination/presence — the live-presence seam (PG by
- * default, in-memory double). Separate from the event log by design
- * (D-009): presence is mutable single-row-per-owner state, not an
- * append-only channel.
+ * @papercusp/coordination/presence — the Postgres tie-in adapter over the
+ * generic PresenceStore seam. `PgPresenceStore` binds presence to
+ * `harness_shared.coord_presence`; the seam + in-memory double are re-exported
+ * from @papercusp/pubsub-substrate/presence, so the public surface is unchanged.
  */
 
-export {
-  PRESENCE_STALE_MS,
-  type PresenceIdentity,
-  type PresenceInput,
-  type PresenceRecord,
-  type PresenceStore,
-} from './types';
+export * from '@papercusp/pubsub-substrate/presence';
 export { PgPresenceStore, type PgPresenceStoreOptions } from './pg-store';
-export { InMemoryPresenceStore, type InMemoryPresenceStoreOptions } from './memory-store';

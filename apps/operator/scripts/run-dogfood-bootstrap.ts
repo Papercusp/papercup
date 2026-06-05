@@ -12,10 +12,10 @@
  *   cd apps/operator && npx tsx scripts/run-dogfood-bootstrap.mts
  */
 
-import { ensurePapercuspWorkspace, PAPERCUSP_WORKSPACE_ID } from '../lib/harness/papercusp-workspace';
-import { registerPapercupHarness } from '../lib/harness/register-papercup';
-import { loadHarnessRegistry } from '../lib/harness-registry';
-import { readRegistry } from '../lib/workspace-registry';
+import { ensurePapercuspWorkspace, PAPERCUSP_WORKSPACE_ID } from '@papercusp/operator-core/lib/harness/papercusp-workspace';
+import { registerPapercupHarness } from '@papercusp/operator-core/lib/harness/register-papercup';
+import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
+import { readRegistry } from '@papercusp/operator-core/lib/workspace-registry';
 
 async function main(): Promise<void> {
   console.log('=== STEP 1: ensurePapercuspWorkspace ===');

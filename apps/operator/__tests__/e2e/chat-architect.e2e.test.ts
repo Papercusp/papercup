@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { fakeRunAgentChat } from '@/lib/test-fixtures/fake-agent-chat';
+import { fakeRunAgentChat } from '@papercusp/operator-core/lib/test-fixtures/fake-agent-chat';
 
 type Emitted = { name: string; data: unknown };
 
@@ -40,14 +40,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.doUnmock('@/lib/agent-chat-stream');
-  vi.doUnmock('@/lib/agent-tools/architect/prompts');
-  vi.doUnmock('@/lib/memory/injection');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-chat-stream');
+  vi.doUnmock('@papercusp/operator-core/lib/agent-tools/architect/prompts');
+  vi.doUnmock('@papercusp/operator-core/lib/memory/injection');
 });
 
 describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
   it('emits the scripted event sequence through the handler', async () => {
-    vi.doMock('@/lib/agent-chat-stream', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-chat-stream', () => ({
       runAgentChat: () =>
         fakeRunAgentChat({
           deltas: [{ text: 'Hello ' }, { text: 'world' }],
@@ -57,16 +57,16 @@ describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
           result: { costUsd: 0.005, tokensIn: 12, tokensOut: 3 },
         }),
     }));
-    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
       resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
-    vi.doMock('@/lib/memory/injection', () => ({
+    vi.doMock('@papercusp/operator-core/lib/memory/injection', () => ({
       buildMemoryContextBlock: async () => null,
     }));
 
-    const { architectChat } = await import('@/lib/agent-tools/architect/chat');
+    const { architectChat } = await import('@papercusp/operator-core/lib/agent-tools/architect/chat');
     const { events, ctx } = recordingCtx();
 
     const result = (await architectChat.handler(
@@ -84,15 +84,15 @@ describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
   });
 
   it('architect:chat declares modality in the projected registry (round-13 #36 regression)', async () => {
-    vi.doMock('@/lib/agent-chat-stream', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-chat-stream', () => ({
       runAgentChat: () => fakeRunAgentChat({}),
     }));
-    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
       resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
-    await import('@/lib/agent-tools/architect/chat'); // register
+    await import('@papercusp/operator-core/lib/agent-tools/architect/chat'); // register
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('architect:chat');
@@ -104,15 +104,15 @@ describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
   });
 
   it('architect:chat declares replayBufferSize > 0 (round-13 #34 regression)', async () => {
-    vi.doMock('@/lib/agent-chat-stream', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-chat-stream', () => ({
       runAgentChat: () => fakeRunAgentChat({}),
     }));
-    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
       resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
-    await import('@/lib/agent-tools/architect/chat'); // register
+    await import('@papercusp/operator-core/lib/agent-tools/architect/chat'); // register
     const { lookupByMcpName } = await import('@papercusp/agent-mcp');
 
     const tool = lookupByMcpName('architect:chat');
@@ -123,23 +123,23 @@ describe('architect:chat e2e (via fake-agent-chat fixture)', () => {
   });
 
   it('error short-circuit propagates as an error event without terminating the result', async () => {
-    vi.doMock('@/lib/agent-chat-stream', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-chat-stream', () => ({
       runAgentChat: () =>
         fakeRunAgentChat({
           deltas: [{ text: 'partial' }],
           error: { message: 'tool x failed', stderr: 'EACCES', afterDelta: 0 },
         }),
     }));
-    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+    vi.doMock('@papercusp/operator-core/lib/agent-tools/architect/prompts', () => ({
       resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
       composeArchitectPrompt: async () => 'PROMPT',
       composeBrainstormPrompt: async () => 'PROMPT',
     }));
-    vi.doMock('@/lib/memory/injection', () => ({
+    vi.doMock('@papercusp/operator-core/lib/memory/injection', () => ({
       buildMemoryContextBlock: async () => null,
     }));
 
-    const { architectChat } = await import('@/lib/agent-tools/architect/chat');
+    const { architectChat } = await import('@papercusp/operator-core/lib/agent-tools/architect/chat');
     const { events, ctx } = recordingCtx();
 
     const result = (await architectChat.handler(

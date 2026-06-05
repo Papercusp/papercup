@@ -104,9 +104,9 @@ In-repo plugins under `libs/papercusp/plugins/<name>/`. They run without a princ
 
 ### `@papercupai/repomix` (1)
 
-| Tool           | What                                                                                                                   |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `repomix.pack` | Pack a project (or subset) into a single LLM-friendly XML doc. ≤50k chars inline; >50k written to `.harness/scratch/`. |
+| Tool           | What                                                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `repomix.pack` | Pack a project (or subset) into a single LLM-friendly XML doc. ≤50k chars inline; >50k written to `.papercusp/scratch/`. |
 
 ### `@papercupai/gitnexus-bridge` (13)
 

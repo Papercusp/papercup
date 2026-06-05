@@ -11,7 +11,7 @@ const navigateClient = vi.fn();
 const toastSuccess = vi.fn();
 const toastError = vi.fn();
 
-vi.mock('../../../lib/client-navigation', () => ({
+vi.mock('@papercusp/operator-core/lib/client-navigation', () => ({
   navigateClient: (...args: unknown[]) => navigateClient(...args),
 }));
 

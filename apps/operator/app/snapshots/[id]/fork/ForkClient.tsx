@@ -16,7 +16,7 @@
 import { use, useState } from 'react';
 import { ForkCompletionForm, type ForkSuccessPayload } from '@/app/_components/ForkCompletionForm';
 import { ForkProvisioningProgress } from '@/app/_components/ForkProvisioningProgress';
-import { navigateClient } from '../../../../lib/client-navigation';
+import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 
 interface Props {
   params: Promise<{ id: string }>;

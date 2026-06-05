@@ -1,6 +1,0 @@
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/release/build/rustversion-5bb76f3fc88ba3da/build_script_build-5bb76f3fc88ba3da.d: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/build/build.rs /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/build/rustc.rs
-
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/release/build/rustversion-5bb76f3fc88ba3da/build_script_build-5bb76f3fc88ba3da: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/build/build.rs /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/build/rustc.rs
-
-/home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/build/build.rs:
-/home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22/build/rustc.rs:

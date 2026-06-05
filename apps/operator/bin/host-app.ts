@@ -15,9 +15,9 @@
 import { Hono } from 'hono';
 import { compress } from 'hono/compress';
 import { cors } from 'hono/cors';
-import { registerRouteLiterals, registerRouteCatchalls } from '../lib/endpoint-route/register';
-import { installMethodNotAllowed } from '../lib/endpoint-route/method-not-allowed';
-import { workspaceContextMiddleware } from '../lib/workspace-context-middleware';
+import { registerRouteLiterals, registerRouteCatchalls } from '@papercusp/operator-core/lib/endpoint-route/register';
+import { installMethodNotAllowed } from '@papercusp/operator-core/lib/endpoint-route/method-not-allowed';
+import { workspaceContextMiddleware } from '@papercusp/operator-core/lib/workspace-context-middleware';
 
 const app = new Hono().basePath('/api');
 

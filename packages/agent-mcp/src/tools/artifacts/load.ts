@@ -7,7 +7,7 @@
  * form per-harness text. Role-gated; agents may read across harnesses
  * by passing an explicit `slug`.
  *
- * The `rel_path` may be passed with or without a leading `.harness/`;
+ * The `rel_path` may be passed with or without a leading `.papercusp/`;
  * it's normalised to the bare relative-to-harness-dir form for lookup.
  */
 
@@ -30,7 +30,7 @@ const ALL_ROLES = [
 ] as const;
 
 function normalizeRelPath(rel: string): string {
-  return rel.replace(/^\.harness\//, '');
+  return rel.replace(/^\.papercusp\//, '');
 }
 
 export default defineTool({

@@ -45,7 +45,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 });
 
 // eslint-disable-next-line import/no-relative-packages -- exercise the real query
-import { readFrontierFeatures } from '../lib/dbos/orchestrator-loop';
+import { readFrontierFeatures } from '@papercusp/operator-core/lib/dbos/orchestrator-loop';
 
 const WS = 'ws-frontier';
 const SLUG = 'h';

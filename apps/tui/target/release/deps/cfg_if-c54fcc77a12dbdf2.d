@@ -1,7 +1,0 @@
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/release/deps/cfg_if-c54fcc77a12dbdf2.d: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs
-
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/release/deps/libcfg_if-c54fcc77a12dbdf2.rlib: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs
-
-/home/marsh-office/papercupai-workspace/papercup/apps/tui/target/release/deps/libcfg_if-c54fcc77a12dbdf2.rmeta: /home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs
-
-/home/marsh-office/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4/src/lib.rs:

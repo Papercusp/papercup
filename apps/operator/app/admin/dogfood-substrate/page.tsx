@@ -16,12 +16,12 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { listBootedHandles } from '@/lib/sync/hyperbee/boot-all';
-import { listBootstrapProgress } from '@/lib/sync/hyperbee/bootstrap-progress';
-import { listBootHistory } from '@/lib/sync/hyperbee/boot-history';
-import { loadClaimAttemptStats } from '@/lib/orchestrator/load-claim-attempts';
-import { assessHarnessSubstrateHealth } from '@/lib/sync/hyperbee/health';
-import { summariseWorkspaceSubstrate } from '@/lib/sync/hyperbee/summary';
+import { listBootedHandles } from '@papercusp/operator-core/lib/sync/hyperbee/boot-all';
+import { listBootstrapProgress } from '@papercusp/operator-core/lib/sync/hyperbee/bootstrap-progress';
+import { listBootHistory } from '@papercusp/operator-core/lib/sync/hyperbee/boot-history';
+import { loadClaimAttemptStats } from '@papercusp/operator-core/lib/orchestrator/load-claim-attempts';
+import { assessHarnessSubstrateHealth } from '@papercusp/operator-core/lib/sync/hyperbee/health';
+import { summariseWorkspaceSubstrate } from '@papercusp/operator-core/lib/sync/hyperbee/summary';
 import { SubstrateStatusBadge } from '../../harness/insights/SubstrateStatusBadge';
 import { ClaimAttemptStatsPill } from '../../harness/insights/ClaimAttemptStatsPill';
 import { BootstrapProgressIndicator } from '../../harness/insights/BootstrapProgressIndicator';

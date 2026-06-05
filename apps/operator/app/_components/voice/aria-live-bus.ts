@@ -9,7 +9,7 @@
  * adapters, voice-mode bridge) can publish without importing JSX.
  */
 
-import type { Priority } from '../../../lib/voice-engines';
+import type { Priority } from '@papercusp/operator-core/lib/voice-engines';
 
 type Listener = (priority: Priority, text: string) => void;
 

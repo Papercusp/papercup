@@ -10,7 +10,7 @@
 
 import dynamic from '@/lib/router-compat/dynamic';
 import type { PanelComponentProps } from './panel-registry';
-import { crossOriginUrl } from '@/lib/cross-origin-url';
+import { crossOriginUrl } from '@papercusp/operator-core/lib/cross-origin-url';
 
 const GitGraphPanelLib = dynamic(
   () => import('@papercusp/git-graph').then((m) => ({ default: m.GitGraphPanel })),

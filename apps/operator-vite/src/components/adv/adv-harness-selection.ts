@@ -1,4 +1,4 @@
-import type { HarnessScopeMode } from '@/lib/harness/scope';
+import type { HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 
 /**
  * Select display token for the "All harnesses" row. Widget-only: picking it

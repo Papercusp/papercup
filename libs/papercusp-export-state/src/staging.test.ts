@@ -104,13 +104,13 @@ describe('stageProjectFiles', () => {
 });
 
 describe('stageHarnessSubset', () => {
-  it('captures the .harness/ subset (notes/memory/proposals/etc.)', async () => {
+  it('captures the .papercusp/ subset (notes/memory/proposals/etc.)', async () => {
     const project = join(work, 'project');
-    await fs.mkdir(join(project, '.harness', 'notes'), { recursive: true });
-    await fs.writeFile(join(project, '.harness', 'notes', 'F-001.md'), 'note');
-    await fs.mkdir(join(project, '.harness', 'memory'), { recursive: true });
-    await fs.writeFile(join(project, '.harness', 'memory', 'raw.md'), 'raw');
-    await fs.writeFile(join(project, '.harness', 'plan-review.md'), 'plan');
+    await fs.mkdir(join(project, '.papercusp', 'notes'), { recursive: true });
+    await fs.writeFile(join(project, '.papercusp', 'notes', 'F-001.md'), 'note');
+    await fs.mkdir(join(project, '.papercusp', 'memory'), { recursive: true });
+    await fs.writeFile(join(project, '.papercusp', 'memory', 'raw.md'), 'raw');
+    await fs.writeFile(join(project, '.papercusp', 'plan-review.md'), 'plan');
 
     const stage = join(work, 'stage');
     await fs.mkdir(stage, { recursive: true });

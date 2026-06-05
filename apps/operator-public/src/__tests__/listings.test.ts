@@ -1,0 +1,177 @@
+/**
+ * Cupboard generalized /listings route tests (migration 004 / D-005 / D-008).
+ *
+ * Covers the three listing kinds (harness/blueprint/snapshot/plugin), the
+ * project-centric 1:N model (N listings per project remote), kind filtering,
+ * and kind-aware publish validation. /harnesses back-compat is in
+ * harnesses.test.ts.
+ */
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { buildApi } from '../routes/index.ts';
+import { makeEnv, stubGithub } from './fake-d1.ts';
+
+function publish(
+  api: ReturnType<typeof buildApi>,
+  env: ReturnType<typeof makeEnv>['env'],
+  body: Record<string, unknown>,
+) {
+  return api.request('/listings', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, env);
+}
+
+const BLUEPRINT_BASE = {
+  github_owner: 'papercupai',
+  github_name: 'demo-project',
+  github_url: 'https://github.com/papercupai/demo-project',
+  project_ref: 'papercupai/demo-project',
+};
+
+describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  it('GET /listings returns empty on fresh db', async () => {
+    const { env } = makeEnv();
+    const res = await api.request('/listings', {}, env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { results: unknown[]; next_cursor: unknown };
+    expect(body.results).toEqual([]);
+    expect(body.next_cursor).toBe(null);
+  });
+
+  it('GET /listings?kind=bogus rejects an unknown kind', async () => {
+    const { env } = makeEnv();
+    const res = await api.request('/listings?kind=bogus', {}, env);
+    expect(res.status).toBe(400);
+    expect((await res.json() as { field: string }).field).toBe('kind');
+  });
+
+  it('POST /listings rejects an unknown listing_kind', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 7, private: false } });
+    const res = await publish(api, env, { ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'widget', listing_ref: 'x' });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { field: string }).field).toBe('listing_kind');
+  });
+
+  it('POST /listings blueprint requires listing_ref', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 7, private: false } });
+    const res = await publish(api, env, { ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint' });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { field: string }).field).toBe('listing_ref');
+  });
+
+  it('POST /listings blueprint publishes WITHOUT a topic_hex', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false, permissions: { admin: true } } });
+    const res = await publish(api, env, {
+      ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint',
+      listing_ref: 'web-app', title: 'Web App blueprint',
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { ok: boolean; listing: Record<string, unknown> };
+    expect(j.ok).toBe(true);
+    expect(j.listing.listing_kind).toBe('blueprint');
+    expect(j.listing.listing_ref).toBe('web-app');
+    expect(j.listing.project_ref).toBe('papercupai/demo-project');
+    expect(j.listing.topic_hex).toBe(null);
+    expect(j.listing.publisher_permission).toBe('admin'); // trust signal applies to every kind
+    expect(store.tables.harnesses).toHaveLength(1);
+  });
+
+  it('a project hosts N blueprints (1:N): two listing_refs on one repo both publish', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false } });
+    const a = await publish(api, env, { ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint', listing_ref: 'web-app' });
+    const b = await publish(api, env, { ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint', listing_ref: 'cli-tool' });
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(store.tables.harnesses).toHaveLength(2);                // NOT deduped — distinct refs
+    expect((await a.json() as { id: string }).id).not.toBe((await b.json() as { id: string }).id);
+  });
+
+  it('re-publishing the same (repo, kind, ref) dedups', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 7, private: false } });
+    const body = { ...BLUEPRINT_BASE, github_repository_id: 7, listing_kind: 'blueprint', listing_ref: 'web-app' };
+    const a = await publish(api, env, body);
+    const b = await publish(api, env, body);
+    expect((await b.json() as { dedup: boolean }).dedup).toBe(true);
+    expect(store.tables.harnesses).toHaveLength(1);
+    void a;
+  });
+
+  it('POST /listings plugin publishes (install kind)', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 9, private: false } });
+    const res = await publish(api, env, {
+      github_owner: 'papercupai', github_name: 'plugins', github_url: 'https://github.com/papercupai/plugins',
+      github_repository_id: 9, listing_kind: 'plugin', listing_ref: 'slack-notify', project_ref: 'papercupai/plugins',
+      title: 'Slack notify plugin',
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { listing: { listing_kind: string } }).listing.listing_kind).toBe('plugin');
+    expect(store.tables.harnesses[0].topic_hex).toBe(null);
+  });
+
+  it('POST /listings with no kind defaults to harness and requires topic_hex', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 11, private: false } });
+    const res = await publish(api, env, {
+      github_owner: 'alice', github_name: 'r', github_url: 'https://github.com/alice/r',
+      github_repository_id: 11,
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { field: string }).field).toBe('topic_hex');
+  });
+
+  it('GET /listings?kind=blueprint filters to blueprints; bare /listings returns all kinds', async () => {
+    const { env } = makeEnv();
+    // Seed one of each kind directly.
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 20, private: false } });
+    await publish(api, env, { github_owner: 'o', github_name: 'n', github_url: 'https://github.com/o/n', github_repository_id: 20, listing_kind: 'blueprint', listing_ref: 'bp1' });
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 21, private: false } });
+    await publish(api, env, { github_owner: 'o', github_name: 'n2', github_url: 'https://github.com/o/n2', github_repository_id: 21, listing_kind: 'plugin', listing_ref: 'pl1' });
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 22, private: false } });
+    await publish(api, env, { github_owner: 'o', github_name: 'n3', github_url: 'https://github.com/o/n3', github_repository_id: 22, topic_hex: 'a'.repeat(64) });
+
+    const bps = await api.request('/listings?kind=blueprint', {}, env);
+    const bpBody = await bps.json() as { results: Array<{ listing_kind: string }> };
+    expect(bpBody.results).toHaveLength(1);
+    expect(bpBody.results[0].listing_kind).toBe('blueprint');
+
+    const all = await api.request('/listings', {}, env);
+    const allBody = await all.json() as { results: unknown[] };
+    expect(allBody.results).toHaveLength(3);
+  });
+
+  it('/harnesses/:id 404s for a non-harness listing; /listings/:id returns it', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 30, private: false } });
+    const pub = await publish(api, env, { github_owner: 'o', github_name: 'n', github_url: 'https://github.com/o/n', github_repository_id: 30, listing_kind: 'blueprint', listing_ref: 'bp' });
+    const id = (await pub.json() as { id: string }).id;
+    void store;
+
+    const viaHarness = await api.request(`/harnesses/${id}`, {}, env);
+    expect(viaHarness.status).toBe(404);                    // kind-pinned view rejects it
+
+    const viaListings = await api.request(`/listings/${id}`, {}, env);
+    expect(viaListings.status).toBe(200);
+    expect((await viaListings.json() as { listing_kind: string }).listing_kind).toBe('blueprint');
+  });
+
+  it('a blueprint publish still rejects a private project remote', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 40, private: true } });
+    const res = await publish(api, env, { ...BLUEPRINT_BASE, github_repository_id: 40, listing_kind: 'blueprint', listing_ref: 'x' });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe('private_repo_rejected');
+  });
+});

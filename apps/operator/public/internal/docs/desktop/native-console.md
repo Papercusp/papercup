@@ -137,7 +137,7 @@ Expected fields:
     "PAPERCUSP_API_BASE": "http://127.0.0.1:3070",
     "PAPERCUSP_HOME": "/home/.../.papercusp-workspaces/default",
     "PAPERCUSP_SCRIPTS_DIR": "/home/.../apps/operator/scripts",
-    "PI_CODING_AGENT_DIR": "/home/.../sheets-clone/.harness/pi-sessions"
+    "PI_CODING_AGENT_DIR": "/home/.../sheets-clone/.papercusp/pi-sessions"
   },
   "mcpJsonContents": "{ \"mcpServers\": { \"papercusp\": { \"url\": \"http://127.0.0.1:3070/api/mcp?superuser=1&workspace=default\", \"headers\": { \"Authorization\": \"Bearer …\" } } } }",
   "greetingCmd": "papercup status 2>/dev/null || true",

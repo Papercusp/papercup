@@ -17,7 +17,7 @@ import { join, normalize, relative, resolve as resolvePath, sep } from 'node:pat
 import { Suspense } from 'react';
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 import Link from '@/lib/router-compat/link';
-import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 
 export const dynamic = 'force-dynamic';
 

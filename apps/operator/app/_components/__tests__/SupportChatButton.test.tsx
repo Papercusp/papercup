@@ -9,7 +9,7 @@ import { SupportChatButton } from '../SupportChatButton';
 const navigateClient = vi.fn();
 const clipboardWriteText = vi.fn();
 
-vi.mock('../../../lib/client-navigation', () => ({
+vi.mock('@papercusp/operator-core/lib/client-navigation', () => ({
   navigateClient: (...args: unknown[]) => navigateClient(...args),
 }));
 

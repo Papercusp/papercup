@@ -46,7 +46,7 @@ Build a minimal viable spreadsheet clone that demonstrates core spreadsheet func
 
 ## Validation
 
-All behavior is validated via 30 black-box assertions (see `.harness/validation-contract.md`). Each assertion is independently testable without knowledge of implementation.
+All behavior is validated via 30 black-box assertions (see `.papercusp/validation-contract.md`). Each assertion is independently testable without knowledge of implementation.
 
 ## Dependencies
 

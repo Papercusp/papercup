@@ -1,5 +1,5 @@
 /**
- * tar+gzip the staging directory to <projectDir>/.harness/snapshots/<id>.tar.gz.
+ * tar+gzip the staging directory to <projectDir>/.papercusp/snapshots/<id>.tar.gz.
  *
  * Streams via the system `tar` binary so we don't need a Node-side tar
  * library; same approach Discourse and Sandstorm use. Reproducibility

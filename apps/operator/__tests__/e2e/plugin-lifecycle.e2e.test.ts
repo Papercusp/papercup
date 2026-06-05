@@ -21,8 +21,8 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-let modHost: typeof import('@/lib/plugin-host-runtime') | null = null;
-let modGrants: typeof import('@/lib/plugin-grants') | null = null;
+let modHost: typeof import('@papercusp/operator-core/lib/plugin-host-runtime') | null = null;
+let modGrants: typeof import('@papercusp/operator-core/lib/plugin-grants') | null = null;
 let runtimeBootable = false;
 
 const TEST_PLUGIN = 'lifecycle-test-plugin';
@@ -32,8 +32,8 @@ const TEST_INSTALL_SLUG = 'lifecycle-install';
 
 beforeAll(async () => {
   try {
-    modHost = await import('@/lib/plugin-host-runtime');
-    modGrants = await import('@/lib/plugin-grants');
+    modHost = await import('@papercusp/operator-core/lib/plugin-host-runtime');
+    modGrants = await import('@papercusp/operator-core/lib/plugin-grants');
     runtimeBootable = true;
   } catch {
     runtimeBootable = false;

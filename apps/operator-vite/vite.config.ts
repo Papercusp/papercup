@@ -84,6 +84,9 @@ export default defineConfig({
   // `finish-next-removal-2026-06-01`.)
   resolve: {
     alias: [
+      // operator-core (headless backend) — carved from apps/operator (SP1 C4).
+      // Must precede the '@' alias (first match wins).
+      { find: '@papercusp/operator-core', replacement: resolve(operatorRoot, '../../packages/operator-core') },
       { find: '@', replacement: operatorRoot },
     ],
     // Operator components and the Vite shell must share ONE React

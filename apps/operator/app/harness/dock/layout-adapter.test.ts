@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultDashboardLayout, validateLayoutDoc, type LayoutDoc } from '../../../lib/dock-layouts';
+import { defaultDashboardLayout, validateLayoutDoc, type LayoutDoc } from '@papercusp/operator-core/lib/dock-layouts';
 import { roundTrip, toDockviewJson, toLayoutDoc } from './layout-adapter';
 
 describe('layout-adapter', () => {

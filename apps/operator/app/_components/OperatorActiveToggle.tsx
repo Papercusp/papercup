@@ -31,7 +31,7 @@ import {
   writeOperatorModeToSession,
   readSleepUntilMs,
   writeSleepUntilMs,
-} from '@/lib/operator-converse-tags';
+} from '@papercusp/operator-core/lib/operator-converse-tags';
 
 const MODE_CHANGE_EVENT = 'papercusp:operatorMode';
 const SLEEP_CHANGE_EVENT = 'papercusp:operatorSleep';

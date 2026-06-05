@@ -72,9 +72,9 @@ describe('buildHarnessSelectOptions', () => {
     expect(opts[0].disabled).toBe(true);
   });
 
-  it('always leads with "All harnesses" when projects exist', () => {
+  it('always leads with "All Pots" when projects exist', () => {
     const opts = buildHarnessSelectOptions([{ slug: 'sheets' }], null);
-    expect(opts[0].label).toBe('All harnesses');
+    expect(opts[0].label).toBe('All Pots');
   });
 
   it('flat list: root harnesses appear after "All harnesses", sorted', () => {

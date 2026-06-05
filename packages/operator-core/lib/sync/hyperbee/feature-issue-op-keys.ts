@@ -1,0 +1,401 @@
+/**
+ * feature-issue-op-keys — Stage 2 of the feature-content federation plan
+ * (papercusp-feature-content-federation-2026-06-01).
+ *
+ * Pure mappers that turn a `harness_shared.substrate_outbox` row (captured by
+ * the Stage-1 AFTER trigger as `to_jsonb` of the full consolidated row) into a
+ * `LocalWriteOp` the Stage-3 drain appends to this device's own Hypercore log.
+ * The existing read-side projections (`projections/harness-features.ts`,
+ * `projections/issues.ts`) then apply that op on peers.
+ *
+ * Two correctness facts this module owns (see the test for the rationale):
+ *
+ *  (1) `LocalWriteOp.table` is the projection's REGISTERED tableTag, NOT the
+ *      raw `harness_*_consolidated` table_name. `applyOpVia` dispatches on
+ *      `lookup(op.table)` keyed by tableTag, so the map below MUST match the
+ *      `tableTag` literals in the two projection builders:
+ *        `harness_features_consolidated` → `'features-by-id'`
+ *        `harness_issues_consolidated`   → `'issues'`
+ *
+ *  (2) `to_jsonb` renders TIMESTAMPTZ columns as ISO strings, but the
+ *      projection's row validators require epoch-ms NUMBERS. The mapper
+ *      converts `taken_at`/`expires_at` (features) and `found_at` (issues) back
+ *      to epoch ms so `decodeValue` accepts the op on peers.
+ *
+ * No PG, no IO — trivially unit-testable.
+ */
+
+import type { LocalWriteOp } from './boot';
+import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import type { HarnessFeatureRow } from './projections/harness-features';
+import type { HarnessPlanRow } from './projections/harness-plans';
+import type { HarnessIssueRow } from './projections/issues';
+import type { ContributorUsageEventRow } from './projections/usage';
+import type { CoordConversationRow } from './projections/coord-conversation';
+import type { CoordMessageRow } from './projections/coord-message';
+import type { CoordThreadRow } from './projections/coord-thread';
+import type { CoordThreadPostRow } from './projections/coord-thread-post';
+import type { PlanItemAssignmentRow } from './projections/plan-item-assignments';
+
+/**
+ * The two consolidated table names the Stage-1 trigger writes into the outbox
+ * (`TG_TABLE_NAME`), mapped to the projection `tableTag` each row projects
+ * through. Adding a third federated table is a one-line addition here +
+ * registering its projection.
+ */
+const TABLE_NAME_TO_TABLE_TAG: Record<string, string> = {
+  harness_features_consolidated: 'features-by-id',
+  harness_issues_consolidated: 'issues',
+  // P-070: the append-only contributor activity ledger. Its projection is
+  // registered under tableTag 'usage' (projections/usage.ts buildUsageProjection).
+  contributor_usage_events: 'usage',
+  // plans-pg-canonical-migration-2026-06-03 (Stage 2): PG-canonical plans federate
+  // as papercup-harness content. Projection registered under 'plans-by-slug'
+  // (projections/harness-plans.ts buildHarnessPlansProjection); key == plan_slug.
+  harness_plans: 'plans-by-slug',
+  // distributed-coordination-shared-harness-2026-06-04 (Track A): harness-scoped
+  // coordination conversations. Projection registered under 'coord-conversations'
+  // (projections/coord-conversation.ts buildCoordConversationProjection); key == id.
+  coord_conversations: 'coord-conversations',
+  // distributed-coordination-shared-harness-2026-06-04 (Track A, surface #1):
+  // harness-scoped coord messages/handoffs/escalations. Projection 'coord-messages'
+  // (projections/coord-message.ts buildCoordMessageProjection); key == msg_id.
+  coord_event_log: 'coord-messages',
+  // distributed-coordination-shared-harness-2026-06-04 (Track A): conversation
+  // reply timeline. coord_threads → 'coord-threads' (key thread_id);
+  // coord_thread_posts → 'coord-thread-posts' (key post_msg_id).
+  coord_threads: 'coord-threads',
+  coord_thread_posts: 'coord-thread-posts',
+  // plan-item-assignment-claim-liveness-2026-06-04 (D-002): per-plan-item ASSIGNMENT
+  // federates as content. Projection 'item-assignments' (projections/plan-item-assignments.ts);
+  // key == '<plan_slug>:<item_id>' (the table's generated fed_key column).
+  plan_item_assignments: 'item-assignments',
+};
+
+/**
+ * Shape of one `substrate_outbox` row, as the drain reads it. `row` is the
+ * `to_jsonb` of the full consolidated row (a superset of the projection row),
+ * or `null` for a `del`.
+ */
+export interface OutboxRow {
+  table_name: string;
+  op: 'put' | 'del';
+  key: string;
+  /** Epoch ms of the capture (the outbox row's `ts` BIGINT). */
+  ts: number;
+  row: Record<string, unknown> | null;
+}
+
+/** Per-harness Hyperbee key for a feature == its feature_id (mirrors the
+ *  projection's `composeKey`, which returns `row.feature_id`). */
+export function composeFeatureKey(featureId: string): string {
+  return featureId;
+}
+
+/** Per-harness Hyperbee key for an issue == its issue_id (mirrors the
+ *  projection's `composeKey`, which returns `row.issue_id`). */
+export function composeIssueKey(issueId: string): string {
+  return issueId;
+}
+
+/** Per-harness Hyperbee key for a plan == its plan_slug (mirrors the
+ *  projection's `composeKey`, which returns `row.plan_slug`). */
+export function composePlanKey(planSlug: string): string {
+  return planSlug;
+}
+
+/**
+ * Coerce a `to_jsonb` TIMESTAMPTZ field (ISO string) — or a value already
+ * parsed to epoch ms by a future client — into epoch ms `number | null`.
+ * Idempotent over numbers; `null`/`undefined` → `null`.
+ */
+function isoOrMsToEpochMs(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+
+/** Coerce a value to `number | null` (BIGINT → number; ISO timestamps handled
+ *  separately by `isoOrMsToEpochMs`). */
+function numOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const n = Number(v);
+    return Number.isNaN(n) ? null : n;
+  }
+  return null;
+}
+
+/** Coerce a value to `number` (issues' NOT NULL counters); falls back to 0. */
+function numOrZero(v: unknown): number {
+  const n = numOrNull(v);
+  return n == null ? 0 : n;
+}
+
+function strOrNull(v: unknown): string | null {
+  return typeof v === 'string' ? v : v == null ? null : String(v);
+}
+
+/** Map an outbox `row` jsonb to the `HarnessFeatureRow` value the projection
+ *  INSERT consumes (the subset of the consolidated row, with TIMESTAMPTZ fields
+ *  converted to epoch ms). */
+function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    feature_id: String(row.feature_id ?? ''),
+    title: strOrNull(row.title),
+    summary: strOrNull(row.summary),
+    status: strOrNull(row.status),
+    attempts: numOrNull(row.attempts),
+    claims: strOrNull(row.claims),
+    notes: strOrNull(row.notes),
+    metadata: row.metadata ?? null,
+    kind: strOrNull(row.kind),
+    project_id: strOrNull(row.project_id),
+    expected_cost_cents: numOrNull(row.expected_cost_cents),
+    tags: row.tags ?? null,
+    needs_human_review:
+      typeof row.needs_human_review === 'boolean' ? row.needs_human_review : null,
+    ts: numOrNull(row.ts),
+    created_ts: numOrNull(row.created_ts),
+    updated_ts: numOrNull(row.updated_ts),
+    parent_id: strOrNull(row.parent_id),
+    goal_id: strOrNull(row.goal_id),
+    taken_by: strOrNull(row.taken_by),
+    taken_at: isoOrMsToEpochMs(row.taken_at),
+    expires_at: isoOrMsToEpochMs(row.expires_at),
+  };
+}
+
+/** Map an outbox `row` jsonb to the `HarnessIssueRow` value the projection
+ *  INSERT consumes. `found_at` (TIMESTAMPTZ) → epoch ms. */
+function toIssueValue(row: Record<string, unknown>): HarnessIssueRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    issue_id: String(row.issue_id ?? ''),
+    title: String(row.title ?? ''),
+    severity: String(row.severity ?? ''),
+    source: String(row.source ?? ''),
+    status: String(row.status ?? ''),
+    found_at: isoOrMsToEpochMs(row.found_at) ?? 0,
+    found_during: strOrNull(row.found_during),
+    repro: strOrNull(row.repro),
+    evidence: strOrNull(row.evidence),
+    suggested_fix: strOrNull(row.suggested_fix),
+    code_pointer: strOrNull(row.code_pointer),
+    linked_feature_id: strOrNull(row.linked_feature_id),
+    attempts: numOrZero(row.attempts),
+    notes: row.notes ?? [],
+    created_ts: numOrZero(row.created_ts),
+    updated_ts: numOrZero(row.updated_ts),
+  };
+}
+
+/** Map an outbox `row` jsonb to the `HarnessPlanRow` value the plans projection
+ *  INSERT consumes — the federated subset of harness_plans. No TIMESTAMPTZ
+ *  conversion (the op_ columns + created_at/updated_at are machine-local, not
+ *  federated) and no jsonb (content is TEXT, supersedes is text[] → a JSON array
+ *  under to_jsonb). */
+function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    plan_slug: String(row.plan_slug ?? ''),
+    content: typeof row.content === 'string' ? row.content : '',
+    content_hash: typeof row.content_hash === 'string' ? row.content_hash : '',
+    title: strOrNull(row.title),
+    status: strOrNull(row.status),
+    created: strOrNull(row.created),
+    updated: strOrNull(row.updated),
+    owner: strOrNull(row.owner),
+    supersedes: Array.isArray(row.supersedes)
+      ? row.supersedes.filter((s): s is string => typeof s === 'string')
+      : [],
+    superseded_by: strOrNull(row.superseded_by),
+    archived: typeof row.archived === 'boolean' ? row.archived : false,
+    is_legacy: typeof row.is_legacy === 'boolean' ? row.is_legacy : false,
+  };
+}
+
+/** Map an outbox `row` jsonb to the `ContributorUsageEventRow` value the usage
+ *  projection INSERT consumes. `ts` is TIMESTAMPTZ → ISO string under `to_jsonb`;
+ *  the projection validator requires epoch-ms NUMBER, so convert it. github_user_id
+ *  / schema_version (BIGINT) are coerced to numbers. Append-only → no del reshape. */
+function toUsageValue(row: Record<string, unknown>): ContributorUsageEventRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    event_id: String(row.event_id ?? ''),
+    github_user_id: numOrZero(row.github_user_id),
+    device_pubkey: String(row.device_pubkey ?? ''),
+    kind: String(row.kind ?? ''),
+    ref_id: strOrNull(row.ref_id),
+    payload: row.payload ?? null,
+    ts: isoOrMsToEpochMs(row.ts) ?? 0,
+    schema_version: numOrZero(row.schema_version),
+  };
+}
+
+/** Map an outbox `row` jsonb to the `CoordConversationRow` value the conversation
+ *  projection INSERT consumes. created_at/updated_at/resolved_at (TIMESTAMPTZ) →
+ *  epoch ms; accepted_post_id is NOT federated (local bigserial, dropped here). */
+function toConversationValue(row: Record<string, unknown>): CoordConversationRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    id: String(row.id ?? ''),
+    kind: String(row.kind ?? ''),
+    scope: String(row.scope ?? 'harness'),
+    asker_id: String(row.asker_id ?? ''),
+    title: strOrNull(row.title),
+    body: typeof row.body === 'string' ? row.body : '',
+    state: String(row.state ?? 'open'),
+    accepted_answer: strOrNull(row.accepted_answer),
+    capture_target: strOrNull(row.capture_target),
+    promoted_issue_id: strOrNull(row.promoted_issue_id),
+    created_at: isoOrMsToEpochMs(row.created_at) ?? 0,
+    updated_at: isoOrMsToEpochMs(row.updated_at) ?? 0,
+    resolved_at: isoOrMsToEpochMs(row.resolved_at),
+  };
+}
+
+/** Map an outbox `row` jsonb to the `CoordMessageRow` the message projection
+ *  INSERT consumes. `body` is a nested jsonb object (the envelope); `ts`
+ *  (TIMESTAMPTZ) → epoch ms; the local bigserial `id` is dropped (not federated). */
+function toMessageValue(row: Record<string, unknown>): CoordMessageRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    msg_id: String(row.msg_id ?? ''),
+    surface: String(row.surface ?? ''),
+    writer_key: strOrNull(row.writer_key),
+    body:
+      row.body && typeof row.body === 'object' && !Array.isArray(row.body)
+        ? (row.body as Record<string, unknown>)
+        : {},
+    ts: isoOrMsToEpochMs(row.ts) ?? 0,
+  };
+}
+
+/** Map an outbox `row` jsonb to the `CoordThreadRow` the thread projection
+ *  consumes. created_at/last_post_at (TIMESTAMPTZ) → epoch ms. */
+function toThreadValue(row: Record<string, unknown>): CoordThreadRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    thread_id: String(row.thread_id ?? ''),
+    parent_kind: String(row.parent_kind ?? ''),
+    parent_ref: String(row.parent_ref ?? ''),
+    title: strOrNull(row.title),
+    created_by: strOrNull(row.created_by),
+    created_at: isoOrMsToEpochMs(row.created_at) ?? 0,
+    last_post_at: isoOrMsToEpochMs(row.last_post_at),
+    post_count: numOrZero(row.post_count),
+  };
+}
+
+/** Map an outbox `row` jsonb to the `CoordThreadPostRow` the post projection
+ *  consumes. created_at (TIMESTAMPTZ) → epoch ms; the bigserial id is dropped. */
+function toThreadPostValue(row: Record<string, unknown>): CoordThreadPostRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    post_msg_id: String(row.post_msg_id ?? ''),
+    thread_id: String(row.thread_id ?? ''),
+    author_id: strOrNull(row.author_id),
+    body: typeof row.body === 'string' ? row.body : '',
+    created_at: isoOrMsToEpochMs(row.created_at) ?? 0,
+  };
+}
+
+/** Map an outbox `row` jsonb to the `PlanItemAssignmentRow` the assignment
+ *  projection INSERT consumes — the federated subset. assigned_ts/released_ts stay
+ *  ISO strings (PG casts them to timestamptz on insert); no jsonb, no epoch dance. */
+function toAssignmentValue(row: Record<string, unknown>): PlanItemAssignmentRow {
+  return {
+    harness_slug: String(row.harness_slug ?? ''),
+    plan_slug: String(row.plan_slug ?? ''),
+    item_id: String(row.item_id ?? ''),
+    assignee_name: strOrNull(row.assignee_name),
+    assigned_by_user: strOrNull(row.assigned_by_user),
+    assigned_ts: strOrNull(row.assigned_ts),
+    released_ts: strOrNull(row.released_ts),
+    strategy: strOrNull(row.strategy),
+    note: strOrNull(row.note),
+  };
+}
+
+/**
+ * Map one `substrate_outbox` row to the `LocalWriteOp` the drain appends to the
+ * own log. Throws on an unknown `table_name` (a programming error — the trigger
+ * only ever writes the federated tables in `TABLE_NAME_TO_TABLE_TAG`). For a
+ * `del`, `value` is undefined (the projection's delete path needs only `hbKey`).
+ */
+export function outboxRowToLocalWriteOp(outboxRow: OutboxRow): LocalWriteOp {
+  const table = TABLE_NAME_TO_TABLE_TAG[outboxRow.table_name];
+  if (!table) {
+    throw new Error(
+      `outboxRowToLocalWriteOp: unknown table_name '${outboxRow.table_name}'`,
+    );
+  }
+
+  const ts = typeof outboxRow.ts === 'number' ? outboxRow.ts : Number(outboxRow.ts);
+
+  if (outboxRow.op === 'del') {
+    return {
+      type: 'del',
+      table,
+      hbKey: outboxRow.key,
+      ts,
+      schema_version: CURRENT_SCHEMA_VERSION,
+    };
+  }
+
+  const row = outboxRow.row ?? {};
+  let value:
+    | HarnessFeatureRow
+    | HarnessIssueRow
+    | ContributorUsageEventRow
+    | HarnessPlanRow
+    | CoordConversationRow
+    | CoordMessageRow
+    | CoordThreadRow
+    | CoordThreadPostRow
+    | PlanItemAssignmentRow;
+  switch (outboxRow.table_name) {
+    case 'harness_features_consolidated':
+      value = toFeatureValue(row);
+      break;
+    case 'harness_plans':
+      value = toPlanValue(row);
+      break;
+    case 'contributor_usage_events':
+      value = toUsageValue(row);
+      break;
+    case 'coord_conversations':
+      value = toConversationValue(row);
+      break;
+    case 'coord_event_log':
+      value = toMessageValue(row);
+      break;
+    case 'coord_threads':
+      value = toThreadValue(row);
+      break;
+    case 'coord_thread_posts':
+      value = toThreadPostValue(row);
+      break;
+    case 'plan_item_assignments':
+      value = toAssignmentValue(row);
+      break;
+    default:
+      value = toIssueValue(row);
+  }
+
+  return {
+    type: 'put',
+    table,
+    hbKey: outboxRow.key,
+    value,
+    ts,
+    schema_version: CURRENT_SCHEMA_VERSION,
+  };
+}

@@ -3,18 +3,18 @@
 /**
  * Delegates section in the operator panel.
  *
- * Lists open delegates (agent CLI sessions the operator has spawned —
- * `omp -p` via Meridian by default, or `claude -p` when AGENT_BACKEND=claude-code)
- * with title, age, turn-count, and click-to-resume. Resume opens a
- * mini-transcript drawer + lets the user type a follow-up that gets
- * dispatched to /api/agent-mcp/delegate-chat with the same session id.
+ * Lists the operator's delegated tasks (work_items of kind=task — the durable record
+ * of each `operator:delegate`, see collapse-delegate-into-workitems-2026-06-04) with
+ * title, age, turn-count, and click-to-resume. Resume opens a mini-transcript drawer
+ * (the work_item's coord thread) + lets the user type a follow-up that gets dispatched
+ * to /api/agent-mcp/delegate-chat with the same session id.
  *
- * Per Plan v6 phase D — appears above the per-harness status section.
+ * Data source: GET /api/agent-mcp/delegates (backed by delegated-tasks over work_items),
+ * refetched on mount, filter change, and delegation-lifecycle events. Per Plan v6
+ * phase D — appears above the per-harness status section.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSyncQuery } from '@papercusp/sync';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface DelegateTurn {
   ts: string;
@@ -22,51 +22,24 @@ interface DelegateTurn {
   response: string;
 }
 
-interface DelegateRow {
-  id: number;
+interface DelegateSession {
+  id: string;
   agentSessionId: string;
   title: string | null;
   summary: string | null;
   status: 'open' | 'archived';
+  createdAt: string;
   lastActiveAt: string;
   turnCount: number;
-  origin: string;
-  initiatorMsg: string | null;
+  origin: string | null;
   transcript?: DelegateTurn[];
 }
 
-interface DelegateZeroRow {
-  id: number;
-  workspace: string;
-  agentSessionId: string;
-  title: string | null;
-  summary: string | null;
-  status: string;
-  createdAt: number;
-  lastActiveAt: number;
-  turnCount: number;
-  origin: string;
-  initiatorMsg: string | null;
-  transcript: DelegateTurn[];
-}
-
-interface ListResponse {
-  sessions: DelegateRow[];
-}
-
 /**
- * "Running" heuristic for a delegate: no completed turns yet
- * (turnCount === 0) AND last activity within the last 5 minutes.
- *
- * The schema doesn't have an explicit "running" flag — turnCount
- * gets bumped only when a turn completes. So a fresh row with
- * turnCount=0 and recent lastActiveAt is in flight; an old row
- * with turnCount=0 either errored before completion or was never
- * driven (and is dead either way).
- *
- * 5min is generous enough for long file-reads / multi-step plans
- * but tight enough that an old failed delegate doesn't keep
- * spinning forever in the UI.
+ * "Running" heuristic for a delegate: no completed turns yet (turnCount === 0) AND
+ * last activity within the last 5 minutes. turnCount is the work_item thread's
+ * post_count — bumped only when a turn completes — so a fresh task with turnCount=0
+ * and recent activity is in flight; an old turnCount=0 task is dead either way.
  */
 function isLikelyRunning(d: { turnCount: number; lastActiveAt: string }): boolean {
   if (d.turnCount > 0) return false;
@@ -90,59 +63,68 @@ type DelegateFilter = 'open' | 'archived' | 'all';
 
 export default function DelegatesSection() {
   const [filter, setFilter] = useState<DelegateFilter>('open');
+  const [rows, setRows] = useState<DelegateSession[]>([]);
+  const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedTranscript, setExpandedTranscript] = useState<DelegateTurn[]>([]);
   const [followText, setFollowText] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState('');
   const abortRef = useRef<AbortController | null>(null);
-  const workspaceId = useWorkspaceId();
 
-  // Delegates stream from harness_shared.delegates via Zero. Filter values
-  // 'open' / 'archived' map directly to the status column; 'all' is a special
-  // case the named query doesn't support directly so we fan out two queries.
-  const { data: openRows, loading: openLoading } = useSyncQuery<DelegateZeroRow>({
-    queryName: 'delegates.byWorkspace',
-    args: { workspace: workspaceId, status: 'open', limit: 50 },
-    enabled: filter === 'open' || filter === 'all',
-  });
-  const { data: archivedRows, loading: archivedLoading } = useSyncQuery<DelegateZeroRow>({
-    queryName: 'delegates.byWorkspace',
-    args: { workspace: workspaceId, status: 'archived', limit: 50 },
-    enabled: filter === 'archived' || filter === 'all',
-  });
+  const fetchRows = useCallback(async (f: DelegateFilter) => {
+    try {
+      const r = await fetch(`/api/agent-mcp/delegates?status=${f}&limit=50`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const sessions: DelegateSession[] = Array.isArray(data?.sessions) ? data.sessions : [];
+      setRows(sessions);
+    } catch { /* leave previous rows */ } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const loading = (filter === 'open' && openLoading)
-    || (filter === 'archived' && archivedLoading)
-    || (filter === 'all' && (openLoading || archivedLoading));
-
-  const rows: DelegateRow[] = useMemo(() => {
-    const merged: DelegateZeroRow[] = [];
-    if ((filter === 'open' || filter === 'all') && Array.isArray(openRows)) merged.push(...openRows);
-    if ((filter === 'archived' || filter === 'all') && Array.isArray(archivedRows)) merged.push(...archivedRows);
-    return merged
-      .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
-      .map((r) => ({
-        id: r.id,
-        agentSessionId: r.agentSessionId,
-        title: r.title,
-        summary: r.summary,
-        status: (r.status === 'archived' ? 'archived' : 'open') as DelegateRow['status'],
-        lastActiveAt: r.lastActiveAt ? new Date(r.lastActiveAt).toISOString() : '',
-        turnCount: r.turnCount,
-        origin: r.origin,
-        initiatorMsg: r.initiatorMsg,
-        transcript: Array.isArray(r.transcript) ? r.transcript : undefined,
-      }));
-  }, [openRows, archivedRows, filter]);
-
-  // Watcher → Zero handles refresh on archive/delegation-complete; the manual
-  // refresh stub stays for legacy callers in this file.
-  const refresh = async (_f?: DelegateFilter) => {};
+  // Initial + on-filter-change load, plus a refetch whenever a delegation completes.
+  useEffect(() => {
+    let live = true;
+    void (async () => { if (live) await fetchRows(filter); })();
+    const onChange = () => { void fetchRows(filter); };
+    window.addEventListener('operator:delegation-complete', onChange);
+    window.addEventListener('operator:delegation-async-complete', onChange);
+    return () => {
+      live = false;
+      window.removeEventListener('operator:delegation-complete', onChange);
+      window.removeEventListener('operator:delegation-async-complete', onChange);
+    };
+  }, [filter, fetchRows]);
 
   async function archive(agentSessionId: string) {
     await fetch(`/api/agent-mcp/delegates?id=${encodeURIComponent(agentSessionId)}`, {
       method: 'DELETE',
     }).catch(() => {});
+    void fetchRows(filter);
+  }
+
+  // Lazy-load the transcript (the work_item thread) when a row expands.
+  async function loadTranscript(agentSessionId: string) {
+    setExpandedTranscript([]);
+    try {
+      const r = await fetch(`/api/agent-mcp/delegates?id=${encodeURIComponent(agentSessionId)}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      const t: DelegateTurn[] = data?.session?.transcript ?? [];
+      setExpandedTranscript(Array.isArray(t) ? t : []);
+    } catch { /* ignore */ }
+  }
+
+  function toggleExpand(agentSessionId: string) {
+    if (expandedId === agentSessionId) {
+      setExpandedId(null);
+      setExpandedTranscript([]);
+    } else {
+      setExpandedId(agentSessionId);
+      void loadTranscript(agentSessionId);
+    }
   }
 
   async function sendFollowUp(agentSessionId: string) {
@@ -190,26 +172,12 @@ export default function DelegatesSection() {
     } finally {
       setStreaming(false);
       setFollowText('');
-      void refresh();
+      void fetchRows(filter);
+      if (expandedId) void loadTranscript(expandedId);
     }
   }
 
-  const expanded = useMemo(
-    () => rows.find((r) => r.agentSessionId === expandedId) ?? null,
-    [rows, expandedId],
-  );
-
-  // delegates.byWorkspace already returns the full row including the
-  // transcript JSONB. Avg transcript size measured at ~1.6 KB / max 4 KB
-  // across current data — well under any threshold for eager
-  // subscription. Read the expanded row directly from the cached list
-  // instead of refetching.
-  const expandedDetail = useMemo<DelegateRow | null>(() => {
-    if (!expandedId) return null;
-    return rows.find((r) => String(r.id) === String(expandedId)) ?? null;
-  }, [expandedId, rows]);
-
-  if (loading) return null;
+  if (loading && rows.length === 0) return null;
 
   const filterLabels: Record<DelegateFilter, string> = {
     open: 'Open',
@@ -256,7 +224,7 @@ export default function DelegatesSection() {
           const running = isLikelyRunning(d);
           return (
             <li
-              key={d.agentSessionId}
+              key={d.agentSessionId || d.id}
               className="operator-delegates__item"
               data-open={isOpen}
               data-running={running ? 'true' : 'false'}
@@ -264,7 +232,7 @@ export default function DelegatesSection() {
               <button
                 type="button"
                 className="operator-delegates__row"
-                onClick={() => setExpandedId(isOpen ? null : d.agentSessionId)}
+                onClick={() => toggleExpand(d.agentSessionId)}
               >
                 <span className="operator-delegates__title">
                   {running && (
@@ -274,7 +242,7 @@ export default function DelegatesSection() {
                       title="In flight — waiting on Claude"
                     />
                   )}
-                  {d.title ?? d.initiatorMsg?.slice(0, 60) ?? '(untitled)'}
+                  {d.title ?? '(untitled)'}
                 </span>
                 <span className="operator-delegates__meta">
                   {running ? 'running' : `${d.turnCount}t`} · {fmtAge(d.lastActiveAt)}
@@ -285,9 +253,9 @@ export default function DelegatesSection() {
                   {d.summary && (
                     <p className="operator-delegates__summary">{d.summary}</p>
                   )}
-                  {expandedDetail?.transcript && expandedDetail.transcript.length > 0 && (
+                  {expandedTranscript.length > 0 && (
                     <div className="operator-delegates__transcript" role="log" aria-label="Delegate transcript">
-                      {expandedDetail.transcript.map((turn, i) => (
+                      {expandedTranscript.map((turn, i) => (
                         <div key={`${turn.ts}-${i}`} className="operator-delegates__turn">
                           <div className="operator-delegates__turn-user">
                             <span className="operator-delegates__turn-label">You</span>

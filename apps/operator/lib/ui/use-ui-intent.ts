@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { registerIntent, type IntentHandler } from './intent-registry';
+import { registerIntent, type IntentHandler } from '@papercusp/operator-core/lib/ui/intent-registry';
 
 export function useUiIntent(name: string, handler: IntentHandler): void {
   // Keep handler fresh without re-registering on every render — the

@@ -12,8 +12,8 @@
 
 // Import the step vocabulary from the dependency-free leaf, NOT join-shared-harness
 // (which pulls node:child_process/fs/os + the identity chain into the SPA bundle).
-import { JOIN_STEP_IDS } from '../../lib/harness/join-steps';
-import type { JoinStepId, JoinStepState, JoinStepStatus } from '../../lib/harness/join-steps';
+import { JOIN_STEP_IDS } from '@papercusp/operator-core/lib/harness/join-steps';
+import type { JoinStepId, JoinStepState, JoinStepStatus } from '@papercusp/operator-core/lib/harness/join-steps';
 
 // ─── step metadata ─────────────────────────────────────────────────────────
 

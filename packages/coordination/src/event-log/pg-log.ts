@@ -34,13 +34,13 @@
  */
 
 import type { Sql } from 'postgres';
-import type { CoordEnvelope } from '../core/envelope';
+import type { CoordEnvelope } from '@papercusp/pubsub-substrate/core';
 import type {
   CoordEventLog,
   EventSurface,
   LineSurface,
   ReadLinesOpts,
-} from './types';
+} from '@papercusp/pubsub-substrate/event-log';
 
 /** The coordination scope used when a host does not bind one. Matches the
  *  `'default'` fallback `PgPresenceStore` writes for a workspace-less agent. */
@@ -100,6 +100,15 @@ export async function ensureCoordEventLogTable(sql: Sql): Promise<void> {
     ALTER TABLE harness_shared.coord_event_log
       ADD COLUMN IF NOT EXISTS workspace_id text NOT NULL DEFAULT 'default'
   `;
+  // harness_slug: the harness scope projected from CoordEnvelope.harness_slug.
+  // NULL = operator-scope/workspace-global (local). The federation migration
+  // (147) adds the same column + the capture triggers + the fed unique index;
+  // keeping it here too means the runtime-bootstrapped table (conformance / fresh
+  // test rigs) has the scope column without depending on migration order.
+  await sql`
+    ALTER TABLE harness_shared.coord_event_log
+      ADD COLUMN IF NOT EXISTS harness_slug text
+  `;
   // EVENT surfaces are keyed: exactly one immutable record per (workspace_id,
   // surface, msg_id). LINE surfaces (messages/plan-events) are pure append —
   // the partial predicate keeps them out of the uniqueness constraint so the
@@ -128,9 +137,16 @@ export class PgCoordLog implements CoordEventLog {
   async appendLine(surface: LineSurface, writerKey: string, line: CoordEnvelope): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // `::text::jsonb` (not bare `::jsonb`): the explicit text cast forces
+    // postgres-js to bind the JSON as a plain text param, so it stores a real
+    // jsonb OBJECT under BOTH the operator runtime client (getOrgPg — where a
+    // bare `::jsonb` happens to work but `sql.json()` throws) AND a fresh /
+    // testcontainer pool (where bare `::jsonb` double-encodes to a jsonb
+    // string). One form, correct everywhere. See agent-insight
+    // postgres-js-jsonb-binding.
     await sql`
-      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
-      VALUES (${this.ws}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::jsonb)
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
+      VALUES (${this.ws}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null})
     `;
   }
 
@@ -151,10 +167,10 @@ export class PgCoordLog implements CoordEventLog {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     await sql`
-      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
-      VALUES (${this.ws}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::jsonb)
+      INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug)
+      VALUES (${this.ws}, ${surface}, NULL, ${msgId}, ${JSON.stringify(record)}::text::jsonb, ${record.harness_slug ?? null})
       ON CONFLICT (workspace_id, surface, msg_id) WHERE surface IN ('handoffs', 'escalations')
-      DO UPDATE SET body = EXCLUDED.body, ts = now()
+      DO UPDATE SET body = EXCLUDED.body, ts = now(), harness_slug = EXCLUDED.harness_slug
     `;
   }
 

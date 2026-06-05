@@ -1,0 +1,130 @@
+/**
+ * Hyperbee → PG projection for `harness_shared.contributors`.
+ *
+ * Plan: papercusp-dogfood-phase5a-hyperbee-plumbing-2026-05-24 P-031.
+ *
+ * Each shared harness's Hyperbee carries one
+ * `contributors/<github_user_id>` row per human. The projection
+ * consumes Hyperbee writes + upserts the row into the shared PG
+ * table; symmetric delete on `del`.
+ *
+ * The Hyperbee key inside one harness's Hyperbee is just
+ * `<github_user_id>` (no namespace prefix needed — Hyperbees are
+ * per-harness). The PG primary key is
+ * `(workspace_id, harness_slug, github_user_id)`.
+ *
+ * Workspace_id + harness_slug carry-through: the projection is
+ * registered PER-HARNESS at boot; the registration closure binds
+ * those values. The substrate's `applyHyperbeeOpToPg` calls the
+ * harness-specific projection, which then composes the full PG
+ * primary key.
+ *
+ * `device_attestations` JSONB array stays as JSON in PG; the type
+ * spine's `isContributorRow` predicate validates the shape on
+ * read. Defensive: dropping malformed rows rather than crashing
+ * the projection loop.
+ */
+
+import { getOrgPg } from '@papercusp/db-org';
+import { normalizeJsonbInput } from './_jsonb-input';
+import type { TableProjection } from '../projection';
+import {
+  isContributorRow,
+  type ContributorRow,
+} from '../../../harness/contributor-row-types';
+
+export interface ContributorsProjectionOpts {
+  workspaceId: string;
+  harnessSlug: string;
+}
+
+function composeKey(row: ContributorRow): string {
+  // Within a per-harness Hyperbee, the key is `<github_user_id>`
+  // (the harness is implicit). The full key is composed by the
+  // substrate via `HYPERBEE_TAG_TO_PREFIX['contributors']` +
+  // composeKey, producing `contributors/<github_user_id>`.
+  return String(row.github_user_id);
+}
+
+function decodeValue(raw: unknown): ContributorRow | null {
+  if (!isContributorRow(raw)) return null;
+  return raw;
+}
+
+async function writeToPg(opts: ContributorsProjectionOpts, row: ContributorRow): Promise<void> {
+  if (row.harness_slug !== opts.harnessSlug) {
+    // Cross-harness write — drop silently. The projection is bound
+    // to one harness; an op for a different one is a substrate bug
+    // we don't want to compound by writing it through.
+    return;
+  }
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.contributors
+      (workspace_id, harness_slug, github_user_id, github_username,
+       display_name, avatar_url,
+       device_attestations, revoked_pubkeys,
+       joined_at, last_seen_at,
+       binding_status, channel1_verified_at, channel2_verified_at,
+       channel2_branch_ref, binding_last_checked_at,
+       schema_version)
+    VALUES
+      (${opts.workspaceId}, ${row.harness_slug}, ${row.github_user_id}, ${row.github_username},
+       ${row.display_name}, ${row.avatar_url},
+       -- jsonb: bind via JSON.stringify(x)::jsonb — sql.json THROWS under getOrgPg (agent-insights/postgres-js-jsonb-binding)
+       ${JSON.stringify(normalizeJsonbInput(row.device_attestations) ?? [])}::text::jsonb, ${row.revoked_pubkeys as unknown as string},
+       to_timestamp(${row.joined_at} / 1000.0),
+       ${row.last_seen_at == null ? null : sql`to_timestamp(${row.last_seen_at} / 1000.0)`},
+       ${row.binding_status},
+       ${row.channel1_verified_at == null ? null : sql`to_timestamp(${row.channel1_verified_at} / 1000.0)`},
+       ${row.channel2_verified_at == null ? null : sql`to_timestamp(${row.channel2_verified_at} / 1000.0)`},
+       ${row.channel2_branch_ref},
+       ${row.binding_last_checked_at == null ? null : sql`to_timestamp(${row.binding_last_checked_at} / 1000.0)`},
+       ${row.schema_version})
+    ON CONFLICT (workspace_id, harness_slug, github_user_id) DO UPDATE SET
+      github_username = EXCLUDED.github_username,
+      display_name = EXCLUDED.display_name,
+      avatar_url = EXCLUDED.avatar_url,
+      device_attestations = EXCLUDED.device_attestations,
+      revoked_pubkeys = EXCLUDED.revoked_pubkeys,
+      last_seen_at = EXCLUDED.last_seen_at,
+      binding_status = EXCLUDED.binding_status,
+      channel1_verified_at = EXCLUDED.channel1_verified_at,
+      channel2_verified_at = EXCLUDED.channel2_verified_at,
+      channel2_branch_ref = EXCLUDED.channel2_branch_ref,
+      binding_last_checked_at = EXCLUDED.binding_last_checked_at,
+      schema_version = EXCLUDED.schema_version
+  `;
+}
+
+async function deleteFromPg(opts: ContributorsProjectionOpts, key: string): Promise<void> {
+  const userId = Number(key);
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  const { sql } = getOrgPg();
+  await sql`
+    DELETE FROM harness_shared.contributors
+    WHERE workspace_id = ${opts.workspaceId}
+      AND harness_slug = ${opts.harnessSlug}
+      AND github_user_id = ${userId}
+  `;
+}
+
+/**
+ * Build the projection for a specific (workspace, harness). Called
+ * once per shared harness at boot.
+ */
+export function buildContributorsProjection(opts: ContributorsProjectionOpts): TableProjection<ContributorRow> {
+  return {
+    tableTag: 'contributors',
+    composeKey,
+    decodeValue,
+    writeToPg: (row) => writeToPg(opts, row),
+    deleteFromPg: (key) => deleteFromPg(opts, key),
+  };
+}
+
+// Pure helpers exported for test reuse.
+export const _testing = {
+  composeKey,
+  decodeValue,
+};

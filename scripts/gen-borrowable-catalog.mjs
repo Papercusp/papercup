@@ -27,9 +27,21 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BORROWABLE = [
   // path (repo-relative)                  category                fallback description (only if package.json lacks one)
   ['libs/generic/rrf',                        'Pure utilities & infra'],
+  ['libs/generic/rules',                      'Pure utilities & infra'],
+  ['libs/generic/step-program',               'Pure utilities & infra'],
+  ['libs/generic/event-reaction',             'Pure utilities & infra'],
+  ['libs/generic/structured-concurrency',     'Pure utilities & infra'],
+  ['libs/generic/failure-detector',           'Pure utilities & infra'],
+  ['libs/generic/locks-core',                 'Pure utilities & infra'],
+  ['libs/generic/fanout-resolver',            'Pure utilities & infra'],
+  ['libs/generic/projection-index',           'Pure utilities & infra'],
+  ['libs/generic/activity-bridge',            'Pure utilities & infra'],
+  ['libs/generic/plugin-loader',              'Pure utilities & infra'],
   ['libs/generic/embedded-pg-discovery',      'Pure utilities & infra'],
+  ['libs/generic/linkable-edges',             'Pure utilities & infra'],
   ['libs/generic/plan-parser',                'Pure utilities & infra'],
   ['libs/generic/rate-limit',                 'Pure utilities & infra'],
+  ['libs/generic/artifact-registry',          'Pure utilities & infra'],
   ['libs/generic/papergrid/kv-persist',           'Pure utilities & infra'],
   ['libs/generic/papergrid/kv-persist-indexeddb', 'Pure utilities & infra'],
   ['libs/papercusp/packages/file-claim',  'Pure utilities & infra'],
@@ -46,6 +58,7 @@ const BORROWABLE = [
   ['libs/generic/chat-protocol',                  'IPC, transport & sync'],
   ['libs/generic/tooldef',                        'IPC, transport & sync'],
   ['libs/generic/tooldef-http',                   'IPC, transport & sync'],
+  ['libs/generic/pubsub-substrate',               'IPC, transport & sync'],
   ['libs/generic/ui-primitives',                  'UI components'],
   ['libs/generic/git-graph',                      'UI components'],
   ['libs/generic/papergrid/grid-core',            'UI components'],
@@ -61,7 +74,7 @@ const BORROWABLE = [
  */
 const SEAMED = [
   ['libs/papercusp/packages/locks', 'Distributed file-lock coordinator (own side-DB + advisory locks); generic via an opaque coordination domain.'],
-  ['packages/coordination',   'Agent coordination substrate (pure core + swappable event-log + presence store).'],
+  ['packages/coordination',   'Papercusp Postgres tie-in adapter over @papercusp/pubsub-substrate (generic pub/sub: core + event-log + presence + watermark + topic/subscription/thread fan-out) and @papercusp/linkable-edges; keeps only the harness_shared-bound Pg* backends.'],
   ['packages/backup',         'Per-workspace kopia backup behind a BackupHost config seam.'],
   ['packages/docs-engine',    'Source-agnostic docs retrieval; ships a generic-fs/starlight adapter plus a harness-fs one.'],
   ['libs/host-platform',      'The host-boundary interface — the ~10% that is genuinely host-specific (fs, PG-DSN resolution).'],
@@ -134,6 +147,13 @@ function build() {
   lines.push('`github.com/Papercusp/`) — clone that one repo to borrow it. In-repo');
   lines.push('packages are consumed as `file:` workspace deps and can be promoted to');
   lines.push('their own repo when needed.');
+  lines.push('');
+  lines.push('**Generic-first.** A new domain-free algorithm — a textbook concurrency /');
+  lines.push('distributed-systems / data-structure core — **starts in `libs/generic/<name>`');
+  lines.push('behind a seam**, not in the app to be migrated out later. `npm run');
+  lines.push('lint:generic-first` (advisory; `:all` for a full-tree sweep) flags a');
+  lines.push('zero-coupling, concept-naming algorithm file that landed in the app and nudges');
+  lines.push('it here.');
   lines.push('');
   for (const cat of CATEGORY_ORDER) {
     if (!byCat[cat]) continue;

@@ -1,11 +1,11 @@
 'use client';
 import type { ReactNode } from 'react';
 import { HarnessZeroProvider } from '../../providers/HarnessZeroProvider';
-import { installDesktopIpcPolyfills } from '../../lib/transport-adapters/desktop-bootstrap';
-import { installWorkspaceHeaderFetch } from '../../lib/transport-adapters/workspace-header-fetch';
-import { installWorkspaceParamEventSource } from '../../lib/transport-adapters/workspace-eventsource';
-import { installCallToolResolver } from '../../lib/call-tool-resolver';
-import { installIpcInspector } from '../../lib/dev/ipc-inspector-client';
+import { installDesktopIpcPolyfills } from '@papercusp/operator-core/lib/transport-adapters/desktop-bootstrap';
+import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
+import { installWorkspaceParamEventSource } from '@papercusp/operator-core/lib/transport-adapters/workspace-eventsource';
+import { installCallToolResolver } from '@papercusp/operator-core/lib/call-tool-resolver';
+import { installIpcInspector } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
 
 /**
  * Root sync provider. Wraps the app in `HarnessZeroProvider` and, on

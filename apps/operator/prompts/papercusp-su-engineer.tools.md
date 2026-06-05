@@ -58,24 +58,46 @@ playbook is the *how*; the policies are the *what's allowed*.
 
 ## Orientation: what Papercusp is
 
-A **multi-agent coding harness**. A project ("harness") gets a queue of
-features; an orchestrator routes work through specialist agents (scoper →
-architect → worker → validator → reviewer → documenter → curator); humans
-approve at gates. Runs locally — Tauri desktop + embedded Postgres + a Hono
-operator API (`bin/hono-host.ts`, `:3070`; a Vite SPA — `@papercusp/operator-vite`,
-TanStack Router — serves `:3055` content) + per-project harnesses.
+A **multi-agent coding platform**. A **Pot** (a project) is run by an
+**operator** that creates + supervises **harnesses** — work-pipelines each
+shaped by a **blueprint** (coding / research / gym / review / …). A harness
+gets a queue of **work_items**; its blueprint's spine routes work through
+specialist agents (the `coding` blueprint = scoper → architect → worker →
+validator → reviewer → documenter → curator); humans approve at gates. Runs
+locally — Tauri desktop + embedded Postgres + a Hono operator API
+(`bin/hono-host.ts`, `:3070`; a Vite SPA — `@papercusp/operator-vite`,
+TanStack Router — serves `:3055` content).
+
+**Naming (cup theme — rename in flight, `project-centric-harness-rethink` D-014):**
+**Pot** = a project (the operator-managed top level) · **Brew** = a work-group
+within it · **Cup** = a contributor. The **Cupboard** holds a Pot's
+distributable facets (blueprints / snapshots / plugins).
 
 **Core nouns:**
-- **Workspace** — one Papercusp install (many harnesses, one PG db, one
+- **Workspace** — one Papercusp install (many pots/harnesses, one PG db, one
   credential set). `papercusp:list_workspaces`.
-- **Harness** — one managed project: repo + work queue + runs + issues.
-  Identified by a **slug** (`papercup`, `restart`, …); lives at the
-  `harness_<slug>` PG schema.
-- **Feature** — a unit of requested work (`F-001`-shaped), with status
-  (`todo`/`validating`/`passed`/`failing`/`deprecated`) + acceptance
-  criteria. In `harness_features`.
-- **Chunk** — a sub-unit of a feature sized for one worker turn (scopers
-  produce, workers consume).
+- **Pot** — a project, run by an **operator** (a minimal *operator blueprint*,
+  the user's single surface). The operator wakes on its own declared
+  schedule/events, **creates harnesses from blueprints**, supervises the fleet,
+  and curates reports to the user (`autoloop-pot-operator-rebuild` — shipping;
+  `curator-operator`). It is *not* a feature-pipeline — it's the judgment layer
+  over harnesses.
+- **Blueprint** — a harness's *declarative shape* (work-item kind + roles +
+  spine + triggers + gates + `dispatch:` policy). Built-ins at
+  `libs/papercusp/packages/harness/blueprints/` (`base`/`coding`/`research`/
+  `gym`/`review`/`migration`/`deliberate`/`scan`/…) extend `base` and drive the
+  engine via `deriveNext`. The `coding` blueprint is the pipeline below; others
+  are different shapes on the same engine (`harness-blueprint-orchestration`).
+- **Harness** — one managed work-pipeline: repo (optional) + work queue + runs,
+  **instantiated from a blueprint by the operator** (the autoloop is the
+  harness's runtime, set up by its blueprint). slug-identified (`papercup`, …);
+  lives at `harness_<slug>`.
+- **Work item** — the unified unit of work (`work_items:*`), with a `kind`:
+  **`feature`** (`F-001`-shaped, the pipeline's unit) · **`bug`**/**`change`**
+  (formerly *issues*) · `research-task` · `chunk` (a feature sub-unit sized for
+  one worker turn). Status (`todo`/`validating`/`passed`/`failing`/`deprecated`)
+  + acceptance. Per-kind tables under a `work_items` view (`unify-work-items`);
+  `features:*`/`issues:*` are the legacy per-kind views.
 - **Run / spawn** — one agent invocation. The spawn is the envelope
   (workspace + harness + role + feature + chunk + signed URL); the run is
   the execution. Tracked in `harness_shared.spawned_agents`.
@@ -85,21 +107,24 @@ TanStack Router — serves `:3055` content) + per-project harnesses.
   cross-cutting experts. Read `AGENT_ROLES`, don't hard-count; spawn
   personas live at `libs/papercusp/packages/harness/prompts/<role>.md`
   (not every role has one — operator/oracle are chat surfaces).
-- **Issue** — a known harness problem (severity + status); a separate
-  surface from feature status. `issues:list`.
+- **Issue** — *folded into Work item* (kind=`bug`/`change`):
+  `work_items:list { kind:'bug' }`; `issues:*` is the legacy view.
 - **Phase** — `staging`/`testing`/`production` worktrees per harness;
   features promote through them.
-- **Endpoint system** — the framework under every tool: one typed function
-  projected onto HTTP/MCP/IPC/in-process transports with a shared
-  dispatcher, gating, quotas, telemetry. `/internal/docs/endpoint-system/overview`.
+- **Endpoint system** — the framework under every tool: one typed `defineTool`
+  fn projected onto HTTP/MCP/IPC/in-process transports with a shared dispatcher,
+  gating, quotas, telemetry — plus declarative **`requires:`** preconditions +
+  **`emits:`** reactions over `@papercusp/rules` (`event-reaction-system`).
+  `/internal/docs/endpoint-system/overview`.
 
+The `coding` blueprint's spine (others differ):
 ```
-user files feature → scoper chunks it → architect plans hard chunks
+user files a work_item → scoper chunks it → architect plans hard chunks
   → worker executes → validator checks vs acceptance → reviewer ships/returns
   → documenter writes docs → curator records lessons
 ```
 Inter-agent hand-offs are durable (`messages:send` / `messages:inbox`,
-feature-scoped via `feature_id`), never in-memory.
+work_item-scoped via `to_feature_id`), never in-memory.
 
 ## Scope: which harness a tool acts on
 
@@ -141,10 +166,11 @@ operator) is the authoritative, self-describing list; the same data is in
 MCP `tools/list`. Don't trust any enumeration here to be complete.
 
 Built-in groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`,
-`harness:*`, `features:*`, `issues:*`, `docs:*`, `search:*` (fulltext +
-semantic), `memory:*`, `messages:*`, `audit:*`, `agents:*`, `tasks:*`,
-`goals:*`, `cross_harness:*`, `artifacts:*`, `agent_chats:*`,
-`ui:*` (UI control), `chat:*` (ask_choice). Plus **MCP resources**
+`work_items:*` (the unified work surface — `features:*`/`issues:*` are legacy
+per-kind views), `blueprint:*` (validate/extend/create), `harness:*`, `docs:*`,
+`search:*` (fulltext + semantic), `memory:*`, `messages:*`, `audit:*`,
+`agents:*`, `tasks:*`, `goals:*`, `cross_harness:*`, `artifacts:*`,
+`agent_chats:*`, `ui:*` (UI control), `chat:*` (ask_choice). Plus **MCP resources**
 (`papercusp://docs/index`, `papercusp://docs/section/{section}`), **MCP
 prompts**, and **multi-workspace fan-out** (workspace is a per-call arg;
 hop without re-auth). `?superuser=1` + loopback + bearer skips role/quota
@@ -161,13 +187,25 @@ your activity is visible, just not blocked
   UI, and record reviews here rather than ad hoc.
 - **`repomix.pack`** — pack a repo (or subset) into one LLM-friendly
   document when you need a holistic view of a codebase. Inline for small
-  output, else a `.harness/scratch/` path. The go-to "load the whole thing
+  output, else a `.papercusp/scratch/` path. The go-to "load the whole thing
   into context" tool. (Works out of the box.)
-- **`delegates:list` / `delegates:inbox`** — enumerate the long-running
-  background agent sessions you spawn (via `operator:delegate`) and read
-  their completion messages, instead of polling PG.
+- **`work_items:list { assignedBy }` + `coord:presence`** — a delegated task is
+  a **work_item** (kind=`task`), so "my background agents" =
+  `work_items:list { assignedBy: '<you>', kind: 'task' }` joined with who's live
+  (`coord:presence`); their completions **push** to your `coord:inbox` via
+  subscribe→inject — no poll. (The old `delegates:list` / `delegates:inbox` verbs
+  collapsed into this — plan `collapse-delegate-into-workitems-2026-06-04`.)
+- **`blueprint:validate` / `blueprint:extend` + `harness:create`** — the blueprint
+  surface. Inspect the available harness blueprints (`base`/`coding`/`research`/
+  `gym`/`review`/`migration`/`deliberate`/`scan`/…), author a child via `extend`
+  (override a built-in's knobs/roles/spine), and instantiate a harness from one.
+  This is how you (and the operator) spin up a harness for a piece of work — pick
+  the blueprint whose shape fits: decomposable features → `coding`, investigation
+  → `research`, optimize another blueprint → `gym`, parallel codemod →
+  `migration`, a decision → `deliberate`.
 - **`autoloop:control` / `autoloop:status`** — pause/resume the operator's
-  background harness-picking loop. This is the tool for "pause the loop."
+  background harness loop. This is the tool for "pause the loop." (Being rebuilt
+  around the Pot-operator — `autoloop-pot-operator-rebuild`, shipping.)
 - **`notifications:recent`** — the app's own recent toast/error stream;
   first stop for "why did the app just error?"
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway OS process by PID to
@@ -245,14 +283,19 @@ servers, and paperclip all assume `main`. Coordinate through the lock +
 coord systems, not tree isolation: `locks:*` guards files, `coord:*`
 announces intent.
 
-**Restarting / bringing down the operator is fine.** If a restart unblocks
-you — picking up a `lib/**` edit (`:3070` has **no hot-reload**), clearing
-a wedged process, freeing a port — **just do it.** It's a dev box; it comes
-back, peers expect churn, and the lock hook fails open. Restart via the
-Tauri shell reload or, on the standing dev box, `systemctl --user restart
-papercup-dev-api.service`, then re-probe where your write lands before
-trusting any result. Don't stall waiting on the server when a restart is
-the unblock.
+**Two operators now — `:3070` is GREEN/stable, `:3170` is where your edits run.**
+The site + fleet MCP server **`:3070`** (`papercup-dev-api`) runs from the **green
+release checkout** (`papercup-release`), decoupled from `main` churn so a peer's
+broken commit can't break it. The cost: **restarting `:3070` does NOT pick up your
+`lib/**` edit** — it just restarts the same green snapshot. To **test a `lib/**`
+edit live**, use the **staging operator `:3170`** (`papercup-staging-api`, runs
+from `main`, no hot-reload): `systemctl --user restart papercup-staging-api.service`,
+then probe **`:3170`** (`curl :3170/…` or point a tool there). To promote your edit
+to the stable `:3070`, it goes through the **release gate** — green-checkpoint
+advances `ready` when `main` is green, then `npx tsx apps/operator/lib/release/deploy-cli.ts
+--execute` refreshes `:3070` (a raw restart can never deploy churning HEAD by
+construction). Clearing a wedged process / freeing a port is still fine to just do.
+Full model: plan `release-gate-ready-branch-2026-06-04` + its `README.md`.
 
 **Named resource locks — coordinate destructive shared actions.** Beyond
 file locks (which guard *files*), `locks:*` has **named resource locks** for
@@ -369,6 +412,15 @@ Three layers, three jobs — never confuse them. **mem0 = what I know; coord
 = what's happening; insights = how things work.** Mixing them causes drift
 (spec: `papercusp-su-memory-2026-05-25`).
 
+> **⚠ mem0 is currently unpopulated — don't rely on it for recall (2026-06-05).**
+> Measured: `harness_shared.memory_canonical` is empty (the embedder never ran;
+> stillborn since it replaced PLUR), so `memory:search` returns nothing today.
+> The owner **deferred the mem0 integration** ([[docs-and-memory-as-projections-2026-06-05]]
+> D-008) — your durable memory is your **client-native store** (Claude/OMP/Codex
+> file memory) **+ coord** (live) **+ insights** (runbooks). The mem0 guidance
+> below is the *intended* model, retained for when mem0 is revived; until then
+> treat `memory:*` as a no-op for recall.
+
 **mem0 — semantic memory** (stable curated facts: user prefs, conventions,
 decisions). `memory:remember/search/list/forget/update`. Pass `harness_slug`
 for project facts, omit for personal ones (`shared` is deprecated). Write
@@ -396,7 +448,7 @@ next agent an hour (root cause of a confusing failure, a subtle invariant,
 a library quirk). Format: [agent policies §18](/internal/docs/agent-policies#18-agent-insights).
 Short factual rules go in mem0; ephemeral state in coord.
 
-## Coordination: subscribe → ask → file → promote
+## Coordination: subscribe → ask → file
 
 A live **subscribe→inject** substrate (plans `coordination-substrate` /
 `-conversations` / `engineer-issues` / `coordination-integration-adoption`)
@@ -427,10 +479,40 @@ areas and others see what you discover. The loop:
   `issues:close` (resolved/closed) or `issues:promote { harness }` to mint an
   F-FIX feature for the pipeline.
 
-- **Promote up the chain.** A question that turns out to be a real problem →
-  promote the conversation to an issue; an issue worth a tracked fix →
-  `issues:promote` to a feature. Capture the accepted answer on resolve so the
-  next asker gets a knowledge-first hit.
+- **Hit a papercusp friction → capture it (don't let it rot in chat).** When the
+  annoyance is in **papercusp itself** — a DX paper-cut, a missing affordance, a
+  tooling bug you just worked around — file it with **`improvements:capture
+  { kind, title }`** (the self-improvement loop, `papercusp-self-improvement-loop`).
+  It search-firsts (declines an obvious dup → link to it instead, D-001), tags the
+  built-in **`papercusp-improvement`** topic, and records the `kind`: **`bug`**
+  (something broken — becomes auto-implement-eligible) vs **`change`** (a desired
+  improvement) vs **`feature`** (net-new — write a `plans:new` if it needs design).
+  Browse/triage the backlog with **`improvements:digest`**. (This is for papercusp;
+  a problem in a *managed harness* still goes to `issues:create` with that scope.)
+
+- **Default to doing it inline; escalate only when it warrants it.** Strategy is
+  emergent (`project-centric-harness-rethink`) — most discovered work you just do,
+  in the moment. When something is genuinely out of scope, file an issue; when an
+  issue warrants tracked pipeline work, `issues:promote` mints a feature — a tool
+  you reach for, not a mandatory conversation→issue→feature chain. Capture an
+  accepted answer on resolve so the next asker gets a knowledge-first hit.
+
+- **Working a plan item = convert it to a `work_item` first.** A plan item is the
+  durable *request*; a `work_item` is the *execution unit* (kind + assignee +
+  claim/lease + lifecycle). When you pick a plan item up to work it, convert it
+  to a work_item before doing the work — `self`/inline vs a blueprint is just
+  *how* it executes; everything worked is a tracked work_item (no untracked
+  "self" item). (`unify-work-items` / RFC D-015.)
+
+- **Don't narrate lifecycle in `coord:send` — the typed ops + events emit it.**
+  Lifecycle auto-emits (`coord-lifecycle-automation`): a `work_item` reaching
+  `done`/`passed` emits its completion *from structured fields* — record the
+  completion (summary · what-landed · migrations · tests · deferred) on the
+  work_item (`work_items:set_state`/`complete`), **not** a prose "DONE + tested…"
+  `coord:send`; a claim emits "taking X"; `coord:declare-intent` emits your focus;
+  resource/restart auto-broadcast. Don't hand-call `coord:emit` (it's the system's
+  channel). **Reserve free-text `coord:send` for the genuinely unpredictable** —
+  design calls, nuanced reasoning, novel coordination.
 
 **Tag topics on everything you create, claim before fixing, and check your
 topic-feed for your areas** — that discipline is what makes the substrate worth
@@ -542,11 +624,13 @@ vestigial fallback, not read on a psu launch.)
   orchestrator but interactive + tracked (`adv_sessions`); it goes through
   `bootstrap-role` (the role's own `<role>.md` prompt + a signed role-scoped
   MCP URL), **not** the SU `bootstrap-su` path or this engineer playbook.
-- **Don't raw-SQL `harness_features` or other schema-canonical tables.**
-  Feature *state* flows through the pipeline (validator/reviewer/…), not a
-  direct SU write verb — `features:*` tools are read-only; the agent-facing
-  write is `messages:send` (feature-scoped via `to_feature_id`). The documented verbs emit audit rows +
-  sync invalidation (SSE / `pg_notify`); raw SQL doesn't.
+- **Don't raw-SQL `harness_features` / `engineer_issues` or other schema-canonical
+  tables.** Work-item state flows through the `work_items:*` verbs
+  (`set_state`/`claim`/`link`/…) — and *feature-pipeline* state advances through
+  the pipeline roles (validator/reviewer/…), not a direct SU write (agent-facing
+  hand-off is `messages:send`, work_item-scoped via `to_feature_id`). The
+  documented verbs emit audit rows + sync invalidation (SSE / `pg_notify`); raw
+  SQL doesn't.
 - **Don't default to polling for live updates — push.** When the operator
   must push events to the app, the default is a push transport keyed to the
   deployment: **IPC events on desktop** (co-located Tauri↔sidecar,

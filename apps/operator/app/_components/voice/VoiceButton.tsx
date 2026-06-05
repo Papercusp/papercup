@@ -8,8 +8,8 @@
  */
 
 import { useEffect, useState, useCallback, useRef, type ReactElement } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
-import { navigateClient } from '@/lib/client-navigation';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Tooltip } from '../../harness/Tooltip';

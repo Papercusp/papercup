@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { toast } from 'sonner';
-import { hardReload } from '@/lib/hard-reload';
+import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 
 /**
  * Surfaces a user-controlled reload when a code-split chunk fails to load.

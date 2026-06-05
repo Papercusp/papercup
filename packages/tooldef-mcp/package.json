@@ -1,5 +1,6 @@
 {
   "name": "@papercusp/tooldef-mcp",
+  "type": "module",
   "version": "0.1.0",
   "private": true,
   "description": "MCP transport bridge primitives for @papercusp/tooldef — the host-agnostic glue between an MCP server (Vercel mcp-handler or any SDK) and the tooldef dispatcher: RequestHandlerExtra extractors + a projected-dispatch→MCP-result mapper. The auth/spawn-context assembly is inherently host-specific and stays in the host (see README).",

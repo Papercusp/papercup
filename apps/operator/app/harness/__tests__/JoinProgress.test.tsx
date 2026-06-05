@@ -19,8 +19,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { JoinProgress } from '../JoinProgress';
-import { JOIN_STEP_IDS } from '../../../lib/harness/join-steps';
-import type { JoinStepState } from '../../../lib/harness/join-steps';
+import { JOIN_STEP_IDS } from '@papercusp/operator-core/lib/harness/join-steps';
+import type { JoinStepState } from '@papercusp/operator-core/lib/harness/join-steps';
 
 afterEach(() => cleanup());
 

@@ -9,7 +9,7 @@
  */
 import * as Dialog from '@radix-ui/react-dialog';
 import RouteLink from './RouteLink';
-import { SHORTCUTS, effectiveCombo, type ShortcutCategory } from '../../lib/shortcut-registry';
+import { SHORTCUTS, effectiveCombo, type ShortcutCategory } from '@papercusp/operator-core/lib/shortcut-registry';
 import { useShortcutOverrides } from '../../lib/hotkeys';
 
 const CATEGORY_LABELS: Record<ShortcutCategory, string> = {

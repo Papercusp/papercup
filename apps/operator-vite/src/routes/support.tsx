@@ -68,7 +68,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
           The <em>brain</em> tab on the harness dashboard shows the last orchestrator decision and the cost-to-date. Two common exit causes:
         </p>
         <ul>
-          <li><strong>Cost cap hit</strong> — default <code>maxCostUsd: 10</code>. Raise in <code>~/.papercusp/projects/&lt;name&gt;/.harness/config.json</code> and re-run.</li>
+          <li><strong>Cost cap hit</strong> — default <code>maxCostUsd: 10</code>. Raise in <code>~/.papercusp/projects/&lt;name&gt;/.papercusp/config.json</code> and re-run.</li>
           <li><strong>Validator rejection loop</strong> — same feature failing 3 attempts. The dashboard shows the failed feature in red; click it to see validator output and either refine the owning plan (its items / acceptance criteria) or accept the proposal manually.</li>
         </ul>
         <p>For deeper debugging, the embedded <em>pi</em> tab (omp terminal) lets you ask the harness questions directly.</p>
@@ -86,7 +86,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
           You'll need a GitHub identity to publish — run <code>papercusp login</code> first. Your namespace is your GitHub login (e.g. <code>@avi/my-template</code>).
         </p>
         <p>
-          Browse what's already there at the <Link to="/marketplace/templates">templates</Link> and <Link to="/marketplace/plugins">plugins</Link> pages.
+          Browse what's already there in the <Link to="/cupboard">Cupboard</Link>.
         </p>
       </>
     ),

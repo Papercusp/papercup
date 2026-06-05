@@ -57,27 +57,27 @@ export const DEFAULT_DENY: DenyMatcher[] = [
 
   // Snapshot-system reflexive paths — must be excluded or every capture
   // restages prior snapshots into the new one. Especially:
-  //   .harness/snapshots/        previous snapshot tarballs (huge, multiplicative)
-  //   .harness/snapshot-staging/ in-progress capture's own scratch dir
-  //   .harness/logs/             agent_runs JSONL — derived; PG-canonical via harness_agent_runs
-  //   .harness/pi-sessions/      local terminal state; not portable
-  //   .harness/screenshots/      operator-captured PNGs; large + machine-local
-  { pattern: '.harness/snapshots/', reason: 'denylist:reflexive-snapshot-output' },
-  { pattern: '.harness/snapshot-staging/', reason: 'denylist:reflexive-snapshot-staging' },
-  { pattern: '.harness/logs/', reason: 'denylist:re-derivable' },
-  { pattern: '.harness/pi-sessions/', reason: 'denylist:per-machine-ephemeral' },
-  { pattern: '.harness/screenshots/', reason: 'denylist:per-machine-ephemeral' },
+  //   .papercusp/snapshots/        previous snapshot tarballs (huge, multiplicative)
+  //   .papercusp/snapshot-staging/ in-progress capture's own scratch dir
+  //   .papercusp/logs/             agent_runs JSONL — derived; PG-canonical via harness_agent_runs
+  //   .papercusp/pi-sessions/      local terminal state; not portable
+  //   .papercusp/screenshots/      operator-captured PNGs; large + machine-local
+  { pattern: '.papercusp/snapshots/', reason: 'denylist:reflexive-snapshot-output' },
+  { pattern: '.papercusp/snapshot-staging/', reason: 'denylist:reflexive-snapshot-staging' },
+  { pattern: '.papercusp/logs/', reason: 'denylist:re-derivable' },
+  { pattern: '.papercusp/pi-sessions/', reason: 'denylist:per-machine-ephemeral' },
+  { pattern: '.papercusp/screenshots/', reason: 'denylist:per-machine-ephemeral' },
   // Autonomous expert runtime state — per-run logs and dispatch locks.
   // Per-machine and rebuilt on the next dispatch; never useful to a
   // forker. The role definitions live in the harness package's
   // `prompts/` (which DOES ride). Manual chat-driven expert directories
-  // `.harness/experts/EXP-NNN/` are NOT excluded — those carry authored
+  // `.papercusp/experts/EXP-NNN/` are NOT excluded — those carry authored
   // content (identity.json, SPEC.md, feedback rounds).
-  { pattern: '.harness/experts/runs/', reason: 'denylist:per-machine-ephemeral' },
-  { pattern: '.harness/expert-prompts/', reason: 'denylist:per-machine-ephemeral' },
+  { pattern: '.papercusp/experts/runs/', reason: 'denylist:per-machine-ephemeral' },
+  { pattern: '.papercusp/expert-prompts/', reason: 'denylist:per-machine-ephemeral' },
   // Branch-action runtime state — per-run logs and metadata for the
   // /actions UI. Re-derivable on next run; not portable.
-  { pattern: '.harness/action-runs/', reason: 'denylist:per-machine-ephemeral' },
+  { pattern: '.papercusp/action-runs/', reason: 'denylist:per-machine-ephemeral' },
 
   // Secrets — never
   { pattern: '.env', reason: 'denylist:secret' },
@@ -109,9 +109,9 @@ export const DEFAULT_DENY: DenyMatcher[] = [
 
 export const OPT_IN_INCLUDE: DenyMatcher[] = [
   { pattern: '.git/', reason: 'opt-in:git-history' },
-  // agent_chats.transcript lives under `.harness/agent_chats/` typically
+  // agent_chats.transcript lives under `.papercusp/agent_chats/` typically
   { pattern: 'agent_chats.transcript', reason: 'opt-in:agent-transcripts' },
-  { pattern: '.harness/notes/', reason: 'opt-in:operator-notes' },
+  { pattern: '.papercusp/notes/', reason: 'opt-in:operator-notes' },
 ];
 
 /** Returns the matching DenyMatcher (or null) for a given relative path. */
@@ -133,11 +133,11 @@ function matches(path: string, pattern: string): boolean {
   // recurse into 100s of MB of node_modules even though every individual
   // file inside would later match. That makes saves take minutes.
   if (pattern.endsWith('/')) {
-    const bare = pattern.slice(0, -1);          // 'node_modules' or '.harness/snapshots'
+    const bare = pattern.slice(0, -1);          // 'node_modules' or '.papercusp/snapshots'
     // "Anchored" if pattern has internal '/' (a path-prefix shape).
     const isAnchored = bare.includes('/');
     if (isAnchored) {
-      // '.harness/snapshots/' — match exact path-prefix only.
+      // '.papercusp/snapshots/' — match exact path-prefix only.
       return path === bare || path.startsWith(pattern);
     }
     // Bare name like 'node_modules/' — match anywhere in the tree, including
@@ -185,7 +185,7 @@ export function effectiveDenylist(opts: CaptureOptions = {}): DenyMatcher[] {
   for (const m of OPT_IN_INCLUDE) {
     if (m.pattern === '.git/' && opts.includeGit) continue;
     if (m.pattern === 'agent_chats.transcript' && opts.includeAgentTranscripts) continue;
-    if (m.pattern === '.harness/notes/' && opts.includeOperatorNotes) continue;
+    if (m.pattern === '.papercusp/notes/' && opts.includeOperatorNotes) continue;
     out.push(m);
   }
   return out;

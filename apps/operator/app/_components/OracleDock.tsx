@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -56,7 +56,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from '@/lib/router-compat/navigation';
-import { getOrCreateClientId } from '@/lib/ui/client-id';
+import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
 
 gsap.registerPlugin(useGSAP);
 

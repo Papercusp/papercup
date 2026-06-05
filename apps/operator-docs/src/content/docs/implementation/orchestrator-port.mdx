@@ -32,7 +32,7 @@ New package `@papercusp/orchestrator` at `libs/papercusp/packages/orchestrator/`
 | 2c. NEXT_WORKER + NEXT_VALIDATOR | ✅ | 80 | sequential path; debugger threshold pre-check; `setFeatureStatus in_progress` |
 | 2c+. 7 trivial branches | ✅ | 85 | NEXT_TESTER / NEXT_SECURITY / GENERATE_TESTS / NEXT_MONITOR / CONVERTED / FEATURE_FREEZE / RUN_TESTS |
 | 3. Branch-iso + worktree subsystem | ✅ | 89 | `git.ts` wrapper; `branchIsoPreWorker` / `PostWorker` / `PreValidator` / `PostValidator` with on-pass merge / keep / pr; `worktreeReset` |
-| 4a. User hooks | ✅ | 95 | `runHook` fires `.harness/hooks/<name>.sh` at pre/post-worker, pre/post-validator, on-smoke-pass/fail, on-escalate, on-checkpoint-fired |
+| 4a. User hooks | ✅ | 95 | `runHook` fires `.papercusp/hooks/<name>.sh` at pre/post-worker, pre/post-validator, on-smoke-pass/fail, on-escalate, on-checkpoint-fired |
 | 4b. NEXT_ARCHITECT (PATCH/REVIEW) | ✅ | 99 | parses architect verdict line; PATCH → `setFeatureStatus todo + resetAttempts`; REVIEW → blocked + `notify review-pending` |
 | 4c. Terminal-verb polish | ✅ | 100 | ESCALATE exit code 3 (was 9, fixed), runs curator before exit; CHECKPOINT writes file body; READY_FOR_PROD writes flag; IDLE 30s sleep with sleepFn override |
 | 4d. NEXT_HARNESS (cross-harness) | ✅ | 100 | POST `localhost:3001/api/harness/<slug>/invoke?role=<role>`; on failure walks `~/.restart-harness-projects.json` and recurses bash run.sh with `MAX_ITERATIONS=1` |
@@ -70,7 +70,7 @@ libs/papercusp/packages/orchestrator/
 ├── src/main-loop.ts          + .test  # the iteration loop + dispatcher
 ├── src/git.ts                         # spawnSync('git') wrapper
 ├── src/branch-iso.ts         + .test  # branch/worktree pre/post hooks
-├── src/hooks.ts              + .test  # user-defined .harness/hooks/*.sh runner
+├── src/hooks.ts              + .test  # user-defined .papercusp/hooks/*.sh runner
 ├── src/actions-block.ts      + .test  # CEO-mode action-block POSTer
 ├── src/cost-cap.ts           + .test  # sumJsonlCost / evaluateCostCap
 ├── src/prune-logs.ts         + .test  # logRetention pruner

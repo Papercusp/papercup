@@ -15,10 +15,11 @@
  */
 
 import type { CSSProperties, ReactNode } from 'react';
-import {
-  ClaimStatusBadge,
-  type ClaimStatus,
-} from '../../_components/ClaimStatusBadge';
+import { ClaimStatusBadge } from '../../_components/ClaimStatusBadge';
+import type {
+  ProjectCardLanguage,
+  ProjectCardProps,
+} from '@papercusp/operator-core/lib/harness-insights/card-types';
 
 const CARD: CSSProperties = {
   border: '1px solid var(--border, #2a2a2a)',
@@ -136,50 +137,7 @@ function relativeTime(iso: string): string {
   return 'just now';
 }
 
-export interface ProjectCardLanguage {
-  name: string;
-  /** Hex color matching the language. */
-  color: string;
-  /** Percentage 0-100. Used to size visual weight; not rendered here. */
-  percent: number;
-}
-
-export interface ProjectCardProps {
-  /** Harness slug or display name. */
-  name: string;
-  /** One-line description, usually from harness config. */
-  description: string;
-  /** Owner's GitHub login (or display name). */
-  ownerDisplayName: string;
-  /** Used to render ClaimStatusBadge in the title row. */
-  claimStatus: ClaimStatus;
-  /** Optional — for status='claimed', the lead claimant login. */
-  claimantLogin?: string | null;
-  /** Repo license short name (e.g. 'MIT', 'Apache-2.0'). */
-  license?: string | null;
-  /** Top 3 languages, ordered by percent desc. */
-  languages?: ProjectCardLanguage[];
-  /** GitHub repo URL. */
-  githubUrl: string;
-  /** Optional — Discord server URL if §11 is set. */
-  discordUrl?: string | null;
-  /** GitHub stars (tier-A — verifiable via the GitHub API). */
-  stars?: number | null;
-  /** GitHub fork count. */
-  forks?: number | null;
-  /** Open issues on GitHub. */
-  openIssues?: number | null;
-  /** ISO timestamp of the repo's last push (GitHub `pushed_at`). */
-  lastActivityIso?: string | null;
-  /** Repo topics (GitHub `topics`), rendered as pills. */
-  topics?: string[];
-  /** Latest GitHub release (tag + publish date), if any. */
-  latestRelease?: {
-    tag: string;
-    publishedAtIso?: string | null;
-    url?: string | null;
-  } | null;
-}
+export type { ProjectCardLanguage, ProjectCardProps };
 
 export function ProjectCard(props: ProjectCardProps): ReactNode {
   const {

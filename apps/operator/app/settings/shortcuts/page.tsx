@@ -18,7 +18,7 @@ import {
   saveOverride,
   resetOverride,
   resetAllOverrides,
-} from '../../../lib/shortcut-registry';
+} from '@papercusp/operator-core/lib/shortcut-registry';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 const CATEGORY_LABELS: Record<ShortcutCategory, string> = {

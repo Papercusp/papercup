@@ -52,15 +52,15 @@ describe('denylist', () => {
     });
     it('with includeAgentTranscripts, transcripts allowed', () => {
       const list = effectiveDenylist({ includeAgentTranscripts: true });
-      expect(matchDeny('.harness/agent_chats/agent_chats.transcript', list)).toBeNull();
+      expect(matchDeny('.papercusp/agent_chats/agent_chats.transcript', list)).toBeNull();
     });
     it('without opt-in, agent transcripts denied', () => {
       const list = effectiveDenylist();
-      expect(matchDeny('.harness/agent_chats/agent_chats.transcript', list)).toBeTruthy();
+      expect(matchDeny('.papercusp/agent_chats/agent_chats.transcript', list)).toBeTruthy();
     });
     it('with includeOperatorNotes, notes allowed', () => {
       const list = effectiveDenylist({ includeOperatorNotes: true });
-      expect(matchDeny('.harness/notes/F-001.md', list)).toBeNull();
+      expect(matchDeny('.papercusp/notes/F-001.md', list)).toBeNull();
     });
   });
 

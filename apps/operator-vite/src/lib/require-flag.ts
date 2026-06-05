@@ -13,9 +13,9 @@ import { getFlagSnapshot, loadFlags } from '@papercusp/flags/client';
  * real client-side fetch (`loadFlags()`) — the same path `useFlag()` uses.
  * So the gate becomes a TanStack Router `beforeLoad` hook:
  *
- *   export const Route = createFileRoute('/marketplace/')({
- *     beforeLoad: () => requireFlag(FLAGS.MARKETPLACE),
- *     component: MarketplaceHomeClient,
+ *   export const Route = createFileRoute('/snapshots/')({
+ *     beforeLoad: () => requireFlag(FLAGS.SNAPSHOTS),
+ *     component: SnapshotsClient,
  *   });
  *
  * Behavior parity with the Next gate:

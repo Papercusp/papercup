@@ -121,7 +121,7 @@ P-056..P-060 all MISSING. `packages/holepunch-substrate` doesn't exist; only `li
 
 ### Phase 11 — multi-engineer dogfood (`phase11` -24 → -26)  — wiring real (gated off), milestone not done
 - -24 correctly `status: superseded`; -26 `status: active`. -26 renumbered (P-061..065 → P-077..081).
-- P-078 swarm wiring: IMPLEMENTED but **gated OFF + starved** — `joinHarnessSwarm` + boot honors `swarmBinding` + `boot-all` reads `.harness/shared.json`; unit-tested incl. real 2-store Autobase replication via piped streams.
+- P-078 swarm wiring: IMPLEMENTED but **gated OFF + starved** — `joinHarnessSwarm` + boot honors `swarmBinding` + `boot-all` reads `.papercusp/shared.json`; unit-tested incl. real 2-store Autobase replication via piped streams.
 - P-077 bind papercup as first shared harness: STUB/MISSING — ShareWizard `/share/finalize` route DOESN'T EXIST; `runBackfill` is a 200ms no-op; nothing sets `state:'shared-private'` → `defaultResolveSwarmBinding` always returns null → every harness boots `swarm: null`.
 - P-079 cross-machine smoke / P-080 soak / P-081 gate+D-001: MISSING (manual; never run). P-062 stress script / P-063 F-DOGFOOD-002 capture / P-064 onboarding doc / P-065 cupboard-publish: MISSING.
 - **Verdict:** "cross-machine replication wiring SHIPPED" holds at the code level (real + tested in isolation), but it's off by default, never verified cross-machine, and the share→shared.json→boot-binding chain is broken at the missing finalize route. The milestone is not done.

@@ -1,0 +1,29 @@
+{
+  "//": "Papercusp worker hooks as a Claude plugin (papercusp-worker-integration-2026-06-04, D-005). These reference the worker hook scripts at their stable installed location (~/.papercusp/hooks/cc/, populated by install-standalone-mcp.sh) — the plugin is a thin wiring convenience over the installed worker, NOT a standalone bundle (the scripts need a running operator + ~/.papercusp). All hooks self-gate on PAPERCUSP_SID + fail open. The activity-report hook is the cross-CLI activity bridge.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/pretooluse-locks-acquire.sh" }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/pretooluse-bash-resource-gate.sh" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttooluse-locks-release.sh" }]
+      },
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttooluse-coord-inbox.sh" }]
+      },
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttooluse-activity-report.sh" }]
+      }
+    ]
+  }
+}

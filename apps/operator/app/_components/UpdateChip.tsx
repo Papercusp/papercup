@@ -25,7 +25,7 @@ import {
   checkForUpdate,
   installUpdate,
   isDesktop,
-} from '../../lib/version-tauri';
+} from '@papercusp/operator-core/lib/version-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h

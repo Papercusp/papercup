@@ -21,7 +21,7 @@
 #   409: { ok: false, error: 'lock-held', existingExpertId, existingStartedAt }
 #
 # Watch the run via:
-#   tail -f ~/<project>/.harness/experts/runs/<role>-<expertId>.log
+#   tail -f ~/<project>/.papercusp/experts/runs/<role>-<expertId>.log
 # Or open the operator UI's "Recent actions" panel.
 set -euo pipefail
 
@@ -117,7 +117,7 @@ for p in d['projects']:
     if p['slug'] == '$slug':
         print(p['path']); break" 2>/dev/null)
         if [[ -n "$proj_path" ]]; then
-          echo "  tail -F '$proj_path/.harness/experts/runs/$role-$expert_id.log'"
+          echo "  tail -F '$proj_path/.papercusp/experts/runs/$role-$expert_id.log'"
         fi
       fi
       echo "  curl -sS '$operator_url/api/user-actions/$slug?limit=5' | jq '.actions[] | select(.kind == \"expert.dispatch\")'"

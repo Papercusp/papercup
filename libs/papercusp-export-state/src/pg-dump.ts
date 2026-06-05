@@ -131,6 +131,16 @@ export async function copyFilteredSharedTables(args: {
   const written: { table: string; outPath: string; rowCount: number }[] = [];
   try {
     for (const entry of includedSharedTables()) {
+      // Skip include tables not present on this DB — e.g. a table whose migration
+      // hasn't landed yet (work_items, distribution P-005, lands as
+      // harness_shared.work_items). Without this the COPY below throws and aborts
+      // the entire capture; an absent table is a recorded no-op, not a hard fail.
+      const reg = await sql`SELECT to_regclass(${`harness_shared.${entry.table}`}) AS oid`;
+      if (!reg[0]?.oid) {
+        // eslint-disable-next-line no-console
+        console.warn(`[snapshot] skipping shared table harness_shared.${entry.table}: not present on this DB`);
+        continue;
+      }
       const where = entry.filter(args.slug);
       const outPath = join(args.destDir, `shared-${entry.table}.csv`);
       const copySql = `COPY (SELECT * FROM harness_shared.${entry.table} WHERE ${where}) TO STDOUT WITH (FORMAT csv, HEADER)`;

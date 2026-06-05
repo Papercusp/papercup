@@ -1,1 +1,0 @@
-[2026-06-03T21:39:15Z] merge-resolver -: vitest.config env conflict (node vs jsdom) — take jsdom when the incoming side adds renderHook/DOM tests (superset; node tests still pass) AND retain local keys like server.fs.strict; additive index.ts export-list collisions integrate by unioning both export lines.

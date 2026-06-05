@@ -14,7 +14,7 @@ The Phase 2 P-016 plan said:
 
 Reasonable wording — until you read the actual `harness_escalations`
 schema. It's a per-`(harness_slug, phase)` mirror of
-`.harness/escalation.md` + `.harness/supervisor-notes.md`. **One row per
+`.papercusp/escalation.md` + `.papercusp/supervisor-notes.md`. **One row per
 phase, not one row per event.** There's no `kind` column. There's no
 event-id column. It's a file-content cache, not an event queue.
 

@@ -22,7 +22,7 @@ import { useQueryState, parseAsBoolean } from 'nuqs';
 import '@xterm/xterm/css/xterm.css';
 import { Loader2 } from 'lucide-react';
 import { Tooltip } from './Tooltip';
-import { isTauriNative, openNativeSession, type NativeSession } from '../../lib/pty-tauri';
+import { isTauriNative, openNativeSession, type NativeSession } from '@papercusp/operator-core/lib/pty-tauri';
 import './PiPanel.css';
 // xterm packages reference `self` at module-load (WebGL context probe,
 // canvas factory). Static-importing them breaks Next.js SSR — even

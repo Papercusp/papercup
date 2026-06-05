@@ -1,0 +1,28 @@
+/**
+ * plan_items:* tool group — plan-item assignment / claim / liveness.
+ *
+ * Plan: plan-item-assignment-claim-liveness-2026-06-04.
+ *
+ * Side-effect imports register each tool (defineTool self-registers on import), and
+ * we install the swarm-backed claim authority so claim leases ride the per-harness
+ * lock authority (Track B) in production (tests of the stores keep the pure local
+ * default). We also register the AUTHORITY-side claim op handlers
+ * (plan-item.claim.*), so when THIS operator is the elected authority it can execute
+ * claim ops routed from remote peers (Phase-4 legs b/c — two-peer contention +
+ * failover). Both are idempotent.
+ */
+import './adopt-name';
+import './assign';
+import './unassign';
+import './my-items';
+import './claim';
+import './release';
+import './heartbeat';
+import './status';
+import './join-group';
+import './leave-group';
+import { installSwarmClaimAuthority } from '../../plan-items/claim-authority-swarm';
+import { registerPlanItemClaimAuthorityOps } from '../../plan-items/plan-item-claim-authority-ops';
+
+installSwarmClaimAuthority();
+registerPlanItemClaimAuthorityOps();

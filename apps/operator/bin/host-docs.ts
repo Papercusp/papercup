@@ -18,7 +18,7 @@
 import { Hono } from 'hono';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
-import { isLoopbackHost } from '../lib/endpoint-route/loopback-guard';
+import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
 
 /**
  * Starlight docs root. `__dirname`-relative in dev (host run via `tsx`);

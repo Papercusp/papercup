@@ -38,8 +38,8 @@ sidebar:
 
 ### 4. config.json merge failed
 
-- **Symptom**: `internal { detail: "failed to write .harness/config.json: ..." }`.
-- **State**: `papercusp init` succeeded, dir exists, but `.harness/config.json` may be partially written.
+- **Symptom**: `internal { detail: "failed to write .papercusp/config.json: ..." }`.
+- **State**: `papercusp init` succeeded, dir exists, but `.papercusp/config.json` may be partially written.
 - **Recovery**: same as case 3.
 
 ### 5. Schema scaffold failed
@@ -53,7 +53,7 @@ sidebar:
   PGUSER=postgres_app PGPASSWORD=postgres PGHOST=localhost PGDATABASE=papercusp \
     bash bin/scaffold-harness-schema.sh <slug>
   # Then re-mirror the token:
-  TOKEN=$(jq -r .harness_token <projectPath>/.harness/config.json)
+  TOKEN=$(jq -r .harness_token <projectPath>/.papercusp/config.json)
   PGUSER=postgres_app PGPASSWORD=postgres psql -d papercusp -c \
     "INSERT INTO harness_<slug>.config_token (token) VALUES ('$TOKEN') ON CONFLICT DO NOTHING;
      INSERT INTO harness_shared.token_index (token, harness_slug) VALUES ('$TOKEN', '<slug>') ON CONFLICT (token) DO NOTHING;"

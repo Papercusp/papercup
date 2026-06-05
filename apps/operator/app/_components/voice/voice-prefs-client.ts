@@ -12,7 +12,7 @@
  * `setVoicePrefsClient` for that path).
  */
 
-import type { VoicePrefs } from '../../../lib/voice-prefs';
+import type { VoicePrefs } from '@papercusp/operator-core/lib/voice-prefs';
 
 const DEFAULT_CLIENT_PREFS: VoicePrefs = {
   speakSuggestions: true,

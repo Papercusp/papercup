@@ -22,7 +22,7 @@
  */
 import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
-import { getHarnessAdminUrl } from '../lib/embedded-pg-discovery';
+import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
 
 const MIGRATION_PATH =
   '/home/marsh-office/papercupai-workspace/papercup/libs/papercusp/libs/db/sql/078-emit-change-notify.sql';

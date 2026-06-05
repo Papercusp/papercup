@@ -4,8 +4,9 @@
 
 export const FLAGS = {
   SNAPSHOTS: "papercusp-snapshots",
-  TEMPLATES: "papercusp-templates",
-  MARKETPLACE: "papercusp-marketplace",
+  // TEMPLATES + MARKETPLACE retired (revive-cupboard-distribution D-004): the
+  // legacy :3057 marketplace + /templates routes/UI are deleted; distribution
+  // lives in the (ungated) Cupboard.
   CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
   ORACLE: "papercusp-oracle",
   RUST_PORT_UI: "papercusp-rust-port-ui",
@@ -17,14 +18,23 @@ export const FLAGS = {
   // the human can answer it live OR later from the inbox; either path resolves
   // the same record. Default off — the live ctx.askUser path is unchanged.
   INBOX_DURABLE_ESCALATIONS: "papercusp-inbox-durable-escalations",
+  // papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008): the
+  // master switch for AUTO-implementing captured improvements. When OFF (default),
+  // the improvement-implement routine is a no-op — capture (Phase 1) + triage
+  // (Phase 2) run, but nothing is auto-built. Flip ON only once the work_items
+  // surface + the release-gate cutover have landed (the routine spawns the
+  // implementer in a dedicated runner harness and lands via the release gate).
+  IMPROVEMENT_AUTO_IMPLEMENT: "papercusp-improvement-auto-implement",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
 
 export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
-  [FLAGS.SNAPSHOTS]: false,
-  [FLAGS.TEMPLATES]: false,
-  [FLAGS.MARKETPLACE]: false,
+  // Snapshots are ON by default: they are the Cupboard's `kind=snapshot`
+  // fork-source (revive-cupboard-distribution-2026-06-04 P1 / D-002). Capture +
+  // local instantiate are verified working; the prod CF-worker deploy + the live
+  // PostHog flip on the shared service stay federation-owner actions.
+  [FLAGS.SNAPSHOTS]: true,
   [FLAGS.CLOUDFLARE_PUBLISH]: false,
   [FLAGS.ORACLE]: false,
   [FLAGS.RUST_PORT_UI]: false,
@@ -32,6 +42,9 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.DESIGN]: false,
   [FLAGS.TESTING]: false,
   [FLAGS.INBOX_DURABLE_ESCALATIONS]: false,
+  // OFF by default — the self-improvement loop captures + triages with this off;
+  // auto-implementation only begins once an owner flips it (see the flag note above).
+  [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

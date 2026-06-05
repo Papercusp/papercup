@@ -136,7 +136,7 @@ A `running` row from a prior operator process is **always** zombied at restart (
 | ------------------- | --------------------------------------------------------------------- |
 | `harnessDir`        | `PAPERCUSP_HARNESS_DIR` env var, falls back to `~/autonomous-harness` |
 | `projectDir`        | From the caller's tool ctx (resolved via `loadHarnessRegistry()`)     |
-| `stateDir`          | `<projectDir>/.harness`                                               |
+| `stateDir`          | `<projectDir>/.papercusp`                                             |
 | `phase`             | Read from `<stateDir>/config.json` — defaults to `'staging'`          |
 | `claudeCmd`         | `AGENT_CMD` env, then `CLAUDE` env, then `'omp -p'` default           |
 | `agentBackend`      | `'omp'`                                                               |

@@ -10,7 +10,7 @@ beforeAll(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-fs-test-'));
   await fs.mkdir(path.join(tmpDir, 'docs'), { recursive: true });
   await fs.mkdir(path.join(tmpDir, 'docs', 'features'), { recursive: true });
-  await fs.mkdir(path.join(tmpDir, '.harness'), { recursive: true });
+  await fs.mkdir(path.join(tmpDir, '.papercusp'), { recursive: true });
 
   await fs.writeFile(
     path.join(tmpDir, 'SPEC.md'),
@@ -23,7 +23,7 @@ beforeAll(async () => {
     'utf-8',
   );
   await fs.writeFile(
-    path.join(tmpDir, '.harness', 'knowledge.md'),
+    path.join(tmpDir, '.papercusp', 'knowledge.md'),
     '# Knowledge\n\nCurated notes.\n',
     'utf-8',
   );

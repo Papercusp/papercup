@@ -26,7 +26,7 @@ import { createPortal } from 'react-dom';
 import { Boxes } from 'lucide-react';
 import { toast } from 'sonner';
 import { Tooltip } from '../../harness/Tooltip';
-import { listWorkspaces, type Workspace } from '../../../lib/workspaces-tauri';
+import { listWorkspaces, type Workspace } from '@papercusp/operator-core/lib/workspaces-tauri';
 
 interface Props {
   slug: string;

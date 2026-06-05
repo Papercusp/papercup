@@ -95,7 +95,7 @@
     },
     "ui": {
       "type": "array",
-      "description": "UI surface contributions. Each entry is a top-level pane/tab the operator renders. v1 supports React (in-bundle component) and iframe (sandboxed; loaded from plugin dir).",
+      "description": "UI surface contributions. Each entry is a top-level pane/tab a host renders. v1 hosts: React (in-bundle component) and iframe (sandboxed) on desktop; tui-pane in the pui (terminal).",
       "items": {
         "type": "object",
         "properties": {
@@ -103,9 +103,10 @@
             "type": "string",
             "enum": [
               "react",
-              "iframe"
+              "iframe",
+              "tui-pane"
             ],
-            "description": "react = in-bundle component (default for back-compat). iframe = sandboxed iframe (Batch H)."
+            "description": "react = in-bundle component (default for back-compat). iframe = sandboxed iframe (Batch H). tui-pane = a terminal pane the pui opens via zellij, running `command` (revive-plugin-system D-002)."
           },
           "slug": {
             "type": "string"
@@ -126,6 +127,13 @@
               "type": "string"
             },
             "description": "Origins the iframe is allowed to top-navigate to. Honored by the iframe:navigate cap gate."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "argv to run in the pui's zellij pane. Required when type='tui-pane'. command[0] must be a PATH basename (or absolute path) the plugin holds `compute:exec:<command[0]>` for; runs with cwd = the plugin's install dir. Example: [\"sh\", \"render.sh\"]."
           }
         },
         "required": [

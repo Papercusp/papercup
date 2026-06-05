@@ -1,0 +1,3 @@
+[2026-06-03T21:39:15Z] merge-resolver -: vitest.config env conflict (node vs jsdom) — take jsdom when the incoming side adds renderHook/DOM tests (superset; node tests still pass) AND retain local keys like server.fs.strict; additive index.ts export-list collisions integrate by unioning both export lines.
+[2026-06-04T16:07:32Z] advocate -: const/let decision — advocate against "safe" declarations that lock intent; code evolves, so starting permissive (let) costs nothing but gains flexibility; restrictive declarations create friction when they're proven wrong.
+[2026-06-04T23:54:50Z] advocate -: const-vs-let vote — const only prevents reassignment not mutation; teams that default to const universally often skip Readonly<T>/readonly type discipline for reference types

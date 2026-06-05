@@ -17,7 +17,7 @@ Single endpoint, slug-less, dispatched by `action.op`. NOT mounted under `/api/h
 **Token issuance:**
 - Generated at scaffold time: 256-bit random, base64url-encoded
 - Stored in three places, all written together:
-  1. `<harness-dir>/.harness/config.json:harness_token` (mode 0600)
+  1. `<harness-dir>/.papercusp/config.json:harness_token` (mode 0600)
   2. `harness_<slug>.config_token` (one row per harness)
   3. `harness_shared.token_index` (token → harness_slug for O(1) lookup)
 - Generated once per harness; **rotation is out of scope for v1**
@@ -120,7 +120,7 @@ Effects:
   - On non-zero exit: rollback partial directory; return `internal` with stderr.
 - After init succeeds:
   - Write `SPEC.md` from request body (north-star goal + technical scope; if both `spec` and `goal` are passed, `goal` is prepended).
-  - Atomically merge `parent_slug: derivedCallingHarness` into `<projectDir>/.harness/config.json`.
+  - Atomically merge `parent_slug: derivedCallingHarness` into `<projectDir>/.papercusp/config.json`.
   - Generate `harness_token`, write to same config.json (chmod 0600).
   - Call internal harness-projects registration (provisions per-harness PG schema, creates `config_token` + `token_index` rows).
 - On partial scaffold (init succeeded, register failed): error response includes `partialPath` so the caller can retry with same `actionId`.

@@ -25,7 +25,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '@/app/harness/Modal';
-import { launchAgent } from '@/lib/launch-agent';
+import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import {
   addPlanDecision,
   addPlanItem,

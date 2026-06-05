@@ -1,6 +1,6 @@
 ---
 title: Harness Tests-tab domains are harness-owned, not operator-hardwired
-description: The harness Tests tab's domain nav comes from the harness's OWN contract at <worktree>/.harness/testing-domains.json (served by GET /api/harness/:slug/testing/domains), falling back to the generic generalized+Acceptance set. Do not special-case a harness in operator code. Also — harness endpoints resolve against reg.current (the global active workspace), so a CLI curl can silently hit the wrong workspace.
+description: The harness Tests tab's domain nav comes from the harness's OWN contract at <worktree>/.papercusp/testing-domains.json (served by GET /api/harness/:slug/testing/domains), falling back to the generic generalized+Acceptance set. Do not special-case a harness in operator code. Also — harness endpoints resolve against reg.current (the global active workspace), so a CLI curl can silently hit the wrong workspace.
 discovered: 2026-05-31
 tags: [harness, testing, tests-tab, workspace, registry, dogfood, debugging]
 status: active
@@ -22,7 +22,7 @@ The **harness** Tests tab does NOT import that. Each harness declares its own
 test domains in its contract surface:
 
 ```
-<worktree>/.harness/testing-domains.json   ->  { domains: TestDomain[], tierLabels?: {} }
+<worktree>/.papercusp/testing-domains.json   ->  { domains: TestDomain[], tierLabels?: {} }
 ```
 
 served by `GET /api/harness/:slug/testing/domains`
@@ -35,13 +35,13 @@ frontend fetches that route for its nav; it does not import a static registry.
 The wrong fix (rejected) was `isSelfHarness(slug) ? adminRegistry : …` wired
 into the view/route. That hard-wires the operator's internal registry into a
 harness surface. The right place for a harness's test config is the harness's
-own `.harness/` contract — the same surface where `tests.json` (tester-created
+own `.papercusp/` contract — the same surface where `tests.json` (tester-created
 tests) lives. To give a harness more domains, write its
-`.harness/testing-domains.json`; don't edit operator code.
+`.papercusp/testing-domains.json`; don't edit operator code.
 </Aside>
 
 The **papercup dogfood harness** (its worktree IS the operator repo) ships a
-`.harness/testing-domains.json` **generated from `adminRegistry`** (so there's
+`.papercusp/testing-domains.json` **generated from `adminRegistry`** (so there's
 no hand-maintained drift) — that's why its Tests tab shows all 22 domains while
 a generic harness shows the sparse generalized tier + Acceptance. Regenerate it
 the same way (load `adminRegistry` + the Acceptance domain, serialize) if the

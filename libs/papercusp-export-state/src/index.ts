@@ -48,6 +48,15 @@ export {
   dbCapture,
 } from './pg-dump';
 export {
+  buildSnapshotIndexRow,
+  upsertSnapshotIndexRow,
+  listSnapshotIndex,
+  getSnapshotIndexRow,
+  deleteSnapshotIndexRow,
+  type SnapshotIndexRow,
+  type SnapshotPublishRecord,
+} from './snapshot-index';
+export {
   stageProjectFiles,
   stageHarnessSubset,
   SnapshotTooLargeError,

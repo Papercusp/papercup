@@ -62,7 +62,7 @@ const result = await tool.fn(
     spawn: pluginSpawnImpl,
     secret: secretImpl,
     projectDir: '/some/project',
-    stateDir: '/some/project/.harness',
+    stateDir: '/some/project/.papercusp',
   },
 );
 ```

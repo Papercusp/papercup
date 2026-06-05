@@ -6,8 +6,8 @@ import {
   harnessTestingRegistry,
   HARNESS_TESTING_TIER_LABELS,
   ACCEPTANCE_DOMAIN_ID,
-} from '@/lib/harness-testing-registry';
-import { type TestDomain } from '@/lib/testing-domains';
+} from '@papercusp/operator-core/lib/harness-testing-registry';
+import { type TestDomain } from '@papercusp/operator-core/lib/testing-domains';
 import { TESTING_CUSTOM_TABS } from '@/app/admin/testing/testing-custom-tabs';
 import { makeHarnessTestingDataSource } from './harness-testing-data-source';
 import AcceptancePanel from './AcceptancePanel';
@@ -18,7 +18,7 @@ import AcceptancePanel from './AcceptancePanel';
  * `TESTING_CUSTOM_TABS`), just DRIVEN FROM THE HARNESS CONFIG instead of the
  * admin-global one:
  *
- *   - nav comes from the harness's own `.harness/testing-domains.json`
+ *   - nav comes from the harness's own `.papercusp/testing-domains.json`
  *     (GET /api/harness/:slug/testing/domains; falls back to the generic
  *     generalized+Acceptance set), not a hard-wired operator registry;
  *   - the file-list domains read through `makeHarnessTestingDataSource(slug)`

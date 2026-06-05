@@ -25,9 +25,9 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { hashPlanContent, parsePlan } from '@papercusp/plan-parser';
-import { resolveHarnessPlansDir } from '../../lib/agent-tools/plans/source';
-import { loadHarnessRegistry } from '../../lib/harness-registry';
-import { DEFAULT_WORKSPACE_ID } from '../../lib/workspace-registry';
+import { resolveHarnessPlansDir } from '@papercusp/operator-core/lib/agent-tools/plans/source';
+import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
+import { DEFAULT_WORKSPACE_ID } from '@papercusp/operator-core/lib/workspace-registry';
 
 /**
  * Read plan `.md` files straight off disk (live + archive). The backfill is

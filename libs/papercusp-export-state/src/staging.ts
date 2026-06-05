@@ -129,11 +129,11 @@ async function walk(
 }
 
 /**
- * Copies `<projectDir>/.harness/<subset>` into `<staging>/state/harness/`,
+ * Copies `<projectDir>/.papercusp/<subset>` into `<staging>/state/harness/`,
  * then computes the union of paths captured.
  *
  * §15.4 — `state/harness/` carries `notes/`, `memory/`, `proposals/`,
- * `plan-review.md`, `validation-contract.md`. Other `.harness/` content
+ * `plan-review.md`, `validation-contract.md`. Other `.papercusp/` content
  * (snapshots staging, runs/) is excluded by the main denylist already.
  */
 export async function stageHarnessSubset(args: {
@@ -142,11 +142,11 @@ export async function stageHarnessSubset(args: {
   capture?: CaptureOptions;
   signal?: AbortSignal;
 }): Promise<StageEntry[]> {
-  const harnessSrc = join(args.projectDir, '.harness');
+  const harnessSrc = join(args.projectDir, '.papercusp');
   const harnessDest = join(args.stagingDir, 'state', 'harness');
   const out: StageEntry[] = [];
 
-  // Subset of .harness/ to capture
+  // Subset of .papercusp/ to capture
   const subsetPatterns = [
     'notes',
     'memory',

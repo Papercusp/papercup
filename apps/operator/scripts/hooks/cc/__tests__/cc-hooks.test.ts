@@ -169,3 +169,176 @@ describe('cc PostToolUse coord-inbox hook — operator-independent paths', () =>
     expect(r.stdout).toBe(''); // and never injects junk
   });
 });
+
+// ── PostToolUse activity-report hook ───────────────────────────────────
+// Operator-independent paths only: the psu-session + install gates, the
+// fail-open contract, and the non-blocking (detached) guarantee. The live
+// report→agent_activity path needs a running operator and is exercised by
+// the activity-tool integration test + the live smoke recorded in the plan.
+const ACTIVITY_HOOK = join(__dirname, '..', 'posttooluse-activity-report.sh');
+const editPayload = {
+  tool_name: 'Edit',
+  tool_input: { file_path: '/x/y.ts', old_string: 'a', new_string: 'b' },
+  tool_use_id: 't',
+  session_id: 's',
+  cwd: '/x',
+};
+
+function runActivity(extraEnv: Record<string, string> = {}, input: string = payload(editPayload), homeDir = home) {
+  const r = spawnSync('bash', [ACTIVITY_HOOK], {
+    input,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PAPERCUSP_SID: '', // cleared unless a test opts in
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // never reach a real operator
+      ...extraEnv,
+    },
+  });
+  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+}
+
+describe('cc PostToolUse activity-report hook — operator-independent paths', () => {
+  it('no PAPERCUSP_SID (not a psu session) → no-op (exit 0, no stdout)', () => {
+    const r = runActivity();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('psu session but not installed (no token) → no-op', () => {
+    const bareHome = fs.mkdtempSync(join(os.tmpdir(), 'acthook-bare-'));
+    const r = runActivity({ PAPERCUSP_SID: 'sid-x' }, payload(editPayload), bareHome);
+    fs.rmSync(bareHome, { recursive: true, force: true });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('SID + token, SYNC mode, operator unreachable → FAIL-OPEN (exit 0, no stdout)', () => {
+    const r = runActivity({ PAPERCUSP_SID: 'sid-sync', PAPERCUSP_ACTIVITY_SYNC: '1' });
+    expect(r.status).toBe(0); // a reporting blip never blocks the tool
+    expect(r.stdout).toBe(''); // and never emits anything onto the tool result
+  });
+
+  it('malformed JSON in SYNC mode → fail-open (exit 0, no stdout)', () => {
+    const r = runActivity({ PAPERCUSP_SID: 'sid-junk', PAPERCUSP_ACTIVITY_SYNC: '1' }, 'not valid json {');
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('detached (default) mode is NON-BLOCKING — returns fast even when the operator would hang', () => {
+    const t0 = Date.now();
+    // An unroutable host would hang a synchronous POST for the full timeout; the
+    // detached path must return near-instantly (it reparents the POST to init).
+    const r = runActivity({ PAPERCUSP_SID: 'sid-detach', PAPERCUSP_OPERATOR_URL: 'http://10.255.255.1:81' });
+    const elapsed = Date.now() - t0;
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(elapsed).toBeLessThan(2500); // proves it did NOT wait on the 3s POST timeout
+  });
+});
+
+// ── Fleet statusline (Claude-only progressive enhancement) ─────────────
+// The render is fixture-driven (PAPERCUSP_STATUSLINE_FIXTURE) so it's testable
+// without a live operator; the fail-open paths must NEVER error.
+const STATUSLINE = join(__dirname, '..', 'statusline-fleet.sh');
+
+function runStatusline(extraEnv: Record<string, string> = {}, homeDir = home) {
+  const r = spawnSync('bash', [STATUSLINE], {
+    input: '{"model":"opus","cwd":"/x"}',
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PAPERCUSP_SID: '',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      ...extraEnv,
+    },
+  });
+  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+}
+
+// ── SessionStart/SessionEnd lifecycle hook ─────────────────────────────
+const LIFECYCLE_HOOK = join(__dirname, '..', 'lifecycle-report.sh');
+
+function runLifecycle(payloadObj: object, extraEnv: Record<string, string> = {}, homeDir = home) {
+  const r = spawnSync('bash', [LIFECYCLE_HOOK], {
+    input: payload(payloadObj),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      PAPERCUSP_SID: '',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      ...extraEnv,
+    },
+  });
+  return { status: r.status, stdout: (r.stdout ?? '').trim() };
+}
+
+describe('cc lifecycle hook — operator-independent paths', () => {
+  it('no PAPERCUSP_SID → no-op (exit 0, no stdout)', () => {
+    const r = runLifecycle({ hook_event_name: 'SessionStart', session_id: 's' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('SessionStart + operator unreachable (SYNC) → fail-open (exit 0, no stdout)', () => {
+    const r = runLifecycle({ hook_event_name: 'SessionStart', source: 'startup', session_id: 's', cwd: '/x' }, { PAPERCUSP_SID: 'su-l', PAPERCUSP_ACTIVITY_SYNC: '1' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('SessionEnd + operator unreachable (SYNC) → fail-open (exit 0)', () => {
+    const r = runLifecycle({ hook_event_name: 'SessionEnd', reason: 'logout', session_id: 's' }, { PAPERCUSP_SID: 'su-l', PAPERCUSP_ACTIVITY_SYNC: '1' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('a non-lifecycle event (PreToolUse) is ignored — exit 0, no report', () => {
+    const r = runLifecycle({ hook_event_name: 'PreToolUse', tool_name: 'Edit' }, { PAPERCUSP_SID: 'su-l', PAPERCUSP_ACTIVITY_SYNC: '1' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+});
+
+describe('cc fleet statusline — render + fail-open', () => {
+  it('renders peers + the newest PEER action (excluding my own activity)', () => {
+    const fixture = join(cache, 'sl-fixture.json');
+    fs.writeFileSync(fixture, JSON.stringify({
+      activity: [
+        { owner_id: 'su-074be3de', summary: '✎ catalog.ts', kind: 'tool' },
+        { owner_id: 'su-me-self', summary: '▶ npm test', kind: 'tool' },
+        { owner_id: 'su-a6146ddc', summary: '👁 README.md', kind: 'tool' },
+      ],
+      count: 3,
+    }));
+    const r = runStatusline({ PAPERCUSP_SID: 'su-me-self', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('papercusp');
+    expect(r.stdout).toContain('2 peers'); // su-074be + su-a6146, not me
+    expect(r.stdout).toContain('4be3de'); // newest peer's short id
+    expect(r.stdout).toContain('✎ catalog.ts');
+    expect(r.stdout).not.toContain('npm test'); // my own action is excluded
+  });
+
+  it('renders "solo" when only my own activity exists', () => {
+    const fixture = join(cache, 'sl-solo.json');
+    fs.writeFileSync(fixture, JSON.stringify({ activity: [{ owner_id: 'su-only-me', summary: '✎ x.ts', kind: 'tool' }], count: 1 }));
+    const r = runStatusline({ PAPERCUSP_SID: 'su-only-me', PAPERCUSP_STATUSLINE_FIXTURE: fixture });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('papercusp · solo');
+  });
+
+  it('not a psu session → prints nothing (Claude falls back to default), exit 0', () => {
+    const r = runStatusline();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+
+  it('operator unreachable → fail-open empty, exit 0 (never errors the statusline)', () => {
+    const r = runStatusline({ PAPERCUSP_SID: 'su-x' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+  });
+});

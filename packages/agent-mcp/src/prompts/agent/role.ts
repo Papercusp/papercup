@@ -32,8 +32,8 @@ function findPromptsDir(): string | null {
   // check for the dir as a whole.
   const platform = getHostPlatform();
   const candidates = [
-    resolve(__dirname, '../../../../../libs/papercusp/packages/harness/prompts'),
-    resolve(__dirname, '../../../../libs/papercusp/packages/harness/prompts'),
+    resolve(import.meta.dirname, '../../../../../libs/papercusp/packages/harness/prompts'),
+    resolve(import.meta.dirname, '../../../../libs/papercusp/packages/harness/prompts'),
     resolve(process.cwd(), 'libs/papercusp/packages/harness/prompts'),
   ];
   for (const dir of candidates) {

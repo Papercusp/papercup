@@ -16,13 +16,13 @@
 import { Hono } from 'hono';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadHarnessRegistry } from '../lib/harness-registry';
+import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
 
 export const pageRoutes = new Hono();
 
 // ---- /wiki -----------------------------------------------------------------
 
-const SEARCH_DIRS = ['.harness', '', '.claude/skills'] as const;
+const SEARCH_DIRS = ['.papercusp', '', '.claude/skills'] as const;
 
 // Maps known SpecEditor tab ids to the on-disk filenames they edit.
 const TAB_BY_FILENAME: Record<string, string> = {

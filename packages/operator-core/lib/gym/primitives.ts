@@ -1,0 +1,226 @@
+/**
+ * Gym ENGINE-PRIMITIVES surface (harness-blueprint-orchestration-2026-06-03 P-012 /
+ * D-022).
+ *
+ * The gym is now a blueprint (the `gym` built-in), and its roles drive optimization
+ * by calling the gym's primitives. This module is the single, stable import surface
+ * those primitives are re-exposed through — so the `gym:*` agent tools, the A/B
+ * eval-matrix (P-013), and any future gym wiring import from ONE place instead of
+ * reaching into a dozen `lib/gym/*` cores.
+ *
+ * Two things live HERE (not just re-exports), because they are the host-side
+ * resolution the blueprint engine needs by NAME:
+ *
+ *   1. The SIGNAL REGISTRY — `blueprint.gym.signals` is a `string[]` of signal
+ *      names; this resolves each name to its deterministic, un-gameable guardrail
+ *      (`regressionsFromTests`, `plantedBugCaught`) under one uniform interface so
+ *      a target blueprint's declared signals can be evaluated host-side (D-011/D-015).
+ *   2. The RUBRIC MAPPER — `rubricFromBlueprintGym` maps the engine's schema-shaped
+ *      `blueprint.gym.rubric` (loose `GymRubricSchema`) onto the concrete frozen
+ *      `GymJudgeRubric` the judge runs, falling back to `GYM_JUDGE_RUBRIC_V1` per
+ *      field. This is how the judge reads the *target's* rubric (D-022).
+ *
+ * Pure — no I/O, no PG, no LLM. The heavy primitives it re-exports take their
+ * effects injected (an `llmCall`, a `Sql`, runner ports), so this surface stays
+ * unit-testable without the network.
+ */
+import {
+  GYM_JUDGE_RUBRIC_V1,
+  type GymJudgeRubric,
+  type DimensionWeights,
+} from './judge-scoring';
+import { regressionsFromTests, plantedBugCaught, type TestResult } from './signals';
+import type { PlantedBug } from './probe-generator';
+
+// ───────────────────────────── signal registry ─────────────────────────────
+
+/**
+ * Everything a deterministic signal might read about one gym run. Each signal pulls
+ * only the fields it needs and reports `applicable:false` when they are absent —
+ * so a `coding` target (test-based) and a `research` target (output-based) can each
+ * declare the signals that make sense for it without the others erroring.
+ */
+export interface SignalContext {
+  /** The repo's own tests, run BEFORE the harness's change (for regression detection). */
+  preTests?: readonly TestResult[];
+  /** The repo's own tests, run AFTER the harness's change. */
+  postTests?: readonly TestResult[];
+  /** The defect planted in the task (for the planted-bug-caught monitor), if any. */
+  plantedBug?: PlantedBug | null;
+  /** The harness's produced output text (validator/crosscheck verdicts, filed issues). */
+  harnessOutputText?: string;
+}
+
+export interface SignalResult {
+  name: string;
+  /**
+   * The signal's raw boolean. Direction is signal-specific (the gym's gate logic
+   * interprets it): `regressionsFromTests` true = a regression occurred (bad);
+   * `plantedBugCaught` true = the harness caught the defect (good).
+   */
+  value: boolean;
+  /** false when the context lacked the inputs this signal needs — a skip, not a real value. */
+  applicable: boolean;
+}
+
+export type SignalFn = (ctx: SignalContext) => SignalResult;
+
+/**
+ * The host-side resolution of `blueprint.gym.signals` names → evaluators. These are
+ * the un-gameable guardrails (D-011): the optimizer can touch neither the repo's own
+ * tests nor the planted defect, so they are trustworthy monitors, never reward
+ * targets. Add a new deterministic signal here to make it nameable from a blueprint.
+ */
+export const GYM_SIGNAL_REGISTRY: Readonly<Record<string, SignalFn>> = Object.freeze({
+  regressionsFromTests: (ctx) => {
+    if (!ctx.preTests || !ctx.postTests) {
+      return { name: 'regressionsFromTests', value: false, applicable: false };
+    }
+    return { name: 'regressionsFromTests', value: regressionsFromTests(ctx.preTests, ctx.postTests), applicable: true };
+  },
+  plantedBugCaught: (ctx) => {
+    if (!ctx.plantedBug || ctx.harnessOutputText == null) {
+      return { name: 'plantedBugCaught', value: false, applicable: false };
+    }
+    return { name: 'plantedBugCaught', value: plantedBugCaught(ctx.plantedBug, ctx.harnessOutputText), applicable: true };
+  },
+});
+
+/** The signal names a blueprint may reference. */
+export function knownSignals(): string[] {
+  return Object.keys(GYM_SIGNAL_REGISTRY);
+}
+
+export interface ResolvedSignals {
+  resolved: Array<{ name: string; fn: SignalFn }>;
+  /** Names in the blueprint that no registered signal matches (an authoring smell). */
+  unknown: string[];
+}
+
+/** Resolve a blueprint's declared signal names to their evaluators (+ report unknowns). */
+export function resolveSignals(names: readonly string[]): ResolvedSignals {
+  const resolved: Array<{ name: string; fn: SignalFn }> = [];
+  const unknown: string[] = [];
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(GYM_SIGNAL_REGISTRY, name)) {
+      resolved.push({ name, fn: GYM_SIGNAL_REGISTRY[name] });
+    } else {
+      unknown.push(name);
+    }
+  }
+  return { resolved, unknown };
+}
+
+/**
+ * Evaluate a target blueprint's declared signals over one run's context. Unknown
+ * names are reported (not silently dropped) so a typo'd signal in a blueprint
+ * surfaces. The results feed the gym's gate logic + the trace's `signals` summary.
+ */
+export function evaluateSignals(
+  names: readonly string[],
+  ctx: SignalContext,
+): { results: SignalResult[]; unknown: string[] } {
+  const { resolved, unknown } = resolveSignals(names);
+  return { results: resolved.map(({ fn }) => fn(ctx)), unknown };
+}
+
+// ───────────────────────────── rubric mapper ─────────────────────────────
+
+const DEFAULT_DIMS = GYM_JUDGE_RUBRIC_V1.dimensions;
+const DEFAULT_WEIGHTS = GYM_JUDGE_RUBRIC_V1.weights;
+
+/**
+ * The (loose) rubric shape a target's `blueprint.gym.rubric` or an agent may supply —
+ * every field optional; the mapper fills the rest from `GYM_JUDGE_RUBRIC_V1`. A full
+ * `BlueprintGym.rubric` (whose `version` is required) is structurally assignable here.
+ */
+export interface GymRubricInput {
+  version?: string;
+  model?: string;
+  temperature?: number;
+  thinkingBudgetTokens?: number;
+  weights?: Record<string, number>;
+  dimensions?: Record<string, string>;
+}
+
+function pickWeight(w: Record<string, number> | undefined, key: keyof DimensionWeights): number {
+  const v = w?.[key];
+  return typeof v === 'number' && !Number.isNaN(v) ? v : DEFAULT_WEIGHTS[key];
+}
+function pickDim(d: Record<string, string> | undefined, key: 'd1' | 'd2' | 'd3'): string {
+  const v = d?.[key];
+  return typeof v === 'string' && v.length > 0 ? v : DEFAULT_DIMS[key];
+}
+
+/**
+ * Map a target blueprint's (loose, schema-shaped) `blueprint.gym.rubric` onto the
+ * concrete frozen `GymJudgeRubric` the judge runs. Every field falls back to
+ * `GYM_JUDGE_RUBRIC_V1`, so a target that declares only `weights` (or no rubric at
+ * all) still gets a complete, runnable rubric. This is the seam by which the judge
+ * reads the TARGET's rubric (D-022) rather than a gym-side constant.
+ */
+export function rubricFromBlueprintGym(gym: { rubric?: GymRubricInput } | undefined): GymJudgeRubric {
+  const r = gym?.rubric;
+  if (!r) return GYM_JUDGE_RUBRIC_V1;
+  return {
+    version: r.version || GYM_JUDGE_RUBRIC_V1.version,
+    model: r.model ?? GYM_JUDGE_RUBRIC_V1.model,
+    temperature: typeof r.temperature === 'number' ? r.temperature : GYM_JUDGE_RUBRIC_V1.temperature,
+    thinkingBudgetTokens:
+      typeof r.thinkingBudgetTokens === 'number' ? r.thinkingBudgetTokens : GYM_JUDGE_RUBRIC_V1.thinkingBudgetTokens,
+    weights: {
+      d1: pickWeight(r.weights, 'd1'),
+      d2: pickWeight(r.weights, 'd2'),
+      d3: pickWeight(r.weights, 'd3'),
+    },
+    dimensions: {
+      d1: pickDim(r.dimensions, 'd1'),
+      d2: pickDim(r.dimensions, 'd2'),
+      d3: pickDim(r.dimensions, 'd3'),
+    },
+  };
+}
+
+// ───────────────────────────── re-exports ─────────────────────────────
+// The gym's primitives, surfaced from one module so the `gym:*` tools + the A/B
+// eval-matrix import from here. Effects stay injected on the heavy ones.
+
+export {
+  judgeGymRun,
+  buildJudgePrompt,
+  type GymScore,
+  type GymJudgeInput,
+  type JudgeLlmCall,
+} from './judge';
+export {
+  GYM_JUDGE_RUBRIC_V1,
+  composite,
+  rubricHash,
+  parseJudgeOutput,
+  type GymJudgeRubric,
+  type DimensionWeights,
+  type JudgeDimensionScores,
+} from './judge-scoring';
+export {
+  regressionsFromTests,
+  plantedBugCaught,
+  type TestResult,
+} from './signals';
+export {
+  collectTrace,
+  assembleRawTrace,
+  buildDiffCommand,
+  type RunOutputRow,
+  type CollectInput,
+  type CollectDeps,
+} from './collector';
+export {
+  runAbEvaluation,
+  type AbConfig,
+  type AbVariant,
+  type AbTask,
+  type AbResult,
+  type AbRunOutcome,
+  type AbDeps,
+} from './ab-runner';
+export type { PlantedBug } from './probe-generator';

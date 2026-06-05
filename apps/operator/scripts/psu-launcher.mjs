@@ -105,7 +105,7 @@ export function suWrapperExtraArgs(agent, { model, resumeSession } = {}) {
  * approvals/sandbox bypass MCP tool calls need (mirrors the codex-su
  * wrapper).
  */
-export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath }) {
   if (backend === 'claude') {
     return {
       bin: 'claude',
@@ -120,7 +120,14 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath }) {
   }
   if (backend === 'omp') {
     // omp path-discovers <cwd>/.mcp.json; --append-system-prompt takes a file path.
-    return { bin: 'omp', args: ['--approval-mode', 'yolo', '--append-system-prompt', promptFile] };
+    // -e loads the coordination extension (lock enforcement + coord + the activity
+    // bridge port) when one is supplied — a role omp session is a worker that edits
+    // files + whose activity belongs in the fleet view, so it gets the same hook the
+    // su omp launch + role codex/claude do. (claude/codex role hooks are user-level /
+    // baked; omp's is the `-e` module.)
+    const args = ['--approval-mode', 'yolo', '--append-system-prompt', promptFile];
+    if (coordExtPath) args.push('-e', coordExtPath);
+    return { bin: 'omp', args };
   }
   if (backend === 'codex') {
     // CODEX_HOME (with AGENTS.md + role-scoped config.toml + lock-hook
@@ -365,7 +372,14 @@ async function api(path, opts = {}) {
     json = { status: 'error', error: text.slice(0, 200) };
   }
   if (!res.ok || json.status === 'error') {
-    throw new Error(json.error || `HTTP ${res.status} from ${path}`);
+    // json.error may be a string OR a structured object ({code, message}) — coerce
+    // to a real message so we never surface "[object Object]".
+    const err = json.error;
+    const msg =
+      typeof err === 'string'
+        ? err
+        : err?.message || (err ? JSON.stringify(err) : `HTTP ${res.status} from ${path}`);
+    throw new Error(msg);
   }
   return json;
 }
@@ -695,9 +709,15 @@ async function roleFlow(args, role, rolesMeta) {
     body: JSON.stringify({ role, agent, workspace, harness_slug: harness, feature, plan }),
   });
 
+  // omp role sessions load the coordination extension (lock enforcement + coord +
+  // the activity-bridge port) via -e, the same stable module the su omp launch +
+  // resume use. claude/codex role hooks are user-level / baked into the codex home.
+  const roleCoordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
+  const roleCoordExtPath = res.agent === 'omp' && existsSync(roleCoordExt) ? roleCoordExt : undefined;
   const { bin, args: launchArgs } = roleLaunchArgs(res.agent, {
     promptFile: res.promptFile,
     mcpJsonPath: res.mcpJsonPath,
+    coordExtPath: roleCoordExtPath,
   });
   console.error(
     `psu: ${res.role} on ${res.agent}  ·  ${res.feature ? `feature ${res.feature}` : (res.planSlug ? `plan ${res.planSlug}` : 'no feature')}` +
@@ -804,7 +824,8 @@ if (isMain) {
       console.error('psu: cancelled');
       process.exit(130);
     }
-    console.error('psu: ' + (e?.message || e));
+    const msg = e?.message || (typeof e === 'string' ? e : JSON.stringify(e));
+    console.error('psu: ' + msg);
     process.exit(1);
   });
 }

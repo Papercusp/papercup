@@ -15,8 +15,8 @@ import {
   harnessTestingRegistry,
   HARNESS_TESTING_TIER_LABELS,
   ACCEPTANCE_DOMAIN_ID,
-} from '../harness-testing-registry';
-import { universalDomains } from '../testing-domains';
+} from '@papercusp/operator-core/lib/harness-testing-registry';
+import { universalDomains } from '@papercusp/operator-core/lib/testing-domains';
 import HarnessTestsView from '../../app/adv/harnesses/HarnessTestsView';
 import AcceptancePanel from '../../app/adv/harnesses/AcceptancePanel';
 

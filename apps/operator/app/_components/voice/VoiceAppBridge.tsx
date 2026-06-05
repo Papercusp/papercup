@@ -134,14 +134,14 @@ export function VoiceAppBridge(): null {
           // Skip intent parsing; fall through to consumer/Oracle routing.
           throw new Error('wake-word disabled');
         }
-        const { parseOperatorIntent, resolveApprove } = await import('../../../lib/voice-intents');
+        const { parseOperatorIntent, resolveApprove } = await import('@papercusp/operator-core/lib/voice-intents');
         // Engine-agnostic wake-word strip: Voicemode/Deepgram deliver the
         // raw transcript ("hey papercup approve sheets") without going
         // through the Web Speech wake-word listener, so we re-prefix here
         // so parseOperatorIntent sees a parseable string. Web Speech path
         // already passes a normalized "operator …" string and is a no-op
         // through this helper.
-        const { stripWakeWordAndPrefix } = await import('../../../lib/wake-word');
+        const { stripWakeWordAndPrefix } = await import('@papercusp/operator-core/lib/wake-word');
         const { getVoiceConfig } = await import('./voice-mode');
         const wakeWord = getVoiceConfig().wakeWord ?? 'hey papercup';
         const stripped = stripWakeWordAndPrefix(text, wakeWord);
@@ -172,7 +172,7 @@ export function VoiceAppBridge(): null {
         }
         if (intent) {
           if (intent.kind === 'open' || intent.kind === 'open-and-scan') {
-            const { setOperatorState } = await import('../operator-shared-state');
+            const { setOperatorState } = await import('@papercusp/operator-core/lib/operator-shared-state');
             setOperatorState({ open: true });
             if (intent.kind === 'open-and-scan') {
               // Defer the scan trigger to next tick so the panel mounts first.

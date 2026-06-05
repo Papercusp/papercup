@@ -18,7 +18,7 @@
  */
 
 import { useEffect, type CSSProperties, type ReactNode } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 
 const FLAG_KEY = 'papercusp.provisionalOwner.shown.v1';
 

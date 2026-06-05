@@ -293,7 +293,7 @@ export default function ChatPanel({ slug, chatId, mode, onArchive }: ChatPanelPr
             Feature {chat.feature_id} is being worked on autonomously
             {chat.feature_lock.taken_by ? ` (${chat.feature_lock.taken_by})` : ''}.
             This chat will advise but not commit code; for guidance the worker should pick up,
-            ask it to leave a note in <code>.harness/notes/{chat.feature_id}.md</code>.
+            ask it to leave a note in <code>.papercusp/notes/{chat.feature_id}.md</code>.
           </span>
         </div>
       )}

@@ -13,8 +13,8 @@
  * disable input.
  */
 import { useEffect, useRef, useState } from 'react';
-import { commands } from '@/lib/tauri-bindings';
-import { isTauriNative } from '@/lib/pty-tauri';
+import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
+import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
 
 type TauriListenFn = <T>(
   event: string,

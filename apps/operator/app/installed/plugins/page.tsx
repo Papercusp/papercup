@@ -110,29 +110,14 @@ export default function InstalledPluginsPage() {
       });
       if (!ok) return;
     }
-    setBusy(slug);
-    try {
-      const r = await fetch('/api/marketplace/install-plugin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug, version: u.available }),
-      });
-      const d = await r.json();
-      if (!r.ok || !d.ok) {
-        const cleanLog = String(d.log ?? '').replace(/\x1b\[[0-9;]*m/g, '').trim();
-        toast.error(`Update failed: ${slug}`, {
-          description: cleanLog.split('\n').filter(Boolean).slice(-3).join('\n') || d.error || 'unknown',
-          duration: 10000,
-        });
-        return;
-      }
-      toast.success(`${slug} updated to v${u.available}`);
-      setTimeout(() => setReloadKey((k) => k + 1), 400);
-    } catch (e: any) {
-      toast.error(`Update failed: ${slug}`, { description: String(e?.message ?? e), duration: 10000 });
-    } finally {
-      setBusy(null);
-    }
+    // Plugin install/update flows through the Cupboard now (kind=plugin) — the
+    // legacy :3057 /api/marketplace/install-plugin route is retired
+    // (revive-cupboard-distribution D-004). Direct the user to the Cupboard to
+    // reinstall at the new version.
+    toast.info(`Update ${slug} from the Cupboard`, {
+      description: `Plugin install/update is now in the Cupboard (kind=plugin). Open the Cupboard and reinstall ${slug} to pick up v${u.available}.`,
+      duration: 8000,
+    });
   }
 
   async function uninstall(slug: string) {
@@ -243,7 +228,7 @@ export default function InstalledPluginsPage() {
       ) : plugins.length === 0 ? (
         <div className="pc-card pc-marketplace-empty">
           <strong>No plugins installed yet.</strong>
-          <span>Browse the <RouteLink href="/marketplace/plugins">plugin catalog</RouteLink> to install one.</span>
+          <span>Browse the <RouteLink href="/cupboard?kind=plugin">Cupboard plugin catalog</RouteLink> to install one.</span>
         </div>
       ) : (
         <div className="pc-marketplace-grid pc-installed-plugin-grid">
@@ -254,7 +239,7 @@ export default function InstalledPluginsPage() {
                 <div className="pc-marketplace-card-head">
                   <span className="pc-marketplace-card-icon plugin"><Lucide.Puzzle size={18} /></span>
                   <div>
-                    <RouteLink href={`/marketplace/${encodeURIComponent(p.name)}`} className="pc-marketplace-card-title">{p.name}</RouteLink>
+                    <RouteLink href="/cupboard?kind=plugin" className="pc-marketplace-card-title">{p.name}</RouteLink>
                     <span>{p.source}</span>
                   </div>
                   <em>Installed</em>

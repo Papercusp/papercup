@@ -21,9 +21,9 @@
  */
 
 import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
-import { resolveGitContext } from '@/lib/testing-branch-resolve';
-import { inferWorkspaceRoot } from '@/lib/testing-domain-glob';
-import { resolveTestRunSource } from '@/lib/testing-run-source';
+import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
+import { inferWorkspaceRoot } from '@papercusp/operator-core/lib/testing-domain-glob';
+import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
 
 interface TestRunRow {

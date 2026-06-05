@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { wsLocalKey } from '@/lib/browser-workspace';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OperatorChatSidebar } from '../OperatorChatSidebar';
 import { OPERATOR_CHAT_COLLAPSED_WIDTH } from '../operator-chat-layout';

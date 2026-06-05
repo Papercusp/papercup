@@ -18,8 +18,8 @@
  * is re-exported here so existing `@/lib/theme` importers keep working.
  */
 import { useSyncExternalStore } from 'react';
-import { wsLocalKey } from '@/lib/browser-workspace';
-import { injectedPref, reconcileProfilePref, writeProfileField } from '@/lib/profile-pref';
+import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
+import { injectedPref, reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
 import {
   BUILTIN_THEMES,
   CUSTOM_PREFIX,
@@ -29,9 +29,9 @@ import {
   isValidThemeId,
   type CustomTheme,
   type ThemeMeta,
-} from '@/lib/theme-tokens';
+} from '@papercusp/operator-core/lib/theme-tokens';
 
-export * from '@/lib/theme-tokens';
+export * from '@papercusp/operator-core/lib/theme-tokens';
 
 export const THEME_STORAGE_KEY = 'papercusp.theme';
 export const THEME_CHANGE_EVENT = 'papercusp:theme-changed';

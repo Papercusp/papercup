@@ -2,6 +2,7 @@
   "name": "@papercusp/agent-mcp",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "MCP server exposing workspace-knowledge tools to in-app concierges (Operator, Oracle) and out-of-process pi sessions.",
   "main": "./src/index.ts",
   "exports": {

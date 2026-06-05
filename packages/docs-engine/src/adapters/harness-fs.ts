@@ -9,7 +9,7 @@
  * Slugs are relative paths with the .md extension stripped, e.g.
  *   docs/architecture.md → docs/architecture
  *   SPEC.md              → SPEC
- *   .harness/knowledge.md → harness-state/knowledge
+ *   .papercusp/knowledge.md → harness-state/knowledge
  *
  * State files are grouped under the synthetic `harness-state/` slug
  * prefix so they appear as their own section in the outline.
@@ -37,9 +37,9 @@ export interface HarnessFsAdapterOptions {
 const DEFAULT_STATE_FILES = [
   'SPEC.md',
   'AGENTS.md',
-  '.harness/knowledge.md',
-  '.harness/supervisor-notes.md',
-  '.harness/validation-contract.md',
+  '.papercusp/knowledge.md',
+  '.papercusp/supervisor-notes.md',
+  '.papercusp/validation-contract.md',
 ] as const;
 
 const MAX_FILE_BYTES = 512 * 1024;
@@ -50,9 +50,9 @@ interface FsPage extends DocPage {
 
 function slugFromRelPath(rel: string): string {
   const noExt = rel.replace(/\.(md|mdx)$/i, '');
-  // .harness/knowledge.md → harness-state/knowledge
-  if (noExt.startsWith('.harness/')) {
-    return 'harness-state/' + noExt.slice('.harness/'.length);
+  // .papercusp/knowledge.md → harness-state/knowledge
+  if (noExt.startsWith('.papercusp/')) {
+    return 'harness-state/' + noExt.slice('.papercusp/'.length);
   }
   // top-level e.g. SPEC.md → harness-state/SPEC
   if (!noExt.includes('/') && !noExt.startsWith('docs')) {
@@ -206,7 +206,7 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
       if (sectionSlug === 'harness-state') {
         return {
           title: 'Harness state',
-          description: 'Top-level project files + .harness/ state (SPEC, AGENTS, knowledge, supervisor-notes, validation-contract).',
+          description: 'Top-level project files + .papercusp/ state (SPEC, AGENTS, knowledge, supervisor-notes, validation-contract).',
         };
       }
       if (sectionSlug === 'docs') {

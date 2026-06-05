@@ -21,9 +21,9 @@ import { useQueryState, parseAsBoolean, parseAsStringEnum } from 'nuqs';
 import {
   dispatchEndpointStream,
   type EndpointStreamEvent,
-} from '@/lib/transport-adapters';
+} from '@papercusp/operator-core/lib/transport-adapters';
 import { Checkbox } from '@/app/harness/Checkbox';
-import type { IpcInspectorApi } from '@/lib/dev/ipc-inspector-client';
+import type { IpcInspectorApi } from '@papercusp/operator-core/lib/dev/ipc-inspector-client';
 
 interface LogEntry {
   ts: number;

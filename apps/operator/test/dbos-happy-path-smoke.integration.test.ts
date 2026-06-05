@@ -34,9 +34,9 @@ import { createFreshPgDb, type FreshPgDb } from './_pg-helpers';
 import { readFeaturesPg, parseDecision, type PgStateContext } from '@papercusp/orchestrator';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real durable modules
 import { readPlan, type ChunkPlanPgCtx } from '../../../libs/papercusp/packages/orchestrator/src/chunk-plan-pg';
-import { classifyDecision } from '../lib/dbos/orchestrator-decide';
-import { computeFrontier } from '../lib/dbos/orchestrator-loop';
-import { planFinalization } from '../lib/dbos/orchestrator-finalize';
+import { classifyDecision } from '@papercusp/operator-core/lib/dbos/orchestrator-decide';
+import { computeFrontier } from '@papercusp/operator-core/lib/dbos/orchestrator-loop';
+import { planFinalization } from '@papercusp/operator-core/lib/dbos/orchestrator-finalize';
 
 const WS = 'ws_smoke';
 const SLUG = 'smoke';

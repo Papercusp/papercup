@@ -80,8 +80,8 @@ export async function restore(req: RestoreRequest): Promise<RestoreResult> {
   // Copy `source/` from the extracted staging dir into projectDir
   await copyDir(join(stagingDir, 'source'), projectDir);
 
-  // Copy `state/harness/*` into <projectDir>/.harness/ for operator artifacts
-  const harnessDest = join(projectDir, '.harness');
+  // Copy `state/harness/*` into <projectDir>/.papercusp/ for operator artifacts
+  const harnessDest = join(projectDir, '.papercusp');
   await fs.mkdir(harnessDest, { recursive: true });
   await copyDir(join(stagingDir, 'state', 'harness'), harnessDest).catch(() => {});
 

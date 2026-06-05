@@ -4,7 +4,7 @@
  * The "third branch" for docs:* — for power-engineer callers running
  * `omp-su` on their own non-harness repo with PAPERCUSP_PROJECT_DOCS_ROOT
  * pointing at their docs tree. Reads `<root>/**\/*.{md,mdx}` straight —
- * no harness-state files, no .harness/ slug munging.
+ * no harness-state files, no .papercusp/ slug munging.
  *
  * Slugs are relative paths with the extension stripped:
  *   architecture.md          → architecture

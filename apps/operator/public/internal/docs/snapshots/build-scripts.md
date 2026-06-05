@@ -298,7 +298,7 @@ The substrate provides each script with a controlled environment:
 | ------------------------- | ------------------------------------------------------------------------------------------- |
 | `$PAPERCUSP_PLUGIN_DIR`   | Absolute path to the plugin's installed directory (read-only, even outside the sandbox)     |
 | `$PAPERCUSP_PLUGIN_STATE` | Absolute path to a writeable `state.json` location (write here for resource tracking)       |
-| `$PAPERCUSP_PLUGIN_DATA`  | The plugin's per-harness data directory (`<harness>/.harness/plugins/<name>/`)              |
+| `$PAPERCUSP_PLUGIN_DATA`  | The plugin's per-harness data directory (`<harness>/.papercusp/plugins/<name>/`)            |
 | `$PAPERCUSP_HARNESS_SLUG` | The harness slug the script is being run for                                                |
 | `$PAPERCUSP_PROJECT_DIR`  | The harness's project dir                                                                   |
 | `$PAPERCUSP_RUN_ID`       | Unique id for this script invocation; used by the substrate to correlate audit log + output |
@@ -732,7 +732,7 @@ in the plugin's harness-toolbar tile and in the dashboard summary.
 
 ## Audit logging
 
-Every script run writes to `<harness>/.harness/audit/provision-runs/<ts>-<plugin>-<phase>.log`:
+Every script run writes to `<harness>/.papercusp/audit/provision-runs/<ts>-<plugin>-<phase>.log`:
 
 ```
 === papercusp provision run ===
@@ -804,7 +804,7 @@ request capacity while flagging it as a thing the user should notice.
 
 ### Fail-loud on encrypted-locked volumes
 
-`<harness>/.harness/audit/provision-runs/` may live on an encrypted
+`<harness>/.papercusp/audit/provision-runs/` may live on an encrypted
 volume that's locked at boot (LUKS, FileVault, EncFS). If the substrate
 can't write to the audit dir, it **fails loud**: setup is refused,
 operator banner shows "audit volume unavailable; unlock the volume or

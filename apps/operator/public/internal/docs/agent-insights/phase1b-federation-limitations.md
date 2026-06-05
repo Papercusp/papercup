@@ -21,7 +21,7 @@ device keypair. The second device publishes its contributor file. Because contri
 files are keyed by `github_login`:
 
 ```
-.harness/contributors/<login>.json
+.papercusp/contributors/<login>.json
 ```
 
 …the second device's publish **overwrites** the first device's file on the
@@ -42,7 +42,7 @@ One of:
   `device_pubkeys: string[]` field (replacing the single `device_pubkey`).
   The verifier accepts a signature from any listed key.
 * **Per-device paths.**
-  `.harness/contributors/<login>/<device-fingerprint>.json`
+  `.papercusp/contributors/<login>/<device-fingerprint>.json`
   Each device has its own file; the verifier walks the directory.
 
 Either approach requires a schema migration for existing contributor files and
@@ -58,10 +58,10 @@ A contributor renames their GitHub username. The `user/<id>` branch (keyed by th
 stable numeric `github_user_id`) survives intact. But the contributor file lives at:
 
 ```
-.harness/contributors/<old-login>.json
+.papercusp/contributors/<old-login>.json
 ```
 
-The verifier looks up `.harness/contributors/<new-login>.json` and finds nothing —
+The verifier looks up `.papercusp/contributors/<new-login>.json` and finds nothing —
 federation breaks for that contributor on all harnesses they've joined.
 
 ### Root cause
@@ -78,7 +78,7 @@ so the data is correct once found — the problem is purely path resolution.
 Key the file path by the numeric id instead of the login:
 
 ```
-.harness/contributors/<github_user_id>.json
+.papercusp/contributors/<github_user_id>.json
 ```
 
 Or: keep the login path but add a re-publish trigger when the GitHub API returns a

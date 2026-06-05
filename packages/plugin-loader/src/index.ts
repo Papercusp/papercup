@@ -16,7 +16,7 @@
  */
 import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 /**
  * Resolve the active Papercusp root. The substrate moved to per-workspace
@@ -84,9 +84,13 @@ function fallbackRoot(): string {
   if (existsSync(def)) return def;
   return join(homedir(), '.papercusp');
 }
-import { pathToFileURL } from 'node:url';
 import type { Plugin } from '@papercusp/plugin-sdk';
-import { satisfies } from './semver';
+import {
+  createPluginLoader,
+  satisfies,
+  type LoadedPlugin as CoreLoadedPlugin,
+  type DiscoverRoot,
+} from '@papercusp/plugin-loader-core';
 
 // Lazy + cached read of PAPERCUSP_RUNTIME_VERSION. Top-level destructure of
 // the CJS-loaded plugin-sdk namespace yields undefined under Node 25 + tsx
@@ -269,9 +273,26 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
       return `plugin "${plugin.name}" registers role "${roleName}" but lacks capability "${requiredCap}"`;
     }
   }
-  // Validate UI requires the right cap.
-  if (plugin.ui && !plugin.capabilities.includes('ui:harness-route' as any)) {
-    return `plugin "${plugin.name}" declares ui contribution but lacks capability "ui:harness-route"`;
+  // Validate UI surfaces require the right cap, per entry type. react/iframe
+  // panes are desktop surfaces gated by ui:harness-route; tui-pane panes are
+  // pui surfaces gated by ui:tui-pane and must carry a non-empty `command`
+  // (revive-plugin-system-2026-06-04 D-002). The exec-gate on command[0]
+  // (compute:exec:<bin>) is enforced at the resolution endpoint.
+  if (Array.isArray(plugin.ui) && plugin.ui.length > 0) {
+    const entries = plugin.ui as Array<{ type?: string; slug?: string; command?: unknown }>;
+    const hasDesktopSurface = entries.some((u) => (u.type ?? 'react') !== 'tui-pane');
+    if (hasDesktopSurface && !plugin.capabilities.includes('ui:harness-route' as any)) {
+      return `plugin "${plugin.name}" declares a react/iframe ui contribution but lacks capability "ui:harness-route"`;
+    }
+    const tuiPanes = entries.filter((u) => u.type === 'tui-pane');
+    if (tuiPanes.length > 0 && !plugin.capabilities.includes('ui:tui-pane' as any)) {
+      return `plugin "${plugin.name}" declares a tui-pane ui contribution but lacks capability "ui:tui-pane"`;
+    }
+    for (const u of tuiPanes) {
+      if (!Array.isArray(u.command) || u.command.length === 0 || typeof u.command[0] !== 'string') {
+        return `plugin "${plugin.name}" tui-pane "${u.slug ?? '?'}" must declare a non-empty string[] \`command\``;
+      }
+    }
   }
   if ((plugin.dashboardTabs?.length ?? 0) > 0 && !plugin.capabilities.includes('ui:dashboard-tab' as any)) {
     return `plugin "${plugin.name}" declares dashboardTabs but lacks capability "ui:dashboard-tab"`;
@@ -334,25 +355,19 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
   return null;
 }
 
-/** Load a single plugin from a known directory. */
-export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<LoadedPlugin | { error: string; path: string } | { skipped: 'not-a-plugin'; path: string }> {
-  const path = resolve(dir);
-  const manifest = await readManifest(path);
-  // A directory with neither manifest nor entry point isn't a misconfigured
-  // plugin — it's not a plugin dir at all (scope dir like `@papercupai/`,
-  // or a stray dir like `pi/` for pi-omp integration). Skip silently
-  // instead of polluting the error log.
-  if (!manifest) {
-    const entry = await locateEntry(path);
-    if (!entry) return { skipped: 'not-a-plugin', path };
-    return { error: 'missing or invalid papercusp.json', path };
-  }
-  if ('__error' in manifest) {
-    return { error: manifest.__error, path };
-  }
-  // G3 dispatch: if manifest opts into a non-JS runtime, route to the
-  // dedicated loader. WASM + daemon plugins don't need a JS entry; they
-  // expose actions/ui through the runtime's own host surface.
+/**
+ * Papercusp runtime dispatch (the `@papercusp/plugin-loader-core`
+ * `runtimeDispatch` port). G3 dispatch: when a manifest opts into a non-JS
+ * runtime, route to the dedicated loader. WASM + daemon plugins don't need
+ * a JS entry — they expose actions/ui through the runtime's own host
+ * surface. Returns a ready core result, an error, or null to fall through
+ * to the JS entry path.
+ */
+async function runtimeDispatch(
+  manifest: ManifestShape,
+  path: string,
+  source: string,
+): Promise<CoreLoadedPlugin<Plugin, ManifestShape> | { error: string; path: string } | null> {
   const runtime = manifest.runtime;
   if (runtime?.kind === 'wasm') {
     if (!runtime.wasmPath) {
@@ -362,41 +377,70 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
     try {
       // Stat-only — actual instantiation happens at enable time so a
       // browse over installed plugins doesn't pay the wasmtime startup
-      // cost. The dispatch shim below records intent; the operator's
-      // plugin-host-runtime calls loadWasmPlugin() at enable.
+      // cost. The shim records intent; the operator's plugin-host-runtime
+      // calls loadWasmPlugin() at enable.
       await fs.stat(wasmAbs);
     } catch {
       return { error: `wasm artifact not found at ${wasmAbs}`, path };
     }
-    return {
-      plugin: makeWasmPluginShim(manifest, wasmAbs),
-      path,
-      source,
-      toolDefinitions: manifest.tools ?? [],
-      runtime: { ...runtime, wasmPath: wasmAbs },
-    };
+    return { plugin: makeWasmPluginShim(manifest, wasmAbs), manifest, path, source };
   }
   if (runtime?.kind === 'daemon') {
     if (!runtime.daemonCommand || runtime.daemonCommand.length === 0) {
       return { error: 'manifest.runtime.kind = "daemon" but runtime.daemonCommand missing/empty', path };
     }
-    return {
-      plugin: makeDaemonPluginShim(manifest),
-      path,
-      source,
-      toolDefinitions: manifest.tools ?? [],
-      runtime,
-    };
+    return { plugin: makeDaemonPluginShim(manifest), manifest, path, source };
   }
-  const entry = await locateEntry(path);
-  if (!entry) return { error: 'no entry point found (looked for index.cjs, dist/index.cjs, index.js, index.mjs, dist/index.js, index.ts, src/index.ts)', path };
-  const importResult = await importPluginEntry(entry);
-  if (!importResult) return { error: `import returned null/non-object from ${entry}`, path };
-  if ('error' in importResult) return { error: `import threw at ${entry}: ${importResult.error}`, path };
-  const plugin = importResult;
-  const validationError = await validate(plugin, manifest);
-  if (validationError) return { error: validationError, path };
-  return { plugin, path, source, toolDefinitions: manifest.tools ?? [], runtime: runtime ?? { kind: 'js' } };
+  return null;
+}
+
+/**
+ * Map a generic core load-result onto the Papercusp `LoadedPlugin` shape:
+ * derive `toolDefinitions` + the resolved `runtime` descriptor from the
+ * manifest. WASM runtimes get their `wasmPath` resolved to absolute
+ * (matching runtimeDispatch's stat target); JS plugins default to
+ * `{ kind: 'js' }`.
+ */
+function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugin {
+  const manifest = r.manifest;
+  let runtime: import('@papercusp/plugin-sdk').PluginRuntime = manifest.runtime ?? { kind: 'js' };
+  if (runtime.kind === 'wasm' && runtime.wasmPath) {
+    runtime = { ...runtime, wasmPath: resolve(r.path, runtime.wasmPath) };
+  }
+  return {
+    plugin: r.plugin,
+    path: r.path,
+    source: r.source as LoadedPlugin['source'],
+    toolDefinitions: manifest.tools ?? [],
+    runtime,
+  };
+}
+
+/**
+ * The Papercusp-bound loader: the generic `@papercusp/plugin-loader-core`
+ * pipeline wired to the Papercusp manifest reader, entry locator, importer,
+ * runtime dispatch, and the capability/role/UI validation rules (`validate`)
+ * above. The generic kernel owns the discover→read→dispatch→import→validate
+ * →dedupe control flow; this object is the seam.
+ */
+const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
+  readManifest,
+  locateEntry,
+  importEntry: importPluginEntry,
+  runtimeDispatch,
+  validatePlugin: validate,
+  pluginName: (p) => p.name,
+  invalidManifestError: 'missing or invalid papercusp.json',
+  noEntryError:
+    'no entry point found (looked for index.cjs, dist/index.cjs, index.js, index.mjs, dist/index.js, index.ts, src/index.ts)',
+});
+
+/** Load a single plugin from a known directory. */
+export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<LoadedPlugin | { error: string; path: string } | { skipped: 'not-a-plugin'; path: string }> {
+  const r = await corePluginLoader.loadFromDir(dir, source);
+  if ('skipped' in r) return r;
+  if ('error' in r) return r;
+  return toLoadedPlugin(r);
 }
 
 /**
@@ -428,79 +472,32 @@ function makeDaemonPluginShim(manifest: ManifestShape): import('@papercusp/plugi
   } as unknown as import('@papercusp/plugin-sdk').Plugin;
 }
 
-async function listSubdirs(parent: string): Promise<string[]> {
-  try {
-    const entries = await fs.readdir(parent, { withFileTypes: true });
-    const out: string[] = [];
-    for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
-      let isDir = e.isDirectory();
-      if (!isDir && e.isSymbolicLink()) {
-        // Follow symlinks (dev-mode pattern: symlinking a plugin's repo
-        // dir into ~/.papercusp/global-plugins/<name>).
-        try {
-          const st = await fs.stat(join(parent, e.name));
-          isDir = st.isDirectory();
-        } catch { /* dangling symlink — skip */ }
-      }
-      if (isDir) out.push(join(parent, e.name));
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
 /** Discover and load all plugins reachable via the configured search paths. */
 export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
   loaded: LoadedPlugin[];
   errors: Array<{ error: string; path: string }>;
 }> {
-  const loaded: LoadedPlugin[] = [];
-  const errors: Array<{ error: string; path: string }> = [];
-
-  // Collect candidate directories.
-  const candidates: Array<{ dir: string; source: LoadedPlugin['source'] }> = [];
-
+  // Build the Papercusp search roots (precedence: project > harness >
+  // global). The generic kernel walks + dedupes them by plugin name
+  // (first-seen wins); the `~/.papercusp` root resolution + scope-recursion
+  // policy is the Papercusp-specific part that stays here.
+  const roots: DiscoverRoot[] = [];
   if (opts.projectDir) {
-    for (const d of await listSubdirs(join(opts.projectDir, 'plugins'))) {
-      candidates.push({ dir: d, source: 'project' });
-    }
+    roots.push({ pluginsDir: join(opts.projectDir, 'plugins'), source: 'project' });
   }
   for (const slug of opts.harnessSlugs ?? []) {
-    for (const d of await listSubdirs(join(papercuspRootResolved(), 'harnesses', slug, 'plugins'))) {
-      candidates.push({ dir: d, source: 'harness' });
-    }
+    roots.push({
+      pluginsDir: join(papercuspRootResolved(), 'harnesses', slug, 'plugins'),
+      source: 'harness',
+    });
   }
   const globalDir = opts.globalPluginsDir ?? join(papercuspRootResolved(), 'global-plugins');
-  for (const d of await listSubdirs(globalDir)) {
-    // npm-style scope dirs (`@papercupai/`) hold one or more plugins; treat
-    // each child dir as a candidate, not the scope itself. The scope dir
-    // never carries its own manifest.
-    if (basename(d).startsWith('@')) {
-      for (const child of await listSubdirs(d)) {
-        candidates.push({ dir: child, source: 'global' });
-      }
-      continue;
-    }
-    candidates.push({ dir: d, source: 'global' });
-  }
+  // Global plugins may live under npm-style `@scope/` dirs (e.g.
+  // `@papercupai/`); recurse those into per-plugin candidates.
+  roots.push({ pluginsDir: globalDir, source: 'global', scopeRecurse: true });
 
-  // Load each. Dedupe by plugin.name (project > harness > global).
-  const seen = new Set<string>();
-  for (const c of candidates) {
-    const result = await loadPluginFromDir(c.dir, c.source);
-    if ('skipped' in result) continue;
-    if ('error' in result) {
-      errors.push(result);
-      continue;
-    }
-    if (seen.has(result.plugin.name)) continue;
-    seen.add(result.plugin.name);
-    loaded.push(result);
-  }
-
-  return { loaded, errors };
+  const { loaded, errors } = await corePluginLoader.loadAll(roots);
+  return { loaded: loaded.map(toLoadedPlugin), errors };
 }
 
 /**
@@ -580,8 +577,18 @@ export async function registerPluginTools(
         // plugin can still be invoked later — the failure here means
         // getDynamicTools didn't surface tools, not that the plugin is
         // broken. 10s is generous for cached binaries; cold-start failures
-        // are visible in errors[] for the user to act on.
-        const DISCOVERY_TIMEOUT_MS = 10_000;
+        // are visible in errors[] for the user to act on. A plugin whose
+        // cold start legitimately needs longer (gitnexus loading a large
+        // code-graph index) declares `discoveryTimeoutMs` to extend the
+        // budget — clamped to [100ms, 120s]: the ceiling stops a typo from
+        // wedging boot forever; the floor just blocks a zero/negative
+        // (revive-plugin-system-2026-06-04 D-003).
+        const DEFAULT_DISCOVERY_TIMEOUT_MS = 10_000;
+        const declared = (lp.plugin as { discoveryTimeoutMs?: number }).discoveryTimeoutMs;
+        const DISCOVERY_TIMEOUT_MS =
+          typeof declared === 'number' && Number.isFinite(declared)
+            ? Math.min(Math.max(declared, 100), 120_000)
+            : DEFAULT_DISCOVERY_TIMEOUT_MS;
         const r = await Promise.race([
           dynFn(),
           new Promise<never>((_, reject) =>

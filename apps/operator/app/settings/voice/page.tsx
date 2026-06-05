@@ -20,9 +20,9 @@ import {
   speak,
 } from '@/app/_components/voice/voice-mode';
 import { setVoicePrefsClient } from '@/app/_components/voice/voice-prefs-client';
-import type { VoicePrefs, SttEngineKind, TtsEngineKind } from '@/lib/voice-prefs';
-import type { TtsSpendState } from '@/lib/tts-spend';
-import type { SttSpendState } from '@/lib/stt-spend';
+import type { VoicePrefs, SttEngineKind, TtsEngineKind } from '@papercusp/operator-core/lib/voice-prefs';
+import type { TtsSpendState } from '@papercusp/operator-core/lib/tts-spend';
+import type { SttSpendState } from '@papercusp/operator-core/lib/stt-spend';
 
 const KNOWN_ROLES = [
   'system:operator',

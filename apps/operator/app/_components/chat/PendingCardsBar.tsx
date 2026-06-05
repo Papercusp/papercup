@@ -38,7 +38,7 @@ import {
 } from './AskChoiceCard';
 import { InputCard, type InputCardResponse } from './InputCard';
 import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
-import { postCardResponse, postRunCancel } from '@/lib/post-card-response';
+import { postCardResponse, postRunCancel } from '@papercusp/operator-core/lib/post-card-response';
 import { selectFocusedCard } from '@/lib/chat-cards/select-focused-card';
 
 interface Props {

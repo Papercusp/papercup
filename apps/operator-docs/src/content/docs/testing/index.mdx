@@ -71,7 +71,7 @@ needs a one-line glob add — and the coverage guard below forces it.
 
 **Two sources, one of them generated.** `/admin/testing` reads the
 registry (`testing-domains-registry.ts`) directly; the `/adv` Tests tab
-reads the harness contract `.harness/testing-domains.json`. That contract
+reads the harness contract `.papercusp/testing-domains.json`. That contract
 is **generated** from the registry — run `npm run gen:contract` after
 changing domains (CI's `gen:contract:check` fails if it drifted). Do not
 hand-edit the JSON.

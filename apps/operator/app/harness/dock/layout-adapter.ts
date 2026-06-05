@@ -19,7 +19,7 @@ import type {
   GroupNode,
   TabStrip,
   PanelInstance,
-} from '../../../lib/dock-layouts';
+} from '@papercusp/operator-core/lib/dock-layouts';
 
 // ───────── Dockview wire shape (minimal, as documented in dockview v6) ─────────
 // Refs:

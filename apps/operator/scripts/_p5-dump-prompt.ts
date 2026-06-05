@@ -4,7 +4,7 @@
  * spawn can be tested with faithful inputs. Not part of the suite.
  */
 import { writeFileSync } from 'node:fs';
-import { buildOperatorPrompt } from '@/lib/agent-tools/operator/converse-prompt';
+import { buildOperatorPrompt } from '@papercusp/operator-core/lib/agent-tools/operator/converse-prompt';
 
 async function main() {
   const { systemPromptText, userPromptText } = await buildOperatorPrompt(

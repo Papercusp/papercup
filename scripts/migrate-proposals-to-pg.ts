@@ -1,5 +1,5 @@
 /**
- * One-shot: scan each project's `.harness/proposals/` directory and load
+ * One-shot: scan each project's `.papercusp/proposals/` directory and load
  * the metadata (id, status, ts, review verdict, summary) into
  * `harness_<slug>.harness_proposals`.
  *
@@ -44,7 +44,7 @@ interface ProposalEntry {
 }
 
 function scanProposalsDir(projectPath: string): ProposalEntry[] {
-  const dir = join(projectPath, '.harness', 'proposals');
+  const dir = join(projectPath, '.papercusp', 'proposals');
   if (!existsSync(dir)) return [];
   const allFiles = readdirSync(dir);
   const reviewSet = new Set(allFiles.filter((f) => f.endsWith('.review.md')));

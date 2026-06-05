@@ -1,8 +1,8 @@
-import newTool from '../lib/agent-tools/plans/new';
-import addItem from '../lib/agent-tools/plans/add-item';
-import setStatus from '../lib/agent-tools/plans/set-status';
-import addDecision from '../lib/agent-tools/plans/add-decision';
-import setNow from '../lib/agent-tools/plans/set-now';
+import newTool from '@papercusp/operator-core/lib/agent-tools/plans/new';
+import addItem from '@papercusp/operator-core/lib/agent-tools/plans/add-item';
+import setStatus from '@papercusp/operator-core/lib/agent-tools/plans/set-status';
+import addDecision from '@papercusp/operator-core/lib/agent-tools/plans/add-decision';
+import setNow from '@papercusp/operator-core/lib/agent-tools/plans/set-now';
 import * as fs from 'node:fs/promises';
 
 const ctx: any = { isSuperuser: true, uiClientId: 'audit-smoke' };
@@ -25,7 +25,7 @@ function txt(r:any){ return JSON.parse(r.content[0].text); }
     console.log('set-now:', f.ok ?? f.error);
   } finally {
     // cleanup
-    const { getPlansDir } = await import('../lib/agent-tools/plans/source');
+    const { getPlansDir } = await import('@papercusp/operator-core/lib/agent-tools/plans/source');
     await fs.unlink(getPlansDir() + '/' + slug + '.md').catch(()=>{});
     console.log('cleaned up scratch file');
   }

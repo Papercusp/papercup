@@ -16,11 +16,11 @@ import {
   listSavedPrompts,
   upsertSavedPrompt,
   removeSavedPrompt,
-} from '../lib/saved-prompts-store';
+} from '@papercusp/operator-core/lib/saved-prompts-store';
 import {
   materializeWorkspacePrompts,
   materializeCodexPrompts,
-} from '../lib/saved-prompts-materialize';
+} from '@papercusp/operator-core/lib/saved-prompts-materialize';
 
 let sql: postgres.Sql;
 

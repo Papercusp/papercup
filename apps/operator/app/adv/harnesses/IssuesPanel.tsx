@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import { ArrowUpRight, Bot, CheckCircle, Circle, Cpu, Eye, FileCode, User, XCircle } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@papercusp/grid-core';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
-import type { Issue, IssueSource, IssueStatus } from '../../harness/issues/types';
+import type { Issue, IssueSource, IssueStatus } from '@papercusp/operator-core/lib/harness/issue-types';
 import { SeverityPill, ISSUE_STATUS_ICON } from '../../harness/primitives';
 import { ISSUE_STATUS, SEVERITY, type IssueStatusKey, type IssueSeverityKey } from '../../harness/theme';
 import { Tooltip } from '../../harness/Tooltip';

@@ -9,11 +9,11 @@ How an agent finds documentation in Papercusp. One engine, three surfaces, conte
 
 ## The three doc surfaces
 
-| Surface                   | URL prefix                                      | Filesystem                             | Who reads it                                                                                           |
-| ------------------------- | ----------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| **Public Papercusp docs** | `/docs`                                         | `apps/operator/content/docs/`          | Humans browsing the docs site (currently placeholder pending authoring)                                |
-| **Engineering reference** | `/internal/docs`                                | `apps/operator/content/internal-docs/` | This page lives here. Engineering material — endpoint-system, plugins, agents, etc. Loopback-gated.    |
-| **Per-harness docs**      | (no public URL; `/project-docs?harness=<slug>`) | `<projectPath>/docs/` + state files    | Each harness's own SPEC, AGENTS, plans, `.harness/{knowledge,supervisor-notes,validation-contract}.md` |
+| Surface                   | URL prefix                                      | Filesystem                             | Who reads it                                                                                             |
+| ------------------------- | ----------------------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **Public Papercusp docs** | `/docs`                                         | `apps/operator/content/docs/`          | Humans browsing the docs site (currently placeholder pending authoring)                                  |
+| **Engineering reference** | `/internal/docs`                                | `apps/operator/content/internal-docs/` | This page lives here. Engineering material — endpoint-system, plugins, agents, etc. Loopback-gated.      |
+| **Per-harness docs**      | (no public URL; `/project-docs?harness=<slug>`) | `<projectPath>/docs/` + state files    | Each harness's own SPEC, AGENTS, plans, `.papercusp/{knowledge,supervisor-notes,validation-contract}.md` |
 
 There's no "public surface for agents." Agents see *either* engineering reference *or* a specific harness — never the human-facing public site.
 

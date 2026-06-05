@@ -15,6 +15,9 @@ coverage/
 .source/
 
 # Rust/Tauri build artifacts — accidentally committed before; never again.
+# (2026-06-05: apps/{tui,pui-zellij-plugin,pui-companion-proto}/target/ got swept
+# into git-sync commits — 10GB of unpushed >100MB blobs wedged the push for 20h.)
+apps/*/target/
 apps/operator-mobile/src-tauri/target/
 
 # operator-docs (Astro+Starlight)

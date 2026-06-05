@@ -8,7 +8,7 @@ name: Audit harness FS state
 # state files outside the PG-canonical paths.
 #
 # This is intentionally a fast no-PG-needed check — the audit script
-# walks .harness directories looking at filenames only.
+# walks .papercusp directories looking at filenames only.
 
 on:
   pull_request:
@@ -35,7 +35,7 @@ jobs:
         with:
           node-version: 22
 
-      # Walk for any committed .harness directory in the repo (e.g.
+      # Walk for any committed .papercusp directory in the repo (e.g.
       # test fixtures) and audit each one. The script exits 0 on clean,
       # 1 on stale state files found. We aggregate; one stale finding
       # in one harness fails the whole job.
@@ -48,9 +48,9 @@ jobs:
             echo "::error::audit script missing at $AUDIT"
             exit 1
           fi
-          mapfile -t harnesses < <(find . -type d -name '.harness' -not -path '*/node_modules/*' -not -path '*/.next/*')
+          mapfile -t harnesses < <(find . -type d -name '.papercusp' -not -path '*/node_modules/*' -not -path '*/.next/*')
           if [ ${#harnesses[@]} -eq 0 ]; then
-            echo "no .harness directories found in checkout — audit clean by vacuity"
+            echo "no .papercusp directories found in checkout — audit clean by vacuity"
             exit 0
           fi
           fails=0
@@ -65,4 +65,4 @@ jobs:
             echo "::error::$fails harness director$([ $fails -eq 1 ] && echo 'y' || echo 'ies') contain stale FS state — see annotations above"
             exit 1
           fi
-          echo "all ${#harnesses[@]} .harness directories clean"
+          echo "all ${#harnesses[@]} .papercusp directories clean"

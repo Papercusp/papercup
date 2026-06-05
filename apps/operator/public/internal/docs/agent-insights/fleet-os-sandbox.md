@@ -59,7 +59,7 @@ loopback-through-srt's-proxy transport codex uses, so its egress allowlist is
 operator + localhost + registries; a cloud-model omp adds its host via
 `PAPERCUSP_FLEET_SANDBOX_ALLOWED_DOMAINS` (omp's provider is deployment-set, so
 there's no single host to hardcode like codex's OpenAI). Its writable agent dirs
-(`~/.omp` + `PI_CODING_AGENT_DIR` = `<project>/.harness/pi-sessions`, which holds
+(`~/.omp` + `PI_CODING_AGENT_DIR` = `<project>/.papercusp/pi-sessions`, which holds
 omp's agent/auth/models SQLite DBs) are added to `allowWrite` — miss that and omp
 dies at startup with `SQLiteError: attempt to write a readonly database`. Verified
 under srt: omp **starts cleanly + reaches its model**. (Caveat unrelated to

@@ -20,17 +20,17 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { parseAsInteger, parseAsStringEnum, useQueryState } from 'nuqs';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { BindingStatusBadge, type BindingStatus } from '../../_components/BindingStatusBadge';
-import { statsAggregateForStatus } from '../../../lib/identity/binding-verifier-types';
+import { statsAggregateForStatus } from '@papercusp/operator-core/lib/identity/binding-verifier-types';
 import {
   compareContributors,
   type ContributorSortKey,
   type ContributorTabRow,
-} from '../../../lib/harness-insights/load-contributors-tab';
+} from '@papercusp/operator-core/lib/harness-insights/load-contributors-tab';
 import {
   USAGE_EVENT_KINDS,
   type UsageEventKind,
   type UsageRollupForContributor,
-} from '../../../lib/harness/contributor-usage-event-types';
+} from '@papercusp/operator-core/lib/harness/contributor-usage-event-types';
 import { useViewer } from './useViewer';
 
 interface ApiRow {

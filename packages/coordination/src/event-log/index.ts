@@ -1,20 +1,13 @@
 /**
- * @papercusp/coordination/event-log — the swappable append-only channel
- * log seam (D-009). Three interchangeable backends satisfy `CoordEventLog`
- * and pass the SAME conformance suite (the P-050 gate):
- *   - `FsCoordLog`        — the portable default (detached agents, no PG).
- *   - `InMemoryCoordLog`  — the test double / detached proof.
- *   - `PgCoordLog`        — the optional single-table Postgres backend.
+ * @papercusp/coordination/event-log — the Postgres tie-in adapter over the
+ * generic CoordEventLog seam. `PgCoordLog` binds the append-only log to
+ * `harness_shared.coord_event_log`; the seam + portable backends (FsCoordLog /
+ * InMemoryCoordLog) are re-exported from the borrowable generic lib
+ * (@papercusp/pubsub-substrate/event-log), so the public surface of this
+ * subpath is unchanged.
  */
 
-export {
-  type CoordEventLog,
-  type LineSurface,
-  type EventSurface,
-  type ReadLinesOpts,
-} from './types';
-export { FsCoordLog, type FsCoordLogOptions } from './fs-log';
-export { InMemoryCoordLog } from './memory-log';
+export * from '@papercusp/pubsub-substrate/event-log';
 export {
   PgCoordLog,
   ensureCoordEventLogTable,
@@ -24,4 +17,4 @@ export {
 // NOTE: the conformance harness imports `vitest`, so it is deliberately NOT
 // re-exported here (this barrel is imported by production code). Test code
 // imports it from the dedicated `@papercusp/coordination/event-log/conformance`
-// subpath — mirroring `@papercusp/coordination/presence/conformance`.
+// subpath — which re-exports the generic suite.

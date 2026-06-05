@@ -14,6 +14,9 @@ pub struct PaneSpec {
     pub argv: Vec<String>,
     /// Optional pane title.
     pub title: Option<String>,
+    /// Optional working directory to run the command in (zellij `--cwd`). Used by
+    /// plugin-contributed panes (D-002) that must run inside a specific repo dir.
+    pub cwd: Option<String>,
 }
 
 impl PaneSpec {
@@ -21,10 +24,16 @@ impl PaneSpec {
         Self {
             argv: argv.into_iter().map(Into::into).collect(),
             title: None,
+            cwd: None,
         }
     }
     pub fn titled(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+    /// Set the working directory the pane's command runs in (zellij `--cwd`).
+    pub fn cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.cwd = Some(cwd.into());
         self
     }
 }
@@ -92,6 +101,10 @@ impl Multiplexer for Zellij {
             v.push("--name".to_string());
             v.push(t.clone());
         }
+        if let Some(c) = &spec.cwd {
+            v.push("--cwd".to_string());
+            v.push(c.clone());
+        }
         v.push("--".to_string());
         v.extend(spec.argv.iter().cloned());
         v
@@ -158,6 +171,23 @@ mod tests {
         assert_eq!(argv[dd - 2], "--name");
         assert_eq!(argv[dd - 1], "codex · F-12");
         assert_eq!(&argv[dd + 1..], &["psu", "--agent=codex"]);
+    }
+
+    #[test]
+    fn includes_cwd_when_set_and_argv_follows_separator() {
+        // A plugin-contributed pane (D-002): the command argv is run inside `cwd`.
+        let command = vec!["sh".to_string(), "render.sh".to_string()];
+        let spec = PaneSpec::new(command.clone())
+            .titled("my-plugin · papercup")
+            .cwd("/repo/papercup");
+        let argv = Zellij.new_pane_argv(&spec);
+        // --cwd sits before the `--` separator, with its value next to it.
+        let cwd_at = argv.iter().position(|a| a == "--cwd").unwrap();
+        assert_eq!(argv[cwd_at + 1], "/repo/papercup");
+        // The contribution's command argv lands verbatim after the `--`.
+        let dd = argv.iter().position(|a| a == "--").unwrap();
+        assert!(cwd_at < dd);
+        assert_eq!(&argv[dd + 1..], &command[..]);
     }
 
     #[test]

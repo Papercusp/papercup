@@ -35,7 +35,7 @@ import {
   wslUninstall,
   type WslOpError,
   type WslStatus,
-} from '../../lib/wsl-tauri';
+} from '@papercusp/operator-core/lib/wsl-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 function isWslOpError(e: unknown): e is WslOpError {

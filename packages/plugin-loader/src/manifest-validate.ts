@@ -1,8 +1,16 @@
 /**
- * Strict manifest validation. Refuses unknown fields, validates id +
- * semver shape, surfaces a precise field path on failure. The same
+ * Strict Papercusp manifest validation. Refuses unknown fields, validates
+ * id + semver shape, surfaces a precise field path on failure. The same
  * validator is used by the loader (load-time) and the `papercusp plugin
  * lint` CLI (build-time) so authors see errors before deploy.
+ *
+ * This is the **Papercusp adapter** over the generic JSON-Schema validator
+ * engine in `@papercusp/plugin-loader-core`: that lib owns the ajv
+ * mechanics + the field-path issue mapping (incl. the
+ * `additionalProperties` "unknown property — typo?" rewrite); this module
+ * binds it to the Papercusp plugin schema and supplies the two
+ * Papercusp-specific message rewrites (the plugin-id regex hint and the
+ * semver hint).
  *
  * Schema is statically imported so it becomes part of the dependency
  * graph and is bundled by Next/Turbopack into the standalone build.
@@ -17,54 +25,34 @@
  * build time and don't pull `node:*` modules at runtime.
  */
 
-import Ajv, { type ErrorObject } from 'ajv';
+import {
+  createManifestValidator,
+  type ManifestValidationIssue,
+  type ManifestValidationResult,
+} from '@papercusp/plugin-loader-core';
 import schemaJson from '../../plugin-sdk/papercusp-plugin.schema.json' with { type: 'json' };
 
-function getSchema(): object {
-  return schemaJson as object;
-}
+export type { ManifestValidationIssue, ManifestValidationResult };
 
-let _validator: ReturnType<Ajv['compile']> | null = null;
-function getValidator() {
-  if (_validator) return _validator;
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  _validator = ajv.compile(getSchema());
-  return _validator;
-}
-
-export interface ManifestValidationIssue {
-  path: string;
-  message: string;
-}
-
-export interface ManifestValidationResult {
-  ok: boolean;
-  issues: ManifestValidationIssue[];
-}
+const _validator = createManifestValidator(schemaJson as object, {
+  customizeMessage: (e, manifest) => {
+    const path = e.instancePath || '/';
+    if (e.keyword === 'pattern' && path === '/name') {
+      return `plugin id must match ^(@scope/)?[a-z][a-z0-9_.-]{2,62}$ (got "${(manifest as { name?: unknown }).name}")`;
+    }
+    if (e.keyword === 'pattern' && path === '/version') {
+      return `version must be valid semver (got "${(manifest as { version?: unknown }).version}")`;
+    }
+    return undefined;
+  },
+});
 
 /**
  * Validates a parsed manifest against the JSON schema. Returns issues
  * with field paths so callers can render precise error messages.
  */
 export function validateManifest(manifest: unknown): ManifestValidationResult {
-  const validate = getValidator();
-  const ok = validate(manifest);
-  if (ok) return { ok: true, issues: [] };
-  const issues: ManifestValidationIssue[] = (validate.errors ?? []).map((e: ErrorObject) => {
-    const path = e.instancePath || '/';
-    let message = e.message ?? 'invalid';
-    if (e.keyword === 'additionalProperties' && e.params && 'additionalProperty' in e.params) {
-      message = `unknown property "${(e.params as { additionalProperty: string }).additionalProperty}" — typo? (additionalProperties:false)`;
-    }
-    if (e.keyword === 'pattern' && path === '/name') {
-      message = `plugin id must match ^(@scope/)?[a-z][a-z0-9_.-]{2,62}$ (got "${(manifest as { name?: unknown }).name}")`;
-    }
-    if (e.keyword === 'pattern' && path === '/version') {
-      message = `version must be valid semver (got "${(manifest as { version?: unknown }).version}")`;
-    }
-    return { path, message };
-  });
-  return { ok: false, issues };
+  return _validator.validate(manifest);
 }
 
 /**
@@ -72,8 +60,5 @@ export function validateManifest(manifest: unknown): ManifestValidationResult {
  * time where partial loading is wrong.
  */
 export function assertManifestValid(manifest: unknown, sourceLabel = 'manifest'): void {
-  const r = validateManifest(manifest);
-  if (r.ok) return;
-  const lines = r.issues.map((i) => `  ${i.path} — ${i.message}`).join('\n');
-  throw new Error(`${sourceLabel} is invalid:\n${lines}`);
+  _validator.assertValid(manifest, sourceLabel);
 }

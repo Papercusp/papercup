@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, type MouseEvent } from 'react';
 import { toast } from 'sonner';
 import { ChevronDown, UserPlus, Settings, LogOut, ArrowLeftRight } from 'lucide-react';
 import { Popover } from '../harness/Popover';
-import { navigateClient } from '../../lib/client-navigation';
+import { navigateClient } from '@papercusp/operator-core/lib/client-navigation';
 
 interface User {
   id: string;
