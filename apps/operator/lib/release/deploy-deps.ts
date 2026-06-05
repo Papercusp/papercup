@@ -23,6 +23,12 @@ import { lockCoordinationDomain } from '@papercusp/operator-core/lib/agent-tools
 import { sendMessage } from '@papercusp/operator-core/lib/agent-tools/coordination/messages';
 import type { AgentIdentity } from '@papercusp/operator-core/lib/agent-tools/coordination/identity';
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
+// Side-effect: wires the operator host binding (getSql / workspacesRoot /
+// admin-URL) into @papercusp/backup. The standalone deploy doesn't go through
+// the operator boot path that normally triggers this, so without it the
+// snapshot step throws "configureBackup() must be called before using the
+// backup API" and aborts the deploy → rollback (observed 2026-06-05).
+import '@papercusp/operator-core/lib/backup/configure';
 import { workspaceBackupFor } from '@papercusp/backup';
 import type { ReleaseConfig } from './release-config';
 import type { DeployDeps, SnapshotInfo } from './deploy';

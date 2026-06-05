@@ -2754,6 +2754,115 @@ mod tests {
         }
     }
 
+    // ─── Voice mode PTT (voice-mode-tui-port-2026-06-05 P2) ───
+
+    #[test]
+    fn voice_v_starts_recording_on_operator_tab() {
+        let mut a = App::new();
+        a.tab = Tab::Operator; // (already the default, explicit for intent)
+        assert_eq!(a.voice_phase, VoicePhase::Idle);
+        let act = a.update(key('v', KeyModifiers::NONE));
+        assert_eq!(act, Action::Voice(VoiceCmd::Start));
+        assert_eq!(a.voice_phase, VoicePhase::Recording); // optimistic
+    }
+
+    #[test]
+    fn voice_v_again_stops_recording_toggle() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('v', KeyModifiers::NONE)); // start
+        let act = a.update(key('v', KeyModifiers::NONE)); // toggle-stop
+        assert_eq!(act, Action::Voice(VoiceCmd::Stop));
+    }
+
+    #[test]
+    fn voice_key_release_stops_when_recording_hold_to_talk() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('v', KeyModifiers::NONE)); // recording
+        let release = Event::KeyRelease(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(a.update(release), Action::Voice(VoiceCmd::Stop));
+        // A release while idle is a no-op (Action::None).
+        let mut b = App::new();
+        b.tab = Tab::Operator;
+        let rel = Event::KeyRelease(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(b.update(rel), Action::None);
+    }
+
+    #[test]
+    fn voice_esc_cancels_recording() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('v', KeyModifiers::NONE)); // recording
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(act, Action::Voice(VoiceCmd::Cancel));
+        assert_eq!(a.voice_phase, VoicePhase::Idle);
+    }
+
+    #[test]
+    fn voice_v_ignored_off_operator_tab_and_while_composing() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        // On a non-Operator tab `v` is not a voice key (no Start).
+        assert_ne!(a.update(key('v', KeyModifiers::NONE)), Action::Voice(VoiceCmd::Start));
+        assert_eq!(a.voice_phase, VoicePhase::Idle);
+        // While composing, `v` types into the message, never starts voice.
+        let mut b = App::new();
+        b.tab = Tab::Operator;
+        b.chat_composing = true;
+        b.update(key('v', KeyModifiers::NONE));
+        assert_eq!(b.voice_phase, VoicePhase::Idle);
+        assert_eq!(b.chat_input, "v");
+    }
+
+    #[test]
+    fn voice_v_ignored_mid_pipeline() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.voice_phase = VoicePhase::Thinking; // a turn is converse-streaming
+        assert_eq!(a.update(key('v', KeyModifiers::NONE)), Action::None);
+        assert_eq!(a.voice_phase, VoicePhase::Thinking);
+    }
+
+    #[test]
+    fn voice_transcribed_injects_user_turn_and_thinks() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        let before = a.chat_messages.len();
+        a.update(Event::Voice(crate::event::VoiceMsg::Transcribed("hello there".into())));
+        assert_eq!(a.voice_phase, VoicePhase::Thinking);
+        // begin_user_send added the user msg + a streaming assistant bubble.
+        assert_eq!(a.chat_messages.len(), before + 2);
+        assert_eq!(a.chat_messages[before].content, "hello there");
+        assert!(a.chat_streaming);
+    }
+
+    #[test]
+    fn voice_lifecycle_phases_and_errors_reset() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(Event::Voice(crate::event::VoiceMsg::Started(Ok(()))));
+        assert_eq!(a.voice_phase, VoicePhase::Recording);
+        a.update(Event::Voice(crate::event::VoiceMsg::Speaking));
+        assert_eq!(a.voice_phase, VoicePhase::Speaking);
+        a.update(Event::Voice(crate::event::VoiceMsg::Finished));
+        assert_eq!(a.voice_phase, VoicePhase::Idle);
+        // An open failure resets + records the error.
+        a.update(Event::Voice(crate::event::VoiceMsg::Started(Err("no mic".into()))));
+        assert_eq!(a.voice_phase, VoicePhase::Idle);
+        assert_eq!(a.voice_error.as_deref(), Some("no mic"));
+    }
+
+    #[test]
+    fn voice_level_only_tracks_while_recording() {
+        let mut a = App::new();
+        a.set_voice_level(0.5);
+        assert_eq!(a.voice_level, 0.0); // ignored when idle
+        a.voice_phase = VoicePhase::Recording;
+        a.set_voice_level(0.5);
+        assert_eq!(a.voice_level, 0.5);
+    }
+
     #[test]
     fn q_and_ctrl_c_quit() {
         let mut a = App::new();

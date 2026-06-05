@@ -1684,6 +1684,46 @@ mod tests {
     }
 
     #[test]
+    fn mic_meter_scales_and_is_fixed_width() {
+        // 12 cells + 2 brackets = 14 chars, always.
+        assert_eq!(mic_meter(0.0).chars().count(), 14);
+        assert_eq!(mic_meter(5.0).chars().count(), 14);
+        assert_eq!(mic_meter(0.0), "[············]");
+        // Full scale at level 0.25 (the 4× gain ceiling).
+        assert_eq!(mic_meter(0.25), "[▮▮▮▮▮▮▮▮▮▮▮▮]");
+        assert!(mic_meter(0.05).contains('▮')); // quiet speech still registers
+        assert!(mic_meter(0.05).contains('·'));
+    }
+
+    #[test]
+    fn voice_recording_shows_meter_in_composer() {
+        use crate::app::VoicePhase;
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.voice_phase = VoicePhase::Recording;
+        app.voice_level = 0.2;
+        let text = render(&app, 90, 16);
+        assert!(text.contains("REC"), "recording badge missing: {text:?}");
+        assert!(text.contains('▮'), "mic meter missing");
+    }
+
+    #[test]
+    fn voice_idle_hint_mentions_v_to_speak() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        assert!(render(&app, 90, 16).contains("v to speak"));
+    }
+
+    #[test]
+    fn voice_speaking_phase_badge_renders() {
+        use crate::app::VoicePhase;
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.voice_phase = VoicePhase::Speaking;
+        assert!(render(&app, 90, 16).contains("speaking"));
+    }
+
+    #[test]
     fn plans_view_renders_list_and_detail() {
         let mut app = App::new();
         app.tab = Tab::Plans; // the default landing tab is now Operator
