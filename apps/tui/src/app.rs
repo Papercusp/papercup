@@ -487,7 +487,8 @@ pub fn edit_json_path(
 
 /// The workbench tabs. Variant identifiers are stable wire/route keys and are
 /// deliberately NOT renamed (D-001 is label-only): `Tab::Harnesses` titles as
-/// **Pots** and `Tab::Fleet` titles as **Brew** (cup-theme naming, RFC D-014).
+/// **Pots** and `Tab::Fleet` titles as **Fleet** (the cup-theme rename was
+/// reverted by the owner 2026-06-05, RFC D-014).
 /// Order + switch keys are the single source of truth — `draw_tabs` labels and
 /// the keyboard dispatch both derive from `ALL` + `switch_key` (g1: no dual map).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,7 +508,7 @@ pub enum Tab {
     Inbox,
     Plans,
     /// Fleet — the fleet monitoring + agent-launch surface. Titles as "Fleet"
-    /// (the cup-theme Fleet→Brew rename was reversed by the owner 2026-06-05);
+    /// (the cup-theme rename was reverted by the owner 2026-06-05);
     /// absorbed the old Sessions launcher (D-002b: roster + dossier + n-launch
     /// fold into the fleet view).
     Fleet,
@@ -540,8 +541,8 @@ pub enum Tab {
 
 impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
-    // audit_log, and the Brew tab's mirror mode already rides the richer
-    // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
+    // audit_log, and the Fleet tab's mirror mode already rides the richer
+    // `agent_activity` bridge — a re-point would have duplicated Fleet exactly.
     pub const ALL: [Tab; 15] = [
         Tab::Overview,
         Tab::Operator,
@@ -565,7 +566,7 @@ impl Tab {
             Tab::Operator => "Operator",
             Tab::Inbox => "Inbox",
             Tab::Plans => "Plans",
-            // D-001 label-only rename: Harnesses→Pots. The Fleet→Brew rename
+            // D-001 label-only rename: Harnesses→Pots. The cup-theme rename
             // was REVERSED by the owner (2026-06-05) — "Fleet is clearer".
             Tab::Fleet => "Fleet",
             Tab::Harnesses => "Pots",
@@ -684,7 +685,7 @@ pub struct App {
     pub harness: String,
     /// POTS scope axis (D-003, matching the desktop's two-axis model): `?slug=`
     /// is WHICH pot is active (`harness`, always a real slug); this flag is HOW
-    /// WIDE the global list tabs (Plans / Inbox / Brew) read — `true` = "All
+    /// WIDE the global list tabs (Plans / Inbox / Fleet) read — `true` = "All
     /// Pots" (unfiltered), `false` = scoped to the active pot. The "all"
     /// sentinel lives on this axis, never in `harness`.
     pub all_pots: bool,
@@ -799,7 +800,7 @@ pub struct App {
     pub palette_input: String,
     /// Always-on presence sidebar visible (P7 — who's online + intent). `p` toggles.
     pub show_presence: bool,
-    /// Plans-filter rail (D-009 — Inbox + Brew). `plan_filter` is the selected
+    /// Plans-filter rail (D-009 — Inbox + Fleet). `plan_filter` is the selected
     /// plan slugs (empty = no filtering); `plan_filter_open` shows the
     /// collapsible left rail (`F` toggles on the two tabs it narrows);
     /// `plan_filter_sel` is the rail's own cursor into `visible_plans()`.
@@ -1423,7 +1424,7 @@ impl App {
         v
     }
 
-    /// The Brew roster under the plans filter (D-009) — `fleet.agent_sel`
+    /// The Fleet roster under the plans filter (D-009) — `fleet.agent_sel`
     /// indexes this. Rows with NO current plan are never hidden (the desktop's
     /// rule: an unattributed agent must stay visible), so a filter only
     /// narrows plan-attributed rows.
@@ -1457,7 +1458,7 @@ impl App {
         }
     }
 
-    /// Fleet work-items under the current pot scope (Brew headline + rollup).
+    /// Fleet work-items under the current pot scope (Fleet headline + rollup).
     pub fn visible_work_items(&self) -> Vec<&WorkItem> {
         self.fleet
             .work_items
@@ -1466,7 +1467,7 @@ impl App {
             .collect()
     }
 
-    /// The Brew activity feed under the current pot scope (mirror mode).
+    /// The Fleet activity feed under the current pot scope (mirror mode).
     pub fn visible_fleet_activity(&self) -> Vec<&ActivityRow> {
         self.fleet
             .activity
@@ -1475,7 +1476,7 @@ impl App {
             .collect()
     }
 
-    /// The curator's signals under the current pot scope (Brew curated mode).
+    /// The curator's signals under the current pot scope (Fleet curated mode).
     pub fn visible_signals(&self) -> Vec<&CuratedSignal> {
         self.fleet
             .curated_signals
@@ -1770,7 +1771,7 @@ impl App {
                 self.publish_active();
                 Ok(json!({ "ok": true, "harness": slug }))
             }
-            // Plans filter (D-009): set the slugs that narrow Inbox + the Brew
+            // Plans filter (D-009): set the slugs that narrow Inbox + the Fleet
             // roster ([] clears), optionally opening/closing the rail — keeps
             // the filter agent-driveable, not just key-driveable.
             "set_plan_filter" => {
@@ -1829,7 +1830,7 @@ impl App {
             "panes" | "plugins" => self.pane_sel = clamp(self.panes.len()),
             "flags" | "settings" => self.flag_sel = clamp(self.flags.len()),
             "memory" | "memories" => self.memory_sel = clamp(self.visible_memories().len()),
-            // The Brew tab (fleet ⋃ the old Sessions launcher, D-002b) shares one
+            // The Fleet tab (fleet ⋃ the old Sessions launcher, D-002b) shares one
             // cursor; every legacy alias resolves to it. Clamped to the
             // plans-filtered roster (D-009) — the list that actually renders.
             "agents" | "fleet" | "brew" | "roster" | "sessions" => {
@@ -1885,7 +1886,7 @@ impl App {
             "doc_scroll": self.doc_scroll,
             "show_presence": self.show_presence,
             // The plans filter (D-009) — agent-visible so a driver can see what
-            // narrows the Inbox/Brew lists.
+            // narrows the Inbox/Fleet lists.
             "plan_filter": self.plan_filter.iter().cloned().collect::<Vec<_>>(),
             "plan_filter_open": self.plan_filter_open,
             "companion": self.companion_version,
@@ -1987,8 +1988,8 @@ impl App {
         self.visible_inbox().get(self.inbox_sel).copied()
     }
 
-    /// The roster entry the Brew tab has selected (the single shared cursor,
-    /// `fleet.agent_sel`, after the Sessions↦Brew merge — D-002b). Backs the
+    /// The roster entry the Fleet tab has selected (the single shared cursor,
+    /// `fleet.agent_sel`, after the Sessions↦Fleet merge — D-002b). Backs the
     /// dossier + the `n`-launch agent default. Indexes the plans-filtered
     /// roster (D-009) — the list the tab renders.
     pub fn selected_session(&self) -> Option<&RosterEntry> {
@@ -3301,7 +3302,7 @@ impl App {
                 }
                 Action::Render
             }
-            // Launch a native agent pane from the Brew tab (the old Sessions
+            // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
             // Plugins tab (D-007/D-014): in Panes focus, Enter launches the
@@ -3370,7 +3371,7 @@ impl App {
                 };
                 Action::Render
             }
-            // Brew (fleet) curated ↔ mirror toggle (D-006). On `Tab`, mirroring
+            // Fleet curated ↔ mirror toggle (D-006). On `Tab`, mirroring
             // the Pots column-switch idiom — frees `m` for the Memory tab.
             KeyCode::Tab if self.tab == Tab::Fleet => {
                 self.fleet.toggle_mode();
@@ -3901,7 +3902,7 @@ mod tests {
     #[test]
     fn number_keys_switch_tabs() {
         // Digit keys follow Tab::switch_key (D-002 reorder): 1 Operator, 2 Inbox,
-        // 3 Plans, 4 Brew (Fleet), 5 Pots (Harnesses).
+        // 3 Plans, 4 Fleet, 5 Pots (Harnesses).
         let mut a = App::new();
         assert_eq!(a.update(key('2', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Inbox);
@@ -4008,12 +4009,12 @@ mod tests {
 
     #[test]
     fn n_launches_on_brew_only() {
-        // The agent launcher folded from Sessions into Brew (D-002b): `n` only
-        // launches on the Brew (Fleet) tab.
+        // The agent launcher folded from Sessions into Fleet (D-002b): `n` only
+        // launches on the Fleet tab.
         let mut a = App::new();
         a.update(key('3', KeyModifiers::NONE)); // Plans tab
         assert_eq!(a.update(key('n', KeyModifiers::NONE)), Action::None);
-        a.update(key('4', KeyModifiers::NONE)); // Brew
+        a.update(key('4', KeyModifiers::NONE)); // Fleet
         match a.update(key('n', KeyModifiers::NONE)) {
             Action::Launch(spec) => assert_eq!(spec.argv[0], "psu"),
             other => panic!("expected Launch, got {other:?}"),
@@ -4443,7 +4444,7 @@ mod tests {
 
     #[test]
     fn plan_filter_rail_keys_toggle_clear_and_close() {
-        // D-009: `F` opens the rail on Inbox/Brew; j/k move its cursor;
+        // D-009: `F` opens the rail on Inbox/Fleet; j/k move its cursor;
         // Space toggles the plan under it; c clears; F closes.
         let mut a = App::new();
         a.set_plans(vec![plan("alpha"), plan("beta")]);
@@ -4520,7 +4521,7 @@ mod tests {
             .map(|r| r.owner_id.clone())
             .collect();
         assert_eq!(roster, vec!["su-alpha", "su-1"]);
-        // The Brew cursor + selected_session ride the filtered list.
+        // The Fleet cursor + selected_session ride the filtered list.
         a.fleet.agent_sel = 1;
         assert_eq!(
             a.selected_session().map(|r| r.owner_id.as_str()),
@@ -5549,7 +5550,7 @@ mod tests {
 
     #[test]
     fn key_4_switches_to_brew_and_tab_toggles_mode() {
-        // Brew (Fleet) is digit '4' (D-002); the curated↔mirror toggle moved from
+        // Fleet is digit '4' (D-002); the curated↔mirror toggle moved from
         // `m` to `Tab` (frees `m` for the Memory tab), mirroring Pots' column Tab.
         use crate::fleet::FleetMode;
         let mut a = App::new();
@@ -5560,7 +5561,7 @@ mod tests {
         assert_eq!(a.fleet.mode, FleetMode::Mirror);
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(a.fleet.mode, FleetMode::Curated);
-        // Tab only toggles the mode on the Brew tab (elsewhere it's column-switch
+        // Tab only toggles the mode on the Fleet tab (elsewhere it's column-switch
         // or inert — no mode change).
         a.update(key('3', KeyModifiers::NONE)); // Plans
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
@@ -5591,7 +5592,7 @@ mod tests {
     #[test]
     fn fleet_tab_navigates_roster_and_reclamps() {
         let mut a = App::new();
-        a.update(key('4', KeyModifiers::NONE)); // Brew
+        a.update(key('4', KeyModifiers::NONE)); // Fleet
         a.set_roster(vec![roster_entry("claude"), roster_entry("codex")]);
         assert_eq!(a.fleet.agent_sel, 0);
         a.update(key('j', KeyModifiers::NONE));
@@ -5694,7 +5695,7 @@ mod tests {
         assert_eq!(Tab::Operator.switch_key(), '1');
         assert_eq!(Tab::Operator.title(), "Operator");
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
-        // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
+        // Sessions folded into Fleet (D-002b) + Activity retired (D-004b) → ten
         // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
         // D-011) + Conversations ('d', Brief 25) + Voice ('a', holepunch-voice-
         // channels P-008) letter tabs + the prepended Overview ('h', Brief 23).
