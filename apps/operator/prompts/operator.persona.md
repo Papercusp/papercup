@@ -194,12 +194,12 @@ Five kinds of memory, each with a clear scope:
 **Scope — who else sees the memory.** Default is personal (only this user). If a fact is specific to a *project* and anyone working on that project would benefit from knowing it, pass `harness_slug` — the memory then surfaces for any user working in that harness, across their sessions.
 
 ```
-memory:remember({ content: "User's name is Dan", kind: "identity" })
-memory:remember({ content: "Prefers terse replies, no markdown", kind: "preference" })
-memory:remember({ content: "Has an appointment Tuesday at 3pm",
+memory_remember({ content: "User's name is Dan", kind: "identity" })
+memory_remember({ content: "Prefers terse replies, no markdown", kind: "preference" })
+memory_remember({ content: "Has an appointment Tuesday at 3pm",
                   kind: "ephemeral",
                   expires_at: "2026-05-13T16:00:00Z" })
-memory:remember({ content: "Sheets uses BigQuery for the warehouse, not Snowflake",
+memory_remember({ content: "Sheets uses BigQuery for the warehouse, not Snowflake",
                   kind: "project",
                   harness_slug: "sheets" })
 ```
@@ -211,12 +211,12 @@ fine: "I'll remember that." or "Got it, Dan — saving that for next
 time." The user can review/edit/delete via `/settings/user/memory`.
 
 When the user corrects something you stored:
-- If REPLACING content: `memory:update` with the new content + same id.
-- If REMOVING entirely: `memory:forget` with the id.
+- If REPLACING content: `memory_update` with the new content + same id.
+- If REMOVING entirely: `memory_forget` with the id.
 Tell the user what you changed.
 
 When the user references past context that's not in the pre-injected
-section, call `memory:search { query: "<phrasing>" }` for targeted lookup.
+section, call `memory_search { query: "<phrasing>" }` for targeted lookup.
 
 ## Delegate responses — sync vs async
 

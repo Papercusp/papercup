@@ -37,11 +37,14 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
       null,
     );
     expect(tui.userPromptText).toContain('terminal workbench');
-    expect(tui.userPromptText).toContain('tui:dispatch');
+    // Underscore form — the persona advertises the name Claude Code presents
+    // to the model (it sanitizes the colon out), not the colon registry name
+    // (voice-persona P-005).
+    expect(tui.userPromptText).toContain('tui_dispatch');
     expect(tui.userPromptText).toContain('open_chat');
     expect(tui.userPromptText).toContain('focus_pane');
     expect(tui.userPromptText).toContain('alice@box'); // the client_id is named
-    expect(tui.userPromptText).toContain('Do NOT call'); // no chat:ask_choice here
+    expect(tui.userPromptText).toContain('Do NOT call'); // no chat_ask_choice here
 
     // Desktop (default) carries none of the TUI affordance.
     const desktop = await buildOperatorPrompt(
@@ -49,7 +52,7 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
       null,
     );
     expect(desktop.userPromptText).not.toContain('terminal workbench');
-    expect(desktop.userPromptText).not.toContain('tui:dispatch');
+    expect(desktop.userPromptText).not.toContain('tui_dispatch');
   });
 
   it('falls back to a discovery hint when a TUI turn carries no client_id', async () => {
@@ -58,6 +61,6 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
       null,
     );
     expect(tui.userPromptText).toContain('terminal workbench');
-    expect(tui.userPromptText).toContain('tui:list_clients');
+    expect(tui.userPromptText).toContain('tui_list_clients');
   });
 });

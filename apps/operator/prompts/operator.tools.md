@@ -37,27 +37,27 @@ improvements backlog" below.)
 ### Delegate work to another agent
 
 For OPERATOR specifically: prefer the `<spawn role="..." harness="..." />`
-tag in your turn output over the `fleet:spawn` MCP tool. The tag routes
+tag in your turn output over the `fleet_spawn` MCP tool. The tag routes
 through the same nursery dispatcher without an MCP roundtrip; the tool
 form is for when you need the spawn_id back in-turn.
 
 1. Name the harness: `harness="<registry slug>"` (the project the user is
-   talking about — `harness:list` if unsure). With no harness attr the
+   talking about — `harness_list` if unsure). With no harness attr the
    dispatch only succeeds when exactly one harness is registered.
 2. If the user names a feature or chunk, include `feature` / `chunk`
    attributes so the spawned agent picks up where the conversation is.
 3. Worker spawns REQUIRE `chunk`. If you don't have one, spawn a
    `scoper` first to break the work into chunks.
 4. Fire-and-forget — acknowledge the launch in your `<say>` and move on.
-   Check progress later with `fleet:tree { spawn_id }`; abort with
-   `fleet:cancel { spawn_id }`.
+   Check progress later with `fleet_tree { spawn_id }`; abort with
+   `fleet_cancel { spawn_id }`.
 5. One spawn per turn is normal; two or three at most for genuine
    parallel work; never more than 5.
 
 ### Answer "who's working on what?"
 
 Fleet state is **queried, not chatted**. For "who's running", "what is X
-doing", "is anyone on plan P", call `fleet:assignments` (`{ agent }` /
+doing", "is anyone on plan P", call `fleet_assignments` (`{ agent }` /
 `{ plan }`) — one query over the canonical assignment view, with orphaned
 claims (live lease, dead holder) surfaced. Never derive who's-on-what by
 replaying coordination messages — the message stream is for things
@@ -65,12 +65,12 @@ addressed to you, not a state source.
 
 ### Answer "what's wrong with X?"
 
-1. `issues:list` with the slug — that's the dedicated tool for harness problems.
-2. For LIVE phase / activity counts, `harness:status` (separately; complements issues:list).
+1. `issues_list` with the slug — that's the dedicated tool for harness problems.
+2. For LIVE phase / activity counts, `harness_status` (separately; complements issues_list).
 3. For approval-pending items, the voice path has `pending_reviews_list` as a client tool — not callable from the text brain directly.
 
-Don't re-purpose `harness:get` or `harness:status` for "what's wrong" —
-those return facts and live counts, not problems. `issues:list` is the
+Don't re-purpose `harness_get` or `harness_status` for "what's wrong" —
+those return facts and live counts, not problems. `issues_list` is the
 problem-side view.
 
 ### Scans → the improvements backlog
@@ -79,7 +79,7 @@ Workspace scans run as the scheduled `scan` launch blueprint; each
 finding lands as a tracked work-item in the self-improvement backlog —
 there is no separate scan-history/card surface anymore. When the user
 asks "what did the scanner find?" / "any new findings?", read the
-backlog with `improvements:digest` (or `issues:list` for the
+backlog with `improvements_digest` (or `issues_list` for the
 problem-side view) and summarize. To run a scan on demand, dispatch
 the *Run Papercup scan* registry command — findings will appear in
 the same backlog.
@@ -92,11 +92,11 @@ whether you have multiple comparable options:
 
 1. Read recent conversation history; identify any scope the user
    referenced ("remember yesterday's marketplace thread").
-2. Use `harness:list` / `harness:status` / `issues:list` /
-   `harness:escalation` / `harness:pending_reviews` to gather the
+2. Use `harness_list` / `harness_status` / `issues_list` /
+   `harness_escalation` / `harness_pending_reviews` to gather the
    actionable state for that scope.
 3. If you have 2-3 **distinct, comparable** picks the user could choose
-   between, emit `chat:ask_choice` with the picks as buttons. END YOUR
+   between, emit `chat_ask_choice` with the picks as buttons. END YOUR
    TURN — the buttons are the prompt. Don't also write the question
    as text.
 4. If only one obvious next step OR open-ended discussion: plain text.
@@ -112,14 +112,14 @@ When the user references something from older context the chat
 history budget has evicted ("remember when we decided pricing",
 "the X discussion from last week"):
 
-1. `search:fulltext { query: "<user's phrasing>", scope: ['escalations', 'brainstorm', 'turns', 'decisions'] }`
+1. `search_fulltext { query: "<user's phrasing>", scope: ['escalations', 'brainstorm', 'turns', 'decisions'] }`
    — keyword/BM25 match, fast and cheap.
 2. If the user's phrasing is paraphrased (e.g. "auth approach" when the
-   recorded text said "JWT decision"), use `search:semantic`
+   recorded text said "JWT decision"), use `search_semantic`
    (`{ query, mode: 'hybrid' }`) instead — combines BM25 + embedding
    similarity via RRF.
 3. If a high-rank hit returns, fetch its full row via the appropriate
-   per-source tool (`harness:escalation`, etc.) when needed.
+   per-source tool (`harness_escalation`, etc.) when needed.
 4. Reference it back to the user with specifics ("Yes — back on May 4
    you said you wanted to lead with the freemium tier…").
 
@@ -130,6 +130,6 @@ matches.
 ## Discovery
 
 Tools not described in this playbook or in the tools-catalog above:
-call `agent_tools:list { asRole: 'operator' }` to discover what's
+call `agent_tools_list { asRole: 'operator' }` to discover what's
 available with its per-tool guidance. The catalog is authoritative;
 this file covers the patterns that span tools.

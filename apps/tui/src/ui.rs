@@ -116,6 +116,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             && !app.palette_open
             && !app.show_notifs
             && !app.pot_picker_open
+            && app.fleet_action_menu.is_none()
         {
             draw_toast(f, t);
         }
@@ -132,6 +133,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_palette(f, app);
     } else if app.pot_picker_open {
         draw_pot_picker(f, app);
+    } else if let Some(menu) = &app.fleet_action_menu {
+        draw_fleet_menu(f, menu);
     }
 }
 
@@ -2364,6 +2367,57 @@ fn draw_pot_picker(f: &mut Frame, app: &App) {
         .highlight_symbol("> ");
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// The Fleet `[r]/[n]/[f]` no-session action menu (pui-workbench-usability
+/// D-002). Surfaced when Enter on a roster agent finds no single reachable
+/// session, so Enter never silently focuses empty space. Only the viable choices
+/// render; `[n] launch` is always offered.
+fn draw_fleet_menu(f: &mut Frame, menu: &crate::app::FleetActionMenu) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(menu.note.clone(), Theme::dim())),
+        Line::from(""),
+    ];
+    if menu.can_resume {
+        lines.push(Line::from(vec![
+            Span::styled("[r]", Theme::title_active()),
+            Span::raw(" resume the ended session"),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("[n]", Theme::title_active()),
+        Span::raw(" launch a new agent here"),
+    ]));
+    if menu.can_focus_window {
+        lines.push(Line::from(vec![
+            Span::styled("[f]", Theme::title_active()),
+            Span::raw(" focus its terminal window"),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Esc to cancel", Theme::dim())));
+
+    // Height: note + blank + the rendered choices + blank + esc, +2 for borders.
+    let h = (lines.len() as u16 + 2).min(f.area().height);
+    let full = f.area();
+    let w = (full.width as u32 * 56 / 100).clamp(36, 72) as u16;
+    let area = Rect {
+        x: full.x + (full.width.saturating_sub(w)) / 2,
+        y: full.y + (full.height.saturating_sub(h)) / 2,
+        width: w.max(1),
+        height: h,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(format!(
+                " {} · reach agent ",
+                trunc(&menu.label, 28)
+            )))),
+        area,
+    );
 }
 
 fn draw_palette(f: &mut Frame, app: &App) {

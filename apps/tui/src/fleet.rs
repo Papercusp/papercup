@@ -461,18 +461,19 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     }
     let body = if items.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "(no agents in the fleet)",
+            "(no agents in the fleet) — press n to launch one here",
             Theme::dim(),
         )))]
     } else {
         items
     };
     // The plans-filter badge (D-009) keeps an active-but-hidden rail visible.
+    // `Enter: reach` advertises the Enter-by-location routing (D-001).
     let title = if app.plan_filter.is_empty() {
-        format!(" Agents ({}) · n: launch ", roster.len())
+        format!(" Agents ({}) · Enter: reach · n: launch ", roster.len())
     } else {
         format!(
-            " Agents ({}/{}) · F:plans({}) · n: launch ",
+            " Agents ({}/{}) · F:plans({}) · Enter: reach · n: launch ",
             roster.len(),
             app.roster.len(),
             app.plan_filter.len()
@@ -545,6 +546,19 @@ fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
             out
         }
         None => "Select an agent (j/k) to see its dossier · n launches a new agent.".to_string(),
+    };
+    // Empty-work-area hint (pui-workbench-usability D-002): at startup the
+    // workbench opens with a blank work area + no agent — surface the launch
+    // affordance instead of leaving it silent. Prepended so it's the first thing
+    // seen whether or not an agent row is selected.
+    let body = if app.work_area_empty() {
+        format!(
+            "{} Work area is empty — press n to launch an agent here.\n\n{}",
+            glyph::nav::PANES,
+            body
+        )
+    } else {
+        body
     };
     f.render_widget(
         Paragraph::new(body)

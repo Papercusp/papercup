@@ -7,6 +7,7 @@ import type { ChatTarget } from '@papercusp/testing-shell/llm';
 import { ArchitectTarget } from './architect';
 import { OperatorTarget } from './operator';
 import { OracleTarget } from './oracle';
+import { SuTarget } from './su';
 
 export type TargetFactory = () => ChatTarget;
 
@@ -18,6 +19,11 @@ const TARGETS: Record<string, TargetFactory> = {
   // dev harness present in harness_shared.projects). Scenarios can
   // override per-turn via input.meta.harnessSlug.
   architect: () => new ArchitectTarget({ defaultHarnessSlug: 'sheets' }),
+  // su — in-process behavioral SUT for the engineer-collaborator playbook
+  // (su-scenario-suite-2026-05-31). Unlike the HTTP-chat targets above it
+  // runs a hand-rolled Anthropic tool loop in-process (playbook-as-system-
+  // prompt + the papercusp-su catalog); see ./su.
+  su: () => new SuTarget(),
 };
 
 export function registerTarget(id: string, factory: TargetFactory): void {
@@ -34,4 +40,4 @@ export function listTargets(): string[] {
   return Object.keys(TARGETS);
 }
 
-export { OperatorTarget, OracleTarget, ArchitectTarget };
+export { OperatorTarget, OracleTarget, ArchitectTarget, SuTarget };

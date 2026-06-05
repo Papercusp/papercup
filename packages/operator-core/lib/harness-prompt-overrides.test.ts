@@ -1,13 +1,12 @@
 /**
  * Coverage for harness-prompt-overrides: the (workspace, harness, role) prompt
  * override CRUD. The org-PG `sql` tagged template is mocked (postgres-js style),
- * so the tests assert null-defaulting, RETURNING→boolean/count mapping, the
- * snake→camel + Number row mapping, and that ensure*Table runs (sql.unsafe).
+ * so the tests assert null-defaulting, RETURNING→boolean/count mapping, and the
+ * snake→camel + Number row mapping.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const sqlUnsafe = vi.fn(async () => undefined);
-const sql = Object.assign(vi.fn(async (..._a: unknown[]) => [] as unknown[]), { unsafe: sqlUnsafe });
+const sql = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return { ...actual, getOrgPg: () => ({ sql }) };
@@ -19,11 +18,9 @@ async function load(): Promise<Mod> {
 }
 
 beforeEach(() => {
-  vi.resetModules(); // reset the module-level `ensured` flag
+  vi.resetModules();
   sql.mockReset();
   sql.mockResolvedValue([]);
-  sqlUnsafe.mockReset();
-  sqlUnsafe.mockResolvedValue(undefined);
 });
 
 describe('getPromptOverride', () => {

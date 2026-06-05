@@ -46,7 +46,7 @@ const BOOT_PREREQS_DDL = `
   CREATE EXTENSION IF NOT EXISTS vector;
 `;
 
-const MIN_HARNESS_SHARED_TABLES = 181; // complete baseline (see verify-baseline.ts); -3 after dropping the 3 harness_expert* tables (migration 117, experts feature removed)
+const MIN_HARNESS_SHARED_TABLES = 180; // complete baseline (see verify-baseline.ts); -3 after dropping the 3 harness_expert* tables (migration 117); -1 harness_health (migration 171)
 
 let adminUri: string;
 let dbName: string;

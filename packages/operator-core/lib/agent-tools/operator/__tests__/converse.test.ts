@@ -138,6 +138,27 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     expect(call.mcpConfig?.mcpServers.agentmcp.type).toBe('http');
   });
 
+  it('mcpUrl carries &tools=<operator set> so the surface loads non-deferred (P-009)', async () => {
+    await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig };
+    const url = mcpUrlOf(call.mcpConfig)!;
+    expect(url).toContain('&tools=');
+    // The param is the colon MCP-catalog name (mcp__agentmcp__ prefix stripped).
+    const tools = new URL(url).searchParams.get('tools') ?? '';
+    expect(tools.split(',')).toEqual(['tasks:read', 'chat:ask_choice']);
+  });
+
+  it('&tools= drops chat:ask_choice on surface="tui" (mirrors allowedTools)', async () => {
+    await handler(
+      { messages: [], trigger: 'user_message', surface: 'tui', sessionUser: null },
+      makeCtx(),
+    );
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as { mcpConfig?: McpConfig };
+    const tools = new URL(mcpUrlOf(call.mcpConfig)!).searchParams.get('tools') ?? '';
+    expect(tools.split(',')).toEqual(['tasks:read']);
+    expect(tools).not.toContain('chat:ask_choice');
+  });
+
   it('workspaceId is URL-encoded in the mcpUrl', async () => {
     const wonky = 'ws with space/slash';
     vi.mocked(activeWorkspaceId).mockReturnValue(wonky);

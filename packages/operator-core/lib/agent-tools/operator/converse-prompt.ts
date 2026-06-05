@@ -41,7 +41,7 @@ export interface ConverseInput {
    *  across surfaces (one role, one persona — tui-operator-surface D-001); only
    *  surface-appropriate AFFORDANCES are injected per turn (D-003). */
   surface?: 'desktop' | 'tui';
-  /** The pui's workbench owner key (its tui:dispatch client_id), passed through
+  /** The pui's workbench owner key (its tui_dispatch client_id), passed through
    *  on TUI turns so the affordance block can name the exact target. */
   uiClientId?: string;
   /** The shared PG conversation this turn belongs to. When present (desktop /
@@ -134,7 +134,7 @@ export async function buildOperatorPrompt(
   const toClaudeName = (mcpName: string): string => mcpName.replace(/:/g, '_');
   // Phase 4 T3.1: pass modality so the catalog filters out tools
   // that don't declare 'voice' support when this turn is voice-side.
-  // Today chat:ask_choice is the load-bearing example — buttons are
+  // Today chat_ask_choice is the load-bearing example — buttons are
   // invisible to a voice user, so the tool declares modality:['text']
   // and gets dropped from the voice catalog automatically (replaces
   // the manual NOTE in the trigger sections below).
@@ -213,19 +213,19 @@ You may emit another \`<continue/>\` if the multi-step work isn't done yet — n
 If you realize the work is actually complete and there's nothing more to narrate, end with a brief terminal \`<say>\` summarizing what's done. Do not loop on no-op continues.`,
     open_canvas: `Trigger: open_canvas — fresh chat with no prior history.
 
-STEP 1: Use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews / audit:list) AND/OR your full conversation history above to find what's actionable.
+STEP 1: Use MCP tools (harness_list / harness_status / issues_list / harness_escalation / harness_pending_reviews / audit_list) AND/OR your full conversation history above to find what's actionable.
 
 STEP 2: Decide the OUTPUT SHAPE — cards or text. **PREFER CARDS.**
 
-CARDS (use this whenever possible) — emit \`chat:ask_choice\` if you can name ≥2 distinct things the user could pick between. Includes:
+CARDS (use this whenever possible) — emit \`chat_ask_choice\` if you can name ≥2 distinct things the user could pick between. Includes:
   - 2 named items + "something else" (3 options total) ← THIS COUNTS, use cards
   - 3 active threads (use 3 options, no "other")
   - 2 specific escalations to triage
-Button labels ≤80 chars. ≤3 options total. Mark one option with style: 'primary' if you have a recommended pick. The buttons ARE the prompt; do NOT also write the question as text. chat:ask_choice BLOCKS until the user picks — you'll receive {picks:[{option_id,label},...]} as the tool result and can react to it in the same turn.
+Button labels ≤80 chars. ≤3 options total. Mark one option with style: 'primary' if you have a recommended pick. The buttons ARE the prompt; do NOT also write the question as text. chat_ask_choice BLOCKS until the user picks — you'll receive {picks:[{option_id,label},...]} as the tool result and can react to it in the same turn.
 
 WORKED EXAMPLE — DO emit cards for this:
   User's last context: "rust port and marketplace pipeline were both active."
-  ✅ chat:ask_choice({ question: "Pick up where you left off?", options: [
+  ✅ chat_ask_choice({ question: "Pick up where you left off?", options: [
        { id: "rust", label: "Check rust port status", style: "primary" },
        { id: "marketplace", label: "Check marketplace pipeline" },
        { id: "other", label: "Something else" }] })
@@ -238,7 +238,7 @@ TEXT (fallback) — use plain <say> ONLY when:
 
 FORBIDDEN: generic greetings like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — never start that way regardless of card vs text.
 
-NOTE: chat:ask_choice works in both text and voice. Voice users hear fallbackText (the question + options) and click on the chat surface. For voice-answerable cards (the silence-nudge Ready card sets voiceAnswerable:true), the user can also speak their pick.`,
+NOTE: chat_ask_choice works in both text and voice. Voice users hear fallbackText (the question + options) and click on the chat surface. For voice-answerable cards (the silence-nudge Ready card sets voiceAnswerable:true), the user can also speak their pick.`,
 
     user_says_ready: `Trigger: user_says_ready — the user is open to suggestions. Fires from THREE entry points:
   (a) the user typed "ready" / "next" / "what now?" / "go"
@@ -247,66 +247,66 @@ NOTE: chat:ask_choice works in both text and voice. Voice users hear fallbackTex
 
 ALL THREE entry points expect the same behavior: do investigation in THIS ONE TURN (multi-tool MCP calls within a single turn are fine and expected — no need to chain), and produce one of:
 
-  - \`chat:ask_choice\` with 2-3 specific options the user could pick next
+  - \`chat_ask_choice\` with 2-3 specific options the user could pick next
   - \`<sleep duration_minutes="N"/>\` if there is genuinely nothing worth surfacing right now (entry point (c) only — for (a) and (b) the user explicitly asked, so always produce a card or short concrete answer)
 
 **Do NOT emit \`<continue/>\` from this trigger.** Idle-scan work is one turn. Do not auto-execute side-effecting actions from this trigger — surface the suggestion as a card and let the user approve.
 
 **Do NOT emit a terminal \`<say>\` without a card AND without a \`<sleep>\`.** That would loop back into another auto-fire. Either emit a card OR a sleep — never bare text from an entry-point-(c) auto-fire.
 
-STEP 1: Re-read the full history above for specific scope ("remember yesterday's X", "continue with Y"). If no specific reference, use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews) to find what's actionable. All within this turn.
+STEP 1: Re-read the full history above for specific scope ("remember yesterday's X", "continue with Y"). If no specific reference, use MCP tools (harness_list / harness_status / issues_list / harness_escalation / harness_pending_reviews) to find what's actionable. All within this turn.
 
 STEP 2: Emit a card. **PREFER CARDS for this trigger** — when you have 2-3 distinct things to surface, the card is the right output. Button labels ≤80 chars. ≤3 options. Mark one option with style: 'primary' if you have a recommended pick.
 
 WORKED EXAMPLE:
   Recent thread mentioned: sheets escalation, marketplace pipeline.
-  ✅ chat:ask_choice({ question: "What's the priority?", options: [
+  ✅ chat_ask_choice({ question: "What's the priority?", options: [
        { id: "sheets", label: "Look at sheets escalation", style: "primary" },
        { id: "market", label: "Resume marketplace pipeline" },
        { id: "wiki", label: "Decide what to do with wiki" }] })
   ❌ <say>"Want to look at sheets, or maybe the marketplace?"</say>   ← USE CARDS
 
-NOTE: chat:ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
+NOTE: chat_ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
 
     user_welcomed: `Trigger: user_welcomed — the user just logged in${input.welcomed_user?.display_name ? ` as **${input.welcomed_user.display_name}**` : ''}. Open with a warm, NAMED greeting in your FIRST SENTENCE (e.g. "Welcome back, ${input.welcomed_user?.display_name ?? 'there'}.").
 
-Then deliver substance via the same suggestions flow as user_says_ready: use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews) to find what's actionable, emit chat:ask_choice with ≤3 options when you have distinct comparables, or plain <say> with a single concrete suggestion otherwise.
+Then deliver substance via the same suggestions flow as user_says_ready: use MCP tools (harness_list / harness_status / issues_list / harness_escalation / harness_pending_reviews) to find what's actionable, emit chat_ask_choice with ≤3 options when you have distinct comparables, or plain <say> with a single concrete suggestion otherwise.
 
 NEVER say "Hi, what can I help with" or any generic greeting — always anchor on a concrete fact + a concrete option.
 
-NOTE: chat:ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
+NOTE: chat_ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
   };
 
   userSections.push(
     `## Modality\n\nOutput surface: **${modality}**.\n\n` +
       (modality === 'voice'
-        ? 'You are speaking to a voice user — every <say> is read aloud by TTS, so brevity is a HARD constraint, not a style preference. (1) LENGTH: each <say> MUST be ≤220 characters / 1–2 short sentences. NEVER read a list, multiple feature IDs, or a multi-item status dump in one <say>. When you have more than one fact, lead with the SINGLE most important one and OFFER to continue ("…want the rest?") — put the remainder in a later turn or a card, never in a longer <say>. (2) ONE QUESTION per turn — never stack two. (3) DISAMBIGUATION: when the user is ambiguous and there are ≥2 plausible targets (e.g. "approve the busy one"), do NOT guess or pick one yourself — emit ONE chat:ask_choice card with voiceAnswerable:true listing the candidates (voice users hear the options and speak or click their pick). Use a plain <say> recommendation only when there is a single obvious answer. chat:ask_choice supports ≤6 short options. (4) GROUNDED: never state a count or status before the tool result that supports it has come back — call the tool first, then speak the result; never invent a number and silently correct it next turn. (5) PLAIN LANGUAGE: no internal jargon or raw IDs read aloud (not "F-FMT-002 dash-delimited parsing" / "dig the chunks") — say what a non-engineer listener understands ("the formatting fix", "the items waiting on you").'
-        : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, emit chat:ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
+        ? 'You are speaking to a voice user — every <say> is read aloud by TTS, so brevity is a HARD constraint, not a style preference. (1) LENGTH: each <say> MUST be ≤220 characters / 1–2 short sentences. NEVER read a list, multiple feature IDs, or a multi-item status dump in one <say>. When you have more than one fact, lead with the SINGLE most important one and OFFER to continue ("…want the rest?") — put the remainder in a later turn or a card, never in a longer <say>. (2) ONE QUESTION per turn — never stack two. (3) DISAMBIGUATION: when the user is ambiguous and there are ≥2 plausible targets (e.g. "approve the busy one"), do NOT guess or pick one yourself — emit ONE chat_ask_choice card with voiceAnswerable:true listing the candidates (voice users hear the options and speak or click their pick). Use a plain <say> recommendation only when there is a single obvious answer. chat_ask_choice supports ≤6 short options. (4) GROUNDED: never state a count or status before the tool result that supports it has come back — call the tool first, then speak the result; never invent a number and silently correct it next turn. (5) PLAIN LANGUAGE: no internal jargon or raw IDs read aloud (not "F-FMT-002 dash-delimited parsing" / "dig the chunks") — say what a non-engineer listener understands ("the formatting fix", "the items waiting on you").'
+        : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, emit chat_ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
   );
 
   // Per-surface affordances (tui-operator-surface D-003). The persona is the
   // same across desktop and TUI; only the surface-appropriate control tools are
   // injected per turn. On the TUI the web UI is absent, so steer the brain to
-  // the pui control surface (tui:dispatch) and away from web-only affordances.
+  // the pui control surface (tui_dispatch) and away from web-only affordances.
   if (input.surface === 'tui') {
     const clientId = typeof input.uiClientId === 'string' && input.uiClientId.trim()
       ? input.uiClientId.trim()
       : null;
     const clientLine = clientId
-      ? `Its \`client_id\` is **${clientId}** — pass that to every tui:dispatch call.`
-      : 'Resolve its `client_id` with `tui:list_clients` if you need to target it (usually your turn already carries it).';
+      ? `Its \`client_id\` is **${clientId}** — pass that to every tui_dispatch call.`
+      : 'Resolve its `client_id` with `tui_list_clients` if you need to target it (usually your turn already carries it).';
     userSections.push(
       `## Surface — terminal workbench (pui)\n\n` +
         `You are speaking through the **pui terminal workbench**, NOT the desktop web UI. ${clientLine}\n\n` +
-        `Drive this surface with the \`tui:dispatch\` tool (the TUI analogue of \`ui:dispatch\`). Intents:\n` +
+        `Drive this surface with the \`tui_dispatch\` tool (the TUI analogue of \`ui_dispatch\`). Intents:\n` +
         `- \`open_chat\` ({}) — focus this operator chat pane.\n` +
         `- \`set_tab\` ({tab:"Operator"|"Plans"|"Inbox"|"Sessions"|"Harnesses"|"Docs"|"Activity"|"Testing"|"Config"|"Plugins"|"Settings"|"Fleet"}) — switch the workbench tab; e.g. set_tab "Sessions" or "Fleet" to show the live fleet.\n` +
         `- \`set_harness\` ({slug}) — change the active harness.\n` +
         `- \`select\` ({list, index}) — move a selection within a tab's list.\n` +
         `- \`focus_pane\` ({pane_id}) — focus a worker's zellij pane (pane ids come from \`get_state\`).\n` +
         `- \`get_state\` ({}) — read the workbench state (active tab, selections, counts, live panes).\n\n` +
-        `Rules for this surface: (1) prefer \`tui:dispatch\` over \`ui:dispatch\` — the web UI isn't present here. ` +
-        `(2) Do NOT call \`chat:ask_choice\` — the terminal can't render choice cards; ask in plain \`<say>\` text and let the user type a reply. ` +
+        `Rules for this surface: (1) prefer \`tui_dispatch\` over \`ui_dispatch\` — the web UI isn't present here. ` +
+        `(2) Do NOT call \`chat_ask_choice\` — the terminal can't render choice cards; ask in plain \`<say>\` text and let the user type a reply. ` +
         `(3) Keep \`<say>\` concise — it renders in a terminal pane.`,
     );
   }

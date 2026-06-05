@@ -37,24 +37,12 @@ export interface VoiceLease {
   expiresAtMs: number;
 }
 
-let ensured = false;
-async function ensureLeaseTable(): Promise<void> {
-  if (ensured) return;
-  const { sql } = getOrgPg();
-  await sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.voice_lease (
-      workspace_id   TEXT PRIMARY KEY,
-      owner_id       TEXT NOT NULL,
-      owner_kind     TEXT NOT NULL CHECK (owner_kind IN ('desktop','mobile','tui')),
-      expires_at_ms  BIGINT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS voice_lease_expires_idx
-      ON harness_shared.voice_lease (expires_at_ms);
-    GRANT SELECT, INSERT, UPDATE, DELETE
-      ON harness_shared.voice_lease TO harness_app;
-  `);
-  ensured = true;
-}
+// NOTE: the `harness_shared.voice_lease` table + `voice_lease_expires_idx` index
+// are defined in `000-baseline.sql` (the 'tui' owner_kind added by migration 166);
+// harness_app's grants come from migration 109. The runtime `ensureLeaseTable()`
+// `CREATE TABLE/INDEX IF NOT EXISTS` + `GRANT` that used to live here was redundant
+// (a "schema = migrations only" no-op) and was removed in
+// self-contained-migration-baseline-2026-06-02 (P-008b-remainder).
 
 /**
  * Claim or refresh the lease for a workspace. Behavior:
@@ -74,7 +62,6 @@ export async function claimVoiceLease(opts: {
   ownerKind: VoiceLeaseKind;
   force?: boolean;
 }): Promise<{ granted: boolean; lease: VoiceLease }> {
-  await ensureLeaseTable();
   const { db } = getOrgPg();
   const now = Date.now();
   const expiresAtMs = now + LEASE_MS;
@@ -166,14 +153,12 @@ export async function releaseVoiceLease(opts: {
   workspaceId: string;
   ownerId: string;
 }): Promise<void> {
-  await ensureLeaseTable();
   const { db } = getOrgPg();
   await db.delete(vl).where(and(eq(vl.workspaceId, opts.workspaceId), eq(vl.ownerId, opts.ownerId)));
   void notifySyncInvalidate('voiceLease.current', { workspaceId: opts.workspaceId });
 }
 
 export async function readVoiceLease(workspaceId: string): Promise<VoiceLease | null> {
-  await ensureLeaseTable();
   const { db } = getOrgPg();
   const rows = await db
     .select({

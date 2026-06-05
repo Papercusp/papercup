@@ -466,6 +466,38 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 let _ = intent_result_tx.send((intent_id, result_json, error));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::FocusLocalPane { pane_id } => {
+                // Enter-by-location LOCAL route (pui-workbench-usability D-001):
+                // bring the selected agent's workbench pane to front. Companion-
+                // only (id-addressed); without a link, tell the user.
+                match &companion {
+                    Some(c) => c.focus_pane(pane_id),
+                    None => {
+                        app.update(Event::Error(
+                            "focus: needs the companion plugin (run inside the workbench)".into(),
+                        ));
+                    }
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FocusWindow {
+                adv_session_id,
+                pid,
+                window_id,
+                label,
+            } => {
+                // Enter-by-location EXTERNAL-WINDOW route (D-001): wmctrl the
+                // agent's terminal window to the front off the UI thread; the
+                // outcome returns as a toast (Event::Notify/Error).
+                tokio::spawn(focus_session_window(
+                    adv_session_id,
+                    pid,
+                    window_id,
+                    label,
+                    tx.clone(),
+                ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::LoadEarlierChat => {
                 // Load-earlier history (scroll-back). The reducer set the in-flight
                 // flag; spawn the fetch with a snapshot of the conversation id +
@@ -689,6 +721,45 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
     }
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
+    }
+}
+
+/// Enter-by-location EXTERNAL-WINDOW route (pui-workbench-usability D-001):
+/// bring the selected agent's terminal window to the front via
+/// `/api/adv/sessions/focus` (wmctrl). Best-effort — a resolved window toasts
+/// success; an unresolvable one (no wmctrl/DISPLAY/window, or a remote host)
+/// toasts a friendly "couldn't bring … to front" rather than failing silently.
+async fn focus_session_window(
+    adv_session_id: Option<i64>,
+    pid: Option<i64>,
+    window_id: Option<String>,
+    label: String,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("focus window: {e}")));
+            return;
+        }
+    };
+    match client.focus_session(adv_session_id, pid, window_id).await {
+        Ok(true) => {
+            let _ = tx.send(Event::Notify(models::Notif {
+                level: "info".to_string(),
+                message: format!("focused {label}"),
+                harness: None,
+                ts: None,
+            }));
+        }
+        Ok(false) => {
+            let _ = tx.send(Event::Error(format!(
+                "couldn't bring {label} to front (no window — try resume/launch)"
+            )));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("focus window: {e}")));
+        }
     }
 }
 

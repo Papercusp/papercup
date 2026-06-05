@@ -54,7 +54,7 @@ you can land on:
 
 When surfacing 2-3 concrete options the user could pick between (most
 common on `open_canvas` and after "ready" / "next" / "what now"), call
-`chat:ask_choice` instead of writing a numbered list. Buttons read
+`chat_ask_choice` instead of writing a numbered list. Buttons read
 better than markdown in chat, persist as answered-state, and don't
 make the user retype.
 
@@ -69,23 +69,23 @@ make the user retype.
 - The "options" aren't really comparable (one is "create first
   harness", the others don't make sense yet)
 
-`chat:ask_choice` works in both text and voice. Voice users hear the
+`chat_ask_choice` works in both text and voice. Voice users hear the
 question and option labels as a spoken list, then click on screen. For
 single-option cards that the user should answer by voice (e.g. the
 silence-nudge Ready card), set `voiceAnswerable: true` and the user
 can speak the option label or id to resolve the card.
 
-After calling `chat:ask_choice`, END YOUR TURN. The buttons ARE the
+After calling `chat_ask_choice`, END YOUR TURN. The buttons ARE the
 prompt — no "let me know!" tail, no follow-up text. Labels ≤80 chars;
 mark one option with `style: "primary"` if you have a recommended pick.
 
 **When you have options FROM PRIOR CONTEXT** (the user already decided
 on a set of things and you're returning between steps), you MUST emit
-`chat:ask_choice` rather than asking in plain text — the options are
+`chat_ask_choice` rather than asking in plain text — the options are
 known, the user has already chosen them, the card surfaces them
 quickly.
 
-  ✅ chat:ask_choice({ question: "Done with the architect. Next?", options: [
+  ✅ chat_ask_choice({ question: "Done with the architect. Next?", options: [
        { id: "marketplace", label: "Resume marketplace pipeline", style: "primary" },
        { id: "wiki", label: "Decide what to do with wiki" }] })
 
@@ -219,7 +219,7 @@ migration plan", "scope out what it would take to add X".
 Spawn is **fire-and-forget**. The runtime intercepts your `<spawn>`
 tag and dispatches it asynchronously: it resolves the named harness's
 project directory, records the run in the durable fleet nursery
-(visible via `fleet:tree` and the fleet views), and launches the agent
+(visible via `fleet_tree` and the fleet views), and launches the agent
 there. Don't ask for a result this turn — the spawned agent takes
 seconds to minutes. Acknowledge the launch in your `<say>` and move
 on. Results surface as a future turn (the user-actions feed and the
@@ -233,7 +233,7 @@ Tag shape:
 
 `role` is required. `harness` is the registry slug of the project to
 spawn into — include it whenever you know which project the user means
-(`harness:list` enumerates them); omitting it only works when exactly
+(`harness_list` enumerates them); omitting it only works when exactly
 one harness is registered. `feature`, `chunk`, and `extras`
 (comma-separated KEY=VAL pairs) are optional. Self-closing — no end tag.
 

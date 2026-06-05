@@ -2925,6 +2925,11 @@ impl App {
             self.show_notifs = false;
             return Action::Render;
         }
+        // Fleet no-session action menu (D-002): captures r/n/f/Esc while open so
+        // the choices fire (or it closes) before any tab navigation.
+        if self.fleet_action_menu.is_some() {
+            return self.fleet_menu_key(code);
+        }
         // Pot-picker overlay (D-003) captures navigation while open: j/k moves
         // over ["All Pots", ...pots], Enter applies, Esc closes unchanged.
         if self.pot_picker_open {
@@ -3611,6 +3616,11 @@ impl App {
                 }
                 Action::Render
             }
+            // Enter on a Fleet-roster agent routes by WHERE the agent lives
+            // (pui-workbench-usability D-001): local pane focus / external-window
+            // focus / resume an ended session / the [r]/[n]/[f] menu — never the
+            // old silent focus-empty-pane no-op.
+            KeyCode::Enter if self.tab == Tab::Fleet => self.fleet_enter(),
             // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
@@ -4315,6 +4325,303 @@ mod tests {
         let mut b = App::new();
         b.set_roster(vec![roster_entry("codex")]);
         assert!(b.launch_spec().argv.contains(&"--agent=codex".to_string()));
+    }
+
+    // ── Enter-by-location routing (pui-workbench-usability D-001/D-002) ──
+
+    /// A live roster agent with an external-window handle (window id / same-host
+    /// pid) and no matching local pane.
+    fn live_windowed_entry(agent: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: "su-w".into(),
+            label: format!("su · {agent}-w"),
+            liveness: "live".into(),
+            stale: false,
+            agent: Some(agent.into()),
+            pid: Some(4242),
+            pid_alive: Some(true),
+            window_id: Some("0x0123abcd".into()),
+            adv_session_id: Some(7),
+            has_launch_record: true,
+            mode: Some("console".into()),
+            cwd: Some("/repo".into()),
+            ..Default::default()
+        }
+    }
+
+    /// An ended/dead session that still carries a resume handle.
+    fn ended_resumable_entry(agent: &str) -> RosterEntry {
+        RosterEntry {
+            owner_id: "su-e".into(),
+            label: format!("su · {agent}-e"),
+            liveness: "stale".into(),
+            stale: true,
+            agent: Some(agent.into()),
+            adv_session_id: Some(42),
+            has_launch_record: true,
+            cwd: Some("/repo".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn roster_entry_liveness_and_handle_helpers() {
+        // A fresh heartbeat over a DEAD process (zombie) is not live (D-001
+        // "check liveness first" — must not focus, should resume).
+        let zombie = RosterEntry {
+            liveness: "live".into(),
+            stale: false,
+            pid_alive: Some(false),
+            ..Default::default()
+        };
+        assert!(!zombie.is_live());
+        // A genuinely live entry.
+        assert!(live_windowed_entry("claude").is_live());
+        // Resumability needs both an adv id and a known agent.
+        assert!(ended_resumable_entry("claude").is_resumable());
+        assert!(!RosterEntry {
+            agent: Some("claude".into()),
+            ..Default::default()
+        }
+        .is_resumable());
+        // Window handle: an explicit window id always counts; a bare same-host
+        // pid counts; nothing → false.
+        assert!(live_windowed_entry("claude").has_window_handle("any-host"));
+        assert!(RosterEntry {
+            pid: Some(9),
+            host: "h1".into(),
+            ..Default::default()
+        }
+        .has_window_handle("h1"));
+        assert!(!RosterEntry::default().has_window_handle("h1"));
+        // A cross-host pid with no window id can't be focused locally.
+        assert!(!RosterEntry {
+            pid: Some(9),
+            host: "other".into(),
+            ..Default::default()
+        }
+        .has_window_handle("h1"));
+    }
+
+    #[test]
+    fn route_local_pane_wins_when_topology_matches() {
+        use pui_companion_proto::{PaneNode, TabNode, Topology};
+        let mut a = App::new();
+        a.companion_version = Some("0.1.0".into());
+        a.topology = Some(Topology {
+            tabs: vec![TabNode {
+                pos: 0,
+                name: "papercup".into(),
+                active: true,
+                swap_layout: None,
+                swap_dirty: false,
+            }],
+            panes: vec![PaneNode {
+                id: 5,
+                tab: 0,
+                title: "claude · F-9".into(),
+                focused: false,
+                is_plugin: false,
+                exited: false,
+                command: Some("psu".into()),
+            }],
+        });
+        // Live + windowed, but a local pane matches the entry's feature → local
+        // pane wins (it's right here in the workbench).
+        let entry = RosterEntry {
+            feature: Some("F-9".into()),
+            ..live_windowed_entry("claude")
+        };
+        assert_eq!(a.resolve_agent_route(&entry), AgentRoute::LocalPane { pane_id: 5 });
+    }
+
+    #[test]
+    fn route_focus_window_when_live_and_windowed() {
+        let a = App::new(); // no topology → no local pane
+        match a.resolve_agent_route(&live_windowed_entry("claude")) {
+            AgentRoute::FocusWindow { adv_session_id, window_id, .. } => {
+                assert_eq!(adv_session_id, Some(7));
+                assert_eq!(window_id.as_deref(), Some("0x0123abcd"));
+            }
+            other => panic!("expected FocusWindow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_menu_when_live_but_unreachable() {
+        let a = App::new();
+        // Live, but no window id and no pid → can't reach it from here.
+        let entry = RosterEntry {
+            owner_id: "su-r".into(),
+            label: "su · remote".into(),
+            liveness: "live".into(),
+            stale: false,
+            agent: Some("claude".into()),
+            adv_session_id: Some(3),
+            has_launch_record: true,
+            ..Default::default()
+        };
+        match a.resolve_agent_route(&entry) {
+            AgentRoute::Menu(m) => {
+                // A live session must NOT offer resume (it'd double-spawn — D-001).
+                assert!(!m.can_resume);
+                assert!(!m.can_focus_window);
+            }
+            other => panic!("expected Menu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_resume_when_ended_and_resumable() {
+        let a = App::new();
+        match a.resolve_agent_route(&ended_resumable_entry("claude")) {
+            AgentRoute::Resume { spec } => {
+                assert_eq!(spec.argv, vec!["psu", "--resume", "42"]);
+                assert_eq!(spec.cwd.as_deref(), Some("/repo"));
+            }
+            other => panic!("expected Resume, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_menu_when_dead_and_not_resumable() {
+        let a = App::new();
+        let entry = RosterEntry {
+            label: "su · ghost".into(),
+            liveness: "stale".into(),
+            stale: true,
+            agent: Some("claude".into()),
+            ..Default::default() // no adv_session_id → not resumable
+        };
+        match a.resolve_agent_route(&entry) {
+            AgentRoute::Menu(m) => assert!(!m.can_resume),
+            other => panic!("expected Menu, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_fleet_focus_window_action() {
+        let mut a = App::new();
+        a.tab = Tab::Fleet;
+        a.set_roster(vec![live_windowed_entry("claude")]);
+        match a.on_key(KeyCode::Enter, KeyModifiers::empty()) {
+            Action::FocusWindow { window_id, .. } => {
+                assert_eq!(window_id.as_deref(), Some("0x0123abcd"))
+            }
+            other => panic!("expected FocusWindow, got {other:?}"),
+        }
+        // No menu opened — it acted on the unambiguous route.
+        assert!(a.fleet_action_menu.is_none());
+    }
+
+    #[test]
+    fn enter_on_fleet_resume_launches() {
+        let mut a = App::new();
+        a.tab = Tab::Fleet;
+        a.set_roster(vec![ended_resumable_entry("codex")]);
+        match a.on_key(KeyCode::Enter, KeyModifiers::empty()) {
+            Action::Launch(spec) => {
+                assert!(spec.argv.iter().any(|x| x == "--resume"));
+                assert!(spec.argv.iter().any(|x| x == "42"));
+            }
+            other => panic!("expected Launch(resume), got {other:?}"),
+        }
+        // The resume was recorded into the crew roster.
+        assert_eq!(a.launched.len(), 1);
+    }
+
+    #[test]
+    fn enter_on_fleet_opens_menu_then_n_launches() {
+        let mut a = App::new();
+        a.tab = Tab::Fleet;
+        // Live but unreachable → Enter opens the menu (D-002), not a silent no-op.
+        let entry = RosterEntry {
+            label: "su · remote".into(),
+            liveness: "live".into(),
+            stale: false,
+            agent: Some("claude".into()),
+            ..Default::default()
+        };
+        a.set_roster(vec![entry]);
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert!(a.fleet_action_menu.is_some());
+        // `n` in the menu launches a fresh agent and closes the menu.
+        match a.on_key(KeyCode::Char('n'), KeyModifiers::empty()) {
+            Action::Launch(spec) => assert_eq!(spec.argv[0], "psu"),
+            other => panic!("expected Launch, got {other:?}"),
+        }
+        assert!(a.fleet_action_menu.is_none());
+    }
+
+    #[test]
+    fn fleet_menu_f_focuses_and_esc_closes() {
+        let mut a = App::new();
+        a.tab = Tab::Fleet;
+        // A dead-but-windowed session: not resumable here lacks an id, but it has
+        // a window handle → the menu offers [f].
+        let entry = RosterEntry {
+            label: "su · win".into(),
+            liveness: "stale".into(),
+            stale: true,
+            agent: Some("claude".into()),
+            window_id: Some("0xdead".into()),
+            ..Default::default()
+        };
+        a.set_roster(vec![entry]);
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        let menu = a.fleet_action_menu.clone().expect("menu open");
+        assert!(menu.can_focus_window);
+        match a.on_key(KeyCode::Char('f'), KeyModifiers::empty()) {
+            Action::FocusWindow { window_id, .. } => {
+                assert_eq!(window_id.as_deref(), Some("0xdead"))
+            }
+            other => panic!("expected FocusWindow, got {other:?}"),
+        }
+        assert!(a.fleet_action_menu.is_none());
+        // Re-open and Esc closes without acting.
+        a.on_key(KeyCode::Enter, KeyModifiers::empty());
+        assert!(a.fleet_action_menu.is_some());
+        assert_eq!(a.on_key(KeyCode::Esc, KeyModifiers::empty()), Action::Render);
+        assert!(a.fleet_action_menu.is_none());
+    }
+
+    #[test]
+    fn enter_on_empty_fleet_roster_is_noop_render() {
+        let mut a = App::new();
+        a.tab = Tab::Fleet; // empty roster
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert!(a.fleet_action_menu.is_none());
+    }
+
+    #[test]
+    fn work_area_empty_tracks_companion_and_panes() {
+        use pui_companion_proto::{PaneNode, TabNode, Topology};
+        let mut a = App::new();
+        // No companion link → not "empty" (we just don't know the work area).
+        assert!(!a.work_area_empty());
+        a.companion_version = Some("0.1.0".into());
+        a.topology = Some(Topology { tabs: vec![], panes: vec![] });
+        assert!(a.work_area_empty());
+        // A live work pane → no longer empty.
+        a.topology = Some(Topology {
+            tabs: vec![TabNode {
+                pos: 0,
+                name: "papercup".into(),
+                active: true,
+                swap_layout: None,
+                swap_dirty: false,
+            }],
+            panes: vec![PaneNode {
+                id: 1,
+                tab: 0,
+                title: "claude".into(),
+                focused: true,
+                is_plugin: false,
+                exited: false,
+                command: Some("psu".into()),
+            }],
+        });
+        assert!(!a.work_area_empty());
     }
 
     #[test]

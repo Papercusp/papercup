@@ -15,25 +15,12 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 
-let ensured = false;
-
-/** Create the store if missing. Lazy (called before each op), idempotent. */
-export async function ensureHarnessPromptOverridesTable(): Promise<void> {
-  if (ensured) return;
-  const { sql } = getOrgPg();
-  await sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.harness_prompt_overrides (
-      workspace_id  TEXT NOT NULL,
-      harness_slug  TEXT NOT NULL,
-      role          TEXT NOT NULL,
-      prompt_md     TEXT NOT NULL,
-      updated_at    BIGINT NOT NULL,
-      PRIMARY KEY (workspace_id, harness_slug, role)
-    );
-    GRANT SELECT, INSERT, UPDATE, DELETE ON harness_shared.harness_prompt_overrides TO harness_app, harness_admin;
-  `);
-  ensured = true;
-}
+// NOTE: the `harness_shared.harness_prompt_overrides` table is defined in
+// `000-baseline.sql`; harness_app/harness_admin grants come from migration 109.
+// The lazy runtime `ensureHarnessPromptOverridesTable()` `CREATE TABLE IF NOT
+// EXISTS` + `GRANT` that used to run before each op was redundant (a "schema =
+// migrations only" no-op) and was removed in
+// self-contained-migration-baseline-2026-06-02 (P-008b-remainder).
 
 /** The override markdown for (workspace, harness, role), or null when unset. */
 export async function getPromptOverride(
@@ -41,7 +28,6 @@ export async function getPromptOverride(
   harnessSlug: string,
   role: string,
 ): Promise<string | null> {
-  await ensureHarnessPromptOverridesTable();
   const { sql } = getOrgPg();
   const rows = await sql<{ prompt_md: string }[]>`
     SELECT prompt_md FROM harness_shared.harness_prompt_overrides
@@ -58,7 +44,6 @@ export async function setPromptOverride(
   role: string,
   promptMd: string,
 ): Promise<void> {
-  await ensureHarnessPromptOverridesTable();
   const { sql } = getOrgPg();
   await sql`
     INSERT INTO harness_shared.harness_prompt_overrides (workspace_id, harness_slug, role, prompt_md, updated_at)
@@ -74,7 +59,6 @@ export async function deletePromptOverride(
   harnessSlug: string,
   role: string,
 ): Promise<boolean> {
-  await ensureHarnessPromptOverridesTable();
   const { sql } = getOrgPg();
   const rows = await sql`
     DELETE FROM harness_shared.harness_prompt_overrides
@@ -90,7 +74,6 @@ export async function clearAllPromptOverrides(
   workspaceId: string,
   harnessSlug: string,
 ): Promise<number> {
-  await ensureHarnessPromptOverridesTable();
   const { sql } = getOrgPg();
   const rows = await sql`
     DELETE FROM harness_shared.harness_prompt_overrides
@@ -105,7 +88,6 @@ export async function listPromptOverrides(
   workspaceId: string,
   harnessSlug: string,
 ): Promise<Array<{ role: string; promptMd: string; updatedAt: number }>> {
-  await ensureHarnessPromptOverridesTable();
   const { sql } = getOrgPg();
   const rows = await sql<{ role: string; prompt_md: string; updated_at: string }[]>`
     SELECT role, prompt_md, updated_at FROM harness_shared.harness_prompt_overrides
