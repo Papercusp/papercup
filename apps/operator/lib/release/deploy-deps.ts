@@ -31,6 +31,7 @@ import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-regist
 import '@papercusp/operator-core/lib/backup/configure';
 import { workspaceBackupFor } from '@papercusp/backup';
 import type { ReleaseConfig } from './release-config';
+import { VERIFY_RESULT_MARKER } from './verify-release-paths';
 import type { DeployDeps, SnapshotInfo } from './deploy';
 import { applyStagedMigrations } from './migrate';
 import { probeHealth } from './health-probe';
@@ -72,7 +73,10 @@ function run(
     child.on('close', (code) =>
       code === 0
         ? resolve({ stdout, stderr })
-        : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}: ${stderr || stdout}`)),
+        // Include BOTH streams: a failing verify-paths prints its human text to
+        // stderr but the machine-readable marker line to stdout — the caller
+        // parses the marker out of this message on the failure path.
+        : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}:\n${stderr}\n${stdout}`)),
     );
   });
 }
@@ -162,16 +166,36 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       // tsx/script are always present — avoids a first-deploy chicken-and-egg.)
       const tsx = path.join(cfg.integrationRoot, 'node_modules/.bin/tsx');
       const script = path.join(cfg.integrationRoot, 'apps/operator/lib/release/verify-release-paths.ts');
+      // The verify script prints exactly one marker-delimited JSON line on
+      // stdout; everything else (human text, stray PG NOTICEs from imported
+      // modules) is noise we must skip. Parse the marker line, not the whole
+      // stream — JSON.parse(stdout) broke on the trailing OK line (2026-06-05).
+      const parseMarker = (stream: string): { ok: boolean; failures: string[] } | null => {
+        const line = stream
+          .split('\n')
+          .find((l) => l.includes(VERIFY_RESULT_MARKER));
+        if (!line) return null;
+        try {
+          const json = JSON.parse(line.slice(line.indexOf(VERIFY_RESULT_MARKER) + VERIFY_RESULT_MARKER.length).trim());
+          return { ok: !!json.ok, failures: Array.isArray(json.failures) ? json.failures : [] };
+        } catch {
+          return null;
+        }
+      };
       try {
         const { stdout } = await run(tsx, [script, cfg.releaseRoot], {
           cwd: path.join(cfg.releaseRoot, 'apps/operator'),
           env: { PAPERCUSP_RELEASE_ROOT: cfg.releaseRoot },
         });
-        const json = JSON.parse(stdout) as { ok: boolean; failures: string[] };
-        return { ok: json.ok, failures: json.failures };
+        const parsed = parseMarker(stdout);
+        if (parsed) return parsed;
+        return { ok: false, failures: [`verify-paths: no ${VERIFY_RESULT_MARKER} line in output`] };
       } catch (e) {
-        // Non-zero exit = verification failed; surface its reported failures.
+        // Non-zero exit = verification failed; the marker line is still on the
+        // captured stdout (run() includes it in the thrown error's message).
         const msg = e instanceof Error ? e.message : String(e);
+        const parsed = parseMarker(msg);
+        if (parsed) return parsed;
         const m = msg.match(/"failures":\s*(\[[^\]]*\])/);
         return { ok: false, failures: m ? (JSON.parse(m[1]) as string[]) : [msg] };
       }

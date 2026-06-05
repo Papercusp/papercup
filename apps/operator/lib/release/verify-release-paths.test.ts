@@ -11,7 +11,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifyReleasePaths } from './verify-release-paths';
+import { execFileSync } from 'node:child_process';
+import { verifyReleasePaths, VERIFY_RESULT_MARKER } from './verify-release-paths';
 
 let release: string;
 let opCwd: string;

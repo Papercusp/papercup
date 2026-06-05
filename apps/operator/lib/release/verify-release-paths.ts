@@ -89,13 +89,18 @@ export function verifyReleasePaths(releaseRoot?: string): VerifyResult {
   return { ok: failures.length === 0, releaseRoot: root, cwd: process.cwd(), checks: out, failures };
 }
 
-// CLI
+// CLI — stdout carries ONLY the marker-delimited JSON line so the deploy's
+// parser is immune to stray stdout (a trailing human line, or a PG NOTICE that
+// an imported module's onnotice handler logs — both observed polluting this
+// subprocess's stdout, 2026-06-05). All human text goes to stderr.
+export const VERIFY_RESULT_MARKER = '__VERIFY_RELEASE_PATHS__';
 if (require.main === module) {
   const result = verifyReleasePaths(process.argv[2]);
-  console.log(JSON.stringify(result, null, 2));
+  console.log(`${VERIFY_RESULT_MARKER} ${JSON.stringify(result)}`);
   if (!result.ok) {
     console.error(`\n[verify-release-paths] FAIL — ${result.failures.length} issue(s)`);
+    for (const f of result.failures) console.error(`   - ${f}`);
     process.exit(1);
   }
-  console.log('\n[verify-release-paths] OK — all runtime reads resolve under the release checkout');
+  console.error('\n[verify-release-paths] OK — all runtime reads resolve under the release checkout');
 }
