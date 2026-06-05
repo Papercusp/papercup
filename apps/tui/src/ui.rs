@@ -2634,4 +2634,49 @@ mod tests {
         // An empty line is preserved (paragraph break).
         assert_eq!(wrap_text("x\n\ny", 80), vec!["x", "", "y"]);
     }
+
+    #[test]
+    fn plan_filter_rail_renders_with_check_marks_on_inbox() {
+        // D-009: the open rail lists the pot-scoped plans with a checkbox per
+        // slug + the toggle/clear/close hint, and the Inbox title carries the
+        // active-filter badge.
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.set_plans(vec![plan("alpha-2026", "todo"), plan("beta-2026", "shipped")]);
+        app.plan_filter_open = true;
+        app.plan_filter.insert("alpha-2026".to_string());
+        let text = render(&app, 120, 16);
+        assert!(text.contains("Filter: plans (1 on)"), "rail title missing: {text:?}");
+        assert!(text.contains("[x]"), "checked plan glyph missing");
+        assert!(text.contains("[ ]"), "unchecked plan glyph missing");
+        assert!(text.contains("toggle"), "rail hint missing");
+        assert!(text.contains("F:plans(1)"), "inbox filter badge missing");
+        // Closing the rail hides it but keeps the badge (filter still applies).
+        app.plan_filter_open = false;
+        let closed = render(&app, 120, 16);
+        assert!(!closed.contains("Filter: plans"), "rail should be hidden when closed");
+        assert!(closed.contains("F:plans(1)"), "badge should persist while rail hidden");
+    }
+
+    #[test]
+    fn status_bar_shows_help_and_tutorial_hint() {
+        // D-012: the footer always advertises the help overlay + tutorial launch.
+        let app = App::new();
+        let text = render(&app, 100, 12);
+        assert!(text.contains("?:help"), "help hint missing from status bar");
+        assert!(text.contains("F1/:tutorial"), "tutorial hint missing from status bar");
+    }
+
+    #[test]
+    fn help_overlay_lists_tutorial_and_plans_filter() {
+        // D-012 + D-009: the `?` help overlay documents both the re-openable
+        // tutorial and the plans-filter rail.
+        let mut app = App::new();
+        app.show_help = true;
+        // Tall enough that the full help text (incl. the F1/:tutorial line near
+        // the bottom) renders without clipping.
+        let text = render(&app, 100, 40);
+        assert!(text.contains(":tutorial"), "help should mention the :tutorial palette command");
+        assert!(text.contains("plans filter"), "help should mention the plans filter rail");
+    }
 }

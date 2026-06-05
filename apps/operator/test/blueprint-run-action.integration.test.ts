@@ -93,6 +93,21 @@ beforeAll(async () => {
     )
   `);
 
+  // autoloop_state — the P-009 fire-backoff gate reads this before a mode='run'
+  // decider fire (checkFireGate → readFireState). A real baseline table; without
+  // it the gate fail-opens with a console.warn that trips fail-on-console.
+  await sql.unsafe(`
+    CREATE TABLE harness_shared.autoloop_state (
+      harness_slug       text NOT NULL,
+      role               text NOT NULL DEFAULT 'director',
+      last_fired_at      timestamptz NOT NULL DEFAULT now(),
+      last_status        text,
+      consecutive_errors integer NOT NULL DEFAULT 0,
+      workspace_id       text NOT NULL DEFAULT '',
+      PRIMARY KEY (workspace_id, harness_slug, role)
+    )
+  `);
+
   process.env.HARNESS_ADMIN_DATABASE_URL = u.toString();
   await _resetForTests();
 }, 60_000);
