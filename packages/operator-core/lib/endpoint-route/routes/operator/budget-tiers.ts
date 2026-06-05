@@ -2,7 +2,7 @@
  * GET /api/operator/budget-tiers
  *
  * Preset daily-budget tiers shown in the first-run Operator picker.
- * Idempotent table-ensure + floor defaults if empty.
+ * Floor defaults if the table is empty.
  *
  * Ported from app/api/operator/budget-tiers/route.ts. `auth: 'public'`.
  */
@@ -18,16 +18,9 @@ export default defineTool({
   auth: 'public',
   async handler() {
     try {
-      const { db, sql } = getOrgPg();
-      await sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS harness_shared.operator_budget_tiers (
-          ord INT NOT NULL,
-          label TEXT NOT NULL,
-          cap_usd NUMERIC(10, 2) NOT NULL,
-          blurb TEXT NOT NULL,
-          PRIMARY KEY (ord)
-        )
-      `);
+      // `harness_shared.operator_budget_tiers` is migration-sourced (000-baseline.sql;
+      // harness_app grants from migration 109) — no runtime ensure needed.
+      const { db } = getOrgPg();
       const rows = await db
         .select({ ord: bt.ord, label: bt.label, cap_usd: bt.capUsd, blurb: bt.blurb })
         .from(bt)

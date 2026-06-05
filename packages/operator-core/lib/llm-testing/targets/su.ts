@@ -260,7 +260,9 @@ class SuSession implements ChatSession {
     let Anthropic: new (cfg: unknown) => AnthropicClient;
     try {
       const mod = await import('@anthropic-ai/sdk');
-      Anthropic = ((mod as { default?: unknown }).default ?? mod) as never;
+      Anthropic = ((mod as { default?: unknown }).default ?? mod) as unknown as new (
+        cfg: unknown,
+      ) => AnthropicClient;
     } catch (err) {
       return errorTurn(`su target: failed to load @anthropic-ai/sdk: ${(err as Error).message}`, performance.now() - startMs);
     }

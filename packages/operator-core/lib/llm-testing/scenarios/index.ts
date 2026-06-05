@@ -70,6 +70,13 @@ import { MEM07_COLUMN_RENAME } from './memory/MEM07-column-rename';
 import { MEM08_TTS_ROTATION } from './memory/MEM08-tts-rotation';
 import { MEM09_MIC_DEVICE } from './memory/MEM09-mic-device';
 import { MEM10_EXPLICIT_SEARCH } from './memory/MEM10-explicit-search';
+// SU-S01–S06: su-scenario-suite-2026-05-31 (engineer-collaborator playbook behavioral coverage)
+import { SU_S01_HARNESS_SCOPE } from './su/S01-harness-scope';
+import { SU_S02_TAURI_ONLY } from './su/S02-tauri-only';
+import { SU_S03_PUSH_NOT_POLL } from './su/S03-push-not-poll';
+import { SU_S04_DESIGN_FIRST } from './su/S04-design-first';
+import { SU_S05_NO_INVENT_WRITE } from './su/S05-no-invent-write';
+import { SU_S06_SHARED_TREE_GIT } from './su/S06-shared-tree-git';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -130,6 +137,13 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   MEM08_TTS_ROTATION,
   MEM09_MIC_DEVICE,
   MEM10_EXPLICIT_SEARCH,
+  // su engineer-collaborator playbook behavioral coverage (su-scenario-suite-2026-05-31)
+  SU_S01_HARNESS_SCOPE,
+  SU_S02_TAURI_ONLY,
+  SU_S03_PUSH_NOT_POLL,
+  SU_S04_DESIGN_FIRST,
+  SU_S05_NO_INVENT_WRITE,
+  SU_S06_SHARED_TREE_GIT,
 ];
 
 export function getScenario(id: string): Scenario {

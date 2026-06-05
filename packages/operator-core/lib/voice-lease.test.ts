@@ -43,7 +43,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   ...((await orig()) as object), // real `generated` so eq()/and() resolve real columns
   getOrgPg: () => ({
     sql: Object.assign(() => Promise.resolve([]), {
-      unsafe: () => Promise.resolve([]), // ensureLeaseTable's CREATE TABLE
+      unsafe: () => Promise.resolve([]), // unused now (table is migration-sourced)
     }),
     db: fakeDb,
   }),

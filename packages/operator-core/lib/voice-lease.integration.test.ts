@@ -1,7 +1,8 @@
 /**
  * voice-lease.integration.test.ts — cross-surface single-listener arbitration
  * against real testcontainer PG (the unit test mocks the DB; this drives the
- * real drizzle insert/upsert/delete + the on-demand ensureLeaseTable DDL).
+ * real drizzle insert/upsert/delete against the migration-sourced voice_lease
+ * table, which this rig builds in its per-file schema).
  *
  * Proves the arbitration the desktop+phone rely on to avoid stereo responses:
  * grant-on-empty, same-owner refresh, refuse a different active owner,
@@ -34,10 +35,10 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('voicelease');
-  // ensureLeaseTable's DDL GRANTs to harness_app; create the role so its
-  // CREATE-TABLE batch commits. The role is CLUSTER-wide and persists on the
-  // reused testcontainer, so creating it must be idempotent. Pre-create the
-  // table so ensureLeaseTable's CREATE-IF-NOT-EXISTS is a no-op.
+  // The SUT no longer ensures the table at runtime (voice_lease is migration-
+  // sourced now — 000-baseline.sql); this rig mirrors that DDL to build it in the
+  // per-file schema. harness_app is CLUSTER-wide and persists on the reused
+  // testcontainer, so create it idempotently.
   await db.sql.unsafe(`
     DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     CREATE TABLE harness_shared.voice_lease (

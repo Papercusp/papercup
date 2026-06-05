@@ -346,7 +346,7 @@ function resolveScenarioFilePath(scenario: { id: string; target: string }): stri
   // Oracle scenarios:   'oracle-O1-...' → files 'O1-...'
   // Architect:          'architect-A1-...' → files 'A1-...'
   const here = dirname(fileURLToPath(import.meta.url));
-  const idPart = scenario.id.replace(/^(op|oracle|architect)-/, '');
+  const idPart = scenario.id.replace(/^(op|oracle|architect|su)-/, '');
   return join(here, '..', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`);
 }
 

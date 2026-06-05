@@ -80,6 +80,13 @@ describe('scenario registry', () => {
       'op-MEM08-tts-rotation',
       'op-MEM09-mic-device',
       'op-MEM10-explicit-search',
+      // su engineer-collaborator playbook (su-scenario-suite-2026-05-31)
+      'su-S01-harness-scope',
+      'su-S02-tauri-only',
+      'su-S03-push-not-poll',
+      'su-S04-design-first',
+      'su-S05-no-invent-write',
+      'su-S06-shared-tree-git',
     ].sort());
   });
 
@@ -89,7 +96,7 @@ describe('scenario registry', () => {
 
   it('every scenario references a known target', () => {
     for (const s of SCENARIOS) {
-      expect(['operator', 'oracle', 'architect']).toContain(s.target);
+      expect(['operator', 'oracle', 'architect', 'su']).toContain(s.target);
     }
   });
 

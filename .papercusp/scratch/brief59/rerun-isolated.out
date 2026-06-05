@@ -1,0 +1,3 @@
+### RUNNING lib/sync/hyperbee/backfill-local-state.integration.test.ts
+### DONE backfill-local-state exit=1 ::  Test Files  1 failed (1)       Tests  4 failed (4) 
+### RUNNING lib/__tests__/mint-roundtrip.integration.test.ts

@@ -20,15 +20,9 @@ export default defineTool({
       return Response.json({ error: 'invalid key' }, { status: 400 });
     }
     try {
-      const { db, sql } = getOrgPg();
-      await sql.unsafe(`
-        CREATE TABLE IF NOT EXISTS harness_shared.operator_settings (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL,
-          description TEXT,
-          updated_at BIGINT NOT NULL DEFAULT 0
-        )
-      `);
+      // `harness_shared.operator_settings` is migration-sourced (000-baseline.sql;
+      // harness_app grants from migration 109) — no runtime ensure needed.
+      const { db } = getOrgPg();
       const rows = await db
         .select({ key: os.key, value: os.value, description: os.description })
         .from(os)

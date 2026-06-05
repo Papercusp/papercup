@@ -32,10 +32,6 @@ describe('getPromptOverride', () => {
     sql.mockResolvedValueOnce([]);
     expect(await (await load()).getPromptOverride('ws', 'h', 'worker')).toBeNull();
   });
-  it('ensures the table on first use (sql.unsafe)', async () => {
-    await (await load()).getPromptOverride('ws', 'h', 'worker');
-    expect(sqlUnsafe).toHaveBeenCalledOnce();
-  });
 });
 
 describe('setPromptOverride', () => {

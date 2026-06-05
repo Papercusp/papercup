@@ -2218,12 +2218,13 @@ impl App {
         }
     }
 
-    /// Resolve where the selected Fleet agent lives → how Enter reaches it
-    /// (pui-workbench-usability D-001/D-002). Pure: roster entry + live topology
-    /// + local host. Priority: a confidently-matched LOCAL pane wins (it's right
-    /// here); else a LIVE agent focuses its external window (or, if unreachable,
-    /// opens the menu so Enter never silently no-ops); else an ENDED+resumable
-    /// session resumes; else the menu.
+    /// Resolve where the selected Fleet agent lives and how Enter reaches it
+    /// (pui-workbench-usability D-001/D-002). Pure over the roster entry, the
+    /// live topology, and the local host. A confidently-matched local pane wins
+    /// (it is right here in the workbench). Otherwise a live agent focuses its
+    /// external window, or opens the menu when it is unreachable so Enter never
+    /// silently no-ops. Otherwise an ended-but-resumable session resumes. Failing
+    /// all of that, the menu is shown.
     pub fn resolve_agent_route(&self, entry: &RosterEntry) -> AgentRoute {
         // 1. Local workbench pane — highest signal, no I/O needed.
         if let Some(pane_id) = self.match_local_pane(entry) {
@@ -4432,14 +4433,21 @@ mod tests {
             feature: Some("F-9".into()),
             ..live_windowed_entry("claude")
         };
-        assert_eq!(a.resolve_agent_route(&entry), AgentRoute::LocalPane { pane_id: 5 });
+        assert_eq!(
+            a.resolve_agent_route(&entry),
+            AgentRoute::LocalPane { pane_id: 5 }
+        );
     }
 
     #[test]
     fn route_focus_window_when_live_and_windowed() {
         let a = App::new(); // no topology → no local pane
         match a.resolve_agent_route(&live_windowed_entry("claude")) {
-            AgentRoute::FocusWindow { adv_session_id, window_id, .. } => {
+            AgentRoute::FocusWindow {
+                adv_session_id,
+                window_id,
+                ..
+            } => {
                 assert_eq!(adv_session_id, Some(7));
                 assert_eq!(window_id.as_deref(), Some("0x0123abcd"));
             }
@@ -4543,7 +4551,10 @@ mod tests {
             ..Default::default()
         };
         a.set_roster(vec![entry]);
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
         assert!(a.fleet_action_menu.is_some());
         // `n` in the menu launches a fresh agent and closes the menu.
         match a.on_key(KeyCode::Char('n'), KeyModifiers::empty()) {
@@ -4568,7 +4579,10 @@ mod tests {
             ..Default::default()
         };
         a.set_roster(vec![entry]);
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
         let menu = a.fleet_action_menu.clone().expect("menu open");
         assert!(menu.can_focus_window);
         match a.on_key(KeyCode::Char('f'), KeyModifiers::empty()) {
@@ -4581,7 +4595,10 @@ mod tests {
         // Re-open and Esc closes without acting.
         a.on_key(KeyCode::Enter, KeyModifiers::empty());
         assert!(a.fleet_action_menu.is_some());
-        assert_eq!(a.on_key(KeyCode::Esc, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Esc, KeyModifiers::empty()),
+            Action::Render
+        );
         assert!(a.fleet_action_menu.is_none());
     }
 
@@ -4589,7 +4606,10 @@ mod tests {
     fn enter_on_empty_fleet_roster_is_noop_render() {
         let mut a = App::new();
         a.tab = Tab::Fleet; // empty roster
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::empty()), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
         assert!(a.fleet_action_menu.is_none());
     }
 
@@ -4600,7 +4620,10 @@ mod tests {
         // No companion link → not "empty" (we just don't know the work area).
         assert!(!a.work_area_empty());
         a.companion_version = Some("0.1.0".into());
-        a.topology = Some(Topology { tabs: vec![], panes: vec![] });
+        a.topology = Some(Topology {
+            tabs: vec![],
+            panes: vec![],
+        });
         assert!(a.work_area_empty());
         // A live work pane → no longer empty.
         a.topology = Some(Topology {

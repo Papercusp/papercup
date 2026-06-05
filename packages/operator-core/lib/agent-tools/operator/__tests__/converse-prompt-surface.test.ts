@@ -55,6 +55,19 @@ describe('buildOperatorPrompt — per-surface affordances', () => {
     expect(desktop.userPromptText).not.toContain('tui_dispatch');
   });
 
+  it('carries the tool-calling contract: no ToolSearch + underscore names (P-005/P-009)', async () => {
+    const { systemPromptText } = await buildOperatorPrompt(
+      { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message' },
+      null,
+    );
+    // The brain's tools are loaded non-deferred — steer it off ToolSearch and
+    // onto the underscore catalog name (the form Claude Code presents).
+    expect(systemPromptText).toContain('Calling tools');
+    expect(systemPromptText).toContain('ToolSearch');
+    expect(systemPromptText).toContain('harness_status');
+    expect(systemPromptText).toMatch(/underscores, never colons/i);
+  });
+
   it('falls back to a discovery hint when a TUI turn carries no client_id', async () => {
     const tui = await buildOperatorPrompt(
       { messages: [{ role: 'user', content: 'hi' }], trigger: 'user_message', surface: 'tui' },

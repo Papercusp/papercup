@@ -27,17 +27,9 @@ async function getHiddenBasenames(): Promise<Set<string>> {
   const now = Date.now();
   if (_hiddenCache && _hiddenCache.expires > now) return _hiddenCache.value;
   try {
-    const { db, sql } = getOrgPg();
-    await sql.unsafe(`
-      CREATE TABLE IF NOT EXISTS harness_shared.hidden_plugins (
-        basename TEXT NOT NULL,
-        reason TEXT,
-        hidden_at BIGINT NOT NULL DEFAULT 0,
-        hidden_by TEXT,
-        workspace_id TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY (workspace_id, basename)
-      )
-    `);
+    // `harness_shared.hidden_plugins` is migration-sourced (000-baseline.sql;
+    // harness_app grants from migration 109) — no runtime ensure needed.
+    const { db } = getOrgPg();
     const rows = await db.select({ basename: hp.basename }).from(hp);
     const set = new Set(rows.map((r) => r.basename));
     _hiddenCache = { value: set, expires: now + HIDDEN_TTL_MS };

@@ -3882,6 +3882,49 @@ mod tests {
     }
 
     #[test]
+    fn fleet_empty_work_area_hint_and_enter_title_render() {
+        use pui_companion_proto::Topology;
+        let mut app = App::new();
+        app.tab = Tab::Fleet;
+        app.show_presence = false;
+        // Companion linked but no work-area panes → the work area is empty.
+        app.companion_version = Some("0.1.0".into());
+        app.topology = Some(Topology {
+            tabs: vec![],
+            panes: vec![],
+        });
+        app.set_roster(vec![fleet_roster("su-a", "claude", "x")]);
+        let text = render(&app, 120, 24);
+        // D-002: the empty work area surfaces the launch affordance, not a blank.
+        assert!(text.contains("Work area is empty"));
+        assert!(text.contains("press n to launch"));
+        // D-001: Enter-by-location routing is advertised on the Agents column.
+        assert!(text.contains("Enter: reach"));
+    }
+
+    #[test]
+    fn fleet_no_session_menu_overlay_renders() {
+        use crate::app::FleetActionMenu;
+        let mut app = App::new();
+        app.tab = Tab::Fleet;
+        // The [r]/[n]/[f] no-session menu (D-002) renders as a modal overlay.
+        app.fleet_action_menu = Some(FleetActionMenu {
+            label: "su · remote".into(),
+            note: "agent is live but not reachable from this workbench".into(),
+            can_resume: true,
+            can_focus_window: true,
+            resume_spec: None,
+            focus: None,
+        });
+        let text = render(&app, 120, 24);
+        assert!(text.contains("reach agent")); // overlay title
+        assert!(text.contains("resume")); // [r] choice
+        assert!(text.contains("launch a new agent")); // [n] choice
+        assert!(text.contains("focus its terminal window")); // [f] choice
+        assert!(text.contains("Esc to cancel"));
+    }
+
+    #[test]
     fn fleet_curated_renders_selected_agent_todos() {
         let mut app = App::new();
         app.tab = Tab::Fleet;
