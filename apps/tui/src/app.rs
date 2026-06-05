@@ -67,6 +67,9 @@ pub enum Action {
     VoiceSessionStart,
     /// Tear the realtime voice session down (user toggle).
     VoiceSessionStop,
+    /// A P2P voice-channel command from the Voice tab (holepunch-voice-channels
+    /// P-008) — the run loop owns the VoiceStream socket + executes it.
+    VoiceChan(crate::voice_ui::VoiceCmd),
     /// Focus a worker's zellij pane via the companion (tui-operator-surface P2 —
     /// the `focus_pane` tui:dispatch intent). The run loop drives the companion
     /// and POSTs the intent result back.
@@ -475,13 +478,18 @@ pub enum Tab {
     /// state/kind/topic filters, a detail thread + accepted answer + linked
     /// work-item, and promote-to-issue. Appended; key 'd' (Discuss).
     Conversations,
+    /// Voice (holepunch-voice-channels-2026-06-05 P-008) — P2P user↔user voice
+    /// channels over the operator voice node. Appended; key 'a' (audio). The
+    /// operator Conv-AI voice MODE (voice-realtime-tui) is a dock toggle, not
+    /// this tab — agreed division, coord 2026-06-05.
+    Voice,
 }
 
 impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Brew tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
-    pub const ALL: [Tab; 14] = [
+    pub const ALL: [Tab; 15] = [
         Tab::Overview,
         Tab::Operator,
         Tab::Inbox,
@@ -496,6 +504,7 @@ impl Tab {
         Tab::Memory,
         Tab::Cupboard,
         Tab::Conversations,
+        Tab::Voice,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -514,6 +523,7 @@ impl Tab {
             Tab::Memory => "Memory",
             Tab::Cupboard => "Cupboard",
             Tab::Conversations => "Convos",
+            Tab::Voice => "Voice",
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
@@ -537,6 +547,7 @@ impl Tab {
             Tab::Memory => 'm',
             Tab::Cupboard => 'c',
             Tab::Conversations => 'd',
+            Tab::Voice => 'a',
         }
     }
     pub fn index(self) -> usize {
@@ -819,6 +830,9 @@ pub struct App {
     /// The continuous EL Conv-AI session phase. `V` toggles; transcripts ride
     /// the shared operator chat; the session task lives in the run loop.
     pub convai_phase: ConvAiPhase,
+    /// P2P voice-channel tab state (holepunch-voice-channels P-008). All
+    /// voice-tab keys/render live in `voice_ui`; the run loop owns the socket.
+    pub voice_ui: crate::voice_ui::VoiceUiState,
 }
 
 /// Realtime Conv-AI session phase (distinct from the PTT `VoicePhase` — both
@@ -990,6 +1004,7 @@ impl App {
             operator_dock_focused: false,
             voice_phase: VoicePhase::Idle,
             convai_phase: ConvAiPhase::Off,
+            voice_ui: crate::voice_ui::VoiceUiState::default(),
             voice_level: 0.0,
             voice_error: None,
         }
@@ -2084,6 +2099,10 @@ impl App {
             }
             // Realtime operator voice (voice-realtime-tui-2026-06-05): session
             // updates land in the SHARED operator chat (D-007) + phase badges.
+            Event::VoiceUi(ev) => {
+                crate::voice_ui::apply_event(&mut self.voice_ui, ev);
+                Action::Render
+            }
             Event::ConvAi(u) => {
                 use crate::voice_convai::ConvAiUpdate as U;
                 match u {
@@ -2900,6 +2919,16 @@ impl App {
                 _ => {}
             }
         }
+        // Voice tab (holepunch-voice-channels P-008): delegate to voice_ui for the
+        // keys it owns (and everything while its composer/settings overlay is open).
+        // Keys it doesn't own fall through to the global dispatch below, so tab
+        // switching (digits / 'a' / '<' '>') still works from the Voice tab.
+        if self.tab == Tab::Voice && crate::voice_ui::owns_key(&self.voice_ui, code) {
+            return match crate::voice_ui::handle_key(&mut self.voice_ui, code, mods) {
+                Some(cmd) => Action::VoiceChan(cmd),
+                None => Action::Render,
+            };
+        }
         match code {
             KeyCode::Char('?') => {
                 self.show_help = true;
@@ -3245,6 +3274,11 @@ impl App {
                         && !self.conversations_loading
                     {
                         return self.refetch_conversations();
+                    }
+                    // Voice tab (holepunch-voice-channels P-008): connect the voice
+                    // socket + fetch the channel list on first open.
+                    if t == Tab::Voice && !self.voice_ui.connected {
+                        return Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect);
                     }
                     Action::Render
                 }

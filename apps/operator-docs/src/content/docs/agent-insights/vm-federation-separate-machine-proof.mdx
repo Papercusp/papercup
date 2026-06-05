@@ -1,0 +1,110 @@
+---
+title: VM federation — proving the packaged .deb federates between separate machines
+description: "How bin/vm-federation.sh proves cross-MACHINE federation: two pristine Ubuntu VMs over a host bridge, distinct GitHub identities, host-run testnet DHT — reusing the same federation-asserts.sh core as the one-box smokes. The two traps that bite: identical slirp subnets break holepunch, and the clean-machine embedded-PG boot race."
+discovered: 2026-06-05
+tags: [federation, hyperswarm, dht, packaged-desktop, vm, two-machine, clean-room, smoke-test, p079]
+status: active
+sidebar:
+  order: 70
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The in-process [p079 live test](/internal/docs/testing/p079-bidirectional-federation)
+proves the federation *logic* over a testnet DHT; the
+[packaged two-instance merge](/internal/docs/agent-insights/packaged-two-instance-federation-merge)
+proves it between two `.deb` processes **on one box**. The last rung of the
+fidelity ladder is two **separate machines** — real OS × N, a real network hop.
+`papercusp-desktop/bin/vm-federation.sh` is that proof, running each instance in
+its own pristine Ubuntu VM. Plan: `linux-test-vm-and-federation-2026-06-04`
+(Phase 2, P-009..P-013).
+
+## Shape
+
+```bash
+cd papercusp-desktop
+bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge   # the primary run
+```
+
+Each VM (`fed-a`, `fed-b`) is a `vmctl` overlay off the golden image. The driver:
+resets each to pristine, boots it with a **second NIC** on the host bridge,
+installs the newest `.deb` (the fresh-install dep test, for free), launches the
+packaged app headless under the VM's own `:0`, then runs the **same**
+`bin/lib/federation-asserts.sh` assertions the one-box smokes use — only the
+driver primitives (`drv_exec`/`drv_applog`/`drv_psql`) differ: they `ssh` into
+the VM instead of running locally (D-003 — one assert core, no drift).
+
+The gate is the local merge proof, now cross-machine: both boot · `[swarm]
+peer_connected` in both logs (a `join FAILED` line fails fast) · a feature
+INSERTed on A reaches B's `harness_features_consolidated` as `origin='remote'`
+within ~90 s **and** the reverse · teardown by power-off.
+
+## Networking: dual-NIC, no DHCP/NAT
+
+Every fed VM keeps its Phase-1 **slirp** NIC (internet + SSH-hostfwd + SPICE)
+and gets the federation network as a **second** NIC (D-016, amending D-002):
+
+- **`--net=bridge` (primary, needs sudo):** host bridge `pcusp-fedbr0`
+  (`10.77.0.0/24`, host `10.77.0.1`). Each VM gets a host tap and a **static**
+  guest IP (`10.77.0.2`/`.3`) assigned over SSH by deterministic MAC — no
+  dnsmasq, no DHCP race, no iptables (internet rides the slirp NIC). The host
+  runs `hyperdht/testnet` advertised on `10.77.0.1`, so both VMs reach the DHT,
+  each other, and the host over a real hop.
+- **`--net=socket` (rootless fallback, exactly two VMs):** a qemu `-netdev
+  socket` point-to-point L2 link (static `10.99.0.1/2`); the DHT bootstrap runs
+  *inside* `fed-a` since the host isn't on that L2.
+
+<Aside type="caution" title="Trap 1 — identical slirp subnets silently kill discovery">
+The bug that cost the first green run: with qemu's **default** user-net, every
+VM is `10.0.2.15`. Hyperswarm's holepunch exchanges *local-address candidates*,
+so a peer dialing the other's `10.0.2.15` reaches **itself** — the DHT join
+succeeds (`[swarm] joined topic …` in both logs) but `peer_connected` never
+fires and the merge times out with zero error. Fix: give each VM a **distinct**
+slirp subnet (`boot-vm.sh` `SLIRP_NET`; the driver sets `10.31.<idx>.0/24`). The
+tell is "joined topic" on both sides but no "peer_connected" — a join success is
+**not** a discovery success.
+</Aside>
+
+<Aside type="caution" title="Trap 2 — the clean-machine embedded-PG boot race">
+On a pristine machine the desktop occasionally loses the embedded-Postgres-vs-
+sidecar startup race: the sidecar comes up first, `readOperatorState` connects
+to the **default** `127.0.0.1:5432` (no embedded-pg discovery file yet),
+`ECONNREFUSED`, and the app exits with "sidecar did not start within 30s". It's
+transient (the other VM in the same run boots fine), so `vm-federation.sh`
+tolerates it with a **bounded relaunch retry** (`ensure_booted`, up to 3
+attempts; a fresh relaunch wipes `~/.papercusp` and wins the race) rather than
+flaking. If you see it deterministically on *both* VMs, that's a real ordering
+regression in `src-tauri/src/main.rs` (embedded-PG must be ready before the
+sidecar spawns), not this harness.
+</Aside>
+
+## Modes
+
+| Flag | Meaning |
+|---|---|
+| `--vms=2` (default) | `fed-a` VM ↔ `fed-b` VM (P-009) |
+| `--vms=1` | host-local packaged instance ↔ `fed-a` VM (P-010) |
+| `--dht=testnet` (default) | host-run `hyperdht/testnet` on the bridge IP — deterministic |
+| `--dht=public` | no bootstrap override → the real public DHT. Best-effort (P-012): same-host VMs share one public IP and may fail to hairpin → expect `INCONCLUSIVE` |
+| `--net=bridge` / `--net=socket` | host bridge (root) vs rootless qemu-socket L2 |
+| `--no-reset` / `--skip-install` | reuse overlays + installed `.deb` (fast iteration; the default is a pristine reset + fresh install — the faithful acceptance run) |
+| `--keep-up` | leave the VMs running for debugging |
+
+## Identities + driver prereqs
+
+Distinct identities `papercupai` / `aviynw` via per-instance `GH_TOKEN` (the
+token is written to `~/fed.env` 0600 over SSH stdin, never on `argv`).
+`gh-token.ts` resolves the token from the `GH_TOKEN` env var — no interactive
+`gh auth login` needed in the VM. Two driver prereqs are apt-installed in each
+VM (NOT app deps — the `.deb`'s own dependency resolution is the separate
+fresh-install test): `gh` and `postgresql-client` (the `.deb` bundles
+`initdb`/`postgres` but no `psql`, which the merge asserts need).
+
+<Aside type="tip">
+Teardown is scoped to the run's `$WORK` mktemp dir, never a broad
+`pkill -f papercusp-desktop`; the host-side testnet DHT node carries `$WORK` on
+its argv so the scoped cleanup catches it (the one-box smokes used to leak it).
+The `--dht=testnet` host node binds `0.0.0.0` and *advertises* the bridge IP so
+the VMs can reach it; with a loopback-only `127.0.0.1` testnet a VM would never
+connect.
+</Aside>

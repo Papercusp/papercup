@@ -34,6 +34,10 @@ pub enum Event {
     FleetRate(FleetRateStatus),
     /// Realtime operator voice session updates (voice-realtime-tui-2026-06-05).
     ConvAi(crate::voice_convai::ConvAiUpdate),
+    /// P2P voice-channel updates (holepunch-voice-channels P-008): socket
+    /// status/error/mic + HTTP-fetched channel list / prefs, folded into the
+    /// Voice tab's state by the reducer.
+    VoiceUi(crate::voice_ui::VoiceUiEvent),
     /// Fresh features for the active harness.
     Features(Vec<HarnessFeature>),
     /// Fresh issues for the active harness.

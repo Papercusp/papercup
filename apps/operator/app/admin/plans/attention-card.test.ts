@@ -170,6 +170,16 @@ describe('attentionItemToCardSpec (P-010)', () => {
     expect(attentionItemToCardSpec(needsHuman).question).toBe('Body text');
     expect(attentionItemToCardSpec(item({ body: '   ', title: 'Just a title' })).question).toBe('Just a title');
   });
+
+  it('operator-report: carries the ReportBlock + uses the title as the question (not the body dump)', () => {
+    const spec = attentionItemToCardSpec(operatorReport);
+    expect(spec.report).toBeDefined();
+    expect(spec.report?.plans[0]?.title).toBe('Rate-limit v2');
+    // The structured block renders natively; the question is the short title,
+    // NOT the plain-text body fallback (which would duplicate the block).
+    expect(spec.question).toBe('Fleet status');
+    expect(ids(spec)).toEqual(['resolve']);
+  });
 });
 
 describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
@@ -215,6 +225,17 @@ describe('resolveAttentionAction (P-011/P-012/P-013 parity)', () => {
     const r = await resolveAttentionAction(needsHuman, 'message-owner');
     expect(r.resolved).toBe(false);
     expect(setItemStatus).not.toHaveBeenCalled();
+  });
+
+  it('operator-report Resolve → inbox:triage resolve (the triage state machine), keyed by item id', async () => {
+    const r = await resolveAttentionAction(operatorReport, 'resolve');
+    expect(triageAttentionItem).toHaveBeenCalledWith(
+      expect.objectContaining({ itemId: 'operator-report:turn-1', action: 'resolve' }),
+    );
+    expect(r.resolved).toBe(true);
+    // It does NOT touch the plan-item / escalation backends.
+    expect(setItemStatus).not.toHaveBeenCalled();
+    expect(resolveEscalation).not.toHaveBeenCalled();
   });
 });
 

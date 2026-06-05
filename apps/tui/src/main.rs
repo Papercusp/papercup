@@ -154,6 +154,11 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // owns the session handle too. A handle whose task already ended is inert
     // (stop() goes nowhere), so Start always replaces.
     let mut convai_session: Option<voice_convai::ConvAiHandle> = None;
+    // P2P voice channels (holepunch-voice-channels P-008): the run loop owns the
+    // long-lived voice socket (an Arc so the cpal capture callback can hold it)
+    // and the in-flight mic-capture handle (dropping it stops transmitting).
+    let mut voice_chan: Option<std::sync::Arc<voice_stream::VoiceStream>> = None;
+    let mut voice_mic: Option<voice_stream::MicHandle> = None;
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
@@ -175,6 +180,14 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
             if let Some(cap) = &voice_capture {
                 app.set_voice_level(cap.level());
                 terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            // P2P voice-channel mic meter (P-008): same atomic-on-Tick pump as
+            // the PTT meter — no per-frame event spam.
+            if voice_mic.is_some() {
+                if let Some(vs) = &voice_chan {
+                    app.voice_ui.mic_level = vs.mic_level();
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
             }
         }
 
@@ -275,6 +288,90 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
             Action::VoiceSessionStop => {
                 if let Some(h) = convai_session.take() {
                     h.stop();
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::VoiceChan(cmd) => {
+                use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
+                match cmd {
+                    VC::Connect => {
+                        if voice_chan.is_none() {
+                            match voice_stream::VoiceStream::connect() {
+                                Ok((vs, ev_rx, mix_rx)) => {
+                                    let vs = std::sync::Arc::new(vs);
+                                    voice_chan = Some(vs.clone());
+                                    // Forward socket events (status/error/disconnect)
+                                    // onto the run-loop event channel.
+                                    let tx2 = tx.clone();
+                                    std::thread::spawn(move || {
+                                        while let Ok(ev) = ev_rx.recv() {
+                                            if tx2.send(Event::VoiceUi(VE::Stream(ev))).is_err() {
+                                                break;
+                                            }
+                                        }
+                                    });
+                                    // Mixed peer audio → local playback.
+                                    if let Err(e) = voice_stream::start_playback(mix_rx) {
+                                        let _ = tx.send(Event::VoiceUi(VE::Error(format!(
+                                            "voice playback: {e}"
+                                        ))));
+                                    }
+                                    let _ = vs.request_status();
+                                    let _ = tx.send(Event::VoiceUi(VE::Connected(true)));
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Event::VoiceUi(VE::Error(e.to_string())));
+                                }
+                            }
+                        } else if let Some(vs) = &voice_chan {
+                            let _ = vs.request_status();
+                        }
+                        // (Re)fetch the channel registry over HTTP (not realtime).
+                        tokio::spawn(voice_channels_fetch(tx.clone()));
+                        terminal.draw(|f| ui::draw(f, &app))?;
+                    }
+                    VC::Join(id) => {
+                        if let Some(vs) = &voice_chan {
+                            let _ = vs.join(&id);
+                        }
+                    }
+                    VC::Leave => {
+                        if let Some(vs) = &voice_chan {
+                            let _ = vs.leave();
+                        }
+                        voice_mic = None;
+                        let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
+                    }
+                    VC::SetMuted(m) => {
+                        if let Some(vs) = &voice_chan {
+                            let _ = vs.set_muted(m);
+                        }
+                    }
+                    VC::MicOn => match &voice_chan {
+                        Some(vs) => match voice_stream::start_mic(vs.clone()) {
+                            Ok(h) => {
+                                voice_mic = Some(h);
+                                let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
+                            }
+                        },
+                        None => {}
+                    },
+                    VC::MicOff => {
+                        voice_mic = None;
+                        let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
+                    }
+                    VC::Create(name) => {
+                        tokio::spawn(voice_channel_create(name, tx.clone()));
+                    }
+                    VC::PrefsGet => {
+                        tokio::spawn(voice_prefs_get(tx.clone()));
+                    }
+                    VC::PrefsSet(key, value) => {
+                        tokio::spawn(voice_prefs_set(key.to_string(), value, tx.clone()));
+                    }
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
@@ -520,6 +617,86 @@ async fn set_max_agents(n: u32, tx: UnboundedSender<Event>) {
     }
     if let Ok(s) = client.fleet_rate_status().await {
         let _ = tx.send(Event::FleetRate(s));
+    }
+}
+
+// ─── P2P voice channels (holepunch-voice-channels P-008) ───
+// HTTP-side helpers: the channel REGISTRY + voice-prefs ride agent-tools (not
+// realtime); join/leave/mute + audio ride the voice socket in the run loop.
+
+async fn voice_channels_fetch(tx: UnboundedSender<Event>) {
+    use crate::voice_ui::VoiceUiEvent as VE;
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("voice channels: {e}"))));
+            return;
+        }
+    };
+    match client.voice_channels_list().await {
+        Ok(list) => {
+            let _ = tx.send(Event::VoiceUi(VE::Channels(list)));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("voice channels: {e}"))));
+        }
+    }
+}
+
+async fn voice_channel_create(name: String, tx: UnboundedSender<Event>) {
+    use crate::voice_ui::VoiceUiEvent as VE;
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("create channel: {e}"))));
+            return;
+        }
+    };
+    match client.voice_channel_create(&name).await {
+        Ok(list) => {
+            let _ = tx.send(Event::VoiceUi(VE::Channels(list)));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("create channel: {e}"))));
+        }
+    }
+}
+
+async fn voice_prefs_get(tx: UnboundedSender<Event>) {
+    use crate::voice_ui::VoiceUiEvent as VE;
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("voice prefs: {e}"))));
+            return;
+        }
+    };
+    match client.voice_prefs_get().await {
+        Ok(p) => {
+            let _ = tx.send(Event::VoiceUi(VE::Prefs(p)));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("voice prefs: {e}"))));
+        }
+    }
+}
+
+async fn voice_prefs_set(key: String, value: serde_json::Value, tx: UnboundedSender<Event>) {
+    use crate::voice_ui::VoiceUiEvent as VE;
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("voice prefs: {e}"))));
+            return;
+        }
+    };
+    match client.voice_prefs_set(&key, value).await {
+        Ok(p) => {
+            let _ = tx.send(Event::VoiceUi(VE::Prefs(p)));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::VoiceUi(VE::Error(format!("voice prefs: {e}"))));
+        }
     }
 }
 

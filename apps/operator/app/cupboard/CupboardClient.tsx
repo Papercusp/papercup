@@ -83,11 +83,11 @@ function ActionIcon({ kind, size = 13 }: { kind: ListingKind; size?: number }) {
 }
 
 const KIND_TONES: Record<ListingKind, { fg: string; bg: string; border: string }> = {
-  harness: { fg: '#93c5fd', bg: 'rgba(59,130,246,0.14)', border: 'rgba(147,197,253,0.26)' },
+  harness: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
   blueprint: { fg: '#a7f3d0', bg: 'rgba(16,185,129,0.14)', border: 'rgba(167,243,208,0.24)' },
   snapshot: { fg: '#fcd34d', bg: 'rgba(245,158,11,0.14)', border: 'rgba(252,211,77,0.24)' },
-  plugin: { fg: '#c4b5fd', bg: 'rgba(139,92,246,0.14)', border: 'rgba(196,181,253,0.24)' },
-  pack: { fg: '#67e8f9', bg: 'rgba(6,182,212,0.13)', border: 'rgba(103,232,249,0.24)' },
+  plugin: { fg: 'var(--accent-soft)', bg: 'color-mix(in srgb, var(--accent), transparent 86%)', border: 'color-mix(in srgb, var(--accent-strong), transparent 74%)' },
+  pack: { fg: 'var(--accent-cool)', bg: 'color-mix(in srgb, var(--accent-deep), transparent 87%)', border: 'color-mix(in srgb, var(--accent-cool), transparent 76%)' },
 };
 
 const filterButtonStyle = (active: boolean): React.CSSProperties => ({
@@ -96,16 +96,18 @@ const filterButtonStyle = (active: boolean): React.CSSProperties => ({
   justifyContent: 'center',
   gap: 6,
   background: active
-    ? `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accentHover})`
-    : 'rgba(15,20,32,0.72)',
-  color: active ? '#fff' : COLORS.textMuted,
-  border: `1px solid ${active ? 'rgba(255,255,255,0.18)' : COLORS.border}`,
+    ? 'linear-gradient(135deg, var(--accent), var(--accent-strong))'
+    : 'var(--bg-2)',
+  color: active ? 'var(--accent-ink)' : 'var(--fg-mute)',
+  border: active
+    ? '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)'
+    : '1px solid var(--border)',
   borderRadius: 999,
   padding: '7px 13px',
   cursor: 'pointer',
   fontSize: 12,
   fontFamily: FONTS.ui,
-  boxShadow: active ? '0 12px 26px rgba(94,106,210,0.24)' : 'none',
+  boxShadow: active ? '0 12px 26px color-mix(in srgb, var(--accent), transparent 78%)' : 'none',
 });
 
 const ghostButtonStyle: React.CSSProperties = {
@@ -113,12 +115,12 @@ const ghostButtonStyle: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   gap: 6,
-  background: 'rgba(15,20,32,0.72)',
-  border: `1px solid ${COLORS.border}`,
+  background: 'var(--bg-2)',
+  border: '1px solid var(--border)',
   borderRadius: 999,
   padding: '7px 12px',
   cursor: 'pointer',
-  color: COLORS.textMuted,
+  color: 'var(--fg-mute)',
   fontSize: 12,
   fontFamily: FONTS.ui,
 };
@@ -234,9 +236,9 @@ export default function CupboardClient() {
         minHeight: '100%',
         padding: 24,
         background: `
-          radial-gradient(circle at 12% 0%, rgba(94,106,210,0.20), transparent 32%),
-          radial-gradient(circle at 92% 8%, rgba(14,165,233,0.12), transparent 28%),
-          linear-gradient(180deg, #0b0e14 0%, #0d121d 46%, #0b0e14 100%)
+          radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent), transparent 82%), transparent 32%),
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--accent-deep), transparent 88%), transparent 28%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-1) 46%, var(--bg) 100%)
         `,
       }}
     >
@@ -250,7 +252,7 @@ export default function CupboardClient() {
           borderRadius: 18,
           padding: 24,
           marginBottom: 16,
-          background: 'linear-gradient(135deg, rgba(17,24,39,0.96), rgba(15,20,32,0.84))',
+          background: 'linear-gradient(135deg, var(--bg-popover), color-mix(in srgb, var(--bg-1), transparent 16%))',
           boxShadow: '0 24px 80px rgba(0,0,0,0.34)',
         }}
       >
@@ -270,9 +272,9 @@ export default function CupboardClient() {
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 7,
-                color: '#bfdbfe',
-                border: '1px solid rgba(147,197,253,0.22)',
-                background: 'rgba(59,130,246,0.10)',
+                color: 'var(--accent-soft)',
+                border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 78%)',
+                background: 'color-mix(in srgb, var(--accent), transparent 90%)',
                 borderRadius: 999,
                 padding: '5px 10px',
                 fontFamily: FONTS.ui,
@@ -309,7 +311,7 @@ export default function CupboardClient() {
             padding: 6,
             border: `1px solid ${COLORS.border}`,
             borderRadius: 999,
-            background: 'rgba(15,20,32,0.72)',
+            background: 'var(--bg-2)',
             width: 'fit-content',
             maxWidth: '100%',
           }}
@@ -342,7 +344,7 @@ export default function CupboardClient() {
             padding: 12,
             border: `1px solid ${COLORS.border}`,
             borderRadius: RADIUS.lg,
-            background: 'rgba(15,20,32,0.78)',
+            background: 'var(--bg-2)',
           }}
         >
           <button
@@ -375,7 +377,7 @@ export default function CupboardClient() {
           padding: 12,
           border: `1px solid ${COLORS.border}`,
           borderRadius: RADIUS.lg,
-          background: 'rgba(15,20,32,0.82)',
+          background: 'var(--bg-2)',
           boxShadow: '0 14px 40px rgba(0,0,0,0.20)',
         }}
       >
@@ -463,7 +465,7 @@ export default function CupboardClient() {
             padding: '44px 18px',
             border: `1px dashed ${COLORS.borderStrong}`,
             borderRadius: RADIUS.lg,
-            background: 'rgba(15,20,32,0.48)',
+            background: 'var(--bg-2)',
           }}
         >
           {pot
@@ -556,7 +558,7 @@ export function ListingCard({
       style={{
         position: 'relative',
         overflow: 'hidden',
-        background: 'linear-gradient(180deg, rgba(17,24,39,0.96), rgba(15,20,32,0.92))',
+        background: 'linear-gradient(180deg, var(--bg-popover), color-mix(in srgb, var(--bg-1), transparent 8%))',
         border: `1px solid ${COLORS.border}`,
         borderRadius: 14,
         padding: 15,
@@ -651,7 +653,7 @@ export function ListingCard({
           style={{
             alignSelf: 'flex-start',
             display: 'inline-flex', alignItems: 'center', gap: 4,
-            background: 'rgba(17,24,39,0.82)',
+            background: 'var(--bg-2)',
             border: `1px solid ${COLORS.border}`,
             borderRadius: 999,
             padding: '3px 8px',
@@ -674,15 +676,15 @@ export function ListingCard({
           style={{
             flex: 1,
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-            background: `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accentHover})`,
-            color: '#fff',
-            border: '1px solid rgba(255,255,255,0.16)',
+            background: 'linear-gradient(135deg, var(--accent), var(--accent-strong))',
+            color: 'var(--accent-ink)',
+            border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)',
             borderRadius: 999,
             padding: '8px 0',
             cursor: 'pointer',
             fontFamily: FONTS.ui,
             fontSize: 12,
-            boxShadow: '0 12px 24px rgba(94,106,210,0.22)',
+            boxShadow: '0 12px 24px color-mix(in srgb, var(--accent), transparent 78%)',
           }}
         >
           <ActionIcon kind={kind} /> {LISTING_ACTION_LABEL[listingAction(kind)]}
@@ -697,7 +699,7 @@ export function ListingCard({
               alignItems: 'center',
               justifyContent: 'center',
               padding: '8px 11px',
-              background: 'rgba(17,24,39,0.82)',
+              background: 'var(--bg-2)',
               border: `1px solid ${COLORS.border}`,
               borderRadius: 999,
               color: COLORS.textMuted,

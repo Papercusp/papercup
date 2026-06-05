@@ -105,6 +105,54 @@ describe('rate-limit layer (real PG)', () => {
     expect(self!.usagePct).toBeNull(); // graceful fallback — never a fabricated percentage
   });
 
+  // --- cross-backend-cost-capture P-006/verify: the Overview $spend rollup reflects ALL
+  //     three CLIs, and codex (tokens-only) cost is estimated + labeled. -------------------
+  it('summarizeUsage rolls up spend across claude (provider) + omp (provider) + codex (estimated)', async () => {
+    const ws = 'ws-xbackend-spend';
+    const prevWs = h.ws;
+    h.ws = ws;
+    try {
+      // claude — provider-reported cost
+      await recordUsageSample({
+        bucketKey: 'anthropic:opus', provider: 'anthropic', modelClass: 'opus', source: 'jsonl',
+        inputTokens: 1000, outputTokens: 200, costUsd: 0.05,
+        model: 'claude-opus-4-8', costSource: 'provider', harnessSlug: 'h1', runId: 'r1', role: 'worker',
+      });
+      // omp — provider-reported cost.total
+      await recordUsageSample({
+        bucketKey: 'unknown:self', provider: 'unknown', modelClass: 'self', source: 'jsonl',
+        inputTokens: 500, outputTokens: 100, costUsd: 0.01,
+        model: 'claude-opus-4-8', costSource: 'provider', harnessSlug: 'h1', runId: 'r2', role: 'scoper',
+      });
+      // codex — NO costUsd, but a known model → recordUsageSample prices it (estimated).
+      // 1M uncached in × $2.5 + 100k out × $20 per MTok = 2.5 + 2.0 = 4.5
+      await recordUsageSample({
+        bucketKey: 'openai:default', provider: 'openai', modelClass: 'default', source: 'jsonl',
+        inputTokens: 1_000_000, outputTokens: 100_000,
+        model: 'gpt-5.5', harnessSlug: 'h1', runId: 'r3', role: 'validator',
+      });
+
+      const s = await summarizeUsage(60 * 60 * 1000);
+      // total spend = 0.05 + 0.01 + 4.5 — all three backends contribute
+      expect(s.spendUsd).toBeCloseTo(4.56, 6);
+      expect(s.calls).toBe(3);
+
+      // codex row persisted the estimated cost + label
+      const rows = await (h.sql as (parts: TemplateStringsArray, ...vals: unknown[]) => Promise<Array<{ cost_usd: number | null; cost_source: string | null; model: string | null; harness_slug: string | null }>>)`
+        SELECT cost_usd, cost_source, model, harness_slug
+          FROM harness_shared.agent_usage_samples
+         WHERE workspace_id = ${ws} AND run_id = 'r3'
+      `;
+      expect(rows).toHaveLength(1);
+      expect(Number(rows[0].cost_usd)).toBeCloseTo(4.5, 6);
+      expect(rows[0].cost_source).toBe('estimated');
+      expect(rows[0].model).toBe('gpt-5.5');
+      expect(rows[0].harness_slug).toBe('h1');
+    } finally {
+      h.ws = prevWs;
+    }
+  });
+
   it('recordUsageHeaders skips a wholly-empty sample and persists a header-bearing one', async () => {
     await recordUsageHeaders('anthropic:sonnet', 'anthropic', 'sonnet', {}); // nothing useful → no row
     await recordUsageHeaders('anthropic:sonnet', 'anthropic', 'sonnet', {

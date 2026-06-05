@@ -393,6 +393,68 @@ impl OperatorClient {
             .panes)
     }
 
+    /// P2P voice channel registry via the `voice:channels` agent-tool
+    /// (holepunch-voice-channels P-008). MCP envelope → inner `{ok,channels}`.
+    pub async fn voice_channels_list(&self) -> Result<Vec<crate::voice_ui::VoiceChannelRow>> {
+        let env = self
+            .post_json("/api/agent-tools/voice/channels", serde_json::json!({ "op": "list" }))
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("voice:channels: missing content[0].text")?;
+        #[derive(serde::Deserialize)]
+        struct P {
+            channels: Vec<crate::voice_ui::VoiceChannelRow>,
+        }
+        Ok(serde_json::from_str::<P>(text).context("parse voice channels")?.channels)
+    }
+
+    /// Create a voice channel by name, returning the refreshed list.
+    pub async fn voice_channel_create(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::voice_ui::VoiceChannelRow>> {
+        let _ = self
+            .post_json(
+                "/api/agent-tools/voice/channels",
+                serde_json::json!({ "op": "create", "name": name }),
+            )
+            .await?;
+        self.voice_channels_list().await
+    }
+
+    /// Read the operator voice-prefs (the Voice Settings overlay, P-017).
+    pub async fn voice_prefs_get(&self) -> Result<crate::voice_ui::VoicePrefsView> {
+        let env = self
+            .post_json("/api/agent-tools/operator/voice_prefs", serde_json::json!({ "op": "get" }))
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("voice_prefs: missing content[0].text")?;
+        serde_json::from_str::<crate::voice_ui::VoicePrefsView>(text).context("parse voice prefs")
+    }
+
+    /// Patch one voice-pref field, returning the refreshed view.
+    pub async fn voice_prefs_set(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<crate::voice_ui::VoicePrefsView> {
+        let _ = self
+            .post_json(
+                "/api/agent-tools/operator/voice_prefs",
+                serde_json::json!({ "op": "set", "patch": { key: value } }),
+            )
+            .await?;
+        self.voice_prefs_get().await
+    }
+
     pub async fn issues_for(&self, slug: &str) -> Result<Vec<HarnessIssue>> {
         let v = self
             .get_json(&format!("/api/harness/{slug}/issues"))

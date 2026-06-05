@@ -43,12 +43,12 @@ const toolRefreshStyle: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'rgba(15,20,32,0.72)',
-  border: `1px solid ${COLORS.border}`,
+  background: 'var(--bg-2)',
+  border: '1px solid var(--border)',
   borderRadius: 999,
   padding: '7px 10px',
   cursor: 'pointer',
-  color: COLORS.textMuted,
+  color: 'var(--fg-mute)',
 };
 
 function UnitIcon({ kind, size = 11 }: { kind: 'plugin' | 'pack'; size?: number }) {
@@ -104,7 +104,7 @@ export function ToolsSection({
             padding: 12,
             border: `1px solid ${COLORS.border}`,
             borderRadius: RADIUS.lg,
-            background: 'rgba(15,20,32,0.82)',
+            background: 'var(--bg-2)',
             fontFamily: FONTS.ui,
             fontSize: 12,
             color: COLORS.textMuted,
@@ -141,7 +141,7 @@ export function ToolsSection({
       )}
 
       {!loading && !error && payload && payload.tools.length === 0 && (
-        <div style={{ color: COLORS.textMuted, fontSize: 12, textAlign: 'center', padding: '44px 18px', border: `1px dashed ${COLORS.borderStrong}`, borderRadius: RADIUS.lg, background: 'rgba(15,20,32,0.48)' }}>
+        <div style={{ color: COLORS.textMuted, fontSize: 12, textAlign: 'center', padding: '44px 18px', border: `1px dashed ${COLORS.borderStrong}`, borderRadius: RADIUS.lg, background: 'var(--bg-2)' }}>
           No tools found{q ? ` matching "${q}"` : ''}.
         </div>
       )}
@@ -152,7 +152,7 @@ export function ToolsSection({
           style={{
             border: `1px solid ${COLORS.border}`,
             borderRadius: 14,
-            background: 'linear-gradient(180deg, rgba(17,24,39,0.96), rgba(15,20,32,0.92))',
+            background: 'linear-gradient(180deg, var(--bg-popover), color-mix(in srgb, var(--bg-1), transparent 8%))',
             overflow: 'hidden',
             boxShadow: '0 18px 42px rgba(0,0,0,0.22)',
           }}
@@ -219,15 +219,15 @@ export function ToolsSection({
                     }}
                     style={{
                       display: 'inline-flex', alignItems: 'center', gap: 4,
-                      background: `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.accentHover})`,
-                      color: '#fff',
-                      border: '1px solid rgba(255,255,255,0.16)',
+                      background: 'linear-gradient(135deg, var(--accent), var(--accent-strong))',
+                      color: 'var(--accent-ink)',
+                      border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)',
                       borderRadius: 999,
                       padding: '5px 10px',
                       cursor: 'pointer',
                       fontSize: 11,
                       fontFamily: FONTS.ui,
-                      boxShadow: '0 10px 22px rgba(94,106,210,0.20)',
+                      boxShadow: '0 10px 22px color-mix(in srgb, var(--accent), transparent 80%)',
                     }}
                   >
                     <Plug size={11} /> Install {t.provider.name}

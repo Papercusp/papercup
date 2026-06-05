@@ -294,6 +294,30 @@ fn in_channel(s: &VoiceUiState) -> bool {
         .unwrap_or(false)
 }
 
+/// Will the Voice tab consume this key? When an overlay is open it captures
+/// everything; otherwise only the keys it acts on. Keys it doesn't own (digits,
+/// tab-switch letters, `?`/`:`/`<`/`>`…) return false so `on_key` falls through
+/// to the global dispatch — that's how tab-switching still works from this tab.
+pub fn owns_key(s: &VoiceUiState, code: KeyCode) -> bool {
+    if s.composing || s.settings_open {
+        return true;
+    }
+    matches!(
+        code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Enter
+            | KeyCode::Char('j')
+            | KeyCode::Char('k')
+            | KeyCode::Char('l')
+            | KeyCode::Char('m')
+            | KeyCode::Char('n')
+            | KeyCode::Char('r')
+            | KeyCode::Char('s')
+            | KeyCode::Char('v')
+    )
+}
+
 // ---------------------------------------------------------------- render
 
 pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {

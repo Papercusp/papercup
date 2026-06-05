@@ -242,7 +242,7 @@ export default function CupboardDetailPage() {
               <a
                 href={`https://github.com/${repoSlug}`}
                 target="_blank" rel="noopener noreferrer"
-                style={{ color: COLORS.accent, fontFamily: FONTS.mono, fontSize: SIZES.sm, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                style={{ color: 'var(--accent-soft)', fontFamily: FONTS.mono, fontSize: SIZES.sm, display: 'inline-flex', alignItems: 'center', gap: 4 }}
               >
                 {repoSlug} <ExternalLink size={11} />
               </a>
@@ -304,7 +304,9 @@ export default function CupboardDetailPage() {
             data-action={action}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 7,
-              background: COLORS.accent, color: '#fff', border: 'none',
+              background: 'linear-gradient(135deg, var(--accent), var(--accent-strong))',
+              color: 'var(--accent-ink)',
+              border: '1px solid color-mix(in srgb, var(--accent-strong), transparent 54%)',
               borderRadius: RADIUS.md, padding: '9px 20px',
               cursor: busy ? 'default' : 'pointer',
               opacity: busy ? 0.7 : 1,
