@@ -90,10 +90,11 @@ bin/vm-federation.sh --vms=2 --no-reset --skip-install    # fast iteration (reus
 fresh-install the `.deb`, boot embedded-PG clean on a fresh `initdb`, share write-free, and
 announce on the same topic + testnet DHT over the bridge. It does **not** reach the
 bidirectional merge: hyperdht **holepunch does not complete between two SAME-HOST bridged VMs**
-(proven at the raw hyperswarm level — `conns=0`), consistent with the plan's D-004 best-effort
-caveat. The full bidirectional-merge acceptance needs **truly separate machines**. The finding,
-the two clean-machine traps it flushed out (slirp-subnet, embedded-PG boot race), and the
-candidate same-host fix (single bridge NIC + NAT) are in the agent-insight
+(proven at the raw hyperswarm level — `conns=0` — and across single/dual-NIC and
+single/multi-node-DHT, so the single-NIC+NAT candidate is **refuted**), consistent with the
+plan's D-004 best-effort caveat. The full bidirectional-merge acceptance needs **truly separate
+machines**. The finding and the two clean-machine traps it flushed out (slirp-subnet,
+embedded-PG boot race) are in the agent-insight
 [VM federation harness](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
 
 ## SSH commands

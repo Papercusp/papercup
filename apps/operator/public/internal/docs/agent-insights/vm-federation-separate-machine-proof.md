@@ -1,7 +1,7 @@
 # VM federation harness — cross-machine swarm-join works; same-host-bridge holepunch does not
 URL: /internal/docs/agent-insights/vm-federation-separate-machine-proof
 
-bin/vm-federation.sh stands up two pristine Ubuntu VMs over a host bridge with distinct GitHub identities and a host-run testnet DHT, reusing the one-box smokes' federation-asserts.sh core. What it PROVES (fresh-install, clean embedded-PG boot, share, cross-machine swarm-join) and the wall it hit: hyperdht holepunch does not complete between two SAME-HOST bridged VMs — proven at the raw hyperswarm level, so the bidirectional-merge acceptance needs truly separate machines.
+bin/vm-federation.sh stands up two pristine Ubuntu VMs over a host bridge with distinct GitHub identities and a host-run testnet DHT, reusing the one-box smokes' federation-asserts.sh core. What it PROVES (fresh-install, clean embedded-PG boot, share, cross-machine swarm-join) and the wall it hit: hyperdht holepunch does not complete between two SAME-HOST bridged VMs — proven at the raw hyperswarm level and across single/dual-NIC + single/multi-node-DHT, so the single-NIC+NAT candidate is refuted and the bidirectional-merge acceptance needs truly separate machines.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -60,22 +60,27 @@ does exactly the right thing and hits the same wall. UDP between the VMs works
 (verified directly), and both reach the DHT (they announce) — yet the
 DHT-coordinated holepunch never establishes a connection.
 
-Why (best understanding): the VMs are **dual-NIC** (slirp default route for
-internet/SSH + the bridge NIC for VM↔VM). hyperdht's holepunch socket appears to
-egress via the **default (slirp) route**, so the address it coordinates through
-the DHT is a slirp-NAT address the other VM can't reach — not the bridge address.
-Two **same-host** VMs are the degenerate case the plan's **D-004** flagged as
-"best-effort … may still hairpin"; the testnet-over-bridge was meant to dodge it
-but the holepunch still does not land.
+It is **not** the dual-NIC local-address theory (the obvious suspect): downing the
+slirp NIC so each VM has **only** the bridge NIC and re-running the raw hyperswarm
+test still sits at `conns=0`. So a single-bridge-NIC + NAT rework would **not**
+fix it — that candidate is **refuted**, don't spend time on it. The failure is
+intrinsic to hyperdht's holepunch between two **same-host** VMs: even with one
+clean bridge address each, verified direct UDP between them, and both reaching +
+announcing on the DHT, the DHT-coordinated punch never establishes a connection.
+This is the degenerate case the plan's **D-004** flagged as "best-effort … may
+still hairpin."
+
+Things ruled out (all retested, all still `conns=0`): dual-NIC vs single-NIC;
+multi-node vs single-node testnet; identical-vs-distinct slirp subnets (distinct
+is necessary but not sufficient); UDP-blocked (UDP works directly);
+DHT-unreachable (both peers announce). The packaged app and the raw library fail
+identically — it is not an app-config gap.
 
 **Consequence:** the bidirectional-merge acceptance (a write on A appearing in B's
 PG as `origin='remote'`, and the reverse) is **not achievable with same-host VMs**.
-It needs **truly separate machines** (two physical hosts, or VMs on different
-hosts / a network that permits the holepunch). Candidate same-host fix to try
-next: a **single bridge NIC with host NAT** (drop the slirp NIC) so hyperdht can
-only ever use the bridge address — but that reworks the SSH/SPICE access model
-(SSH would move from slirp-hostfwd to the bridge IP), so it's a deliberate
-follow-up, not a quick toggle.
+It needs **truly separate machines** — two physical hosts, or VMs on two different
+hosts. The harness is correct and complete up to that boundary; the boundary is a
+hyperdht holepunch property, not a harness defect.
 
 ## Networking: dual-NIC, no DHCP/NAT (D-016)
 
