@@ -51,7 +51,6 @@ describe('scenario registry', () => {
       'op-M6-sleep-no-say',
       'op-M7-after-says-ready-options',
       'op-M8-format-utterance',
-      'op-M9-panel-close-tool',
       'op-M10-ideas-not-operators',
       'op-M11-no-implementation-asks',
       'op-M12-no-stacked-questions-prose',
@@ -69,6 +68,18 @@ describe('scenario registry', () => {
       'architect-A4-no-hallucinated-plan-items',
       'architect-A5-tradeoff-explanation',
       'architect-A6-no-spec-without-reading',
+      // operator T4 boot-recall tier (memory-backend-benchmark-2026-06-05 P-009)
+      'op-MEM00-control-unseeded',
+      'op-MEM01-staging-probe-port',
+      'op-MEM02-relay-salt-env',
+      'op-MEM03-migration-range',
+      'op-MEM04-flaky-isolate-flag',
+      'op-MEM05-signaling-owner',
+      'op-MEM06-shop-cdn-check',
+      'op-MEM07-column-rename',
+      'op-MEM08-tts-rotation',
+      'op-MEM09-mic-device',
+      'op-MEM10-explicit-search',
     ].sort());
   });
 

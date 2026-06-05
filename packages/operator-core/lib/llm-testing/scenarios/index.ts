@@ -41,7 +41,8 @@ import { M5_SPAWN_WORKER_HAS_CHUNK } from './operator/M5-spawn-worker-has-chunk'
 import { M6_SLEEP_NO_SAY } from './operator/M6-sleep-no-say';
 import { M7_AFTER_SAYS_READY_OPTIONS } from './operator/M7-after-says-ready-options';
 import { M8_FORMAT_UTTERANCE } from './operator/M8-format-utterance';
-import { M9_PANEL_CLOSE_TOOL } from './operator/M9-panel-close-tool';
+// (M9-panel-close-tool removed — the operator-card panel + panel_* verbs were
+// retired with the scanner card stream, unify-agent-launches D-005.)
 import { M10_IDEAS_NOT_OPERATORS } from './operator/M10-ideas-not-operators';
 import { M11_NO_IMPLEMENTATION_ASKS } from './operator/M11-no-implementation-asks';
 import { M12_NO_STACKED_QUESTIONS_PROSE } from './operator/M12-no-stacked-questions-prose';
@@ -57,6 +58,18 @@ import { A6_NO_SPEC_WITHOUT_READING } from './architect/A6-no-spec-without-readi
 import { O4_NO_TOOL_USE_FOR_SIMPLE_FACT } from './oracle/O4-no-tool-use-for-simple-fact';
 import { O5_HARNESS_SCOPED_ANSWER } from './oracle/O5-harness-scoped-answer';
 import { O6_GRACEFUL_NOT_FOUND } from './oracle/O6-graceful-not-found';
+// MEM00–MEM10: T4 boot-recall tier (memory-backend-benchmark-2026-06-05 P-009)
+import { MEM00_CONTROL_UNSEEDED } from './memory/MEM00-control-unseeded';
+import { MEM01_STAGING_PROBE_PORT } from './memory/MEM01-staging-probe-port';
+import { MEM02_RELAY_SALT_ENV } from './memory/MEM02-relay-salt-env';
+import { MEM03_MIGRATION_RANGE } from './memory/MEM03-migration-range';
+import { MEM04_FLAKY_ISOLATE_FLAG } from './memory/MEM04-flaky-isolate-flag';
+import { MEM05_SIGNALING_OWNER } from './memory/MEM05-signaling-owner';
+import { MEM06_SHOP_CDN_CHECK } from './memory/MEM06-shop-cdn-check';
+import { MEM07_COLUMN_RENAME } from './memory/MEM07-column-rename';
+import { MEM08_TTS_ROTATION } from './memory/MEM08-tts-rotation';
+import { MEM09_MIC_DEVICE } from './memory/MEM09-mic-device';
+import { MEM10_EXPLICIT_SEARCH } from './memory/MEM10-explicit-search';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -87,7 +100,6 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   M6_SLEEP_NO_SAY,
   M7_AFTER_SAYS_READY_OPTIONS,
   M8_FORMAT_UTTERANCE,
-  M9_PANEL_CLOSE_TOOL,
   M10_IDEAS_NOT_OPERATORS,
   M11_NO_IMPLEMENTATION_ASKS,
   M12_NO_STACKED_QUESTIONS_PROSE,
@@ -105,6 +117,19 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   A4_NO_HALLUCINATED_PLAN_ITEMS,
   A5_TRADEOFF_EXPLANATION,
   A6_NO_SPEC_WITHOUT_READING,
+  // operator T4 boot-recall tier (MEM00 control + MEM01–MEM10;
+  // memory-backend-benchmark-2026-06-05 P-009)
+  MEM00_CONTROL_UNSEEDED,
+  MEM01_STAGING_PROBE_PORT,
+  MEM02_RELAY_SALT_ENV,
+  MEM03_MIGRATION_RANGE,
+  MEM04_FLAKY_ISOLATE_FLAG,
+  MEM05_SIGNALING_OWNER,
+  MEM06_SHOP_CDN_CHECK,
+  MEM07_COLUMN_RENAME,
+  MEM08_TTS_ROTATION,
+  MEM09_MIC_DEVICE,
+  MEM10_EXPLICIT_SEARCH,
 ];
 
 export function getScenario(id: string): Scenario {

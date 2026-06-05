@@ -2,7 +2,7 @@
  * Generic TTL-based row expiry. One sweep loop, many tables.
  *
  * Replaces ad-hoc lazy-delete + bespoke sweeper code scattered across
- * `operator-scan-lock.ts`, `provision/operator-claims.ts`, `auth.ts`,
+ * `provision/operator-claims.ts`, `auth.ts`,
  * `harness-status-sweep.ts:sweepHarnessStatusStalled`, etc. — each of
  * which had its own TTL constant + its own DELETE timing + its own
  * "what to do with expired rows" semantics.

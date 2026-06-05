@@ -22,6 +22,7 @@ import { readAgentConfig } from '../agent-config';
 
 import { llmCall } from './llm-client';
 import { tryClaim, release } from './ledger';
+import { applyScenarioSetup } from './setup';
 import { persistRunReport } from './storage';
 import { getTarget } from './targets';
 import { pullContinueChainRows, pullToolInvocations } from './telemetry';
@@ -52,6 +53,9 @@ export function operatorRunnerDeps(opts: OperatorDepsOpts = {}): RunnerDeps {
     },
     telemetry: { pullToolInvocations, pullContinueChainRows },
     claim: { tryClaim, release },
+    // scenario.setup seeding (memory entries through the neutral seam) —
+    // memory-backend-benchmark P-009; see ./setup.
+    applySetup: applyScenarioSetup,
   };
   if (opts.persist !== false) {
     deps.store = { persistRunReport };

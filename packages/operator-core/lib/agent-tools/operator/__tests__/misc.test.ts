@@ -185,33 +185,6 @@ describe('operator:dedup_check', () => {
   });
 });
 
-describe('operator:parse_suggestions', () => {
-  it('loads preferences automatically and forwards to parseSuggestions', async () => {
-    const parseSuggestions = vi.fn(async () => ({ blocks: [], parseErrors: [] }));
-    const loadPreferences = vi.fn(async () => ({ standingApprovals: [] }));
-    vi.doMock('../../../operator-suggestion-parser', () => ({ parseSuggestions }));
-    vi.doMock('../../../operator-preferences', () => ({ loadPreferences }));
-    const { default: tool } = await import('../parse_suggestions');
-    await tool.handler({ text: 'hello' }, MAKE_CTX());
-    expect(loadPreferences).toHaveBeenCalled();
-    expect(parseSuggestions).toHaveBeenCalledWith('hello', { standingApprovals: [] });
-  });
-
-  it('honors preferencesOverride if provided', async () => {
-    const parseSuggestions = vi.fn(async () => ({ blocks: [], parseErrors: [] }));
-    const loadPreferences = vi.fn(async () => ({ should_not_be_used: true }));
-    vi.doMock('../../../operator-suggestion-parser', () => ({ parseSuggestions }));
-    vi.doMock('../../../operator-preferences', () => ({ loadPreferences }));
-    const { default: tool } = await import('../parse_suggestions');
-    await tool.handler(
-      { text: 'hi', preferencesOverride: { override: true } },
-      MAKE_CTX(),
-    );
-    expect(loadPreferences).not.toHaveBeenCalled();
-    expect(parseSuggestions).toHaveBeenCalledWith('hi', { override: true });
-  });
-});
-
 describe('operator:preview_prompt', () => {
   it('builds with default placeholder userId', async () => {
     const buildOperatorPrompt = vi.fn(async () => ({

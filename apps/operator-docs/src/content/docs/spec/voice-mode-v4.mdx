@@ -365,3 +365,25 @@ npx vitest run lib/voice-*.test.ts app/_components/voice/voice-*.test.ts
 
 Coverage: 78 tests across 9 modules — parser, intents, prefs, credentials,
 engines, cost methodology, health monitor, nudges, leader election.
+
+## Realtime operator voice in the pui (voice-realtime-tui-2026-06-05)
+
+The terminal workbench has BOTH voice modes:
+
+- **PTT** (`v`): capture → Whisper STT → operator-converse → `operator-tts`
+  (engine + voice from voice prefs — ElevenLabs when selected) → playback.
+- **Realtime** (`V`, any tab): a raw ElevenLabs Conv-AI **WebSocket** session.
+  `GET /api/agent-mcp/operator-elevenlabs-ws-init` mints the signed URL
+  server-side (key never leaves the operator), claims the voice lease
+  (kind `tui` — one live listener across desktop/mobile/pui), and returns the
+  shell-mode payload (language-pin override only). The Rust client
+  (`apps/tui/src/voice_convai.rs`) streams ~250 ms `pcm_16000` mic chunks up,
+  plays `audio` events gap-free, answers `ping`, stops playback on
+  `interruption` (barge-in), and serves the **`ask_operator` client tool**
+  over the existing operator-converse SSE — the same brain loop as the
+  desktop's browser clientTool. Transcripts persist into the SAME operator
+  conversation (sources `voice_stt`/`voice_tts`, tags stripped).
+
+Requirements: `fullAgentEngine = elevenlabs-conv` + `elevenLabsAgentId` in
+`/settings/voice` and an ElevenLabs API key — the same config the desktop
+full-agent mode uses. Without them `V` surfaces the route's hint as a toast.

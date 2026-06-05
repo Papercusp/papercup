@@ -30,13 +30,15 @@ beforeEach(() => {
 describe('operatorToolResolver', () => {
   it('maps the seeded streaming tools to their canonical shim routes', () => {
     expect(operatorToolResolver('oracle:chat').route).toBe('/api/oracle/chat');
-    expect(operatorToolResolver('operator:scan').route).toBe('/api/agent-mcp/operator-scan');
     expect(operatorToolResolver('operator:converse').route).toBe('/api/agent-mcp/operator-converse');
   });
 
   it('falls back to the projected convention for unmapped tools', () => {
     expect(operatorToolResolver('dev:ipc_echo').route).toBe('/api/agent-tools/dev/ipc_echo');
     expect(operatorToolResolver('something:else').route).toBe('/api/agent-tools/something/else');
+    // operator:scan was UNMAPPED with the scanner teardown (D-005) — it now
+    // projects like any unknown tool rather than hitting a dead shim route.
+    expect(operatorToolResolver('operator:scan').route).toBe('/api/agent-tools/operator/scan');
   });
 
   it('maps operator:delegate to its delegate-chat shim route', () => {
@@ -44,7 +46,7 @@ describe('operatorToolResolver', () => {
   });
 
   it('Phase E: marks the verified self-contained tools direct-eligible', () => {
-    for (const n of ['operator:scan', 'operator:converse', 'operator:delegate']) {
+    for (const n of ['operator:converse', 'operator:delegate']) {
       expect(operatorToolResolver(n).directEligible).toBe(true);
     }
   });

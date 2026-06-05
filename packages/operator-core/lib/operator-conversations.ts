@@ -265,6 +265,123 @@ export async function appendTurn(input: {
   throw new Error('appendTurn: failed after 3 retries');
 }
 
+// ---------------------------------------------------------------------------
+// Rolling conversation summary (operator context compaction)
+// operator-context-compaction-2026-06-05 D-002/D-003 — the compacted gist of
+// every turn with seq <= summary_through_seq lives WITH the conversation
+// (migration 168). Raw-column SQL on purpose: no drizzle generated-schema
+// regen in the shared tree (same precedent as operator_turns.report).
+// ---------------------------------------------------------------------------
+
+export interface ConversationSummary {
+  /** Compacted summary text, or null before the first compaction. */
+  summaryText: string | null;
+  /** Highest operator_turns.seq covered by summaryText (CAS baseline). */
+  summaryThroughSeq: number | null;
+  summaryUpdatedAt: number | null;
+  summaryModel: string | null;
+  summaryTurnsCovered: number;
+}
+
+/** Read the conversation's rolling summary state. Null = conversation not found. */
+export async function readConversationSummary(
+  conversationId: string,
+): Promise<ConversationSummary | null> {
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT summary_text, summary_through_seq, summary_updated_at,
+            summary_model, summary_turns_covered
+       FROM harness_shared.operator_conversations
+      WHERE id = $1`,
+    [conversationId],
+  )) as Array<Record<string, unknown>>;
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  return {
+    summaryText: r.summary_text == null ? null : String(r.summary_text),
+    summaryThroughSeq: r.summary_through_seq == null ? null : Number(r.summary_through_seq),
+    summaryUpdatedAt: r.summary_updated_at == null ? null : Number(r.summary_updated_at),
+    summaryModel: r.summary_model == null ? null : String(r.summary_model),
+    summaryTurnsCovered: r.summary_turns_covered == null ? 0 : Number(r.summary_turns_covered),
+  };
+}
+
+/**
+ * CAS write of an incrementally-regenerated summary. Succeeds only when the
+ * row's `summary_through_seq` still equals `expectedThroughSeq` (NULL-safe) —
+ * a concurrent compactor that landed first wins and this call returns false;
+ * the loser discards its result (D-003).
+ */
+export async function writeConversationSummary(input: {
+  conversationId: string;
+  /** The summaryThroughSeq read before summarizing — the CAS baseline. */
+  expectedThroughSeq: number | null;
+  summaryText: string;
+  summaryThroughSeq: number;
+  summaryModel: string;
+  /** How many turns this compaction folded in (adds to the running total). */
+  turnsAdded: number;
+}): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `UPDATE harness_shared.operator_conversations
+        SET summary_text = $2,
+            summary_through_seq = $3,
+            summary_updated_at = $4,
+            summary_model = $5,
+            summary_turns_covered = COALESCE(summary_turns_covered, 0) + $6
+      WHERE id = $1
+        AND summary_through_seq IS NOT DISTINCT FROM $7
+      RETURNING id`,
+    [
+      input.conversationId,
+      input.summaryText,
+      input.summaryThroughSeq,
+      Date.now(),
+      input.summaryModel,
+      input.turnsAdded,
+      input.expectedThroughSeq,
+    ],
+  )) as Array<Record<string, unknown>>;
+  return rows.length > 0;
+}
+
+/** Highest turn seq in the conversation, or null when it has no turns. */
+export async function maxTurnSeq(conversationId: string): Promise<number | null> {
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ s: dsql<number | null>`MAX(${ot.seq})` })
+    .from(ot)
+    .where(eq(ot.conversationId, conversationId));
+  const v = rows[0]?.s;
+  return v == null ? null : Number(v);
+}
+
+/**
+ * Turns with `afterSeq < seq <= throughSeq`, ASC — the aged-out uncovered
+ * range the compactor folds into the summary.
+ */
+export async function listTurnsBetween(
+  conversationId: string,
+  afterSeq: number | null,
+  throughSeq: number,
+): Promise<TurnRow[]> {
+  const { db } = getOrgPg();
+  const lower = afterSeq ?? -1;
+  const rows = await db
+    .select(turnCols)
+    .from(ot)
+    .where(
+      and(
+        eq(ot.conversationId, conversationId),
+        dsql`${ot.seq} > ${lower}`,
+        dsql`${ot.seq} <= ${throughSeq}`,
+      ),
+    )
+    .orderBy(ot.seq);
+  return (rows as Array<Record<string, unknown>>).map(rowToTurn);
+}
+
 /** Replace the last assistant turn in place — used for EL barge-in correction. */
 export async function correctLastAssistantTurn(
   conversationId: string,

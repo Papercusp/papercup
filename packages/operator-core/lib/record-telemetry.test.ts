@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // In-memory stand-in for operator-state PG (same pattern as
-// operator-idle-snapshot.test.ts): the helper's only side effect is the
+// the old operator-idle-snapshot tests): the helper's only side effect is the
 // telemetry_reports ring buffer, so we capture it without touching PG.
 const store = new Map<string, unknown>();
 vi.mock('./operator-state-pg', () => ({

@@ -2122,6 +2122,16 @@ impl App {
                     }
                     U::Error(e) => {
                         self.convai_phase = ConvAiPhase::Off;
+                        // Toast AND status line: the poller's success events
+                        // wipe last_error within ms, so a one-shot session
+                        // error must also land somewhere durable (the toast +
+                        // notifs history).
+                        self.push_notif(Notif {
+                            level: "error".into(),
+                            message: e.clone(),
+                            harness: None,
+                            ts: None,
+                        });
                         self.last_error = Some(e);
                     }
                 }

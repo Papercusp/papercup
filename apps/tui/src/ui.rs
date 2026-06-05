@@ -1514,10 +1514,21 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             format!("> {}", app.chat_input),
             Theme::selected(),
         )
+    } else if app.convai_phase != crate::app::ConvAiPhase::Off {
+        // Realtime Conv-AI session (voice-realtime-tui-2026-06-05 P-007): the
+        // composer becomes the live-session status — no PTT, just talk.
+        (
+            " Voice — realtime ",
+            format!(
+                "{}   speak naturally · V stops · i still types",
+                app.convai_phase.badge()
+            ),
+            Theme::notify(),
+        )
     } else {
         let hint = match &app.voice_error {
             Some(e) => format!("press i to talk · v to speak — last voice: {e}"),
-            None => "press i to talk · v to speak to the operator".to_string(),
+            None => "press i to talk · v PTT · V realtime voice".to_string(),
         };
         (
             " Composer — i type · v speak · j/k scroll ",
@@ -2127,7 +2138,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -2607,7 +2618,26 @@ mod tests {
     fn voice_idle_hint_mentions_v_to_speak() {
         let mut app = App::new();
         app.tab = Tab::Operator;
-        assert!(render(&app, 90, 16).contains("v to speak"));
+        // Idle hint advertises BOTH voice modes (PTT + the realtime session,
+        // voice-realtime-tui-2026-06-05).
+        let text = render(&app, 90, 16);
+        assert!(text.contains("v PTT"));
+        assert!(text.contains("V realtime voice"));
+    }
+
+    #[test]
+    fn convai_live_composer_shows_realtime_badge() {
+        // The realtime session replaces the composer with its status line
+        // (voice-realtime-tui-2026-06-05 P-007).
+        use crate::app::ConvAiPhase;
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.convai_phase = ConvAiPhase::Live;
+        let text = render(&app, 100, 16);
+        assert!(text.contains("● voice"), "live badge missing");
+        assert!(text.contains("V stops"), "stop hint missing");
+        app.convai_phase = ConvAiPhase::Connecting;
+        assert!(render(&app, 100, 16).contains("◐ voice…"), "connecting badge missing");
     }
 
     #[test]

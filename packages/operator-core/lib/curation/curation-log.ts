@@ -6,7 +6,7 @@
  * here (within the window) is suppressed so the operator doesn't re-nag the
  * SAME fact every tick. PG-backed (`harness_shared.operator_curation_log`,
  * migration 150) so it's multi-tab / cross-machine safe, mirroring
- * `operator-dismissed-cache.ts`.
+ * the old operator-dismissed-cache (retired with the scanner, D-005).
  *
  * This is de-dup memory, NOT a suppression list — a NEW escalation/blocker is
  * always surfaced (it just won't repeat). The raw item is always reachable via

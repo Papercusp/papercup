@@ -1,7 +1,7 @@
 /**
  * Shared `--allowed-tools` list for the operator's claude-code spawns.
  *
- * Both /api/agent-mcp/operator-scan and /api/agent-mcp/operator-converse
+ * The operator chat surfaces (operator-converse + one-shot tools)
  * use this so the operator's tool surface is identical across the
  * proactive scanner and the conversational brain. Adding a tool here
  * makes it available to the operator everywhere.
@@ -27,6 +27,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__goals:list',
   'mcp__agentmcp__goals:get',
   'mcp__agentmcp__issues:list',
+  // Scan findings live in the self-improvement backlog (unify-agent-launches
+  // D-005) — improvements:digest is the operator's "what did the scanner
+  // find?" read surface, replacing the retired scans_list/scans_get.
+  'mcp__agentmcp__improvements:digest',
   'mcp__agentmcp__harness:escalation',
   'mcp__agentmcp__harness:pending_reviews',
   // Plans read surface — the needs-human inbox + importance the scanner
@@ -127,7 +131,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
  * Subset of ALL_AGENT_MCP_TOOLS that require an INTERACTIVE chat
  * surface — i.e., a real-time user the agent can solicit a response
  * from. These should NOT be in allowedTools for one-shot surfaces
- * like operator-scan (which emits suggestions, not chat turns) or
+ * like one-shot surfaces (which emit results, not chat turns) or
  * spawn-pi (which boots a workspace; no chat).
  *
  * If a chat-only tool is given to a one-shot surface, the model might
@@ -143,7 +147,7 @@ export const INTERACTIVE_CHAT_TOOLS: readonly string[] = [
 
 /**
  * The non-interactive subset — everything except INTERACTIVE_CHAT_TOOLS.
- * For one-shot surfaces (operator-scan etc.) that spawn an agent but
+ * For one-shot surfaces that spawn an agent but
  * don't have a user-facing chat session.
  */
 export const NON_INTERACTIVE_AGENT_MCP_TOOLS: readonly string[] =

@@ -12,7 +12,7 @@
 
 ### `*_list` → `*_get` chaining
 
-Tools that come in list/get pairs (delegates, scans, chats, tasks, goals)
+Tools that come in list/get pairs (delegates, chats, tasks, goals)
 follow the same rule:
 
 1. Use the **list** form first to find the id (cheap, summary-only).
@@ -20,25 +20,10 @@ follow the same rule:
    item.
 3. Read or summarize the result — never dump the raw payload at the user.
 
-### Panel verbs map 1:1 to panel tools
-
-When the user says panel-related action verbs right after a
-panel-related turn, the antecedent is the panel and you MUST call
-the matching tool. **The tool call IS the action** — don't acknowledge
-in words and skip the tool.
-
-| User said | Call |
-|---|---|
-| "close it" / "close the panel" / "dismiss it" / "hide it" / "shut that" | `panel_close` |
-| "open it" / "open it again" / "bring it back" / "show it" | `panel_open` |
-| "what's there?" / "what's on it" | `panel_state` THEN describe |
-| "scroll" / "next" / "previous" | `panel_dispatch_card` |
-| "ignore that" / "not now" / "kill that one" | `panel_dismiss_card` |
-
-Reference cards by what's on them, not by id. "I see three pending
-— a sheets sync at high, two low-tier docs updates." Resolve the id
-yourself when the user picks one ("dispatch the sheets one"). Do
-not read raw ids out loud — they're noise.
+(The operator-card panel and its `panel_*` verbs are retired —
+unify-agent-launches D-005. Scans run as the `scan` launch blueprint;
+findings live in the self-improvement backlog. See "Scans → the
+improvements backlog" below.)
 
 ## Named workflows
 
@@ -48,17 +33,6 @@ not read raw ids out loud — they're noise.
 2. Confirm the target out loud — "Approving the X for sheets, go?"
 3. Wait for yes / go / sure / proceed.
 4. Call `operator_approve_pending` with the slug + capability from step 1.
-
-### Dispatch a tier-high panel card
-
-1. `panel_cards` to enumerate (or you already have the id from a recent listing).
-2. Read the card title out loud + ask one direct yes/no question.
-   *"Forms validator failed schema check, that's tier-high — dispatch?"*
-3. **WAIT.** Don't say "on it" before the question; that primes you to dispatch.
-4. Only after the user says yes / go / do it / sure / proceed: call `panel_dispatch_card`.
-
-Tier-low / tier-medium cards skip steps 2-3 entirely — dispatch
-immediately with a two-word ack.
 
 ### Delegate work to another agent
 
@@ -90,16 +64,16 @@ Don't re-purpose `harness:get` or `harness:status` for "what's wrong" —
 those return facts and live counts, not problems. `issues:list` is the
 problem-side view.
 
-### Find scans
+### Scans → the improvements backlog
 
-The panel's **Scan history** tab shows the same data visually. When
-the user asks "show me yesterday's scans" you can answer from
-`scans_list` AND mention the panel ("I see four scans from yesterday;
-they're in the Scan history tab too").
-
-- `scans_list` — summaries (id, startedAt, summary, suggestionCount, error). Fine to call frequently.
-- `scans_search` — same shape, free-text filtered. Use when the user names a topic ("scans about typecheck") instead of paging through list.
-- `scans_get` — full scan with every suggestion card. Only when the user asks about a specific past scan in detail; heavier payload.
+Workspace scans run as the scheduled `scan` launch blueprint; each
+finding lands as a tracked work-item in the self-improvement backlog —
+there is no separate scan-history/card surface anymore. When the user
+asks "what did the scanner find?" / "any new findings?", read the
+backlog with `improvements:digest` (or `issues:list` for the
+problem-side view) and summarize. To run a scan on demand, dispatch
+the *Run Papercup scan* registry command — findings will appear in
+the same backlog.
 
 ### Surfacing suggestions (open_canvas / user_says_ready)
 

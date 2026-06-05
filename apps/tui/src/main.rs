@@ -29,6 +29,7 @@ mod ui;
 mod voice;
 mod voice_convai;
 mod voice_stream;
+mod voice_ui;
 mod workbench;
 
 use anyhow::Result;

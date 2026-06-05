@@ -5,16 +5,15 @@
  * `route.ts` files they replaced — without a running operator.
  *
  *   GET  /desktop/version            — the GET + OPTIONS + CORS case
- *   POST /agent-mcp/operator-dismissed — the typed-input case
  *   POST /flags/webhook              — the public + self-authed case
+ *
+ * (The third pilot, POST /agent-mcp/operator-dismissed — the typed-input
+ * case — was removed with the scanner card stream, unify-agent-launches
+ * D-005. Typed-input route coverage now lives across the 100+ per-route
+ * tests that migrated after R1.)
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-
-// recordDismissed is PG-backed — mock it so the pilot test needs no DB.
-vi.mock('../../operator-dismissed-cache', () => ({
-  recordDismissed: vi.fn(async () => {}),
-}));
 
 // Telemetry writes to PG — not under test here.
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
@@ -23,9 +22,7 @@ import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
 import desktopVersion from '../routes/desktop/version';
-import operatorDismissed from '../routes/agent-mcp/operator-dismissed';
 import flagsWebhook from '../routes/flags/webhook';
-import { recordDismissed } from '../../operator-dismissed-cache';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -60,40 +57,6 @@ describe('GET /desktop/version', () => {
     const res = await app.request('/desktop/version', { method: 'OPTIONS' });
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-methods')).toContain('GET');
-  });
-});
-
-describe('POST /agent-mcp/operator-dismissed', () => {
-  const app = appWith(operatorDismissed as AnyRoute);
-
-  it('records a dismissal and returns ok', async () => {
-    const res = await app.request('/agent-mcp/operator-dismissed', {
-      method: 'POST',
-      body: JSON.stringify({ id: 'card-123' }),
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(recordDismissed).toHaveBeenCalledWith('card-123');
-  });
-
-  it('rejects a missing id with 400', async () => {
-    const res = await app.request('/agent-mcp/operator-dismissed', {
-      method: 'POST',
-      body: JSON.stringify({}),
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(res.status).toBe(400);
-    expect(recordDismissed).not.toHaveBeenCalled();
-  });
-
-  it('rejects a non-JSON body with 400', async () => {
-    const res = await app.request('/agent-mcp/operator-dismissed', {
-      method: 'POST',
-      body: 'garbage{',
-      headers: { 'content-type': 'application/json' },
-    });
-    expect(res.status).toBe(400);
   });
 });
 
