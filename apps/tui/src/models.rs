@@ -188,24 +188,9 @@ pub struct ProjectsResponse {
     pub projects: Vec<HarnessRef>,
 }
 
-/// One row of `/api/harness/all/recent-activity` → `{events:[...]}`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ActivityEvent {
-    #[serde(default)]
-    pub ts: String,
-    #[serde(default)]
-    pub action: String,
-    #[serde(default)]
-    pub subject: String,
-    #[serde(default)]
-    pub actor: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ActivityResponse {
-    #[serde(default)]
-    pub events: Vec<ActivityEvent>,
-}
+// NOTE: the old Activity tab's `/api/harness/all/recent-activity` DTOs
+// (ActivityEvent/ActivityResponse) were removed with the tab (D-004b) — the
+// Brew tab's `ActivityRow` (agent_activity) is the live activity surface.
 
 /// One testing domain from `/api/harness/:slug/testing/domains`.
 #[derive(Debug, Clone, Deserialize)]
@@ -223,6 +208,50 @@ pub struct TestingDomain {
 pub struct TestingResponse {
     #[serde(default)]
     pub domains: Vec<TestingDomain>,
+}
+
+// ── Testing run-on-click (D-004a, pui-completion-and-polish-2026-06-05) ─────
+//
+// `GET /api/harness/:slug/testing/domain-detail?domainId=` resolves a domain's
+// sections + their glob-walked files; the PUI flattens them into the runnable
+// file list. `POST /api/harness/:slug/testing/run` runs one file (vitest,
+// synchronous server-side) and returns the status + tail output.
+
+/// One resolved file inside a testing-domain section (`{path,sizeBytes,mtimeMs}`;
+/// only the path is rendered).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestingFileHit {
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestingDomainSection {
+    #[serde(default)]
+    pub files: Vec<TestingFileHit>,
+}
+
+/// `GET /api/harness/:slug/testing/domain-detail` (only the file lists are kept).
+#[derive(Debug, Clone, Deserialize)]
+pub struct TestingDomainDetail {
+    #[serde(default)]
+    pub sections: Vec<TestingDomainSection>,
+}
+
+/// `POST /api/harness/:slug/testing/run` → the synchronous run result.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestRunResult {
+    #[serde(default)]
+    pub run_id: String,
+    /// "pass" | "fail".
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub exit_code: i32,
+    /// Tail of the runner output (server clips to the last 8000 chars).
+    #[serde(default)]
+    pub output: String,
 }
 
 /// `/api/harness/:slug/claude-settings` → `{content}` (read-only file body).
@@ -361,8 +390,6 @@ pub struct ViewState {
     pub doc_sel: usize,
     #[serde(default)]
     pub doc_scroll: u16,
-    #[serde(default)]
-    pub activity_sel: usize,
     #[serde(default)]
     pub testing_sel: usize,
     #[serde(default)]
@@ -999,16 +1026,6 @@ mod tests {
         assert_eq!(r.projects.len(), 2);
         assert_eq!(r.projects[0].slug, "papercup");
         assert_eq!(r.projects[0].path.as_deref(), Some("/repo/papercup"));
-    }
-
-    #[test]
-    fn parses_activity_shape() {
-        let j = r#"{"events":[{"ts":"2026-06-03T05:38:30Z","action":"operator.accept_failed",
-            "subject":"commit-plan-updates","actor":"system:operator"}]}"#;
-        let r: ActivityResponse = serde_json::from_str(j).unwrap();
-        assert_eq!(r.events.len(), 1);
-        assert_eq!(r.events[0].action, "operator.accept_failed");
-        assert_eq!(r.events[0].actor, "system:operator");
     }
 
     #[test]

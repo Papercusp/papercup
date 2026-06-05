@@ -6,9 +6,9 @@
 use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
-    ActivityEvent, AttentionItem, ChatMessage, ChatToolCall, CrewMember, DocsResponse,
-    FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates,
-    PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
+    AttentionItem, ChatMessage, ChatToolCall, CrewMember, DocsResponse, FlagsResponse,
+    HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary,
+    RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -53,6 +53,14 @@ pub enum Action {
     /// The reducer already set `chat_loading_earlier`; the run loop snapshots the
     /// conversation id + oldest cursor from App.
     LoadEarlierChat,
+    /// Fetch the selected testing domain's runnable files (D-004a) — the run
+    /// loop spawns the domain-detail fetch; results return as
+    /// `Event::TestingFiles` (stale-guarded by domain id).
+    FetchTestingFiles { harness: String, domain_id: String },
+    /// Run one test file via `POST /api/harness/:slug/testing/run` (D-004a).
+    /// The reducer already marked the run in-flight; the result returns as
+    /// `Event::TestRunDone`.
+    RunTest { harness: String, file: String },
 }
 
 /// A command-palette workbench command (P12b / D-002). Parsed from the palette
@@ -105,7 +113,6 @@ pub enum Tab {
     /// titled "Pots" per D-001).
     Harnesses,
     Docs,
-    Activity,
     Testing,
     Config,
     Plugins,
@@ -113,14 +120,16 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [
+    // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
+    // audit_log, and the Brew tab's mirror mode already rides the richer
+    // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
+    pub const ALL: [Tab; 10] = [
         Tab::Operator,
         Tab::Inbox,
         Tab::Plans,
         Tab::Fleet,
         Tab::Harnesses,
         Tab::Docs,
-        Tab::Activity,
         Tab::Testing,
         Tab::Config,
         Tab::Plugins,
@@ -135,7 +144,6 @@ impl Tab {
             Tab::Fleet => "Brew",
             Tab::Harnesses => "Pots",
             Tab::Docs => "Docs",
-            Tab::Activity => "Activity",
             Tab::Testing => "Testing",
             Tab::Config => "Config",
             Tab::Plugins => "Plugins",
@@ -143,8 +151,8 @@ impl Tab {
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
-    /// dispatch in `on_key` derives from it, g1). The lead tabs take digits 1-9
-    /// then 0; the tail takes a mnemonic letter so the digit scheme survives.
+    /// dispatch in `on_key` derives from it, g1). Ten tabs, ten digits (1-9, 0);
+    /// an appended tab (e.g. the Memory tab, D-006) takes a mnemonic letter.
     pub fn switch_key(self) -> char {
         match self {
             Tab::Operator => '1',
@@ -153,11 +161,10 @@ impl Tab {
             Tab::Fleet => '4',
             Tab::Harnesses => '5',
             Tab::Docs => '6',
-            Tab::Activity => '7',
-            Tab::Testing => '8',
-            Tab::Config => '9',
-            Tab::Plugins => '0',
-            Tab::Settings => 's',
+            Tab::Testing => '7',
+            Tab::Config => '8',
+            Tab::Plugins => '9',
+            Tab::Settings => '0',
         }
     }
     pub fn index(self) -> usize {
@@ -179,6 +186,27 @@ impl Tab {
 pub enum HarnessFocus {
     Features,
     Issues,
+}
+
+/// Which column the Testing tab has keyboard focus on (D-004a): the domain
+/// list (left) or the selected domain's runnable files (right).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestingFocus {
+    Domains,
+    Files,
+}
+
+/// One test run's lifecycle on the Testing tab (D-004a): in-flight, then the
+/// finished status + tail output. Replaced wholesale per run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestRunState {
+    pub running: bool,
+    /// The file being run (the run pane's title).
+    pub file: String,
+    /// "pass" | "fail" once finished; empty while running.
+    pub status: String,
+    /// Tail of the runner output (server clips to ~8000 chars).
+    pub output: String,
 }
 
 /// Root application state. Grows as more panels are ported.
@@ -219,12 +247,17 @@ pub struct App {
     pub doc_scroll: u16,
     /// Shared selected-doc path the poller fetches (None → endpoint's default).
     pub active_doc: Arc<Mutex<Option<String>>>,
-    /// Activity tab: cross-harness recent activity.
-    pub activity: Vec<ActivityEvent>,
-    pub activity_sel: usize,
     /// Testing tab: testing domains for the active harness.
     pub testing: Vec<TestingDomain>,
     pub testing_sel: usize,
+    /// Testing tab run-on-click (D-004a): the selected domain's runnable files
+    /// (fetched on Enter via domain-detail), the file cursor, which column has
+    /// focus, whether a file fetch is in flight, and the last/in-flight run.
+    pub testing_files: Vec<String>,
+    pub testing_file_sel: usize,
+    pub testing_focus: TestingFocus,
+    pub testing_files_loading: bool,
+    pub test_run: Option<TestRunState>,
     /// Config tab: the active harness's claude-settings content (read-only).
     pub config: String,
     /// Plugins tab (D-002): plugin-contributed TUI panes for the active harness +
@@ -309,7 +342,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
-            status: "pui · 1 operator · 4 brew · 1-0/s tabs · j/k move · [/] pot · ? help · q quit".to_string(),
+            status: "pui · 1 operator · 4 brew · 1-0 tabs · j/k move · [/] pot · ? help · q quit".to_string(),
             // The operator chat is the default landing surface — the single pane
             // of glass for talking to the fleet (tui-operator-surface D-004).
             tab: Tab::Operator,
@@ -334,10 +367,13 @@ impl App {
             doc_content: String::new(),
             doc_scroll: 0,
             active_doc: Arc::new(Mutex::new(None)),
-            activity: Vec::new(),
-            activity_sel: 0,
             testing: Vec::new(),
             testing_sel: 0,
+            testing_files: Vec::new(),
+            testing_file_sel: 0,
+            testing_focus: TestingFocus::Domains,
+            testing_files_loading: false,
+            test_run: None,
             config: String::new(),
             panes: Vec::new(),
             pane_sel: 0,
@@ -580,6 +616,11 @@ impl App {
         self.doc_scroll = 0;
         self.testing.clear();
         self.testing_sel = 0;
+        self.testing_files.clear();
+        self.testing_file_sel = 0;
+        self.testing_focus = TestingFocus::Domains;
+        self.testing_files_loading = false;
+        self.test_run = None;
         self.config.clear();
         self.panes.clear();
         self.pane_sel = 0;
@@ -637,17 +678,51 @@ impl App {
         }
     }
 
-    pub fn set_activity(&mut self, activity: Vec<ActivityEvent>) {
-        self.activity = activity;
-        if self.activity_sel >= self.activity.len() {
-            self.activity_sel = self.activity.len().saturating_sub(1);
-        }
-    }
-
     pub fn set_testing(&mut self, testing: Vec<TestingDomain>) {
         self.testing = testing;
         if self.testing_sel >= self.testing.len() {
             self.testing_sel = self.testing.len().saturating_sub(1);
+        }
+    }
+
+    /// Enter/r on the Testing tab (D-004a): on the domain column, fetch the
+    /// selected domain's runnable files; on the file column, run the selected
+    /// file (one run at a time — a second Enter while running is inert).
+    fn testing_activate(&mut self) -> Action {
+        match self.testing_focus {
+            TestingFocus::Domains => match self.testing.get(self.testing_sel) {
+                Some(d) => {
+                    self.testing_files.clear();
+                    self.testing_file_sel = 0;
+                    self.testing_files_loading = true;
+                    Action::FetchTestingFiles {
+                        harness: self.harness.clone(),
+                        domain_id: d.id.clone(),
+                    }
+                }
+                None => Action::None,
+            },
+            TestingFocus::Files => {
+                if self.test_run.as_ref().is_some_and(|r| r.running) {
+                    return Action::Render; // a run is in flight — wait for it
+                }
+                match self.testing_files.get(self.testing_file_sel) {
+                    Some(f) => {
+                        let file = f.clone();
+                        self.test_run = Some(TestRunState {
+                            running: true,
+                            file: file.clone(),
+                            status: String::new(),
+                            output: String::new(),
+                        });
+                        Action::RunTest {
+                            harness: self.harness.clone(),
+                            file,
+                        }
+                    }
+                    None => Action::None,
+                }
+            }
         }
     }
 
@@ -700,7 +775,6 @@ impl App {
             issue_sel: self.issue_sel,
             doc_sel: self.doc_sel,
             doc_scroll: self.doc_scroll,
-            activity_sel: self.activity_sel,
             testing_sel: self.testing_sel,
             pane_sel: self.pane_sel,
             show_presence: self.show_presence,
@@ -735,7 +809,6 @@ impl App {
         self.issue_sel = vs.issue_sel;
         self.doc_sel = vs.doc_sel;
         self.doc_scroll = vs.doc_scroll;
-        self.activity_sel = vs.activity_sel;
         self.testing_sel = vs.testing_sel;
         self.pane_sel = vs.pane_sel;
         self.show_presence = vs.show_presence;
@@ -810,8 +883,7 @@ impl App {
                 self.doc_sel = clamp(self.docs_files.len());
                 self.publish_active_doc();
             }
-            "harnesses" => self.harness_sel = clamp(self.harnesses.len()),
-            "activity" => self.activity_sel = clamp(self.activity.len()),
+            "harnesses" | "pots" => self.harness_sel = clamp(self.harnesses.len()),
             "testing" => self.testing_sel = clamp(self.testing.len()),
             "panes" | "plugins" => self.pane_sel = clamp(self.panes.len()),
             "flags" | "settings" => self.flag_sel = clamp(self.flags.len()),
@@ -843,7 +915,6 @@ impl App {
                 "issue": self.issue_sel,
                 "doc": self.doc_sel,
                 "harness": self.harness_sel,
-                "activity": self.activity_sel,
                 "testing": self.testing_sel,
                 "pane": self.pane_sel,
                 "agent": self.fleet.agent_sel,
@@ -856,7 +927,6 @@ impl App {
                 "issues": self.issues.len(),
                 "docs": self.docs_files.len(),
                 "harnesses": self.harnesses.len(),
-                "activity": self.activity.len(),
                 "testing": self.testing.len(),
                 "panes": self.panes.len(),
                 "flags": self.flags.len(),
@@ -1117,14 +1187,36 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
-            Event::Activity(a) => {
-                self.set_activity(a);
-                self.last_error = None;
-                Action::Render
-            }
             Event::Testing(t) => {
                 self.set_testing(t);
                 self.last_error = None;
+                Action::Render
+            }
+            Event::TestingFiles { domain_id, files } => {
+                // Stale-guard: only paint files for the domain that is STILL
+                // selected (mirrors the plan-item-states guard).
+                if self.testing.get(self.testing_sel).map(|d| d.id.as_str())
+                    == Some(domain_id.as_str())
+                {
+                    self.testing_files = files;
+                    self.testing_file_sel = 0;
+                    self.testing_files_loading = false;
+                    self.testing_focus = TestingFocus::Files;
+                }
+                self.last_error = None;
+                Action::Render
+            }
+            Event::TestRunDone { file, result } => {
+                self.test_run = Some(TestRunState {
+                    running: false,
+                    file,
+                    status: if result.status.is_empty() {
+                        format!("exit {}", result.exit_code)
+                    } else {
+                        result.status
+                    },
+                    output: result.output,
+                });
                 Action::Render
             }
             Event::Config(c) => {
@@ -1569,7 +1661,6 @@ impl App {
                 HarnessFocus::Issues => (self.issues.len(), &mut self.issue_sel),
             },
             Tab::Docs => (self.docs_files.len(), &mut self.doc_sel),
-            Tab::Activity => (self.activity.len(), &mut self.activity_sel),
             Tab::Testing => (self.testing.len(), &mut self.testing_sel),
             Tab::Plugins => (self.panes.len(), &mut self.pane_sel),
             Tab::Settings => (self.flags.len(), &mut self.flag_sel),
@@ -1832,7 +1923,7 @@ mod tests {
     fn testing_and_config_tabs_switch_and_nav() {
         use crate::models::TestingDomain;
         let mut a = App::new();
-        assert_eq!(a.update(key('8', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.update(key('7', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Testing);
         a.set_testing(vec![
             TestingDomain { id: "unit".into(), label: "Unit".into(), description: "d".into(), tier: "universal".into() },
@@ -1840,7 +1931,7 @@ mod tests {
         ]);
         a.update(key('j', KeyModifiers::NONE));
         assert_eq!(a.testing_sel, 1);
-        assert_eq!(a.update(key('9', KeyModifiers::NONE)), Action::Render);
+        assert_eq!(a.update(key('8', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Config);
         a.set_config("xterm=1".into());
         assert_eq!(a.config, "xterm=1");
@@ -1863,8 +1954,8 @@ mod tests {
     #[test]
     fn plugins_tab_navigates_and_enter_launches_selected_pane() {
         let mut a = App::new();
-        // `0` switches to the Plugins tab.
-        assert_eq!(a.update(key('0', KeyModifiers::NONE)), Action::Render);
+        // `9` switches to the Plugins tab.
+        assert_eq!(a.update(key('9', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Plugins);
         // Enter with no panes is a no-op.
         assert_eq!(
@@ -2374,9 +2465,9 @@ mod tests {
     }
 
     #[test]
-    fn key_s_switches_to_settings_and_navigates() {
+    fn key_0_switches_to_settings_and_navigates() {
         let mut a = App::new();
-        a.on_key(KeyCode::Char('s'), KeyModifiers::empty());
+        a.on_key(KeyCode::Char('0'), KeyModifiers::empty());
         assert_eq!(a.tab, Tab::Settings);
         // Empty list → move clamps to 0 (no panic).
         a.move_sel(1);
@@ -2600,17 +2691,21 @@ mod tests {
     }
 
     #[test]
-    fn switch_key_maps_digits_and_settings_letter() {
-        // D-002 reorder: Operator leads ('1'), Plugins takes '0', Settings the
-        // tail letter 's'. from_switch_key is the inverse (the unified dispatch).
+    fn switch_key_maps_ten_tabs_to_ten_digits() {
+        // D-002 reorder + D-004b Activity retirement: ten tabs, ten digits.
+        // from_switch_key is the inverse (the unified dispatch, g1).
         assert_eq!(Tab::Operator.switch_key(), '1');
         assert_eq!(Tab::Plans.switch_key(), '3');
         assert_eq!(Tab::Fleet.switch_key(), '4');
-        assert_eq!(Tab::Plugins.switch_key(), '0');
-        assert_eq!(Tab::Settings.switch_key(), 's');
+        assert_eq!(Tab::Plugins.switch_key(), '9');
+        assert_eq!(Tab::Settings.switch_key(), '0');
         assert_eq!(Tab::from_switch_key('1'), Some(Tab::Operator));
-        assert_eq!(Tab::from_switch_key('s'), Some(Tab::Settings));
+        assert_eq!(Tab::from_switch_key('0'), Some(Tab::Settings));
         assert_eq!(Tab::from_switch_key('z'), None);
+        // Every tab's key is unique (the single-keymap invariant).
+        for t in Tab::ALL {
+            assert_eq!(Tab::from_switch_key(t.switch_key()), Some(t));
+        }
     }
 
     // --- Operator chat pane (tui-operator-surface-2026-06-04) ---
@@ -2626,7 +2721,9 @@ mod tests {
         assert_eq!(Tab::Operator.switch_key(), '1'); // leads the strip (D-002)
         assert_eq!(Tab::Operator.title(), "Operator");
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
-        assert_eq!(Tab::ALL.len(), 11); // Sessions folded into Brew (D-002b)
+        // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
+        // tabs on ten digit keys.
+        assert_eq!(Tab::ALL.len(), 10);
         // `1` returns to it from elsewhere.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));

@@ -7,8 +7,8 @@
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
 use crate::models::{
-    ActivityEvent, ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CuratedSignal,
-    DocsResponse, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig,
+    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CuratedSignal, DocsResponse,
+    FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig,
     PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
@@ -37,10 +37,13 @@ pub enum Event {
     Harnesses(Vec<HarnessRef>),
     /// Project docs (file list + active doc content) for the active harness.
     Docs(DocsResponse),
-    /// Cross-harness recent activity.
-    Activity(Vec<ActivityEvent>),
     /// Testing domains for the active harness.
     Testing(Vec<TestingDomain>),
+    /// The selected testing domain's runnable files (D-004a, from domain-detail).
+    /// Carries the domain id so a stale fetch never paints the wrong domain.
+    TestingFiles { domain_id: String, files: Vec<String> },
+    /// A test run finished (D-004a) — the file that ran + its result.
+    TestRunDone { file: String, result: crate::models::TestRunResult },
     /// Plugin-contributed TUI panes for the active harness (D-002).
     TuiPanes(Vec<TuiPaneContribution>),
     /// Claude-settings file content for the active harness (read-only).

@@ -1016,14 +1016,6 @@ async fn refetch_all(
             let _ = tx.send(Event::Error(format!("docs: {e}")));
         }
     }
-    match client.recent_activity().await {
-        Ok(a) => {
-            let _ = tx.send(Event::Activity(a));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("activity: {e}")));
-        }
-    }
     match client.testing_domains(&slug).await {
         Ok(t) => {
             let _ = tx.send(Event::Testing(t));

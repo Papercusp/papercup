@@ -43,7 +43,6 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Fleet => crate::fleet::draw_fleet(f, app, body),
         Tab::Harnesses => draw_harnesses(f, app, body),
         Tab::Docs => draw_docs(f, app, body),
-        Tab::Activity => draw_activity(f, app, body),
         Tab::Testing => draw_testing(f, app, body),
         Tab::Config => draw_config(f, app, body),
         Tab::Plugins => draw_plugins(f, app, body),
@@ -479,34 +478,6 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(para, cols[1]);
 }
 
-fn draw_activity(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .activity
-        .iter()
-        .map(|e| {
-            ListItem::new(Line::from(format!(
-                "{:<20} {:<28} {:<26} {}",
-                trunc(&e.ts, 20),
-                trunc(&e.action, 28),
-                trunc(&e.subject, 26),
-                trunc(&e.actor, 18),
-            )))
-        })
-        .collect();
-    let mut state = ListState::default();
-    if !app.activity.is_empty() {
-        state.select(Some(app.activity_sel));
-    }
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " Recent activity ({}) ",
-            app.activity.len()
-        ))))
-        .highlight_style(Theme::selected())
-        .highlight_symbol("> ");
-    f.render_stateful_widget(list, area, &mut state);
-}
-
 fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .testing
@@ -789,7 +760,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / s    switch tab (1 Operator · 4 Brew · 5 Pots · s Settings)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0        switch tab (1 Operator · 4 Brew · 5 Pots · 0 Settings)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -867,8 +838,8 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
             "Welcome to pui — the Papercusp workbench",
             "pui is your terminal HUD over the operator. Everything here is live —\n\
              it reads + reacts to the same backend the desktop app uses.\n\n\
-             Tabs (press 1‑0 / s, or  <  /  >  to cycle):\n\
-             \x20 Operator · Inbox · Plans · Brew · Pots · Docs · Activity · Testing · Config · Plugins · Settings\n\
+             Tabs (press 1‑0, or  <  /  >  to cycle):\n\
+             \x20 Operator · Inbox · Plans · Brew · Pots · Docs · Testing · Config · Plugins · Settings\n\
              \x20 Brew is the whole fleet at a glance (agents + plan progress + launch).\n\n\
              Pick the pot you're working in with  [  /  ] .",
         ),
@@ -1358,23 +1329,6 @@ mod tests {
     }
 
     #[test]
-    fn activity_view_renders_events() {
-        use crate::models::ActivityEvent;
-        let mut app = App::new();
-        app.tab = Tab::Activity;
-        app.set_activity(vec![ActivityEvent {
-            ts: "2026-06-03T05:38:30Z".into(),
-            action: "operator.accept_failed".into(),
-            subject: "commit-plan-updates".into(),
-            actor: "system:operator".into(),
-        }]);
-        let text = render(&app, 110, 8);
-        assert!(text.contains("Recent activity (1)"));
-        assert!(text.contains("accept_failed"));
-        assert!(text.contains("commit-plan-updates"));
-    }
-
-    #[test]
     fn testing_and_config_views_render() {
         use crate::models::TestingDomain;
         let mut app = App::new();
@@ -1508,9 +1462,6 @@ mod tests {
         }
         if let Ok(v) = c.docs_for(slug, None).await {
             app.set_docs(v);
-        }
-        if let Ok(v) = c.recent_activity().await {
-            app.set_activity(v);
         }
         if let Ok(v) = c.testing_domains(slug).await {
             app.set_testing(v);

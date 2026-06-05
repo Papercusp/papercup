@@ -9,7 +9,7 @@
 use crate::http::HttpClient;
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models::{
-    ActivityEvent, ActivityRecentPayload, ActivityResponse, ActivityRow, AttentionItem, AttentionResponse,
+    ActivityRecentPayload, ActivityRow, AttentionItem, AttentionResponse,
     ClaudeSettings, ConversationLoad, CoordInboxResponse, CuratedSignal, CurationFeedPayload,
     CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
     HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, Notif,
@@ -625,13 +625,6 @@ impl OperatorClient {
         serde_json::from_value::<DocsResponse>(v).context("decode docs")
     }
 
-    pub async fn recent_activity(&self) -> Result<Vec<ActivityEvent>> {
-        let v = self.get_json("/api/harness/all/recent-activity").await?;
-        Ok(serde_json::from_value::<ActivityResponse>(v)
-            .context("decode activity")?
-            .events)
-    }
-
     pub async fn testing_domains(&self, slug: &str) -> Result<Vec<TestingDomain>> {
         let v = self
             .get_json(&format!("/api/harness/{slug}/testing/domains"))
@@ -639,6 +632,37 @@ impl OperatorClient {
         Ok(serde_json::from_value::<TestingResponse>(v)
             .context("decode testing domains")?
             .domains)
+    }
+
+    /// The runnable file paths of one testing domain (D-004a): domain-detail's
+    /// sections flattened to their glob-walked file paths.
+    pub async fn testing_domain_files(&self, slug: &str, domain_id: &str) -> Result<Vec<String>> {
+        let v = self
+            .get_json(&format!(
+                "/api/harness/{slug}/testing/domain-detail?domainId={}",
+                urlencode(domain_id)
+            ))
+            .await?;
+        let detail = serde_json::from_value::<models::TestingDomainDetail>(v)
+            .context("decode domain detail")?;
+        Ok(detail
+            .sections
+            .into_iter()
+            .flat_map(|s| s.files)
+            .map(|f| f.path)
+            .collect())
+    }
+
+    /// Run one test file in the harness worktree (D-004a). The backend runs
+    /// vitest SYNCHRONOUSLY (up to ~120s) and returns status + tail output.
+    pub async fn testing_run(&self, slug: &str, file: &str) -> Result<models::TestRunResult> {
+        let v = self
+            .post_json(
+                &format!("/api/harness/{slug}/testing/run"),
+                serde_json::json!({ "runner": { "kind": "vitest", "filePath": file } }),
+            )
+            .await?;
+        serde_json::from_value::<models::TestRunResult>(v).context("decode test run result")
     }
 
     pub async fn claude_settings(&self, slug: &str) -> Result<String> {
