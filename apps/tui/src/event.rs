@@ -146,17 +146,52 @@ pub enum Event {
     PaneExited { pane_id: u32, exit_code: Option<i32> },
     /// A pane was fully closed in the live session.
     PaneClosed { pane_id: u32 },
+    // --- Voice mode (voice-mode-tui-port-2026-06-05) ---
+    /// A terminal key RELEASE. Only delivered when the kitty keyboard protocol
+    /// is active (most terminals never emit it); drives hold-to-talk PTT. Press
+    /// + Repeat still arrive as `Key`, so every existing binding is unaffected.
+    KeyRelease(KeyEvent),
+    /// A voice-pipeline state change (record → transcribe → converse → speak),
+    /// sourced from the PTT turn task. See `app::VoicePhase`.
+    Voice(VoiceMsg),
+}
+
+/// A message from the voice PTT pipeline (voice-mode-tui-port-2026-06-05).
+#[derive(Debug, Clone)]
+pub enum VoiceMsg {
+    /// Mic capture opened (or failed to open — `Err` carries why).
+    Started(std::result::Result<(), String>),
+    /// Whisper transcribed the utterance — inject it as the user's turn.
+    Transcribed(String),
+    /// The reply is being synthesized + played.
+    Speaking,
+    /// The turn finished (reply spoken, or nothing to say) — back to idle.
+    Finished,
+    /// The pipeline failed (STT/converse/TTS) — surfaced in the status line.
+    Error(String),
 }
 
 /// Spawn the blocking input reader. Emits `Key` on input and `Tick` otherwise,
 /// so the loop stays responsive without a busy-wait. Returns when the channel
 /// receiver is dropped.
+///
+/// Press + Repeat forward as `Key` (so held nav keys still autorepeat and every
+/// existing binding is untouched); Release forwards as `KeyRelease` (only ever
+/// emitted when the kitty keyboard protocol is active — see main's enhancement
+/// push — which drives hold-to-talk PTT). Without the protocol no Release events
+/// arrive, so PTT falls back to press-to-toggle (voice-mode-tui-port D-007).
 pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
+    use crossterm::event::KeyEventKind;
     std::thread::spawn(move || loop {
         match event::poll(Duration::from_millis(250)) {
             Ok(true) => {
                 if let Ok(CtEvent::Key(key)) = event::read() {
-                    if tx.send(Event::Key(key)).is_err() {
+                    let ev = match key.kind {
+                        KeyEventKind::Release => Event::KeyRelease(key),
+                        // Press + Repeat → Key (preserves pre-enhancement behavior).
+                        _ => Event::Key(key),
+                    };
+                    if tx.send(ev).is_err() {
                         break;
                     }
                 }

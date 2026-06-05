@@ -101,6 +101,23 @@ pub enum Action {
     CupboardAct {
         listing: crate::models::CupboardListing,
     },
+    /// A voice-mode PTT command (voice-mode-tui-port-2026-06-05 P2). The run
+    /// loop owns the mic capture handle + the audio player and drives the
+    /// record → transcribe → operator-converse → speak pipeline, feeding
+    /// `Event::Voice(..)` (and the existing `Chat*` events) back.
+    Voice(VoiceCmd),
+}
+
+/// A push-to-talk command on the Operator tab (voice-mode-tui-port D-007).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceCmd {
+    /// Begin mic capture (key down on `v`, or toggle-on).
+    Start,
+    /// Stop capture and run the turn (key up under the kitty protocol, or
+    /// toggle-off).
+    Stop,
+    /// Abort capture, discard audio (Esc while recording).
+    Cancel,
 }
 
 /// A command-palette workbench command (P12b / D-002). Parsed from the palette
@@ -598,6 +615,49 @@ pub struct App {
     pub chat_oldest_seq: Option<i64>,
     /// True while an older-history page fetch is in flight (dedupes the trigger).
     pub chat_loading_earlier: bool,
+    // ─── Voice mode (voice-mode-tui-port-2026-06-05 P2) ───
+    /// Current PTT phase (Idle unless a voice turn is in flight). Drives the
+    /// Operator status line + gates the `v` keybind.
+    pub voice_phase: VoicePhase,
+    /// Latest mic RMS level (0..~1) while recording — the meter; updated from
+    /// the run loop on Tick, not via events (no per-frame event spam).
+    pub voice_level: f32,
+    /// The last voice-pipeline error (STT/converse/TTS), shown until the next
+    /// turn starts.
+    pub voice_error: Option<String>,
+}
+
+/// The voice PTT pipeline phase (voice-mode-tui-port-2026-06-05). Linear:
+/// Idle → Recording → Transcribing → Thinking → Speaking → Idle, with any
+/// stage able to fail back to Idle (error stored in `voice_error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VoicePhase {
+    #[default]
+    Idle,
+    /// Mic is capturing (press `v` again / release / Esc to end).
+    Recording,
+    /// Whisper is transcribing the captured audio.
+    Transcribing,
+    /// The operator turn is streaming a reply.
+    Thinking,
+    /// The reply is being synthesized + played back.
+    Speaking,
+}
+
+impl VoicePhase {
+    /// A one-glyph + label badge for the Operator status line.
+    pub fn badge(self) -> &'static str {
+        match self {
+            VoicePhase::Idle => "",
+            VoicePhase::Recording => "● REC",
+            VoicePhase::Transcribing => "✎ transcribing",
+            VoicePhase::Thinking => "… thinking",
+            VoicePhase::Speaking => "♪ speaking",
+        }
+    }
+    pub fn is_active(self) -> bool {
+        !matches!(self, VoicePhase::Idle)
+    }
 }
 
 impl App {
@@ -694,6 +754,9 @@ impl App {
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
+            voice_phase: VoicePhase::Idle,
+            voice_level: 0.0,
+            voice_error: None,
         }
     }
 
@@ -804,6 +867,68 @@ impl App {
         self.chat_streaming = false;
         self.last_error = Some(format!("operator: {err}"));
         self.chat_scroll = 0;
+    }
+
+    // ─── Voice mode (voice-mode-tui-port-2026-06-05 P2) ───
+
+    /// Update the live mic meter (run loop reads `CaptureSession::level()` on
+    /// Tick while recording). No-op once recording ends.
+    pub fn set_voice_level(&mut self, level: f32) {
+        if self.voice_phase == VoicePhase::Recording {
+            self.voice_level = level;
+        }
+    }
+
+    /// True when a `v` PTT keypress should be accepted on the Operator tab —
+    /// only there, and never while composing a typed message.
+    pub fn voice_key_active(&self) -> bool {
+        self.tab == Tab::Operator && !self.chat_composing
+    }
+
+    /// Apply a voice-pipeline state change (`Event::Voice`). The pipeline task
+    /// drives record → transcribe → converse → speak; this reduces each step to
+    /// `voice_phase` + transcript side-effects. Returns whether a redraw is due.
+    fn on_voice(&mut self, msg: crate::event::VoiceMsg) -> bool {
+        use crate::event::VoiceMsg;
+        match msg {
+            VoiceMsg::Started(Ok(())) => {
+                self.voice_phase = VoicePhase::Recording;
+                self.voice_level = 0.0;
+                self.voice_error = None;
+            }
+            VoiceMsg::Started(Err(e)) => {
+                self.voice_phase = VoicePhase::Idle;
+                self.voice_error = Some(e.clone());
+                self.last_error = Some(format!("voice: {e}"));
+            }
+            VoiceMsg::Transcribed(text) => {
+                // Show the recognized utterance as the user's turn + an empty
+                // streaming assistant bubble (the converse fills it). Mirrors a
+                // typed send (begin_user_send) so the transcript is identical.
+                self.voice_phase = VoicePhase::Thinking;
+                self.voice_level = 0.0;
+                self.begin_user_send(&text);
+            }
+            VoiceMsg::Speaking => {
+                self.voice_phase = VoicePhase::Speaking;
+            }
+            VoiceMsg::Finished => {
+                self.voice_phase = VoicePhase::Idle;
+                self.voice_level = 0.0;
+            }
+            VoiceMsg::Error(e) => {
+                // A mid-turn failure: drop any in-flight streaming bubble's
+                // streaming flag so the transcript isn't stuck, and surface why.
+                self.voice_phase = VoicePhase::Idle;
+                self.voice_level = 0.0;
+                self.voice_error = Some(e.clone());
+                self.last_error = Some(format!("voice: {e}"));
+                if self.chat_streaming {
+                    self.fail_chat_turn(&e);
+                }
+            }
+        }
+        true
     }
 
     pub fn set_plans(&mut self, plans: Vec<PlanSummary>) {
@@ -1909,6 +2034,13 @@ impl App {
             }
             Event::ChatError(e) => {
                 self.fail_chat_turn(&e);
+                // A converse failure during a voice turn (P2) leaves the phase
+                // stuck at Thinking — reset it so PTT is usable again.
+                if self.voice_phase.is_active() {
+                    self.voice_phase = VoicePhase::Idle;
+                    self.voice_level = 0.0;
+                    self.voice_error = Some(e);
+                }
                 Action::Render
             }
             // --- Companion zellij plugin (P-004 / D-008) ---
@@ -1930,6 +2062,22 @@ impl App {
                     t.panes.retain(|p| p.id != pane_id);
                 }
                 Action::Render
+            }
+            // --- Voice mode (voice-mode-tui-port-2026-06-05 P2) ---
+            Event::Voice(msg) => {
+                self.on_voice(msg);
+                Action::Render
+            }
+            // A key RELEASE (kitty protocol only): releasing `v` while recording
+            // ends hold-to-talk. Everything else ignores releases.
+            Event::KeyRelease(key) => {
+                if key.code == KeyCode::Char('v')
+                    && self.voice_phase == VoicePhase::Recording
+                    && self.voice_key_active()
+                {
+                    return Action::Voice(VoiceCmd::Stop);
+                }
+                Action::None
             }
         }
     }
@@ -2253,6 +2401,22 @@ impl App {
                 self.chat_composing = true;
                 Action::Render
             }
+            // Push-to-talk (voice-mode-tui-port-2026-06-05 P2). `v` on the
+            // Operator tab (outside compose): Idle → start recording; Recording
+            // → stop + run the turn (the press-to-toggle path; the kitty
+            // key-release path also stops, via Event::KeyRelease). While the
+            // pipeline is transcribing/thinking/speaking `v` is ignored so a new
+            // capture can't stomp an in-flight turn.
+            KeyCode::Char('v') if self.voice_key_active() => match self.voice_phase {
+                VoicePhase::Idle => {
+                    // Optimistic — the run loop confirms via Event::Voice(Started).
+                    self.voice_phase = VoicePhase::Recording;
+                    self.voice_error = None;
+                    Action::Voice(VoiceCmd::Start)
+                }
+                VoicePhase::Recording => Action::Voice(VoiceCmd::Stop),
+                _ => Action::None,
+            },
             KeyCode::Char('p') => {
                 self.show_presence = !self.show_presence;
                 Action::Render
@@ -2283,6 +2447,13 @@ impl App {
                 Action::Render
             }
             KeyCode::Esc => {
+                // Esc while recording aborts the capture, discarding audio (PTT
+                // cancel — voice-mode-tui-port D-007).
+                if self.voice_phase == VoicePhase::Recording {
+                    self.voice_phase = VoicePhase::Idle;
+                    self.voice_level = 0.0;
+                    return Action::Voice(VoiceCmd::Cancel);
+                }
                 // On the Memory tab, Esc first clears an active search back to
                 // the full list (D-006); else dismiss the transient toast.
                 if self.tab == Tab::Memory && self.memory_hits.is_some() {

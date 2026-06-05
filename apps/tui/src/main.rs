@@ -64,11 +64,28 @@ async fn main() -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
+    // Voice hold-to-talk (voice-mode-tui-port-2026-06-05 D-007): request key
+    // RELEASE events when the terminal speaks the kitty keyboard protocol, so
+    // holding `v` can drive PTT. Without support no release events arrive and
+    // PTT falls back to press-to-toggle. Best-effort; only REPORT_EVENT_TYPES is
+    // pushed (minimal — doesn't disambiguate/alter other key reporting).
+    let kbd_enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    if kbd_enhanced {
+        let _ = execute!(
+            out,
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        );
+    }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
     let result = run(&mut terminal).await;
 
     // Always restore the terminal, even on error.
+    if kbd_enhanced {
+        let _ = execute!(terminal.backend_mut(), crossterm::event::PopKeyboardEnhancementFlags);
+    }
     disable_raw_mode().ok();
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     terminal.show_cursor().ok();
@@ -119,6 +136,14 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // arrive on `tx` like any other.
     let companion = Companion::spawn(tx.clone());
 
+    // Voice mode (voice-mode-tui-port-2026-06-05 P2): the run loop owns the
+    // audio handles — the long-lived playback `Player` and the in-flight mic
+    // `CaptureSession` — so `App` stays pure/testable (the cpal/rodio objects
+    // never enter app state). The PTT pipeline is driven from the `Action::Voice`
+    // arm + a Tick-driven mic-meter pump.
+    let voice_player = voice::Player::spawn();
+    let mut voice_capture: Option<voice::CaptureSession> = None;
+
     terminal.draw(|f| ui::draw(f, &app))?;
 
     // Tracks the last notification we surfaced to the OS so we fire exactly one
@@ -129,7 +154,18 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
     while let Some(ev) = rx.recv().await {
         let is_key = matches!(ev, Event::Key(_));
+        let is_tick = matches!(ev, Event::Tick);
         let action = app.update(ev);
+
+        // Pump the live mic meter while recording: read the capture level on each
+        // idle Tick and repaint so the meter animates (no per-frame event spam —
+        // the level is an atomic the audio callback writes; plan D-007).
+        if is_tick {
+            if let Some(cap) = &voice_capture {
+                app.set_voice_level(cap.level());
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+        }
 
         // Persist the quiet view-state on each nav change (the saver debounces).
         if is_key && action == Action::Render {
@@ -196,6 +232,7 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                     app.conversation_id.clone(),
                     app.chat_history_for_send(),
                     workbench::workbench_owner(),
+                    None, // typed turn — no spoken reply
                     tx.clone(),
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -282,6 +319,50 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 // A confirmed per-kind Cupboard action (D-011): join / fork /
                 // install. Outcomes ride Notify/Error events.
                 tokio::spawn(cupboard_act(listing, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::Voice(cmd) => {
+                // Push-to-talk lifecycle (voice-mode-tui-port-2026-06-05 P2).
+                // The run loop owns the mic CaptureSession; the turn pipeline
+                // (transcribe → converse → speak) runs in a spawned task and
+                // feeds Event::Voice / Chat* events back.
+                use app::VoiceCmd;
+                match cmd {
+                    VoiceCmd::Start => match voice::start_capture() {
+                        Ok(session) => {
+                            voice_capture = Some(session);
+                            let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Ok(()))));
+                        }
+                        Err(e) => {
+                            let _ = tx
+                                .send(Event::Voice(event::VoiceMsg::Started(Err(e.to_string()))));
+                        }
+                    },
+                    VoiceCmd::Cancel => {
+                        if let Some(session) = voice_capture.take() {
+                            tokio::task::spawn_blocking(move || session.cancel());
+                        }
+                        let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
+                    }
+                    VoiceCmd::Stop => {
+                        if let Some(session) = voice_capture.take() {
+                            // Reflect the transcribing phase immediately, then run
+                            // the turn with a snapshot of the converse context
+                            // (the pipeline appends the transcribed text itself).
+                            app.voice_phase = app::VoicePhase::Transcribing;
+                            tokio::spawn(voice_turn(
+                                session,
+                                app.conversation_id.clone(),
+                                app.chat_history_for_send(),
+                                workbench::workbench_owner(),
+                                voice_player.clone(),
+                                tx.clone(),
+                            ));
+                        } else {
+                            let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
+                        }
+                    }
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::Quit => break,
@@ -1036,11 +1117,17 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
 /// finalized assistant turn — exactly the path the desktop operator uses, over
 /// the shared `operator` role. `history` is the transcript to send (already
 /// includes the just-sent user message).
+///
+/// When `speak` is `Some(player)` (a voice PTT turn — voice-mode-tui-port P2),
+/// the finalized reply is also synthesized via the operator TTS proxy and played
+/// through `player`, and the turn's voice phase transitions (Speaking → Finished)
+/// ride `Event::Voice`.
 async fn converse_send(
     text: String,
     mut conversation_id: Option<String>,
     history: Vec<(String, String)>,
     owner: String,
+    speak: Option<voice::Player>,
     tx: UnboundedSender<Event>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -1137,6 +1224,89 @@ async fn converse_send(
             let _ = client.append_turn(id, "assistant", &final_text, &tools).await;
         }
     }
+
+    // Voice PTT turn (P2): speak the finalized reply. Synthesis goes through the
+    // operator TTS proxy (engine/voice from voice-prefs server-side) and plays
+    // through the run loop's long-lived player. An empty reply just ends the turn.
+    if let Some(player) = speak {
+        if final_text.trim().is_empty() {
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
+        } else {
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Speaking));
+            match client.tts_speak(&final_text).await {
+                Ok(audio) => player.play(audio),
+                Err(e) => {
+                    let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("tts: {e}"))));
+                    return;
+                }
+            }
+            // Playback is fire-and-forget on the player thread; the turn is
+            // logically done (the meter/phase return to idle now).
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
+        }
+    }
+}
+
+/// One voice PTT turn (voice-mode-tui-port-2026-06-05 P2): finish the mic
+/// capture, transcribe it via the operator STT proxy, inject the recognized text
+/// as the user's turn, then run the operator converse turn + speak the reply
+/// (reusing `converse_send`). Each step's failure surfaces as `Event::Voice(Error)`
+/// (which the reducer resets the phase on); a too-short / empty capture ends
+/// quietly. The mic `CaptureSession` arrives from the run loop, which owns it.
+async fn voice_turn(
+    session: voice::CaptureSession,
+    conversation_id: Option<String>,
+    mut history: Vec<(String, String)>,
+    owner: String,
+    player: voice::Player,
+    tx: UnboundedSender<Event>,
+) {
+    // 1. Stop recording + encode (blocking DSP + device close) off the runtime.
+    let cap = match tokio::task::spawn_blocking(move || session.finish()).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("capture: {e}"))));
+            return;
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("capture join: {e}"))));
+            return;
+        }
+    };
+    if cap.seconds < 0.3 {
+        let _ = tx.send(Event::Voice(event::VoiceMsg::Error("recording too short".into())));
+        return;
+    }
+
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("{e}"))));
+            return;
+        }
+    };
+
+    // 2. Transcribe.
+    let text = match client.stt_transcribe(&cap.wav).await {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = tx.send(Event::Voice(event::VoiceMsg::Error(format!("stt: {e}"))));
+            return;
+        }
+    };
+    if text.trim().is_empty() {
+        let _ = tx.send(Event::Voice(event::VoiceMsg::Error("didn't catch that".into())));
+        return;
+    }
+
+    // 3. Inject the recognized utterance as the user's turn (the reducer runs
+    //    begin_user_send + flips the phase to Thinking) — and append it to the
+    //    converse history so the model sees it (mirrors the typed-send path).
+    let _ = tx.send(Event::Voice(event::VoiceMsg::Transcribed(text.clone())));
+    history.push(("user".to_string(), text.clone()));
+
+    // 4. Run the operator turn over the shared converse path + speak the reply.
+    converse_send(text, conversation_id, history, owner, Some(player), tx).await;
 }
 
 /// Subscribe to this pui's agent-intent SSE stream (P12b / D-002 A6 —

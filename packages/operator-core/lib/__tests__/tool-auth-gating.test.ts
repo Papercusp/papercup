@@ -65,17 +65,13 @@ describe('auth gating (missing bearer/workspace class)', () => {
   });
 
   it('every operator-converse allowedTool resolves in the core registry (invokable, not just named)', () => {
-    // Plugin-provided tools are loaded per-workspace, NOT in the static
-    // `@/lib/agent-tools/index` catalog — the orchestrator-spawn family
-    // (@papercupai/orchestrator-spawn) is exposed to the converse surface but
-    // lives in a plugin (see operator-mcp-tools.ts §"Spawn primitive"). Exclude
-    // that documented family; everything else must resolve.
-    const PLUGIN_PROVIDED = new Set([
-      'orchestrator_spawn', 'orchestrator_poll', 'orchestrator_list_active', 'orchestrator_cancel',
-    ]);
+    // As of Brief 4 (agent-briefs-2026-06-05) the spawn surface is the BUILT-IN
+    // fleet:spawn/tree/cancel (over the durable nursery), replacing the dead
+    // @papercupai/orchestrator-spawn plugin family that was never installed (every
+    // orchestrator_* call returned "tool not found"). So there are no longer any
+    // plugin-provided allowedTools to exclude — EVERY entry must resolve.
     const src = readFileSync(join(__dirname, '..', 'operator-mcp-tools.ts'), 'utf8');
-    const names = [...new Set([...src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.-]+)/g)].map((m) => m[1]))]
-      .filter((n) => !PLUGIN_PROVIDED.has(n));
+    const names = [...new Set([...src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.-]+)/g)].map((m) => m[1]))];
     expect(names.length).toBeGreaterThan(10);
     const missing = names.filter((n) => !isInvokable(n));
     expect(missing, `allowedTools with no registry entry: ${missing.join(', ')}`).toEqual([]);

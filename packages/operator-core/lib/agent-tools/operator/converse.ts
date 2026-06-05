@@ -412,8 +412,12 @@ export default defineTool({
       const parsed = parseOperatorTurn(assembled);
       if (parsed.spawns.length > 0) {
         const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
-        const parentSpawnId = `op-converse-${Date.now()}`;
         for (const sp of parsed.spawns) {
+          // The operator conversation turn is NOT itself a nursery node, so each
+          // spawned agent is a ROOT in the spawn tree (parent_spawn_id = null) —
+          // inspect it with fleet:tree { spawn_id: <returned id> }. (A synthetic
+          // parent id would be an orphan: getSubtree anchors on a real row, so a
+          // tree rooted at a non-existent parent comes back empty.)
           void spawnAgentInHarness({
             workspaceId,
             harness: sp.harness,
@@ -421,7 +425,7 @@ export default defineTool({
             featureId: sp.featureId,
             chunkId: sp.chunkId,
             extras: sp.extras,
-            parentSpawnId,
+            parentSpawnId: null,
             parentRole: 'operator',
           })
             .then((r) => {

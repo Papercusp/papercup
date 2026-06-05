@@ -1088,22 +1088,49 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(Line::from(title)));
     f.render_widget(para, transcript_area);
 
-    let (ctitle, ctext, cstyle) = if app.chat_composing {
+    let (ctitle, ctext, cstyle) = if app.voice_phase.is_active() {
+        // Voice PTT in flight (voice-mode-tui-port-2026-06-05 P2) — the composer
+        // line becomes the voice status: phase badge, plus a live mic meter while
+        // recording (key-up / `v` / Esc to end).
+        use crate::app::VoicePhase;
+        let badge = app.voice_phase.badge();
+        let body = if app.voice_phase == VoicePhase::Recording {
+            format!("{badge}  {}   (v / release to send · Esc cancel)", mic_meter(app.voice_level))
+        } else {
+            badge.to_string()
+        };
+        (" Voice ", body, Theme::notify())
+    } else if app.chat_composing {
         (
             " Message — Enter send · Esc cancel ",
             format!("> {}", app.chat_input),
             Theme::selected(),
         )
     } else {
-        (
-            " Composer — i to type · j/k scroll ",
-            "press i to talk to the operator".to_string(),
-            Theme::dim(),
-        )
+        let hint = match &app.voice_error {
+            Some(e) => format!("press i to talk · v to speak — last voice: {e}"),
+            None => "press i to talk · v to speak to the operator".to_string(),
+        };
+        (" Composer — i type · v speak · j/k scroll ", hint, Theme::dim())
     };
     let cpara = Paragraph::new(Line::from(Span::styled(ctext, cstyle)))
         .block(Block::default().borders(Borders::ALL).title(Line::from(ctitle)));
     f.render_widget(cpara, composer_area);
+}
+
+/// A small fixed-width mic-level meter for the voice composer line. `level` is
+/// an RMS amplitude (0..~1); we map it (with a little gain, since speech RMS sits
+/// low) onto a 12-cell bar. Pure — unit-tested.
+fn mic_meter(level: f32) -> String {
+    const CELLS: usize = 12;
+    let filled = ((level * 4.0).clamp(0.0, 1.0) * CELLS as f32).round() as usize;
+    let mut s = String::with_capacity(CELLS + 2);
+    s.push('[');
+    for i in 0..CELLS {
+        s.push(if i < filled { '▮' } else { '·' });
+    }
+    s.push(']');
+    s
 }
 
 /// Memory tab (D-006 Step 2): the backend's memories, two-pane like Inbox —

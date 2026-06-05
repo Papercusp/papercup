@@ -49,6 +49,13 @@ export default defineTool({
     // bootstrap's specifier-space then throws "Operation .featurePipeline is
     // already registered" — killing the whole DBOS boot (durable pipelines dead).
     const { spawnAgentInHarness } = await import('../../fleet/operator-spawn');
+    // Lineage: link to the caller ONLY when it's itself a real nursery node (a
+    // spawned agent's owner == its spawnId, shaped `s-…`). A human/operator/SU
+    // caller's ownerId is a session id, not a spawn row — linking to it would
+    // make the new row an orphan (getSubtree anchors on a real parent), so such
+    // spawns are ROOTS. Inspect either with fleet:tree { spawn_id: <returned id> }.
+    const ownerId = actor.ownerId ?? '';
+    const parentSpawnId = /^s-/.test(ownerId) ? ownerId : null;
     const res = await spawnAgentInHarness({
       workspaceId,
       harness: args.harness ?? null,
@@ -56,9 +63,7 @@ export default defineTool({
       featureId: args.feature ?? null,
       chunkId: args.chunk ?? null,
       extras: args.extras,
-      // Lineage: attribute the spawn to the calling identity so fleet:tree
-      // shows who launched it.
-      parentSpawnId: actor.ownerId ?? null,
+      parentSpawnId,
       parentRole: ctx.role ?? 'operator',
     });
     return {
