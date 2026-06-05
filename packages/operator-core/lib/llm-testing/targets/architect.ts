@@ -34,6 +34,8 @@ import type {
   ControlTag,
 } from '@papercusp/testing-shell/llm';
 
+import { llmTestBaseUrl } from './base-url';
+
 export interface ArchitectTargetOpts {
   baseUrl?: string;
   /** Default harness slug if scenario meta doesn't override. */
@@ -51,7 +53,7 @@ export class ArchitectTarget implements ChatTarget {
 
   async open(opts: SessionOptions): Promise<ChatSession> {
     const baseUrl = this.opts.baseUrl
-      ?? process.env.PAPERCUSP_OPERATOR_URL
+      ?? llmTestBaseUrl()
       ?? 'http://127.0.0.1:3055';
     if (opts.transport !== 'http-sse') {
       throw new Error(`architect target supports only transport='http-sse' (got '${opts.transport}')`);

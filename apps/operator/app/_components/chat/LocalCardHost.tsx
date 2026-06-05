@@ -34,12 +34,14 @@ import {
   type OpenLocalCard,
 } from '@/lib/chat-cards/ask-user-local';
 import type { CardPresentation } from '@papercusp/agent-mcp';
+import type { ReportBlock } from '@papercusp/chat-protocol';
 
 interface SchemaWithPresentation {
   presentation?: CardPresentation;
   prompt?: string;
   fallbackText?: string;
   allowDecline?: boolean;
+  report?: ReportBlock;
 }
 
 export function LocalCardHost(): ReactNode {
@@ -81,6 +83,7 @@ export function LocalCardHost(): ReactNode {
         style: o.style,
       })),
       multi: presentation.kind === 'checkbox',
+      report: spec.report,
     };
     const onChoice = (r: AskChoiceResponse): void => {
       if (r.action === 'submit') {

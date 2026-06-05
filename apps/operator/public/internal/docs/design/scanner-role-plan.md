@@ -1,7 +1,20 @@
-# Scanner role + persistent session + scan history
+# Scanner role + persistent session + scan history (RETIRED)
 URL: /internal/docs/design/scanner-role-plan
 
-Plan for converting the operator scan from a fresh-prompt-per-scan flow to a real role with continuity and history.
+Historical design — the bespoke scanner + operator-card stream were dissolved into the scheduled `scan` launch blueprint (unify-agent-launches D-005, 2026-06-05).
+
+:::caution\[Retired 2026-06-05]
+The system this page designs — the persistent `operator_scanner_session`,
+scan history (`operator_scans`), the operator-card recommendation stream,
+and the panel Deck — was **dissolved** by
+`unify-agent-launches-as-blueprints-2026-06-04` D-005 (decisions D-010/D-011
+record the teardown). Proactive scanning now runs as the scheduled **`scan`
+launch blueprint** (`blueprints/scan/`); the scanner persona survives as that
+blueprint's role, and findings land as tracked **work\_items in the
+self-improvement backlog** (`improvements:capture` / `improvements:digest`)
+— one triage surface, no separate card feed. The scanner DB tables were
+dropped in migration 167. This page is kept as design history only.
+:::
 
 ## Goals
 

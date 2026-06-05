@@ -68,6 +68,13 @@ export interface SharedTableFilter {
   reason?: string;
 }
 
+/**
+ * The issue-family discriminators — rows the work_items view routes to
+ * engineer_issues (mig 159's trigger). Must stay in lockstep with
+ * harness_shared.work_items_view_dml.
+ */
+export const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+
 const ENABLED_FEATURES_PROJECT_IDS = (slug: string) =>
   `id IN (SELECT DISTINCT project_id
             FROM harness_${slug}.harness_features
@@ -210,13 +217,6 @@ export const SHARED_TABLE_FILTERS: SharedTableFilter[] = [
         : row,
   },
 ];
-
-/**
- * The issue-family discriminators — rows the work_items view routes to
- * engineer_issues (mig 159's trigger). Must stay in lockstep with
- * harness_shared.work_items_view_dml.
- */
-export const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
 
 export function findSharedTableFilter(table: string): SharedTableFilter | undefined {
   return SHARED_TABLE_FILTERS.find((f) => f.table === table);

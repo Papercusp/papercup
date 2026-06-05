@@ -303,7 +303,11 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
                     .and_then(|st| st.channel.as_ref())
                     .map(|ch| ch.id == c.id)
                     .unwrap_or(false);
-                let marker = if active { "● " } else { "  " };
+                let marker = if active {
+                    format!("{} ", crate::glyph::toggle::ON)
+                } else {
+                    "  ".to_string()
+                };
                 ListItem::new(format!("{marker}{}", c.name))
             })
             .collect()
@@ -360,7 +364,7 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
     if let Some(e) = &s.error {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("⚠ {e}"),
+            format!("{} {e}", crate::glyph::severity::WARN),
             Style::default().fg(Color::Red),
         )));
     }

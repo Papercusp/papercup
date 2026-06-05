@@ -337,35 +337,9 @@ const TOOLS = [
       description: 'Feature listing args.',
     },
   },
-  {
-    name: 'harness_last_scan', type: 'client', expects_response: true,
-    description:
-      'Get the cached most-recent Operator scan summary for a harness. Cheap; does ' +
-      'NOT trigger a fresh scan. Use to answer "what did the operator find?" without ' +
-      'burning a Claude call. If the user wants a fresh scan, use operator_scan instead.',
-    parameters: {
-      type: 'object',
-      properties: { slug: prop('string', 'Harness slug.') },
-      required: ['slug'],
-      description: 'Harness target.',
-    },
-  },
-  {
-    name: 'harness_recent_suggestions', type: 'client', expects_response: true,
-    description:
-      'List the most recent suggestion cards Operator surfaced for a harness. Each has ' +
-      'a title, kind, and one-line preview. Use after "what was the operator suggesting?" ' +
-      'when the user wants a recap of past suggestions, not a fresh scan.',
-    parameters: {
-      type: 'object',
-      properties: {
-        slug: prop('string', 'Harness slug.'),
-        limit: prop('integer', 'Max suggestions to return (default 10, cap 50).'),
-      },
-      required: ['slug'],
-      description: 'Recent-suggestions args.',
-    },
-  },
+  // (harness_last_scan / harness_recent_suggestions removed with the scanner
+  // card stream — unify-agent-launches D-005. "What did the scanner find?"
+  // reads the self-improvement backlog now.)
   {
     name: 'agents_across_workspace', type: 'client', expects_response: true,
     description:
@@ -546,52 +520,9 @@ const TOOLS = [
       description: 'Listing args.',
     },
   },
-  {
-    name: 'scans_list', type: 'client', expects_response: true,
-    description:
-      'List recent Operator scans — summaries only. Returns { count, scans: ' +
-      "[{id, startedAt, summary, suggestionCount, costUsd, error, agentSessionId}, ...] }. " +
-      'Does NOT include the full suggestions array (kept light to save context). Use to ' +
-      "answer 'what have I been scanning?', 'what did the last scan find?', or to find " +
-      'a scan id before calling scans_get for detail. Default 20 most-recent.',
-    parameters: {
-      type: 'object',
-      properties: { limit: prop('integer', 'Max scans to return (default 20, cap 50).') },
-      required: [],
-      description: 'Listing args.',
-    },
-  },
-  {
-    name: 'scans_get', type: 'client', expects_response: true,
-    description:
-      'Get a single Operator scan including its full list of suggestion cards. ' +
-      'Use AFTER scans_list when the user asks about a specific past scan in detail. ' +
-      'Returns each suggestion as {id, title, action, tier, reason, body}. Do NOT read ' +
-      'the full body verbatim — paraphrase titles and the headline finding.',
-    parameters: {
-      type: 'object',
-      properties: { id: prop('integer', 'Scan id from scans_list.') },
-      required: ['id'],
-      description: 'Scan to fetch.',
-    },
-  },
-  {
-    name: 'scans_search', type: 'client', expects_response: true,
-    description:
-      'Search past Operator scans by free-text. Matches against summary, request text, and ' +
-      "the suggestions array. Use when the user names a topic that might appear in older scans " +
-      "(\"scans about the harness\", \"the one that mentioned typecheck\"). " +
-      'Returns same shape as scans_list (summaries only). Use scans_get for the full payload of a hit.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: prop('string', 'Free-text needle.'),
-        limit: prop('integer', 'Max scans to return (default 10, cap 50).'),
-      },
-      required: ['query'],
-      description: 'Search filters.',
-    },
-  },
+  // (scans_list / scans_get / scans_search removed with the scan-history
+  // surface — unify-agent-launches D-005. Scan findings are work_items in
+  // the self-improvement backlog now.)
   {
     name: 'delegates_list', type: 'client', expects_response: true,
     description:

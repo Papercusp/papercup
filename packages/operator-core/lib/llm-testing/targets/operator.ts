@@ -16,6 +16,8 @@
  */
 
 import { registerOverride, clearOverride } from '@papercusp/testing-shell/llm';
+
+import { llmTestBaseUrl } from './base-url';
 import type {
   ChatSession,
   ChatTarget,
@@ -56,8 +58,9 @@ export class OperatorTarget implements ChatTarget {
     // /api/agent-mcp/operator-converse — is the Hono host on :3070
     // (bin/hono-host.ts). The framework is an HTTP client of the
     // backend, so it targets the Hono host directly, not the frontend
-    // dev server's proxy. Override with PAPERCUSP_OPERATOR_URL.
-    const baseUrl = this.opts.baseUrl ?? process.env.PAPERCUSP_OPERATOR_URL ?? 'http://127.0.0.1:3070';
+    // dev server's proxy. Override with PAPERCUSP_LLM_TEST_OPERATOR_URL
+    // (PAPERCUSP_OPERATOR_URL is honored origin-only — see ./base-url).
+    const baseUrl = this.opts.baseUrl ?? llmTestBaseUrl() ?? 'http://127.0.0.1:3070';
     if (opts.transport === 'http-sse' && opts.dispatchOverride) {
       registerOverride(opts.runId, opts.dispatchOverride);
     }

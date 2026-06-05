@@ -26,13 +26,15 @@ describe('registerAllExpirables', () => {
     const tables = registerExpirable.mock.calls.map((c) => (c[0] as { table: string }).table);
     expect(tables).toEqual(
       expect.arrayContaining([
-        'harness_shared.operator_scan_locks',
+        // operator_scan_locks removed with the scanner teardown (unify-agent-launches
+        // D-005; table dropped in migration 167)
         // operator_claims removed in P-002 (claim machinery deleted)
         'harness_shared.harness_status',
         'papercusp_auth.magic_link_requests',
         'papercusp_auth.sessions',
       ]),
     );
+    expect(tables).not.toContain('harness_shared.operator_scan_locks');
   });
 
   it('configures harness_status to MARK running rows stalled (not delete)', () => {

@@ -24597,6 +24597,11 @@ body:has(.operator-panel) {
   gap: 5px;
 }
 
+/* Structured body block (CardSpec.report) between question and options. */
+.ask-choice-report {
+  margin: 2px 0 4px;
+}
+
 .ask-choice-question {
   margin: 0;
   color: #eef7ff;
@@ -26595,14 +26600,13 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   }
 }
 
-/* ── Operator <report> card (structured-report-protocol-2026-06-05) ──
-   Structured per-plan/per-item status the operator emits alongside <say>,
-   rendered below the say bubble. Global (not .op-chat-sidebar-scoped) so the
-   same card renders in the docked operator pane (Brief 24). */
-.oracle-msg-report {
-  margin-top: 8px;
-}
-.operator-report-card {
+/* ── Report block card (report-cards-inbox-reconciliation-2026-06-05) ──
+   The shared ReportBlock (two-tier plan→item status) rendered by
+   ReportBlockCard — in the Inbox detail pane (operator-report attention
+   items) and as a CardSpec.report body inside AskChoiceCard. Global so
+   every card surface shares it. (Formerly .operator-report-*, the in-chat
+   render — removed: operator structured output routes to the Inbox.) */
+.report-block-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -26615,48 +26619,48 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 22px rgba(0,0,0,0.18);
   font-size: 12.5px;
 }
-.operator-report-title {
+.report-block-title {
   font-weight: 600;
   color: var(--fg);
   letter-spacing: 0.01em;
 }
-.operator-report-plans {
+.report-block-plans {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.operator-report-plan {
+.report-block-plan {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding-left: 8px;
   border-left: 2px solid rgb(from var(--accent-strong) r g b / 0.28);
 }
-.operator-report-plan[data-tone="good"]   { border-left-color: rgb(from var(--ok) r g b / 0.5); }
-.operator-report-plan[data-tone="bad"]     { border-left-color: rgb(from var(--danger) r g b / 0.5); }
-.operator-report-plan[data-tone="muted"]   { border-left-color: rgb(from var(--muted) r g b / 0.35); }
-.operator-report-plan-head {
+.report-block-plan[data-tone="good"]   { border-left-color: rgb(from var(--ok) r g b / 0.5); }
+.report-block-plan[data-tone="bad"]     { border-left-color: rgb(from var(--danger) r g b / 0.5); }
+.report-block-plan[data-tone="muted"]   { border-left-color: rgb(from var(--muted) r g b / 0.35); }
+.report-block-plan-head {
   display: flex;
   align-items: baseline;
   gap: 6px;
 }
-.operator-report-plan-title {
+.report-block-plan-title {
   font-weight: 600;
   color: var(--fg);
 }
-.operator-report-plan-status {
+.report-block-plan-status {
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
   margin-left: auto;
 }
-.operator-report-plan-summary {
+.report-block-plan-summary {
   margin: 0;
   color: var(--muted);
   font-size: 11.5px;
 }
-.operator-report-items {
+.report-block-items {
   list-style: none;
   margin: 2px 0 0 0;
   padding: 0;
@@ -26664,13 +26668,13 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   flex-direction: column;
   gap: 2px;
 }
-.operator-report-item {
+.report-block-item {
   display: flex;
   align-items: baseline;
   gap: 6px;
   color: var(--fg);
 }
-.operator-report-glyph {
+.report-block-glyph {
   flex: 0 0 auto;
   width: 1em;
   text-align: center;
@@ -26678,16 +26682,16 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
   font-size: 11px;
   line-height: 1.2;
 }
-.operator-report-glyph[data-tone="good"]   { color: var(--ok); }
-.operator-report-glyph[data-tone="accent"] { color: var(--accent-strong); }
-.operator-report-glyph[data-tone="bad"]     { color: var(--danger); }
-.operator-report-glyph[data-tone="muted"]   { color: var(--muted); }
-.operator-report-item-id {
+.report-block-glyph[data-tone="good"]   { color: var(--ok); }
+.report-block-glyph[data-tone="accent"] { color: var(--accent-strong); }
+.report-block-glyph[data-tone="bad"]     { color: var(--danger); }
+.report-block-glyph[data-tone="muted"]   { color: var(--muted); }
+.report-block-item-id {
   flex: 0 0 auto;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   font-size: 11px;
 }
-.operator-report-item-text {
+.report-block-item-text {
   color: var(--fg);
 }

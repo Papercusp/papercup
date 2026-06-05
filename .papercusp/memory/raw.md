@@ -8,3 +8,7 @@
 [2026-06-05T07:45:04Z] scanner -: operator-vite test expects Vite HMR client disabled but it's not — HMR config may be wrong for desktop no-HMR mode
 [2026-06-05T07:45:05Z] scanner -: 31 modified files in workspace including improvements capture/resolve/watchdog code, blueprint install/publish endpoints, Rust TUI app changes — work in progress on self-improvement system
 [2026-06-05T07:45:06Z] scanner -: no escalations or pending reviews for papercup harness; 19 features all in todo state; no improvements captured yet in system
+[2026-06-05T10:46:00Z] scanner papercup: memory-backend benchmark complete (14-40-41-392Z) shows 100% false-positive rate at P@5 on both mem0 and file backends due to overlapping score distributions; needs consumer-side score threshold or abstention heuristic
+[2026-06-05T10:46:01Z] scanner papercup: Anthropic API credential is stale (401) in mem0 memory extraction path — currently falling back to OpenAI; owner action needed to rotate credential at /settings/api-keys
+[2026-06-05T10:46:02Z] scanner papercup: 2 git-sync tests fail (runGitSync oversized-blob tests) hitting pre-push hook; tests use /tmp clone with local origin so constraint should not apply; need hook bypass or test isolation strategy
+[2026-06-05T10:46:03Z] scanner papercup: design decision pending on memory injection score-threshold policy (threshold vs abstention heuristic) for both backends; benchmark identified need but decision not yet made

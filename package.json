@@ -27,6 +27,7 @@
     "libs/papercusp/libs/db",
     "libs/papercusp/packages/harness",
     "libs/papercusp/packages/orchestrator",
+    "libs/papercusp/packages/model-pricing",
     "libs/papercusp/packages/blueprint-distribution",
     "libs/papercusp/packages/locks",
     "libs/papercusp/packages/embedded-postgres-server",

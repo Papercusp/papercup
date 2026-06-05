@@ -15,11 +15,13 @@
  */
 
 import { type Importance } from '@papercusp/plan-parser';
+import type { ReportBlock } from '@papercusp/chat-protocol';
 import {
   type AttentionItem,
   type AttentionAction,
   type AttentionTier,
   needsHumanForTier,
+  reportTier,
   severityToImportance,
   untriaged,
 } from './types';
@@ -261,5 +263,77 @@ export function planReviewToAttention(r: PlanReviewInput): AttentionItem {
     ...untriaged(),
     actions: [{ id: 'open', label: 'Review', primary: true }, CHAT, MESSAGE_OWNER],
     ref: { kind: 'plan-review', harnessSlug: r.harnessSlug },
+  };
+}
+
+/* ── operator `<report>` turn (report-cards-inbox-reconciliation P-003) ── */
+
+export interface OperatorReportInput {
+  turnId: string;
+  conversationId: string;
+  /** The validated `ReportBlock` from `operator_turns.report`. */
+  report: ReportBlock;
+  /** The turn's `<say>` text — title fallback when the report has none. */
+  sayText?: string | null;
+}
+
+/** Plain-text rendition of a report block for text-only surfaces (the
+ *  mobile/device attention route, search). The structured payload rides
+ *  `AttentionItem.report` for the native renderers. */
+function reportBody(report: ReportBlock): string {
+  const lines: string[] = [];
+  for (const p of report.plans) {
+    const status = p.status ? `[${p.status}] ` : '';
+    const summary = p.summary ? ` — ${p.summary}` : '';
+    lines.push(`${status}${p.title}${summary}`);
+    for (const it of p.items ?? []) {
+      const is = it.status ? `[${it.status}] ` : '';
+      const id = it.id ? `${it.id} ` : '';
+      lines.push(`  ${is}${id}${it.text}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * One inbox item per `<report>` turn (D-003 — a 4-plan status report is one
+ * row, not four). Tier = worst-of statuses via {@link reportTier}; the
+ * operator's report is the precision-filtered output already (Brief 21
+ * D-006), so `decision` here means the operator explicitly marked something
+ * needs-human/review. Importance follows the tier (a "needs your review"
+ * report should be seen today; a status snapshot can wait).
+ */
+export function operatorReportToAttention(r: OperatorReportInput): AttentionItem {
+  const tier = reportTier(r.report);
+  const importance: Importance =
+    tier === 'decision' ? 'high' : tier === 'alert' ? 'normal' : 'low';
+  // A single-plan report is *about* that plan — adopt its slug so the item
+  // groups with the plan in the master list. Multi-plan snapshots stay
+  // unattached (the synthetic bucket).
+  const planSlug =
+    r.report.plans.length === 1 ? r.report.plans[0]?.slug ?? null : null;
+  const actions: AttentionAction[] = [
+    { id: 'resolve', label: 'Resolve', primary: true },
+  ];
+  if (planSlug) actions.push({ id: 'open', label: 'Open plan' });
+  return {
+    id: `operator-report:${r.turnId}`,
+    kind: 'operator-report',
+    source: 'operator',
+    harnessSlug: null, // the operator conversation is workspace-level
+    planSlug,
+    itemRef: null,
+    title: r.report.title ?? (clip(r.sayText) || 'Operator report'),
+    body: reportBody(r.report),
+    status: 'report',
+    importance,
+    tier,
+    needsHuman: needsHumanForTier(tier),
+    ownerAgentId: null,
+    ownerLabel: 'Operator',
+    ...untriaged(),
+    actions,
+    ref: { kind: 'operator-report', turnId: r.turnId, conversationId: r.conversationId },
+    report: r.report,
   };
 }

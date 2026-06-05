@@ -16,15 +16,17 @@
  */
 
 import { type Importance, IMPORTANCE_LEVELS } from '@papercusp/plan-parser';
+import type { ReportBlock } from '@papercusp/chat-protocol';
 
 export type AttentionKind =
   | 'plan-item'
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'plan-review';
+  | 'plan-review'
+  | 'operator-report';
 
-export type AttentionSource = 'plan' | 'coord' | 'harness';
+export type AttentionSource = 'plan' | 'coord' | 'harness' | 'operator';
 
 /**
  * The four inbox tiers (inbox-tiering-and-message-agent-2026-06-05 D-002/D-006).
@@ -109,7 +111,8 @@ export type AttentionRef =
   | { kind: 'coord-escalation'; msgId: string; options: { id: string; label: string }[] }
   | { kind: 'coord-message'; msgId: string }
   | { kind: 'smoke-fail'; harnessSlug: string }
-  | { kind: 'plan-review'; harnessSlug: string };
+  | { kind: 'plan-review'; harnessSlug: string }
+  | { kind: 'operator-report'; turnId: string; conversationId: string };
 
 export interface AttentionItem {
   /** Unique within a reader response. `<kind>:<...>`. */
@@ -151,6 +154,11 @@ export interface AttentionItem {
   triagedAt: string | null;
   actions: AttentionAction[];
   ref: AttentionRef;
+  /** Structured report payload (kind `operator-report` only) — the one
+   *  `ReportBlock` schema from `@papercusp/chat-protocol`, rendered natively
+   *  in the detail pane (desktop card / TUI two-tier list). Absent on every
+   *  other kind. report-cards-inbox-reconciliation-2026-06-05 D-001/D-003. */
+  report?: ReportBlock;
 }
 
 /** The untriaged-default triage fields every adapter spreads into its item
@@ -192,6 +200,37 @@ export function applyTriage(item: AttentionItem, rec: TriageRecord): AttentionIt
     triagedBy: rec.triagedBy,
     triagedAt: rec.triagedAt,
   };
+}
+
+/**
+ * Worst-of tier for an operator `<report>` payload (D-003 of
+ * report-cards-inbox-reconciliation-2026-06-05): scan every plan + item
+ * status — any needs-human/review token → `decision`; else any
+ * blocked/failing token → `alert`; else `activity`.
+ *
+ * Token families deliberately mirror the renderer's status-glyph map
+ * (OperatorReportCard / TUI status_marker) so what *looks* like a review
+ * ask or a failure *tiers* like one. Statuses are free strings (Brief 22
+ * D-002); unknown tokens fall through to `activity` — per Brief 21 D-006
+ * the source is a loose cheap pre-sort and the operator's `<report>` is
+ * already operator-judged, so over-deriving here is the bigger error.
+ */
+export function reportTier(report: ReportBlock): AttentionTier {
+  const DECISION = new Set(['needs-human', 'needs_human', 'review']);
+  const ALERT = new Set(['blocked', 'failing', 'failed', 'error']);
+  let sawAlert = false;
+  const statuses = (s: string | undefined): string => (s ?? '').trim().toLowerCase();
+  for (const plan of report.plans) {
+    const ps = statuses(plan.status);
+    if (DECISION.has(ps)) return 'decision';
+    if (ALERT.has(ps)) sawAlert = true;
+    for (const it of plan.items ?? []) {
+      const is = statuses(it.status);
+      if (DECISION.has(is)) return 'decision';
+      if (ALERT.has(is)) sawAlert = true;
+    }
+  }
+  return sawAlert ? 'alert' : 'activity';
 }
 
 /** Sort rank — lower = more important (urgent=0 … low=3). Unknown→normal. */

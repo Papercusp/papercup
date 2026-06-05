@@ -29,7 +29,6 @@
 import { useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { ParsedReport } from '@papercusp/operator-core/lib/operator-converse-tags';
 
 export interface ChatToolCall {
   /** Display name of the tool the model called. */
@@ -58,12 +57,10 @@ export interface ChatMessage {
   content: string;
   /** Optional tool calls to render above the content. Oracle uses; operator does too as of 2026-05-11 (chat:ask_choice). */
   tools?: ChatToolCall[];
-  /**
-   * Optional structured `<report>` payload (operator only) — per-plan/per-item
-   * status rendered as a card below the content via `renderReport`.
-   * structured-report-protocol-2026-06-05.
-   */
-  report?: ParsedReport;
+  // NOTE: there is deliberately NO structured-report field here. The chat
+  // stream is conversation only — the operator's `<report>` payload routes
+  // to the tiered Inbox as an attention item and renders there via
+  // ReportBlockCard (report-cards-inbox-reconciliation-2026-06-05 D-002).
   /**
    * Stable id for optimistic-write dedup. Set client-side to a uuid
    * when an optimistic local turn is dispatched; once the POST returns,

@@ -81,7 +81,7 @@ export interface BenchRunReport {
   scorecardMarkdown: string;
 }
 
-interface BackendCtx {
+export interface BackendCtx {
   backend: MemoryBackend;
   /** Build a FRESH instance over the same store (restart-survival probe). */
   reinstantiate: () => MemoryBackend;
@@ -93,7 +93,8 @@ interface BackendCtx {
   extractionOnRemember: boolean;
 }
 
-async function makeBackendCtx(name: BenchBackendName, keep: boolean): Promise<BackendCtx> {
+/** Exported for the T3 judged tier (./judged), which seeds the same isolated contexts. */
+export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Promise<BackendCtx> {
   if (name === 'mem0') {
     setupBenchMemoryHost();
     const pg = await benchPgClient();

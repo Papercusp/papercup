@@ -27,6 +27,8 @@
 
 import { useState, type ReactNode } from 'react';
 import { ChevronRight, Check, Sparkles, Square } from 'lucide-react';
+import type { ReportBlock } from '@papercusp/chat-protocol';
+import { ReportBlockCard } from './ReportBlockCard';
 
 export interface AskChoiceOption {
   id: string;
@@ -49,6 +51,13 @@ export interface AskChoiceArgs {
   options: AskChoiceOption[];
   /** Multi-select mode. When true, renders checkboxes + Submit button. */
   multi?: boolean;
+  /**
+   * Optional structured body block (the shared two-tier plan→item shape,
+   * `CardSpec.report` on the wire) rendered between the question and the
+   * options via `ReportBlockCard`. A `<report>` block IS a card body —
+   * report-cards-inbox-reconciliation-2026-06-05 D-001.
+   */
+  report?: ReportBlock;
 }
 
 /**
@@ -183,6 +192,11 @@ export function AskChoiceCard({
         </p>
         {renderPickedSummary()}
       </div>
+      {args.report && (
+        <div className="ask-choice-report">
+          <ReportBlockCard report={args.report} />
+        </div>
+      )}
       {mainOptions.length > 0 && (
       <div className="ask-choice-options">
         {mainOptions.map((opt) => {

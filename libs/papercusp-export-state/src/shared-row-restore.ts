@@ -21,6 +21,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { assertValidSlug, includedSharedTables } from './shared-table-filters';
+import type { SharedTableFilter } from './shared-table-filters';
 
 interface CsvFile {
   table: string;
@@ -42,6 +43,38 @@ async function discoverCsvs(stateDir: string): Promise<CsvFile[]> {
 }
 
 /**
+ * Pure restore-side row shaping for one shared table (§15.6 step 7e):
+ *   1. `slugColumn` rewrite — rows captured under the snapshot's original
+ *      slug are re-keyed to the fork slug, so they land in the FORK rather
+ *      than orphaned (cross-machine) or bled into the source harness (local).
+ *   2. `restoreRowTransform` — table-specific shaping (work_items'
+ *      issue-family id suffixing).
+ *   3. `forkPrefixIds` — `id` column gets the `_fork_<suffix>` suffix to
+ *      dodge same-machine PK collisions.
+ *
+ * Exported for unit tests; `applyHarnessSharedRestore` is the only
+ * production caller.
+ */
+export function transformSharedRows(
+  reg: SharedTableFilter,
+  rows: Array<Record<string, unknown>>,
+  ctx: { originalSlug: string; newSlug: string; forkSuffix: string },
+): Array<Record<string, unknown>> {
+  let out = rows;
+  if (reg.slugColumn) {
+    const col = reg.slugColumn;
+    out = out.map((r) => (r[col] === ctx.originalSlug ? { ...r, [col]: ctx.newSlug } : r));
+  }
+  if (reg.restoreRowTransform) {
+    out = out.map((r) => reg.restoreRowTransform!(r, ctx));
+  }
+  if (reg.forkPrefixIds) {
+    out = out.map((r) => ({ ...r, id: `${String(r.id)}_fork_${ctx.forkSuffix}` }));
+  }
+  return out;
+}
+
+/**
  * Restore harness_shared CSVs into the live schema, with column-aware
  * INSERTs (information_schema roundtrip) so we can rewrite the `id`
  * column when the registry asks for it.
@@ -51,6 +84,10 @@ async function discoverCsvs(stateDir: string): Promise<CsvFile[]> {
  */
 export async function applyHarnessSharedRestore(args: {
   url: string;
+  /** The snapshot's source harness slug (manifest.harnessSlug). */
+  originalSlug: string;
+  /** The fork harness slug rows are re-keyed to. */
+  newSlug: string;
   forkSuffix: string;
   stateDir: string;
   workDir: string;
@@ -63,6 +100,8 @@ export async function applyHarnessSharedRestore(args: {
   if (csvs.length === 0) return { tables: [] };
 
   assertValidSlug(args.forkSuffix.replace(/_/g, ''));
+  assertValidSlug(args.originalSlug);
+  assertValidSlug(args.newSlug);
 
   const sql = postgres(args.url, {
     max: 1,
@@ -89,12 +128,15 @@ export async function applyHarnessSharedRestore(args: {
           continue;
         }
 
-        // Apply id-fork-prefixing in JS rather than via SQL expression so the
-        // INSERT can be a single bulk statement. postgres-js's `tx(rows)`
-        // helper expands an object array into a multi-row VALUES clause.
-        const transformed = reg.forkPrefixIds
-          ? rows.map((r) => ({ ...r, id: String(r.id) + `_fork_${args.forkSuffix}` }))
-          : rows;
+        // Apply slug re-keying + table transforms + id-fork-prefixing in JS
+        // rather than via SQL expression so the INSERT can be a single bulk
+        // statement. postgres-js's `tx(rows)` helper expands an object array
+        // into a multi-row VALUES clause.
+        const transformed = transformSharedRows(reg, rows, {
+          originalSlug: args.originalSlug,
+          newSlug: args.newSlug,
+          forkSuffix: args.forkSuffix,
+        });
 
         await tx`
           INSERT INTO ${tx(`harness_shared.${csv.table}`)}
@@ -162,7 +204,9 @@ async function loadColumnLists(
 function parseCsv(text: string, expectedCols: string[]): Array<Record<string, unknown>> {
   const fields = tokenizeCsv(text);
   if (fields.length === 0) return [];
-  const header = fields[0];
+  // Header cells are always real column names from PG COPY HEADER; the
+  // tokenizer's `null` (unquoted-empty) can't legitimately occur here.
+  const header = fields[0].map((h) => String(h ?? ''));
   // Sanity: header should match the column order from information_schema.
   // If a column is missing, downstream INSERT will fail with a clearer
   // message than we'd produce here, so just trust the header.

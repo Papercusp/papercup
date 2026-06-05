@@ -24,18 +24,17 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { ENCRYPTED_TABLES, getDbEncryptionKey } from './db-encryption';
 
+// (operator_last_scan / operator_idle_snapshot / operator_scanner_session were
+// removed with the scanner teardown — unify-agent-launches D-005, migration 167.)
 type StateTable =
   | 'operator_budget'
-  | 'operator_last_scan'
   | 'operator_standing_candidates'
-  | 'operator_idle_snapshot'
   | 'operator_tts_spend'
   | 'operator_stt_spend'
   | 'operator_voice_prefs'
   | 'operator_credentials'
   // Round-2 extensions (migration 021):
   | 'operator_agent_config'
-  | 'operator_scanner_session'
   | 'operator_first_run'
   | 'operator_user_profile'
   // Round-3 extensions (migration 022):

@@ -80,11 +80,32 @@ describe('shared-table-filter registry', () => {
     expect(exc.every((t) => t.mode === 'exclude')).toBe(true);
   });
 
-  it('forkPrefixIds tables list FK refs in per-harness schema', () => {
+  it('forkPrefixIds tables declare their per-harness FK refs (explicit empty = audited none)', () => {
     for (const e of SHARED_TABLE_FILTERS) {
       if (e.forkPrefixIds) {
-        expect(e.fkRefsInPerHarness?.length ?? 0).toBeGreaterThan(0);
+        // The field must be PRESENT — an explicit [] records "nothing in the
+        // per-harness schema references this id" as a reviewed fact, not an
+        // oversight (pending_events/routines); a populated list drives the
+        // restore-side FK UPDATE (projects/goals).
+        expect(e.fkRefsInPerHarness, `${e.table} must declare fkRefsInPerHarness`).toBeDefined();
       }
+    }
+  });
+
+  it('slug-keyed include tables declare slugColumn so restore re-keys them to the fork slug', () => {
+    // Every include filter that scopes by a slug-bearing column must also name
+    // that column for the restore-side rewrite — otherwise restored rows stay
+    // keyed to the publisher's slug (orphaned cross-machine, or bled into the
+    // source harness on a local fork).
+    const expectations: Record<string, string> = {
+      pending_events: 'install_slug',
+      routines: 'install_slug',
+      goals: 'install_slug',
+      work_items: 'harness_slug',
+    };
+    for (const [table, col] of Object.entries(expectations)) {
+      const f = findSharedTableFilter(table);
+      expect(f?.slugColumn, `${table} must declare slugColumn`).toBe(col);
     }
   });
 

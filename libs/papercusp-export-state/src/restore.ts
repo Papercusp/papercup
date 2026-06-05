@@ -101,6 +101,8 @@ export async function restore(req: RestoreRequest): Promise<RestoreResult> {
     emit({ phase: 'shared-rows', message: 'importing harness_shared subset' });
     await applyHarnessSharedRestore({
       url,
+      originalSlug: manifest.harnessSlug,
+      newSlug,
       forkSuffix,
       stateDir: join(stagingDir, 'state'),
       workDir: workRoot,

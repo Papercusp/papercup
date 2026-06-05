@@ -31,6 +31,8 @@ import type {
   ControlTag,
 } from '@papercusp/testing-shell/llm';
 
+import { llmTestBaseUrl } from './base-url';
+
 const BEHAVIORS = [
   // Borrows the operator catalog where it applies; oracle-specific
   // behaviors (no cards, refusal-to-speculate) ride on the judge
@@ -53,7 +55,7 @@ export class OracleTarget implements ChatTarget {
 
   async open(opts: SessionOptions): Promise<ChatSession> {
     const baseUrl = this.opts.baseUrl
-      ?? process.env.PAPERCUSP_OPERATOR_URL
+      ?? llmTestBaseUrl()
       ?? 'http://127.0.0.1:3055';
     if (opts.transport !== 'http-sse') {
       throw new Error(`oracle target supports only transport='http-sse' (got '${opts.transport}')`);

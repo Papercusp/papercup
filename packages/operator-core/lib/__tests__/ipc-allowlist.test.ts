@@ -33,7 +33,7 @@ const TOOLS_DIR = join(REPO, 'packages/operator-core/lib/agent-tools');
  *  carries WHY — every one owns its full lifecycle in the handler. */
 const EXPECTED_IPC_ELIGIBLE = new Set<string>([
   'dev:ipc_echo', // pure echo test tool — no deps at all
-  'operator:scan', // owns lock+LLM+parse+persist+release; "safe to call from any transport"
+  // (operator:scan removed with the scanner teardown — unify-agent-launches D-005)
   'operator:converse', // self-contained: prompt+budget+spend+mem0 in the handler
   'operator:delegate', // self-contained since the IPC-allowlist migration (2026-05-12)
   'architect:chat', // self-contained since the IPC-allowlist migration (2026-05-12)

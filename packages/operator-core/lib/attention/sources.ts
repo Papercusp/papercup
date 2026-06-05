@@ -7,7 +7,9 @@
  */
 
 import { resolveEffectiveStatus, type ParsedPlan } from '@papercusp/plan-parser';
-import { planItemToAttention } from './adapters';
+import { parseReportBlock } from '@papercusp/chat-protocol';
+import { operatorReportToAttention, planItemToAttention } from './adapters';
+import type { OperatorReportTurnRow } from './operator-report-source';
 import type { AttentionItem } from './types';
 
 /**
@@ -40,6 +42,41 @@ export function planItemsToAttention(
         }),
       );
     }
+  }
+  return out;
+}
+
+/**
+ * Map recent report-carrying operator turns to AttentionItems — the
+ * operator-report source (report-cards-inbox-reconciliation-2026-06-05,
+ * P-003 / D-003). The stored jsonb is re-validated through the shared
+ * `parseReportBlock` (defensive — a row written by an older/foreign client
+ * may not match the schema); invalid payloads are skipped, never thrown.
+ * Rows arrive newest-first from the source query and order is preserved.
+ */
+export function reportTurnsToAttention(rows: readonly OperatorReportTurnRow[]): AttentionItem[] {
+  const out: AttentionItem[] = [];
+  for (const row of rows) {
+    // jsonb arrives pre-parsed or as a raw string depending on the postgres
+    // client's type config — normalize before validating.
+    let raw = row.report;
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+    }
+    const report = parseReportBlock(raw);
+    if (!report) continue;
+    out.push(
+      operatorReportToAttention({
+        turnId: row.turnId,
+        conversationId: row.conversationId,
+        report,
+        sayText: row.text,
+      }),
+    );
   }
   return out;
 }

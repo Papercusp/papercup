@@ -281,15 +281,28 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(List::new(items), body_area);
 }
 
+/// Focus-cursor prefix for pane titles (`▸ ` on the focused pane, empty
+/// otherwise). Single source for the cursor glyph (Brief 27 vocabulary).
+fn focus_cursor(focused: bool) -> String {
+    if focused {
+        format!("{} ", crate::glyph::nav::CURSOR)
+    } else {
+        String::new()
+    }
+}
+
 /// One plan-item row: `<glyph> <id> <disposition> <who> <liveness> <intent>` (P-005a).
 /// `who` is the live-claim holder's agent-name, falling back to the durable assignee.
+/// Glyphs ride the shared vocabulary (cross-category reuse per its D-004:
+/// liveness fill = activity, `◆` = demands routing, `▲` = warn).
 fn plan_item_line(it: &crate::models::PlanItemState) -> String {
+    use crate::glyph::{liveness, severity, status};
     let (glyph, label) = match it.disposition.as_str() {
-        "active" => ("●", "active"),
-        "assigned-idle" => ("◐", "assigned"),
-        "claimed-pooled" => ("◆", "claimed"),
-        "claimed-mismatch" => ("⚠", "MISMATCH"),
-        "pooled" => ("·", "pooled"),
+        "active" => (liveness::LIVE, "active"),
+        "assigned-idle" => (liveness::IDLE, "assigned"),
+        "claimed-pooled" => (status::NEEDS_HUMAN, "claimed"),
+        "claimed-mismatch" => (severity::WARN, "MISMATCH"),
+        "pooled" => (severity::INFO, "pooled"),
         other => ("?", other),
     };
     let who = it
@@ -324,7 +337,7 @@ fn draw_presence(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = online
         .iter()
         .map(|r| {
-            let dot = if r.liveness == "live" { "●" } else { "◐" };
+            let dot = crate::glyph::liveness_dot(r.stale, &r.liveness);
             let who = r.agent.clone().unwrap_or_else(|| r.label.clone());
             // Prefer live intent; fall back to feature, then role.
             let detail = r
@@ -459,7 +472,11 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     // the full per-tier counts live in the section headers below. The plans-
     // filter badge (D-009) stays visible. Kept compact so it never truncates the
     // badge in a narrowed (rail-open) pane.
-    let mut title = format!(" Inbox ◆{} ", counts[0]);
+    let mut title = format!(
+        " Inbox {}{} ",
+        crate::glyph::status::NEEDS_HUMAN,
+        counts[0]
+    );
     if !app.plan_filter.is_empty() {
         title.push_str(&format!("· F:plans({}) ", app.plan_filter.len()));
     }
@@ -469,7 +486,13 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(Line::from(title)),
-        "  ◆ Decisions · ✓ Handled · ! Alerts · · Activity",
+        &format!(
+            "  {} Decisions · {} Handled · {} Alerts · {} Activity",
+            crate::glyph::status::NEEDS_HUMAN,
+            crate::glyph::status::DONE,
+            crate::glyph::severity::ALERT,
+            crate::glyph::severity::INFO,
+        ),
     );
     let list = List::new(list_items)
         .highlight_style(Theme::selected())
@@ -630,7 +653,10 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
             s.push_str(&format!("\n{body}\n"));
         }
         if let Some(ans) = c.and_then(|c| c.accepted_answer.clone()) {
-            s.push_str(&format!("\n✓ accepted: {ans}\n"));
+            s.push_str(&format!(
+                "\n{} accepted: {ans}\n",
+                crate::glyph::status::DONE
+            ));
         }
         if let Some(issue) = c.and_then(|c| c.promoted_issue_id.clone()) {
             s.push_str(&format!(
@@ -713,7 +739,7 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .title(Line::from(format!(
                 " {}{} ({}/{}) [/] · features ({}) ",
-                if feat_focused { "▸ " } else { "" },
+                focus_cursor(feat_focused),
                 app.harness,
                 app.harness_sel + 1,
                 app.harnesses.len().max(1),
@@ -729,7 +755,7 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     // Issues (right) — selectable when focused (Tab toggles focus).
     let ititle = Line::from(format!(
         " {}issues ({}) ",
-        if !feat_focused { "▸ " } else { "" },
+        focus_cursor(!feat_focused),
         app.issues.len()
     ));
     if app.issues.is_empty() {

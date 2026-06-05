@@ -153,7 +153,12 @@ Env:
                                       .anthropic_api_key when unset.
   PAPERCUSP_LLM_TEST_SKIP_CLAIM=1     Skip the parallel-runner claim
                                       ledger (unit tests without PG).
-  PAPERCUSP_OPERATOR_URL              Operator base URL (default http://127.0.0.1:3055)
+  PAPERCUSP_LLM_TEST_OPERATOR_URL     Operator HTTP origin the targets POST to
+                                      (default http://127.0.0.1:3070).
+                                      PAPERCUSP_OPERATOR_URL is honored as a
+                                      fallback but reduced to its ORIGIN — its
+                                      fleet-wide meaning is the MCP endpoint
+                                      (…/api/mcp), not an API base.
   LLM_TEST_SUT_MODEL                  Override SUT model (default claude-sonnet-4-6)
   LLM_TEST_JUDGE_MODEL                Override judge model (default claude-sonnet-4-6)
   LLM_TEST_SIM_MODEL                  Override sim-user model (default claude-haiku-4-5)

@@ -835,11 +835,12 @@ pub enum ConvAiPhase {
 
 impl ConvAiPhase {
     /// A one-glyph + label badge for the Operator title/status line.
-    pub fn badge(self) -> &'static str {
+    /// Glyphs ride the shared vocabulary (`crate::glyph`, Brief 27).
+    pub fn badge(self) -> String {
         match self {
-            ConvAiPhase::Off => "",
-            ConvAiPhase::Connecting => "◐ voice…",
-            ConvAiPhase::Live => "● voice",
+            ConvAiPhase::Off => String::new(),
+            ConvAiPhase::Connecting => format!("{} voice…", crate::glyph::liveness::IDLE),
+            ConvAiPhase::Live => format!("{} voice", crate::glyph::liveness::LIVE),
         }
     }
 }
@@ -863,13 +864,16 @@ pub enum VoicePhase {
 
 impl VoicePhase {
     /// A one-glyph + label badge for the Operator status line.
-    pub fn badge(self) -> &'static str {
+    /// Glyphs ride the shared vocabulary (`crate::glyph`, Brief 27).
+    pub fn badge(self) -> String {
         match self {
-            VoicePhase::Idle => "",
-            VoicePhase::Recording => "● REC",
-            VoicePhase::Transcribing => "✎ transcribing",
-            VoicePhase::Thinking => "… thinking",
-            VoicePhase::Speaking => "♪ speaking",
+            VoicePhase::Idle => String::new(),
+            VoicePhase::Recording => format!("{} REC", crate::glyph::liveness::LIVE),
+            VoicePhase::Transcribing => {
+                format!("{} transcribing", crate::glyph::action::EDIT)
+            }
+            VoicePhase::Thinking => "… thinking".to_string(),
+            VoicePhase::Speaking => format!("{} speaking", crate::glyph::voice::SPEAKING),
         }
     }
     pub fn is_active(self) -> bool {
@@ -1092,7 +1096,7 @@ impl App {
     fn fail_chat_turn(&mut self, err: &str) {
         if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
             if m.content.trim().is_empty() {
-                m.content = format!("⚠ {err}");
+                m.content = format!("{} {err}", crate::glyph::severity::WARN);
             } else {
                 m.content = crate::chat_tags::finalize(&m.content);
             }
@@ -5513,7 +5517,10 @@ mod tests {
         a.begin_user_send("hi");
         a.update(Event::ChatError("backend down".into()));
         assert!(!a.chat_streaming);
-        assert_eq!(a.chat_messages[1].content, "⚠ backend down");
+        assert_eq!(
+            a.chat_messages[1].content,
+            format!("{} backend down", crate::glyph::severity::WARN)
+        );
         assert!(a.last_error.as_deref().unwrap().contains("backend down"));
         // Mid-stream bubble → partial say is preserved on error.
         let mut b = App::new();

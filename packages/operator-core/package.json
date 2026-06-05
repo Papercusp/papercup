@@ -24,6 +24,7 @@
     "@papercusp/rules": "*",
     "@papercusp/step-program": "*",
     "@papercusp/locks-core": "*",
+    "@papercusp/model-pricing": "*",
     "@papercusp/structured-concurrency": "*",
     "@papercusp/p2p-voice": "*"
   },

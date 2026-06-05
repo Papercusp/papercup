@@ -11,6 +11,9 @@
  *   - coord messages addressed to 'human'  → coordMessageToAttention
  *   - failing smoke tests (harness_smoke_test)  → smokeFailToAttention
  *   - plans awaiting review (harness_plan_review) → planReviewToAttention
+ *   - operator `<report>` turns (operator_turns.report) → reportTurnsToAttention
+ *     (report-cards-inbox-reconciliation-2026-06-05 — the operator's
+ *     structured output routes to the Inbox, not the chat stream)
  *
  * Each source is best-effort: one source erroring (PG offline, no coord
  * log) degrades to fewer items, never a failed read. The orchestrator's
@@ -34,7 +37,7 @@ import {
   smokeFailToAttention,
   planReviewToAttention,
 } from '../../attention/adapters';
-import { planItemsToAttention } from '../../attention/sources';
+import { planItemsToAttention, reportTurnsToAttention } from '../../attention/sources';
 import { buildAttentionGroups } from '../../attention/group';
 import { applyTriage, groupByTier, type AttentionItem } from '../../attention/types';
 import { readTriageByWorkspace } from '../../attention/triage-store';
@@ -64,7 +67,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:attention',
   description:
-    "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + plan-reviews, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
+    "The Planning tab's unified attention feed: plan items + coord escalations + coord messages-to-human + smoke-fails + plan-reviews + operator <report> turns, mapped to a single AttentionItem shape, grouped by plan (+ per-harness Alerts bucket), importance-sorted. Each source best-effort.",
   guidance: {
     when: 'You want everything awaiting the human / pickable, in one importance-sorted feed — the Planning tab inbox, or to find the single most-urgent open thing.',
     notWhen:
@@ -201,7 +204,19 @@ export default defineTool({
       /* best-effort */
     }
 
-    // 6. Operator triage overlay (D-006): a downgrade/resolve moves the item to
+    // 6. Operator `<report>` turns — the operator's structured output is an
+    //    inbox surface, not chat content (report-cards-inbox-reconciliation
+    //    D-002). One item per report turn at the worst-of tier (D-003); the
+    //    recent window + triage (resolve → handled) keep the feed clean (D-004).
+    try {
+      const { readRecentOperatorReports } = await import('../../attention/operator-report-source');
+      const reportTurns = await readRecentOperatorReports();
+      items.push(...reportTurnsToAttention(reportTurns));
+    } catch {
+      /* best-effort */
+    }
+
+    // 7. Operator triage overlay (D-006): a downgrade/resolve moves the item to
     //    the auditable "Handled by operator" tier, an escalate/confirm keeps it
     //    a Decision — never a silent vanish. Best-effort: no triage table / PG
     //    offline degrades to "untriaged", never a failed feed.

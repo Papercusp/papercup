@@ -969,33 +969,15 @@ mod tests {
     /// glyph upstream of a label would shift it right by one cell).
     #[test]
     fn fleet_render_width_safe_and_aligned_at_80_and_120() {
-        use ratatui::{backend::TestBackend, Terminal};
         use unicode_width::UnicodeWidthStr;
 
-        let mut app = App::new();
-        app.tab = crate::app::Tab::Fleet;
-        app.show_presence = false;
-        app.set_roster(vec![
-            roster_entry("su-alpha", false),
-            roster_entry("su-bee", true),
-            roster_entry("su-much-longer-name", false),
-        ]);
-        app.fleet.set_work_items(vec![
-            wi("feature", "feature", "passed"),
-            wi("feature", "feature", "todo"),
-            wi("bug", "issue", "open"),
-        ]);
-        app.fleet.set_curated_signals(vec![
-            curated("e1", "escalation", "needs a human", "papercup", true),
-            curated("b1", "blocker", "blocked on X", "papercup", false),
-        ]);
-
-        for &(w, h) in &[(80u16, 30u16), (120, 30)] {
+        // Frame-wide scan: every cell symbol must be ≤1 column wide unless it
+        // is one of the sanctioned header emoji.
+        fn scan(app: &App, w: u16, h: u16) -> Vec<String> {
+            use ratatui::{backend::TestBackend, Terminal};
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-            term.draw(|f| crate::ui::draw(f, &app)).unwrap();
+            term.draw(|f| crate::ui::draw(f, app)).unwrap();
             let buf = term.backend().buffer().clone();
-
-            // (a) No wide symbol outside the header set, anywhere in the frame.
             let mut rows: Vec<String> = Vec::with_capacity(h as usize);
             for y in 0..h {
                 let mut row = String::with_capacity(w as usize);
@@ -1012,19 +994,51 @@ mod tests {
                 }
                 rows.push(row);
             }
+            rows
+        }
 
-            // (b) Roster rows: every agent label starts at the same column.
-            let cols: Vec<usize> = rows
-                .iter()
-                .filter_map(|r| r.find("su · su-"))
-                .collect();
+        // Heuristic (no curator) mode — per-agent roster rows render.
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.set_roster(vec![
+            roster_entry("su-alpha", false),
+            roster_entry("su-bee", true),
+            roster_entry("su-much-longer-name", false),
+        ]);
+        app.fleet.set_work_items(vec![
+            wi("feature", "feature", "passed"),
+            wi("feature", "feature", "todo"),
+            wi("bug", "issue", "open"),
+        ]);
+
+        for &(w, h) in &[(80u16, 30u16), (120, 30)] {
+            let rows = scan(&app, w, h);
+            // Roster rows: every agent label starts at the same column (a wide
+            // glyph in the liveness-dot cell would shift the label by one).
+            let cols: Vec<usize> = rows.iter().filter_map(|r| r.find("claude")).collect();
             assert!(
-                cols.len() >= 2,
-                "expected at least 2 roster rows in the {w}-col render"
+                cols.len() >= 3,
+                "expected 3 roster rows in the {w}-col render, got {cols:?}"
             );
             assert!(
                 cols.windows(2).all(|p| p[0] == p[1]),
                 "roster label column drifted at width {w}: {cols:?}"
+            );
+        }
+
+        // Curated mode — the What-matters panel renders the signal glyphs
+        // (escalation ▲ / blocker ⊘) plus the ⚡ header emoji (sanctioned).
+        app.fleet.set_curated_signals(vec![
+            curated("e1", "escalation", "needs a human", "papercup", true),
+            curated("b1", "blocker", "blocked on X", "papercup", false),
+        ]);
+        for &(w, h) in &[(80u16, 30u16), (120, 30)] {
+            let rows = scan(&app, w, h);
+            let joined = rows.join("\n");
+            assert!(
+                joined.contains(glyph::severity::WARN),
+                "escalation glyph missing from curated render at width {w}"
             );
         }
     }

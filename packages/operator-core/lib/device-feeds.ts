@@ -88,17 +88,11 @@ export async function currentlyRunning(workspaceId: string): Promise<{
   harnesses: RunningHarnessPhase[];
 }> {
   return withWorkspace(workspaceId, async (tx) => {
-    const scans = await tx<RunningScan[]>`
-      SELECT id,
-             EXTRACT(EPOCH FROM started_at)::bigint * 1000 AS started_at,
-             request_text,
-             cost_usd
-      FROM harness_shared.operator_scans
-      WHERE ended_at IS NULL
-      ORDER BY started_at DESC
-      LIMIT 1
-    `;
-
+    // Operator scans are retired (unify-agent-launches-as-blueprints D-005
+    // scanner teardown, 2026-06-05) — `harness_shared.operator_scans` no
+    // longer exists. The device contract keeps `scan: RunningScan | null`
+    // (mobile models Option<RunningScan>), so always report "no scan
+    // running"; harness phases + lanes below are the real fleet data.
     const harnesses = await tx<Omit<RunningHarnessPhase, 'active_roles'>[]>`
       SELECT harness_slug, phase, status, iteration,
              total_features, passed_count, todo_count, blocked_count,
@@ -122,7 +116,7 @@ export async function currentlyRunning(workspaceId: string): Promise<{
     }
 
     return {
-      scan: scans[0] ?? null,
+      scan: null,
       harnesses: harnesses.map((h) => ({
         ...h,
         active_roles: roleMap.get(`${h.harness_slug}::${h.phase}`) ?? [],

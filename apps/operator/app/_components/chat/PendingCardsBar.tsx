@@ -61,6 +61,7 @@ function toAskChoiceArgs(card: OpenCardWithRun): AskChoiceArgs | null {
       style: o.style,
     })),
     multi: p.kind === 'checkbox',
+    report: card.report,
   };
 }
 

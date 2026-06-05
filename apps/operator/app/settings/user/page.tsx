@@ -60,6 +60,12 @@ const OVERRIDES: readonly OverrideSpec[] = [
     help: 'Hard session-duration cap. 0 = no max.' },
   { key: 'operatorHistoryTokenBudget', kind: 'number', min: 5000, max: 150000, step: 1000, label: 'Papercup history budget (tokens)',
     help: 'How much chat history the Papercup brain sees per turn. Higher = better recall, more cost.' },
+  { key: 'operatorContextMode', kind: 'enum', label: 'Papercup long-conversation memory',
+    help: 'Compaction keeps recent turns verbatim plus a rolling summary of everything older, so Papercup remembers the whole conversation at bounded cost. Window is the legacy escape hatch: verbatim budget only, older turns are forgotten.',
+    options: [
+      { value: 'compaction', label: 'Compaction (recommended) — window + rolling summary' },
+      { value: 'window', label: 'Window only — forget turns past the budget' },
+    ] },
   { key: 'operatorActiveOnStartup', kind: 'bool', label: 'Papercup active on startup',
     help: 'When a new chat opens, start in active mode (Papercup initiates) vs passive.' },
   { key: 'voicePrivacyMode', kind: 'enum', label: 'Voice privacy mode',
