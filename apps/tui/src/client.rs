@@ -10,6 +10,7 @@ use crate::http::HttpClient;
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AttentionItem, AttentionResponse,
+    ConvDetail, ConvListResponse, ConvSummary,
     ConversationLoad, CoordInboxResponse, CuratedSignal, CurationFeedPayload,
     CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
     HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, Notif,
@@ -332,6 +333,86 @@ impl OperatorClient {
         Ok(serde_json::from_value::<IssuesResponse>(v)
             .context("decode issues")?
             .issues)
+    }
+
+    /// Conversations (Brief 25) via the `conversations:list` agent-tool — optional
+    /// state/kind/topic filters; MCP envelope unwrapped like `features_for`. Each
+    /// row carries its topic tags + the promoted-issue link (D-002/D-004).
+    pub async fn conversations_list(
+        &self,
+        state: Option<&str>,
+        kind: Option<&str>,
+        topic: Option<&str>,
+    ) -> Result<Vec<ConvSummary>> {
+        let mut body = serde_json::Map::new();
+        if let Some(s) = state {
+            body.insert("state".into(), serde_json::json!(s));
+        }
+        if let Some(k) = kind {
+            body.insert("kind".into(), serde_json::json!(k));
+        }
+        if let Some(t) = topic {
+            if !t.is_empty() {
+                body.insert("topic".into(), serde_json::json!(t));
+            }
+        }
+        let env = self
+            .post_json("/api/agent-tools/conversations/list", serde_json::Value::Object(body))
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("conversations:list: missing content[0].text")?;
+        Ok(serde_json::from_str::<ConvListResponse>(text)
+            .context("parse conversations payload")?
+            .conversations)
+    }
+
+    /// Full conversation detail (seed + topics + thread + accepted answer + the
+    /// linked work-item) via the `conversations:get` agent-tool.
+    pub async fn conversation_get(&self, id: &str) -> Result<ConvDetail> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/conversations/get",
+                serde_json::json!({ "conversation_id": id }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("conversations:get: missing content[0].text")?;
+        serde_json::from_str::<ConvDetail>(text).context("parse conversation detail")
+    }
+
+    /// Promote a conversation into an engineer issue (carries its thread). Returns
+    /// the new issue id, or an Err carrying the tool's `reason` on failure.
+    pub async fn conversation_promote(&self, id: &str) -> Result<String> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/conversations/promote",
+                serde_json::json!({ "conversation_id": id }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("conversations:promote: missing content[0].text")?;
+        let v: serde_json::Value = serde_json::from_str(text).context("parse promote result")?;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+            let reason = v.get("reason").and_then(|r| r.as_str()).unwrap_or("promote_failed");
+            return Err(anyhow!("promote failed: {reason}"));
+        }
+        Ok(v.get("issue")
+            .and_then(|i| i.get("id"))
+            .and_then(|i| i.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     pub async fn harnesses(&self) -> Result<Vec<HarnessRef>> {

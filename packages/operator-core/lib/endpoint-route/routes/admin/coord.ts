@@ -13,6 +13,12 @@
  *
  * POST /api/admin/coord/resolve  { msg_id, choice, note? }  → coord:resolve
  * POST /api/admin/coord/ack      { msg_id }                 → coord:ack
+ * POST /api/admin/coord/message-agent { to?, body, harness?, plan_slug?,
+ *        item_ref?, title?, topics? }                        → coord:message-agent
+ *   The inbox "Message owner" action — opens a work-item-scoped conversation
+ *   with the owning agent (inbox-tiering-and-message-agent-2026-06-05, D-004).
+ *   The inline thread is then read/posted via /api/admin/coordination/
+ *   conversations/{get,post} (admin/coordination.ts allowlist).
  */
 
 import { handleHttpToolRequest, type HttpToolHostExtras } from '@papercusp/agent-mcp';
@@ -27,7 +33,7 @@ import { ADMIN_COORD_UI_OWNER } from '../../../agent-tools/coordination/identity
 // "Acknowledge" actually dismisses: the human acks AS this owner here, and the
 // reader drops messages acked BY this owner.
 const ADMIN_UI_CLIENT_ID = ADMIN_COORD_UI_OWNER;
-const WRITE_VERBS = new Set(['resolve', 'ack']);
+const WRITE_VERBS = new Set(['resolve', 'ack', 'message-agent']);
 
 const HOST_EXTRAS: HttpToolHostExtras = {
   deps: PROJECTED_DEPS,

@@ -1164,6 +1164,95 @@ pub struct TurnsPage {
     pub has_more_earlier: bool,
 }
 
+// ── Conversations (Brief 25, conversations-tab-2026-06-05) ───────────────────
+// The coord conversations browse surface. Shapes match the snake_case JSON the
+// `conversations:*` tools return (NO camelCase rename, unlike the plan/issue
+// DTOs above): conversations:list → ConvListResponse, conversations:get →
+// ConvGetResponse (the conversation fields are nested under `conversation`,
+// with topics/posts/subscriber_count as top-level siblings).
+
+/// One row of `conversations:list` → `{ conversations: [...] }`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConvSummary {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub asker_id: String,
+    #[serde(default)]
+    pub topics: Vec<String>,
+    #[serde(default)]
+    pub promoted_issue_id: Option<String>,
+    #[serde(default)]
+    pub created_ts: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConvListResponse {
+    #[serde(default)]
+    pub conversations: Vec<ConvSummary>,
+}
+
+/// The conversation object nested under `conversation` in conversations:get.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConvCore {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub asker_id: String,
+    #[serde(default)]
+    pub accepted_answer: Option<String>,
+    #[serde(default)]
+    pub promoted_issue_id: Option<String>,
+    #[serde(default)]
+    pub created_ts: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConvPost {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default)]
+    pub author_id: Option<String>,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub created_ts: String,
+}
+
+/// `conversations:get` → conversation + topics + posts + subscriber_count as
+/// top-level siblings. Stored whole as the selected-conversation detail.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ConvDetail {
+    #[serde(default)]
+    pub conversation: Option<ConvCore>,
+    #[serde(default)]
+    pub topics: Vec<String>,
+    #[serde(default)]
+    pub posts: Vec<ConvPost>,
+    #[serde(default)]
+    pub subscriber_count: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1783,5 +1872,44 @@ mod tests {
         let e: TurnsPage = serde_json::from_str("{}").unwrap();
         assert!(e.turns.is_empty());
         assert!(!e.has_more_earlier);
+    }
+
+    #[test]
+    fn parses_conversations_list_shape() {
+        // conversations:list (snake_case) → rows carry topics + promoted link.
+        let j = r#"{"ok":true,"count":2,"conversations":[
+            {"id":"conv-1","kind":"question","state":"open","scope":"operator","harness_slug":null,
+             "title":"why freeze?","asker_id":"agA","topics":["zero-cache","firefox"],
+             "promoted_issue_id":null,"created_ts":"2026-06-05T00:00:00.000Z","resolved":false},
+            {"id":"conv-2","kind":"discussion","state":"closed","scope":"harness","harness_slug":"papercup",
+             "title":null,"asker_id":"agB","topics":[],"promoted_issue_id":"EI-9","created_ts":"x"}
+        ]}"#;
+        let p: ConvListResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(p.conversations.len(), 2);
+        assert_eq!(p.conversations[0].topics, vec!["zero-cache", "firefox"]);
+        assert_eq!(p.conversations[1].promoted_issue_id.as_deref(), Some("EI-9"));
+        assert_eq!(p.conversations[1].harness_slug.as_deref(), Some("papercup"));
+        assert!(p.conversations[1].title.is_none());
+    }
+
+    #[test]
+    fn parses_conversation_detail_shape() {
+        // conversations:get — conversation nested; topics/posts/subscriber_count siblings.
+        let j = r#"{"ok":true,"conversation":{"id":"conv-1","kind":"question","state":"resolved",
+            "scope":"operator","harness_slug":null,"title":"q","body":"the body","asker_id":"agA",
+            "accepted_answer":"because X","promoted_issue_id":null,"created_ts":"x"},
+            "topics":["zero-cache"],"posts":[{"id":7,"author_id":"agB","body":"a reply","created_ts":"x"}],
+            "subscriber_count":3}"#;
+        let d: ConvDetail = serde_json::from_str(j).unwrap();
+        let c = d.conversation.expect("conversation present");
+        assert_eq!(c.id, "conv-1");
+        assert_eq!(c.accepted_answer.as_deref(), Some("because X"));
+        assert_eq!(d.topics, vec!["zero-cache"]);
+        assert_eq!(d.posts.len(), 1);
+        assert_eq!(d.posts[0].id, 7);
+        assert_eq!(d.subscriber_count, 3);
+        // not_found shape decodes to an empty detail (no conversation).
+        let nf: ConvDetail = serde_json::from_str(r#"{"ok":false,"reason":"not_found"}"#).unwrap();
+        assert!(nf.conversation.is_none());
     }
 }

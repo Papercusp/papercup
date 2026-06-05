@@ -7,10 +7,10 @@
 //! (see `main`) forwards `Plans` / `Roster` / `Error`.
 
 use crate::models::{
-    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CuratedSignal, DocsResponse,
-    EffectiveClaudeSettings, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif,
-    OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution,
-    ViewState, WorkItem,
+    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConvDetail, ConvSummary, CuratedSignal,
+    DocsResponse, EffectiveClaudeSettings, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef,
+    Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
+    TuiPaneContribution, ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -92,6 +92,13 @@ pub enum Event {
         query: String,
         listings: Vec<crate::models::CupboardListing>,
     },
+    /// The conversations list for the Conversations tab (Brief 25) — the result
+    /// of a `FetchConversations` action under the current state/kind/topic filter.
+    Conversations(Vec<ConvSummary>),
+    /// One conversation's full detail (thread + topics + accepted answer + linked
+    /// work-item) loaded on selection. Carries the id so a stale fetch never
+    /// paints another conversation's detail (the TestingFiles/PluginConfig guard).
+    ConversationDetail { id: String, detail: ConvDetail },
     /// A live `attention.notify` event (P8) — raise a toast + OS notification.
     Notify(Notif),
     /// Backfilled notification history from `/api/toast-log` (P8).

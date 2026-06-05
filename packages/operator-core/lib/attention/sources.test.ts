@@ -67,15 +67,18 @@ describe('planItemsToAttention (plan-item source of plans:attention)', () => {
     expect(p3.needsHuman).toBe(true);
     expect(p3.importance).toBe('high');
     // The needs-human action set is the single source the inbox card maps from
-    // (inbox-cards-unification P-009): answer + Resolve(primary) + drop + chat.
-    expect(p3.actions.map((a) => a.id)).toEqual(['answer', 'mark-done', 'drop', 'chat']);
+    // (inbox-cards-unification P-009): answer + Resolve(primary) + drop + chat +
+    // message-owner (inbox-tiering-and-message-agent D-004).
+    expect(p3.actions.map((a) => a.id)).toEqual(['answer', 'mark-done', 'drop', 'chat', 'message-owner']);
     expect(p3.actions.find((a) => a.id === 'mark-done')?.primary).toBe(true);
+    expect(p3.tier).toBe('decision');
   });
 
-  it('surfaces a computed-blocked item with effective status blocked', () => {
+  it('surfaces a computed-blocked item with effective status blocked (alert tier, not needs-human)', () => {
     const p4 = items.find((i) => i.itemRef === 'P-004')!;
     expect(p4.status).toBe('blocked'); // effectiveStatus: blocked-by P-002 (not done)
     expect(p4.needsHuman).toBe(false);
+    expect(p4.tier).toBe('alert');
   });
 
   it('skips legacy plans', () => {

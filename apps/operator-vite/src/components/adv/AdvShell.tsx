@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Lightbulb,
   ListChecks,
+  MessageCircle,
   Plus,
   Settings,
   Share2,
@@ -25,7 +26,7 @@ import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
 
-const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
+const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -50,6 +51,7 @@ export const ADV_TABS: ReadonlyArray<{
   { id: 'testing', label: 'Tests', icon: FlaskConical, accent: '#84cc16', accentRgb: '132, 204, 22' },
   { id: 'docs', label: 'Docs', icon: BookOpen, accent: '#60a5fa', accentRgb: '96, 165, 250' },
   { id: 'insights', label: 'Insights', icon: TrendingUp, accent: '#14b8a6', accentRgb: '20, 184, 166' },
+  { id: 'conversations', label: 'Conversations', icon: MessageCircle, accent: '#ec4899', accentRgb: '236, 72, 153' },
   { id: 'config', label: 'Config', icon: SlidersHorizontal, accent: '#e879f9', accentRgb: '232, 121, 249' },
   { id: 'settings', label: 'Settings', icon: Settings, accent: '#f97316', accentRgb: '249, 115, 22' },
 ] as const;

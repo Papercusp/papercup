@@ -194,6 +194,12 @@ import './coordination/tools/presence';
 import './coordination/tools/declare-intent';
 // L3 channels — messages + acks + threads (Phase B core)
 import './coordination/tools/send';
+// Open a work-item-scoped conversation with an agent — the inbox "Message owner"
+// action (inbox-tiering-and-message-agent-2026-06-05, D-004).
+import './coordination/tools/message-agent';
+// Operator inbox-triage PASS — re-tier an attention item, audit the why
+// (inbox-tiering-and-message-agent-2026-06-05, D-006).
+import './inbox/triage';
 // Lifecycle auto-emission target (coord-lifecycle-automation-2026-06-04)
 import './coordination/tools/emit';
 import './coordination/tools/inbox';

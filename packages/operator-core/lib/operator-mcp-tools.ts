@@ -37,6 +37,10 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__plans:get',
   'mcp__agentmcp__plans:items',
   'mcp__agentmcp__plans:attention',
+  // Inbox-triage PASS — re-tier an attention item, audit the why; + message the
+  // owning agent in their context (inbox-tiering-and-message-agent-2026-06-05).
+  'mcp__agentmcp__inbox:triage',
+  'mcp__agentmcp__coord:message-agent',
   'mcp__agentmcp__messages:inbox',
   'mcp__agentmcp__messages:outbox',
   'mcp__agentmcp__messages:send',
