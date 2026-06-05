@@ -341,8 +341,17 @@ pub fn edit_json_path(root: &mut Value, path: &str, mut value: Option<Value>) ->
 /// the keyboard dispatch both derive from `ALL` + `switch_key` (g1: no dual map).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    /// Overview — the dashboard landing surface (overview-dashboard-2026-06-05,
+    /// Brief 23): top bar (usage/spend/max, stub until rate-limit-layer-v2's
+    /// read-model lands) + Plans · Needs-you · Agents · Activity tiles + the
+    /// always-on operator strip (Brief 24's draw_operator_dock). Leads the
+    /// strip and is the DEFAULT startup tab; key 'h' (home) — the ten digits
+    /// stay on the original lead tabs to avoid a fleet-wide renumber.
+    Overview,
     /// Operator chat pane (tui-operator-surface-2026-06-04) — the conversational
-    /// front door + the default startup tab; leads the strip (D-002, key '1').
+    /// front door (key '1'). No longer the startup tab (Overview is, Brief 23
+    /// D-001) but still always-on: the Overview bottom strip + the `o` right
+    /// dock render the same chat state.
     Operator,
     Inbox,
     Plans,
@@ -376,7 +385,8 @@ impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Brew tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
-    pub const ALL: [Tab; 13] = [
+    pub const ALL: [Tab; 14] = [
+        Tab::Overview,
         Tab::Operator,
         Tab::Inbox,
         Tab::Plans,
@@ -393,6 +403,7 @@ impl Tab {
     ];
     pub fn title(self) -> &'static str {
         match self {
+            Tab::Overview => "Overview",
             Tab::Operator => "Operator",
             Tab::Inbox => "Inbox",
             Tab::Plans => "Plans",
@@ -410,11 +421,13 @@ impl Tab {
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
-    /// dispatch in `on_key` derives from it, g1). Ten lead tabs take the ten
-    /// digits (1-9, 0); appended tabs take a mnemonic letter (Memory → 'm',
-    /// Cupboard → 'c').
+    /// dispatch in `on_key` derives from it, g1). The ten ORIGINAL lead tabs
+    /// keep the ten digits (1-9, 0); Overview (the landing tab, prepended)
+    /// takes 'h' (home) so the digits don't renumber fleet-wide; other
+    /// appended tabs take a mnemonic letter (Memory → 'm', Cupboard → 'c').
     pub fn switch_key(self) -> char {
         match self {
+            Tab::Overview => 'h',
             Tab::Operator => '1',
             Tab::Inbox => '2',
             Tab::Plans => '3',
@@ -495,6 +508,10 @@ pub struct App {
     pub roster: Vec<RosterEntry>,
     pub inbox: Vec<AttentionItem>,
     pub inbox_sel: usize,
+    /// Overview tab (Brief 23): which of the four tiles the cursor is on —
+    /// 0 Plans · 1 Needs-you · 2 Agents · 3 Activity. j/k cycle; Enter opens
+    /// the tile's full tab (D-007).
+    pub overview_sel: usize,
     /// Harnesses tab: the harness list + selection + the active harness's data.
     pub harnesses: Vec<HarnessRef>,
     pub harness_sel: usize,
@@ -737,16 +754,18 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
-            status: "pui · 1 operator · 4 brew · 1-0 tabs · j/k move · [/] pot · ? help · q quit".to_string(),
-            // The operator chat is the default landing surface — the single pane
-            // of glass for talking to the fleet (tui-operator-surface D-004).
-            tab: Tab::Operator,
+            status: "pui · h overview · 1 operator · j/k move · [/] pot · ? help · q quit".to_string(),
+            // The Overview dashboard is the default landing surface (Brief 23,
+            // overview-dashboard-2026-06-05 D-001); the operator chat stays
+            // always-on via the Overview's bottom strip + the `o` right dock.
+            tab: Tab::Overview,
             plans: Vec::new(),
             plan_sel: 0,
             plan_item_states: None,
             roster: Vec::new(),
             inbox: Vec::new(),
             inbox_sel: 0,
+            overview_sel: 0,
             harnesses: Vec::new(),
             harness_sel: 0,
             harness: "papercup".to_string(),
@@ -2751,6 +2770,7 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('r') if self.tab == Tab::Conversations => self.refetch_conversations(),
+            KeyCode::Enter if self.tab == Tab::Overview => self.overview_activate(),
             KeyCode::Enter if self.tab == Tab::Conversations => self.conv_open_detail(),
             KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
             KeyCode::Char('f') if self.tab == Tab::Cupboard => {
@@ -3097,10 +3117,30 @@ impl App {
         }
     }
 
+    /// Enter on the Overview tab: click the selected tile through to its full
+    /// tab (overview-dashboard-2026-06-05 D-007). Pure tile→tab mapping:
+    /// 0 Plans → Plans · 1 Needs-you → Inbox · 2 Agents / 3 Activity → Fleet
+    /// (the fleet view carries both the roster and the activity stream).
+    pub fn overview_tile_target(sel: usize) -> Tab {
+        match sel {
+            0 => Tab::Plans,
+            1 => Tab::Inbox,
+            _ => Tab::Fleet,
+        }
+    }
+
+    fn overview_activate(&mut self) -> Action {
+        let target = Self::overview_tile_target(self.overview_sel);
+        self.switch_to(target);
+        Action::Render
+    }
+
     fn move_sel(&mut self, delta: isize) {
         // Two phases: the visible LENGTH first (scope-filtered lists borrow
         // self immutably, D-003), then the cursor slot.
         let len = match self.tab {
+            // The Overview's four tiles (Plans · Needs-you · Agents · Activity).
+            Tab::Overview => 4,
             Tab::Plans => self.visible_plans().len(),
             Tab::Inbox => self.visible_inbox().len(),
             Tab::Harnesses => match self.harness_focus {
@@ -3129,6 +3169,7 @@ impl App {
             return;
         }
         let slot: &mut usize = match self.tab {
+            Tab::Overview => &mut self.overview_sel,
             Tab::Plans => &mut self.plan_sel,
             Tab::Inbox => &mut self.inbox_sel,
             Tab::Harnesses => match self.harness_focus {
@@ -3768,7 +3809,7 @@ mod tests {
         a.update(key('2', KeyModifiers::NONE));
         assert!(a.show_tutorial);
         assert_eq!(a.tutorial_step, 1);
-        assert_eq!(a.tab, Tab::Operator); // swallowed (default tab is Operator)
+        assert_eq!(a.tab, Tab::Overview); // swallowed (default tab is Overview, Brief 23)
         a.update(key(' ', KeyModifiers::NONE));
         assert_eq!(a.tutorial_step, 2);
         assert!(a.show_tutorial);
@@ -4761,25 +4802,64 @@ mod tests {
     }
 
     #[test]
-    fn operator_is_default_tab_and_leads_strip() {
+    fn overview_is_default_tab_and_leads_strip() {
         let a = App::new();
-        assert_eq!(a.tab, Tab::Operator); // D-004: the front door
-        assert_eq!(Tab::Operator.switch_key(), '1'); // leads the strip (D-002)
+        // Brief 23 (overview-dashboard-2026-06-05 D-001): the Overview
+        // dashboard is the landing surface; the operator stays always-on via
+        // the Overview bottom strip + the `o` dock.
+        assert_eq!(a.tab, Tab::Overview);
+        assert_eq!(Tab::ALL[0], Tab::Overview); // leads the strip
+        assert_eq!(Tab::Overview.switch_key(), 'h'); // home
+        assert_eq!(Tab::Overview.title(), "Overview");
+        assert_eq!(Tab::from_title("Overview"), Some(Tab::Overview));
+        // The operator keeps its digit + title (front door, key '1').
+        assert_eq!(Tab::Operator.switch_key(), '1');
         assert_eq!(Tab::Operator.title(), "Operator");
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
         // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
         // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
-        // D-011) + Conversations ('d', Brief 25) letter tabs.
-        assert_eq!(Tab::ALL.len(), 13);
+        // D-011) + Conversations ('d', Brief 25) letter tabs + the prepended
+        // Overview ('h', Brief 23).
+        assert_eq!(Tab::ALL.len(), 14);
         assert_eq!(Tab::Memory.switch_key(), 'm');
         assert_eq!(Tab::Cupboard.switch_key(), 'c');
         assert_eq!(Tab::Conversations.switch_key(), 'd');
-        // `1` returns to it from elsewhere.
+        // `h` returns to the Overview from elsewhere; `1` still reaches the chat.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));
         assert_eq!(b.tab, Tab::Plans);
+        b.update(key('h', KeyModifiers::NONE));
+        assert_eq!(b.tab, Tab::Overview);
         b.update(key('1', KeyModifiers::NONE));
         assert_eq!(b.tab, Tab::Operator);
+    }
+
+    #[test]
+    fn overview_tiles_cycle_and_enter_clicks_through() {
+        // j/k move the tile cursor (clamped to the 4 tiles); Enter opens the
+        // selected tile's full tab (D-007).
+        let mut a = App::new();
+        assert_eq!(a.tab, Tab::Overview);
+        assert_eq!(a.overview_sel, 0);
+        a.update(ev(KeyCode::Char('j')));
+        a.update(ev(KeyCode::Char('j')));
+        assert_eq!(a.overview_sel, 2);
+        a.update(ev(KeyCode::Char('j')));
+        a.update(ev(KeyCode::Char('j'))); // clamps at the last tile
+        assert_eq!(a.overview_sel, 3);
+        a.update(ev(KeyCode::Enter)); // Activity tile → Fleet
+        assert_eq!(a.tab, Tab::Fleet);
+        // Tile→tab mapping is total + stable.
+        assert_eq!(App::overview_tile_target(0), Tab::Plans);
+        assert_eq!(App::overview_tile_target(1), Tab::Inbox);
+        assert_eq!(App::overview_tile_target(2), Tab::Fleet);
+        assert_eq!(App::overview_tile_target(3), Tab::Fleet);
+        // Needs-you tile → Inbox.
+        let mut c = App::new();
+        c.update(ev(KeyCode::Char('j')));
+        assert_eq!(c.overview_sel, 1);
+        c.update(ev(KeyCode::Enter));
+        assert_eq!(c.tab, Tab::Inbox);
     }
 
     #[test]
@@ -4816,6 +4896,7 @@ mod tests {
     #[test]
     fn compose_esc_leaves_and_ctrl_c_quits() {
         let mut a = App::new();
+        a.tab = Tab::Operator; // `i` composes on the Operator tab (Overview is default now)
         a.update(key('i', KeyModifiers::NONE));
         assert!(a.chat_composing);
         a.update(ev(KeyCode::Esc));
@@ -4916,7 +4997,8 @@ mod tests {
 
     #[test]
     fn page_up_triggers_load_earlier_then_prepends() {
-        let mut a = App::new(); // on Operator
+        let mut a = App::new();
+        a.tab = Tab::Operator; // chat behavior — Overview is the default now (Brief 23)
         a.update(Event::ChatHistory {
             conversation_id: "c1".into(),
             messages: vec![ChatMessage::user("newest")],
@@ -4947,6 +5029,7 @@ mod tests {
     #[test]
     fn page_up_no_load_without_more_or_conversation() {
         let mut a = App::new();
+        a.tab = Tab::Operator; // chat behavior — Overview is the default now (Brief 23)
         // No conversation loaded yet → PageUp just scrolls.
         assert_eq!(a.update(ev(KeyCode::PageUp)), Action::Render);
         assert!(!a.chat_loading_earlier);
@@ -4979,7 +5062,8 @@ mod tests {
 
     #[test]
     fn chat_scroll_keys_adjust_offset_and_delta_snaps_bottom() {
-        let mut a = App::new(); // on Operator
+        let mut a = App::new();
+        a.tab = Tab::Operator; // chat behavior — Overview is the default now (Brief 23)
         assert_eq!(a.chat_scroll, 0);
         a.update(ev(KeyCode::Char('k'))); // up into history
         a.update(ev(KeyCode::Char('k')));

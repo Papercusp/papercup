@@ -35,13 +35,33 @@ Plan: `holepunch-voice-channels-2026-06-05` P-001/P-002/P-003 + P-006/P-014 mesh
   Acceptable for "join channel" but a known optimization target (cached peer addr / persistent
   swarm / local bootstrap).
 
-## What Phase 0 does NOT cover (the cross-NAT gate item + Phase 1+)
+## Two-node + TRUE cross-NAT runs (2026-06-05, later same session)
 
-1. **Cross-NAT WAN** (P-001 tail / P-013) — needs a second machine on a different network;
-   loopback omits real RTT + hole-punch success. **The one decisive number still missing — and
-   it requires hardware I don't have solo.**
-2. **Real Opus codec** in the loop (here: synthetic frames — correct wire shape, not real audio).
-3. **N-peer MIX compute** (decode+sum) with a real decoder — pending the audio stack (P-005).
+| Pair | Path | connect | RTT p50 | jitter | loss | verdict |
+|---|---|---|---|---|---|---|
+| host ↔ QEMU-slirp VM (`06`) | host-local shortcut (`10.10.0.2`, the `papercusp` WG iface addr) | 4.0s | 0.98ms | 0.21ms | 0% | two-OS path works; NOT a NAT test (co-located VM short-circuits) |
+| home originator → Ashburn echoer | — | TIMEOUT 60s | — | — | — | **FAIL: firewalled↔firewalled** (Hetzner *cloud* FW drops inbound UDP — host nft has NO INPUT chain; raw-UDP probe confirmed external drop). **hyperdht did NOT auto-relay.** |
+| **Ashburn originator → home echoer** | **genuine internet** (saw `38.229.109.7` ↔ `178.156.250.24` — real reflexive addrs, not the WG tunnel) | **1.9s** | **38.8ms** | **1.2ms** | **0%** | **PASS — home NAT traversed, direct UDP, real WAN** |
+
+### Cross-NAT findings (the P-013 answers)
+
+1. **Direct P2P voice across the real internet between two different networks WORKS**: 0% loss,
+   ~39ms WAN RTT (home↔Ashburn), 1.2ms jitter, one-way transport ≈19ms — well inside the ~150ms
+   mouth-to-ear budget.
+2. **Reachability is the whole game**: one punchable/reachable side → instant success; both sides
+   firewalled (cloud FW dropping UDP) → **total failure with NO automatic relay fallback**.
+   ARCHITECTURE REQUIREMENT: each peer-pair needs ≥1 UDP-reachable or punch-friendly peer, or we
+   must provide an explicit relay. A *cloud* fleet peer needs one UDP port opened in its cloud
+   firewall (host-level nft is already open on ours).
+3. The home NAT here punched fine (server dialed our announced reflexive addr directly). The
+   success-RATE across diverse NATs (CGNAT, symmetric↔symmetric) remains a field/beta question.
+
+## What Phase 0 still does NOT cover
+
+1. **Real Opus codec** in the loop (synthetic frames — correct wire shape, not real audio).
+2. **N-peer MIX compute** with a real decoder — pending the audio stack (P-005).
+3. **NAT-diversity success rate** (CGNAT/symmetric↔symmetric) — field/beta measurement.
+4. Relay implementation for the firewalled↔firewalled case (now a known requirement, see D-009).
 
 ## Run
 

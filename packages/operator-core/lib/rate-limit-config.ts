@@ -16,7 +16,7 @@
  * in-process bus suffices; PG LISTEN/NOTIFY is the documented multi-process extension.
  */
 import { getChannel } from '@papercusp/sse';
-import { setGlobalConcurrencyCap } from '@papercusp/papercup-shared/agent';
+import { setGlobalConcurrencyCap, setGlobalConcurrencyFloor } from '@papercusp/papercup-shared/agent';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 export interface RateLimitConfig {
@@ -64,8 +64,10 @@ export function getCachedRateLimitConfig(): RateLimitConfig {
 
 function applyCached(cfg: RateLimitConfig): void {
   cached = cfg;
-  // Push the fleet cap into the governor registry's global gate — honored by the next acquire.
+  // Push the fleet cap + AIMD floor into the governor registry's global gate — honored by the
+  // next acquire (D-004/D-005).
   setGlobalConcurrencyCap(cfg.maxSimultaneousAgents);
+  setGlobalConcurrencyFloor(cfg.concurrencyFloor);
 }
 
 /** Load from PG, install into the governor, and subscribe to live changes. Idempotent; call once
@@ -99,4 +101,5 @@ export function __resetRateLimitConfigForTest(): void {
   cached = { ...DEFAULT_RATE_LIMIT_CONFIG };
   booted = false;
   setGlobalConcurrencyCap(undefined);
+  setGlobalConcurrencyFloor(undefined);
 }

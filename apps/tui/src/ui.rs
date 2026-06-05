@@ -74,6 +74,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     };
 
     match app.tab {
+        Tab::Overview => draw_overview(f, app, body),
         Tab::Operator => draw_chat(f, app, body),
         Tab::Inbox => draw_inbox(f, app, body),
         Tab::Plans => draw_plans(f, app, body),
@@ -1393,6 +1394,249 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 /// marker in the title is driven by `app.operator_dock_focused` (see draw_chat).
 pub fn draw_operator_dock(f: &mut Frame, app: &App, area: Rect) {
     draw_chat(f, app, area);
+}
+
+/// Overview — the dashboard landing surface (Brief 23,
+/// overview-dashboard-2026-06-05). Top bar (usage/spend/max — stub slots until
+/// rate-limit-layer-v2 lands its read-model route, D-004) + four tiles
+/// (Plans · Needs-you · Agents · Activity; j/k cycle, Enter opens the full
+/// tab, D-007) + the always-on operator strip at the bottom (Brief 24's
+/// `draw_operator_dock`, D-008). Tiles read the SAME pot-scoped app state the
+/// full tabs render (D-002/D-005) — no Overview-private fetches.
+fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
+    // The operator strip yields on short terminals — the tiles win, and the
+    // operator stays reachable via the Operator tab / the `o` dock.
+    let strip_h: u16 = if area.height >= 24 { 9 } else { 0 };
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),       // fleet top bar
+            Constraint::Min(8),          // tiles
+            Constraint::Length(strip_h), // operator strip
+        ])
+        .split(area);
+
+    draw_overview_topbar(f, app, rows[0]);
+
+    // 2×2 grid on wide bodies; a 1×4 stack on narrow ones.
+    let tiles: [Rect; 4] = if area.width >= 96 {
+        let halves = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[1]);
+        let top = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(halves[0]);
+        let bot = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(halves[1]);
+        [top[0], top[1], bot[0], bot[1]]
+    } else {
+        let quarters = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+            ])
+            .split(rows[1]);
+        [quarters[0], quarters[1], quarters[2], quarters[3]]
+    };
+
+    draw_overview_plans_tile(f, app, tiles[0], app.overview_sel == 0);
+    draw_overview_needs_you_tile(f, app, tiles[1], app.overview_sel == 1);
+    draw_overview_agents_tile(f, app, tiles[2], app.overview_sel == 2);
+    draw_overview_activity_tile(f, app, tiles[3], app.overview_sel == 3);
+
+    if strip_h > 0 {
+        draw_operator_dock(f, app, rows[2]);
+    }
+}
+
+/// The Overview tile chrome: bordered block, title styled selected/dim so the
+/// j/k tile cursor is visible (the focus_hl idiom the column panes use).
+fn overview_tile_block(title: String, selected: bool) -> Block<'static> {
+    let style = if selected { Theme::selected() } else { Theme::header() };
+    Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(title, style)))
+}
+
+/// Top bar: the fleet rate/usage/max read-model slots (STUB values until
+/// Brief 20's rate-limit-layer-v2 exposes the route — the slots are final so
+/// wiring it is a fetch + three substitutions) + a live alerts count off the
+/// inbox alert tier.
+fn draw_overview_topbar(f: &mut Frame, app: &App, area: Rect) {
+    let alerts = app
+        .visible_inbox()
+        .iter()
+        .filter(|i| i.tier_rank() == 2)
+        .count();
+    let mut spans: Vec<Span> = vec![
+        Span::styled(" usage ", Theme::dim()),
+        Span::raw("—%"),
+        Span::styled("  ·  spend ", Theme::dim()),
+        Span::raw("$—"),
+        Span::styled("  ·  max agents ", Theme::dim()),
+        Span::raw("—"),
+        Span::styled("  (pending rate-limit-layer-v2)", Theme::dim()),
+        Span::styled("  ·  ", Theme::dim()),
+    ];
+    if alerts > 0 {
+        spans.push(Span::styled(
+            format!("{} {} alerts", crate::glyph::severity::WARN, alerts),
+            Theme::warn(),
+        ));
+    } else {
+        spans.push(Span::styled("no alerts", Theme::dim()));
+    }
+    let p = Paragraph::new(Line::from(spans))
+        .block(Block::default().borders(Borders::ALL).title(" Fleet "));
+    f.render_widget(p, area);
+}
+
+/// Plans tile: in-flight plans (pot-scoped, non-archived, non-shipped) with a
+/// done/total progress bar per plan — the same `item_counts` aggregation the
+/// fleet view uses.
+fn draw_overview_plans_tile(f: &mut Frame, app: &App, area: Rect, selected: bool) {
+    let plans: Vec<&crate::models::PlanSummary> = app
+        .visible_plans()
+        .into_iter()
+        .filter(|p| !p.archived && p.status != "shipped" && p.status != "superseded")
+        .collect();
+    let rows_avail = area.height.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = plans
+        .iter()
+        .take(rows_avail.max(1))
+        .map(|p| {
+            let c = &p.item_counts;
+            let done = c.done;
+            let total = c.todo + c.wip + c.blocked + c.needs_human + c.done;
+            let bar = progress_bar(done, total, 10);
+            let title = if p.title.is_empty() { &p.slug } else { &p.title };
+            ListItem::new(Line::from(vec![
+                Theme::status_marker(&p.status),
+                Span::raw(format!(" {:<28} ", trunc(title, 28))),
+                Span::styled(bar, Theme::notify()),
+                Span::styled(format!(" {done}/{total}"), Theme::dim()),
+            ]))
+        })
+        .collect();
+    let n = plans.len();
+    let list = List::new(items).block(overview_tile_block(
+        format!(" Plans ({n}) · Enter: open "),
+        selected,
+    ));
+    f.render_widget(list, area);
+}
+
+/// Needs-you tile: the inbox DECISIONS tier only (inbox-tiering D-006) — the
+/// items that genuinely demand the user, not the activity firehose.
+fn draw_overview_needs_you_tile(f: &mut Frame, app: &App, area: Rect, selected: bool) {
+    let decisions: Vec<&crate::models::AttentionItem> = app_decisions(app);
+    let rows_avail = area.height.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = decisions
+        .iter()
+        .take(rows_avail.max(1))
+        .map(|it| {
+            let loc = it
+                .plan_slug
+                .clone()
+                .or_else(|| it.harness_slug.clone())
+                .unwrap_or_default();
+            ListItem::new(Line::from(vec![
+                Span::styled(crate::glyph::status::NEEDS_HUMAN, Theme::warn()),
+                Span::raw(format!(" {:<34} ", trunc(&it.title, 34))),
+                Span::styled(trunc(&loc, 16), Theme::dim()),
+            ]))
+        })
+        .collect();
+    let n = decisions.len();
+    let list = List::new(items).block(overview_tile_block(
+        format!(" Needs you ({n}) "),
+        selected,
+    ));
+    f.render_widget(list, area);
+}
+
+/// Agents tile: live (non-stale) roster entries — who's on, what each is doing.
+fn draw_overview_agents_tile(f: &mut Frame, app: &App, area: Rect, selected: bool) {
+    // The same plan-filtered roster the Fleet tab renders (D-002/D-005).
+    let live: Vec<&crate::models::RosterEntry> = app
+        .visible_roster()
+        .into_iter()
+        .filter(|r| !r.stale)
+        .collect();
+    let rows_avail = area.height.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = live
+        .iter()
+        .take(rows_avail.max(1))
+        .map(|r| {
+            let what = r.intent.clone().unwrap_or_default();
+            let who = if r.label.is_empty() { &r.owner_id } else { &r.label };
+            ListItem::new(Line::from(vec![
+                Theme::liveness_marker(r.stale, &r.liveness),
+                Span::raw(format!(" {:<14} ", trunc(who, 14))),
+                Span::styled(trunc(&what, 40), Theme::dim()),
+            ]))
+        })
+        .collect();
+    let n = live.len();
+    let list = List::new(items).block(overview_tile_block(
+        format!(" Agents ({n} live) "),
+        selected,
+    ));
+    f.render_widget(list, area);
+}
+
+/// Activity tile: the most-recent fleet activity rows (the live stream the
+/// Fleet tab mirrors; `summary` arrives server-enriched with its own glyph).
+fn draw_overview_activity_tile(f: &mut Frame, app: &App, area: Rect, selected: bool) {
+    let rows_avail = area.height.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = app
+        .visible_fleet_activity()
+        .into_iter()
+        .take(rows_avail.max(1))
+        .map(|a| {
+            let agent = a.agent.clone().unwrap_or_default();
+            let what = a.summary.clone().unwrap_or_else(|| a.kind.clone());
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<6} ", trunc(&agent, 6)), Theme::dim()),
+                Span::raw(trunc(&what, 52)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).block(overview_tile_block(
+        " Activity · live ".to_string(),
+        selected,
+    ));
+    f.render_widget(list, area);
+}
+
+/// The inbox decisions tier (tier_rank 0), pot-scoped. Split out so the tile
+/// and tests share one definition.
+fn app_decisions(app: &App) -> Vec<&crate::models::AttentionItem> {
+    app.visible_inbox()
+        .into_iter()
+        .filter(|i| i.tier_rank() == 0)
+        .collect()
+}
+
+/// A `done/total` progress bar of `cells` single-width blocks. Pure.
+pub(crate) fn progress_bar(done: u32, total: u32, cells: usize) -> String {
+    let filled = if total == 0 {
+        0
+    } else {
+        ((done as f32 / total as f32) * cells as f32).round() as usize
+    };
+    let mut s = String::with_capacity(cells);
+    for i in 0..cells {
+        s.push(if i < filled.min(cells) { '█' } else { '·' });
+    }
+    s
 }
 
 /// A small fixed-width mic-level meter for the voice composer line. `level` is
@@ -2976,7 +3220,8 @@ mod tests {
 
     #[test]
     fn chat_view_renders_transcript_and_composer() {
-        let mut app = App::new(); // lands on the Operator tab
+        let mut app = App::new();
+        app.tab = Tab::Operator; // chat view — Overview is the default landing now (Brief 23)
         // Empty state prompts the user to compose.
         let empty = render(&app, 100, 16);
         assert!(empty.contains("Operator"));
@@ -3007,6 +3252,7 @@ mod tests {
     #[test]
     fn chat_streaming_bubble_shows_live_say_preview() {
         let mut app = App::new();
+        app.tab = Tab::Operator; // chat view — Overview is the default landing now (Brief 23)
         app.begin_user_send("hi");
         // The in-flight bubble holds raw tag text; it renders through live_preview.
         if let Some(m) = app.chat_messages.last_mut() {
@@ -3021,6 +3267,7 @@ mod tests {
     #[test]
     fn chat_report_renders_two_tier_plan_item_list() {
         let mut app = App::new();
+        app.tab = Tab::Operator; // chat view — Overview is the default landing now (Brief 23)
         let report = crate::chat_tags::Report {
             title: Some("Fleet status".into()),
             plans: vec![crate::chat_tags::ReportPlan {
@@ -3091,8 +3338,15 @@ mod tests {
 
     #[test]
     fn status_bar_shows_help_and_tutorial_hint() {
-        // D-012: the footer always advertises the help overlay + tutorial launch.
-        let app = App::new();
+        // D-012: the footer always advertises the help overlay. On non-Operator
+        // tabs (incl. the default Overview landing, Brief 23) the right edge
+        // advertises the operator dock instead of the tutorial
+        // (operator-always-visible-2026-06-05).
+        let mut app = App::new();
+        let text = render(&app, 100, 12);
+        assert!(text.contains("o:operator"), "dock hint missing on the Overview landing");
+        assert!(text.contains("?:help"), "help hint missing from status bar");
+        app.tab = Tab::Operator;
         let text = render(&app, 100, 12);
         assert!(text.contains("?:help"), "help hint missing from status bar");
         assert!(text.contains("F1/:tutorial"), "tutorial hint missing from status bar");
