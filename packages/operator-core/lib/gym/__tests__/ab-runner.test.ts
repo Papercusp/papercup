@@ -291,4 +291,23 @@ describe('runWithRatePause', () => {
     ).rejects.toThrow(LlmCallError);
     expect(n).toBe(4); // initial + 3 retries
   });
+
+  it('fires onPause/onReset around each pause; a hook throw never breaks the pause (await-event P-010)', async () => {
+    let n = 0;
+    let clock = 0;
+    const pauses: Array<{ waitMs: number; attempt: number }> = [];
+    const resets: Array<{ waitedMs: number; attempt: number }> = [];
+    const r = await runWithRatePause(
+      async () => { if (n++ === 0) throw rateLimited(3000); return okScore; },
+      {
+        now: () => clock,
+        sleep: async (ms) => { clock += ms; },
+        onPause: (i) => { pauses.push(i); throw new Error('hook boom'); },
+        onReset: (i) => { resets.push(i); },
+      },
+    );
+    expect(r.composite).toBe(7);
+    expect(pauses).toEqual([{ waitMs: 3000, attempt: 0 }]);
+    expect(resets).toEqual([{ waitedMs: 3000, attempt: 0 }]);
+  });
 });

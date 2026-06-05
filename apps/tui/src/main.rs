@@ -837,6 +837,56 @@ async fn execute_workbench_command(
                 }
             }
         }
+        // `:release [<plan>] <item>` — the `:pickup` inverse (P-005b release
+        // half): POST /api/tui/plan-item-release releases the converted
+        // work_item (server-side reflect rules flip the item back to todo +
+        // drop the lease) or just the bare lease when nothing live exists.
+        // Refetch the item states right after, same as pickup.
+        P::ReleasePlanItem {
+            harness,
+            plan,
+            item,
+        } => {
+            let harness = harness.unwrap_or_else(|| "all".to_string());
+            let Some(plan) = plan else {
+                let _ = tx.send(Event::Error("release: no plan selected".to_string()));
+                return;
+            };
+            match client.plan_item_release(&owner, &harness, &plan, &item).await {
+                Ok(v) => {
+                    let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+                    if ok {
+                        let msg = match v.pointer("/workItem/id").and_then(|s| s.as_str()) {
+                            // Released the live execution record — the reflect
+                            // rules put the plan item back in the pool.
+                            Some(wi) => format!("release {item}: {wi} released (back to pool)"),
+                            // Bare-lease path (`released` rides plan_items:release).
+                            None => {
+                                if v.get("released").and_then(|b| b.as_bool()).unwrap_or(true) {
+                                    format!("release {item}: lease released")
+                                } else {
+                                    format!("release {item}: no claim held")
+                                }
+                            }
+                        };
+                        let _ = tx.send(toast(msg));
+                    } else {
+                        let why = v
+                            .get("note")
+                            .or_else(|| v.get("error"))
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("refused");
+                        let _ = tx.send(Event::Error(format!("release {item}: {why}")));
+                    }
+                    if let Ok(s) = client.plan_item_states(&harness, &plan).await {
+                        let _ = tx.send(Event::PlanItemStates(s));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("release: {e}")));
+                }
+            }
+        }
         // Config-tab (D-013) + plugin-settings (D-014) commands are routed to
         // their own Actions in the reducer and never reach the workbench
         // executor — defensive no-op.

@@ -263,6 +263,20 @@ export async function applyPlanBlock(
     }, harnessSlug);
   }
 
+  // await-event-primitive-2026-06-05 P-014 (D-006 #6): the draft is ready —
+  // an awaitable event replaces the old "callers should poll/refresh" advice
+  // (`events:await { event: 'plan:draft-ready:<slug>' }`). Fire-and-forget.
+  void import('../../events/await/engine')
+    .then(({ emitAwaitedEvent }) =>
+      emitAwaitedEvent({
+        key: `plan:draft-ready:${slug}`,
+        summary: `plan draft '${slug}' is ready`,
+        payload: { slug, harnessSlug: harnessSlug ?? null },
+        source: 'plan-blocks',
+      }),
+    )
+    .catch(() => {});
+
   return { slug };
 }
 
@@ -301,7 +315,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'Harness this plan should belong to. Used by the admin HTTP route to invalidate that harness\'s plansDrafts.bySlug subscription so the ProposalsPanel sees the new draft immediately. When omitted, no sync invalidation is fired (callers should poll/refresh).',
+        "Harness this plan should belong to. Used by the admin HTTP route to invalidate that harness's plansDrafts.bySlug subscription so the ProposalsPanel sees the new draft immediately. When omitted, no sync invalidation is fired — await the `plan:draft-ready:<slug>` event (events:await) instead of polling.",
       ),
   }),
   async handler(args) {

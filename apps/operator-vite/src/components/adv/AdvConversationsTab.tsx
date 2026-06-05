@@ -163,11 +163,11 @@ export default function AdvConversationsTab() {
     <div className="pc-coord pc-advconv">
       <section className="pc-advconv__hero" aria-label="Conversations overview">
         <div className="pc-advconv__hero-copy">
-          <span className="pc-advconv__eyebrow">Coordination archive</span>
-          <h2>Conversations that turned into work</h2>
+          <span className="pc-advconv__eyebrow">Coordination</span>
+          <h2>Conversations</h2>
           <p>
-            Browse questions and discussions from the shared coordination layer, then jump from
-            the thread to a reply, accepted answer, or promoted engineer issue.
+            Browse shared questions and discussions, then follow the thread to replies,
+            accepted answers, or promoted engineer issues.
           </p>
         </div>
         <dl className="pc-advconv__metrics">
@@ -342,82 +342,84 @@ export default function AdvConversationsTab() {
       </div>
       <style>{`
         .pc-advconv {
-          --advconv-accent: #ec4899;
-          --advconv-accent-rgb: 236, 72, 153;
-          --advconv-teal: #2dd4bf;
+          --advconv-accent: var(--accent, #7dd3fc);
+          --advconv-accent-strong: var(--accent-strong, #7dd3fc);
           gap: 14px;
           height: 100%;
           min-height: 0;
-          padding: 14px;
+          padding: 14px 16px 16px;
         }
         .pc-advconv__hero {
           display: flex;
+          align-items: center;
           justify-content: space-between;
-          gap: 18px;
-          padding: 18px;
-          border: 1px solid color-mix(in oklab, var(--advconv-accent), transparent 68%);
-          border-radius: 20px;
+          gap: 14px;
+          padding: 10px 12px;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+          border-radius: 12px;
           background:
-            radial-gradient(circle at 12% 0%, rgba(var(--advconv-accent-rgb), 0.26), transparent 34%),
-            linear-gradient(135deg, rgba(7, 16, 29, 0.96), rgba(16, 24, 42, 0.82));
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+            radial-gradient(circle at top left, color-mix(in oklab, var(--advconv-accent), transparent 91%), transparent 42%),
+            var(--bg-2, rgba(255, 255, 255, 0.04));
         }
-        .pc-advconv__hero-copy { max-width: 720px; }
+        .pc-advconv__hero-copy {
+          display: grid;
+          gap: 3px;
+          min-width: 0;
+        }
         .pc-advconv__eyebrow {
-          color: color-mix(in oklab, var(--advconv-teal), white 14%);
+          color: color-mix(in oklab, var(--advconv-accent-strong), transparent 20%);
           font-size: 10px;
-          font-weight: 780;
-          letter-spacing: 0.12em;
+          font-weight: 760;
+          letter-spacing: 0.11em;
           line-height: 1;
           text-transform: uppercase;
         }
         .pc-advconv__hero h2 {
-          margin: 6px 0 5px;
+          margin: 0;
           color: var(--fg, #e7f7ff);
-          font-size: clamp(24px, 4vw, 40px);
-          line-height: 0.98;
-          letter-spacing: -0.055em;
+          font-size: 18px;
+          font-weight: 760;
+          line-height: 1;
+          letter-spacing: -0.02em;
         }
         .pc-advconv__hero p {
           margin: 0;
-          color: color-mix(in oklab, var(--fg-mute, #9eb4ca), white 8%);
-          font-size: 13px;
-          line-height: 1.55;
+          color: var(--fg-mute, #7f9bb4);
+          font-size: 12px;
+          line-height: 1.35;
         }
         .pc-advconv__metrics {
           display: grid;
-          grid-template-columns: repeat(3, minmax(74px, 1fr));
-          gap: 8px;
-          min-width: 290px;
+          grid-template-columns: repeat(3, minmax(58px, 1fr));
+          gap: 6px;
+          min-width: 220px;
           margin: 0;
         }
         .pc-advconv__metrics div {
-          display: flex;
-          flex-direction: column-reverse;
-          justify-content: space-between;
-          min-height: 84px;
-          padding: 12px;
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.045);
+          display: grid;
+          gap: 2px;
+          padding: 6px 8px;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.14));
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.03);
         }
         .pc-advconv__metrics dt {
           color: var(--fg-mute, #7f9bb4);
-          font-size: 10px;
-          font-weight: 760;
-          letter-spacing: 0.1em;
+          font-size: 9.5px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
           text-transform: uppercase;
         }
         .pc-advconv__metrics dd {
           margin: 0;
           color: var(--fg, #e7f7ff);
-          font-size: 30px;
-          font-weight: 800;
-          letter-spacing: -0.04em;
+          font-size: 18px;
+          font-weight: 760;
+          line-height: 1;
         }
         .pc-advconv .pc-coord__split {
           grid-template-columns: minmax(300px, 390px) minmax(0, 1fr);
-          gap: 14px;
+          gap: 12px;
           flex: 1;
           min-height: 0;
         }
@@ -425,9 +427,12 @@ export default function AdvConversationsTab() {
         .pc-advconv .pc-coord__detail {
           max-height: none;
           min-height: 0;
-          border: 1px solid rgba(125, 211, 252, 0.13);
-          border-radius: 18px;
-          background: rgba(4, 13, 24, 0.72);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+          border-radius: 14px;
+          background:
+            radial-gradient(circle at top left, color-mix(in oklab, var(--advconv-accent), transparent 94%), transparent 42%),
+            var(--bg-2, rgba(255, 255, 255, 0.035));
+          overflow: hidden;
         }
         .pc-advconv .pc-coord__rail {
           gap: 8px;
@@ -443,12 +448,13 @@ export default function AdvConversationsTab() {
           justify-content: space-between;
           gap: 10px;
           padding: 4px 2px 8px;
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
           color: var(--fg, #e7f7ff);
         }
         .pc-advconv__rail-head div { display: grid; gap: 4px; }
         .pc-advconv__sync {
           padding: 4px 8px;
-          border: 1px solid rgba(125, 211, 252, 0.16);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
           border-radius: 999px;
           color: var(--fg-mute, #7f9bb4);
           font-size: 11px;
@@ -464,21 +470,21 @@ export default function AdvConversationsTab() {
         .pc-advconv .pc-coord__filters { gap: 6px; margin: 0 0 4px; }
         .pc-advconv .pc-coord__chip {
           padding: 5px 10px;
-          border-color: rgba(125, 211, 252, 0.15);
-          background: rgba(255, 255, 255, 0.035);
-          color: color-mix(in oklab, var(--fg-mute, #9eb4ca), white 8%);
+          border-color: var(--border, rgba(125, 211, 252, 0.18));
+          background: rgba(255, 255, 255, 0.03);
+          color: var(--fg-mute, #7f9bb4);
           font-weight: 680;
           transition: background-color 120ms, border-color 120ms, color 120ms;
         }
         .pc-advconv .pc-coord__chip:hover:not(:disabled) {
-          border-color: rgba(var(--advconv-accent-rgb), 0.42);
-          background: rgba(var(--advconv-accent-rgb), 0.12);
+          border-color: color-mix(in oklab, var(--advconv-accent), transparent 62%);
+          background: color-mix(in oklab, var(--advconv-accent), transparent 88%);
           color: var(--fg, #e7f7ff);
         }
         .pc-advconv .pc-coord__chip.is-active {
-          border-color: rgba(var(--advconv-accent-rgb), 0.6);
-          background: rgba(var(--advconv-accent-rgb), 0.22);
-          color: #ffe9f5;
+          border-color: color-mix(in oklab, var(--advconv-accent), transparent 54%);
+          background: color-mix(in oklab, var(--advconv-accent), transparent 82%);
+          color: var(--fg, #e7f7ff);
         }
         .pc-advconv__topics {
           max-height: 86px;
@@ -489,32 +495,33 @@ export default function AdvConversationsTab() {
         .pc-advconv__state-card {
           display: block;
           padding: 16px;
-          border: 1px dashed rgba(125, 211, 252, 0.16);
-          border-radius: 14px;
+          border: 1px dashed var(--border, rgba(125, 211, 252, 0.16));
+          border-radius: 10px;
           text-align: center;
         }
         .pc-advconv__row {
           grid-template-columns: auto minmax(0, 1fr);
           gap: 4px 10px;
-          padding: 11px;
-          border-color: rgba(125, 211, 252, 0.08);
-          border-radius: 14px;
-          background: rgba(255, 255, 255, 0.028);
+          padding: 9px 10px;
+          border-color: transparent;
+          border-radius: 10px;
+          background: transparent;
           transition: background-color 120ms, border-color 120ms;
         }
         .pc-advconv__row:hover {
-          border-color: rgba(var(--advconv-accent-rgb), 0.24);
-          background: rgba(var(--advconv-accent-rgb), 0.075);
+          border-color: var(--border, rgba(125, 211, 252, 0.14));
+          background: rgba(255, 255, 255, 0.035);
         }
         .pc-advconv__row.is-active {
-          border-color: rgba(var(--advconv-accent-rgb), 0.58);
+          border-color: color-mix(in oklab, var(--advconv-accent), transparent 58%);
           background:
-            linear-gradient(90deg, rgba(var(--advconv-accent-rgb), 0.18), rgba(255, 255, 255, 0.04));
+            radial-gradient(circle at top left, color-mix(in oklab, var(--advconv-accent), transparent 86%), transparent 46%),
+            rgba(255, 255, 255, 0.04);
         }
         .pc-advconv__kind {
-          border-radius: 999px;
-          background: rgba(45, 212, 191, 0.12);
-          color: #8af5e6;
+          border-radius: 5px;
+          background: var(--bg-popover, #0d1829);
+          color: color-mix(in oklab, var(--advconv-accent-strong), white 8%);
         }
         .pc-advconv__row-title {
           min-width: 0;
@@ -529,10 +536,10 @@ export default function AdvConversationsTab() {
           align-items: center;
           min-height: 20px;
           padding: 1px 7px;
-          border: 1px solid rgba(45, 212, 191, 0.18);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
           border-radius: 999px;
-          background: rgba(45, 212, 191, 0.08);
-          color: #99f6e4;
+          background: rgba(255, 255, 255, 0.03);
+          color: var(--fg-mute, #7f9bb4);
           font-size: 11px;
           font-weight: 680;
         }
@@ -542,8 +549,8 @@ export default function AdvConversationsTab() {
           gap: 8px;
           min-height: 360px;
           padding: 24px;
-          border: 1px dashed rgba(125, 211, 252, 0.16);
-          border-radius: 16px;
+          border: 1px dashed var(--border, rgba(125, 211, 252, 0.16));
+          border-radius: 12px;
           text-align: center;
         }
         .pc-advconv__empty-detail strong { color: var(--fg, #e7f7ff); font-size: 17px; }
@@ -559,42 +566,46 @@ export default function AdvConversationsTab() {
           justify-content: space-between;
           gap: 18px;
           padding-bottom: 10px;
-          border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+          border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
         }
         .pc-advconv__detail-head h2 {
           margin: 6px 0 0;
           color: var(--fg, #e7f7ff);
-          font-size: clamp(22px, 3vw, 34px);
+          font-size: 20px;
+          font-weight: 760;
           line-height: 1.04;
-          letter-spacing: -0.045em;
+          letter-spacing: -0.025em;
         }
         .pc-advconv__status {
           flex-shrink: 0;
           padding: 5px 10px;
-          border: 1px solid rgba(125, 211, 252, 0.16);
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
           border-radius: 999px;
           color: #dbeafe;
           font-size: 11px;
           font-weight: 780;
           text-transform: uppercase;
         }
-        .pc-advconv__status--open { border-color: rgba(45, 212, 191, 0.42); color: #99f6e4; }
+        .pc-advconv__status--open {
+          border-color: color-mix(in oklab, var(--advconv-accent), transparent 56%);
+          color: color-mix(in oklab, var(--advconv-accent-strong), white 10%);
+        }
         .pc-advconv__status--resolved { border-color: rgba(34, 197, 94, 0.42); color: #bbf7d0; }
         .pc-advconv__status--closed { border-color: rgba(148, 163, 184, 0.35); color: #cbd5e1; }
         .pc-advconv__detail-meta { margin: 0; }
         .pc-advconv__accepted {
           border-left: 2px solid rgba(34, 197, 94, 0.6);
           padding: 10px 12px;
-          border-radius: 0 12px 12px 0;
+          border-radius: 0 10px 10px 0;
           background: rgba(34, 197, 94, 0.075);
         }
         .pc-advconv__linked {
           display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
           padding: 9px 11px;
-          border: 1px solid rgba(var(--advconv-accent-rgb), 0.22);
-          border-radius: 12px;
-          background: rgba(var(--advconv-accent-rgb), 0.085);
-          font-size: 12px; color: #fbcfe8; margin: 0;
+          border: 1px solid color-mix(in oklab, var(--advconv-accent), transparent 78%);
+          border-radius: 10px;
+          background: color-mix(in oklab, var(--advconv-accent), transparent 92%);
+          font-size: 12px; color: var(--fg, #e7f7ff); margin: 0;
         }
         .pc-advconv__section-title {
           margin: 6px 0 0;
@@ -610,9 +621,9 @@ export default function AdvConversationsTab() {
         }
         .pc-advconv .pc-coord__thread li {
           padding: 10px 12px;
-          border: 1px solid rgba(125, 211, 252, 0.12);
-          border-left: 3px solid rgba(45, 212, 191, 0.34);
-          border-radius: 12px;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+          border-left: 3px solid color-mix(in oklab, var(--advconv-accent), transparent 66%);
+          border-radius: 10px;
           background: rgba(255, 255, 255, 0.032);
         }
         .pc-advconv .pc-coord__actions button {
@@ -620,26 +631,26 @@ export default function AdvConversationsTab() {
           align-items: center;
           gap: 6px;
           min-height: 30px;
-          border-color: rgba(125, 211, 252, 0.18);
-          border-radius: 999px;
-          background: rgba(255, 255, 255, 0.055);
+          border-color: var(--border, rgba(125, 211, 252, 0.18));
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.04);
           color: var(--fg, #e7f7ff);
           font-size: 12px;
           font-weight: 720;
         }
         .pc-advconv .pc-coord__actions button:hover:not(:disabled) {
-          border-color: rgba(var(--advconv-accent-rgb), 0.42);
-          background: rgba(var(--advconv-accent-rgb), 0.16);
+          border-color: color-mix(in oklab, var(--advconv-accent), transparent 60%);
+          background: color-mix(in oklab, var(--advconv-accent), transparent 86%);
         }
         .pc-advconv__reply { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
         .pc-advconv__reply textarea {
           width: 100%; resize: vertical; min-height: 68px;
           background: var(--bg-popover, #0d1829); color: var(--fg, #e7f7ff);
-          border: 1px solid rgba(125, 211, 252, 0.2);
-          border-radius: 14px; padding: 10px 12px; font: inherit; font-size: 12px;
+          border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
+          border-radius: 10px; padding: 10px 12px; font: inherit; font-size: 12px;
         }
         .pc-advconv__reply textarea:focus {
-          outline: 2px solid rgba(var(--advconv-accent-rgb), 0.38);
+          outline: 2px solid color-mix(in oklab, var(--advconv-accent), transparent 64%);
           outline-offset: 2px;
         }
         @media (max-width: 980px) {
@@ -650,7 +661,7 @@ export default function AdvConversationsTab() {
         }
         @media (max-width: 640px) {
           .pc-advconv { padding: 10px; }
-          .pc-advconv__hero { padding: 14px; border-radius: 16px; }
+          .pc-advconv__hero { padding: 10px 12px; border-radius: 12px; }
           .pc-advconv__metrics { grid-template-columns: 1fr; }
         }
       `}</style>

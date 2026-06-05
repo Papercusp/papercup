@@ -155,5 +155,21 @@ export async function executePlanAgentTurn(
     );
   }
 
+  // await-event-primitive-2026-06-05 P-014 (D-006 #6): a settled plan-run turn
+  // is an awaitable event — `events:await { event: 'plan-run:finished:<runId>' }`
+  // wakes the waiter instead of the old poll-the-sweep pattern (the sweep in
+  // runs.ts stays as the orphan-lease backstop). Fire-and-forget; lazy import
+  // (the engine's plan-run wake channel imports THIS module).
+  void import('../../events/await/engine')
+    .then(({ emitAwaitedEvent }) =>
+      emitAwaitedEvent({
+        key: `plan-run:finished:${opts.runId}`,
+        summary: `plan run ${opts.runId} turn settled → ${status}`,
+        payload: { runId: opts.runId, status, costUsd },
+        source: 'plan-runs',
+      }),
+    )
+    .catch(() => {});
+
   return { status, costUsd, finalText };
 }

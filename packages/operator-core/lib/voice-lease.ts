@@ -28,11 +28,11 @@ const vl = generated.voiceLeaseInHarnessShared;
 
 const LEASE_MS = 12_000;
 
-export type VoiceLeaseKind = 'desktop' | 'mobile';
+export type VoiceLeaseKind = 'desktop' | 'mobile' | 'tui';
 
 export interface VoiceLease {
   workspaceId: string;
-  ownerId: string;        // tabId for desktop, deviceId for mobile
+  ownerId: string;        // tabId (desktop) | deviceId (mobile) | pui owner id (tui)
   ownerKind: VoiceLeaseKind;
   expiresAtMs: number;
 }
@@ -45,7 +45,7 @@ async function ensureLeaseTable(): Promise<void> {
     CREATE TABLE IF NOT EXISTS harness_shared.voice_lease (
       workspace_id   TEXT PRIMARY KEY,
       owner_id       TEXT NOT NULL,
-      owner_kind     TEXT NOT NULL CHECK (owner_kind IN ('desktop','mobile')),
+      owner_kind     TEXT NOT NULL CHECK (owner_kind IN ('desktop','mobile','tui')),
       expires_at_ms  BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS voice_lease_expires_idx

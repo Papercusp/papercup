@@ -2,10 +2,11 @@
  * Unit tests for GET /api/adv/roster (plan adv-sessions-live-roster, P-003).
  *
  * Drives the route handler directly with a hand-built RouteContext, mocking the
- * two data sources (mergeRoster + listEndedAdvSessions) so the test asserts the
- * route's OWN logic: the {active, ended} envelope, the real dedup wiring, and
- * the ?workspace= scope parsing. mergeRoster's join + dedup internals are unit-
- * tested separately (adv-roster.test.ts).
+ * two data sources (mergeRosterWithAssignments + listEndedAdvSessions) so the
+ * test asserts the route's OWN logic: the {active, ended, orphanedClaims}
+ * envelope, the real dedup wiring, and the ?workspace= scope parsing. The
+ * merge's join + dedup + claims internals are unit-tested separately
+ * (adv-roster.test.ts).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
@@ -15,10 +16,10 @@ const listEndedMock = vi.fn();
 const getAgentDetailMock = vi.fn();
 
 // Keep the REAL dedupeEndedAgainstActive (we want to exercise it through the
-// handler); override only mergeRoster.
+// handler); override only mergeRosterWithAssignments.
 vi.mock('../../adv-roster', async (importActual) => ({
   ...(await importActual<typeof import('../../adv-roster')>()),
-  mergeRoster: (...a: unknown[]) => mergeRosterMock(...a),
+  mergeRosterWithAssignments: (...a: unknown[]) => mergeRosterMock(...a),
 }));
 // Override only listEndedAdvSessions; the handler uses no other adv-sessions fn.
 vi.mock('../../adv-sessions', async (importActual) => ({
@@ -81,24 +82,31 @@ async function callAgentDetail(query = ''): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mergeRosterMock.mockResolvedValue([]);
+  mergeRosterMock.mockResolvedValue({ active: [], orphanedClaims: [] });
   listEndedMock.mockResolvedValue([]);
   getAgentDetailMock.mockResolvedValue({ ownerId: 'su-1', locks: {}, coord: {} });
 });
 
 describe('GET /adv/roster', () => {
-  it('returns the { active, ended } envelope', async () => {
-    mergeRosterMock.mockResolvedValue([{ ownerId: 'su-1', label: 'a' }]);
+  it('returns the { active, ended, orphanedClaims } envelope', async () => {
+    mergeRosterMock.mockResolvedValue({
+      active: [{ ownerId: 'su-1', label: 'a' }],
+      orphanedClaims: [{ source: 'plan_item_claim', agent: 'su-dead', id: 'P-001' }],
+    });
     listEndedMock.mockResolvedValue([{ id: 9, coordOwnerId: null }]);
     const res = await callRoster();
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.active).toEqual([{ ownerId: 'su-1', label: 'a' }]);
     expect(json.ended.map((r: { id: number }) => r.id)).toEqual([9]);
+    // The claim-keyed canonical half (state-not-chat-fleet-state D-002) rides along.
+    expect(json.orphanedClaims).toEqual([
+      { source: 'plan_item_claim', agent: 'su-dead', id: 'P-001' },
+    ]);
   });
 
   it('dedupes an ended terminal whose owner is still live in the active roster', async () => {
-    mergeRosterMock.mockResolvedValue([{ ownerId: 'su-1' }]);
+    mergeRosterMock.mockResolvedValue({ active: [{ ownerId: 'su-1' }], orphanedClaims: [] });
     listEndedMock.mockResolvedValue([
       { id: 1, coordOwnerId: 'su-1' }, // live above → dropped
       { id: 2, coordOwnerId: 'su-2' }, // genuinely ended → kept

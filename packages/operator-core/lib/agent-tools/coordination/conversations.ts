@@ -121,11 +121,31 @@ export function answerQuestion(
   return answerQuestionCore(deps, identity, input);
 }
 
-export function resolveConversation(
+export async function resolveConversation(
   identity: AgentIdentity,
   input: ResolveInput,
 ): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' }> {
-  return resolveConversationCore(deps, identity, input);
+  const result = await resolveConversationCore(deps, identity, input);
+  // await-event-primitive-2026-06-05 P-011 (D-006 #3): ask-answered is an
+  // awaitable event — a SLEEPING asker is woken when its question resolves
+  // (`events:await { event: 'conversation:answered:<id>' }`). The asker is on
+  // the notify list too (belt over the core's fanout — same durable inbox).
+  // Host-wrapper concern, kept out of the pure core; never breaks the resolve.
+  if (!('error' in result)) {
+    const conv = result.conversation;
+    void import('../../events/await/engine')
+      .then(({ emitAwaitedEvent }) =>
+        emitAwaitedEvent({
+          key: `conversation:answered:${conv.id}`,
+          summary: `conversation ${conv.id} resolved: ${(conv.accepted_answer ?? '').slice(0, 200)}`,
+          payload: { conversation_id: conv.id, resolver: identity.ownerId },
+          to: conv.asker_id && conv.asker_id !== identity.ownerId ? [conv.asker_id] : [],
+          source: identity.ownerId,
+        }),
+      )
+      .catch(() => {});
+  }
+  return result;
 }
 
 export function joinConversation(

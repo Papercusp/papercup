@@ -486,17 +486,30 @@ export async function setWorkItemState(id: string, state: string, opts: { harnes
     );
   }
   state = norm.state;
+  let result: WorkItem | null;
   if (wi.family === 'issue') {
     const updated = await setIssueState(id, state as IssueState, opts.by);
-    return updated ? issueToWorkItem(updated) : null;
+    result = updated ? issueToWorkItem(updated) : null;
+  } else {
+    const { sql } = getOrgPg();
+    const rows = await sql<FeatureRowDb[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET status = ${state}, updated_ts = ${Date.now()}
+       WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+      RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+    result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
-  const { sql } = getOrgPg();
-  const rows = await sql<FeatureRowDb[]>`
-    UPDATE harness_shared.harness_features_consolidated
-       SET status = ${state}, updated_ts = ${Date.now()}
-     WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
-    RETURNING ${sql.unsafe(FEATURE_COLS)}`;
-  return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  // await-event-primitive P-012/P-013: a SETTLED item fires
+  // `work-item:done:<id>` (+ `work-item:unblocked:<dep>` for dependents whose
+  // last blocker cleared). Fire-and-forget + lazy import (work-items-events
+  // imports this module statically) — an emit failure never breaks the write.
+  if (result && ['passed', 'deprecated', 'resolved', 'closed'].includes(result.state)) {
+    const settled = result;
+    void import('./work-items-events')
+      .then((m) => m.emitWorkItemSettledEvents(settled))
+      .catch(() => {});
+  }
+  return result;
 }
 
 /**

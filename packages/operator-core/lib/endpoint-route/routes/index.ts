@@ -208,6 +208,7 @@ import agentMcp_operatorConvVoice from './agent-mcp/operator-conv-voice';
 import agentMcp_operatorCredentials from './agent-mcp/operator-credentials';
 import agentMcp_operatorDispatch from './agent-mcp/operator-dispatch';
 import agentMcp_operatorElevenlabsBootstrap from './agent-mcp/operator-elevenlabs-bootstrap';
+import agentMcp_operatorElevenlabsWsInit from './agent-mcp/operator-elevenlabs-ws-init';
 import agentMcp_operatorElevenlabsTest from './agent-mcp/operator-elevenlabs-test';
 import agentMcp_operatorElSpend from './agent-mcp/operator-el-spend';
 import agentMcp_operatorElSubscription from './agent-mcp/operator-el-subscription';
@@ -423,6 +424,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorCredentials as AnyRoute[]),
   ...flatten(agentMcp_operatorDispatch as AnyRoute),
   ...flatten(agentMcp_operatorElevenlabsBootstrap as AnyRoute),
+  ...flatten(agentMcp_operatorElevenlabsWsInit as AnyRoute[]),
   ...flatten(agentMcp_operatorElevenlabsTest as AnyRoute),
   ...flatten(agentMcp_operatorElSpend as AnyRoute),
   ...flatten(agentMcp_operatorElSubscription as AnyRoute),

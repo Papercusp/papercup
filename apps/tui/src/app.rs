@@ -184,6 +184,17 @@ pub enum PaletteCommand {
         plan: Option<String>,
         item: String,
     },
+    /// `:release <item>` / `:release <plan> <item>` — put a picked-up plan item
+    /// back (P-005b release half): POST /api/tui/plan-item-release releases the
+    /// converted work_item (server-side reflect rules flip the item back to
+    /// todo + drop the lease) or, with no live execution record, just the bare
+    /// plan-item lease. Plan/harness resolve from the selected plan exactly
+    /// like `:pickup` (the parser stays pure).
+    ReleasePlanItem {
+        harness: Option<String>,
+        plan: Option<String>,
+        item: String,
+    },
     /// `:create <slug> <path-or-github-url>` (D-010) — register a new pot via
     /// `POST /api/harness/projects` (local dir or GitHub clone).
     CreatePot {
@@ -262,6 +273,24 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
                     item,
                 }),
                 None => Some(PaletteCommand::PickupPlanItem {
+                    harness: None,
+                    plan: None,
+                    item: first,
+                }),
+            }
+        }
+        "release" if !arg.is_empty() => {
+            // `:release P-012` (selected plan) or `:release <plan-slug> P-012` —
+            // the `:pickup` inverse, same arg shape.
+            let mut parts = arg.split_whitespace().map(|s| s.to_string());
+            let first = parts.next().unwrap_or_default();
+            match parts.next() {
+                Some(item) => Some(PaletteCommand::ReleasePlanItem {
+                    harness: None,
+                    plan: Some(first),
+                    item,
+                }),
+                None => Some(PaletteCommand::ReleasePlanItem {
                     harness: None,
                     plan: None,
                     item: first,
@@ -2498,6 +2527,43 @@ impl App {
                                 }
                             }
                         }
+                        // `:release` resolves its plan/harness from the SELECTED
+                        // plan exactly like `:pickup` (same scoping rules).
+                        Some(PaletteCommand::ReleasePlanItem {
+                            harness,
+                            plan,
+                            item,
+                        }) => {
+                            let plan =
+                                plan.or_else(|| self.selected_plan().map(|p| p.slug.clone()));
+                            match plan {
+                                Some(plan) => {
+                                    let harness = harness
+                                        .or_else(|| {
+                                            self.selected_plan()
+                                                .filter(|p| p.slug == plan)
+                                                .and_then(|p| p.harness.clone())
+                                        })
+                                        .unwrap_or_else(|| "all".to_string());
+                                    Action::Workbench(PaletteCommand::ReleasePlanItem {
+                                        harness: Some(harness),
+                                        plan: Some(plan),
+                                        item,
+                                    })
+                                }
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message:
+                                            "release: no plan selected — use :release <plan> <item>"
+                                                .to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
                         // Config-tab edits (D-013) go to the read→edit→PUT task,
                         // not the workbench command executor.
                         Some(PaletteCommand::ConfigSet { key, value }) => Action::ConfigEdit {
@@ -4523,9 +4589,28 @@ mod tests {
                 item: "P-012".into(),
             })
         );
+        // `:release` mirrors `:pickup` (the P-005b inverse): bare item resolves
+        // the plan later (selected plan); `<plan> <item>` is explicit.
+        assert_eq!(
+            parse_palette_command(":release P-012"),
+            Some(PaletteCommand::ReleasePlanItem {
+                harness: None,
+                plan: None,
+                item: "P-012".into()
+            })
+        );
+        assert_eq!(
+            parse_palette_command("release demo-plan P-012"),
+            Some(PaletteCommand::ReleasePlanItem {
+                harness: None,
+                plan: Some("demo-plan".into()),
+                item: "P-012".into(),
+            })
+        );
         // Missing arg / unknown / empty → None.
         assert_eq!(parse_palette_command("save-crew"), None);
         assert_eq!(parse_palette_command("pickup"), None);
+        assert_eq!(parse_palette_command("release"), None);
         assert_eq!(parse_palette_command("bogus"), None);
         assert_eq!(parse_palette_command(""), None);
     }

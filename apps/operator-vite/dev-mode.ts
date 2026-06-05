@@ -10,7 +10,17 @@
 // WebSocket, no reload), so every `if (import.meta.hot)` HMR block runs
 // harmlessly against no-ops. (Real HMR opts in via PAPERCUSP_ENABLE_HMR=1,
 // which serves Vite's real client instead.)
-export const NO_VITE_CLIENT_BODY = `/* Papercusp desktop dev: Vite HMR client disabled — inert no-op client. */
+//
+// ⚠ `updateStyle`/`removeStyle` are NOT HMR — they are Vite's dev-mode CSS
+// injection path. Every `import './x.css'` in dev compiles to a JS module
+// that calls `updateStyle(id, css)` from this client. Stubbing them as
+// no-ops (the original version of this file) rendered the ENTIRE app
+// unstyled for any plain-browser consumer of :3055 — invisible in the
+// desktop webview (which loads the BUILT dist, where CSS is real files)
+// but it broke every Playwright a11y/contrast check in e2e. They must be
+// real implementations (mirroring vite/src/client/client.ts); only the
+// hot-reload machinery stays inert.
+export const NO_VITE_CLIENT_BODY = `/* Papercusp desktop dev: Vite HMR client disabled — inert HMR, REAL style injection. */
 const noop = () => {};
 export function createHotContext() {
   return {
@@ -27,8 +37,28 @@ export function createHotContext() {
   };
 }
 export function injectQuery(url) { return url; }
-export function updateStyle() {}
-export function removeStyle() {}
+// Real dev CSS injection (mirrors Vite's client sheetsMap) — see header note.
+const sheetsMap = new Map();
+export function updateStyle(id, content) {
+  let style = sheetsMap.get(id);
+  if (style) {
+    style.textContent = content;
+    return;
+  }
+  style = document.createElement('style');
+  style.setAttribute('type', 'text/css');
+  style.setAttribute('data-vite-dev-id', id);
+  style.textContent = content;
+  document.head.appendChild(style);
+  sheetsMap.set(id, style);
+}
+export function removeStyle(id) {
+  const style = sheetsMap.get(id);
+  if (style) {
+    document.head.removeChild(style);
+    sheetsMap.delete(id);
+  }
+}
 `;
 import { shouldSuppressStaticDesktopReload } from '@papercusp/operator-core/lib/ui/desktop-static-host';
 

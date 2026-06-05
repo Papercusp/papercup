@@ -86,7 +86,7 @@ export default defineTool({
           searched: tier.searched,
           hint: opened.unrouted
             ? 'Question opened, but NO topics tagged → only direct subscribers will see it. Add topics (topics:list) for routing.'
-            : 'Question opened to topic subscribers; peer answers arrive in your inbox on a later turn. conversations:resolve when answered (captures the answer for the next asker).',
+            : `Question opened to topic subscribers; peer answers arrive in your inbox on a later turn. If you are BLOCKED on the answer, events:await { event: 'conversation:answered:${opened.conversation.id}' } and end your turn — the resolve wakes you. conversations:resolve when answered (captures the answer for the next asker).`,
         }),
       }],
     };

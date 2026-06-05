@@ -21,6 +21,7 @@ import type { Sql } from 'postgres';
 import { runGymPipeline, type GymRunnerPorts, type GymRunSpec } from './gym-runner';
 import { collectTraceByStrategy, type CollectStrategy } from './collect-strategies';
 import { distillTrace } from './distill';
+import { ratePauseEventHooks } from './rate-pause-events';
 import {
   insertVariant,
   insertTask,
@@ -189,5 +190,8 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
     llmCall: cfg.llmCall,
     newRunId: (v, t, r) => `${v}::${t}::r${r}`,
     now: () => Date.now(),
+    // await-event P-010: real runs surface judge rate-pauses as awaitable
+    // rate-limit:paused/reset:gym-ab events (unit fakes stay pure).
+    ratePauseHooks: ratePauseEventHooks('gym-ab'),
   };
 }

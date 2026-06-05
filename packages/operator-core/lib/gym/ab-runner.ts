@@ -22,7 +22,7 @@ import { rubricHash, type GymJudgeRubric } from './judge-scoring';
 import type { VariantOverlay } from './variant-overlay';
 import type { VariantComparisonRow } from './store';
 import { rateLimitInfo } from '@papercusp/testing-shell/llm';
-import { runWithRatePause } from './rate-pause';
+import { runWithRatePause, type RatePauseDeps } from './rate-pause';
 
 export interface AbVariant {
   variantId: string;
@@ -104,6 +104,9 @@ export interface AbDeps {
   now(): number;
   /** RB-006: injected for the rate-limit pause+resume wait (defaults to real setTimeout). */
   sleep?(ms: number): Promise<void>;
+  /** await-event P-010: pause/reset visibility hooks (ratePauseEventHooks in
+   *  the real adapter; omitted in unit fakes — purity preserved). */
+  ratePauseHooks?: Pick<RatePauseDeps, 'onPause' | 'onReset'>;
 }
 
 export interface AbRunOutcome {
@@ -198,7 +201,7 @@ export async function runAbEvaluation(config: AbConfig, deps: AbDeps): Promise<A
                 { intent: task.intent, projectContext: task.projectContext, distilledTrace, rubric: config.rubric },
                 { llmCall: deps.llmCall },
               ),
-            { now: deps.now, sleep },
+            { now: deps.now, sleep, ...(deps.ratePauseHooks ?? {}) },
           );
           await deps.store.recordScore(runId, score);
           outcomes.push({
