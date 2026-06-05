@@ -775,6 +775,32 @@ async fn execute_workbench_command(
         P::SharePot { slug, remote, public } => {
             share_pot(&client, &slug, remote, public, &tx).await;
         }
+        // `:message <text>` (inbox-tiering D-004) — "Message owner": open a
+        // work-item-scoped conversation with the selected inbox item's owning
+        // agent. The thread is browsable + repliable in the Conversations tab.
+        P::MessageOwner { to, harness, plan_slug, item_ref, title, body } => {
+            match client
+                .message_agent(
+                    to.as_deref(),
+                    harness.as_deref(),
+                    plan_slug.as_deref(),
+                    item_ref.as_deref(),
+                    &title,
+                    &body,
+                )
+                .await
+            {
+                Ok(conv_id) => {
+                    let who = to.as_deref().unwrap_or("the owning agent");
+                    let _ = tx.send(toast(format!(
+                        "messaged {who} — thread {conv_id} (open the Conversations tab to continue)"
+                    )));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("message owner: {e}")));
+                }
+            }
+        }
     }
 }
 

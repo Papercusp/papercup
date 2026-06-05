@@ -177,6 +177,18 @@ pub enum PaletteCommand {
     PluginSet { key: String, value: String },
     /// `:punset <key.path>` — remove a key from the selected plugin's config.
     PluginUnset { key: String },
+    /// `:message <text>` / `:msg <text>` — "Message owner" (inbox-tiering D-004):
+    /// open a work-item-scoped conversation with the SELECTED inbox item's owning
+    /// agent. `to`/harness/plan_slug/item_ref/title are None at parse; the palette
+    /// Enter handler resolves them from the selected inbox item (parser stays pure).
+    MessageOwner {
+        to: Option<String>,
+        harness: Option<String>,
+        plan_slug: Option<String>,
+        item_ref: Option<String>,
+        title: String,
+        body: String,
+    },
 }
 
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
@@ -260,6 +272,16 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             }
         }
         "punset" if !arg.is_empty() => Some(PaletteCommand::PluginUnset { key: arg }),
+        // `:message <text>` / `:msg <text>` — "Message owner" on the selected inbox
+        // item (D-004). Fields None at parse; resolved from the selection at Enter.
+        "message" | "msg" if !arg.is_empty() => Some(PaletteCommand::MessageOwner {
+            to: None,
+            harness: None,
+            plan_slug: None,
+            item_ref: None,
+            title: String::new(),
+            body: arg,
+        }),
         _ => None,
     }
 }
@@ -1152,7 +1174,8 @@ impl App {
     /// selected plan show (an Inbox item without a plan is filtered out — the
     /// strict rule for a plan-attributed list).
     pub fn visible_inbox(&self) -> Vec<&AttentionItem> {
-        self.inbox
+        let mut v: Vec<&AttentionItem> = self
+            .inbox
             .iter()
             .filter(|i| self.in_scope(i.harness_slug.as_deref()))
             .filter(|i| {
@@ -1161,7 +1184,12 @@ impl App {
                         .as_deref()
                         .is_some_and(|s| self.plan_filter.contains(s))
             })
-            .collect()
+            .collect();
+        // Cluster by tier (Decisions ▸ Handled ▸ Alerts ▸ Activity) so the inbox
+        // tier-sections render in order and j/k navigates sequentially (D-006).
+        // A stable sort preserves the server's within-tier importance order.
+        v.sort_by_key(|i| i.tier_rank());
+        v
     }
 
     /// The Brew roster under the plans filter (D-009) — `fleet.agent_sel`
@@ -2417,6 +2445,31 @@ impl App {
                                 }
                             }
                         }
+                        // `:message <text>` (D-004) — resolve the owning agent +
+                        // work-item scope from the SELECTED inbox item; no item
+                        // selected → an error notif, not a half-scoped dispatch.
+                        Some(PaletteCommand::MessageOwner { body, .. }) => {
+                            match self.selected_inbox() {
+                                Some(it) => Action::Workbench(PaletteCommand::MessageOwner {
+                                    to: it.owner_agent_id.clone(),
+                                    harness: it.harness_slug.clone(),
+                                    plan_slug: it.plan_slug.clone(),
+                                    item_ref: it.item_ref.clone(),
+                                    title: it.title.clone(),
+                                    body,
+                                }),
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: "message: no inbox item selected (Inbox tab)"
+                                            .to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
                         Some(c) => Action::Workbench(c),
                         None => Action::Render,
                     }
@@ -3328,6 +3381,11 @@ mod tests {
             status: "todo".into(),
             importance: None,
             needs_human: false,
+            tier: None,
+            owner_agent_id: None,
+            owner_label: None,
+            triage_state: None,
+            triage_note: None,
         };
         let mut a = App::new();
         a.update(key('2', KeyModifiers::NONE)); // Inbox tab
@@ -3807,6 +3865,11 @@ mod tests {
             status: "todo".into(),
             importance: None,
             needs_human: false,
+            tier: None,
+            owner_agent_id: None,
+            owner_label: None,
+            triage_state: None,
+            triage_note: None,
         };
         let mut a = App::new();
         a.set_inbox(vec![
@@ -4222,6 +4285,37 @@ mod tests {
         assert_eq!(parse_palette_command("pickup"), None);
         assert_eq!(parse_palette_command("bogus"), None);
         assert_eq!(parse_palette_command(""), None);
+    }
+
+    #[test]
+    fn parse_message_owner_palette_command() {
+        // `:message <text>` / `:msg <text>` (D-004) — body required; scope fields
+        // are None at parse (resolved from the selected inbox item at Enter).
+        assert_eq!(
+            parse_palette_command(":message please advise on the rename"),
+            Some(PaletteCommand::MessageOwner {
+                to: None,
+                harness: None,
+                plan_slug: None,
+                item_ref: None,
+                title: String::new(),
+                body: "please advise on the rename".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_palette_command("msg quick q"),
+            Some(PaletteCommand::MessageOwner {
+                to: None,
+                harness: None,
+                plan_slug: None,
+                item_ref: None,
+                title: String::new(),
+                body: "quick q".to_string(),
+            })
+        );
+        // Body required.
+        assert_eq!(parse_palette_command("message"), None);
+        assert_eq!(parse_palette_command(":msg"), None);
     }
 
     #[test]

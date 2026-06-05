@@ -426,12 +426,11 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     }
     let mut state = ListState::default();
     state.select(sel_display);
-    // Title carries the per-tier counts; Decisions is the headline (what
-    // actually demands the user). The plans-filter badge (D-009) stays visible.
-    let mut title = format!(
-        " Inbox  ◆{} ✓{} !{} ·{} ",
-        counts[0], counts[1], counts[2], counts[3]
-    );
+    // Title headlines the Decisions count (the only tier that demands the user);
+    // the full per-tier counts live in the section headers below. The plans-
+    // filter badge (D-009) stays visible. Kept compact so it never truncates the
+    // badge in a narrowed (rail-open) pane.
+    let mut title = format!(" Inbox ◆{} ", counts[0]);
     if !app.plan_filter.is_empty() {
         title.push_str(&format!("· F:plans({}) ", app.plan_filter.len()));
     }
@@ -2094,9 +2093,9 @@ mod tests {
             triage_state: None,
             triage_note: None,
         }]);
-        let text = render(&app, 100, 14);
+        let text = render(&app, 100, 28);
         assert!(text.contains("Inbox"));
-        assert!(text.contains("◆1")); // tier-count summary: 1 Decision
+        assert!(text.contains("◆1")); // title headlines the Decisions count
         assert!(text.contains("Decisions (1)")); // the Decisions tier section header
         assert!(text.contains("needs-human"));
         assert!(text.contains("my-plan/P-002"));
@@ -2143,9 +2142,8 @@ mod tests {
         assert!(text.contains("Handled by operator (1)"));
         assert!(text.contains("Alerts (1)"));
         assert!(text.contains("Activity (2)"));
-        // The tier-count summary in the title.
-        assert!(text.contains("◆1"));
-        assert!(text.contains("✓1"));
+        // The title headlines the Decisions count.
+        assert!(text.contains("Inbox ◆1"));
     }
 
     fn presence_entry(agent: &str, intent: &str) -> RosterEntry {
@@ -2549,7 +2547,7 @@ mod tests {
         assert!(plans.contains("slug"));
         app.tab = Tab::Inbox;
         let inbox = render(&app, 100, 14);
-        assert!(inbox.contains("plan/ref")); // inbox header
+        assert!(inbox.contains("Decisions")); // inbox tier-legend header (D-006)
         // Mirror firehose header.
         app.tab = Tab::Fleet;
         app.fleet.mode = crate::fleet::FleetMode::Mirror;
