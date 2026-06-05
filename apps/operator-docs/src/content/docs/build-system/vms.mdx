@@ -82,15 +82,19 @@ bin/vm-federation.sh --vms=2 --no-reset --skip-install    # fast iteration (reus
   real hop. `--net=socket` is a rootless dual-NIC fallback (qemu socket L2, exactly two VMs).
 - **Identities:** `papercupai` / `aviynw` via per-instance `GH_TOKEN` (resolved by
   `gh-token.ts`); `gh` + `postgresql-client` are apt-installed in each VM as driver prereqs.
-- **Gate:** both boot · `[swarm] peer_connected` both logs (no `join FAILED`) · bidirectional
-  `origin='remote'` merge within ~90 s · teardown by power-off.
 - **Up-front `.deb` gate (P-011):** a static grep of the packaged `host.mjs` asserts it carries
   `PAPERCUSP_DHT_BOOTSTRAP` support + `[swarm]` logs (landed 2026-06-02), failing fast on an
   older `.deb` that would silently use the public DHT.
 
-Two non-obvious traps (identical slirp subnets break holepunch; the clean-machine
-embedded-PG boot race) and the full mode matrix are documented in the agent-insight
-[VM federation — separate-machine proof](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
+**Status (verified 2026-06-05):** the harness reaches **cross-machine swarm-join** — both VMs
+fresh-install the `.deb`, boot embedded-PG clean on a fresh `initdb`, share write-free, and
+announce on the same topic + testnet DHT over the bridge. It does **not** reach the
+bidirectional merge: hyperdht **holepunch does not complete between two SAME-HOST bridged VMs**
+(proven at the raw hyperswarm level — `conns=0`), consistent with the plan's D-004 best-effort
+caveat. The full bidirectional-merge acceptance needs **truly separate machines**. The finding,
+the two clean-machine traps it flushed out (slirp-subnet, embedded-PG boot race), and the
+candidate same-host fix (single bridge NIC + NAT) are in the agent-insight
+[VM federation harness](/internal/docs/agent-insights/vm-federation-separate-machine-proof).
 
 ## SSH commands
 
