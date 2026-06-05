@@ -183,20 +183,34 @@ function runChild(
       resolve({ output: '', exitCode: 1, stderr: 'aborted before start' });
       return;
     }
-    const child = spawn(command, args, { cwd: projectDir, env });
+    // `detached: true` puts the child in its OWN process group so we can reap the
+    // WHOLE tree on abort/timeout, not just the immediate child. In dev the spawn is
+    // `node <tsx-cli> invoke-once.ts`, and the tsx CLI forks a worker (invoke-once,
+    // which spawns the agent) — a single-PID kill hits only the wrapper and orphans
+    // the agent (EI-40). Group-kill (`process.kill(-pid)`) takes out wrapper +
+    // invoke-once + agent together. The new group is the child's alone, so it can
+    // never signal the operator host (a different group).
+    const child = spawn(command, args, { cwd: projectDir, env, detached: true });
     let stdout = '';
     let stderr = '';
     let killGrace: ReturnType<typeof setTimeout> | null = null;
     let aborted = false;
+    // Kill the child's whole process group; fall back to a single-PID kill if the
+    // group send fails (e.g. the child already exited / no group).
+    const killTree = (sigName: NodeJS.Signals) => {
+      const pid = child.pid;
+      if (pid) { try { process.kill(-pid, sigName); return; } catch { /* fall through */ } }
+      try { child.kill(sigName); } catch { /* ignore */ }
+    };
     const timer = setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+      killTree('SIGTERM');
     }, INVOKE_TIMEOUT_MS);
-    // Caller-driven abort (EI-40: fleet:cancel of an operator spawn): SIGTERM now,
-    // SIGKILL after a grace period if the child ignores it.
+    // Caller-driven abort (EI-40: fleet:cancel of an operator spawn): SIGTERM the
+    // tree now, SIGKILL it after a grace period if it ignores the term.
     const onAbort = () => {
       aborted = true;
-      try { child.kill('SIGTERM'); } catch { /* ignore */ }
-      killGrace = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, KILL_GRACE_MS);
+      killTree('SIGTERM');
+      killGrace = setTimeout(() => { killTree('SIGKILL'); }, KILL_GRACE_MS);
     };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     const cleanup = () => {
