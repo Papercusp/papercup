@@ -129,9 +129,13 @@ export function buildAbDeps(cfg: RealAbDepsConfig): AbDeps {
       };
       const result = await runGymPipeline(spec, cfg.ports);
       // pipelineUsd = Σ of the harness's agent-run costs (P-027). Fake agents → 0.
+      // Workspace-scoped (cross-backend-cost-capture D-003 #1, migration 170): the
+      // consolidated table is keyed (harness_slug, run_id) across workspaces.
       const rows = await sql<{ c: number }[]>`
         SELECT COALESCE(SUM(cost_usd), 0)::float8 AS c
-          FROM harness_shared.agent_runs_consolidated WHERE harness_slug = ${result.harnessSlug}`;
+          FROM harness_shared.agent_runs_consolidated
+         WHERE harness_slug = ${result.harnessSlug}
+           AND workspace_id = ${input.workspaceId}`;
       return {
         harnessSlug: result.harnessSlug,
         clonePath: result.clonePath,

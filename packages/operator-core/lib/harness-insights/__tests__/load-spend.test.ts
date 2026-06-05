@@ -1,5 +1,9 @@
 /**
- * loadHarnessSpend tests.
+ * loadHarnessSpend tests (cross-backend-cost-capture P-006).
+ *
+ * Reads real per-harness spend from `agent_usage_samples` — total $cost,
+ * the estimated-from-tokens subset (cost_source='estimated'), token
+ * throughput, and run count, all workspace + harness scoped.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -26,118 +30,97 @@ describe('loadHarnessSpend', () => {
     const out = await loadHarnessSpend({
       workspace_id: 'ws-test',
       harness_slug: 'papercup',
-      viewer_github_user_id: 42,
       runQuery: makeRunQuery([]),
     });
-    expect(out.harnessTotalUsdThisWeek).toBe(0);
-    expect(out.viewerUsdThisWeek).toBe(0);
-    expect(out.proxyWitnessExplainerHref).toBeNull();
-  });
-
-  it('converts microcents to USD for both totals', async () => {
-    let firstCall = true;
-    const runQuery = vi.fn(async (query: string) => {
-      // The first matching query (no user_id_text filter) = total
-      if (firstCall && /tool_invocations/.test(query)) {
-        firstCall = false;
-        return [{ sum: 100_000_000 }]; // $100
-      }
-      if (/user_id_text/.test(query)) {
-        return [{ sum: 25_500_000 }]; // $25.50
-      }
-      return [];
-    }) as unknown as RunQuery;
-    const out = await loadHarnessSpend({
-      workspace_id: 'ws-test',
-      harness_slug: 'papercup',
-      viewer_github_user_id: 42,
-      runQuery,
+    expect(out).toEqual({
+      harnessTotalUsdThisWeek: 0,
+      estimatedUsdThisWeek: 0,
+      tokensThisWeek: 0,
+      runsThisWeek: 0,
     });
-    expect(out.harnessTotalUsdThisWeek).toBe(100);
-    expect(out.viewerUsdThisWeek).toBe(25.5);
   });
 
-  it('threads explainer href through', async () => {
+  it('reads total / estimated / tokens / runs from agent_usage_samples', async () => {
     const out = await loadHarnessSpend({
       workspace_id: 'ws-test',
       harness_slug: 'papercup',
-      viewer_github_user_id: 42,
-      proxyWitnessExplainerHref: '/internal/docs/proxy-witness-pattern',
-      runQuery: makeRunQuery([]),
-    });
-    expect(out.proxyWitnessExplainerHref).toBe(
-      '/internal/docs/proxy-witness-pattern',
-    );
-  });
-
-  it('per-source failures are swallowed', async () => {
-    const out = await loadHarnessSpend({
-      workspace_id: 'ws-test',
-      harness_slug: 'papercup',
-      viewer_github_user_id: 42,
       runQuery: makeRunQuery([
         {
-          match: /tool_invocations/,
+          match: /agent_usage_samples/,
+          rows: [{ runs: 7, total_usd: 12.5, estimated_usd: 4.5, tokens: 1_500_000 }],
+        },
+      ]),
+    });
+    expect(out.harnessTotalUsdThisWeek).toBe(12.5);
+    expect(out.estimatedUsdThisWeek).toBe(4.5);
+    expect(out.tokensThisWeek).toBe(1_500_000);
+    expect(out.runsThisWeek).toBe(7);
+  });
+
+  it('coerces string aggregates (postgres bigint/numeric come back as strings)', async () => {
+    const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
+      harness_slug: 'papercup',
+      runQuery: makeRunQuery([
+        {
+          match: /agent_usage_samples/,
+          rows: [{ runs: '3', total_usd: '0.030000', estimated_usd: '0', tokens: '4096' }],
+        },
+      ]),
+    });
+    expect(out.harnessTotalUsdThisWeek).toBeCloseTo(0.03, 9);
+    expect(out.estimatedUsdThisWeek).toBe(0);
+    expect(out.tokensThisWeek).toBe(4096);
+    expect(out.runsThisWeek).toBe(3);
+  });
+
+  it('degrades to zeros when the table/columns are missing (pre-migration substrate)', async () => {
+    const out = await loadHarnessSpend({
+      workspace_id: 'ws-test',
+      harness_slug: 'papercup',
+      runQuery: makeRunQuery([
+        {
+          match: /agent_usage_samples/,
           rows: () => {
-            throw new Error('relation does not exist');
+            throw new Error('column "cost_source" does not exist');
           },
         },
       ]),
     });
     expect(out.harnessTotalUsdThisWeek).toBe(0);
-    expect(out.viewerUsdThisWeek).toBe(0);
+    expect(out.estimatedUsdThisWeek).toBe(0);
   });
 
-  it('coerces string microcents to number', async () => {
-    let firstCall = true;
-    const runQuery = vi.fn(async (query: string) => {
-      if (firstCall && /tool_invocations/.test(query)) {
-        firstCall = false;
-        return [{ sum: '50000000' }];
-      }
-      return [];
-    }) as unknown as RunQuery;
-    const out = await loadHarnessSpend({
-      workspace_id: 'ws-test',
-      harness_slug: 'papercup',
-      viewer_github_user_id: 42,
-      runQuery,
-    });
-    expect(out.harnessTotalUsdThisWeek).toBe(50);
-  });
-
-  it('scopes every tool_invocations query by workspace_id as the first param (P-041)', async () => {
-    // Regression guard: tool_invocations is read through the RLS-bypassing
-    // admin handle, so the workspace must be an explicit predicate or spend
-    // sums fold in every other workspace sharing the harness_slug.
+  it('scopes the query by workspace_id + harness_slug as $1/$2 (P-041)', async () => {
     const calls: Array<{ query: string; params: unknown[] }> = [];
     const runQuery = vi.fn(async (query: string, params: unknown[]) => {
       calls.push({ query, params });
-      return [{ sum: 0 }];
+      return [{ runs: 0, total_usd: 0, estimated_usd: 0, tokens: 0 }];
     }) as unknown as RunQuery;
     await loadHarnessSpend({
       workspace_id: 'ws-alpha',
       harness_slug: 'papercup',
-      viewer_github_user_id: 42,
       runQuery,
     });
-    expect(calls.length).toBeGreaterThan(0);
-    for (const c of calls) {
-      expect(c.query).toMatch(/workspace_id\s*=\s*\$1/);
-      expect(c.params[0]).toBe('ws-alpha');
-    }
+    expect(calls.length).toBe(1);
+    expect(calls[0].query).toMatch(/workspace_id\s*=\s*\$1/);
+    expect(calls[0].query).toMatch(/harness_slug\s*=\s*\$2/);
+    expect(calls[0].params[0]).toBe('ws-alpha');
+    expect(calls[0].params[1]).toBe('papercup');
   });
 
-  it('handles null sum (no rows in window)', async () => {
+  it('handles null aggregates (no rows in window)', async () => {
     const out = await loadHarnessSpend({
       workspace_id: 'ws-test',
       harness_slug: 'papercup',
-      viewer_github_user_id: 42,
       runQuery: makeRunQuery([
-        { match: /tool_invocations/, rows: [{ sum: null }] },
+        {
+          match: /agent_usage_samples/,
+          rows: [{ runs: 0, total_usd: null, estimated_usd: null, tokens: null }],
+        },
       ]),
     });
     expect(out.harnessTotalUsdThisWeek).toBe(0);
-    expect(out.viewerUsdThisWeek).toBe(0);
+    expect(out.tokensThisWeek).toBe(0);
   });
 });

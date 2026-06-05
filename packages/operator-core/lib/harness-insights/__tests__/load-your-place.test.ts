@@ -41,7 +41,6 @@ describe('loadYourPlace', () => {
         is_claimant: false,
       },
       trust: { trusted_authors_count: 0, trusted_by_count: 0 },
-      spend: { spent_usd_this_week: 0 },
     });
   });
 
@@ -108,17 +107,15 @@ describe('loadYourPlace', () => {
     });
   });
 
-  it('converts spend microcents to dollars', async () => {
+  // Per-viewer spend was removed (cross-backend-cost-capture D-003 #2) — agent
+  // runs have no per-person attribution, and the old query summed a phantom
+  // tool_invocations.cost_microcents column. loadYourPlace no longer returns spend.
+  it('does not return a spend section', async () => {
     const out = await loadYourPlace({
       ...baseArgs,
-      runQuery: makeRunQuery([
-        {
-          match: /tool_invocations/,
-          rows: [{ cents: 12_345_678 }],
-        },
-      ]),
+      runQuery: makeRunQuery([]),
     });
-    expect(out.spend.spent_usd_this_week).toBeCloseTo(12.345678, 6);
+    expect((out as Record<string, unknown>).spend).toBeUndefined();
   });
 
   it('per-section failures are swallowed', async () => {

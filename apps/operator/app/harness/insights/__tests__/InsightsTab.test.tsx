@@ -50,7 +50,6 @@ function makeProps(): InsightsTabProps {
         is_claimant: true,
       },
       trust: { trusted_authors_count: 0, trusted_by_count: 0 },
-      spend: { spent_usd_this_week: 0 },
     },
     howItWorks: {
       harnessName: 'papercup',
@@ -65,7 +64,9 @@ function makeProps(): InsightsTabProps {
     },
     spend: {
       harnessTotalUsdThisWeek: 100,
-      viewerUsdThisWeek: 25,
+      estimatedUsdThisWeek: 30,
+      tokensThisWeek: 2_000_000,
+      runsThisWeek: 12,
     },
   };
 }

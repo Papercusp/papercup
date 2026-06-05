@@ -30,7 +30,9 @@ describe('loadHarnessInsights', () => {
     });
     expect(props.howItWorks.harnessName).toBe('papercup');
     expect(props.spend.harnessTotalUsdThisWeek).toBe(0);
-    expect(props.spend.viewerUsdThisWeek).toBe(0);
+    expect(props.spend.estimatedUsdThisWeek).toBe(0);
+    expect(props.spend.tokensThisWeek).toBe(0);
+    expect(props.spend.runsThisWeek).toBe(0);
   });
 
   it('respects project + howItWorks overrides', async () => {
@@ -69,17 +71,23 @@ describe('loadHarnessInsights', () => {
     expect(props.howItWorks.customWelcome).toBe('Custom intro paragraph.');
   });
 
-  it('threads proxyWitnessExplainerHref into the spend card', async () => {
+  it('surfaces real spend from agent_usage_samples in the spend card', async () => {
+    const runQuery = vi.fn(async (query: string) => {
+      if (/agent_usage_samples/.test(query)) {
+        return [{ runs: 4, total_usd: 9.0, estimated_usd: 4.5, tokens: 2_000_000 }];
+      }
+      return [];
+    }) as unknown as RunQuery;
     const props = await loadHarnessInsights({
       workspace_id: 'ws-1',
       harness_slug: 'papercup',
       viewer_github_user_id: 42,
-      runQuery: emptyRunQuery(),
-      proxyWitnessExplainerHref: '/internal/docs/proxy-witness-pattern',
+      runQuery,
     });
-    expect(props.spend.proxyWitnessExplainerHref).toBe(
-      '/internal/docs/proxy-witness-pattern',
-    );
+    expect(props.spend.harnessTotalUsdThisWeek).toBe(9.0);
+    expect(props.spend.estimatedUsdThisWeek).toBe(4.5);
+    expect(props.spend.tokensThisWeek).toBe(2_000_000);
+    expect(props.spend.runsThisWeek).toBe(4);
   });
 
   it('respects activity + people limits', async () => {
@@ -165,7 +173,7 @@ describe('loadHarnessInsights', () => {
       if (/feature_queue/.test(query)) order.push('queue');
       if (/harness_features_consolidated/.test(query)) order.push('features');
       if (/FROM harness_shared\.contributors/.test(query)) order.push('contributors');
-      if (/tool_invocations/.test(query)) order.push('tool_invocations');
+      if (/agent_usage_samples/.test(query)) order.push('usage_samples');
       // small artificial delay to interleave
       await new Promise((r) => setTimeout(r, 1));
       return [];

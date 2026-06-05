@@ -1,7 +1,9 @@
 /**
  * @vitest-environment jsdom
  *
- * YourPlaceCard — P-073d tests.
+ * YourPlaceCard tests. The per-viewer spend section was removed
+ * (cross-backend-cost-capture D-003 #2) — harness-total spend now lives on the
+ * SpendCard, and agent runs have no per-person attribution.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -20,16 +22,15 @@ const baseProps: YourPlaceCardProps = {
     is_claimant: true,
   },
   trust: { trusted_authors_count: 2, trusted_by_count: 5 },
-  spend: { spent_usd_this_week: 12.34, cap_usd: 50 },
 };
 
-describe('YourPlaceCard — P-073d', () => {
-  it('renders all 4 sections', () => {
+describe('YourPlaceCard', () => {
+  it('renders the queue, role, and trust sections (no spend section)', () => {
     render(<YourPlaceCard {...baseProps} />);
     expect(screen.getByTestId('your-place-queue')).toBeTruthy();
     expect(screen.getByTestId('your-place-role')).toBeTruthy();
     expect(screen.getByTestId('your-place-trust')).toBeTruthy();
-    expect(screen.getByTestId('your-place-spend')).toBeTruthy();
+    expect(screen.queryByTestId('your-place-spend')).toBeNull();
   });
 
   it('shows queue stats', () => {
@@ -59,71 +60,8 @@ describe('YourPlaceCard — P-073d', () => {
     expect(t.textContent).toContain('Trust you');
   });
 
-  it('formats spend < $1 with two decimal places', () => {
-    render(
-      <YourPlaceCard
-        {...baseProps}
-        spend={{ spent_usd_this_week: 0.32 }}
-      />,
-    );
-    expect(screen.getByTestId('your-place-spend').textContent).toContain(
-      '$0.32',
-    );
-  });
-
-  it('formats spend < $100 with one decimal place', () => {
-    render(
-      <YourPlaceCard
-        {...baseProps}
-        spend={{ spent_usd_this_week: 12.34 }}
-      />,
-    );
-    expect(screen.getByTestId('your-place-spend').textContent).toContain(
-      '$12.3',
-    );
-  });
-
-  it('formats spend ≥ $100 as whole dollars', () => {
-    render(
-      <YourPlaceCard
-        {...baseProps}
-        spend={{ spent_usd_this_week: 234.5 }}
-      />,
-    );
-    expect(screen.getByTestId('your-place-spend').textContent).toContain(
-      '$235',
-    );
-  });
-
-  it('includes cap when provided', () => {
-    render(
-      <YourPlaceCard
-        {...baseProps}
-        spend={{ spent_usd_this_week: 12.34, cap_usd: 100 }}
-      />,
-    );
-    const s = screen.getByTestId('your-place-spend');
-    expect(s.textContent).toContain('$12.3');
-    expect(s.textContent).toContain('$100');
-  });
-
-  it('omits cap when not provided', () => {
-    render(
-      <YourPlaceCard
-        {...baseProps}
-        spend={{ spent_usd_this_week: 12.34 }}
-      />,
-    );
-    const s = screen.getByTestId('your-place-spend');
-    // no cap separator should appear; but make sure $12.3 is there
-    expect(s.textContent).toContain('$12.3');
-    expect(s.textContent).not.toContain('/ $');
-  });
-
-  it('explains tier-D privacy', () => {
+  it('does not render any spend/cost text', () => {
     render(<YourPlaceCard {...baseProps} />);
-    expect(screen.getByTestId('your-place-spend').textContent).toContain(
-      'never shown to other people',
-    );
+    expect(screen.getByTestId('insights-your-place-card').textContent).not.toContain('$');
   });
 });

@@ -1,7 +1,9 @@
 /**
  * @vitest-environment jsdom
  *
- * SpendCard — P-073f tests.
+ * SpendCard tests (cross-backend-cost-capture P-006) — real per-harness spend
+ * from agent_usage_samples: total $, token throughput, run count, and an
+ * estimated-vs-provider split note.
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -12,83 +14,46 @@ afterEach(() => {
   cleanup();
 });
 
-describe('SpendCard — P-073f', () => {
-  it('renders title and tier-D pill', () => {
+describe('SpendCard', () => {
+  it('renders title and the this-week pill', () => {
     render(
       <SpendCard
         harnessTotalUsdThisWeek={100}
-        viewerUsdThisWeek={25}
+        estimatedUsdThisWeek={0}
+        tokensThisWeek={1_500_000}
+        runsThisWeek={5}
       />,
     );
     const card = screen.getByTestId('insights-spend-card');
     expect(card.textContent).toContain('Spend');
     expect(screen.getByTestId('spend-card-tier-pill').textContent).toContain(
-      'Tier D',
+      'this week',
     );
   });
 
-  it('shows harness total and viewer share', () => {
+  it('shows harness total, tokens, and run count', () => {
     render(
       <SpendCard
         harnessTotalUsdThisWeek={100}
-        viewerUsdThisWeek={25}
+        estimatedUsdThisWeek={0}
+        tokensThisWeek={1_500_000}
+        runsThisWeek={7}
       />,
     );
     expect(
       screen.getByTestId('spend-card-harness-total').textContent,
     ).toContain('$100');
-    const viewer = screen.getByTestId('spend-card-viewer-share');
-    expect(viewer.textContent).toContain('$25');
-    expect(viewer.textContent).toContain('(25%)');
-  });
-
-  it('share bar fill width reflects percent', () => {
-    render(
-      <SpendCard
-        harnessTotalUsdThisWeek={200}
-        viewerUsdThisWeek={50}
-      />,
-    );
-    const fill = screen.getByTestId(
-      'spend-card-share-bar-fill',
-    ) as HTMLElement;
-    expect(fill.style.width).toBe('25%');
-  });
-
-  it('share is 0 when harness total is 0', () => {
-    render(
-      <SpendCard
-        harnessTotalUsdThisWeek={0}
-        viewerUsdThisWeek={0}
-      />,
-    );
-    const viewer = screen.getByTestId('spend-card-viewer-share');
-    expect(viewer.textContent).toContain('(0%)');
-    const fill = screen.getByTestId(
-      'spend-card-share-bar-fill',
-    ) as HTMLElement;
-    expect(fill.style.width).toBe('0%');
-  });
-
-  it('clamps share to 100% if viewer > harness total', () => {
-    // shouldn't happen but be defensive
-    render(
-      <SpendCard
-        harnessTotalUsdThisWeek={10}
-        viewerUsdThisWeek={20}
-      />,
-    );
-    const fill = screen.getByTestId(
-      'spend-card-share-bar-fill',
-    ) as HTMLElement;
-    expect(fill.style.width).toBe('100%');
+    expect(screen.getByTestId('spend-card-tokens').textContent).toContain('1.5M');
+    expect(screen.getByTestId('spend-card-runs').textContent).toContain('7');
   });
 
   it('formats sub-$1 spend with two decimals', () => {
     render(
       <SpendCard
         harnessTotalUsdThisWeek={0.5}
-        viewerUsdThisWeek={0.25}
+        estimatedUsdThisWeek={0}
+        tokensThisWeek={4096}
+        runsThisWeek={1}
       />,
     );
     expect(
@@ -100,7 +65,9 @@ describe('SpendCard — P-073f', () => {
     render(
       <SpendCard
         harnessTotalUsdThisWeek={234.5}
-        viewerUsdThisWeek={117}
+        estimatedUsdThisWeek={0}
+        tokensThisWeek={10_000_000}
+        runsThisWeek={30}
       />,
     );
     expect(
@@ -108,44 +75,45 @@ describe('SpendCard — P-073f', () => {
     ).toContain('$235');
   });
 
-  it('banner mentions proxy-witness deferral', () => {
+  it('formats token throughput with K/M suffixes', () => {
     render(
       <SpendCard
-        harnessTotalUsdThisWeek={100}
-        viewerUsdThisWeek={25}
+        harnessTotalUsdThisWeek={0}
+        estimatedUsdThisWeek={0}
+        tokensThisWeek={2048}
+        runsThisWeek={0}
       />,
     );
-    expect(screen.getByTestId('spend-card-banner').textContent).toContain(
-      'Proxy-witness',
-    );
-    expect(screen.getByTestId('spend-card-banner').textContent).toContain(
-      'computed locally',
-    );
+    expect(screen.getByTestId('spend-card-tokens').textContent).toContain('2.0K');
   });
 
-  it('banner has plan link when href provided', () => {
+  it('shows the estimated-cost note when any spend was token-priced', () => {
     render(
       <SpendCard
-        harnessTotalUsdThisWeek={100}
-        viewerUsdThisWeek={25}
-        proxyWitnessExplainerHref="/internal/docs/proxy-witness-pattern"
+        harnessTotalUsdThisWeek={9}
+        estimatedUsdThisWeek={4.5}
+        tokensThisWeek={2_000_000}
+        runsThisWeek={4}
       />,
     );
-    const link = screen.getByTestId(
-      'spend-card-banner-link',
-    ) as HTMLAnchorElement;
-    expect(link.getAttribute('href')).toBe(
-      '/internal/docs/proxy-witness-pattern',
-    );
+    const note = screen.getByTestId('spend-card-estimate-note');
+    expect(note.textContent).toContain('$4.5');
+    expect(note.textContent).toContain('estimated');
+    expect(screen.queryByTestId('spend-card-note')).toBeNull();
   });
 
-  it('banner skips link when href not provided', () => {
+  it('shows the provider-reported note when nothing was estimated', () => {
     render(
       <SpendCard
-        harnessTotalUsdThisWeek={100}
-        viewerUsdThisWeek={25}
+        harnessTotalUsdThisWeek={9}
+        estimatedUsdThisWeek={0}
+        tokensThisWeek={2_000_000}
+        runsThisWeek={4}
       />,
     );
-    expect(screen.queryByTestId('spend-card-banner-link')).toBeNull();
+    expect(screen.getByTestId('spend-card-note').textContent).toContain(
+      'Provider-reported',
+    );
+    expect(screen.queryByTestId('spend-card-estimate-note')).toBeNull();
   });
 });

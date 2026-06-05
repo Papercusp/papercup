@@ -21,7 +21,6 @@ import type {
   YourPlaceQueueStats,
   YourPlaceRoleState,
   YourPlaceTrustState,
-  YourPlaceSpendState,
   YourPlaceCardProps,
 } from '@papercusp/operator-core/lib/harness-insights/card-types';
 
@@ -95,30 +94,15 @@ const BADGE_ACTIVE: CSSProperties = {
   color: 'var(--accent, #4CAF50)',
 };
 
-const SPEND_NOTE: CSSProperties = {
-  fontSize: 11,
-  color: 'var(--fg-dim, #888)',
-  marginTop: 2,
-};
-
 export type {
   YourPlaceQueueStats,
   YourPlaceRoleState,
   YourPlaceTrustState,
-  YourPlaceSpendState,
   YourPlaceCardProps,
 };
 
-function formatUsd(n: number): string {
-  return n < 1
-    ? `$${n.toFixed(2)}`
-    : n < 100
-      ? `$${n.toFixed(1)}`
-      : `$${Math.round(n)}`;
-}
-
 export function YourPlaceCard(props: YourPlaceCardProps): ReactNode {
-  const { queue, role, trust, spend } = props;
+  const { queue, role, trust } = props;
 
   const roleBadges: Array<{
     key: string;
@@ -192,27 +176,9 @@ export function YourPlaceCard(props: YourPlaceCardProps): ReactNode {
           </div>
         </div>
       </div>
-
-      <div style={SECTION} data-testid="your-place-spend">
-        <div style={SECTION_TITLE}>Spend ⏱</div>
-        <div style={STATS_ROW}>
-          <div>
-            <div style={STAT_VAL}>
-              {formatUsd(spend.spent_usd_this_week)}
-              {spend.cap_usd ? (
-                <span style={{ ...STAT_LABEL, marginLeft: 4 }}>
-                  / {formatUsd(spend.cap_usd)}
-                </span>
-              ) : null}
-            </div>
-            <div style={STAT_LABEL}>This week</div>
-          </div>
-        </div>
-        <div style={SPEND_NOTE}>
-          Tier D — viewer-only; this row is never shown to other people on
-          the harness.
-        </div>
-      </div>
+      {/* Per-viewer spend removed (cross-backend-cost-capture D-003 #2):
+          agent runs are orchestrator-spawned with no per-person attribution.
+          Harness-total spend lives on the SpendCard. */}
     </div>
   );
 }

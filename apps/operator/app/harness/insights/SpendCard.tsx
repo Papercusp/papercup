@@ -1,19 +1,22 @@
 'use client';
 
 /**
- * SpendCard — Phase 8 P-073f.
+ * SpendCard — real per-harness agent spend.
  *
- * Plan: papercusp-dogfood-phase8-sidebar-insights-profile-2026-05-24.
- * v5 §9.0 Insights tab — spend tile, tier-D (viewer-only).
+ * Plan: cross-backend-cost-capture-2026-06-01 (P-006). Reads
+ * `agent_usage_samples` (load-spend.ts) — actual token + $cost telemetry
+ * captured per agent run across all three backends (claude/codex/omp).
  *
  * Renders:
- *   - Total spend for the harness this week (LOCAL tool_invocations).
- *   - Viewer's share-of-harness rough number (their fraction of total).
- *   - Banner with proxy-witness deferral text from v5 addendum-2:
- *     "Spend is computed locally on your machine; proxy-witness
- *      aggregation is deferred until <link>."
+ *   - Harness total spend this week ($, provider-billed + token-estimated).
+ *   - Token throughput + run count this week.
+ *   - An "includes $X estimated" note when any spend was priced from tokens
+ *     (codex reports no $cost), so list-price estimates are never confused
+ *     with billed spend (D-005 honesty rule).
  *
- * The whole card is tier-D — never visible to other contributors.
+ * The original phantom-column / per-viewer-share / proxy-witness version is
+ * gone (the column never existed → always $0; runs have no per-person
+ * attribution — D-003 #2).
  */
 
 import type { CSSProperties, ReactNode } from 'react';
@@ -72,19 +75,6 @@ const STAT_LABEL: CSSProperties = {
   marginTop: 2,
 };
 
-const SHARE_BAR_WRAP: CSSProperties = {
-  height: 6,
-  borderRadius: 3,
-  background: 'var(--surface-2, #2a2a2a)',
-  overflow: 'hidden',
-  marginTop: 4,
-};
-
-const SHARE_BAR_FILL: CSSProperties = {
-  height: '100%',
-  background: 'var(--accent, #4CAF50)',
-};
-
 const BANNER: CSSProperties = {
   fontSize: 12,
   padding: '8px 12px',
@@ -92,11 +82,6 @@ const BANNER: CSSProperties = {
   background: 'var(--surface-2, #2a2a2a)',
   color: 'var(--fg-dim, #aaa)',
   lineHeight: 1.5,
-};
-
-const BANNER_LINK: CSSProperties = {
-  color: 'var(--accent, #4CAF50)',
-  textDecoration: 'none',
 };
 
 export type { SpendCardProps };
@@ -109,61 +94,55 @@ function formatUsd(n: number): string {
       : `$${Math.round(n)}`;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return `${n}`;
+}
+
 export function SpendCard(props: SpendCardProps): ReactNode {
   const {
     harnessTotalUsdThisWeek,
-    viewerUsdThisWeek,
-    proxyWitnessExplainerHref,
+    estimatedUsdThisWeek,
+    tokensThisWeek,
+    runsThisWeek,
   } = props;
-
-  const sharePct =
-    harnessTotalUsdThisWeek > 0
-      ? Math.min(100, (viewerUsdThisWeek / harnessTotalUsdThisWeek) * 100)
-      : 0;
 
   return (
     <div style={CARD} data-testid="insights-spend-card">
       <div style={TITLE_ROW}>
         <div style={TITLE}>Spend</div>
         <span style={TIER_PILL} data-testid="spend-card-tier-pill">
-          ⏱ Tier D
+          this week
         </span>
       </div>
 
       <div style={STATS}>
         <div data-testid="spend-card-harness-total">
-          <div style={STAT_VAL}>
-            {formatUsd(harnessTotalUsdThisWeek)}
-          </div>
-          <div style={STAT_LABEL}>Harness, this week</div>
+          <div style={STAT_VAL}>{formatUsd(harnessTotalUsdThisWeek)}</div>
+          <div style={STAT_LABEL}>Harness spend</div>
         </div>
-        <div style={{ flex: 1 }} data-testid="spend-card-viewer-share">
-          <div style={STAT_VAL}>{formatUsd(viewerUsdThisWeek)}</div>
-          <div style={STAT_LABEL}>You, this week ({sharePct.toFixed(0)}%)</div>
-          <div style={SHARE_BAR_WRAP}>
-            <div
-              style={{ ...SHARE_BAR_FILL, width: `${sharePct}%` }}
-              data-testid="spend-card-share-bar-fill"
-            />
-          </div>
+        <div data-testid="spend-card-tokens">
+          <div style={STAT_VAL}>{formatTokens(tokensThisWeek)}</div>
+          <div style={STAT_LABEL}>Tokens</div>
+        </div>
+        <div data-testid="spend-card-runs">
+          <div style={STAT_VAL}>{runsThisWeek}</div>
+          <div style={STAT_LABEL}>Agent runs</div>
         </div>
       </div>
 
-      <div style={BANNER} data-testid="spend-card-banner">
-        Spend is computed locally on your machine. Proxy-witness
-        aggregation across contributors is deferred until later —{' '}
-        {proxyWitnessExplainerHref ? (
-          <a
-            href={proxyWitnessExplainerHref}
-            style={BANNER_LINK}
-            data-testid="spend-card-banner-link"
-          >
-            see plan.
-          </a>
-        ) : (
-          'see plan.'
-        )}
-      </div>
+      {estimatedUsdThisWeek > 0 ? (
+        <div style={BANNER} data-testid="spend-card-estimate-note">
+          Includes {formatUsd(estimatedUsdThisWeek)} estimated from token
+          counts at provider list price (codex / OMP report no billed cost);
+          the rest is provider-reported.
+        </div>
+      ) : (
+        <div style={BANNER} data-testid="spend-card-note">
+          Provider-reported cost across all agent backends this week.
+        </div>
+      )}
     </div>
   );
 }
