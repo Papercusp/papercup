@@ -29,6 +29,47 @@
 
 export type OperatorMode = 'active' | 'passive';
 
+/**
+ * One item inside a `<report>` plan block. `status` is an optional free
+ * string (rendered through a glyph map with a neutral fallback) — known
+ * tokens are todo|wip|blocked|done|dropped|passed|failing|needs-human,
+ * but an unknown status degrades gracefully rather than dropping the row.
+ */
+export interface ReportItem {
+  /** Item id (e.g. `P-003`, `F-12`), optional. */
+  id?: string;
+  /** The item's one-line text. Required — an item with no text is dropped. */
+  text: string;
+  /** Free-string status; mapped to a glyph by the renderer. */
+  status?: string;
+}
+
+/** One plan (the outer tier) inside a `<report>`. */
+export interface ReportPlan {
+  /** Plan slug, optional (links the block to a plan). */
+  slug?: string;
+  /** Plan title / label. Falls back to `slug` when omitted; a block with neither is dropped. */
+  title: string;
+  /** Free-string status (draft|ready|active|shipped|blocked|…); glyph-mapped. */
+  status?: string;
+  /** Optional one-line summary shown under the title. */
+  summary?: string;
+  /** The plan's items (the inner tier). Omitted/empty when the block is just a header. */
+  items?: ReportItem[];
+}
+
+/**
+ * Parsed `<report>` payload — structured per-plan/per-item status the
+ * operator emits alongside `<say>`. Rendered as a card on desktop and a
+ * two-tiered plan→item list in the TUI. See structured-report-protocol-2026-06-05.
+ */
+export interface ParsedReport {
+  /** Optional overall heading for the report. */
+  title?: string;
+  /** The plan blocks (≥1 — a report with no valid plan is dropped to null). */
+  plans: ReportPlan[];
+}
+
 export interface SpawnRequest {
   role: string;
   /** Registry slug of the harness to spawn into (the `harness` attribute).
@@ -58,6 +99,12 @@ export interface ParsedOperatorTurn {
    * with a `<say>` narrating what's about to happen (prompt rule).
    */
   continue: boolean;
+  /**
+   * Structured `<report>` payload the operator emitted this turn, or null
+   * when none. Paired with `<say>` (the say is the clean line, the report
+   * is the structured detail). See structured-report-protocol-2026-06-05.
+   */
+  report: ParsedReport | null;
   /** Raw input, kept for debug/telemetry. Do NOT render this directly. */
   raw: string;
 }
@@ -77,6 +124,77 @@ const CONTINUE_RE = /<continue\s*\/?>/i;
 // role required; feature/chunk/extras optional. Multiple <spawn> tags per
 // turn are allowed (parallel fan-out: "review these three plans").
 const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
+// <report>{json}</report> — a single JSON object of per-plan/per-item status
+// blocks (D-001). Non-greedy body; we JSON-parse + validate it via
+// parseReportBody. Paired with <say> per the prompt (D-004). The whole span
+// is also stripped from the no-<say> fallback so a stray report never leaks
+// raw JSON into the chat bubble.
+const REPORT_RE = /<report>([\s\S]*?)<\/report>/i;
+const REPORT_STRIP_RE = /<report>[\s\S]*?<\/report>/gi;
+
+/** Trim + drop empties: a non-blank string, or undefined. */
+function reportStr(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t.length > 0 ? t : undefined;
+}
+
+/**
+ * Validate a raw `<report>` JSON body into a `ParsedReport`, or null when
+ * it's malformed / empty. Defensive like `parseAttrs` — never throws; a
+ * bad payload is dropped (the caller warns) rather than crashing the turn.
+ *
+ * Shape: `{ title?, plans: [{ slug?, title, status?, summary?, items?: [{ id?, text, status? }] }] }`.
+ * A plan block needs at least a `title` (or `slug` as fallback); an item
+ * needs at least `text` (or `id` as fallback). Blocks/items missing both
+ * are skipped. Returns null when no valid plan survives.
+ */
+export function parseReportBody(jsonBody: string): ParsedReport | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(jsonBody);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const rawPlans = (data as { plans?: unknown }).plans;
+  if (!Array.isArray(rawPlans)) return null;
+
+  const plans: ReportPlan[] = [];
+  for (const p of rawPlans) {
+    if (!p || typeof p !== 'object') continue;
+    const rec = p as Record<string, unknown>;
+    const slug = reportStr(rec.slug);
+    const title = reportStr(rec.title) ?? slug;
+    if (!title) continue; // a plan block needs a label
+
+    const items: ReportItem[] = [];
+    if (Array.isArray(rec.items)) {
+      for (const it of rec.items) {
+        if (!it || typeof it !== 'object') continue;
+        const irec = it as Record<string, unknown>;
+        const id = reportStr(irec.id);
+        const text = reportStr(irec.text) ?? id;
+        if (!text) continue; // an item needs text
+        items.push({ id, text, status: reportStr(irec.status) });
+      }
+    }
+
+    plans.push({
+      slug,
+      title,
+      status: reportStr(rec.status),
+      summary: reportStr(rec.summary),
+      items: items.length > 0 ? items : undefined,
+    });
+  }
+
+  if (plans.length === 0) return null;
+  const out: ParsedReport = { plans };
+  const topTitle = reportStr((data as Record<string, unknown>).title);
+  if (topTitle) out.title = topTitle;
+  return out;
+}
 
 /**
  * Clamp a `<say>` body to TTS-safe bounds: ≤220 chars, no markdown
@@ -140,6 +258,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     sleep: null,
     spawns: [],
     continue: false,
+    report: null,
     raw,
   };
   if (CONTINUE_RE.test(raw)) {
@@ -158,6 +277,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     // the going-silent contract (silence IS the response), and any prose
     // around the sleep tag is model debug noise we should drop.
     const stripped = raw
+      .replace(REPORT_STRIP_RE, '')
       .replace(/<set_mode>[^<]*<\/set_mode>/gi, '')
       .replace(CONTINUE_RE, '')
       .trim();
@@ -219,6 +339,22 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
       chunkId: attrs['chunk'] ? attrs['chunk'] : null,
       extras,
     });
+  }
+
+  // <report> — structured per-plan/per-item status, rendered as a card
+  // (desktop) / two-tier list (TUI). Validate the JSON body; drop+warn on
+  // malformed (like <sleep>) so a bad payload never crashes the turn.
+  const reportMatch = REPORT_RE.exec(raw);
+  if (reportMatch) {
+    const report = parseReportBody(reportMatch[1].trim());
+    if (report) {
+      result.report = report;
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn('[operator-converse] dropped malformed <report>: invalid/empty JSON body', {
+        raw,
+      });
+    }
   }
 
   // Sleep + say is contradictory per the prompt contract. Drop sleep

@@ -288,6 +288,39 @@ export async function releaseAllClaimsForOwner(workspaceId: string, owner: strin
   return rows.length;
 }
 
+/**
+ * Renew (push the lease out on) every NON-EXPIRED ACTIVITY-mode claim an owner holds
+ * in a workspace — the D-003 per-turn auto-renewal driven by the activity bridge: an
+ * owner that is completing turns (reporting activity) is alive + working, so its
+ * SHARED-harness activity claims stay; an owner that goes idle (no turns) lets them
+ * lapse so others can pull. AVAILABILITY-mode claims are untouched (they renew on any
+ * heartbeat and only lapse when the session dies). An ALREADY-EXPIRED claim is NOT
+ * resurrected (`expires_ts > now()` guard — a lapsed claim must be re-acquired). We
+ * renew all of the owner's activity claims rather than one item: an agent producing
+ * turns is active in (at most) the one harness it's working, so this is the owner's
+ * live working set; the per-item attribution the activity stream lacks is not needed.
+ * Returns the renewed item ids.
+ *
+ * Local (not authority-routed): on a single box the authority is self, so the renewal
+ * runs on the same store the claim lives in. Cross-machine the renewal would route to
+ * the authority alongside acquire/heartbeat — that whole live-mesh path is hardware-
+ * gated (distributed-coordination-shared-harness-2026-06-04), so the local renewal is
+ * correct for the testable single-box reality.
+ */
+export async function renewOwnerActivityClaims(workspaceId: string, owner: string): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ item_id: string }[]>`
+    UPDATE harness_shared.plan_item_claims
+       SET expires_ts = clock_timestamp() + make_interval(secs => ttl_sec),
+           last_activity_ts = clock_timestamp()
+     WHERE workspace_id = ${workspaceId} AND owner = ${owner}
+       AND liveness_mode = 'activity'
+       AND expires_ts > clock_timestamp()
+    RETURNING item_id
+  `;
+  return rows.map((r) => r.item_id);
+}
+
 /** The current claim on an item (with derived `expired`), or null. */
 export async function getClaim(
   workspaceId: string,

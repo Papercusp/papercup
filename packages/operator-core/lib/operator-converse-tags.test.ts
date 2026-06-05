@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   parseOperatorTurn,
+  parseReportBody,
   sleepTagToEpochMs,
 } from './operator-converse-tags';
 
@@ -278,5 +279,87 @@ describe('spawn tags', () => {
   it('accepts single-quoted attributes', () => {
     const r = parseOperatorTurn("<spawn role='scoper' harness='demo'>");
     expect(r.spawns[0]).toMatchObject({ role: 'scoper', harness: 'demo' });
+  });
+
+  // ── <report> structured-status tag (structured-report-protocol) ──
+
+  it('parses a <report> alongside a <say>; say stays the clean line', () => {
+    const r = parseOperatorTurn(
+      '<say>Here is where the fleet stands.</say>\n' +
+        '<report>{"title":"Fleet","plans":[' +
+        '{"slug":"rate-limit-layer-v2","title":"Rate-limit v2","status":"active",' +
+        '"items":[{"id":"P-001","text":"Error classifier","status":"done"},' +
+        '{"id":"P-003","text":"Per-call pacing","status":"wip"}]}]}</report>',
+    );
+    expect(r.say).toBe('Here is where the fleet stands.');
+    expect(r.report).not.toBeNull();
+    expect(r.report?.title).toBe('Fleet');
+    expect(r.report?.plans).toHaveLength(1);
+    expect(r.report?.plans[0]).toMatchObject({
+      slug: 'rate-limit-layer-v2',
+      title: 'Rate-limit v2',
+      status: 'active',
+    });
+    expect(r.report?.plans[0].items).toEqual([
+      { id: 'P-001', text: 'Error classifier', status: 'done' },
+      { id: 'P-003', text: 'Per-call pacing', status: 'wip' },
+    ]);
+  });
+
+  it('drops a malformed <report> (invalid JSON) with a warn; say survives', () => {
+    const r = parseOperatorTurn('<say>ok</say><report>{not json}</report>');
+    expect(r.say).toBe('ok');
+    expect(r.report).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('dropped malformed <report>'),
+      expect.any(Object),
+    );
+  });
+
+  it('strips a stray <report> (no <say>) from the prose fallback', () => {
+    // Model forgot the <say> wrapper — the report must NOT leak as bubble text.
+    const r = parseOperatorTurn(
+      '<report>{"plans":[{"title":"P","items":[{"text":"x"}]}]}</report>',
+    );
+    expect(r.say).toBeNull();
+    expect(r.report?.plans[0].title).toBe('P');
+  });
+
+  it('report is null when no tag is present', () => {
+    expect(parseOperatorTurn('<say>hi</say>').report).toBeNull();
+  });
+});
+
+describe('parseReportBody', () => {
+  it('validates a minimal plan block', () => {
+    const r = parseReportBody('{"plans":[{"title":"Alpha"}]}');
+    expect(r).toEqual({ plans: [{ title: 'Alpha' }] });
+  });
+
+  it('falls back title→slug and item text→id', () => {
+    const r = parseReportBody(
+      '{"plans":[{"slug":"alpha","items":[{"id":"P-001"}]}]}',
+    );
+    expect(r?.plans[0].title).toBe('alpha');
+    expect(r?.plans[0].slug).toBe('alpha');
+    expect(r?.plans[0].items).toEqual([{ id: 'P-001', text: 'P-001', status: undefined }]);
+  });
+
+  it('skips plan blocks with no title/slug and items with no text/id', () => {
+    const r = parseReportBody(
+      '{"plans":[{"status":"active"},{"title":"Keep","items":[{"status":"done"},{"text":"real"}]}]}',
+    );
+    expect(r?.plans).toHaveLength(1);
+    expect(r?.plans[0].title).toBe('Keep');
+    expect(r?.plans[0].items).toEqual([{ id: undefined, text: 'real', status: undefined }]);
+  });
+
+  it('returns null on invalid JSON, non-object, missing/empty plans', () => {
+    expect(parseReportBody('not json')).toBeNull();
+    expect(parseReportBody('[]')).toBeNull();
+    expect(parseReportBody('42')).toBeNull();
+    expect(parseReportBody('{"plans":"nope"}')).toBeNull();
+    expect(parseReportBody('{"plans":[]}')).toBeNull();
+    expect(parseReportBody('{"plans":[{"status":"active"}]}')).toBeNull();
   });
 });

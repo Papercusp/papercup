@@ -12,7 +12,6 @@
  * Linux-only server-side spawn, mirroring console-launch.ts. Same-origin
  * (the /adv UI is served by the operator) — no CORS preamble needed.
  */
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { isSuAgent } from '../../../su-agents';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
+import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const SLUG_RE = /^[A-Za-z0-9._-]+$/;
@@ -34,37 +34,8 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
-// Minimal terminal finder — mirrors console-launch.ts's LINUX_TERMINALS.
-const LINUX_TERMINALS: Array<[string, string[]]> = [
-  ['gnome-terminal', ['--wait', '--window', '--']],
-  ['konsole', ['--new-window', '-e']],
-  ['xfce4-terminal', ['--window', '-e']],
-  ['alacritty', ['-e']],
-  ['kitty', ['--']],
-  ['wezterm', ['start', '--always-new-process', '--']],
-  ['xterm', ['-e']],
-];
-
-function isOnPath(bin: string): boolean {
-  const paths = (process.env.PATH ?? '').split(':');
-  paths.push('/usr/bin', '/usr/local/bin', join(homedir(), '.local', 'bin'));
-  return paths.some((p) => p && existsSync(join(p, bin)));
-}
-
-function findTerminal(): { bin: string; args: string[] } | null {
-  const fromEnv = process.env.TERMINAL;
-  if (fromEnv && isOnPath(fromEnv)) {
-    return fromEnv === 'gnome-terminal' ? { bin: fromEnv, args: ['--wait', '--'] } : { bin: fromEnv, args: ['-e'] };
-  }
-  for (const [bin, args] of LINUX_TERMINALS) {
-    if (isOnPath(bin)) return { bin, args: [...args] };
-  }
-  return null;
-}
-
-function shellEscape(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
+// Terminal discovery + spawn live in the shared `terminal-spawn` helper
+// (findTerminal/isOnPath/shellEscape/spawnInTerminal) — imported above.
 
 const launchSu = defineTool({
   method: 'POST',
@@ -124,14 +95,6 @@ const launchSu = defineTool({
       );
     }
 
-    const term = findTerminal();
-    if (!term) {
-      return json(
-        { status: 'error', error: 'no terminal emulator found. Set $TERMINAL or install gnome-terminal / alacritty / kitty / xterm' },
-        500,
-      );
-    }
-
     // Kickoff brief (P-032): generate the curated prompt file server-side
     // (same factory the retired console-launch omp path used) and hand its
     // path to psu, which feeds it to the *-su wrapper as the launch-context
@@ -156,17 +119,11 @@ const launchSu = defineTool({
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
     const oneliner = `exec ${psuArgs.map(shellEscape).join(' ')}`;
 
-    try {
-      const child = spawn(term.bin, [...term.args, 'bash', '-lc', oneliner], {
-        detached: true,
-        stdio: 'ignore',
-        env: process.env,
-      });
-      child.unref();
-      return json({ status: 'ok', agent, harnessSlug: harness, planSlug: plan, terminal: term.bin, pid: child.pid });
-    } catch (e: any) {
-      return json({ status: 'error', error: `spawn ${term.bin} failed: ${e?.message}` }, 500);
+    const spawned = spawnInTerminal({ oneliner, env: process.env });
+    if (!spawned.ok) {
+      return json({ status: 'error', error: spawned.error }, 500);
     }
+    return json({ status: 'ok', agent, harnessSlug: harness, planSlug: plan, terminal: spawned.terminal, pid: spawned.pid });
   },
 });
 

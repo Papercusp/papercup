@@ -183,4 +183,16 @@ export async function startDbos(): Promise<void> {
       console.warn('[curation] failed to arm urgent wake:', e instanceof Error ? e.message : e);
     }
   }
+
+  // Arm the D-003 per-turn auto-renewal of plan-item ACTIVITY claims
+  // (plan-item-assignment-claim-liveness-2026-06-04): the activity bridge already
+  // fires per completed turn → renew the reporting owner's shared-harness activity
+  // claims, so they stay while the agent works and lapse when it goes idle. Host-only
+  // (rides the agent_activity LISTEN); post-launch; best-effort — must not fail boot.
+  try {
+    const { startPlanItemActivityRenewal } = await import('../plan-items/activity-claim-renewal');
+    startPlanItemActivityRenewal();
+  } catch (e) {
+    console.warn('[plan-item-claim] failed to arm activity renewal:', e instanceof Error ? e.message : e);
+  }
 }
