@@ -87,6 +87,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Settings => draw_settings(f, app, body),
         Tab::Memory => draw_memory(f, app, body),
         Tab::Cupboard => draw_cupboard(f, app, body),
+        Tab::Conversations => draw_conversations(f, app, body),
     }
     if let Some(area) = rail {
         draw_plan_filter(f, app, area);
@@ -431,6 +432,143 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     let para = Paragraph::new(preview)
         .wrap(Wrap { trim: false })
         .block(Block::default().borders(Borders::ALL).title(" Preview "));
+    f.render_widget(para, cols[1]);
+}
+
+/// Conversations tab (Brief 25) — the coord conversations browse surface. List
+/// (left) of questions/discussions under the active state/kind/topic filter +
+/// detail (right): the seed, topics, the thread, the accepted answer, the
+/// linked work-item, and the promote hint. Mirrors `draw_inbox`'s split.
+fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+        .split(area);
+
+    let convs = app.visible_conversations();
+    let items: Vec<ListItem> = convs
+        .iter()
+        .map(|c| {
+            let k = match c.kind.as_str() {
+                "question" => "Q",
+                "discussion" => "D",
+                _ => "·",
+            };
+            let title = c.title.clone().unwrap_or_else(|| c.id.clone());
+            let tags = if c.topics.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", c.topics.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "))
+            };
+            let promoted = if c.promoted_issue_id.is_some() { " →issue" } else { "" };
+            ListItem::new(Line::from(format!(
+                "{} {:<9} {}{}{}",
+                k,
+                trunc(&c.state, 9),
+                trunc(&title, 34),
+                trunc(&tags, 24),
+                promoted,
+            )))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !convs.is_empty() {
+        state.select(Some(app.conversation_sel.min(convs.len() - 1)));
+    }
+    let topic_badge = app
+        .conv_topic
+        .as_ref()
+        .map(|t| format!(" T:#{t}"))
+        .unwrap_or_default();
+    let title = if app.conversations_loading {
+        " Conversations (loading…) ".to_string()
+    } else {
+        format!(
+            " Conversations ({}) · s:{} t:{}{} ",
+            convs.len(),
+            app.conv_state(),
+            app.conv_kind(),
+            topic_badge,
+        )
+    };
+    let body_area = block_with_header(
+        f,
+        cols[0],
+        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        "   k state      title / topics",
+    );
+    let list = List::new(items)
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body_area, &mut state);
+
+    // Detail: the loaded ConvDetail if it matches the selected row, else a
+    // summary placeholder prompting Enter to load the thread.
+    let selected = app.selected_conversation();
+    let detail_matches = matches!(
+        (&app.conversation_detail, selected),
+        (Some(d), Some(sel)) if d.conversation.as_ref().map(|c| c.id.as_str()) == Some(sel.id.as_str())
+    );
+    let preview = if let (true, Some(d)) = (detail_matches, app.conversation_detail.as_ref()) {
+        let c = d.conversation.as_ref();
+        let title = c.and_then(|c| c.title.clone()).unwrap_or_else(|| {
+            selected.map(|s| s.id.clone()).unwrap_or_default()
+        });
+        let kind = c.map(|c| c.kind.as_str()).unwrap_or("");
+        let st = c.map(|c| c.state.as_str()).unwrap_or("");
+        let asker = c.map(|c| c.asker_id.as_str()).unwrap_or("");
+        let scope = c.map(|c| c.scope.as_str()).unwrap_or("");
+        let harness = c.and_then(|c| c.harness_slug.clone()).unwrap_or_default();
+        let topics = if d.topics.is_empty() {
+            "—".to_string()
+        } else {
+            d.topics.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")
+        };
+        let mut s = format!(
+            "{title}\n\n{kind} · {st} · {} follower(s){}\nasked by: {asker}\ntopics:   {topics}\n",
+            d.subscriber_count,
+            if scope == "harness" && !harness.is_empty() { format!(" · {harness}") } else { String::new() },
+        );
+        if let Some(body) = c.map(|c| c.body.as_str()).filter(|b| !b.is_empty()) {
+            s.push_str(&format!("\n{body}\n"));
+        }
+        if let Some(ans) = c.and_then(|c| c.accepted_answer.clone()) {
+            s.push_str(&format!("\n✓ accepted: {ans}\n"));
+        }
+        if let Some(issue) = c.and_then(|c| c.promoted_issue_id.clone()) {
+            s.push_str(&format!("\n→ linked work-item: {issue} (promoted; discussion continues there)\n"));
+        } else if c.map(|c| c.state.as_str()) != Some("closed") {
+            s.push_str("\n[i] promote to an issue\n");
+        }
+        s.push_str(&format!("\n— thread ({}) —\n", d.posts.len()));
+        if d.posts.is_empty() {
+            s.push_str("(no replies yet)\n");
+        } else {
+            for p in &d.posts {
+                let who = p.author_id.clone().unwrap_or_else(|| "unknown".to_string());
+                s.push_str(&format!("\n{who}:\n{}\n", p.body));
+            }
+        }
+        s
+    } else if let Some(sel) = selected {
+        let title = sel.title.clone().unwrap_or_else(|| sel.id.clone());
+        let topics = if sel.topics.is_empty() {
+            "—".to_string()
+        } else {
+            sel.topics.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")
+        };
+        format!(
+            "{title}\n\n{} · {} · asked by {}\ntopics: {topics}\n\n[Enter] load the thread + accepted answer",
+            sel.kind, sel.state, sel.asker_id,
+        )
+    } else if app.conversations_loading {
+        "Loading conversations…".to_string()
+    } else {
+        "No conversations under this filter.\n\ns: state · t: kind · T: topic · r: refresh".to_string()
+    };
+    let para = Paragraph::new(preview)
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(" Detail "));
     f.render_widget(para, cols[1]);
 }
 

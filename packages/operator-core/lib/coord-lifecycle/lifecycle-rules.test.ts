@@ -16,6 +16,10 @@ import './lifecycle-rules';
 // Side-effect: registers work_items:complete (collects its `emits`).
 import '../agent-tools/work_items/complete';
 import { installEmitRules } from './register-emit-rules';
+// For asserting the SCOPED audience selectors (coord-emit-subscription-scoping)
+// without hardcoding the per-family ref format.
+import { workItemObjectRef } from '../work-items';
+import { objectSelector } from '../agent-tools/coordination/audience';
 
 type Action = { ruleId: string; fire: string; args: Record<string, unknown> };
 
@@ -33,7 +37,10 @@ describe('lifecycle:claim (on work_items:claim)', () => {
     const ev = {
       tool: 'work_items:claim',
       args: { id: 'F-1' },
-      result: { ok: true, data: { ok: true, workItem: { id: 'F-1', title: 'Build X', assignee: 'su-z' } } },
+      result: {
+        ok: true,
+        data: { ok: true, workItem: { id: 'F-1', title: 'Build X', assignee: 'su-z', family: 'feature', harness: 'demo' } },
+      },
       ctx: { uiClientId: 'su-z' },
     };
     const a = fireFor(ev, 'lifecycle:claim');
@@ -41,6 +48,9 @@ describe('lifecycle:claim (on work_items:claim)', () => {
     expect(a?.args.category).toBe('claim');
     expect(String(a?.args.summary)).toContain('Taking Build X');
     expect(String(a?.args.summary)).toContain('su-z');
+    // Scoped to the work-item's watchers (coord-emit-subscription-scoping) — NOT ['*'].
+    expect(a?.args.to).toEqual([objectSelector(workItemObjectRef({ family: 'feature', harness: 'demo', id: 'F-1' }))]);
+    expect(a?.args.to).not.toContain('*');
   });
 
   it('does not match when no work-item came back', () => {
@@ -62,6 +72,20 @@ describe('lifecycle:intent (on coord:declare-intent)', () => {
     expect(String(a?.args.summary)).toContain('now working on: building the desugar');
     expect(String(a?.args.body)).toContain('a.ts');
     expect(a?.args.plan_slug).toBe('coord-lifecycle-automation-2026-06-04');
+    // Scoped to peers on the same plan + editing the same files — NOT ['*'].
+    expect(a?.args.to).toEqual(['@plan:coord-lifecycle-automation-2026-06-04', '@file:a.ts']);
+  });
+
+  it('scopes a plan-less, file-less intent to nobody (no * fallback)', () => {
+    const ev = {
+      tool: 'coord:declare-intent',
+      args: { intent: 'thinking' },
+      result: { ok: true, data: { ok: true } },
+      ctx: { uiClientId: 'su-z' },
+    };
+    const a = fireFor(ev, 'lifecycle:intent');
+    expect(a?.args.category).toBe('intent');
+    expect(a?.args.to).toEqual([]);
   });
 });
 
@@ -70,7 +94,7 @@ describe('lifecycle:finding (on work_items:create[kind=bug])', () => {
     const ev = {
       tool: 'work_items:create',
       args: { kind: 'bug', title: 'broken thing', severity: 'major', summary: 'repro here' },
-      result: { ok: true, data: { ok: true, workItem: { id: 'WI-9', title: 'broken thing' } } },
+      result: { ok: true, data: { ok: true, workItem: { id: 'WI-9', title: 'broken thing', family: 'issue' } } },
       ctx: {},
     };
     const a = fireFor(ev, 'lifecycle:finding');
@@ -78,6 +102,8 @@ describe('lifecycle:finding (on work_items:create[kind=bug])', () => {
     expect(String(a?.args.summary)).toContain('[major]');
     expect(String(a?.args.summary)).toContain('broken thing');
     expect(String(a?.args.summary)).toContain('WI-9');
+    // Scoped to the bug's object subscribers — NOT ['*'].
+    expect(a?.args.to).toEqual([objectSelector(workItemObjectRef({ family: 'issue', harness: null, id: 'WI-9' }))]);
   });
 
   it('does NOT fire for a non-bug create (feature)', () => {
@@ -100,7 +126,7 @@ describe('emits: completion (on work_items:complete — the P0 emits field end-t
         ok: true,
         data: {
           ok: true,
-          workItem: { id: 'F-1' },
+          workItem: { id: 'F-1', family: 'feature', harness: 'demo' },
           completion: {
             workItem: 'F-1',
             summary: 'all phases done',
@@ -122,6 +148,12 @@ describe('emits: completion (on work_items:complete — the P0 emits field end-t
     // D-006: the deferred-set survives into the emitted body.
     expect(String(a?.args.body)).toContain('live smoke pending');
     expect(a?.args.plan_slug).toBe('some-plan');
+    // Scoped to the plan's watchers + the completed item's object subscribers — NOT ['*'].
+    expect(a?.args.to).toEqual([
+      '@plan:some-plan',
+      objectSelector(workItemObjectRef({ family: 'feature', harness: 'demo', id: 'F-1' })),
+    ]);
+    expect(a?.args.to).not.toContain('*');
   });
 
   it('does NOT fire the completion emit when no completion record came back', () => {

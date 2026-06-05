@@ -19,6 +19,8 @@ import {
   type InboxOptions,
 } from '@papercusp/coordination/core';
 import { coordLog } from './log';
+import { hasAudienceSelector, expandAudience } from './audience';
+import { hostAudienceResolvers, audienceMode } from './audience-host';
 import type { AgentIdentity } from './identity';
 
 export type { InboxOptions };
@@ -55,11 +57,21 @@ export async function sendMessage(
   identity: AgentIdentity,
   opts: SendOptions,
 ): Promise<CoordEnvelope> {
+  // Audience-selector expansion (coord-emit-subscription-scoping-2026-06-05): a
+  // `to[]` carrying `@plan:`/`@topic:`/`@object:`/`@file:` selectors resolves to
+  // the concrete ownerIds watching that plan/topic/work-item. Zero-overhead when
+  // no selector is present (the overwhelmingly common case). The EXPANDED set is
+  // stored on the envelope so the inbox filter + federation projection are
+  // unchanged (D-001/D-003); an empty resolution → empty `to` → no inbox
+  // delivery, but the row still persists (D-004).
+  const to = hasAudienceSelector(opts.to)
+    ? await expandAudience(opts.to, hostAudienceResolvers, audienceMode())
+    : opts.to;
   const env: CoordEnvelope = {
     ts: new Date().toISOString(),
     msg_id: newMsgId(),
     from: identity.ownerId,
-    to: opts.to,
+    to,
     kind: opts.kind ?? 'message',
   };
   if (opts.summary !== undefined) env.summary = opts.summary;

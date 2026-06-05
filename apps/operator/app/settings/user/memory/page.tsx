@@ -64,6 +64,9 @@ export default function MemoryPage() {
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
   const [backendName, setBackendName] = useState<string | null>(null);
+  const [availableBackends, setAvailableBackends] = useState<string[]>([]);
+  const [currentBackend, setCurrentBackend] = useState<string>('');
+  const [switchingBackend, setSwitchingBackend] = useState(false);
   const [filter, setFilter] = useState<string>('all');
   const [flaggedOnly, setFlaggedOnly] = useState<boolean>(false);
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
@@ -80,6 +83,8 @@ export default function MemoryPage() {
       setRows(j.results ?? []);
       setReason(j.reason ?? null);
       setBackendName(j.backend ?? null);
+      setAvailableBackends(Array.isArray(j.availableBackends) ? j.availableBackends : []);
+      setCurrentBackend(j.currentBackend ?? j.backend ?? '');
       if (fs.ok) setStats(await fs.json());
     } finally {
       setLoading(false);
@@ -87,6 +92,32 @@ export default function MemoryPage() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const switchBackend = useCallback(async (choice: string) => {
+    if (!choice || choice === currentBackend) return;
+    setSwitchingBackend(true);
+    try {
+      const r = await fetch('/api/user/memory/backend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend: choice }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast.error(`Switch failed: ${j.error ?? r.status}`);
+        return;
+      }
+      setCurrentBackend(choice);
+      if (j.availability && j.availability.ok === false) {
+        toast.warning(`Switched to ${choice}, but it's unavailable: ${j.availability.reason}`);
+      } else {
+        toast.success(`Memory backend → ${choice}`);
+      }
+      await refresh();
+    } finally {
+      setSwitchingBackend(false);
+    }
+  }, [currentBackend, refresh]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState('');
@@ -336,6 +367,28 @@ export default function MemoryPage() {
           </details>
         )}
       </header>
+
+      {availableBackends.length > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-2)' }}>
+          <label htmlFor="memory-backend-select" style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
+            Active store:
+          </label>
+          <select
+            id="memory-backend-select"
+            value={currentBackend}
+            disabled={switchingBackend}
+            onChange={(e) => void switchBackend(e.target.value)}
+            style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-1)', color: 'var(--fg)', fontSize: 13, cursor: switchingBackend ? 'wait' : 'pointer' }}
+          >
+            {availableBackends.map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
+            <code>claude-file</code> = your real Claude Code memory; <code>mem0</code> = the semantic store. Applies live, no restart.
+          </span>
+        </div>
+      )}
 
       {reason && (
         <div style={{ padding: 12, border: '1px solid #f59e0b', borderRadius: 6, background: '#fffbeb' }}>

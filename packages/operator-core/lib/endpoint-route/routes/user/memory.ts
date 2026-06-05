@@ -14,7 +14,15 @@
  * session-cookie auth via getSessionUser(req.headers).
  */
 import { getSessionUser } from '../../../auth';
-import { getMemoryBackend, type MemoryEntry } from '../../../memory/backend';
+import {
+  getMemoryBackend,
+  registeredMemoryBackends,
+  type MemoryEntry,
+} from '../../../memory/backend';
+import {
+  currentMemoryBackendChoice,
+  writeMemoryBackendChoice,
+} from '../../../memory/backend-selection';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loadHarnessRegistry } from '../../../harness-registry';
 import { recordFeedback } from '../../../memory/feedback';
@@ -135,7 +143,13 @@ const list = defineTool({
     const backend = getMemoryBackend();
     const avail = await backend.available();
     if (!avail.ok) {
-      return Response.json({ results: [], reason: avail.reason, backend: backend.name });
+      return Response.json({
+        results: [],
+        reason: avail.reason,
+        backend: backend.name,
+        currentBackend: currentMemoryBackendChoice(),
+        availableBackends: registeredMemoryBackends(),
+      });
     }
     const ws = activeWorkspaceId();
 
@@ -182,7 +196,51 @@ const list = defineTool({
       };
     });
 
-    return Response.json({ results: enriched, backend: backend.name });
+    return Response.json({
+      results: enriched,
+      backend: backend.name,
+      currentBackend: currentMemoryBackendChoice(),
+      availableBackends: registeredMemoryBackends(),
+    });
+  },
+});
+
+/**
+ * POST /api/user/memory/backend — switch the active MemoryBackend
+ * (mem0-revive-or-retire / Brief 30). Operator-wide, persisted, live: the
+ * next memory call serves the new store with no restart. The owner uses
+ * this to flip to `claude-file` (the real ~/.claude store) to see real
+ * data + inform the revive-vs-retire decision. Validated against the
+ * registry so an unknown name can't make getMemoryBackend() throw.
+ */
+const setBackend = defineTool({
+  method: 'POST',
+  path: '/user/memory/backend',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUser(req.headers);
+    if (!user) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+    const body = (await req.json().catch(() => null)) as { backend?: string } | null;
+    const choice = body?.backend?.trim();
+    if (!choice) return Response.json({ error: 'backend_required' }, { status: 400 });
+    const available = registeredMemoryBackends();
+    if (!available.includes(choice)) {
+      return Response.json(
+        { error: 'unknown_backend', backend: choice, availableBackends: available },
+        { status: 400 },
+      );
+    }
+    await writeMemoryBackendChoice(choice);
+    // Probe the newly-selected store so the UI can warn if it's unavailable
+    // (e.g. selecting claude-file on a box with no ~/.claude store).
+    let availability: { ok: boolean; reason?: string } = { ok: true };
+    try {
+      const a = await getMemoryBackend().available();
+      availability = a.ok ? { ok: true } : { ok: false, reason: a.reason };
+    } catch (e) {
+      availability = { ok: false, reason: String((e as Error)?.message ?? e) };
+    }
+    return Response.json({ ok: true, backend: choice, availability });
   },
 });
 
@@ -264,4 +322,4 @@ const patch = defineTool({
   },
 });
 
-export default [list, del, patch];
+export default [list, del, patch, setBackend];

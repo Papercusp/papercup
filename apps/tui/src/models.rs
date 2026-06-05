@@ -1172,7 +1172,7 @@ pub struct TurnsPage {
 // with topics/posts/subscriber_count as top-level siblings).
 
 /// One row of `conversations:list` → `{ conversations: [...] }`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ConvSummary {
     pub id: String,
     #[serde(default)]
@@ -1202,7 +1202,7 @@ pub struct ConvListResponse {
 }
 
 /// The conversation object nested under `conversation` in conversations:get.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ConvCore {
     pub id: String,
     #[serde(default)]
@@ -1227,7 +1227,7 @@ pub struct ConvCore {
     pub created_ts: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ConvPost {
     #[serde(default)]
     pub id: i64,

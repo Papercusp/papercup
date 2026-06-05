@@ -125,6 +125,7 @@ export type AttentionKind =
 
 export type AttentionActionId =
   | 'chat'
+  | 'message-owner'
   | 'resolve'
   | 'mark-done'
   | 'answer'
@@ -132,6 +133,22 @@ export type AttentionActionId =
   | 'view-log'
   | 'open'
   | 'ack';
+
+/** The four inbox tiers (inbox-tiering-and-message-agent D-002/D-006), ordered
+ *  Decisions ▸ Handled-by-operator ▸ Alerts ▸ Activity. Mirrors the server
+ *  `AttentionTier`; only `decision` demands the user. */
+export type AttentionTier = 'decision' | 'handled' | 'alert' | 'activity';
+
+export const ATTENTION_TIERS: readonly AttentionTier[] = ['decision', 'handled', 'alert', 'activity'];
+
+export const TIER_LABEL: Record<AttentionTier, string> = {
+  decision: 'Decisions',
+  handled: 'Handled by operator',
+  alert: 'Alerts',
+  activity: 'Activity',
+};
+
+export type TriageState = 'untriaged' | 'confirmed' | 'escalated' | 'downgraded' | 'resolved';
 
 export interface AttentionAction {
   id: AttentionActionId;
@@ -150,7 +167,17 @@ export interface AttentionItem {
   body: string;
   status: string;
   importance: Importance;
+  /** Which inbox tier this belongs to (D-002/D-006). */
+  tier: AttentionTier;
   needsHuman: boolean;
+  /** The owning agent (the coord record's `from`), drives "Message owner". */
+  ownerAgentId: string | null;
+  ownerLabel: string | null;
+  /** Operator-triage overlay (D-006). */
+  triageState: TriageState;
+  triageNote: string | null;
+  triagedBy: string | null;
+  triagedAt: string | null;
   actions: AttentionAction[];
   ref: { kind: AttentionKind } & Record<string, unknown>;
 }
@@ -164,6 +191,9 @@ export interface AttentionGroup {
   items: AttentionItem[];
   maxImportance: Importance;
 }
+
+/** Per-tier counts the reader returns alongside `groups` (for badges). */
+export type TierCounts = Record<AttentionTier, number>;
 
 export interface PlanDecision {
   id: string;
@@ -298,7 +328,7 @@ export function searchPlans(params: { query: string }) {
 }
 
 export function fetchPlanAttention(params?: { harnessSlug?: string; includeArchived?: boolean }) {
-  return getJson<{ groups: AttentionGroup[] }>('attention', params);
+  return getJson<{ groups: AttentionGroup[]; tierCounts?: TierCounts }>('attention', params);
 }
 
 /* ── Other-item actions (coord:* via the /api/admin/coord proxy) ─────── */
@@ -326,6 +356,96 @@ export function resolveEscalation(args: { msg_id: string; choice: string; note?:
 /** Acknowledge a coord message addressed to the human. */
 export function ackCoordMessage(args: { msg_id: string }) {
   return postCoord<{ ok?: boolean; error?: string }>('ack', args);
+}
+
+/* ── "Message owner" + inline conversation thread (Brief 21, D-004) ──────
+ *  message-agent goes through the /api/admin/coord proxy (this brief owns it);
+ *  the thread is read/posted through the /api/admin/coordination proxy
+ *  (conversations:* — shared with Brief 25's conversations tab). */
+
+export interface MessageOwnerArgs {
+  /** The owning agent's ownerId (omit for a harness-scoped thread with no owner). */
+  to?: string | null;
+  body: string;
+  title?: string;
+  harness?: string | null;
+  plan_slug?: string | null;
+  item_ref?: string | null;
+  topics?: string[];
+}
+
+export interface MessageOwnerResult {
+  ok?: boolean;
+  conversation_id?: string;
+  thread_id?: string;
+  to?: string | null;
+  error?: string;
+}
+
+/** Open a work-item-scoped conversation with the item's owning agent. */
+export function messageOwner(args: MessageOwnerArgs) {
+  return postCoord<MessageOwnerResult>('message-agent', {
+    ...(args.to ? { to: args.to } : {}),
+    body: args.body,
+    ...(args.title ? { title: args.title } : {}),
+    ...(args.harness ? { harness: args.harness } : {}),
+    ...(args.plan_slug ? { plan_slug: args.plan_slug } : {}),
+    ...(args.item_ref ? { item_ref: args.item_ref } : {}),
+    ...(args.topics?.length ? { topics: args.topics } : {}),
+  });
+}
+
+async function postCoordination<T>(group: string, verb: string, body: Record<string, unknown>): Promise<T> {
+  const r = await fetch(`/api/admin/coordination/${group}/${verb}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`coordination:${group}/${verb} → ${r.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+export interface ConversationPost {
+  id: number;
+  author_id: string;
+  body: string;
+  created_ts: string;
+}
+
+export interface ConversationDetail {
+  conversation: {
+    id: string;
+    kind: string;
+    state: string;
+    title: string | null;
+    body: string;
+    asker_id: string;
+    harness_slug: string | null;
+    promoted_issue_id?: string | null;
+  };
+  topics: string[];
+  posts: ConversationPost[];
+  subscriber_count: number;
+}
+
+/** Read a conversation thread (the inline thread view). */
+export function getConversation(conversationId: string) {
+  return postCoordination<ConversationDetail | { error: string }>('conversations', 'get', {
+    conversation_id: conversationId,
+  });
+}
+
+/** Post a reply into a conversation thread (as the human/admin identity). */
+export function postConversation(conversationId: string, body: string) {
+  return postCoordination<{ ok?: boolean; post_id?: number; error?: string }>('conversations', 'post', {
+    conversation_id: conversationId,
+    body,
+  });
 }
 
 /* ── Hooks ─────────────────────────────────────────────────────────── */

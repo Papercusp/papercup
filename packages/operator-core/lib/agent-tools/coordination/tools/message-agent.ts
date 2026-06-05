@@ -32,10 +32,6 @@ import { COORD_ROLES } from '../roles';
 import { openConversation } from '../conversations';
 import { sendMessage } from '../messages';
 
-function jsonText(v: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(v) }] };
-}
-
 function truncate(s: string, n = 100): string {
   const t = s.trim().replace(/\s+/g, ' ');
   return t.length <= n ? t : `${t.slice(0, n - 1)}…`;
@@ -50,9 +46,6 @@ export default defineTool({
     notWhen:
       'A quick one-off note to a peer with no thread — use coord:send. A question to the OWNER/human — coord:ask-owner. A reply in an existing conversation — conversations:post.',
     chaining: 'coord:message-agent → conversations:get to read the thread → conversations:post to reply.',
-    byRole: {
-      operator: 'Message the agent that owns an inbox item to unblock it without taking over the work.',
-    },
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -130,13 +123,20 @@ export default defineTool({
       }
     }
 
-    return jsonText({
-      ok: true,
-      conversation_id: conversationId,
-      thread_id: opened.thread_id,
-      to: args.to ?? null,
-      subscribedOwner,
-      pinged,
-    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            conversation_id: conversationId,
+            thread_id: opened.thread_id,
+            to: args.to ?? null,
+            subscribedOwner,
+            pinged,
+          }),
+        },
+      ],
+    };
   },
 });

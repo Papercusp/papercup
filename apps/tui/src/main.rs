@@ -322,6 +322,23 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 tokio::spawn(cupboard_act(listing, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::FetchConversations { state, kind } => {
+                // Conversations browse (Brief 25): GET the list for the active
+                // state/kind filter off the UI thread → Event::Conversations.
+                tokio::spawn(fetch_conversations(state, kind, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchConversationDetail { id } => {
+                // Load the selected conversation's full thread → ConversationDetail.
+                tokio::spawn(fetch_conversation_detail(id, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::PromoteConversation { id } => {
+                // Promote a conversation → engineer issue (carries the thread);
+                // outcome rides Notify/Error + a list/detail refetch.
+                tokio::spawn(promote_conversation(id, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::Voice(cmd) => {
                 // Push-to-talk lifecycle (voice-mode-tui-port-2026-06-05 P2).
                 // The run loop owns the mic CaptureSession; the turn pipeline
@@ -936,6 +953,85 @@ async fn fetch_cupboard(kind: String, query: String, tx: UnboundedSender<Event>)
 /// Execute a confirmed per-kind Cupboard action (D-011): harness→join,
 /// blueprint→fork (install), snapshot→fork, plugin→install. Success/failure
 /// ride Notify/Error; harness-affecting outcomes also refresh the pot list.
+/// Conversations browse (Brief 25): fetch the list under the active state/kind
+/// filter ("all" → no filter). Mirrors `fetch_cupboard` — emits an empty list on
+/// error so the tab degrades to its empty state instead of hanging on "loading".
+async fn fetch_conversations(state: String, kind: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("conversations: {e}")));
+            let _ = tx.send(Event::Conversations(Vec::new()));
+            return;
+        }
+    };
+    let st = if state == "all" { None } else { Some(state.as_str()) };
+    let kd = if kind == "all" { None } else { Some(kind.as_str()) };
+    match client.conversations_list(st, kd, None).await {
+        Ok(list) => {
+            let _ = tx.send(Event::Conversations(list));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("conversations: {e}")));
+            let _ = tx.send(Event::Conversations(Vec::new()));
+        }
+    }
+}
+
+/// Load one conversation's full thread (seed + topics + posts + accepted answer +
+/// linked work-item). Stale-guarded by id in the reducer.
+async fn fetch_conversation_detail(id: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("conversation: {e}")));
+            return;
+        }
+    };
+    match client.conversation_get(&id).await {
+        Ok(detail) => {
+            let _ = tx.send(Event::ConversationDetail { id, detail });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("conversation: {e}")));
+        }
+    }
+}
+
+/// Promote a conversation → engineer issue (carries the thread), then refresh the
+/// detail so the linked work-item + closed state show. The list refreshes on the
+/// next `r`/filter change.
+async fn promote_conversation(id: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("promote: {e}")));
+            return;
+        }
+    };
+    match client.conversation_promote(&id).await {
+        Ok(issue) => {
+            let message = if issue.is_empty() {
+                "conversation promoted to an issue".to_string()
+            } else {
+                format!("promoted → {issue}")
+            };
+            let _ = tx.send(Event::Notify(models::Notif {
+                level: "info".to_string(),
+                message,
+                harness: None,
+                ts: None,
+            }));
+            if let Ok(detail) = client.conversation_get(&id).await {
+                let _ = tx.send(Event::ConversationDetail { id, detail });
+            }
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("promote: {e}")));
+        }
+    }
+}
+
 async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Event>) {
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,

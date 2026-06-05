@@ -24,7 +24,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { getWorkItem, setWorkItemState } from '../../work-items';
+import { objectSelector } from '../coordination/audience';
+import { getWorkItem, setWorkItemState, workItemObjectRef } from '../../work-items';
 import { CompletionRecordSchema, type CompletionRecord } from '../../coord-lifecycle/records';
 import { renderCompletion } from '../../coord-lifecycle/render';
 
@@ -52,14 +53,28 @@ export default defineTool({
       // existed). A not-found returns { ok:false } with no completion.
       when: (e) => Boolean((e.result?.data as { completion?: unknown } | undefined)?.completion),
       render: (e) => {
-        const rec = (e.result.data as { completion: CompletionRecord }).completion;
+        const data = e.result.data as {
+          completion: CompletionRecord;
+          workItem?: { family?: 'feature' | 'issue'; harness?: string | null; id?: string };
+        };
+        const rec = data.completion;
         const { summary, body } = renderCompletion(rec);
+        // Scope to watchers (coord-emit-subscription-scoping-2026-06-05): peers on
+        // the completed item's plan (presence + subscribers) and the item's own
+        // object subscribers. The work-item always exists here (the `when` gated
+        // on a real completion), so `to` is never empty.
+        const to: string[] = [];
+        if (rec.planSlug) to.push(`@plan:${rec.planSlug}`);
+        const wi = data.workItem;
+        if (wi?.family && wi.id) {
+          to.push(objectSelector(workItemObjectRef({ family: wi.family, harness: wi.harness ?? null, id: wi.id })));
+        }
         return {
           category: 'completion',
           summary,
           ...(body ? { body } : {}),
           ...(rec.planSlug ? { plan_slug: rec.planSlug } : {}),
-          to: ['*'],
+          to,
         };
       },
     },

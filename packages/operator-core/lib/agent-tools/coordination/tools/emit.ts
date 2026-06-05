@@ -45,8 +45,13 @@ export default defineTool({
     summary: z.string().min(1),
     /** The rendered detail body. */
     body: z.string().optional(),
-    /** Recipients — defaults to broadcast ['*'], like the prose it replaces. */
-    to: z.array(z.string().min(1)).min(1).default(['*']),
+    /** Recipients — may be concrete ownerIds, `'*'` (broadcast), `'human'`, OR
+     *  audience selectors (`@plan:`/`@topic:`/`@object:`/`@file:`) that sendMessage
+     *  expands to the watching ownerIds (coord-emit-subscription-scoping-2026-06-05).
+     *  Omitted ⇒ broadcast `['*']` (legacy hand-call behavior). An explicit `[]`
+     *  (or a selector that resolves to nobody) ⇒ record the lifecycle row but
+     *  deliver to no inbox (D-004) — so it must be allowed through, hence no min. */
+    to: z.array(z.string().min(1)).default(['*']),
     plan_slug: z.string().optional(),
     /** Chain to a prior message (e.g. a window 'done' referencing its 'open'). */
     related_msg_id: z.string().optional(),

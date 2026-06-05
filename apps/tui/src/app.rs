@@ -25,6 +25,13 @@ const NOTIF_HISTORY_CAP: usize = 50;
 /// `cupboard_kind` indexes this array. "all" sends no `kind` param.
 pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "snapshot", "plugin"];
 
+/// The Conversations state-filter cycle (Brief 25): `s` steps through these;
+/// `conv_state_idx` indexes this array. "all" sends no `state` param.
+pub const CONV_STATES: [&str; 4] = ["open", "resolved", "closed", "all"];
+/// The Conversations kind-filter cycle (Brief 25): `t` steps through these;
+/// `conv_kind_idx` indexes this array. "all" sends no `kind` param.
+pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
+
 /// What the run-loop should do after handling one event.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -106,6 +113,15 @@ pub enum Action {
     /// record → transcribe → operator-converse → speak pipeline, feeding
     /// `Event::Voice(..)` (and the existing `Chat*` events) back.
     Voice(VoiceCmd),
+    /// Fetch the Conversations list (Brief 25) under the active state/kind filter
+    /// ("all" → unfiltered). Result returns as `Event::Conversations`.
+    FetchConversations { state: String, kind: String },
+    /// Load the selected conversation's full thread → `Event::ConversationDetail`
+    /// (stale-guarded by id in the reducer).
+    FetchConversationDetail { id: String },
+    /// Promote the selected conversation → an engineer issue (carries the thread).
+    /// Outcome rides `Notify`/`Error` + a detail refetch.
+    PromoteConversation { id: String },
 }
 
 /// A push-to-talk command on the Operator tab (voice-mode-tui-port D-007).
@@ -327,13 +343,18 @@ pub enum Tab {
     /// (harness/blueprint/snapshot/plugin) + per-kind join/fork/install, all
     /// against the existing `/api/cupboard/*` routes. Appended; key 'c'.
     Cupboard,
+    /// Conversations (conversations-tab-2026-06-05, Brief 25) — browse the coord
+    /// conversations substrate (questions/discussions + threads + topics) with
+    /// state/kind/topic filters, a detail thread + accepted answer + linked
+    /// work-item, and promote-to-issue. Appended; key 'd' (Discuss).
+    Conversations,
 }
 
 impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Brew tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Brew exactly.
-    pub const ALL: [Tab; 12] = [
+    pub const ALL: [Tab; 13] = [
         Tab::Operator,
         Tab::Inbox,
         Tab::Plans,
@@ -346,6 +367,7 @@ impl Tab {
         Tab::Settings,
         Tab::Memory,
         Tab::Cupboard,
+        Tab::Conversations,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -362,6 +384,7 @@ impl Tab {
             Tab::Settings => "Settings",
             Tab::Memory => "Memory",
             Tab::Cupboard => "Cupboard",
+            Tab::Conversations => "Convos",
         }
     }
     /// The keyboard shortcut that switches to this tab — the ONLY keymap (the
@@ -382,6 +405,7 @@ impl Tab {
             Tab::Settings => '0',
             Tab::Memory => 'm',
             Tab::Cupboard => 'c',
+            Tab::Conversations => 'd',
         }
     }
     pub fn index(self) -> usize {
@@ -536,6 +560,19 @@ pub struct App {
     pub cupboard_search_input: String,
     pub cupboard_loading: bool,
     pub cupboard_confirm: Option<String>,
+    /// Conversations tab (Brief 25): the fetched conversation list under the
+    /// active state/kind filter (`conv_state_idx` indexes `CONV_STATES`,
+    /// `conv_kind_idx` indexes `CONV_KINDS`; "all" sends no filter), an optional
+    /// client-side topic filter, the selection cursor, the in-flight flag, and
+    /// the selected conversation's loaded detail (thread + accepted answer +
+    /// linked work-item).
+    pub conversations: Vec<crate::models::ConvSummary>,
+    pub conversation_sel: usize,
+    pub conv_state_idx: usize,
+    pub conv_kind_idx: usize,
+    pub conv_topic: Option<String>,
+    pub conversations_loading: bool,
+    pub conversation_detail: Option<crate::models::ConvDetail>,
     /// Settings tab (P10): operator feature flags (key, enabled), sorted; the
     /// flag-backend source ('defaults'/'posthog'); + the selection cursor.
     /// Read-only v1 — the full per-group settings port lives on the desktop.
@@ -735,6 +772,13 @@ impl App {
             cupboard_search_input: String::new(),
             cupboard_loading: false,
             cupboard_confirm: None,
+            conversations: Vec::new(),
+            conversation_sel: 0,
+            conv_state_idx: 0,
+            conv_kind_idx: 0,
+            conv_topic: None,
+            conversations_loading: false,
+            conversation_detail: None,
             flags: Vec::new(),
             flags_source: String::new(),
             flag_sel: 0,
@@ -1980,6 +2024,31 @@ impl App {
                 }
                 Action::Render
             }
+            Event::Conversations(list) => {
+                // Brief 25: the list under the active state/kind filter landed.
+                self.conversations = list;
+                self.conversations_loading = false;
+                if self.conversation_sel >= self.conversations.len() {
+                    self.conversation_sel = self.conversations.len().saturating_sub(1);
+                }
+                // Drop a client-side topic filter no longer present in the page.
+                if let Some(t) = self.conv_topic.clone() {
+                    if !self.conversations.iter().any(|c| c.topics.iter().any(|x| x == &t)) {
+                        self.conv_topic = None;
+                    }
+                }
+                self.last_error = None;
+                Action::Render
+            }
+            Event::ConversationDetail { id, detail } => {
+                // Stale-guard: only paint if it's still the selected conversation.
+                let matches = self.selected_conversation().map(|c| c.id.clone()) == Some(id.clone());
+                if matches {
+                    self.conversation_detail = Some(detail);
+                    self.last_error = None;
+                }
+                Action::Render
+            }
             Event::TuiPanes(p) => {
                 self.set_panes(p);
                 self.last_error = None;
@@ -2610,6 +2679,24 @@ impl App {
             // and refetches; `/` opens the search composer (seeded with the
             // active query); `r` refetches the current filter; Enter arms the
             // selected listing's action then confirms it; `y` fires the armed one.
+            // ── Conversations tab (Brief 25) ─────────────────────────────────
+            KeyCode::Char('s') if self.tab == Tab::Conversations => {
+                self.conv_state_idx = (self.conv_state_idx + 1) % CONV_STATES.len();
+                self.conversation_sel = 0;
+                self.refetch_conversations()
+            }
+            KeyCode::Char('t') if self.tab == Tab::Conversations => {
+                self.conv_kind_idx = (self.conv_kind_idx + 1) % CONV_KINDS.len();
+                self.conversation_sel = 0;
+                self.refetch_conversations()
+            }
+            KeyCode::Char('T') if self.tab == Tab::Conversations => {
+                self.cycle_conv_topic();
+                Action::Render
+            }
+            KeyCode::Char('r') if self.tab == Tab::Conversations => self.refetch_conversations(),
+            KeyCode::Enter if self.tab == Tab::Conversations => self.conv_open_detail(),
+            KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
             KeyCode::Char('f') if self.tab == Tab::Cupboard => {
                 self.cupboard_kind = (self.cupboard_kind + 1) % CUPBOARD_KINDS.len();
                 self.cupboard_sel = 0;
@@ -2793,6 +2880,11 @@ impl App {
                     if t == Tab::Cupboard && self.cupboard.is_empty() && !self.cupboard_loading {
                         return self.refetch_cupboard();
                     }
+                    // Same lazy-load for Conversations (Brief 25) — not in the
+                    // startup poll; fetch the list on first open.
+                    if t == Tab::Conversations && self.conversations.is_empty() && !self.conversations_loading {
+                        return self.refetch_conversations();
+                    }
                     Action::Render
                 }
                 None => Action::None,
@@ -2866,6 +2958,89 @@ impl App {
         }
     }
 
+    // ── Conversations tab (Brief 25) ──────────────────────────────────────────
+    /// The topic-filtered conversation list — `conversation_sel` indexes THIS.
+    /// State/kind are applied server-side at fetch; the topic filter is
+    /// client-side so the topic-cycle universe stays the full state/kind page.
+    pub fn visible_conversations(&self) -> Vec<&crate::models::ConvSummary> {
+        self.conversations
+            .iter()
+            .filter(|c| match &self.conv_topic {
+                Some(t) => c.topics.iter().any(|x| x == t),
+                None => true,
+            })
+            .collect()
+    }
+
+    pub fn selected_conversation(&self) -> Option<&crate::models::ConvSummary> {
+        self.visible_conversations().get(self.conversation_sel).copied()
+    }
+
+    pub fn conv_state(&self) -> &'static str {
+        CONV_STATES[self.conv_state_idx.min(CONV_STATES.len() - 1)]
+    }
+    pub fn conv_kind(&self) -> &'static str {
+        CONV_KINDS[self.conv_kind_idx.min(CONV_KINDS.len() - 1)]
+    }
+
+    /// Mark the list in-flight + emit the fetch under the current state/kind.
+    fn refetch_conversations(&mut self) -> Action {
+        self.conversations_loading = true;
+        self.conversation_detail = None;
+        Action::FetchConversations {
+            state: self.conv_state().to_string(),
+            kind: self.conv_kind().to_string(),
+        }
+    }
+
+    /// The sorted, unique topic universe across the loaded page (the cycle set).
+    fn conv_topics_universe(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .conversations
+            .iter()
+            .flat_map(|c| c.topics.iter().cloned())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Cycle the client-side topic filter: None → t0 → t1 → … → None.
+    fn cycle_conv_topic(&mut self) {
+        let universe = self.conv_topics_universe();
+        if universe.is_empty() {
+            self.conv_topic = None;
+            return;
+        }
+        self.conv_topic = match &self.conv_topic {
+            None => Some(universe[0].clone()),
+            Some(cur) => match universe.iter().position(|t| t == cur) {
+                Some(i) if i + 1 < universe.len() => Some(universe[i + 1].clone()),
+                _ => None,
+            },
+        };
+        self.conversation_sel = 0;
+        self.conversation_detail = None;
+    }
+
+    /// Enter on the Conversations tab: load the selected conversation's thread.
+    fn conv_open_detail(&mut self) -> Action {
+        match self.selected_conversation() {
+            Some(c) => Action::FetchConversationDetail { id: c.id.clone() },
+            None => Action::None,
+        }
+    }
+
+    /// `i` on the Conversations tab: promote the selected conversation → issue.
+    fn conv_promote(&mut self) -> Action {
+        match self.selected_conversation() {
+            Some(c) if c.promoted_issue_id.is_none() && c.state != "closed" => {
+                Action::PromoteConversation { id: c.id.clone() }
+            }
+            _ => Action::None,
+        }
+    }
+
     fn move_sel(&mut self, delta: isize) {
         // Two phases: the visible LENGTH first (scope-filtered lists borrow
         // self immutably, D-003), then the cursor slot.
@@ -2889,6 +3064,7 @@ impl App {
             Tab::Fleet => self.visible_roster().len(),
             Tab::Memory => self.visible_memories().len(),
             Tab::Cupboard => self.cupboard.len(),
+            Tab::Conversations => self.visible_conversations().len(),
             // No list to navigate — j/k scroll the transcript (Operator) handled
             // in on_key; Config has no list.
             Tab::Config | Tab::Operator => return,
@@ -2916,6 +3092,7 @@ impl App {
             Tab::Fleet => &mut self.fleet.agent_sel,
             Tab::Memory => &mut self.memory_sel,
             Tab::Cupboard => &mut self.cupboard_sel,
+            Tab::Conversations => &mut self.conversation_sel,
             Tab::Config | Tab::Operator => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
@@ -4129,6 +4306,92 @@ mod tests {
         let s = a.update(key('/', KeyModifiers::NONE));
         assert!(a.cupboard_search_open);
         assert_eq!(s, Action::Render);
+    }
+
+    #[test]
+    fn conversations_tab_browse_filter_and_promote() {
+        use crate::models::{ConvCore, ConvDetail, ConvSummary};
+        // Tab wiring: key 'd', title "Convos".
+        assert_eq!(Tab::from_switch_key('d'), Some(Tab::Conversations));
+        assert_eq!(Tab::Conversations.title(), "Convos");
+
+        let mut a = App::new();
+        // 'd' switches to Conversations + lazy-loads the list (Brief 25).
+        let act = a.update(key('d', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Conversations);
+        assert!(matches!(act, Action::FetchConversations { .. }));
+        assert!(a.conversations_loading);
+
+        // The list lands: 2 tagged + 1 untagged, all open.
+        let mk = |id: &str, kind: &str, topics: Vec<&str>| ConvSummary {
+            id: id.into(),
+            kind: kind.into(),
+            state: "open".into(),
+            topics: topics.into_iter().map(String::from).collect(),
+            ..Default::default()
+        };
+        a.update(Event::Conversations(vec![
+            mk("c1", "question", vec!["zero-cache"]),
+            mk("c2", "discussion", vec!["firefox"]),
+            mk("c3", "question", vec![]),
+        ]));
+        assert_eq!(a.conversations.len(), 3);
+        assert!(!a.conversations_loading);
+        assert_eq!(a.visible_conversations().len(), 3);
+
+        // 'T' cycles the client-side topic filter through the sorted universe.
+        a.update(key('T', KeyModifiers::SHIFT));
+        assert_eq!(a.conv_topic.as_deref(), Some("firefox")); // sorted: firefox < zero-cache
+        assert_eq!(a.visible_conversations().len(), 1);
+        assert_eq!(a.visible_conversations()[0].id, "c2");
+        a.update(key('T', KeyModifiers::SHIFT));
+        assert_eq!(a.conv_topic.as_deref(), Some("zero-cache"));
+        a.update(key('T', KeyModifiers::SHIFT));
+        assert_eq!(a.conv_topic, None); // wraps back to unfiltered
+        assert_eq!(a.visible_conversations().len(), 3);
+
+        // 's' cycles state (open→resolved) + refetches; 't' cycles kind.
+        let s = a.update(key('s', KeyModifiers::NONE));
+        assert_eq!(a.conv_state(), "resolved");
+        assert!(matches!(s, Action::FetchConversations { .. }));
+        let t = a.update(key('t', KeyModifiers::NONE));
+        assert_eq!(a.conv_kind(), "question");
+        assert!(matches!(t, Action::FetchConversations { .. }));
+
+        // Enter loads the selected (c1) conversation's detail.
+        let e = a.on_key(KeyCode::Enter, KeyModifiers::empty());
+        assert!(matches!(e, Action::FetchConversationDetail { ref id } if id == "c1"));
+        a.update(Event::ConversationDetail {
+            id: "c1".into(),
+            detail: ConvDetail {
+                conversation: Some(ConvCore { id: "c1".into(), kind: "question".into(), state: "open".into(), ..Default::default() }),
+                topics: vec!["zero-cache".into()],
+                posts: vec![],
+                subscriber_count: 2,
+            },
+        });
+        assert!(a.conversation_detail.is_some());
+        // A STALE detail (a different conversation) is ignored.
+        a.update(Event::ConversationDetail { id: "cX".into(), detail: ConvDetail::default() });
+        assert_eq!(
+            a.conversation_detail.as_ref().and_then(|d| d.conversation.as_ref()).map(|c| c.id.as_str()),
+            Some("c1"),
+        );
+
+        // 'i' promotes the selected (open, unpromoted) conversation.
+        let p = a.update(key('i', KeyModifiers::NONE));
+        assert!(matches!(p, Action::PromoteConversation { ref id } if id == "c1"));
+
+        // An already-promoted conversation is NOT promotable again (returns None).
+        a.update(Event::Conversations(vec![ConvSummary {
+            id: "c9".into(),
+            kind: "discussion".into(),
+            state: "closed".into(),
+            promoted_issue_id: Some("EI-7".into()),
+            ..Default::default()
+        }]));
+        a.conversation_sel = 0;
+        assert_eq!(a.update(key('i', KeyModifiers::NONE)), Action::None);
     }
 
     #[test]

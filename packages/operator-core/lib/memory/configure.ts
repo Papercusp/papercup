@@ -37,6 +37,10 @@ import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { buildLearningInstructions } from './learning';
+import {
+  currentMemoryBackendChoice,
+  initMemoryBackendSelection,
+} from './backend-selection';
 
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
@@ -175,10 +179,12 @@ configureMemory({
   defaultDbName: 'papercusp',
   localStoreDir: path.join(os.homedir(), '.papercusp'),
   // The swappable-store selector (generalize-memory-backend-swappable
-  // D-004): which MemoryBackend getMemoryBackend() serves. A config
-  // flip — 'mem0' (default) | 'noop' | any name registered via
-  // registerMemoryBackend(). An unknown name fails loud at first use.
-  backend: process.env.PAPERCUSP_MEMORY_BACKEND || 'mem0',
+  // D-004): which MemoryBackend getMemoryBackend() serves. A LIVE thunk
+  // (mem0-revive-or-retire / Brief 30) reading the persisted operator
+  // setting → PAPERCUSP_MEMORY_BACKEND → 'mem0', re-evaluated every call
+  // so a UI flip on the settings memory page takes effect with no
+  // restart. An unknown name fails loud at first use.
+  backend: () => currentMemoryBackendChoice(),
   getCredentials: async () => {
     const c = await readCredentials();
     return { openai_api_key: c.openai_api_key, anthropic_api_key: c.anthropic_api_key };
@@ -189,3 +195,9 @@ configureMemory({
   // learning loop. Best-effort — the package treats it as a black box.
   getLearningInstructions: async () => (await buildLearningInstructions()) ?? undefined,
 });
+
+// Best-effort: hydrate the persisted memory-backend selection into the
+// in-process cache so getMemoryBackend()'s thunk reflects it. Until this
+// resolves (or if PG isn't up), the thunk falls back to the env/default.
+// A UI write (writeMemoryBackendChoice) also updates the cache live.
+void initMemoryBackendSelection();

@@ -31,11 +31,37 @@
 
 import { registerReactionRule } from '../events';
 import { renderClaim, renderIntent, renderFinding } from './render';
+import { workItemObjectRef } from '../work-items';
+import { objectSelector } from '../agent-tools/coordination/audience';
 
 interface WorkItemLike {
   id?: string;
   title?: string;
   assignee?: string | null;
+  /** Carried so the lifecycle event can be scoped to the work-item's watchers
+   *  (coord-emit-subscription-scoping-2026-06-05); present on the real
+   *  work_items:claim / work_items:create result. */
+  family?: 'feature' | 'issue';
+  harness?: string | null;
+}
+
+/**
+ * Scope a work-item lifecycle event (claim / finding) to that work-item's
+ * watchers — its coord-object subscribers + tagged-topic subscribers, expanded
+ * by sendMessage. Empty if the item shape is unknown; we never fall back to '*'
+ * (coord-emit-subscription-scoping D-001/D-004).
+ */
+function workItemAudience(wi: WorkItemLike): string[] {
+  if (!wi.family || !wi.id) return [];
+  return [objectSelector(workItemObjectRef({ family: wi.family, harness: wi.harness ?? null, id: wi.id }))];
+}
+
+/** Scope an intent to peers on the same plan and/or editing the same files. */
+function intentAudience(planSlug: string | undefined, files: string[] | undefined): string[] {
+  const sels: string[] = [];
+  if (planSlug) sels.push(`@plan:${planSlug}`);
+  for (const f of files ?? []) sels.push(`@file:${f}`);
+  return sels;
 }
 
 /** CLAIM (D-003, 5%) — a work_item claim auto-emits "Taking X". */
@@ -50,7 +76,7 @@ registerReactionRule({
       workItem: wi.title ?? wi.id ?? 'work-item',
       agent: wi.assignee ?? undefined,
     });
-    return { category: 'claim', summary, to: ['*'] };
+    return { category: 'claim', summary, to: workItemAudience(wi) };
   },
   onlyOnSuccess: true,
   source: 'lifecycle-rules',
@@ -80,7 +106,7 @@ registerReactionRule({
       summary,
       ...(body ? { body } : {}),
       ...(a.current_plan_slug ? { plan_slug: a.current_plan_slug } : {}),
-      to: ['*'],
+      to: intentAudience(a.current_plan_slug, a.current_files),
     };
   },
   dedupKey: (e) =>
@@ -111,7 +137,8 @@ registerReactionRule({
       workItemId: wi.id,
       agent: e.ctx.uiClientId ?? undefined,
     });
-    return { category: 'finding', summary, ...(body ? { body } : {}), to: ['*'] };
+    // Scope the bug finding to its object subscribers + tagged-topic subscribers.
+    return { category: 'finding', summary, ...(body ? { body } : {}), to: workItemAudience(wi) };
   },
   onlyOnSuccess: true,
   source: 'lifecycle-rules',
