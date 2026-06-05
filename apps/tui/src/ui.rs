@@ -2287,7 +2287,7 @@ mod tests {
 
     #[test]
     fn plugins_list_view_renders_contributions_and_settings() {
-        use crate::models::{PluginManifest, PluginsGlobalResponse};
+        use crate::models::PluginsGlobalResponse;
         let mut app = App::new();
         app.tab = Tab::Plugins; // List is the default focus (D-007).
         app.show_presence = false; // full width for the two-column plugins layout
@@ -2312,7 +2312,7 @@ mod tests {
 
     #[test]
     fn plugins_list_view_renders_loaded_config() {
-        use crate::models::{PluginManifest, PluginsGlobalResponse};
+        use crate::models::PluginsGlobalResponse;
         let mut app = App::new();
         app.tab = Tab::Plugins;
         app.show_presence = false; // full width for the two-column plugins layout

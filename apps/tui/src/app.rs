@@ -3228,6 +3228,11 @@ mod tests {
         // `9` switches to the Plugins tab.
         assert_eq!(a.update(key('9', KeyModifiers::NONE)), Action::Render);
         assert_eq!(a.tab, Tab::Plugins);
+        // The tab defaults to the List sub-view (D-007); Tab toggles to the
+        // panes launcher this test exercises.
+        assert_eq!(a.plugins_focus, PluginsFocus::List);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.plugins_focus, PluginsFocus::Panes);
         // Enter with no panes is a no-op.
         assert_eq!(
             a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))),
