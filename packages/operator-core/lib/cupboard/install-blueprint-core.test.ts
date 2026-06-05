@@ -43,7 +43,7 @@ function makeDeps(over: Partial<InstallBlueprintCoreDeps> = {}): InstallBlueprin
     tmpDir: () => root,
     // Installed tier (the target dir) + the engine's bundled floor — the same
     // composition the operator wires, against the test's own installed dir.
-    resolveExtends: makeComposedResolveExtends({ installedDir: () => installedDir as never as string ? installedDir : null } as never),
+    resolveExtends: makeComposedResolveExtends({ installedDir }),
     resolveHostSets: async () => ({
       availableTools: new Set<string>(),
       installedPlugins: new Set<string>(),

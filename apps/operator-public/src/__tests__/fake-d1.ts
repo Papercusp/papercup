@@ -57,6 +57,7 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     tarball_r2_key: null,
     tarball_content_hash: null,
     tarball_bytes: null,
+    provides_tools: null,
     claim_status: 'unclaimed',
     claimant_github_user_id: null,
     claimant_github_login: null,
@@ -87,12 +88,12 @@ export class FakeStore {
   execute(sql: string, binds: unknown[]): number {
     const upper = sql.trim().toUpperCase();
     if (upper.startsWith('INSERT INTO HARNESSES')) {
-      // Bind order matches insertHarness() in db.ts (migration 004).
+      // Bind order matches insertHarness() in db.ts (migrations 004/005/006).
       const [
         id, listing_kind, project_ref, listing_ref,
         gh_repo_id, gh_owner, gh_name, gh_url, title, description, topic_hex,
         pub_user_id, pub_login, pub_permission, device_pubkey, attestation_gist_id,
-        tarball_r2_key, tarball_content_hash, tarball_bytes,
+        tarball_r2_key, tarball_content_hash, tarball_bytes, provides_tools,
         created_at, updated_at,
       ] = binds;
       this.tables.harnesses.push(
@@ -116,6 +117,7 @@ export class FakeStore {
           tarball_r2_key: tarball_r2_key ?? null,
           tarball_content_hash: tarball_content_hash ?? null,
           tarball_bytes: tarball_bytes ?? null,
+          provides_tools: provides_tools ?? null,
           created_at,
           updated_at,
         }),

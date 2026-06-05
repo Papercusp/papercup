@@ -248,6 +248,11 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 tokio::spawn(run_test_file(harness, file, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::SearchMemory { query, harness } => {
+                // Memory semantic search (D-006 Step 2) off the UI thread.
+                tokio::spawn(search_memory(query, harness, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::Quit => break,
             Action::None => {}
         }
@@ -275,6 +280,30 @@ async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSe
         Err(e) => {
             let _ = tx.send(Event::Error(format!("testing files: {e}")));
             let _ = tx.send(Event::TestingFiles { domain_id, files: Vec::new() });
+        }
+    }
+}
+
+/// Semantic memory search (D-006 Step 2): call `memory:search` and emit
+/// `Event::MemoryHits` for the query (the reducer drops hits for a query that
+/// is no longer active). Errors resolve to an empty hit list + a status-bar
+/// error so the search never hangs.
+async fn search_memory(query: String, harness: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("memory search: {e}")));
+            let _ = tx.send(Event::MemoryHits { query, results: Vec::new() });
+            return;
+        }
+    };
+    match client.memory_search(&query, Some(&harness), 20).await {
+        Ok(payload) => {
+            let _ = tx.send(Event::MemoryHits { query, results: payload.results });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("memory search: {e}")));
+            let _ = tx.send(Event::MemoryHits { query, results: Vec::new() });
         }
     }
 }
@@ -1170,6 +1199,17 @@ async fn refetch_all(
     // here rather than surfaced as a status-bar error.
     if let Ok(s) = client.curation_feed().await {
         let _ = tx.send(Event::CuratedSignals(s));
+    }
+    // The Memory tab's list (D-006 Step 2). `ok:false` (backend unavailable —
+    // mem0 unconfigured, auth missing) is an EXPECTED state the tab renders as
+    // its empty state, so errors are quiet here too.
+    match client.memory_list(Some(&slug)).await {
+        Ok(p) => {
+            let _ = tx.send(Event::Memories { available: p.ok, results: p.results });
+        }
+        Err(_) => {
+            let _ = tx.send(Event::Memories { available: false, results: Vec::new() });
+        }
     }
 }
 

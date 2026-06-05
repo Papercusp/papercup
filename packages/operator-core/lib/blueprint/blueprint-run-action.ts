@@ -186,7 +186,17 @@ export async function handleBlueprintRun(ctx: SystemActionCtx): Promise<void> {
       typeof payloadTemplate?.kickoff === 'string' && payloadTemplate.kickoff.trim()
         ? payloadTemplate.kickoff
         : `Scheduled launch of blueprint '${launchId}' for '${installSlug}'.`;
-    const target = await fireLaunchBlueprint(launchId, { installSlug, workspaceId, kickoff });
+    // A scheduled launch may need far more than the invoke route's 90s default —
+    // a workspace `scan` runs many turns (P-009 smoke: 300s SIGTERMed a real scan
+    // with zero output). The routine's payload_template carries the budget;
+    // fireLaunchBlueprint forwards it as the route's `timeoutMs`.
+    const timeoutMs = Number(payloadTemplate?.timeoutMs);
+    const target = await fireLaunchBlueprint(launchId, {
+      installSlug,
+      workspaceId,
+      kickoff,
+      ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
+    });
     console.log(`[blueprint-run] ${installSlug}: fired launch blueprint '${launchId}' (role ${target.role})`);
     return;
   }

@@ -10,6 +10,7 @@
  *   blueprint → fork
  *   snapshot  → fork
  *   plugin    → install
+ *   pack      → install   (migration 006 / tool-distribution-granularity D-001)
  *
  * Pure functions, no mocks.
  */
@@ -63,6 +64,9 @@ describe('listingAction (kind → consumer verb, D-005)', () => {
   it('plugin → install', () => {
     expect(listingAction('plugin')).toBe('install');
   });
+  it('pack → install (a runtime-less code-tool pack installs like a plugin)', () => {
+    expect(listingAction('pack')).toBe('install');
+  });
 
   it('maps every declared kind to a labelled action (no kind falls through)', () => {
     for (const kind of LISTING_KINDS) {
@@ -108,6 +112,7 @@ describe('listingKindOf (row → kind, defaulting to harness)', () => {
     expect(listingKindOf(makeListing({ listing_kind: 'snapshot' }))).toBe('snapshot');
     expect(listingKindOf(makeListing({ listing_kind: 'blueprint' }))).toBe('blueprint');
     expect(listingKindOf(makeListing({ listing_kind: 'harness' }))).toBe('harness');
+    expect(listingKindOf(makeListing({ listing_kind: 'pack' }))).toBe('pack');
   });
 
   it('defaults an ABSENT listing_kind to harness (pre-004 / aspirational row)', () => {

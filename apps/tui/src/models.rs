@@ -406,6 +406,13 @@ pub struct ViewState {
     pub fleet_agent_sel: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet_mode: Option<String>,
+    /// Plans filter (D-009): the selected plan slugs narrowing the Inbox list
+    /// and the Brew roster (empty = no filtering), plus whether the
+    /// collapsible left rail is open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plan_filter: Vec<String>,
+    #[serde(default)]
+    pub plan_filter_open: bool,
 }
 
 /// `GET /api/tui/view-state` → `{ state: {...} }`.
@@ -1413,6 +1420,29 @@ mod tests {
         assert_eq!(r.plans.len(), 2);
         assert_eq!(r.plans[0].item_counts.total(), 0);
         assert_eq!(r.plans[1].item_counts.done, 2);
+    }
+
+    #[test]
+    fn parses_memory_payloads() {
+        // memory:list / memory:search inner JSON (D-006 Step 2).
+        let j = r#"{"ok":true,"results":[
+            {"id":"m-1","memory":"prefers rust","metadata":{"kind":"preference"},"score":0.91},
+            {"id":"m-2","memory":"tz is ET","metadata":{"kind":"identity"}}
+        ]}"#;
+        let p: MemoriesPayload = serde_json::from_str(j).unwrap();
+        assert!(p.ok);
+        assert_eq!(p.results.len(), 2);
+        assert_eq!(p.results[0].kind(), "preference");
+        assert_eq!(p.results[0].score, Some(0.91));
+        assert_eq!(p.results[1].kind(), "identity");
+        // The unavailable shape ({ok:false, reason}) decodes cleanly.
+        let u: MemoriesPayload =
+            serde_json::from_str(r#"{"ok":false,"reason":"mem0_unavailable","results":[]}"#).unwrap();
+        assert!(!u.ok);
+        assert_eq!(u.reason.as_deref(), Some("mem0_unavailable"));
+        // Metadata-less entries report an empty kind.
+        let bare: MemoryEntry = serde_json::from_str(r#"{"id":"x","memory":"y"}"#).unwrap();
+        assert_eq!(bare.kind(), "");
     }
 
     #[test]

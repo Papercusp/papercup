@@ -33,6 +33,14 @@ import { readRegistry } from '../workspace-registry';
 /** Slug papercup is registered under. Stable; downstream code may reference it. */
 export const PAPERCUP_HARNESS_SLUG = 'papercup' as const;
 
+/** True iff `dir` carries both papercup repo markers. */
+function hasPapercupMarkers(dir: string): boolean {
+  return (
+    existsSync(join(dir, 'apps', 'operator', 'package.json')) &&
+    existsSync(join(dir, 'libs', 'papercusp', 'package.json'))
+  );
+}
+
 /**
  * Auto-detect the papercup repo root. Walks up from `start` looking
  * for a directory that has both `apps/operator/package.json` AND
@@ -40,14 +48,29 @@ export const PAPERCUP_HARNESS_SLUG = 'papercup' as const;
  * collide with). Returns the absolute path or null.
  *
  * Bounded to 8 levels — avoids unbounded walk on weird filesystems.
+ *
+ * AMBIENT detection (no explicit `start`) prefers
+ * `PAPERCUSP_INTEGRATION_ROOT` when it's set and carries the markers:
+ * post the release-gate cutover (release-gate-ready-branch-2026-06-04,
+ * cut over 2026-06-05) the operator's cwd is the RELEASE checkout
+ * (`papercup-release`, a worktree with the same markers), but spawned
+ * agents / plan launches / registration must target the INTEGRATION
+ * tree — the churning `main` git-sync commits, where edits actually
+ * land. An explicit `start` still wins (tests + callers that really
+ * mean "walk from here").
  */
-export function detectPapercupRoot(start: string = process.cwd()): string | null {
+export function detectPapercupRoot(start?: string): string | null {
+  if (start === undefined) {
+    const envRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    if (envRoot) {
+      const resolved = resolve(envRoot);
+      if (hasPapercupMarkers(resolved)) return resolved;
+    }
+    start = process.cwd();
+  }
   let dir = resolve(start);
   for (let i = 0; i < 8; i++) {
-    if (
-      existsSync(join(dir, 'apps', 'operator', 'package.json')) &&
-      existsSync(join(dir, 'libs', 'papercusp', 'package.json'))
-    ) {
+    if (hasPapercupMarkers(dir)) {
       return dir;
     }
     const parent = dirname(dir);

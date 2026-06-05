@@ -29,6 +29,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       implement: 'worker',
       'merge-resolution': 'merge-resolver',
       audit: 'auditor',
+      // autoloop-pot-operator-rebuild P0: the pot's decider IS the operator (D-001).
+      pot: 'operator',
     };
     for (const id of BUILTIN_LAUNCH_BLUEPRINTS) {
       const target = await resolveLaunchTarget(id, opts);

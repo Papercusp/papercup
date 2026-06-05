@@ -48,15 +48,16 @@ export const CUPBOARD_CLAIM_STATUSES = [
 export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
 
 /**
- * The three storefront listing kinds (Cupboard worker migration 004 /
- * distribution plan D-005). ONE storefront, three kinds, each with its own
- * consumer action:
+ * The five storefront listing kinds (Cupboard worker migrations 004 + 006 /
+ * distribution plan D-005, tool-distribution-granularity D-001). ONE
+ * storefront, five kinds, each with its own consumer action:
  *   harness   → join     (shared-harness via the Hypercore topic)
  *   blueprint → fork     (a blueprint stream within a project)
  *   snapshot  → fork     (a captured snapshot)
- *   plugin    → install  (a distributable plugin)
+ *   plugin    → install  (a distributable plugin — a pack WITH a runtime)
+ *   pack      → install  (a runtime-less code-tool pack; n≥1 tools)
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin'] as const;
+export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin', 'pack'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -74,6 +75,7 @@ export function listingAction(kind: ListingKind): ListingAction {
     case 'snapshot':
       return 'fork';
     case 'plugin':
+    case 'pack':
       return 'install';
   }
 }
@@ -223,12 +225,19 @@ export interface HarnessListing {
   // they are optional. `listing_kind` drives the per-kind consumer action
   // (join/fork/install); `project_ref`/`listing_ref` carry the project-centric
   // 1:N identity (D-008). See `listingAction()`.
-  /** harness | blueprint | snapshot | plugin. Absent ⇒ treat as 'harness'. */
+  /** harness | blueprint | snapshot | plugin | pack. Absent ⇒ treat as 'harness'. */
   listing_kind?: ListingKind;
   /** Papercupai project remote this listing belongs to (D-008); null = legacy/standalone. */
   project_ref?: string | null;
-  /** Within-project discriminator (blueprint stream / snapshot id / plugin slug). */
+  /** Within-project discriminator (blueprint stream / snapshot id / plugin/pack slug). */
   listing_ref?: string | null;
+  /**
+   * Pack model (worker migration 006): JSON-encoded string[] of the MCP tool
+   * names the unit registers when installed (kinds plugin|pack only). The
+   * tool→provider resolver (pack-catalog/pack-model) parses it to answer
+   * "which Cupboard unit provides tool X?". Absent/null ⇒ no declared tools.
+   */
+  provides_tools?: string | null;
 
   // ── Snapshot tarball blob pointer (Cupboard worker migration 005). Present
   // only on kind='snapshot' listings whose tarball lives in the Cupboard R2

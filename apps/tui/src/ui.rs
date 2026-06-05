@@ -48,6 +48,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Config => draw_config(f, app, body),
         Tab::Plugins => draw_plugins(f, app, body),
         Tab::Settings => draw_settings(f, app, body),
+        Tab::Memory => draw_memory(f, app, body),
     }
     if let Some(area) = presence {
         draw_presence(f, app, area);
@@ -863,11 +864,103 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(cpara, composer_area);
 }
 
+/// Memory tab (D-006 Step 2): the backend's memories, two-pane like Inbox —
+/// list (left: kind + fact) + detail (right: full text + metadata). `/` opens
+/// the semantic-search composer; an active query shows its hits instead of the
+/// list (Esc returns). The tab shows whatever the configured memory BACKEND
+/// holds; an unavailable backend renders a clear empty state.
+fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(area);
+
+    let entries = app.visible_memories();
+    let title = match &app.memory_hits {
+        Some((q, hits)) => format!(" Memory · \"{}\" ({}) · Esc: back ", trunc(q, 24), hits.len()),
+        None => format!(" Memory ({}) · /: search ", entries.len()),
+    };
+    let items: Vec<ListItem> = entries
+        .iter()
+        .map(|m| {
+            ListItem::new(Line::from(format!(
+                "{:<11} {}",
+                trunc(&m.kind(), 11),
+                trunc(&m.memory, 52),
+            )))
+        })
+        .collect();
+    let body = if items.is_empty() {
+        let hint = if !app.memory_available {
+            "(memory backend unavailable — not configured yet)"
+        } else if app.memory_hits.is_some() {
+            "(no hits — Esc returns to the list)"
+        } else {
+            "(no memories stored yet)"
+        };
+        vec![ListItem::new(Line::from(Span::styled(hint, Theme::dim())))]
+    } else {
+        items
+    };
+    let mut state = ListState::default();
+    if !entries.is_empty() {
+        state.select(Some(app.memory_sel.min(entries.len() - 1)));
+    }
+    let body_area = block_with_header(
+        f,
+        cols[0],
+        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        &format!("  {:<12}{}", "kind", "fact"),
+    );
+    let list = List::new(body)
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body_area, &mut state);
+
+    // Detail (right): the full fact + its metadata.
+    let detail = match app.selected_memory() {
+        Some(m) => {
+            let meta = m
+                .metadata
+                .as_ref()
+                .map(|v| serde_json::to_string_pretty(v).unwrap_or_default())
+                .unwrap_or_default();
+            let score = m.score.map(|s| format!("\nscore: {s:.3}")).unwrap_or_default();
+            format!("{}\n\nid: {}{}\n\nmetadata:\n{}", m.memory, m.id, score, meta)
+        }
+        None => "No memory selected.".to_string(),
+    };
+    f.render_widget(
+        Paragraph::new(detail)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Detail ")),
+        cols[1],
+    );
+
+    // The `/` search composer floats over the tab while open.
+    if app.memory_search_open {
+        let overlay = centered_rect(60, 18, f.area());
+        f.render_widget(Clear, overlay);
+        f.render_widget(
+            Paragraph::new(format!("> {}", app.memory_search_input)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Search memory (Enter run · Esc cancel) "),
+            ),
+            overlay,
+        );
+    }
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
-        // The POTS scope indicator (D-003) leads the status line.
-        None => (format!("{} · {}", app.scope_label(), app.status), Theme::dim()),
+        // The POTS scope indicator (D-003) leads the status line; a standing
+        // help/tutorial hint (D-012) trails it so both stay discoverable.
+        None => (
+            format!("{} · {} · ?:help · F1/:tutorial", app.scope_label(), app.status),
+            Theme::dim(),
+        ),
     };
     f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
     // Companion workbench indicator (P-004): right-aligned "⚡ N panes" when the
@@ -887,7 +980,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0        switch tab (1 Operator · 4 Brew · 5 Pots · 0 Settings)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m    switch tab (1 Operator · 4 Brew · 5 Pots · m Memory)\n  /           search memory (on Memory)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -965,8 +1058,8 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
             "Welcome to pui — the Papercusp workbench",
             "pui is your terminal HUD over the operator. Everything here is live —\n\
              it reads + reacts to the same backend the desktop app uses.\n\n\
-             Tabs (press 1‑0, or  <  /  >  to cycle):\n\
-             \x20 Operator · Inbox · Plans · Brew · Pots · Docs · Testing · Config · Plugins · Settings\n\
+             Tabs (press 1‑0 / m, or  <  /  >  to cycle):\n\
+             \x20 Operator · Inbox · Plans · Brew · Pots · Docs · Testing · Config · Plugins · Settings · Memory\n\
              \x20 Brew is the whole fleet at a glance (agents + plan progress + launch).\n\n\
              Pick the pot you're working in with  [  /  ] .",
         ),
@@ -1536,6 +1629,46 @@ mod tests {
         app.set_config(String::new());
         let empty = render(&app, 100, 8);
         assert!(empty.contains("no .claude/settings.json"));
+    }
+
+    #[test]
+    fn memory_tab_renders_entries_states_and_composer() {
+        use crate::models::MemoryEntry;
+        let mut app = App::new();
+        app.tab = Tab::Memory;
+        app.show_presence = false;
+        // Backend unavailable → the clear empty state (mem0 unconfigured today).
+        let unavailable = render(&app, 110, 16);
+        assert!(unavailable.contains("memory backend unavailable"));
+        // Available but empty.
+        app.memory_available = true;
+        let empty = render(&app, 110, 16);
+        assert!(empty.contains("no memories stored yet"));
+        // Entries render with kind + detail pane metadata.
+        app.memories = vec![MemoryEntry {
+            id: "m1".into(),
+            memory: "user prefers rust for systems work".into(),
+            metadata: Some(serde_json::json!({ "kind": "preference" })),
+            score: None,
+        }];
+        let text = render(&app, 110, 18);
+        assert!(text.contains("Memory (1)"));
+        assert!(text.contains("preference"));
+        assert!(text.contains("prefers rust"));
+        assert!(text.contains("Detail"));
+        assert!(text.contains("m1"));
+        // The `/` composer overlays.
+        app.memory_search_open = true;
+        app.memory_search_input = "rust".into();
+        let composing = render(&app, 110, 18);
+        assert!(composing.contains("Search memory"));
+        assert!(composing.contains("> rust"));
+        // An active query titles the list with its hit count.
+        app.memory_search_open = false;
+        app.memory_hits = Some(("rust".into(), vec![]));
+        let hits = render(&app, 110, 18);
+        assert!(hits.contains("\"rust\" (0)"));
+        assert!(hits.contains("no hits"));
     }
 
     #[test]

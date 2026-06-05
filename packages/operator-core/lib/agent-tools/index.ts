@@ -53,6 +53,11 @@ import './tui/dispatch';
 import './activity/report';
 import './activity/recent';
 import './curation/feed';
+// autoloop-pot-operator-rebuild-2026-06-05 P0 — the Pot operator's self-declared
+// wake surface (declare-wake / wake / status):
+import './pot/declare_wake';
+import './pot/wake';
+import './pot/status';
 import './chat/ask_choice';
 import './search/fulltext';
 import './search/semantic';
@@ -354,6 +359,9 @@ import './substrate/revoke-contributor';
 import './blueprint/validate';
 import './blueprint/create';
 import './blueprint/extend';
+// autoloop-pot-operator-rebuild-2026-06-05 P-003 (P1) — blueprint:catalog, the
+// discovery half of the Pot's superpower (catalog → choose → harness:create).
+import './blueprint/catalog';
 import './harness/create';
 // P-009 (B3) — kind #1 harness creation: deterministically generate an
 // `extends: coding` blueprint from an existing repo, then compose harness:create.
@@ -393,3 +401,11 @@ import '../coord-lifecycle/register-emit-rules';
 import './rationale/feed';
 import './rationale/reproject';
 import '../rationale/rules';
+
+// autoloop-pot-operator-rebuild-2026-06-05 P0 — re-project the Pot's persisted
+// event-wake subscriptions (harness_shared.pot_wake) into live reaction rules.
+// The registry is in-memory, so this runs on every host boot. Loaded after
+// '../events' (the registry must exist). Fail-soft: a missing table
+// (pre-migration-158) or a PG hiccup must never block boot.
+import { registerPotWakeRules } from '../pot/wake';
+void registerPotWakeRules().catch(() => {});

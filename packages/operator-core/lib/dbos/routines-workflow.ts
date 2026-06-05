@@ -25,11 +25,10 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
-import { getOrgPg, listDueCronRoutines, type RoutineRow } from '@papercusp/db-org';
-import type { Sql } from 'postgres';
+import { getOrgPg, listDueCronRoutines } from '@papercusp/db-org';
 import { runWithWorkspace } from '../workspace-als';
 import { loopbackFetch } from '../loopback-fetch';
-import { computeNextFireAt } from '../harness/routines/cron';
+import { claimDueRoutine } from '../harness/routines/claim';
 import { getSystemAction, SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
@@ -39,48 +38,6 @@ const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * 
 const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
 
 const routinesQueue = new WorkflowQueue('routines', { concurrency: 4 });
-
-/**
- * Atomically claim a due routine: advance `next_fire_at` to its next cron time
- * ONLY if it is still active + due. The `WHERE active AND (next_fire_at IS NULL
- * OR next_fire_at <= now())` guard means exactly one racing tick wins the claim;
- * a loser sees zero rows updated and skips. Returns whether this tick claimed it.
- *
- * A cron-kind routine WITHOUT a cron expression is a ONE-SHOT (a self-declared
- * wake at an explicit `next_fire_at` — the pot's `pot-wake` routine,
- * autoloop-pot-operator-rebuild D-002): claiming it DEACTIVATES it. Setting
- * `next_fire_at = NULL` while leaving it active would make it due again on the
- * very next tick — an infinite refire loop.
- */
-async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<boolean> {
-  const cron = routine.triggerConfig?.cron;
-  if (!cron) {
-    const rows = await sql<{ id: string }[]>`
-      UPDATE harness_shared.routines
-         SET last_fired_at = now(),
-             next_fire_at = NULL,
-             active = FALSE,
-             updated_at = now()
-       WHERE id = ${routine.id}
-         AND active = TRUE
-         AND (next_fire_at IS NULL OR next_fire_at <= now())
-      RETURNING id
-    `;
-    return rows.length > 0;
-  }
-  const next = computeNextFireAt(cron, new Date());
-  const rows = await sql<{ id: string }[]>`
-    UPDATE harness_shared.routines
-       SET last_fired_at = now(),
-           next_fire_at = ${next ? next.toISOString() : null}::timestamptz,
-           updated_at = now()
-     WHERE id = ${routine.id}
-       AND active = TRUE
-       AND (next_fire_at IS NULL OR next_fire_at <= now())
-    RETURNING id
-  `;
-  return rows.length > 0;
-}
 
 /**
  * One durable fire of a routine: dispatch by target inside the routine's

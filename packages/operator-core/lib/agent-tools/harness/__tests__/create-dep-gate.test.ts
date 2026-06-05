@@ -1,12 +1,17 @@
 /**
- * harness:create — E2b-ii import-time TOOL-dependency gate
- * (harness-blueprint-distribution-2026-06-03 P-003/P-004). A blueprint that
- * declares a tool not in the in-process catalog must fail at CREATE (fail-fast,
- * before any dir/registry/schema side effect) — closing the call-time
- * `unknown_tool` gap. A blueprint with no tool deps must pass the gate untouched.
+ * harness:create — E2b-ii import-time dependency gate
+ * (harness-blueprint-distribution-2026-06-03 P-003/P-004;
+ * tool-distribution-granularity-2026-06-05 D-002/D-006 — the pack model).
+ * A blueprint that declares a tool with NO known provider must fail at CREATE
+ * (fail-fast, before any dir/registry/schema side effect) — closing the
+ * call-time `unknown_tool` gap. Tools/packs/plugins installable from the
+ * Cupboard are advisory and must NOT block. A blueprint with no deps must
+ * pass the gate untouched.
  *
- * Both cases are PG-free: the gate (and the dest-exists check) return before
- * `scaffoldHarnessSchema`. The registry read is mocked.
+ * All cases are PG-free: the gate (and the dest-exists check) return before
+ * `scaffoldHarnessSchema`. The registry read + the pack catalog are mocked
+ * (the catalog mock routes through the REAL pure assembler so the gate is
+ * exercised against the real model, with injected registry snapshots).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -30,6 +35,39 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
   return JSON.parse(result.content[0].text);
 }
 
+/**
+ * Mock the pack catalog with injected registry snapshots, routed through the
+ * REAL `assemblePackCatalog` + `depHostSetsFromCatalog`. `legacyCatalogNames`
+ * defaults to the live in-process catalog so built-in tool deps stay truthful.
+ */
+function mockPackCatalog(opts: {
+  installed?: Array<{ name: string; version?: string; kind?: string; tools?: Array<{ name: string }> }>;
+  projectedTools?: Array<{ pluginName: string; mcpName: string }>;
+  cupboardUnits?: Array<{
+    name: string;
+    kind: 'plugin' | 'pack';
+    listingId: string | null;
+    providesTools: string[];
+  }>;
+  cupboardReachable?: boolean;
+}) {
+  vi.doMock('../../../cupboard/pack-catalog', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../cupboard/pack-catalog')>();
+    const { getCatalog } = await import('@papercusp/agent-mcp');
+    return {
+      ...actual,
+      derivePackCatalog: async (deriveOpts: { includeCupboard?: boolean } = {}) =>
+        actual.assemblePackCatalog({
+          installed: opts.installed ?? [],
+          projectedTools: opts.projectedTools ?? [],
+          legacyCatalogNames: getCatalog().map((t) => t.name),
+          cupboardUnits: deriveOpts.includeCupboard === false ? [] : opts.cupboardUnits ?? [],
+          cupboardReachable: deriveOpts.includeCupboard === false ? true : opts.cupboardReachable ?? true,
+        }),
+    };
+  });
+}
+
 beforeEach(() => {
   vi.resetModules();
   vi.doMock('../../../harness-registry', () => ({
@@ -39,10 +77,12 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.doUnmock('../../../harness-registry');
+  vi.doUnmock('../../../cupboard/pack-catalog');
 });
 
-describe('harness:create — E2b-ii tool-dep gate', () => {
-  it('fails fast when the blueprint declares a tool absent from the catalog', async () => {
+describe('harness:create — E2b-ii dependency gate (pack model)', () => {
+  it('fails fast when the blueprint declares a tool with no known provider', async () => {
+    mockPackCatalog({});
     const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
     const res = await tool.handler(
       {
@@ -52,7 +92,7 @@ describe('harness:create — E2b-ii tool-dep gate', () => {
         blueprint: {
           id: 'deptest',
           extends: 'coding',
-          dependencies: { tools: ['definitely-not-a-real-tool-xyz'] },
+          dependencies: { tools: ['definitely-not-a-real-tool-xyz'], packs: [], plugins: [] },
         },
       },
       MAKE_CTX(),
@@ -63,38 +103,101 @@ describe('harness:create — E2b-ii tool-dep gate', () => {
     expect(payload.missing.tools).toContain('definitely-not-a-real-tool-xyz');
   });
 
-  it('fails when a declared plugin is neither installed nor in the Cupboard (Cupboard reachable)', async () => {
-    vi.doMock('../../../cupboard/plugin-listings', () => ({
-      listInstalledPluginNames: async () => new Set<string>(),
-      resolveCupboardPluginNames: async () => ({ names: new Set<string>(), reachable: true }),
-    }));
+  it('passes when a declared tool is PROVIDED BY AN INSTALLED PLUGIN (projected registry, not getCatalog)', async () => {
+    // The recon-found gap: pre-pack-model, availableTools came from
+    // getCatalog() only, so `repomix.pack` false-failed even when installed.
+    mockPackCatalog({
+      installed: [{ name: 'repomix', version: '1.0.0' }],
+      projectedTools: [{ pluginName: 'repomix', mcpName: 'repomix.pack' }],
+    });
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-plugtool-'));
     try {
+      await fs.mkdir(join(dir, 'already'));
       const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
       const res = await tool.handler(
         {
-          slug: 'plugtest',
-          parentDir: '/tmp/should-never-be-created-by-this-test',
-          folderName: 'plugtest-x',
-          blueprint: { id: 'plugtest', extends: 'coding', dependencies: { plugins: ['ghost-plugin'] } },
+          slug: 'plugtool',
+          parentDir: dir,
+          folderName: 'already',
+          blueprint: { id: 'plugtool', extends: 'coding', dependencies: { tools: ['repomix.pack'], packs: [], plugins: [] } },
         },
         MAKE_CTX(),
       );
       const payload = parsePayload(res);
       expect(payload.ok).toBe(false);
-      expect(payload.error).toMatch(/plugin dependencies unmet/);
-      expect(payload.missing.plugins).toContain('ghost-plugin');
+      expect(payload.error).toMatch(/destination already exists/); // gate passed
     } finally {
-      vi.doUnmock('../../../cupboard/plugin-listings');
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
+  it('passes when a declared tool is provided by an INSTALLABLE Cupboard unit (advisory, non-blocking)', async () => {
+    mockPackCatalog({
+      cupboardUnits: [
+        { name: 'firecrawl', kind: 'plugin', listingId: 'l1', providesTools: ['firecrawl.scrape'] },
+      ],
+    });
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-insttool-'));
+    try {
+      await fs.mkdir(join(dir, 'already'));
+      const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
+      const res = await tool.handler(
+        {
+          slug: 'insttool',
+          parentDir: dir,
+          folderName: 'already',
+          blueprint: { id: 'insttool', extends: 'coding', dependencies: { tools: ['firecrawl.scrape'], packs: [], plugins: [] } },
+        },
+        MAKE_CTX(),
+      );
+      const payload = parsePayload(res);
+      expect(payload.ok).toBe(false);
+      expect(payload.error).toMatch(/destination already exists/); // gate passed
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails when a declared plugin is neither installed nor in the Cupboard (Cupboard reachable)', async () => {
+    mockPackCatalog({ cupboardReachable: true });
+    const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
+    const res = await tool.handler(
+      {
+        slug: 'plugtest',
+        parentDir: '/tmp/should-never-be-created-by-this-test',
+        folderName: 'plugtest-x',
+        blueprint: { id: 'plugtest', extends: 'coding', dependencies: { tools: [], packs: [], plugins: ['ghost-plugin'] } },
+      },
+      MAKE_CTX(),
+    );
+    const payload = parsePayload(res);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toMatch(/pack\/plugin dependencies unmet/);
+    expect(payload.missing.plugins).toContain('ghost-plugin');
+  });
+
+  it('fails when a declared PACK is neither installed nor in the Cupboard (Cupboard reachable)', async () => {
+    mockPackCatalog({ cupboardReachable: true });
+    const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
+    const res = await tool.handler(
+      {
+        slug: 'packtest',
+        parentDir: '/tmp/should-never-be-created-by-this-test',
+        folderName: 'packtest-x',
+        blueprint: { id: 'packtest', extends: 'coding', dependencies: { tools: [], packs: ['ghost-pack'], plugins: [] } },
+      },
+      MAKE_CTX(),
+    );
+    const payload = parsePayload(res);
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toMatch(/pack\/plugin dependencies unmet/);
+    expect(payload.missing.packs).toContain('ghost-pack');
+  });
+
   it('passes the gate when a declared plugin is installable from the Cupboard', async () => {
-    // Plugin present in the Cupboard (not installed) → `installable`, not missing →
-    // gate passes; execution reaches step 2 and rejects on dest-exists.
-    vi.doMock('../../../cupboard/plugin-listings', () => ({
-      listInstalledPluginNames: async () => new Set<string>(),
-      resolveCupboardPluginNames: async () => ({ names: new Set<string>(['cool-plugin']), reachable: true }),
-    }));
+    mockPackCatalog({
+      cupboardUnits: [{ name: 'cool-plugin', kind: 'plugin', listingId: 'l2', providesTools: [] }],
+    });
     const dir = await fs.mkdtemp(join(tmpdir(), 'create-plug-'));
     try {
       await fs.mkdir(join(dir, 'already'));
@@ -104,7 +207,7 @@ describe('harness:create — E2b-ii tool-dep gate', () => {
           slug: 'plugok',
           parentDir: dir,
           folderName: 'already',
-          blueprint: { id: 'plugok', extends: 'coding', dependencies: { plugins: ['cool-plugin'] } },
+          blueprint: { id: 'plugok', extends: 'coding', dependencies: { tools: [], packs: [], plugins: ['cool-plugin'] } },
         },
         MAKE_CTX(),
       );
@@ -112,18 +215,37 @@ describe('harness:create — E2b-ii tool-dep gate', () => {
       expect(payload.ok).toBe(false);
       expect(payload.error).toMatch(/destination already exists/);
     } finally {
-      vi.doUnmock('../../../cupboard/plugin-listings');
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  it('does NOT hard-fail a missing plugin when the Cupboard is unreachable', async () => {
-    // A transient cupboard-unreachable must not false-fail — the plugin may be
-    // installable there. Gate passes; execution reaches step 2 (dest-exists).
-    vi.doMock('../../../cupboard/plugin-listings', () => ({
-      listInstalledPluginNames: async () => new Set<string>(),
-      resolveCupboardPluginNames: async () => ({ names: new Set<string>(), reachable: false }),
-    }));
+  it('passes the gate when a declared pack is installable from the Cupboard (kind pack or plugin)', async () => {
+    mockPackCatalog({
+      cupboardUnits: [{ name: 'audit-pack', kind: 'pack', listingId: 'l3', providesTools: ['audit-pack.scan'] }],
+    });
+    const dir = await fs.mkdtemp(join(tmpdir(), 'create-pack-'));
+    try {
+      await fs.mkdir(join(dir, 'already'));
+      const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
+      const res = await tool.handler(
+        {
+          slug: 'packok',
+          parentDir: dir,
+          folderName: 'already',
+          blueprint: { id: 'packok', extends: 'coding', dependencies: { tools: [], packs: ['audit-pack'], plugins: [] } },
+        },
+        MAKE_CTX(),
+      );
+      const payload = parsePayload(res);
+      expect(payload.ok).toBe(false);
+      expect(payload.error).toMatch(/destination already exists/);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT hard-fail a missing pack/plugin when the Cupboard is unreachable', async () => {
+    mockPackCatalog({ cupboardReachable: false });
     const dir = await fs.mkdtemp(join(tmpdir(), 'create-plug-unreach-'));
     try {
       await fs.mkdir(join(dir, 'already'));
@@ -133,7 +255,11 @@ describe('harness:create — E2b-ii tool-dep gate', () => {
           slug: 'plugunreach',
           parentDir: dir,
           folderName: 'already',
-          blueprint: { id: 'plugunreach', extends: 'coding', dependencies: { plugins: ['ghost-plugin'] } },
+          blueprint: {
+            id: 'plugunreach',
+            extends: 'coding',
+            dependencies: { tools: [], packs: ['ghost-pack'], plugins: ['ghost-plugin'] },
+          },
         },
         MAKE_CTX(),
       );
@@ -141,21 +267,27 @@ describe('harness:create — E2b-ii tool-dep gate', () => {
       expect(payload.ok).toBe(false);
       expect(payload.error).toMatch(/destination already exists/);
     } finally {
-      vi.doUnmock('../../../cupboard/plugin-listings');
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  it('short-circuits (no-op) for a blueprint with no tool deps — gate passes through', async () => {
-    // `coding` declares no dependencies.tools → the gate short-circuits and
-    // execution reaches step 2 (dir resolution), which rejects because the
-    // destination already exists. That proves the gate did NOT block creation.
+  it('short-circuits (no-op) for a blueprint with explicitly empty deps — gate passes through', async () => {
+    // All three dep arrays empty → the gate short-circuits (no catalog
+    // derivation, no Cupboard) and execution reaches step 2 (dir resolution),
+    // which rejects because the destination already exists. That proves the
+    // gate did NOT block creation. (Explicit empties also REPLACE any deps a
+    // parent built-in declares — arrays merge wholesale.)
     const dir = await fs.mkdtemp(join(tmpdir(), 'create-noop-'));
     try {
       await fs.mkdir(join(dir, 'already'));
       const tool = (await import('../create')).default as { handler: (a: unknown, c: unknown) => Promise<any> };
       const res = await tool.handler(
-        { slug: 'noopt', parentDir: dir, folderName: 'already', blueprintId: 'coding' },
+        {
+          slug: 'noopt',
+          parentDir: dir,
+          folderName: 'already',
+          blueprint: { id: 'noopt', extends: 'coding', dependencies: { tools: [], packs: [], plugins: [] } },
+        },
         MAKE_CTX(),
       );
       const payload = parsePayload(res);

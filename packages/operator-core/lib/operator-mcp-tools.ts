@@ -109,6 +109,14 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // the user's click becomes the next user message. See
   // apps/operator/lib/agent-tools/chat/ask_choice.ts.
   'mcp__agentmcp__chat:ask_choice',
+
+  // The Pot's self-declared wake (autoloop-pot-operator-rebuild-2026-06-05 P0).
+  // The chat operator schedules/inspects/fires its own background wakes — the
+  // user says "check the fleet in an hour" → pot:declare-wake; "wake up now" →
+  // pot:wake. pot:status is read-only.
+  'mcp__agentmcp__pot:declare-wake',
+  'mcp__agentmcp__pot:wake',
+  'mcp__agentmcp__pot:status',
 ];
 
 /**

@@ -7,8 +7,8 @@
 
 import type { Env } from './env.ts';
 
-/** The four storefront listing kinds (migration 004 / D-005). */
-export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin'] as const;
+/** The five storefront listing kinds (migrations 004 + 006 / D-005). */
+export const LISTING_KINDS = ['harness', 'blueprint', 'snapshot', 'plugin', 'pack'] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -41,6 +41,11 @@ export interface HarnessRow {
   tarball_r2_key: string | null;          // R2 object key, `snapshots/<sha256>.tar.gz`
   tarball_content_hash: string | null;    // sha256 of the tarball (hex)
   tarball_bytes: number | null;           // tarball size in bytes
+  // Pack model (migration 006): JSON-encoded string[] of the MCP tool names the
+  // unit registers when installed (e.g. ["repomix.pack"]). Kinds plugin|pack
+  // only; NULL elsewhere and for pre-006 listings. The operator's tool→provider
+  // resolver reads it to answer "which Cupboard unit provides tool X?".
+  provides_tools: string | null;
   claim_status: 'unclaimed' | 'claimed' | 'stale' | 'superseded';
   claimant_github_user_id: number | null;
   claimant_github_login: string | null;
@@ -94,6 +99,8 @@ export interface NewHarnessInput {
   tarball_r2_key?: string | null;
   tarball_content_hash?: string | null;
   tarball_bytes?: number | null;
+  /** Pack model (migration 006): JSON string[] of provided tool names; plugin|pack only. */
+  provides_tools?: string | null;
   created_at: number;
 }
 
@@ -106,10 +113,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
-          tarball_r2_key, tarball_content_hash, tarball_bytes,
+          tarball_r2_key, tarball_content_hash, tarball_bytes, provides_tools,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -131,6 +138,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.tarball_r2_key ?? null,
       h.tarball_content_hash ?? null,
       h.tarball_bytes ?? null,
+      h.provides_tools ?? null,
       h.created_at,
       h.created_at,
     )

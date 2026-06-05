@@ -21,11 +21,11 @@
  */
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { defineTool, getCatalog } from '@papercusp/agent-mcp';
+import { defineTool } from '@papercusp/agent-mcp';
 import { parseDepSpec } from '@papercusp/blueprint-distribution';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveCupboardBaseUrl } from './harness/cupboard-publish';
-import { resolveCupboardPluginNames, listInstalledPluginNames } from '../../cupboard/plugin-listings';
+import { derivePackCatalog, depHostSetsFromCatalog } from '../../cupboard/pack-catalog';
 import {
   installBlueprintFromCupboardCore,
   InstallBlueprintError,
@@ -115,17 +115,11 @@ export default defineTool({
           installedBlueprintsDir: INSTALLED_BLUEPRINTS_DIR,
           tmpDir: tmpdir,
           resolveExtends: operatorResolveExtends(),
+          // The pack-catalog host sets (tool-distribution D-002): built-ins +
+          // installed units + Cupboard listings, provider-aware for tools.
           resolveHostSets: async () => {
-            const [installedPlugins, cupboard] = await Promise.all([
-              listInstalledPluginNames(),
-              resolveCupboardPluginNames(),
-            ]);
-            return {
-              availableTools: new Set(getCatalog().map((t) => t.name)),
-              installedPlugins,
-              cupboardPlugins: cupboard.names,
-              cupboardReachable: cupboard.reachable,
-            };
+            const catalog = await derivePackCatalog({});
+            return { ...depHostSetsFromCatalog(catalog), cupboardReachable: catalog.cupboardReachable };
           },
         },
       );

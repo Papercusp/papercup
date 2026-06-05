@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
-import { defineTool, getCatalog } from '@papercusp/agent-mcp';
+import { defineTool } from '@papercusp/agent-mcp';
 import { validateBlueprintDependencies } from '@papercusp/blueprint-distribution';
 import { COORD_ROLES } from '../coordination/roles';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
@@ -83,38 +83,54 @@ export default defineTool({
     const requiresRepo = validation.blueprint!.knobs.requiresRepo !== false;
 
     // 1b. Import-time dependency validation (harness-blueprint-distribution
-    //     E2 — P-003/P-004; revive-cupboard-distribution D-003 — the plugin half).
-    //     A blueprint that declares a TOOL its roles need which is NOT in the
-    //     in-process catalog fails HERE, at create — closing the call-time
-    //     `unknown_tool` gap (capabilities/invoke.ts). A declared PLUGIN must be
-    //     installed OR available in the Cupboard (now that E4's 3-kind storefront
-    //     landed) — a plugin in NEITHER fails with a truthful "needs plugin X".
-    //     Fail-fast: before any dir/registry/schema side effect. No-op for a
-    //     blueprint that declares no tool/plugin deps (the guard short-circuits).
+    //     E2 — P-003/P-004; revive-cupboard-distribution D-003;
+    //     tool-distribution-granularity D-002/D-006 — the pack model).
+    //     A blueprint declares `dependencies.{tools,packs,plugins}`; the gate
+    //     resolves each against the live pack catalog (built-ins + installed
+    //     units + Cupboard listings) HERE, at create — closing the call-time
+    //     `unknown_tool` gap (capabilities/invoke.ts). A declared tool with no
+    //     known provider hard-fails; a tool/pack/plugin installable from the
+    //     Cupboard is advisory. Fail-fast: before any dir/registry/schema side
+    //     effect. No-op for a blueprint that declares no deps.
     const declaredTools = validation.blueprint!.dependencies?.tools ?? [];
+    const declaredPacks = validation.blueprint!.dependencies?.packs ?? [];
     const declaredPlugins = validation.blueprint!.dependencies?.plugins ?? [];
-    if (declaredTools.length > 0 || declaredPlugins.length > 0) {
-      const { resolveCupboardPluginNames, listInstalledPluginNames } = await import('../../cupboard/plugin-listings');
-      const availableTools = new Set(getCatalog().map((t) => t.name));
-      const [installedPlugins, cupboard] = await Promise.all([
-        declaredPlugins.length > 0 ? listInstalledPluginNames() : Promise.resolve(new Set<string>()),
-        declaredPlugins.length > 0 ? resolveCupboardPluginNames() : Promise.resolve({ names: new Set<string>(), reachable: true }),
-      ]);
-      const depCheck = validateBlueprintDependencies(
-        { tools: declaredTools, plugins: declaredPlugins },
-        { availableTools, installedPlugins, cupboardPlugins: cupboard.names },
+    if (declaredTools.length > 0 || declaredPacks.length > 0 || declaredPlugins.length > 0) {
+      const { derivePackCatalog, depHostSetsFromCatalog } = await import('../../cupboard/pack-catalog');
+      // Local-only first: when every declared dep resolves in-process, skip
+      // the Cupboard round-trip entirely.
+      const localCatalog = await derivePackCatalog({ includeCupboard: false });
+      const localCheck = validateBlueprintDependencies(
+        { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
+        depHostSetsFromCatalog(localCatalog),
       );
-      // Tools are a hard gate (catalog is in-process, always authoritative).
-      if (depCheck.missing.tools.length > 0) {
-        return fail({ error: 'blueprint tool dependencies unmet', missing: { tools: depCheck.missing.tools }, messages: depCheck.messages });
+      let depCheck = localCheck;
+      let cupboardReachable = true;
+      if (!localCheck.ok) {
+        const catalog = await derivePackCatalog({});
+        cupboardReachable = catalog.cupboardReachable;
+        depCheck = validateBlueprintDependencies(
+          { tools: declaredTools, packs: declaredPacks, plugins: declaredPlugins },
+          depHostSetsFromCatalog(catalog),
+        );
       }
-      // Plugins: hard-fail only when the Cupboard was actually reachable — a
-      // transient cupboard-unreachable must not false-fail a plugin that may be
-      // installable there. `installable` plugins (in the Cupboard) never block.
-      if (cupboard.reachable && depCheck.missing.plugins.length > 0) {
+      // Tools with NO known provider are a hard gate (the in-process catalog is
+      // authoritative; a Cupboard-installable provider downgrades to advisory).
+      if (depCheck.missing.tools.length > 0) {
         return fail({
-          error: 'blueprint plugin dependencies unmet',
-          missing: { plugins: depCheck.missing.plugins },
+          error: 'blueprint tool dependencies unmet',
+          missing: { tools: depCheck.missing.tools },
+          installable: depCheck.installable,
+          messages: depCheck.messages,
+        });
+      }
+      // Packs/plugins: hard-fail only when the Cupboard was actually reachable —
+      // a transient cupboard-unreachable must not false-fail a unit that may be
+      // installable there. `installable` units (in the Cupboard) never block.
+      if (cupboardReachable && (depCheck.missing.plugins.length > 0 || depCheck.missing.packs.length > 0)) {
+        return fail({
+          error: 'blueprint pack/plugin dependencies unmet',
+          missing: { packs: depCheck.missing.packs, plugins: depCheck.missing.plugins },
           installable: depCheck.installable,
           messages: depCheck.messages,
         });

@@ -38,7 +38,10 @@ async function main(): Promise<void> {
   const { sql } = getOrgPg();
   const name = 'scan';
   const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const payloadTemplate = { blueprintId: 'scan', mode: 'run', kickoff: KICKOFF };
+  // timeoutMs: a real workspace scan runs many turns — far past the invoke
+  // route's 90s default (P-009 smoke: 300s SIGTERMed a scan with zero output).
+  // blueprint-run-action forwards this to fireLaunchBlueprint → the route.
+  const payloadTemplate = { blueprintId: 'scan', mode: 'run', kickoff: KICKOFF, timeoutMs: 900_000 };
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,

@@ -57,8 +57,18 @@ export interface PluginManifest {
   description?: string;
   author?: string;
   papercusp?: string;
+  /**
+   * Distribution kind. `'plugin'` (default) = runtime-bearing pack;
+   * `'pack'` = runtime-less code-tool pack (tools only —
+   * tool-distribution-granularity-2026-06-05 D-001/D-004).
+   */
+  kind?: string;
   capabilities?: string[];
   roles?: string[];
+  /** MCP tool declarations (`registerPluginTools` naming: `<short>.<name>`). */
+  tools?: Array<{ name?: unknown; expose?: { mcp?: { name?: unknown } } } | null>;
+  /** Tool/pack/plugin deps this unit's tools need (D-003 plugin-to-tool deps). */
+  dependencies?: { tools?: string[]; packs?: string[]; plugins?: string[] };
   dashboardTabs?: DashboardTabManifest[];
   sidebarItems?: SidebarItemManifest[];
   ui?: UiContributionManifest;

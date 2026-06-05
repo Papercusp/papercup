@@ -1049,6 +1049,7 @@ impl App {
             "testing" => self.testing_sel = clamp(self.testing.len()),
             "panes" | "plugins" => self.pane_sel = clamp(self.panes.len()),
             "flags" | "settings" => self.flag_sel = clamp(self.flags.len()),
+            "memory" | "memories" => self.memory_sel = clamp(self.visible_memories().len()),
             // The Brew tab (fleet ⋃ the old Sessions launcher, D-002b) shares one
             // cursor; every legacy alias resolves to it.
             "agents" | "fleet" | "brew" | "roster" | "sessions" => {
@@ -1083,6 +1084,7 @@ impl App {
                 "testing": self.testing_sel,
                 "pane": self.pane_sel,
                 "agent": self.fleet.agent_sel,
+                "memory": self.memory_sel,
             },
             "counts": {
                 "plans": self.visible_plans().len(),
@@ -1095,6 +1097,7 @@ impl App {
                 "testing": self.testing.len(),
                 "panes": self.panes.len(),
                 "flags": self.flags.len(),
+                "memories": self.visible_memories().len(),
                 "work_items": self.fleet.work_items.len(),
                 "fleet_activity": self.fleet.activity.len(),
             },
@@ -1369,6 +1372,30 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Memories { available, results } => {
+                self.memory_available = available;
+                self.memories = results;
+                let len = self.visible_memories().len();
+                if self.memory_sel >= len {
+                    self.memory_sel = len.saturating_sub(1);
+                }
+                self.last_error = None;
+                Action::Render
+            }
+            Event::MemoryHits { query, results } => {
+                // Only paint hits for the query that is still active (a cleared
+                // search drops a late response).
+                if self
+                    .memory_hits
+                    .as_ref()
+                    .is_some_and(|(q, _)| *q == query)
+                {
+                    self.memory_hits = Some((query, results));
+                    self.memory_sel = 0;
+                }
+                self.last_error = None;
+                Action::Render
+            }
             Event::TestRunDone { file, result } => {
                 self.test_run = Some(TestRunState {
                     running: false,
@@ -1583,6 +1610,41 @@ impl App {
                 _ => Action::None,
             };
         }
+        // Memory search composer (D-006): captures all input while open, like
+        // the palette. Enter fires the semantic search; Esc cancels.
+        if self.memory_search_open {
+            return match code {
+                KeyCode::Esc => {
+                    self.memory_search_open = false;
+                    self.memory_search_input.clear();
+                    Action::Render
+                }
+                KeyCode::Enter => {
+                    let query = self.memory_search_input.trim().to_string();
+                    self.memory_search_open = false;
+                    self.memory_search_input.clear();
+                    if query.is_empty() {
+                        return Action::Render;
+                    }
+                    // Mark the active query; hits land via Event::MemoryHits.
+                    self.memory_hits = Some((query.clone(), Vec::new()));
+                    self.memory_sel = 0;
+                    Action::SearchMemory {
+                        query,
+                        harness: self.harness.clone(),
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.memory_search_input.pop();
+                    Action::Render
+                }
+                KeyCode::Char(c) => {
+                    self.memory_search_input.push(c);
+                    Action::Render
+                }
+                _ => Action::None,
+            };
+        }
         // Command palette captures all input while open.
         if self.palette_open {
             return match code {
@@ -1706,8 +1768,20 @@ impl App {
                 Action::Render
             }
             KeyCode::Esc => {
-                // Dismiss the transient toast (no-op if none).
+                // On the Memory tab, Esc first clears an active search back to
+                // the full list (D-006); else dismiss the transient toast.
+                if self.tab == Tab::Memory && self.memory_hits.is_some() {
+                    self.memory_hits = None;
+                    self.memory_sel = 0;
+                    return Action::Render;
+                }
                 self.toast = None;
+                Action::Render
+            }
+            // Memory semantic search (D-006): `/` opens the query composer.
+            KeyCode::Char('/') if self.tab == Tab::Memory => {
+                self.memory_search_open = true;
+                self.memory_search_input.clear();
                 Action::Render
             }
             // Launch a native agent pane from the Brew tab (the old Sessions
@@ -1904,6 +1978,7 @@ impl App {
             Tab::Plugins => self.panes.len(),
             Tab::Settings => self.flags.len(),
             Tab::Fleet => self.roster.len(),
+            Tab::Memory => self.visible_memories().len(),
             // No list to navigate — j/k scroll the transcript (Operator) handled
             // in on_key; Config has no list.
             Tab::Config | Tab::Operator => return,
@@ -1926,6 +2001,7 @@ impl App {
             Tab::Plugins => &mut self.pane_sel,
             Tab::Settings => &mut self.flag_sel,
             Tab::Fleet => &mut self.fleet.agent_sel,
+            Tab::Memory => &mut self.memory_sel,
             Tab::Config | Tab::Operator => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
@@ -2978,8 +3054,9 @@ mod tests {
         assert_eq!(Tab::Operator.title(), "Operator");
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
         // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
-        // tabs on ten digit keys.
-        assert_eq!(Tab::ALL.len(), 10);
+        // digit tabs, plus the appended Memory tab on 'm' (D-006).
+        assert_eq!(Tab::ALL.len(), 11);
+        assert_eq!(Tab::Memory.switch_key(), 'm');
         // `1` returns to it from elsewhere.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));
@@ -3212,6 +3289,80 @@ mod tests {
             }
             other => panic!("expected IntentResult error, got {other:?}"),
         }
+    }
+
+    // --- Memory tab (D-006 Step 2, pui-completion-and-polish) ---
+
+    fn mem(id: &str, text: &str, kind: &str) -> crate::models::MemoryEntry {
+        crate::models::MemoryEntry {
+            id: id.into(),
+            memory: text.into(),
+            metadata: Some(serde_json::json!({ "kind": kind })),
+            score: None,
+        }
+    }
+
+    #[test]
+    fn memory_tab_lists_searches_and_clears() {
+        let mut a = App::new();
+        a.update(key('m', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Memory);
+        // The list lands from memory:list; availability follows the payload.
+        a.update(Event::Memories {
+            available: true,
+            results: vec![mem("m1", "likes rust", "preference"), mem("m2", "tz is ET", "identity")],
+        });
+        assert!(a.memory_available);
+        assert_eq!(a.visible_memories().len(), 2);
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.memory_sel, 1);
+        assert_eq!(a.selected_memory().unwrap().id, "m2");
+        // `/` opens the composer; typed keys go to the query, not tabs.
+        a.update(key('/', KeyModifiers::NONE));
+        assert!(a.memory_search_open);
+        a.update(key('r', KeyModifiers::NONE));
+        a.update(key('u', KeyModifiers::NONE));
+        a.update(key('s', KeyModifiers::NONE));
+        a.update(key('t', KeyModifiers::NONE));
+        assert_eq!(a.memory_search_input, "rust");
+        assert_eq!(a.tab, Tab::Memory);
+        // Enter fires the search + arms the active query.
+        match a.update(ev(KeyCode::Enter)) {
+            Action::SearchMemory { query, harness } => {
+                assert_eq!(query, "rust");
+                assert_eq!(harness, "papercup");
+            }
+            other => panic!("expected SearchMemory, got {other:?}"),
+        }
+        assert!(!a.memory_search_open);
+        // Hits for the ACTIVE query apply; a stale query's hits are dropped.
+        a.update(Event::MemoryHits { query: "stale".into(), results: vec![mem("x", "x", "project")] });
+        assert!(a.visible_memories().is_empty()); // armed query, no hits yet
+        a.update(Event::MemoryHits { query: "rust".into(), results: vec![mem("m1", "likes rust", "preference")] });
+        assert_eq!(a.visible_memories().len(), 1);
+        assert_eq!(a.selected_memory().unwrap().kind(), "preference");
+        // Esc clears the search back to the full list.
+        a.update(ev(KeyCode::Esc));
+        assert!(a.memory_hits.is_none());
+        assert_eq!(a.visible_memories().len(), 2);
+        // Esc with no active search just dismisses toasts (no panic).
+        a.update(ev(KeyCode::Esc));
+    }
+
+    #[test]
+    fn memory_search_esc_cancels_composer() {
+        let mut a = App::new();
+        a.update(key('m', KeyModifiers::NONE));
+        a.update(key('/', KeyModifiers::NONE));
+        a.update(key('x', KeyModifiers::NONE));
+        a.update(ev(KeyCode::Esc));
+        assert!(!a.memory_search_open);
+        assert!(a.memory_search_input.is_empty());
+        assert!(a.memory_hits.is_none());
+        // An empty query on Enter is inert.
+        a.update(key('/', KeyModifiers::NONE));
+        assert_eq!(a.update(ev(KeyCode::Enter)), Action::Render);
+        assert!(a.memory_hits.is_none());
     }
 
     // --- POTS scope axis + picker (D-003, pui-completion-and-polish) ---

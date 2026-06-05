@@ -166,10 +166,13 @@ const invoke = defineTool({
   path: '/harness/:slug/invoke',
   auth: 'public',
   // A single-role agent invocation runs an LLM to completion — far longer than
-  // the 30s route default. The handler caps the child at `timeoutMs` (≤300s);
-  // give the route a ceiling just above that so it never aborts a within-limits
-  // agent mid-run (claude-code promote reads the plan + calls plans:promote, ~30-120s).
-  timeoutSec: 310,
+  // the 30s route default. The handler caps the child at `timeoutMs` (≤1200s —
+  // raised from 300s for long single-role launches: a scheduled `scan` blueprint
+  // run sweeps the workspace for many turns; unify-agent-launches P-009 smoke
+  // showed 300s SIGTERMs a real scan with zero output). Give the route a ceiling
+  // just above the cap so it never aborts a within-limits agent mid-run
+  // (claude-code promote reads the plan + calls plans:promote, ~30-120s).
+  timeoutSec: 1210,
   async handler(req, ctx) {
     const gate = requireLoopbackOr403(req);
     if (gate) return gate;
@@ -181,7 +184,7 @@ const invoke = defineTool({
       return Response.json({ error: 'invalid role name' }, { status: 400 });
     }
     const body = await req.json().catch(() => ({} as any));
-    const timeoutMs = Math.max(5_000, Math.min(300_000, Number((body as any)?.timeoutMs ?? 90_000)));
+    const timeoutMs = Math.max(5_000, Math.min(1_200_000, Number((body as any)?.timeoutMs ?? 90_000)));
     const extra: string[] = Array.isArray((body as any)?.extra)
       ? (body as any).extra.filter((s: any) => typeof s === 'string')
       : [];

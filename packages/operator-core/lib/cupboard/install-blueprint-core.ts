@@ -50,8 +50,8 @@ export interface InstallBlueprintCoreResult {
   abstract: boolean;
   source: string;
   installedTo: string;
-  /** The blueprint's declared dependencies, verbatim. */
-  dependencies: { tools: string[]; plugins: string[] };
+  /** The blueprint's declared dependencies, verbatim (tool-distribution D-002: tools/packs/plugins). */
+  dependencies: { tools: string[]; packs: string[]; plugins: string[] };
   /** The import-time dep-validation result (null when no deps are declared). */
   depCheck: BlueprintDependencyValidation | null;
 }
@@ -177,7 +177,7 @@ export async function installBlueprintFromCupboardCore(
     // full semantic validation (it requires a runnable shape); it only ever
     // appears as an `extends` parent.
     const abstract = raw.workItem == null && raw.spine == null;
-    let dependencies: { tools: string[]; plugins: string[] } = { tools: [], plugins: [] };
+    let dependencies: { tools: string[]; packs: string[]; plugins: string[] } = { tools: [], packs: [], plugins: [] };
     if (!abstract) {
       const res = resolveAndValidateBlueprint(raw, deps.resolveExtends);
       if (res.parseError) {
@@ -187,16 +187,21 @@ export async function installBlueprintFromCupboardCore(
         const errs = (res.validation?.errors ?? []).map((e) => `${e.code}: ${e.message}`).join('; ');
         throw new InstallBlueprintError(`blueprint "${id}" is invalid: ${errs}`, 422);
       }
+      const d = res.blueprint!.dependencies as { tools?: string[]; packs?: string[]; plugins?: string[] } | undefined;
       dependencies = {
-        tools: res.blueprint!.dependencies?.tools ?? [],
-        plugins: res.blueprint!.dependencies?.plugins ?? [],
+        tools: d?.tools ?? [],
+        packs: d?.packs ?? [],
+        plugins: d?.plugins ?? [],
       };
     }
 
     // Import-time dep-validation (E2a / D-001): fail upfront with an actionable
-    // "needs tool/plugin X", before the blueprint lands in the installed tier.
+    // "needs tool/pack/plugin X", before the blueprint lands in the installed
+    // tier. Tools with NO known provider hard-fail (installable-advisory tools
+    // are excluded from `missing` by the provider-aware validator); packs/
+    // plugins hard-fail only when the Cupboard was actually reachable.
     let depCheck: BlueprintDependencyValidation | null = null;
-    if (dependencies.tools.length > 0 || dependencies.plugins.length > 0) {
+    if (dependencies.tools.length > 0 || dependencies.packs.length > 0 || dependencies.plugins.length > 0) {
       const host = await deps.resolveHostSets();
       depCheck = validateBlueprintDependencies(dependencies, host);
       if (depCheck.missing.tools.length > 0) {
@@ -205,9 +210,10 @@ export async function installBlueprintFromCupboardCore(
           422,
         );
       }
-      if (host.cupboardReachable && depCheck.missing.plugins.length > 0) {
+      const missingUnits = [...depCheck.missing.packs, ...depCheck.missing.plugins];
+      if (host.cupboardReachable && missingUnits.length > 0) {
         throw new InstallBlueprintError(
-          `blueprint "${id}" plugin dependencies unmet: ${depCheck.missing.plugins.join(', ')}`,
+          `blueprint "${id}" pack/plugin dependencies unmet: ${missingUnits.join(', ')}`,
           422,
         );
       }

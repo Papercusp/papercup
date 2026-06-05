@@ -1,11 +1,13 @@
 /**
  * /listings — the generalized storefront surface (migration 004 / D-005).
  *
- * ONE storefront, three listing kinds:
+ * ONE storefront, five listing kinds:
  *   harness   → join     (shared-harness via the Hypercore topic_hex)
  *   blueprint → fork     (a blueprint stream within a project)
  *   snapshot  → fork     (a captured snapshot)
- *   plugin    → install  (a distributable plugin)
+ *   plugin    → install  (a distributable plugin — a pack WITH a runtime)
+ *   pack      → install  (a runtime-less code-tool pack; migration 006,
+ *                         tool-distribution-granularity D-001/D-004)
  *
  * Project-centric 1:N (D-008): listings key on the papercupai project remote
  * (`project_ref`) and a project hosts N non-harness listings, discriminated by
@@ -70,7 +72,15 @@ interface PublishBody {
   tarball_r2_key?: string;           // MUST be `snapshots/<tarball_content_hash>.tar.gz`
   tarball_content_hash?: string;     // sha256 hex of the tarball
   tarball_bytes?: number;            // tarball size in bytes
+  // Pack model (migration 006). MCP tool names the unit registers when
+  // installed; kinds plugin|pack only. Stored as a JSON TEXT column and
+  // returned verbatim on GET (the operator's resolver parses it).
+  provides_tools?: unknown;          // expected: string[]
 }
+
+/** provides_tools caps (migration 006): bounded so a listing can't smuggle a payload. */
+const PROVIDES_TOOLS_MAX_ENTRIES = 200;
+const PROVIDES_TOOLS_MAX_NAME_LEN = 128;
 
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
 // Slug-ish: blueprint stream name / snapshot id / plugin slug. Permits path-y
@@ -292,6 +302,24 @@ function registerListingEndpoints(
       }
     }
 
+    // provides_tools (migration 006) — pack-model tool metadata. Only the
+    // installable kinds (plugin|pack) register tools; a bounded array of
+    // non-empty tool-name strings, stored as JSON TEXT.
+    let providesToolsJson: string | null = null;
+    if (body.provides_tools != null) {
+      if (kind !== 'plugin' && kind !== 'pack') {
+        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'plugin_or_pack_kind_only' }, 400);
+      }
+      const pt = body.provides_tools;
+      if (!Array.isArray(pt) || pt.length === 0 || pt.length > PROVIDES_TOOLS_MAX_ENTRIES) {
+        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'array_1_to_200' }, 400);
+      }
+      if (!pt.every((t) => typeof t === 'string' && t.trim().length > 0 && t.length <= PROVIDES_TOOLS_MAX_NAME_LEN)) {
+        return c.json({ error: 'invalid_field', field: 'provides_tools', reason: 'non_empty_strings_max_128' }, 400);
+      }
+      providesToolsJson = JSON.stringify(pt);
+    }
+
     // Channel-2 attestation (item 1) — optional, but both-or-neither.
     const hasGist = body.attestation_gist_id != null;
     const hasPubkey = body.publisher_device_pubkey != null;
@@ -387,6 +415,7 @@ function registerListingEndpoints(
       tarball_r2_key: kind === 'snapshot' ? (body.tarball_r2_key ?? null) : null,
       tarball_content_hash: kind === 'snapshot' ? (body.tarball_content_hash ?? null) : null,
       tarball_bytes: kind === 'snapshot' ? (body.tarball_bytes ?? null) : null,
+      provides_tools: providesToolsJson,
       created_at: now,
     });
     await audit(c.env.DB, now, 'published', {

@@ -175,3 +175,121 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect((await res.json() as { error: string }).error).toBe('private_repo_rejected');
   });
 });
+
+describe('Cupboard /listings — pack kind + provides_tools (migration 006)', () => {
+  let api: ReturnType<typeof buildApi>;
+  beforeEach(() => {
+    api = buildApi();
+  });
+
+  const PACK_BASE = {
+    github_owner: 'papercupai',
+    github_name: 'tool-packs',
+    github_url: 'https://github.com/papercupai/tool-packs',
+    project_ref: 'papercupai/tool-packs',
+  };
+
+  it('POST /listings pack publishes with provides_tools; GET returns the JSON passthrough', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 50, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 50, listing_kind: 'pack',
+      listing_ref: 'markdown-tools', title: 'Markdown tools pack',
+      provides_tools: ['md.render', 'md.lint'],
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json() as { ok: boolean; id: string; listing: Record<string, unknown> };
+    expect(j.ok).toBe(true);
+    expect(j.listing.listing_kind).toBe('pack');
+    expect(j.listing.provides_tools).toBe(JSON.stringify(['md.render', 'md.lint']));
+
+    const got = await api.request(`/listings/${j.id}`, {}, env);
+    expect(got.status).toBe(200);
+    expect((await got.json() as { provides_tools: string }).provides_tools)
+      .toBe(JSON.stringify(['md.render', 'md.lint']));
+  });
+
+  it('POST /listings plugin also carries provides_tools', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 51, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 51, listing_kind: 'plugin',
+      listing_ref: 'repomix', provides_tools: ['repomix.pack'],
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { listing: { provides_tools: string } }).listing.provides_tools)
+      .toBe(JSON.stringify(['repomix.pack']));
+  });
+
+  it('pack kind requires listing_ref like every non-harness kind', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 52, private: false } });
+    const res = await publish(api, env, { ...PACK_BASE, github_repository_id: 52, listing_kind: 'pack' });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { field: string }).field).toBe('listing_ref');
+  });
+
+  it('provides_tools is rejected on non-installable kinds', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 53, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 53, listing_kind: 'blueprint',
+      listing_ref: 'bp', provides_tools: ['x'],
+    });
+    expect(res.status).toBe(400);
+    const j = await res.json() as { field: string; reason: string };
+    expect(j.field).toBe('provides_tools');
+    expect(j.reason).toBe('plugin_or_pack_kind_only');
+  });
+
+  it('provides_tools rejects bad shapes: non-array, empty array, empty strings, oversize', async () => {
+    const { env } = makeEnv();
+    const bad: unknown[] = [
+      'not-an-array',
+      [],
+      [''],
+      ['  '],
+      [42],
+      ['a'.repeat(129)],
+      Array.from({ length: 201 }, (_, i) => `t${i}`),
+    ];
+    let userId = 100; // fresh user per publish — stay under the 5/hr per-user cap
+    for (const provides_tools of bad) {
+      stubGithub({ user: { id: userId++, login: 'pub' }, repo: { id: 54, private: false } });
+      const res = await publish(api, env, {
+        ...PACK_BASE, github_repository_id: 54, listing_kind: 'pack',
+        listing_ref: 'p', provides_tools,
+      });
+      expect(res.status, `shape: ${JSON.stringify(provides_tools)}`).toBe(400);
+      expect((await res.json() as { field: string }).field).toBe('provides_tools');
+    }
+  });
+
+  it('provides_tools is optional for pack kind (nullable column)', async () => {
+    const { env } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 55, private: false } });
+    const res = await publish(api, env, {
+      ...PACK_BASE, github_repository_id: 55, listing_kind: 'pack', listing_ref: 'bare',
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json() as { listing: { provides_tools: unknown } }).listing.provides_tools).toBe(null);
+  });
+
+  it('GET /listings?kind=pack filters to packs; (repo, kind, ref) dedup applies', async () => {
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 56, private: false } });
+    const body = { ...PACK_BASE, github_repository_id: 56, listing_kind: 'pack', listing_ref: 'dup', provides_tools: ['a.b'] };
+    await publish(api, env, body);
+    const again = await publish(api, env, body);
+    expect((await again.json() as { dedup: boolean }).dedup).toBe(true);
+    expect(store.tables.harnesses).toHaveLength(1);
+
+    stubGithub({ user: { id: 5, login: 'pub' }, repo: { id: 57, private: false } });
+    await publish(api, env, { ...PACK_BASE, github_name: 'other', github_url: 'https://github.com/papercupai/other', github_repository_id: 57, listing_kind: 'plugin', listing_ref: 'pl' });
+
+    const packs = await api.request('/listings?kind=pack', {}, env);
+    const packBody = await packs.json() as { results: Array<{ listing_kind: string }> };
+    expect(packBody.results).toHaveLength(1);
+    expect(packBody.results[0].listing_kind).toBe('pack');
+  });
+});
