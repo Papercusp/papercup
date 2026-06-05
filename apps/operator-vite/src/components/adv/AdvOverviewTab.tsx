@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { ArrowRight, ListChecks, Users, Bell, Activity as ActivityIcon } from 'lucide-react';
+import FleetRateControl from './FleetRateControl';
 import {
   usePlanList,
   usePlanAttention,
@@ -15,8 +16,8 @@ import {
  *
  * Composition only (see plan overview-dashboard-2026-06-05, D-003): this owns
  * the tiles + layout; it CONSUMES peers' surfaces:
- *   - top-bar rate/usage/max control  → Brief 20 `<FleetRateControl>` (stubbed
- *     here until it exports; the slots are final so the swap is a one-liner).
+ *   - top-bar rate/usage/max control  → Brief 20 `<FleetRateControl>` (LIVE —
+ *     ./FleetRateControl, rate-limit-layer-v2 P-013).
  *   - NEEDS-YOU tiered inbox           → Brief 21 (we read `needsHuman` off the
  *     attention feed, which Brief 21 is fixing AT THE SOURCE — so this tile
  *     auto-sharpens when their fix lands; no re-derivation here).
@@ -203,9 +204,9 @@ export default function AdvOverviewTab() {
 
   return (
     <div className="pc-overview">
-      {/* ── Top bar: Brief 20 rate/usage/max control (stub) + alerts ──── */}
+      {/* ── Top bar: Brief 20 FleetRateControl (live) + alerts ─────────── */}
       <div className="pc-overview__topbar">
-        <FleetRateControlStub />
+        <FleetRateControl />
         <div className="pc-overview__topbar-spacer" />
         <button
           type="button"
@@ -527,45 +528,3 @@ function OverviewTile({
   );
 }
 
-/**
- * Placeholder for Brief 20's `<FleetRateControl>` (rate-limit-layer-v2 D-004).
- * Same slots (usage% · $spend · editable max) so swapping in their exported
- * component is a one-line import change. su-0f7abe6c owns the live control;
- * this renders the layout + a "pending" marker until it exports.
- */
-function FleetRateControlStub() {
-  return (
-    <div className="pc-overview__rate" title="Fleet rate / usage — pending Brief 20 (rate-limit-layer-v2)">
-      <span className="pc-overview__rate-slot">
-        <span className="pc-overview__rate-k">usage</span>
-        <span className="pc-overview__rate-v">—%</span>
-      </span>
-      <span className="pc-overview__rate-slot">
-        <span className="pc-overview__rate-k">spend</span>
-        <span className="pc-overview__rate-v">$—</span>
-      </span>
-      <span className="pc-overview__rate-slot">
-        <span className="pc-overview__rate-k">max agents</span>
-        <span className="pc-overview__rate-v">—</span>
-      </span>
-      <span className="pc-overview__rate-pending">pending Brief 20</span>
-      <style>{`
-        .pc-overview__rate { display: inline-flex; align-items: center; gap: 16px; }
-        .pc-overview__rate-slot { display: inline-flex; flex-direction: column; gap: 1px; }
-        .pc-overview__rate-k {
-          font-size: 9px; font-weight: 760; letter-spacing: 0.09em; text-transform: uppercase;
-          color: var(--fg-mute, #7f9bb4);
-        }
-        .pc-overview__rate-v {
-          font-size: 16px; font-weight: 760; color: var(--fg, #e7f7ff);
-          font-variant-numeric: tabular-nums;
-        }
-        .pc-overview__rate-pending {
-          font-size: 9.5px; font-style: italic; color: var(--fg-mute, #7f9bb4);
-          border: 1px dashed var(--border, rgba(125, 211, 252, 0.25));
-          border-radius: 6px; padding: 2px 6px;
-        }
-      `}</style>
-    </div>
-  );
-}

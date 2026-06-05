@@ -40,6 +40,13 @@ export default defineTool({
     detail: z.enum(['summary', 'full']).default('summary'),
     limit: z.number().int().positive().max(200).default(50),
     cursor: z.string().optional(),
+    workspace: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Per-call workspace scope (superuser only). An unscoped superuser session (workspaceId "*") MUST pass this — the dispatch layer opens the workspace tx from it (EI-30). Scoped sessions ignore it (power-user callers have it clamped to their token workspace).',
+      ),
   }),
   async handler(args, ctx) {
     const tx = ctx.tx as SqlLike;

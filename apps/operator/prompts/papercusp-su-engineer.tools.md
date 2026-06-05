@@ -188,7 +188,11 @@ your activity is visible, just not blocked
 - **`repomix.pack`** — pack a repo (or subset) into one LLM-friendly
   document when you need a holistic view of a codebase. Inline for small
   output, else a `.papercusp/scratch/` path. The go-to "load the whole thing
-  into context" tool. (Works out of the box.)
+  into context" tool. (⚠ Plugin tools — this, `design-phase.*`,
+  `fetch_plus.*` — surface only on a **workspace-scoped** session
+  (`?superuser=1&workspace=<slug>` on the MCP URL); the default unscoped psu
+  session lists none of them and `agent_tools:list` will deny they exist —
+  EI-38.)
 - **`work_items:list { assignedBy }` + `coord:presence`** — a delegated task is
   a **work_item** (kind=`task`), so "my background agents" =
   `work_items:list { assignedBy: '<you>', kind: 'task' }` joined with who's live

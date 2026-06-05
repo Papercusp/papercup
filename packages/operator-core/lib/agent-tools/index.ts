@@ -40,6 +40,11 @@ import './operator/voice_debug';
 import './operator/voice_prefs';
 import './operator/conv_voice';
 import './operator/voice_spend_summary';
+// P2P voice channels (holepunch-voice-channels-2026-06-05 P-006/P-007):
+import './voice/channels';
+import './voice/join';
+import './voice/leave';
+import './voice/status';
 import './roles/list';
 import './roles/get';
 import './roles/firing_on';
@@ -388,6 +393,16 @@ import './gym/signals';
 // (what fires what + recent fired reactions with their cause-chain).
 import './events/graph';
 
+// await-event-primitive-2026-06-05 — the universal subscription primitive:
+// register a one-shot wake on an event key (events:await), fire a key
+// (events:emit), inspect/cancel (events:status / events:cancel). Delivery is
+// liveness-adaptive (pty-inject / session-resume / inbox) + durable
+// (harness_shared.event_awaits + event_wake_deliveries, migration 163).
+import './events/await';
+import './events/emit';
+import './events/cancel';
+import './events/status';
+
 // event-reaction-system-2026-06-04 — the declarative "when tool X settles, fire
 // tool Y" layer over the dispatcher. Importing this registers the built-in
 // Events-file rules and wires PROJECTED_DEPS.postInvoke to the reaction engine.
@@ -420,3 +435,14 @@ import '../rationale/rules';
 // (pre-migration-158) or a PG hiccup must never block boot.
 import { registerPotWakeRules } from '../pot/wake';
 void registerPotWakeRules().catch(() => {});
+
+// await-event-primitive-2026-06-05 — the background sweeper (stuck-delivery
+// recovery, await timeouts, parked→resume conversion). Lazy/unref'd interval;
+// all state in PG; fail-soft (a missing table pre-migration-163 must never
+// block boot — each sweep catches its own errors).
+import { startAwaitSweeper } from '../events/await/engine';
+try {
+  startAwaitSweeper();
+} catch {
+  /* never block boot */
+}

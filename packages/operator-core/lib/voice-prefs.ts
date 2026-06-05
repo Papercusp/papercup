@@ -83,6 +83,24 @@ export interface VoicePrefs {
   ttsEngine: TtsEngineKind;
   /** Full-agent engine. When set to anything but 'off', overrides STT + TTS. */
   fullAgentEngine: FullAgentEngineKind;
+
+  // P2P voice-channel settings (holepunch-voice-channels-2026-06-05 P-016/D-008).
+  // Devices are client-side ids (cpal device name on the pui; MediaDeviceInfo
+  // id on desktop); null = system default.
+  voiceInputDevice: string | null;
+  voiceOutputDevice: string | null;
+  /** Channel input mode — push-to-talk or open mic (open mic wants AEC on). */
+  voiceInputMode: 'ptt' | 'open-mic';
+  /** PTT key in the client keymap space (the pui binds single chars). */
+  voicePttKey: string;
+  /** Acoustic echo cancellation for channel audio. */
+  voiceAec: boolean;
+  /** Noise suppression for channel audio. */
+  voiceNoiseSuppression: boolean;
+  /** Mic gain multiplier (0.0–4.0, 1.0 = unity). */
+  voiceInputGain: number;
+  /** Playback volume multiplier (0.0–2.0, 1.0 = unity). */
+  voiceOutputVolume: number;
   /**
    * Wake-word engine. 'off' = transcribe-everything-then-string-match (current default);
    * 'porcupine' = Picovoice Porcupine (commercial, free for dev, BYO key);
@@ -283,6 +301,14 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   fullAgentEngine: 'off',
+  voiceInputDevice: null,
+  voiceOutputDevice: null,
+  voiceInputMode: 'ptt',
+  voicePttKey: 'v',
+  voiceAec: true,
+  voiceNoiseSuppression: true,
+  voiceInputGain: 1,
+  voiceOutputVolume: 1,
   wakeWordEngine: 'off',
   porcupineKeyword: 'Computer',
   openwakewordKeyword: 'hey_jarvis',

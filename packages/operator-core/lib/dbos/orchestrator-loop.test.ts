@@ -241,6 +241,21 @@ describe('resolveDispatchPolicy — blueprint dispatch: merged with per-install 
     expect((r.effectiveCfg as Record<string, unknown>).maxCostUsd).toBe(10);
   });
 
+  test('the live fleet cap (maxSimultaneousAgents, D-004) clamps the merged result', () => {
+    const r = resolveDispatchPolicy({
+      dispatch: dispatch({ concurrency: 8 }),
+      cfg: cfg(),
+      fleetCap: 3,
+    });
+    expect(r.cap).toBe(3);
+    // No fleet clamp when omitted/null (legacy behavior).
+    const r2 = resolveDispatchPolicy({ dispatch: dispatch({ concurrency: 8 }), cfg: cfg(), fleetCap: null });
+    expect(r2.cap).toBe(8);
+    // Floor of 1 survives an absurdly low fleet cap (dispatch never starves).
+    const r3 = resolveDispatchPolicy({ dispatch: dispatch({ concurrency: 8 }), cfg: cfg(), fleetCap: 0 });
+    expect(r3.cap).toBe(8); // 0 = invalid → ignored, not "cap everything to 0"
+  });
+
   test('the env ceiling clamps the merged result', () => {
     const r = resolveDispatchPolicy({
       dispatch: dispatch({ concurrency: 8 }),

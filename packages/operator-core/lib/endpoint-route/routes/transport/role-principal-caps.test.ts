@@ -7,7 +7,7 @@
  */
 import { describe, test, expect } from 'vitest';
 import type { Sql } from 'postgres';
-import { loadRoleCapabilities } from './role-principal-caps.js';
+import { effectiveDispatchWorkspace, loadRoleCapabilities } from './role-principal-caps.js';
 
 /** A fake `tx` tagged-template that returns a fixed row set regardless of query. */
 function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
@@ -85,5 +85,33 @@ describe('loadRoleCapabilities', () => {
     );
     expect(caps.has('something:read')).toBe(true); // from the row
     expect(caps.has('coord:write')).toBe(true); // from the baseline
+  });
+});
+
+describe('effectiveDispatchWorkspace — EI-30 superuser per-call workspace', () => {
+  test('unscoped superuser + concrete workspace arg → dispatches under the arg workspace', () => {
+    expect(
+      effectiveDispatchWorkspace({ workspaceId: '*', isSuperuser: true }, { workspace: 'papercusp-workspace' }),
+    ).toBe('papercusp-workspace');
+  });
+
+  test('unscoped superuser without a workspace arg → stays "*" (built-ins still fail with the scoped error)', () => {
+    expect(effectiveDispatchWorkspace({ workspaceId: '*', isSuperuser: true }, {})).toBe('*');
+    expect(effectiveDispatchWorkspace({ workspaceId: '*', isSuperuser: true }, undefined)).toBe('*');
+    expect(effectiveDispatchWorkspace({ workspaceId: '*', isSuperuser: true }, { workspace: '' })).toBe('*');
+    expect(effectiveDispatchWorkspace({ workspaceId: '*', isSuperuser: true }, { workspace: 42 })).toBe('*');
+  });
+
+  test('session-scoped superuser keeps the SESSION workspace — the arg never overrides a concrete scope', () => {
+    expect(
+      effectiveDispatchWorkspace({ workspaceId: 'default', isSuperuser: true }, { workspace: 'other-ws' }),
+    ).toBe('default');
+  });
+
+  test('non-superuser callers are never re-scoped by the arg', () => {
+    expect(effectiveDispatchWorkspace({ workspaceId: '*' }, { workspace: 'sneaky' })).toBe('*');
+    expect(
+      effectiveDispatchWorkspace({ workspaceId: 'ws-1', isSuperuser: false }, { workspace: 'sneaky' }),
+    ).toBe('ws-1');
   });
 });

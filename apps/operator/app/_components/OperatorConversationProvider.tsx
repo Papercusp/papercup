@@ -958,7 +958,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     for (let i = state.messages.length - 1; i >= Math.max(0, state.messages.length - 8); i--) {
       const m = state.messages[i];
       if (m.id && m.id.startsWith('opt-')) {
-        optimisticByKey.set(`${m.role} ${m.content}`, m.id);
+        optimisticByKey.set(`${m.role}\x00${m.content}`, m.id);
       }
     }
     let lastTurnTs = 0;
@@ -990,7 +990,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         newestLoadedSeqRef.current = t.seq;
         continue;
       }
-      const optKey = `${t.role} ${t.text}`;
+      const optKey = `${t.role}\x00${t.text}`;
       const optId = optimisticByKey.get(optKey);
       if (optId) {
         dispatch({ type: 'replace_message_id', oldId: optId, newId: t.id });

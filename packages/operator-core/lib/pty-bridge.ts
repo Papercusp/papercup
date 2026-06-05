@@ -21,6 +21,7 @@ import { spawn, type IPty } from '@lydell/node-pty';
 import { randomUUID } from 'node:crypto';
 import * as xtermHeadless from '@xterm/headless';
 import * as xtermAddonSerialize from '@xterm/addon-serialize';
+import { getCachedRateLimitConfig } from './rate-limit-config';
 
 // @xterm/headless + @xterm/addon-serialize are CJS; their named exports aren't
 // statically visible to ESM named-import LINKING (cjs-module-lexer) under tsx now
@@ -85,7 +86,16 @@ export interface PtyHandle {
 const HISTORY_CAP_BYTES = 1024 * 1024;
 const HEADLESS_SCROLLBACK = 1000;
 
+// Absolute backstop; the LIVE cap is min(this, the user's maxSimultaneousAgents) — the
+// rate-limit-layer-v2 D-004 fleet knob also bounds interactive panes.
 const MAX_CONCURRENT_PTYS = 16;
+
+/** The live pty cap: the user's fleet-wide maxSimultaneousAgents (live-editable, D-004)
+    clamped by the absolute MAX_CONCURRENT_PTYS backstop. */
+function livePtyCap(): number {
+  const fleet = getCachedRateLimitConfig().maxSimultaneousAgents;
+  return Number.isFinite(fleet) && fleet > 0 ? Math.min(MAX_CONCURRENT_PTYS, fleet) : MAX_CONCURRENT_PTYS;
+}
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const REAPER_INTERVAL_MS = 30 * 1000;
 
@@ -128,9 +138,10 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
   startReaper();
 
   const live = Array.from(handles.values()).filter((h) => !h.killed).length;
-  if (live >= MAX_CONCURRENT_PTYS) {
+  const cap = livePtyCap();
+  if (live >= cap) {
     throw new PtyError(
-      `pty cap reached (${live}/${MAX_CONCURRENT_PTYS})`,
+      `pty cap reached (${live}/${cap})`,
       'PTY_CAP_REACHED',
     );
   }
@@ -354,9 +365,23 @@ export function getPtyMeta(id: string): { id: string; command: string; args: rea
   };
 }
 
+/**
+ * Find a live pty whose process (or the process it spawned — same pid for
+ * direct spawns) matches `pid`. Used by the await-event wake executor
+ * (events/await/wake-executor.ts) to pick the inject channel when the
+ * sleeping agent's session is one of OUR managed ptys. Returns null when no
+ * live handle matches — most sessions (detached terminal emulators) won't.
+ */
+export function findPtyByPid(pid: number): PtyHandle | null {
+  for (const h of handles.values()) {
+    if (!h.killed && h.exitCode === null && h.pty.pid === pid) return h;
+  }
+  return null;
+}
+
 /** Stats for an `/api/desktop/pty/stats` debug endpoint or similar. */
 export function ptyStats(): { live: number; cap: number; total: number } {
   let live = 0;
   for (const h of handles.values()) if (!h.killed) live++;
-  return { live, cap: MAX_CONCURRENT_PTYS, total: handles.size };
+  return { live, cap: livePtyCap(), total: handles.size };
 }

@@ -142,6 +142,17 @@ export function runBootstrap(): void {
   // engine (blueprint triggers.schedule → system:blueprint-run).
   startMobileVoiceWs();
   startPushCredentialRefresher();
+  // P2P voice channels: the local binary audio socket (holepunch-voice-channels
+  // P-006/D-010). Cheap to start; the voice swarm itself is lazy (first join).
+  void (async () => {
+    try {
+      const { startLocalVoiceSocket } = await import('@papercusp/operator-core/lib/voice-node/local-audio-socket');
+      const { socketPath } = startLocalVoiceSocket();
+      console.log(`[voice-node] local audio socket at ${socketPath}`);
+    } catch (err) {
+      console.error('[voice-node] failed to start local audio socket:', err);
+    }
+  })();
   // device-intervention-watcher (60s poll) retired (P-021) — escalation /
   // smoke-fail / plan-review now push at the source via notifyAttention from
   // their /api/internal/*-event producers; needs-human≥high from set-status.

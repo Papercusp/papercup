@@ -90,10 +90,39 @@ export async function loadRoleCapabilities(
  * Whether a tool call needs a synthesized principal + workspace tx. Any
  * concrete workspace does; `'*'` (superuser with no chosen workspace) and an
  * empty workspace do NOT — principal-gated built-ins then fail and the caller
- * must pass `?workspace=X`.
+ * must pass `?workspace=X` (or, superuser only, a per-call `workspace` arg —
+ * see `effectiveDispatchWorkspace`).
  */
 export function dispatchNeedsTx(spawnCtx: { workspaceId: string }): boolean {
   return Boolean(spawnCtx.workspaceId) && spawnCtx.workspaceId !== '*';
+}
+
+/**
+ * The workspace a tool call should dispatch under — EI-30.
+ *
+ * An UNSCOPED superuser session (`?superuser=1`, workspaceId `'*'`) gets no
+ * synthesized workspace tx, so every principal-gated built-in (harness:list,
+ * …) hard-fails even though the SU playbooks document `workspace` as a
+ * per-call arg ("hop without re-auth"). Honor that promise at the dispatch
+ * layer: when the caller is superuser, the session is unscoped, and the args
+ * carry a concrete `workspace` string, dispatch under THAT workspace (tx
+ * synthesis + ALS pin), exactly as `?workspace=X` would have.
+ *
+ * Superuser is admin across every workspace, so this is a convenience, not a
+ * privilege change. It deliberately does NOT apply to power-user callers
+ * (their `workspace` arg is clamped to the token's workspace upstream) or to
+ * role-scoped callers (they always carry a concrete workspace).
+ */
+export function effectiveDispatchWorkspace(
+  spawnCtx: { workspaceId: string; isSuperuser?: boolean },
+  args: unknown,
+): string {
+  if (spawnCtx.isSuperuser !== true || spawnCtx.workspaceId !== '*') return spawnCtx.workspaceId;
+  const ws =
+    args && typeof args === 'object' && typeof (args as Record<string, unknown>).workspace === 'string'
+      ? ((args as Record<string, unknown>).workspace as string)
+      : '';
+  return ws.length > 0 ? ws : spawnCtx.workspaceId;
 }
 
 /**

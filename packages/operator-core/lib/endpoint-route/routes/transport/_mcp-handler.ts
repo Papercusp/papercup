@@ -51,7 +51,7 @@ import {
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
-import { dispatchNeedsTx, synthesizeDispatchPrincipal } from './role-principal-caps';
+import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '../../../spawn-signing';
@@ -713,7 +713,6 @@ const handler = createMcpHandler(
               }],
             };
           }
-          const baseCtx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification, projected.pluginName);
           // Power-user workspace clamp (defense in depth). The ctx's
           // workspaceId is already token-clamped, so any tool reading
           // ctx.workspaceId is safe. But a handful of tools accept an
@@ -726,6 +725,15 @@ const handler = createMcpHandler(
             spawnRes.ctx.isPowerUser && args && typeof args === 'object' && 'workspace' in args
               ? { ...args, workspace: spawnRes.ctx.workspaceId }
               : args;
+          // Superuser per-call workspace scoping (EI-30) — the inverse of the
+          // power-user clamp. An unscoped superuser session (workspaceId '*')
+          // that passes a concrete `workspace` arg dispatches under THAT
+          // workspace (tx synthesis + ALS pin below), exactly as ?workspace=X
+          // would have. See effectiveDispatchWorkspace for the rationale.
+          const effectiveWs = effectiveDispatchWorkspace(spawnRes.ctx, dispatchArgs);
+          const dispatchSpawnCtx =
+            effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
+          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName);
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected
@@ -735,7 +743,7 @@ const handler = createMcpHandler(
           // run (a role-scoped caller is authenticated by its verified
           // signed URL). workspaceId='*' (no workspace chosen) still fails
           // those tools — caller must pass ?workspace=X.
-          const needsTx = dispatchNeedsTx(spawnRes.ctx);
+          const needsTx = dispatchNeedsTx(dispatchSpawnCtx);
           // Generic projected-dispatch → MCP-result mapping (P-031,
           // @papercusp/tooldef-mcp). Same shape/behavior as before: success →
           // { content }, failure → { isError, content:["<code>: <message>"] }.
@@ -763,24 +771,24 @@ const handler = createMcpHandler(
             const ctx: UnifiedToolContext = {
               ...baseCtx,
               tx: adminTx,
-              principal: await synthesizeDispatchPrincipal(adminTx, spawnRes.ctx),
+              principal: await synthesizeDispatchPrincipal(adminTx, dispatchSpawnCtx),
             };
-            return await runWithWorkspaceIfConcrete(spawnRes.ctx.workspaceId, () => runDispatch(ctx));
+            return await runWithWorkspaceIfConcrete(dispatchSpawnCtx.workspaceId, () => runDispatch(ctx));
           }
           if (needsTx) {
-            const ctxWs = spawnRes.ctx.workspaceId;
+            const ctxWs = dispatchSpawnCtx.workspaceId;
             return await runWithWorkspaceIfConcrete(ctxWs, () =>
               withWorkspace(ctxWs, async (tx) => {
                 const ctx: UnifiedToolContext = {
                   ...baseCtx,
                   tx,
-                  principal: await synthesizeDispatchPrincipal(tx, spawnRes.ctx),
+                  principal: await synthesizeDispatchPrincipal(tx, dispatchSpawnCtx),
                 };
                 return await runDispatch(ctx);
               }),
             );
           }
-          return await runWithWorkspaceIfConcrete(spawnRes.ctx.workspaceId, () =>
+          return await runWithWorkspaceIfConcrete(dispatchSpawnCtx.workspaceId, () =>
             runDispatch(baseCtx),
           );
         }

@@ -1,0 +1,44 @@
+/**
+ * Plan-run wake channel — re-invoke a sleeping PLAN RUN with the wake reason
+ * as its next turn (await-event-primitive-2026-06-05 D-003: "resume-if-exited"
+ * for the plans:launch/plans:resume session shape).
+ *
+ * Mirrors plans:resume's background mode (steps 1/2/4/5 of resumeHandler)
+ * without the tool envelope: recover the run, re-seed from the CURRENT plan,
+ * mark it running, fire the continuation turn fire-and-forget (it settles its
+ * own status). Lazy-imported by the pump so the await engine carries no
+ * static dependency on the plans tool family.
+ */
+
+import { buildPlanContextBundle } from '../../agent-tools/plans/context-bundle';
+import { getRepoRoot } from '../../agent-tools/plans/source';
+import { getPlanRun, markPlanRunResumed } from '../../agent-tools/plans/runs';
+import { executePlanAgentTurn } from '../../agent-tools/plans/turn';
+
+export async function resumePlanRunForWake(input: {
+  runId: number;
+  wakeText: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const run = await getPlanRun(input.runId);
+  if (!run) return { ok: false, error: `plan run ${input.runId} not found` };
+
+  const bundle = await buildPlanContextBundle(run.planSlug, {});
+  if (!bundle) return { ok: false, error: `plan ${run.planSlug} not found for run ${input.runId}` };
+
+  await markPlanRunResumed(input.runId, bundle.contentHash);
+
+  void executePlanAgentTurn({
+    runId: input.runId,
+    sessionId: run.sessionId,
+    systemPromptText: bundle.text,
+    promptText: input.wakeText,
+    cwd: getRepoRoot(),
+    uiClientId: null,
+    signal: undefined,
+    emit: () => {},
+  }).catch(() => {
+    /* settled to 'failed' inside the turn */
+  });
+
+  return { ok: true };
+}

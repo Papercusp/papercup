@@ -76,6 +76,7 @@ import { loadIssuesOrSeed, saveIssues } from '../harness-issues';
 import type { Issue } from '../harness/issue-types';
 import { ensureFeaturePipeline } from './orchestrator-start';
 import { getFeatureBlockers } from './feature-blockers-edges';
+import { getCachedRateLimitConfig } from '../rate-limit-config';
 
 // ─── G2 Auditor lane injection seam (P-007) ──────────────────────────────────
 //
@@ -143,6 +144,9 @@ export function resolvePerHarnessCap(opts: {
   blueprintConcurrency?: number | null;
   /** Blueprint-declared `dispatch.safetyCeiling` — tighten-only (D-007). */
   blueprintSafetyCeiling?: number | null;
+  /** The user's live fleet-wide `maxSimultaneousAgents` (rate-limit-layer-v2 D-004) — a
+      per-harness cap can never exceed the whole fleet's budget. Omit/null = no fleet clamp. */
+  fleetCap?: number | null;
 }): number {
   const declared =
     opts.blueprintConcurrency != null &&
@@ -163,7 +167,14 @@ export function resolvePerHarnessCap(opts: {
       ? Math.min(Math.floor(opts.blueprintSafetyCeiling), SAFETY_CEILING)
       : SAFETY_CEILING;
   const ceiling = opts.envCeiling && opts.envCeiling > 0 ? opts.envCeiling : declaredCeiling;
-  return Math.max(1, Math.min(base, ceiling));
+  // Fleet-wide clamp (D-004): the live maxSimultaneousAgents bounds every harness's cap (the
+  // governor's global gate enforces the precise cross-harness total; this keeps the dispatcher
+  // from even ENQUEUEING past the fleet budget). Floor of 1 below keeps dispatch alive.
+  const fleetClamped =
+    opts.fleetCap != null && Number.isFinite(opts.fleetCap) && opts.fleetCap > 0
+      ? Math.min(ceiling, Math.floor(opts.fleetCap))
+      : ceiling;
+  return Math.max(1, Math.min(base, fleetClamped));
 }
 
 /** Statuses that make a feature TERMINAL — a blocker in this set is satisfied. */
@@ -348,6 +359,8 @@ export function resolveDispatchPolicy(opts: {
   dispatch: BlueprintDispatch | null | undefined;
   cfg: HarnessConfig;
   envCeiling?: number;
+  /** Live fleet-wide maxSimultaneousAgents (D-004); the IO half passes the cached config. */
+  fleetCap?: number | null;
 }): { cap: number; readiness: ReadonlySet<string>; effectiveCfg: HarnessConfig } {
   const { dispatch, cfg } = opts;
   // Explicitness matters: `parallelMaxWorkers(cfg)` returns 1 for BOTH "unset"
@@ -362,6 +375,7 @@ export function resolveDispatchPolicy(opts: {
     envCeiling: opts.envCeiling,
     blueprintConcurrency: dispatch?.concurrency ?? null,
     blueprintSafetyCeiling: dispatch?.safetyCeiling ?? null,
+    fleetCap: opts.fleetCap ?? null,
   });
   const effectiveCfg =
     dispatch?.costCapUsd != null && configGet<number | null>(cfg, 'maxCostUsd', null) == null
@@ -405,6 +419,8 @@ async function resolveHarnessDispatchGate(
       dispatch,
       cfg,
       envCeiling: pipelineEnvCeiling(),
+      // Live fleet cap (D-004): the user's maxSimultaneousAgents bounds dispatch fleet-wide.
+      fleetCap: getCachedRateLimitConfig().maxSimultaneousAgents,
     });
     const overCostCap = evaluateCostCap(effectiveCfg, logDir, stateDir).overCap;
     return { cap, overCostCap, readiness };

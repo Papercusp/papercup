@@ -23,7 +23,8 @@
     "@papercusp/rules": "*",
     "@papercusp/step-program": "*",
     "@papercusp/locks-core": "*",
-    "@papercusp/structured-concurrency": "*"
+    "@papercusp/structured-concurrency": "*",
+    "@papercusp/p2p-voice": "*"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

@@ -409,6 +409,32 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
 }
 
 /**
+ * The most recent adv_sessions row for ONE coord owner — the await-event
+ * wake-handle capture (await-event-primitive-2026-06-05 D-003): events:await
+ * stamps this row's {id, agent, session_id, omp_thread_id, cwd, pid} onto the
+ * subscription at registration. NOT workspace-scoped, same rationale as
+ * advSessionsByCoordOwner above.
+ */
+export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${coordOwnerId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    const r = rows[0];
+    return r ? mapAdvSessionRow(r) : null;
+  } catch (e) {
+    console.warn('[adv-sessions] latestAdvSessionByCoordOwner failed:', (e as Error).message);
+    return null;
+  }
+}
+
+/**
  * Recently-ended adv_sessions — the durable history half of the live-roster
  * view (the active half is the presence-driven mergeRoster). Scoped to a
  * workspace when given, else cross-workspace. Most-recently-ended first.

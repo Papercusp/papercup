@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**310 MCP tools** across **60 groups**.
+**311 MCP tools** across **60 groups**.
 
 ## Groups
 
@@ -56,7 +56,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `messages` | 4 | `dismiss` `inbox` `outbox` `send` | `messages:read` `messages:write` |
 | `notifications` | 1 | `recent` | `notifications:read` |
 | `omp` | 2 | `config` `sessions` | `omp:read` `omp:write` |
-| `operator` | 30 | `audit` `budget` `conv_voice` `converse` `credentials_status` `decisions` `dedup_check` `delegate` `dismissed` `last_scan` `multi_workspace` `notes` `nudge` `parse_suggestions` `paused` `preferences` `preview_prompt` `scan` `scanner_bootstrap` `scanner_reset` `scans_list` `standing_approval_mark_shown` `standing_approvals_decide` `standing_approvals_list` `stats` `trigger_state` `voice_debug` `voice_prefs` `voice_spend_summary` `voice_utterance_log` | `operator:converse` `operator:delegate` `operator:read` `operator:scan` `operator:write` `secrets:operator-credentials:read` |
+| `operator` | 31 | `audit` `budget` `conv_voice` `converse` `credentials_status` `decisions` `dedup_check` `delegate` `dismissed` `last_scan` `multi_workspace` `notes` `nudge` `parse_suggestions` `paused` `preferences` `preview_prompt` `rate_limit_config` `scan` `scanner_bootstrap` `scanner_reset` `scans_list` `standing_approval_mark_shown` `standing_approvals_decide` `standing_approvals_list` `stats` `trigger_state` `voice_debug` `voice_prefs` `voice_spend_summary` `voice_utterance_log` | `operator:converse` `operator:delegate` `operator:read` `operator:scan` `operator:write` `secrets:operator-credentials:read` |
 | `oracle` | 1 | `chat` | `harness:read` |
 | `papercusp` | 1 | `list_workspaces` | `workspaces:read` |
 | `pending_events` | 1 | `list` | `pending_events:read` |
