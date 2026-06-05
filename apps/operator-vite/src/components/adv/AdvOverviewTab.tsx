@@ -6,6 +6,7 @@ import {
   usePlanAttention,
   type PlanListRow,
   type AttentionItem,
+  type AttentionTier,
   type ItemStatus,
 } from '@/app/admin/plans/plans-api';
 
@@ -91,20 +92,29 @@ export function selectActivePlans(rows: readonly PlanListRow[], limit = TILE_LIM
 }
 
 /**
- * NEEDS-YOU = the Decisions tier. Reads `needsHuman` off the attention feed,
- * which Brief 21 fixes AT THE SOURCE (true only for gates / needs-human items /
- * vote-escalations / direct questions) — so this sharpens automatically when
- * their fix lands; no re-derivation here. Pure.
+ * NEEDS-YOU = the Decisions tier (Brief 21's canonical `tier` field,
+ * inbox-tiering-and-message-agent D-002/D-006). Runtime fallback to
+ * `needsHuman`: until the release-gate deploy carries Brief 21 to the green
+ * :3070 host, attention rows arrive WITHOUT `tier` (the type says required;
+ * the wire may lag) — needsHuman is the pre-tier equivalent. Pure.
  */
 export function selectDecisions(items: readonly AttentionItem[], limit = TILE_LIMIT): AttentionItem[] {
-  return items.filter((i) => i.needsHuman).slice(0, limit);
+  return items
+    .filter((i) => {
+      const tier = (i as { tier?: AttentionTier }).tier;
+      return tier ? tier === 'decision' : i.needsHuman;
+    })
+    .slice(0, limit);
 }
 
-/** Alerts = non-decision smoke-fails + escalations (the top-bar badge). Pure. */
+/** Alerts tier for the top-bar badge (same wire-lag fallback as decisions). Pure. */
 export function countAlerts(items: readonly AttentionItem[]): number {
-  return items.filter(
-    (i) => !i.needsHuman && (i.kind === 'smoke-fail' || i.kind === 'coord-escalation'),
-  ).length;
+  return items.filter((i) => {
+    const tier = (i as { tier?: AttentionTier }).tier;
+    return tier
+      ? tier === 'alert'
+      : !i.needsHuman && (i.kind === 'smoke-fail' || i.kind === 'coord-escalation');
+  }).length;
 }
 
 /** Live (non-stale) agents, top-N. Pure. */
@@ -119,6 +129,14 @@ export default function AdvOverviewTab() {
   // Writers only (parseAsString) — AdvShell owns the canonical enum parser, so
   // writing a plain string round-trips identically. Mirrors AdvNowRunning.
   const [, setActiveTab] = useQueryState('tab', parseAsString);
+  // Deep-link the inbox tier bar (Brief 21, ?inboxTier=) when a tile targets
+  // the inbox. SEQUENTIAL awaits — the custom nuqs adapter merges each write
+  // over the live search, so same-tick writes collide (see AdvShell).
+  const [, setInboxTier] = useQueryState('inboxTier', parseAsString);
+  const openInbox = async (tier: AttentionTier) => {
+    await setActiveTab(OVERVIEW_TILE_TARGETS.needsYou);
+    await setInboxTier(tier);
+  };
 
   const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
   const attentionQ = usePlanAttention();
@@ -194,7 +212,7 @@ export default function AdvOverviewTab() {
           className="pc-overview__alerts"
           data-has-alerts={alertCount > 0}
           title="Alerts — smoke failures + escalations"
-          onClick={() => void setActiveTab(OVERVIEW_TILE_TARGETS.needsYou)}
+          onClick={() => void openInbox('alert')}
         >
           <Bell size={13} aria-hidden />
           <span>{alertCount}</span>
@@ -242,7 +260,7 @@ export default function AdvOverviewTab() {
           error={attentionQ.error}
           empty={decisions.length === 0}
           emptyLabel="Nothing needs you right now"
-          onOpen={() => void setActiveTab(OVERVIEW_TILE_TARGETS.needsYou)}
+          onOpen={() => void openInbox('decision')}
         >
           {decisions.map((d) => (
             <div key={d.id} className="pc-overview__row">
@@ -296,14 +314,12 @@ export default function AdvOverviewTab() {
         </OverviewTile>
       </div>
 
-      {/* ── Operator strip (Brief 24 desktop docked pane mounts here) ──── */}
-      <div className="pc-overview__operator" aria-label="Operator">
-        <span className="pc-overview__operator-dot" aria-hidden />
-        <span className="pc-overview__operator-label">Operator</span>
-        <span className="pc-overview__operator-hint">
-          docked pane — Brief 24 (operator-always-visible)
-        </span>
-      </div>
+      {/* No in-tab operator strip on desktop: ChromeShell already mounts the
+          persistent OperatorChatSidebar on every non-chromeless route incl.
+          /adv (Brief 24, operator-always-visible-2026-06-05) — a second
+          operator surface here would duplicate it. The TUI Overview DOES
+          render a bottom strip (draw_operator_dock) because the TUI has no
+          shell-level sidebar. See overview-dashboard-2026-06-05 D-008. */}
 
       <style>{`
         .pc-overview {
@@ -452,23 +468,6 @@ export default function AdvOverviewTab() {
           border: 1px solid var(--border, rgba(125, 211, 252, 0.2));
           border-radius: 5px; padding: 1px 5px; flex-shrink: 0;
         }
-        /* Operator strip */
-        .pc-overview__operator {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px 12px;
-          border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
-          border-radius: 12px;
-          background: var(--bg-2, rgba(255, 255, 255, 0.04));
-          flex-shrink: 0;
-        }
-        .pc-overview__operator-dot {
-          width: 8px; height: 8px; border-radius: 50%;
-          background: #4ade80; box-shadow: 0 0 7px rgba(74, 222, 128, 0.5);
-        }
-        .pc-overview__operator-label { font-size: 12px; font-weight: 760; color: var(--fg, #e7f7ff); }
-        .pc-overview__operator-hint { font-size: 11px; color: var(--fg-mute, #7f9bb4); font-style: italic; }
       `}</style>
     </div>
   );

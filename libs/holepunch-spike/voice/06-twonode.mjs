@@ -62,4 +62,4 @@ const timer = setTimeout(() => { console.error(`\nTIMEOUT ${CONNECT_TIMEOUT_MS}m
 
 console.log(`voice/06 ${role} — topic ${topicHex.slice(0, 12)}… joining via public DHT`);
 const disc = swarm.join(topic, { server: true, client: true });
-if (role === 'echoer') await disc.flushed();
+if (role === 'echoer') { await disc.flushed(); console.log('ANNOUNCED'); }

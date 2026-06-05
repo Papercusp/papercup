@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { PlanListRow, AttentionItem, AttentionKind, Importance } from '@/app/admin/plans/plans-api';
+import type {
+  PlanListRow,
+  AttentionItem,
+  AttentionKind,
+  AttentionTier,
+  Importance,
+} from '@/app/admin/plans/plans-api';
 import {
   planProgress,
   selectActivePlans,
@@ -51,11 +57,19 @@ function attn(over: Partial<AttentionItem> = {}): AttentionItem {
     body: '',
     status: 'open',
     importance: 'normal' as Importance,
+    tier: 'activity' as AttentionTier,
     needsHuman: false,
     actions: [],
     ref: { kind: 'coord-message' } as AttentionItem['ref'],
     ...over,
   };
+}
+
+/** An attention item as the PRE-tier green :3070 host serves it (no `tier`
+ *  on the wire) — exercises the wire-lag fallback path. */
+function attnNoTier(over: Partial<AttentionItem> = {}): AttentionItem {
+  const { tier: _tier, ...rest } = attn(over);
+  return rest as AttentionItem;
 }
 
 function agent(over: Partial<OverviewRosterEntry> = {}): OverviewRosterEntry {
@@ -121,24 +135,41 @@ describe('selectActivePlans', () => {
 
 // ─── selectDecisions ───────────────────────────────────────────────────────
 describe('selectDecisions', () => {
-  it('keeps only needsHuman items', () => {
-    const items = [attn({ id: '1', needsHuman: true }), attn({ id: '2', needsHuman: false })];
+  it('keeps only tier=decision items (canonical Brief 21 path)', () => {
+    const items = [
+      attn({ id: '1', tier: 'decision' }),
+      attn({ id: '2', tier: 'alert' }),
+      attn({ id: '3', tier: 'activity', needsHuman: true }), // tier wins over needsHuman
+    ];
+    expect(selectDecisions(items).map((i) => i.id)).toEqual(['1']);
+  });
+  it('falls back to needsHuman when the wire has no tier (pre-deploy :3070)', () => {
+    const items = [attnNoTier({ id: '1', needsHuman: true }), attnNoTier({ id: '2', needsHuman: false })];
     expect(selectDecisions(items).map((i) => i.id)).toEqual(['1']);
   });
   it('respects the limit', () => {
-    const items = Array.from({ length: 8 }, () => attn({ needsHuman: true }));
+    const items = Array.from({ length: 8 }, () => attn({ tier: 'decision' }));
     expect(selectDecisions(items, 2)).toHaveLength(2);
   });
 });
 
 // ─── countAlerts ───────────────────────────────────────────────────────────
 describe('countAlerts', () => {
-  it('counts non-decision smoke-fail + coord-escalation only', () => {
+  it('counts tier=alert items (canonical Brief 21 path)', () => {
     const items = [
-      attn({ kind: 'smoke-fail' }),
-      attn({ kind: 'coord-escalation' }),
-      attn({ kind: 'coord-message' }), // ignored
-      attn({ kind: 'smoke-fail', needsHuman: true }), // a decision, not an alert
+      attn({ tier: 'alert' }),
+      attn({ tier: 'alert' }),
+      attn({ tier: 'decision' }),
+      attn({ tier: 'activity' }),
+    ];
+    expect(countAlerts(items)).toBe(2);
+  });
+  it('falls back to non-decision smoke-fail + coord-escalation without tier', () => {
+    const items = [
+      attnNoTier({ kind: 'smoke-fail' }),
+      attnNoTier({ kind: 'coord-escalation' }),
+      attnNoTier({ kind: 'coord-message' }), // ignored
+      attnNoTier({ kind: 'smoke-fail', needsHuman: true }), // a decision, not an alert
     ];
     expect(countAlerts(items)).toBe(2);
   });
