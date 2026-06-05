@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { verifyReleasePaths, VERIFY_RESULT_MARKER } from './verify-release-paths';
 
 let release: string;
@@ -79,6 +79,61 @@ describe('verifyReleasePaths', () => {
       expect(r.failures.some((f) => /sqlMigrations: resolved OUTSIDE release root/.test(f))).toBe(true);
       // none of the resolved checks count as under-release
       expect(r.checks.every((c) => !c.underRelease)).toBe(true);
+    } finally {
+      rmSync(otherRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// The CLI output contract — the deploy parses verify-paths's stdout, so a
+// trailing human line on stdout broke it (JSON.parse choked, deploy aborted +
+// rolled back, 2026-06-05). Lock the contract: stdout carries exactly ONE
+// marker-delimited JSON line; human text goes to stderr.
+describe('verify-release-paths CLI output contract', () => {
+  const tsx = join(__dirname, '../../../../node_modules/.bin/tsx');
+  const script = join(__dirname, 'verify-release-paths.ts');
+
+  function runCli(cwd: string, releaseRoot: string): { stdout: string; stderr: string; code: number } {
+    const r = spawnSync(tsx, [script, releaseRoot], {
+      cwd,
+      env: { ...process.env, PAPERCUSP_RELEASE_ROOT: releaseRoot, PAPERCUSP_DOCS_ROOT: '' },
+      encoding: 'utf8',
+    });
+    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
+  }
+
+  /** Parse the marker line exactly as deploy-deps.verifyPaths does. */
+  function parseMarker(stream: string): { ok: boolean; failures: string[] } | null {
+    const line = stream.split('\n').find((l) => l.includes(VERIFY_RESULT_MARKER));
+    if (!line) return null;
+    const json = JSON.parse(line.slice(line.indexOf(VERIFY_RESULT_MARKER) + VERIFY_RESULT_MARKER.length).trim());
+    return { ok: !!json.ok, failures: Array.isArray(json.failures) ? json.failures : [] };
+  }
+
+  it('success: stdout is a single marker line (parseable), no trailing non-JSON; human text on stderr', () => {
+    const { stdout, stderr, code } = runCli(opCwd, release);
+    expect(code).toBe(0);
+    // Exactly one stdout line carries the marker.
+    const markerLines = stdout.split('\n').filter((l) => l.includes(VERIFY_RESULT_MARKER));
+    expect(markerLines).toHaveLength(1);
+    const parsed = parseMarker(stdout);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.ok).toBe(true);
+    expect(parsed!.failures).toEqual([]);
+    // The old bug: a human "OK" line on stdout AFTER the JSON. It's on stderr now.
+    expect(stdout).not.toMatch(/all runtime reads resolve/);
+    expect(stderr).toMatch(/OK — all runtime reads resolve/);
+  });
+
+  it('failure: exits 1, marker line still parseable from stdout, failures populated', () => {
+    const otherRoot = mkdtempSync(join(tmpdir(), 'rel-other-cli-'));
+    try {
+      const { stdout, code } = runCli(opCwd, otherRoot);
+      expect(code).toBe(1);
+      const parsed = parseMarker(stdout);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.ok).toBe(false);
+      expect(parsed!.failures.some((f) => /OUTSIDE release root/.test(f))).toBe(true);
     } finally {
       rmSync(otherRoot, { recursive: true, force: true });
     }
