@@ -52,6 +52,13 @@ pub enum Event {
     TestRunDone { file: String, result: crate::models::TestRunResult },
     /// Plugin-contributed TUI panes for the active harness (D-002).
     TuiPanes(Vec<TuiPaneContribution>),
+    /// All installed plugin manifests for the Plugins tab (D-007) — identity +
+    /// frontend/backend contribution surfaces + configSchema.
+    Plugins(Vec<crate::models::PluginManifest>),
+    /// One plugin's saved per-harness config (D-014) — loaded on Enter in the
+    /// Plugins list, refreshed after each `:pset`/`:punset` round-trip. Carries
+    /// the plugin name so a stale fetch never paints another plugin's config.
+    PluginConfig { plugin: String, config: serde_json::Value },
     /// The active harness's effective claude-settings view (D-013) — defaults
     /// overlaid by the file, plus the raw file body the `:set`/`:unset` editor
     /// round-trips.

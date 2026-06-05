@@ -718,6 +718,60 @@ impl OperatorClient {
         }
     }
 
+    // ─── Plugins tab (D-007 contributions + D-014 settings) ───
+
+    /// All installed plugin manifests (`GET /api/plugins/global`) — identity +
+    /// contribution surfaces + configSchema for the Plugins tab.
+    pub async fn plugins_global(&self) -> Result<Vec<models::PluginManifest>> {
+        let v = self.get_json("/api/plugins/global").await?;
+        Ok(serde_json::from_value::<models::PluginsGlobalResponse>(v)
+            .context("decode plugins global")?
+            .plugins)
+    }
+
+    /// One plugin's saved per-harness config (D-014). Empty object when unset.
+    pub async fn plugin_config(
+        &self,
+        harness: &str,
+        plugin: &str,
+    ) -> Result<serde_json::Value> {
+        let v = self
+            .get_json(&format!(
+                "/api/plugins/config?harness={}&plugin={}",
+                urlencode(harness),
+                urlencode(plugin)
+            ))
+            .await?;
+        Ok(serde_json::from_value::<models::PluginConfigResponse>(v)
+            .context("decode plugin config")?
+            .config)
+    }
+
+    /// Save a plugin's per-harness config (D-014) — the same `PUT
+    /// /api/plugins/config` the desktop form uses (validates against the
+    /// manifest's configSchema server-side; mirrors to PG encrypted).
+    pub async fn put_plugin_config(
+        &self,
+        harness: &str,
+        plugin: &str,
+        config: &serde_json::Value,
+    ) -> Result<()> {
+        let v = self
+            .put_json(
+                "/api/plugins/config",
+                serde_json::json!({ "harness": harness, "plugin": plugin, "config": config }),
+            )
+            .await?;
+        if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "put plugin config: {}",
+                v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error")
+            )
+        }
+    }
+
     // ─── Memory tab (D-006 Step 2) ───
 
     /// All memories for the current user (+ the active harness's pool) via the

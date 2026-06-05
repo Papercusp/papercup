@@ -1,6 +1,17 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from '../harness/routines/system-actions';
+
+// P-009: the decider fire consults the autoloop fire gate + records outcomes.
+// Mock the gate controllably (default: allow) so unit tests never touch PG.
+const gateState = vi.hoisted(() => ({
+  verdict: { allow: true, consecutiveErrors: 0 } as Record<string, unknown>,
+}));
+vi.mock('../autoloop', () => ({
+  checkFireGate: vi.fn(async () => gateState.verdict),
+  recordFire: vi.fn(async () => {}),
+}));
+
 import {
   handleBlueprintRun,
   setBlueprintResolver,
@@ -24,6 +35,7 @@ afterEach(() => {
   setBlueprintResolver(null);
   setBlueprintRunFire(null);
   setLaunchBlueprintFire(null);
+  gateState.verdict = { allow: true, consecutiveErrors: 0 };
 });
 
 describe('system:blueprint-run handler (P-021 / D-018)', () => {
@@ -55,6 +67,22 @@ describe('system:blueprint-run handler (P-021 / D-018)', () => {
 
     expect(fired).toHaveLength(1);
     expect(fired[0].role).toBe('director'); // built-in coding spine.decider
+  });
+
+  it("mode='run' WITHHOLDS the fire when the backoff gate denies (P-009 / D-009)", async () => {
+    const fired: Array<Parameters<DeciderFireFn>[0]> = [];
+    setBlueprintResolver(async () => withDecider('director'));
+    setBlueprintRunFire((input) => { fired.push(input); });
+    gateState.verdict = { allow: false, reason: 'circuit-open', consecutiveErrors: 9, retryAfterSec: 1200 };
+    // The withhold logs a console.warn by design — assert it, mocked.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await handleBlueprintRun(ctx());
+
+    expect(fired).toHaveLength(0); // no fire while the circuit is open
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0][0])).toMatch(/WITHHELD.*circuit-open/);
+    warn.mockRestore();
   });
 
   it("payload.blueprintId fires that STANDALONE launch blueprint's role (unify-launches D-002)", async () => {

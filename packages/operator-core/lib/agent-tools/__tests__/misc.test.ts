@@ -24,38 +24,48 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('../../autoloop');
+  vi.doUnmock('@papercusp/db-org');
   vi.doUnmock('../../snapshot-discovery');
   vi.doUnmock('@papercusp/flags/server');
   vi.doUnmock('../../wiki-backlinks');
   vi.doUnmock('../../omp-config');
 });
 
+// The status/control tools read harness_shared.routines via getOrgPg().sql —
+// stub the tagged-template client to return no schedule routines.
+const mockDbOrgSql = (rows: unknown[] = []) =>
+  vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: vi.fn(async () => rows) }) }));
+
 function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
 }
 
 describe('autoloop:status', () => {
-  it('returns getAutoLoopState rows', async () => {
-    const rows = [{ harness_slug: 's', role: 'r' }];
+  it('returns fire-state rows with the backoff gate verdict + the schedule routines (P-009/P-010)', async () => {
+    const rows = [{ harness_slug: 's', role: 'r', consecutive_errors: 0, last_fired_at: null }];
     vi.doMock('../../autoloop', () => ({
       getAutoLoopState: vi.fn(async () => rows),
-      startAutoLoopOnce: vi.fn(),
-      stopAutoLoop: vi.fn(),
+      evaluateFireGate: vi.fn(() => ({ allow: true, consecutiveErrors: 0 })),
     }));
+    mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/status');
     const result = await tool.handler({ harnessSlug: 'sheets' }, MAKE_CTX());
     const payload = parsePayload(result as never);
-    expect(payload).toEqual({ harnessSlug: 'sheets', rows });
+    expect(payload).toEqual({
+      harnessSlug: 'sheets',
+      rows: [{ ...rows[0], gate: { allow: true, consecutiveErrors: 0 } }],
+      scheduleRoutines: [],
+    });
   });
 
   it('rejects with precondition_failed when no slug (declarative requires: — D-006)', async () => {
     // The former in-handler `if (!slug) throw` guard is lifted into a
     // `requires:` precondition; the DISPATCHER rejects before the handler runs.
     vi.doMock('../../autoloop', () => ({
-      getAutoLoopState: vi.fn(),
-      startAutoLoopOnce: vi.fn(),
-      stopAutoLoop: vi.fn(),
+      getAutoLoopState: vi.fn(async () => null),
+      evaluateFireGate: vi.fn(() => ({ allow: true, consecutiveErrors: 0 })),
     }));
+    mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/status');
     const { lookupByMcpName, dispatchProjectedTool } = await import('@papercusp/tooldef');
     // The tool declares the precondition…
@@ -86,42 +96,42 @@ describe('autoloop:status', () => {
 });
 
 describe('autoloop:control', () => {
-  it('pause op calls stopAutoLoop', async () => {
-    const stopAutoLoop = vi.fn(() => undefined);
-    vi.doMock('../../autoloop', () => ({
-      getAutoLoopState: vi.fn(),
-      startAutoLoopOnce: vi.fn(),
-      stopAutoLoop,
-    }));
+  it("pause flips the harness's bp-schedule-* routines inactive (durable — P-010)", async () => {
+    vi.doMock('../../autoloop', () => ({ resetFireErrors: vi.fn() }));
+    mockDbOrgSql([{ name: 'bp-schedule-0' }]);
     const { default: tool } = await import('../autoloop/control');
-    const result = await tool.handler({ op: 'pause' }, MAKE_CTX({ role: 'operator' }));
-    expect(stopAutoLoop).toHaveBeenCalled();
+    const result = await tool.handler({ op: 'pause', harness: 'sheets' }, MAKE_CTX({ role: 'operator' }));
     const payload = parsePayload(result as never);
-    expect(payload).toEqual({ ok: true, op: 'pause' });
+    expect(payload).toEqual({ ok: true, op: 'pause', harness: 'sheets', routines: ['bp-schedule-0'] });
   });
 
-  it('resume op calls startAutoLoopOnce', async () => {
-    const startAutoLoopOnce = vi.fn(() => undefined);
-    vi.doMock('../../autoloop', () => ({
-      getAutoLoopState: vi.fn(),
-      startAutoLoopOnce,
-      stopAutoLoop: vi.fn(),
-    }));
+  it('resume reports when the blueprint declares no schedule', async () => {
+    vi.doMock('../../autoloop', () => ({ resetFireErrors: vi.fn() }));
+    mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/control');
-    const result = await tool.handler({ op: 'resume' }, MAKE_CTX({ role: 'operator' }));
-    expect(startAutoLoopOnce).toHaveBeenCalled();
+    const result = await tool.handler({ op: 'resume', harness: 'sheets' }, MAKE_CTX({ role: 'operator' }));
     const payload = parsePayload(result as never);
-    expect(payload).toEqual({ ok: true, op: 'resume' });
+    expect(payload).toMatchObject({ ok: true, op: 'resume', harness: 'sheets', routines: [] });
+    expect(String(payload.note)).toMatch(/no bp-schedule/);
   });
 
-  it('exposes operator-only role gate', async () => {
-    vi.doMock('../../autoloop', () => ({
-      getAutoLoopState: vi.fn(),
-      startAutoLoopOnce: vi.fn(),
-      stopAutoLoop: vi.fn(),
-    }));
+  it('reset-errors zeroes the consecutive_errors counters (P-009 circuit reset)', async () => {
+    const resetFireErrors = vi.fn(async () => 2);
+    vi.doMock('../../autoloop', () => ({ resetFireErrors }));
+    mockDbOrgSql([]);
+    const { default: tool } = await import('../autoloop/control');
+    const result = await tool.handler({ op: 'reset-errors', harness: 'sheets' }, MAKE_CTX({ role: 'operator' }));
+    expect(resetFireErrors).toHaveBeenCalledWith('sheets', undefined);
+    const payload = parsePayload(result as never);
+    expect(payload).toEqual({ ok: true, op: 'reset-errors', harness: 'sheets', rowsReset: 2 });
+  });
+
+  it('exposes operator-only role gate + the harness-slug precondition (D-006)', async () => {
+    vi.doMock('../../autoloop', () => ({ resetFireErrors: vi.fn() }));
+    mockDbOrgSql([]);
     const { default: tool } = await import('../autoloop/control');
     expect(tool.agentRoles).toEqual(['operator']);
+    expect(tool.requires?.[0]?.id).toBe('harness-slug');
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Curator-operator cadence (plan curator-operator-2026-06-04, P0) as a DBOS
  * scheduled workflow — the routine half of the curation loop (the urgent half
- * is the event-driven `urgent-wake.ts`). Mirrors `autoloop-workflow.ts`: a
+ * is the event-driven `urgent-wake.ts`). Mirrors `routines-workflow.ts`: a
  * scheduled tick that, per orchestrated workspace, runs `runCurationTick`
  * honoring the adaptive interval ("faster when busy, slower when quiet").
  *

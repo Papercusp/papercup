@@ -446,6 +446,109 @@ pub struct TuiPanesPayload {
     pub panes: Vec<TuiPaneContribution>,
 }
 
+/// One plugin manifest from `GET /api/plugins/global` (D-007/D-014) — the
+/// fields the Plugins tab renders: identity, the frontend/backend contribution
+/// surfaces, and the `configSchema` driving the settings view. Contribution
+/// fields are deliberately loose `Value`s (manifests vary; the tab only counts
+/// + names them via [`contribution_count`]/[`contribution_names`]).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManifest {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    // Frontend contributions.
+    #[serde(default)]
+    pub ui: serde_json::Value,
+    #[serde(default)]
+    pub dashboard_tabs: serde_json::Value,
+    #[serde(default)]
+    pub sidebar_items: serde_json::Value,
+    // Backend contributions.
+    #[serde(default)]
+    pub tools: serde_json::Value,
+    #[serde(default)]
+    pub actions: serde_json::Value,
+    #[serde(default)]
+    pub api_routes: serde_json::Value,
+    #[serde(default)]
+    pub routines: serde_json::Value,
+    // Settings (D-014).
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub default_config: Option<serde_json::Value>,
+}
+
+impl PluginManifest {
+    /// Frontend contribution count: ui[] + dashboardTabs[] + sidebarItems[].
+    pub fn frontend_count(&self) -> usize {
+        contribution_count(&self.ui)
+            + contribution_count(&self.dashboard_tabs)
+            + contribution_count(&self.sidebar_items)
+    }
+
+    /// Backend contribution count: tools + actions + apiRoutes + routines.
+    pub fn backend_count(&self) -> usize {
+        contribution_count(&self.tools)
+            + contribution_count(&self.actions)
+            + contribution_count(&self.api_routes)
+            + contribution_count(&self.routines)
+    }
+}
+
+/// How many contributions a loose manifest field declares — array length,
+/// object key count, or 0 for anything else (absent/null/scalar).
+pub fn contribution_count(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::Array(a) => a.len(),
+        serde_json::Value::Object(o) => o.len(),
+        _ => 0,
+    }
+}
+
+/// Human labels for a loose contribution field: array items' `name`/`label`/
+/// `id`/`type` (first present), or object keys. Used by the detail pane.
+pub fn contribution_names(v: &serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::Array(a) => a
+            .iter()
+            .map(|item| {
+                for k in ["name", "label", "id", "type"] {
+                    if let Some(s) = item.get(k).and_then(|x| x.as_str()) {
+                        return s.to_string();
+                    }
+                }
+                if let Some(s) = item.as_str() {
+                    return s.to_string();
+                }
+                "(unnamed)".to_string()
+            })
+            .collect(),
+        serde_json::Value::Object(o) => o.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `GET /api/plugins/global` → `{plugins}`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginsGlobalResponse {
+    #[serde(default)]
+    pub plugins: Vec<PluginManifest>,
+}
+
+/// `GET /api/plugins/config?harness=&plugin=` → `{config}` (D-014).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginConfigResponse {
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
 /// One human-facing entry from `GET /api/coord/inbox` (P-002 / D-003b) — the
 /// coord messages/escalations/handoffs addressed to the human. Field names match
 /// the route's `HistoryItem` JSON (snake_case).
@@ -1184,6 +1287,40 @@ mod tests {
         // icon is optional; absent → None.
         assert_eq!(r.panes[1].icon, None);
         assert_eq!(r.panes[1].command, vec!["watch", "-n1", "ls"]);
+    }
+
+    #[test]
+    fn parses_plugin_manifest_loosely() {
+        // Backend-only manifest (github-repo shape): no ui/tools, actions list,
+        // configSchema object — and unknown extra keys are ignored.
+        let j = r#"{"plugins":[{
+            "name":"@papercupai/github-repo","version":"0.1.0",
+            "description":"Create a GitHub repo","icon":"GitBranch",
+            "actions":[{"name":"create-repo"}],
+            "configSchema":{"type":"object","required":["github_token"],
+                "properties":{"github_token":{"type":"string","secret":true},"owner":{"type":"string"}}},
+            "capabilities":["net"],"provision":{},"oauth":[{"provider":"github"}]
+        },{
+            "name":"ui-plugin","version":"1.0.0",
+            "ui":[{"type":"tui-pane","label":"Logs"}],
+            "dashboardTabs":[{"id":"x","label":"X"}],
+            "tools":{"my_tool":{}}
+        }]}"#;
+        let r: PluginsGlobalResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.plugins.len(), 2);
+        let gh = &r.plugins[0];
+        assert_eq!(gh.frontend_count(), 0);
+        assert_eq!(gh.backend_count(), 1); // 1 action
+        assert!(gh.config_schema.is_some());
+        assert_eq!(contribution_names(&gh.actions), vec!["create-repo"]);
+        let uip = &r.plugins[1];
+        assert_eq!(uip.frontend_count(), 2); // 1 ui + 1 dashboardTab
+        assert_eq!(uip.backend_count(), 1); // tools as an OBJECT counts keys
+        assert_eq!(contribution_names(&uip.tools), vec!["my_tool"]);
+        assert!(uip.config_schema.is_none());
+        // PluginConfigResponse default-tolerates an empty body.
+        let c: PluginConfigResponse = serde_json::from_str(r#"{"config":{"owner":"me"}}"#).unwrap();
+        assert_eq!(c.config["owner"], "me");
     }
 
     #[test]

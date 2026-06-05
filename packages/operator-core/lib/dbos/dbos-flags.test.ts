@@ -1,7 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import {
   dbosOrchestratorActive,
-  dbosAutoloopActive,
   dbosTimersActive,
   dbosProvisionActive,
   dbosBackupActive,
@@ -16,16 +15,9 @@ describe('dbosOrchestratorActive — default-on since P-009 (off only when =0)',
   test('=0 → the legacy revert', () => expect(dbosOrchestratorActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
 });
 
-describe('dbosAutoloopActive — Option 2: default-on with the orchestrator', () => {
-  test('unset → active (default-on with orchestrator)', () =>
-    expect(dbosAutoloopActive({})).toBe(true));
-  test('AUTOLOOP=0 → disabled (just the autoloop)', () =>
-    expect(dbosAutoloopActive({ PAPERCUSP_DBOS_AUTOLOOP: '0' })).toBe(false));
-  test('ORCHESTRATOR=0 → off (full legacy revert turns the autoloop off too)', () =>
-    expect(dbosAutoloopActive({ PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
-  test('AUTOLOOP=1 explicit → active', () =>
-    expect(dbosAutoloopActive({ PAPERCUSP_DBOS_AUTOLOOP: '1' })).toBe(true));
-});
+// dbosAutoloopActive is gone (autoloop-pot-operator-rebuild P-010 / D-009): the
+// director-cadence autoloop is retired; scheduled fires are the routines
+// engine's job (dbosRoutinesActive).
 
 describe('dbosTimersActive — Phase-2 timers default-on with the orchestrator', () => {
   test('unset → active', () => expect(dbosTimersActive({})).toBe(true));

@@ -8,17 +8,21 @@
  * base64 JSON instead of raw bytes — the TUI's IPC `sys:http` bridge is
  * binary-unsafe (UTF-8 string frames). Engine + voice default from the
  * operator's voice prefs (D-003: prefs reused as-is); `'browser'`
- * (speechSynthesis — meaningless outside a browser) falls back to kokoro.
- * Keys for the cloud engines stay server-side. `auth: 'public'` like the
- * sibling operator voice routes.
+ * (speechSynthesis — meaningless outside a browser) falls back to kokoro
+ * when kokoro's health check passes, else `{ ok:false, error:'no server-side
+ * tts engine available' }`. Keys for the cloud engines stay server-side.
+ * `auth: 'public'` like the sibling operator voice routes.
  */
 import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import { loadVoicePrefs, type VoicePrefs } from '../../../voice-prefs';
 import { defineTool } from '@papercusp/agent-mcp';
+import {
+  KOKORO_URL,
+  MAX_TEXT_CHARS,
+  probeKokoroHealth,
+  resolveTtsEngine,
+} from './operator-voice-proxy-helpers';
 
-const KOKORO_URL = process.env.KOKORO_URL ?? 'http://127.0.0.1:8880';
-/** Whole replies, not previews — but still bounded (≈ several minutes of speech). */
-const MAX_TEXT_CHARS = 4000;
 const TTS_TIMEOUT_MS = 30_000;
 
 type Synth =
@@ -132,8 +136,14 @@ export default defineTool({
       return Response.json({ ok: false, error: 'text (string) required' }, { status: 400 });
     }
     const prefs = await loadVoicePrefs();
-    let engine = typeof body.engine === 'string' && body.engine ? body.engine : prefs.ttsEngine;
-    if (engine === 'browser') engine = 'kokoro'; // no speechSynthesis in a terminal
+    // Resolve engine + apply the browser→kokoro health-gated fallback (D-006):
+    // 'browser' (speechSynthesis) is meaningless in a terminal, so it maps to
+    // local kokoro only when kokoro's health check passes — else a clean error.
+    const resolved = await resolveTtsEngine(body.engine, prefs, () => probeKokoroHealth(KOKORO_URL));
+    if (!resolved.ok) {
+      return Response.json({ ok: false, error: resolved.error }, { status: resolved.status });
+    }
+    const engine = resolved.engine;
     const voiceId = typeof body.voiceId === 'string' && body.voiceId ? body.voiceId : undefined;
 
     const synth = await synthesize(engine, text.slice(0, MAX_TEXT_CHARS), voiceId, prefs);

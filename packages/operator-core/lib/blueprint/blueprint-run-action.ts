@@ -15,8 +15,8 @@
  *
  *   - `'run'` (default) — fires the blueprint's declared decider role (`spine.decider`) for
  *     the harness via the invoke route. This "starts a blueprint run": the decider wakes,
- *     `deriveNext` drives the next pipeline action. Same autonomous launch the autoloop's
- *     `fireDirector` + the role-routine branch use; fire-and-forget. Touches no work-item
+ *     `deriveNext` drives the next pipeline action. Same autonomous launch the
+ *     routines-workflow role-routine branch uses; fire-and-forget. Touches no work-item
  *     table, so it is independent of P-020. Replaying the durable step just re-fires the
  *     decider (idempotent in effect — the decider is fired on a cadence anyway).
  *

@@ -45,28 +45,34 @@ function scriptRepoRoot(): string {
 }
 
 export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseConfig {
+  // Precedence: explicit caller override > env > derived. Env must NOT beat an
+  // explicit override — the operator host exports PAPERCUSP_INTEGRATION_ROOT
+  // (release-gate cutover), and with env-first the release lib's own tests
+  // (which pass throwaway-repo overrides) resolved git ops against the REAL
+  // tree and failed under any env-bearing run (e.g. the green-checkpoint
+  // routine, whose child env sets the var).
   const integrationRoot =
-    process.env.PAPERCUSP_INTEGRATION_ROOT ?? overrides.integrationRoot ?? scriptRepoRoot();
+    overrides.integrationRoot ?? process.env.PAPERCUSP_INTEGRATION_ROOT ?? scriptRepoRoot();
   const parent = path.dirname(integrationRoot);
   const releaseRoot =
-    process.env.PAPERCUSP_RELEASE_ROOT ?? overrides.releaseRoot ?? path.join(parent, 'papercup-release');
+    overrides.releaseRoot ?? process.env.PAPERCUSP_RELEASE_ROOT ?? path.join(parent, 'papercup-release');
   const checkpointRoot =
-    process.env.PAPERCUSP_CHECKPOINT_ROOT ?? overrides.checkpointRoot ?? path.join(parent, 'papercup-checkpoint');
+    overrides.checkpointRoot ?? process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(parent, 'papercup-checkpoint');
   const port = process.env.PAPERCUSP_HONO_PORT ?? '3070';
   return {
     integrationRoot,
     releaseRoot,
     checkpointRoot,
-    releaseRef: process.env.PAPERCUSP_RELEASE_REF ?? overrides.releaseRef ?? 'ready',
+    releaseRef: overrides.releaseRef ?? process.env.PAPERCUSP_RELEASE_REF ?? 'ready',
     integrationBranch:
-      process.env.PAPERCUSP_INTEGRATION_BRANCH ?? overrides.integrationBranch ?? 'main',
+      overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'main',
     systemdUnit:
-      process.env.PAPERCUSP_SYSTEMD_UNIT ?? overrides.systemdUnit ?? 'papercup-dev-api.service',
+      overrides.systemdUnit ?? process.env.PAPERCUSP_SYSTEMD_UNIT ?? 'papercup-dev-api.service',
     operatorHealthUrl:
-      process.env.PAPERCUSP_HEALTH_URL ??
       overrides.operatorHealthUrl ??
+      process.env.PAPERCUSP_HEALTH_URL ??
       `http://127.0.0.1:${port}/api/health`,
-    greenCmd: process.env.PAPERCUSP_GREEN_CMD ?? overrides.greenCmd ?? 'npm run test:affected',
+    greenCmd: overrides.greenCmd ?? process.env.PAPERCUSP_GREEN_CMD ?? 'npm run test:affected',
   };
 }
 

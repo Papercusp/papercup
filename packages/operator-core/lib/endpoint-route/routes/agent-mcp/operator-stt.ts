@@ -11,12 +11,7 @@
  * `auth: 'public'` like the sibling operator voice routes.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-
-const VOICEMODE_URL = process.env.VOICEMODE_URL ?? 'http://localhost:2022';
-/** PTT utterances are short; 25MB ≈ 13 min of 16k mono PCM16 — generous. */
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-/** Smaller than a WAV header = nothing transcribable; reject early. */
-const MIN_AUDIO_BYTES = 44;
+import { VOICEMODE_URL, decodeAudioBase64, normalizeAudioFormat } from './operator-voice-proxy-helpers';
 
 export default defineTool({
   method: 'POST',
@@ -29,22 +24,18 @@ export default defineTool({
     } catch {
       return Response.json({ ok: false, error: 'invalid JSON body' }, { status: 400 });
     }
-    if (typeof body.audioBase64 !== 'string' || body.audioBase64.length === 0) {
-      return Response.json({ ok: false, error: 'audioBase64 (string) required' }, { status: 400 });
+    const decoded = decodeAudioBase64(body.audioBase64);
+    if (!decoded.ok) {
+      return Response.json({ ok: false, error: decoded.error }, { status: decoded.status });
     }
-    const audio = Buffer.from(body.audioBase64, 'base64');
-    if (audio.length < MIN_AUDIO_BYTES) {
-      return Response.json({ ok: false, error: 'audio too short to transcribe' }, { status: 400 });
-    }
-    if (audio.length > MAX_AUDIO_BYTES) {
-      return Response.json({ ok: false, error: 'audio exceeds the 25MB cap' }, { status: 413 });
-    }
-    const format = body.format === 'webm' ? 'webm' : 'wav';
+    const audio = decoded.audio;
+    const format = normalizeAudioFormat(body.format);
 
     const fd = new FormData();
     fd.append(
       'file',
-      new Blob([audio], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
+      // A Node Buffer isn't a BlobPart; wrap as a plain Uint8Array view.
+      new Blob([new Uint8Array(audio)], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
       `audio.${format}`,
     );
     fd.append('model', 'whisper-1');
