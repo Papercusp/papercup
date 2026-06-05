@@ -25,7 +25,13 @@ import type {
   AttentionAction,
   AttentionActionId,
 } from './plans-api';
-import { resolveEscalation, ackCoordMessage, setItemStatus, addPlanDecision } from './plans-api';
+import {
+  resolveEscalation,
+  ackCoordMessage,
+  setItemStatus,
+  addPlanDecision,
+  triageAttentionItem,
+} from './plans-api';
 import type { AskChoiceArgs, AskChoiceOption } from '@/app/_components/chat/AskChoiceCard';
 
 /** Action ids that open a sub-surface rather than answering the item. The
@@ -81,6 +87,13 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
       // commit + disable. `undefined` ⇒ terminal (the renderer default).
       terminal: NAVIGATE_ACTION_IDS.has(a.id) ? false : undefined,
     });
+  }
+
+  // An operator-report item renders its ReportBlock natively (the card body
+  // via ReportBlockCard) — the question stays the short title so the plain-
+  // text body dump isn't duplicated above the structured block.
+  if (item.report) {
+    return { question: item.title, options, report: item.report };
   }
 
   return {
@@ -153,6 +166,19 @@ export async function resolveAttentionAction(
       // …Drop deliberately does NOT (won't-do; preserve today's distinction).
       return { resolved: true };
     }
+  }
+
+  if (ref.kind === 'operator-report' && (optionId === 'resolve' || optionId === 'mark-done')) {
+    // Resolving an operator report IS the triage state machine (resolve →
+    // handled tier, auditable — Brief 21 D-006); the item id is stable
+    // (`operator-report:<turn-id>`) so the triage row sticks across reads.
+    const res = await triageAttentionItem({
+      itemId: item.id,
+      action: 'resolve',
+      note: 'Resolved from the inbox detail pane',
+    });
+    if (res?.error) throw new Error(res.error);
+    return { resolved: true };
   }
 
   // smoke-fail / plan-review have only navigate actions (view-log / open) —

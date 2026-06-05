@@ -73,7 +73,8 @@ type ItemStatusFilter =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'plan-review';
+  | 'plan-review'
+  | 'operator-report';
 const ITEM_STATUS_IDS = [
   'needs-human',
   'todo',
@@ -82,10 +83,11 @@ const ITEM_STATUS_IDS = [
   'coord-message',
   'smoke-fail',
   'plan-review',
+  'operator-report',
 ] as const;
 // The non-plan-item facets — each maps 1:1 to an AttentionItem kind from
 // the plans:attention reader (the "Other" surfaces, now split out).
-const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'plan-review'] as const;
+const OTHER_KIND_IDS = ['coord-escalation', 'coord-message', 'smoke-fail', 'plan-review', 'operator-report'] as const;
 type OtherKind = (typeof OTHER_KIND_IDS)[number];
 
 /** Inbox tier filter (inbox-tiering-and-message-agent D-006). 'all' = every tier. */
@@ -108,6 +110,7 @@ const ITEM_FILTERS: Array<{ id: ItemStatusFilter; label: string; hint: string }>
   { id: 'coord-message', label: 'Messages', hint: 'Coord messages addressed to you.' },
   { id: 'smoke-fail', label: 'Smoke', hint: 'Failing smoke tests — the harness app is broken.' },
   { id: 'plan-review', label: 'Reviews', hint: 'Plans awaiting your review.' },
+  { id: 'operator-report', label: 'Reports', hint: 'Structured operator reports — fleet/plan status routed to the inbox (chat stays conversation only).' },
 ];
 
 const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
@@ -118,6 +121,7 @@ const ITEM_FILTER_LABEL: Record<ItemStatusFilter, string> = {
   'coord-message': 'Messages',
   'smoke-fail': 'Smoke',
   'plan-review': 'Reviews',
+  'operator-report': 'Reports',
 };
 
 const BUCKET_IDS: PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -377,6 +381,7 @@ export default function PlansClient() {
       'coord-message': 0,
       'smoke-fail': 0,
       'plan-review': 0,
+      'operator-report': 0,
     };
     for (const e of taggedItems) {
       if (pBuckets.length && !pBuckets.includes(planBucketBySlug.get(e.row.plan) ?? 'draft')) continue;

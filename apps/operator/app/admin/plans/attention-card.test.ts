@@ -13,6 +13,7 @@ vi.mock('./plans-api', () => ({
   ackCoordMessage: vi.fn(async () => ({ ok: true })),
   setItemStatus: vi.fn(async () => ({ ok: true, oldStatus: 'needs-human', newStatus: 'done', itemId: 'P-7' })),
   addPlanDecision: vi.fn(async () => ({ ok: true, decisionId: 'D-1', slug: 'p' })),
+  triageAttentionItem: vi.fn(async () => ({ ok: true })),
 }));
 
 import {
@@ -20,7 +21,13 @@ import {
   resolveAttentionAction,
   answerAttentionItem,
 } from './attention-card';
-import { resolveEscalation, ackCoordMessage, setItemStatus, addPlanDecision } from './plans-api';
+import {
+  resolveEscalation,
+  ackCoordMessage,
+  setItemStatus,
+  addPlanDecision,
+  triageAttentionItem,
+} from './plans-api';
 import type { AttentionItem } from './plans-api';
 
 const LAUNCH = (slug: string) => `/api/harness/${slug}/launch?phase=staging`;
@@ -77,6 +84,25 @@ const needsHuman = item({
     { id: 'chat', label: 'Chat' },
   ],
   ref: { kind: 'plan-item', slug: 'p', itemId: 'P-7' },
+});
+const operatorReport = item({
+  id: 'operator-report:turn-1',
+  kind: 'operator-report',
+  source: 'operator',
+  harnessSlug: null,
+  planSlug: null,
+  title: 'Fleet status',
+  body: 'plain-text fallback dump',
+  status: 'report',
+  tier: 'activity',
+  needsHuman: false,
+  ownerLabel: 'Operator',
+  actions: [{ id: 'resolve', label: 'Resolve', primary: true }],
+  ref: { kind: 'operator-report', turnId: 'turn-1', conversationId: 'c-1' },
+  report: {
+    title: 'Fleet status',
+    plans: [{ title: 'Rate-limit v2', status: 'active', items: [{ text: 'pacing', status: 'wip' }] }],
+  },
 });
 const smoke = item({
   kind: 'smoke-fail',

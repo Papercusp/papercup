@@ -34,8 +34,6 @@ export interface LoadHarnessInsightsOpts {
   /** Static-but-needed fields the loaders can't compute from PG alone. */
   project?: Partial<ProjectCardProps>;
   howItWorks?: Partial<HowItWorksHereCardProps>;
-  /** Optional href for the spend proxy-witness explainer. */
-  proxyWitnessExplainerHref?: string | null;
   /** Limits */
   activityLimit?: number;
   peopleLimit?: number;
@@ -138,8 +136,6 @@ export async function loadHarnessInsights(
       loadHarnessSpend({
         workspace_id,
         harness_slug,
-        viewer_github_user_id,
-        proxyWitnessExplainerHref: opts.proxyWitnessExplainerHref,
         runQuery,
       }),
     ]);

@@ -1,25 +1,53 @@
 /**
  * Agent-run metadata helpers — shared scan of `.papercusp/logs/` + PG mirror.
  *
- *   probeRunLiveness   — cheap "is this jsonl still being written?" check (tails last 4 KB for a terminal `{type:"result"}` line + mtime guard).
- *   scanAgentRuns      — walks the logs dir, parses filename + tail-reads the last `result` line for cost/tokens; returns full agent_runs row shape.
+ *   probeRunLiveness   — cheap "is this jsonl still being written?" check (tails last 4 KB
+ *                        for a terminal marker + mtime guard). Backend-aware: claude
+ *                        `{"type":"result"}`, codex `{"type":"turn.completed"}`, omp
+ *                        `{"type":"agent_end"}`, and the `papercusp.run_meta` stamp
+ *                        invoke.ts appends at subprocess exit (the authoritative marker).
+ *   scanAgentRuns      — walks the logs dir, parses filename + reads windowed JSONL through
+ *                        the shared `extractRunUsage` (all three backend stream shapes);
+ *                        returns full agent_runs row shape incl. backend/model and
+ *                        estimated-vs-provider cost labeling (cross-backend-cost-capture
+ *                        D-005 — codex reports tokens only, so its cost is priced from
+ *                        `@papercusp/model-pricing` and flagged `costIsEstimate`).
  *   scanAgentRunsCached — 2 s memoization keyed on dir mtime+size; the dashboard polls /agents every 5 s, so multiple concurrent panels share the file-walk cost.
- *   syncAgentRunsToPg  — fire-and-forget mirror of the scan results into `harness_<slug>.agent_runs` (INSERT … ON CONFLICT … + DELETE-not-in to keep the table in sync with the filesystem).
+ *   syncAgentRunsToPg  — fire-and-forget mirror of the scan results into `harness_<slug>.agent_runs` (INSERT … ON CONFLICT … + DELETE-not-in to keep the table in sync with the filesystem), workspace-scoped (migration 170).
+ *
+ * NOTE: in PG-canonical mode invoke.ts writes NO log files, so this FS-scan layer only
+ * sees CLI-fallback / PAPERCUSP_KEEP_FILES runs — per-harness *spend* reads
+ * `agent_usage_samples` (see harness-insights/load-spend.ts), not this mirror.
  *
  * Relocated from `app/api/_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 35 — prereq for `/agents`, `/usage`, `/streams` route migrations
  * which all share these helpers).
  */
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { extractRunUsage } from '@papercusp/orchestrator';
+import { costFromTokens } from '@papercusp/model-pricing';
 import { getHarnessPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from './workspace-registry';
 import { harnessDir } from './harness-core';
 import { type ProjectEntry } from './harness-registry';
 
-// A run is "live" when its jsonl has no terminal `{type:"result"}` line AND
-// its mtime is recent. The mtime guard prevents orphaned runs (harness
-// SIGKILLed mid-stream) from being reported as forever-running.
+// A run is "live" when its jsonl has no terminal marker AND its mtime is
+// recent. The mtime guard prevents orphaned runs (harness SIGKILLed
+// mid-stream) from being reported as forever-running.
 const LIVE_MTIME_GRACE_MS = 10 * 60_000;
+
+// Terminal markers per backend stream format. `papercusp.run_meta` is appended by
+// invoke.ts at subprocess exit and is the authoritative end-of-run stamp; the
+// per-backend terminal events cover files written before the stamp existed.
+// (codex `turn.completed` fires per turn — our `codex exec` spawns are single-turn,
+// and the run_meta stamp disambiguates any future multi-turn shape.)
+const TERMINAL_MARKERS = [
+  '"type":"result"',
+  '"type":"turn.completed"',
+  '"type":"agent_end"',
+  '"type":"papercusp.run_meta"',
+];
 
 export function probeRunLiveness(jsonlPath: string, now: number): { running: boolean; lastEventTs: number } {
   if (!existsSync(jsonlPath)) return { running: false, lastEventTs: 0 };
@@ -37,7 +65,7 @@ export function probeRunLiveness(jsonlPath: string, now: number): { running: boo
     const tail = buf.toString('utf8');
     const lines = tail.split('\n').map((l) => l.trim()).filter(Boolean);
     for (let i = lines.length - 1; i >= 0; i--) {
-      if (lines[i].includes('"type":"result"')) {
+      if (TERMINAL_MARKERS.some((m) => lines[i].includes(m))) {
         return { running: false, lastEventTs };
       }
     }
@@ -55,12 +83,44 @@ export interface AgentRunFull {
   sizeBytes: number;
   durationMs: number;
   costUsd: number;
+  /** True when costUsd was priced from tokens × list price (codex), not provider-reported. */
+  costIsEstimate: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** Backend/model attribution from the stream (run_meta stamp or stream-derived); null pre-stamp. */
+  backend: string | null;
+  model: string | null;
   running: boolean;
   lastEventTs: number;
+}
+
+// Windowed read for the usage parse: head window catches claude's `system:init`
+// (model id), the tail window catches every terminal event + the run_meta stamp
+// (and omp's `agent_end`, which carries the full per-turn usage list — so a
+// missing mid-file `message_end` never undercounts a *finished* run). Whole-file
+// read below the threshold.
+const HEAD_WINDOW = 16384;
+const TAIL_WINDOW = 65536;
+
+function readUsageWindows(jsonlPath: string, size: number): string {
+  if (size <= HEAD_WINDOW + TAIL_WINDOW) return readFileSync(jsonlPath, 'utf8');
+  const fd = openSync(jsonlPath, 'r');
+  try {
+    const head = Buffer.allocUnsafe(HEAD_WINDOW);
+    readSync(fd, head, 0, HEAD_WINDOW, 0);
+    const tail = Buffer.allocUnsafe(TAIL_WINDOW);
+    readSync(fd, tail, 0, TAIL_WINDOW, size - TAIL_WINDOW);
+    // Drop the partial line at each cut edge so the line parser skips cleanly.
+    const headStr = head.toString('utf8');
+    const tailStr = tail.toString('utf8');
+    const headCut = headStr.slice(0, headStr.lastIndexOf('\n') + 1);
+    const tailCut = tailStr.slice(tailStr.indexOf('\n') + 1);
+    return `${headCut}\n${tailCut}`;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
@@ -80,34 +140,33 @@ export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
     let outSize = 0;
     try { if (existsSync(outPath)) outSize = statSync(outPath).size; } catch {}
     const { running, lastEventTs } = probeRunLiveness(jsonlPath, now);
-    let costUsd = 0, inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0, durationMs = 0;
-    // Tail-read the last `result` line for cost/tokens instead of scanning
-    // the whole file. 16 KB is enough headroom for one result line.
+    let costUsd = 0, costIsEstimate = false, inputTokens = 0, outputTokens = 0,
+      cacheReadTokens = 0, cacheCreationTokens = 0, durationMs = 0;
+    let backend: string | null = null, model: string | null = null;
+    // Backend-aware usage parse (claude result / codex turn.completed / omp
+    // message_end+agent_end / run_meta stamp) over a bounded windowed read.
     try {
       const stat = statSync(jsonlPath);
-      const tailSize = Math.min(stat.size, 16384);
-      if (tailSize > 0) {
-        const fd = openSync(jsonlPath, 'r');
-        try {
-          const buf = Buffer.allocUnsafe(tailSize);
-          readSync(fd, buf, 0, tailSize, stat.size - tailSize);
-          const lines = buf.toString('utf8').split('\n').filter(Boolean);
-          for (let i = lines.length - 1; i >= 0; i--) {
-            if (!lines[i].includes('"type":"result"')) continue;
-            try {
-              const obj = JSON.parse(lines[i]);
-              if (obj.type === 'result') {
-                costUsd = obj.total_cost_usd ?? 0;
-                inputTokens = obj.usage?.input_tokens ?? 0;
-                outputTokens = obj.usage?.output_tokens ?? 0;
-                cacheReadTokens = obj.usage?.cache_read_input_tokens ?? 0;
-                cacheCreationTokens = obj.usage?.cache_creation_input_tokens ?? 0;
-                durationMs = obj.duration_ms ?? 0;
-                break;
-              }
-            } catch {}
+      if (stat.size > 0) {
+        const usage = extractRunUsage(readUsageWindows(jsonlPath, stat.size));
+        if (usage) {
+          inputTokens = usage.inputTokens ?? 0;
+          outputTokens = usage.outputTokens ?? 0;
+          cacheReadTokens = usage.cacheReadTokens ?? 0;
+          cacheCreationTokens = usage.cacheCreationTokens ?? 0;
+          durationMs = usage.durationMs ?? 0;
+          backend = usage.backend ?? null;
+          model = usage.model ?? null;
+          if (usage.costUsd !== undefined) {
+            costUsd = usage.costUsd; // provider-reported (claude / omp)
+          } else if (usage.model) {
+            const est = costFromTokens(usage.model, usage);
+            if (est.priced) {
+              costUsd = est.usd; // tokens × list price (codex) — labeled below
+              costIsEstimate = true;
+            }
           }
-        } finally { closeSync(fd); }
+        }
       }
     } catch {}
     out.push({
@@ -117,7 +176,8 @@ export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
       ts: match ? Number(match[1]) * 1000 : jsonlMtime,
       sizeBytes: outSize,
       durationMs,
-      costUsd, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens,
+      costUsd, costIsEstimate, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens,
+      backend, model,
       running,
       lastEventTs: Math.floor(lastEventTs || jsonlMtime),
     });
@@ -163,13 +223,17 @@ export function scanAgentRunsCached(project: ProjectEntry, ttlMs = 2000): AgentR
 /**
  * Mirror agent-run metadata into `harness_<slug>.agent_runs`. Cheap
  * because row count is bounded by .jsonl file count (~200). Fire-and-forget.
+ * Workspace-scoped (migration 170): rows carry workspace_id and the
+ * DELETE-not-in never reaps another workspace's rows under a shared slug.
  */
 export async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFull[]): Promise<void> {
   const { sql } = getHarnessPg(project.slug);
+  const ws = activeWorkspaceId();
   const now = Date.now();
   const ids = runs.map((r) => r.runId);
   if (runs.length > 0) {
     const rows = runs.map((r) => ({
+      workspace_id: ws,
       harness_slug: project.slug,
       run_id: r.runId,
       role: r.role,
@@ -178,28 +242,35 @@ export async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFul
       size_bytes: r.sizeBytes,
       duration_ms: r.durationMs,
       cost_usd: r.costUsd,
+      cost_is_estimate: r.costIsEstimate,
       input_tokens: r.inputTokens,
       output_tokens: r.outputTokens,
       cache_read_tokens: r.cacheReadTokens,
       cache_creation_tokens: r.cacheCreationTokens,
+      backend: r.backend ?? null,
+      model: r.model ?? null,
       running: r.running,
       last_event_ts: r.lastEventTs,
       created_ts: now,
       updated_ts: now,
     }));
     await sql`
-      INSERT INTO agent_runs ${sql(rows, 'harness_slug', 'run_id', 'role', 'feature_id', 'ts', 'size_bytes', 'duration_ms', 'cost_usd', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'running', 'last_event_ts', 'created_ts', 'updated_ts')}
+      INSERT INTO agent_runs ${sql(rows, 'workspace_id', 'harness_slug', 'run_id', 'role', 'feature_id', 'ts', 'size_bytes', 'duration_ms', 'cost_usd', 'cost_is_estimate', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'backend', 'model', 'running', 'last_event_ts', 'created_ts', 'updated_ts')}
       ON CONFLICT (harness_slug, run_id) DO UPDATE SET
+        workspace_id            = EXCLUDED.workspace_id,
         role                    = EXCLUDED.role,
         feature_id              = EXCLUDED.feature_id,
         ts                      = EXCLUDED.ts,
         size_bytes              = EXCLUDED.size_bytes,
         duration_ms             = EXCLUDED.duration_ms,
         cost_usd                = EXCLUDED.cost_usd,
+        cost_is_estimate        = EXCLUDED.cost_is_estimate,
         input_tokens            = EXCLUDED.input_tokens,
         output_tokens           = EXCLUDED.output_tokens,
         cache_read_tokens       = EXCLUDED.cache_read_tokens,
         cache_creation_tokens   = EXCLUDED.cache_creation_tokens,
+        backend                 = EXCLUDED.backend,
+        model                   = EXCLUDED.model,
         running                 = EXCLUDED.running,
         last_event_ts           = EXCLUDED.last_event_ts,
         updated_ts              = EXCLUDED.updated_ts
@@ -207,9 +278,10 @@ export async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFul
     await sql`
       DELETE FROM agent_runs
       WHERE harness_slug = ${project.slug}
+        AND workspace_id = ${ws}
         AND run_id NOT IN ${sql(ids)}
     `;
   } else {
-    await sql`DELETE FROM agent_runs WHERE harness_slug = ${project.slug}`;
+    await sql`DELETE FROM agent_runs WHERE harness_slug = ${project.slug} AND workspace_id = ${ws}`;
   }
 }

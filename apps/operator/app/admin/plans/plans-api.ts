@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import type { ReportBlock } from '@papercusp/chat-protocol';
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
@@ -121,7 +122,8 @@ export type AttentionKind =
   | 'coord-escalation'
   | 'coord-message'
   | 'smoke-fail'
-  | 'plan-review';
+  | 'plan-review'
+  | 'operator-report';
 
 export type AttentionActionId =
   | 'chat'
@@ -180,6 +182,10 @@ export interface AttentionItem {
   triagedAt: string | null;
   actions: AttentionAction[];
   ref: { kind: AttentionKind } & Record<string, unknown>;
+  /** Structured report payload (kind `operator-report` only) — the shared
+   *  ReportBlock the detail pane renders natively via ReportBlockCard.
+   *  report-cards-inbox-reconciliation-2026-06-05 D-001/D-003. */
+  report?: ReportBlock;
 }
 
 export interface AttentionGroup {
@@ -356,6 +362,28 @@ export function resolveEscalation(args: { msg_id: string; choice: string; note?:
 /** Acknowledge a coord message addressed to the human. */
 export function ackCoordMessage(args: { msg_id: string }) {
   return postCoord<{ ok?: boolean; error?: string }>('ack', args);
+}
+
+/** Triage an attention item (inbox:triage via the /api/admin/inbox proxy).
+ *  Resolving an operator-report from the inbox IS the triage state machine
+ *  (resolve → handled tier, auditable). report-cards-inbox-reconciliation P-007. */
+export async function triageAttentionItem(args: {
+  itemId: string;
+  action: 'confirm' | 'escalate' | 'downgrade' | 'resolve';
+  note?: string;
+}): Promise<{ ok?: boolean; error?: string }> {
+  const r = await fetch('/api/admin/inbox/triage', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`inbox:triage → ${r.status}: ${text.slice(0, 200)}`);
+  try {
+    return JSON.parse(text) as { ok?: boolean; error?: string };
+  } catch {
+    return {};
+  }
 }
 
 /* ── "Message owner" + inline conversation thread (Brief 21, D-004) ──────

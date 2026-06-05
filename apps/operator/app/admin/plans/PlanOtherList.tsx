@@ -37,6 +37,7 @@ const KIND_LABEL: Record<AttentionKind, string> = {
   'coord-message': 'message',
   'smoke-fail': 'smoke',
   'plan-review': 'review',
+  'operator-report': 'report',
 };
 
 interface Props {

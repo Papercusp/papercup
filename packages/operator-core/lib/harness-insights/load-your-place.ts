@@ -9,7 +9,9 @@
  *                    in-flight (working), shipped-this-week
  *   role           — pr_reviewer_enabled / provisional-owner / claimant
  *   trust          — N authors I trust + N who trust me
- *   spend (Tier D) — viewer's USD spend this week (LOCAL)
+ *
+ * (Per-viewer spend was removed — cross-backend-cost-capture D-003 #2;
+ * the harness total lives on the SpendCard.)
  *
  * Pure logic — injectable runQuery. Every section defends against a
  * missing table independently.
@@ -21,7 +23,7 @@ export interface LoadYourPlaceOpts {
   workspace_id: string;
   harness_slug: string;
   viewer_github_user_id: number;
-  /** Sliding window for shipped-this-week + spend-this-week. Default 7d. */
+  /** Sliding window for shipped-this-week. Default 7d. */
   windowMs?: number;
   runQuery: <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 }
@@ -150,32 +152,11 @@ export async function loadYourPlace(
     [workspace_id, harness_slug, viewer_github_user_id],
   );
 
-  // ── spend (Tier D) ────────────────────────────────────────────────
-  // tool_invocations stores cost in $µ (microdollars) per memory; total
-  // and divide by 1_000_000 to get dollars. Defensive: missing table or
-  // missing column yields zero.
-  let spent_usd_this_week = 0;
-  try {
-    const rows = await runQuery<{ cents: string | number | null }>(
-      `SELECT COALESCE(SUM(cost_microcents), 0) AS cents
-         FROM harness_shared.tool_invocations
-        WHERE workspace_id = $1
-          AND harness_slug = $2
-          AND user_id_text = $3
-          AND ts >= $4`,
-      [workspace_id, harness_slug, String(viewer_github_user_id), windowStart],
-    );
-    const microcents = rows[0]?.cents;
-    if (microcents != null) {
-      const n =
-        typeof microcents === 'string'
-          ? Number.parseInt(microcents, 10)
-          : Number(microcents);
-      if (Number.isFinite(n)) spent_usd_this_week = n / 1_000_000;
-    }
-  } catch {
-    spent_usd_this_week = 0;
-  }
+  // Per-viewer spend was REMOVED (cross-backend-cost-capture D-003 #2): the old
+  // query summed phantom `tool_invocations.cost_microcents` (column never
+  // existed → always $0), and agent runs are orchestrator-spawned with no
+  // per-person attribution. The harness total lives on the SpendCard
+  // (load-spend.ts → agent_usage_samples).
 
   return {
     queue: { queued, working, shipped_this_week },
@@ -185,6 +166,5 @@ export async function loadYourPlace(
       is_claimant,
     },
     trust: { trusted_authors_count, trusted_by_count },
-    spend: { spent_usd_this_week },
   };
 }

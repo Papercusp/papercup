@@ -146,18 +146,10 @@ export interface YourPlaceTrustState {
   trusted_by_count: number;
 }
 
-export interface YourPlaceSpendState {
-  /** USD this week. */
-  spent_usd_this_week: number;
-  /** Optional weekly cap; renders as `$x/$y`. */
-  cap_usd?: number | null;
-}
-
 export interface YourPlaceCardProps {
   queue: YourPlaceQueueStats;
   role: YourPlaceRoleState;
   trust: YourPlaceTrustState;
-  spend: YourPlaceSpendState;
 }
 
 // ─── Card 5: How it works here ───────────────────────────────────
@@ -191,13 +183,20 @@ export interface HowItWorksHereCardProps {
 
 // ─── Card 6: Spend ───────────────────────────────────────────────
 
+/**
+ * Real per-harness spend from `agent_usage_samples` (cross-backend-cost-capture
+ * P-006). No per-viewer line: agent runs are orchestrator-spawned, not
+ * attributable to a person (D-003 #2).
+ */
 export interface SpendCardProps {
-  /** Total spend this week across all contributors on the harness, USD. */
+  /** Total spend this week on the harness, USD (provider-billed + estimated). */
   harnessTotalUsdThisWeek: number;
-  /** Viewer's own spend this week, USD. */
-  viewerUsdThisWeek: number;
-  /** Optional href explaining the proxy-witness deferral plan. */
-  proxyWitnessExplainerHref?: string | null;
+  /** Portion of the total priced from tokens × list price (codex etc.), USD. */
+  estimatedUsdThisWeek: number;
+  /** Token throughput this week (uncached input + output). */
+  tokensThisWeek: number;
+  /** Number of usage samples (≈ agent runs/calls) contributing this week. */
+  runsThisWeek: number;
 }
 
 // ─── Aggregate: the full Insights tab contract ───────────────────
