@@ -3019,6 +3019,44 @@ mod tests {
     }
 
     #[test]
+    fn chat_report_renders_two_tier_plan_item_list() {
+        let mut app = App::new();
+        let report = crate::chat_tags::Report {
+            title: Some("Fleet status".into()),
+            plans: vec![crate::chat_tags::ReportPlan {
+                slug: Some("rate-limit-layer-v2".into()),
+                title: "Rate-limit v2".into(),
+                status: Some("active".into()),
+                summary: Some("top half of the layer".into()),
+                items: vec![
+                    crate::chat_tags::ReportItem {
+                        id: Some("P-001".into()),
+                        text: "Error classifier".into(),
+                        status: Some("done".into()),
+                    },
+                    crate::chat_tags::ReportItem {
+                        id: Some("P-003".into()),
+                        text: "Per-call pacing".into(),
+                        status: Some("wip".into()),
+                    },
+                ],
+            }],
+        };
+        let mut msg = crate::models::ChatMessage::assistant("Here is where the fleet stands.");
+        msg.report = Some(report);
+        app.set_chat_history("c1".into(), vec![msg], false, None);
+        let text = render(&app, 100, 24);
+        // The say bubble stays clean above the structured report.
+        assert!(text.contains("Here is where the fleet stands."));
+        // The report renders title + plan + items (two tiers).
+        assert!(text.contains("Fleet status"));
+        assert!(text.contains("Rate-limit v2"));
+        assert!(text.contains("Error classifier"));
+        assert!(text.contains("Per-call pacing"));
+        assert!(text.contains("P-001"));
+    }
+
+    #[test]
     fn wrap_text_wraps_words_and_preserves_breaks() {
         assert_eq!(wrap_text("a b c", 3), vec!["a b", "c"]);
         assert_eq!(wrap_text("line1\nline2", 80), vec!["line1", "line2"]);
