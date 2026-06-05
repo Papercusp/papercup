@@ -177,10 +177,27 @@ async function loadColumnLists(
   sql: ReturnType<typeof postgres>,
 ): Promise<Map<string, string[]>> {
   const m = new Map<string, string[]>();
+  // Drop columns that must NOT be supplied at INSERT — capture's
+  // `COPY (SELECT *)` writes them to the CSV, but restore has to omit them:
+  //
+  //   • STORED GENERATED columns (is_generated='ALWAYS') — PG recomputes them
+  //     and HARD-ERRORS ("cannot insert a non-DEFAULT value into column …")
+  //     if you supply one. Every base-table `_search` tsvector is one.
+  //   • tsvector columns generally (udt_name='tsvector') — these are always
+  //     DERIVED search indexes (from title/body/name/slug, which ARE captured),
+  //     never source-of-truth. This catch is needed on top of is_generated for
+  //     the work_items VIEW: a view's `_search` reports is_generated='NEVER'
+  //     (it's a SELECT expr), and binding the captured tsvector text into the
+  //     view's INSTEAD OF INSERT would fail the text→tsvector assignment cast.
+  //
+  // The CSV's extra dropped keys on each parsed row are harmless —
+  // `tx(rows, ...colList)` only reads colList keys.
   const rows = (await sql<{ table_name: string; column_name: string }[]>`
     SELECT table_name, column_name
     FROM information_schema.columns
     WHERE table_schema = 'harness_shared'
+      AND is_generated = 'NEVER'
+      AND udt_name <> 'tsvector'
     ORDER BY table_name, ordinal_position
   `) as Array<{ table_name: string; column_name: string }>;
   for (const row of rows) {

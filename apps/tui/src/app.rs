@@ -33,7 +33,9 @@ pub const CONV_STATES: [&str; 4] = ["open", "resolved", "closed", "all"];
 pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
 
 /// What the run-loop should do after handling one event.
-#[derive(Debug, PartialEq, Eq)]
+/// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
+/// patches, which isn't `Eq`. `PartialEq` is all the run loop needs.)
+#[derive(Debug, PartialEq)]
 pub enum Action {
     None,
     Render,
@@ -3502,9 +3504,9 @@ impl App {
             Tab::Memory => self.visible_memories().len(),
             Tab::Cupboard => self.cupboard.len(),
             Tab::Conversations => self.visible_conversations().len(),
-            // No list to navigate — j/k scroll the transcript (Operator) handled
-            // in on_key; Config has no list.
-            Tab::Config | Tab::Operator => return,
+            // No list move_sel navigates — j/k scroll the transcript (Operator),
+            // Config has no list, and the Voice tab owns its own j/k in voice_ui.
+            Tab::Config | Tab::Operator | Tab::Voice => return,
         };
         if len == 0 {
             return;
@@ -3531,7 +3533,7 @@ impl App {
             Tab::Memory => &mut self.memory_sel,
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
-            Tab::Config | Tab::Operator => return,
+            Tab::Config | Tab::Operator | Tab::Voice => return,
         };
         let next = (*slot as isize + delta).clamp(0, len as isize - 1);
         *slot = next as usize;
@@ -5318,12 +5320,14 @@ mod tests {
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
         // Sessions folded into Brew (D-002b) + Activity retired (D-004b) → ten
         // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
-        // D-011) + Conversations ('d', Brief 25) letter tabs + the prepended
-        // Overview ('h', Brief 23).
-        assert_eq!(Tab::ALL.len(), 14);
+        // D-011) + Conversations ('d', Brief 25) + Voice ('a', holepunch-voice-
+        // channels P-008) letter tabs + the prepended Overview ('h', Brief 23).
+        assert_eq!(Tab::ALL.len(), 15);
         assert_eq!(Tab::Memory.switch_key(), 'm');
         assert_eq!(Tab::Cupboard.switch_key(), 'c');
         assert_eq!(Tab::Conversations.switch_key(), 'd');
+        assert_eq!(Tab::Voice.switch_key(), 'a');
+        assert_eq!(Tab::from_switch_key('a'), Some(Tab::Voice));
         // `h` returns to the Overview from elsewhere; `1` still reaches the chat.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));
