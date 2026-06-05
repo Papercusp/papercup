@@ -30,7 +30,7 @@ use crate::ui::trunc;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 use std::collections::HashMap;
@@ -299,27 +299,6 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn fleet_block(title: Line<'static>, active: bool) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .style(if active {
-            Theme::panel_active()
-        } else {
-            Theme::panel()
-        })
-        .border_style(if active {
-            Theme::border_active()
-        } else {
-            Theme::border()
-        })
-        .title_style(if active {
-            Theme::title_active()
-        } else {
-            Theme::title()
-        })
-        .title(title)
-}
-
 fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
     let line = Line::from(vec![
         // Label is "Fleet" — the Brew rename was reversed by the owner (2026-06-05).
@@ -428,7 +407,7 @@ fn draw_what_matters(f: &mut Frame, app: &App, area: Rect) {
         items
     };
     f.render_widget(
-        List::new(body).style(Theme::panel()).block(fleet_block(
+        List::new(body).style(Theme::panel()).block(Theme::block(
             Line::from(format!(
                 " {} What matters ({}) — the curator's view ",
                 glyph::header::BOLT,
@@ -503,7 +482,7 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     let body_area = crate::ui::block_with_header(
         f,
         area,
-        fleet_block(Line::from(title), true),
+        Theme::block(Line::from(title), true),
         &format!("    {:<7}{:<31}{}", "agent", "doing now", "todos"),
     );
     let list = List::new(body)
@@ -571,7 +550,7 @@ fn draw_agent_detail(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(body)
             .wrap(Wrap { trim: false })
             .style(Theme::panel())
-            .block(fleet_block(Line::from(" Dossier "), sel.is_some())),
+            .block(Theme::block(Line::from(" Dossier "), sel.is_some())),
         area,
     );
 }
@@ -612,7 +591,7 @@ fn draw_plan_progress(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect
         items
     };
     f.render_widget(
-        List::new(body).style(Theme::panel()).block(fleet_block(
+        List::new(body).style(Theme::panel()).block(Theme::block(
             Line::from(format!(
                 " Plan progress — {}/{} items done ",
                 agg.plan_items_done, agg.plan_items_total
@@ -657,7 +636,7 @@ fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
     let body_area = crate::ui::block_with_header(
         f,
         area,
-        fleet_block(
+        Theme::block(
             Line::from(format!(
                 " Activity mirror ({}) — every tool call, newest first ",
                 activity.len()

@@ -25,6 +25,7 @@ impl Theme {
     const HUMAN: Color = Color::Rgb(255, 139, 203);
     const POPUP: Color = Color::Rgb(13, 23, 26);
     const INPUT: Color = Color::Rgb(3, 8, 10);
+    const STATUS: Color = Color::Rgb(5, 10, 12);
 
     /// Base pane surface. Blocks use this so adjacent panes read as an intentional
     /// dashboard instead of raw terminal cells.
@@ -69,7 +70,11 @@ impl Theme {
     }
 
     pub fn status_bar() -> Style {
-        Style::default().fg(Self::MUTED).bg(Color::Rgb(5, 10, 12))
+        Style::default().fg(Self::MUTED).bg(Self::STATUS)
+    }
+
+    pub fn status_text(style: Style) -> Style {
+        style.bg(Self::STATUS)
     }
 
     pub fn tab_bar() -> Style {
@@ -84,12 +89,6 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
-    pub fn selected_soft() -> Style {
-        Style::default()
-            .fg(Self::INK)
-            .bg(Self::PANEL_ACTIVE)
-            .add_modifier(Modifier::BOLD)
-    }
     pub fn dim() -> Style {
         Style::default().fg(Self::MUTED)
     }

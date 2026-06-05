@@ -58,7 +58,7 @@ pub mod kind {
 
 /// Issue / curated-signal severity.
 pub mod severity {
-    pub const INFO: &str = "·";
+    pub const INFO: &str = "•";
     pub const WARN: &str = "▲";
     pub const ERROR: &str = "⊘";
     pub const CRITICAL: &str = "◆";

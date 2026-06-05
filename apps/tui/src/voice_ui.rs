@@ -13,13 +13,13 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
-use crate::voice_stream::{VoiceStatus, VoiceEvent};
+use crate::theme::Theme;
+use crate::voice_stream::{VoiceEvent, VoiceStatus};
 
 // ---------------------------------------------------------------- state
 
@@ -187,8 +187,15 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
             KeyCode::Enter | KeyCode::Char(' ') => {
                 return match s.settings_sel {
                     0 => {
-                        let next = if p.input_mode == "ptt" { "open-mic" } else { "ptt" };
-                        Some(VoiceCmd::PrefsSet("voiceInputMode", serde_json::json!(next)))
+                        let next = if p.input_mode == "ptt" {
+                            "open-mic"
+                        } else {
+                            "ptt"
+                        };
+                        Some(VoiceCmd::PrefsSet(
+                            "voiceInputMode",
+                            serde_json::json!(next),
+                        ))
                     }
                     2 => Some(VoiceCmd::PrefsSet("voiceAec", serde_json::json!(!p.aec))),
                     3 => Some(VoiceCmd::PrefsSet(
@@ -219,7 +226,9 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
                     )),
                     5 => Some(VoiceCmd::PrefsSet(
                         "voiceOutputVolume",
-                        serde_json::json!((((p.output_volume - 0.1).max(0.0)) * 10.0).round() / 10.0),
+                        serde_json::json!(
+                            (((p.output_volume - 0.1).max(0.0)) * 10.0).round() / 10.0
+                        ),
                     )),
                     _ => None,
                 };
@@ -258,7 +267,11 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
             if !in_channel(s) {
                 return None;
             }
-            Some(if s.mic_on { VoiceCmd::MicOff } else { VoiceCmd::MicOn })
+            Some(if s.mic_on {
+                VoiceCmd::MicOff
+            } else {
+                VoiceCmd::MicOn
+            })
         }
         KeyCode::Char('r') => Some(VoiceCmd::Connect), // (re)connect + refresh
         KeyCode::Char('n') => {
@@ -275,7 +288,10 @@ pub fn handle_key(s: &mut VoiceUiState, code: KeyCode, _mods: KeyModifiers) -> O
 }
 
 fn in_channel(s: &VoiceUiState) -> bool {
-    s.status.as_ref().map(|st| st.channel.is_some()).unwrap_or(false)
+    s.status
+        .as_ref()
+        .map(|st| st.channel.is_some())
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- render
@@ -322,8 +338,9 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
     );
     f.render_stateful_widget(
         List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(ltitle))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(ltitle), s.connected))
+            .highlight_style(Theme::selected()),
         cols[0],
         &mut ls,
     );
@@ -334,43 +351,83 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
         Some(ch) => {
             let muted = s.status.as_ref().map(|st| st.muted).unwrap_or(false);
             lines.push(Line::from(vec![
-                Span::styled(format!("# {}", ch.name), Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if muted { "   [muted]" } else { "" }),
+                Span::styled(format!("# {}", ch.name), Theme::title()),
+                if muted {
+                    Span::styled("   [muted]", Theme::warn())
+                } else {
+                    Span::raw("")
+                },
             ]));
             let level = (s.mic_level * 30.0).round() as usize;
             let meter: String = "█".repeat(level.min(30));
-            lines.push(Line::from(format!(
-                "mic {}  {:<30}",
-                if s.mic_on { "ON " } else { "off" },
-                meter
-            )));
+            lines.push(Line::from(vec![
+                Span::raw("mic "),
+                Span::styled(
+                    if s.mic_on { "ON " } else { "off" },
+                    if s.mic_on {
+                        Theme::success()
+                    } else {
+                        Theme::dim()
+                    },
+                ),
+                Span::raw("  "),
+                Span::styled(format!("{meter:<30}"), Theme::success()),
+            ]));
             lines.push(Line::from(""));
-            let peers = s.status.as_ref().map(|st| st.peers.clone()).unwrap_or_default();
+            let peers = s
+                .status
+                .as_ref()
+                .map(|st| st.peers.clone())
+                .unwrap_or_default();
             if peers.is_empty() {
-                lines.push(Line::from("(no peers yet — they join via this channel on their box)"));
+                lines.push(Line::from(Span::styled(
+                    "(no peers yet — they join via this channel on their box)",
+                    Theme::dim(),
+                )));
             } else {
                 for p in &peers {
-                    let glyph = if p.speaking { "🗣" } else if p.muted { "🔇" } else { "•" };
-                    lines.push(Line::from(format!("{glyph} {}", p.label)));
+                    let glyph = if p.speaking {
+                        "🗣"
+                    } else if p.muted {
+                        "🔇"
+                    } else {
+                        "•"
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            glyph,
+                            if p.speaking {
+                                Theme::info()
+                            } else {
+                                Theme::dim()
+                            },
+                        ),
+                        Span::raw(format!(" {}", p.label)),
+                    ]));
                 }
             }
         }
         None => {
-            lines.push(Line::from("Not in a channel."));
+            lines.push(Line::from(Span::styled("Not in a channel.", Theme::dim())));
             lines.push(Line::from(""));
-            lines.push(Line::from("Enter join · n new · r refresh · s settings"));
+            lines.push(Line::from(Span::styled(
+                "Enter join · n new · r refresh · s settings",
+                Theme::info(),
+            )));
         }
     }
     if let Some(e) = &s.error {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("{} {e}", crate::glyph::severity::WARN),
-            Style::default().fg(Color::Red),
+            Theme::danger(),
         )));
     }
     let rtitle = " Channel  (v talk · m mute · l leave · s settings) ";
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(rtitle)),
+        Paragraph::new(lines)
+            .style(Theme::panel())
+            .block(Theme::block(Line::from(rtitle), in_channel(s))),
         cols[1],
     );
 
@@ -380,7 +437,10 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
         f.render_widget(Clear, r);
         f.render_widget(
             Paragraph::new(format!("> {}", s.compose_input))
-                .block(Block::default().borders(Borders::ALL).title(" New channel name (Enter/Esc) ")),
+                .style(Theme::input())
+                .block(Theme::popup_block(Line::from(
+                    " New channel name (Enter/Esc) ",
+                ))),
             r,
         );
     }
@@ -394,7 +454,11 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
             p.input_mode.clone(),
             p.ptt_key.clone(),
             if p.aec { "on".into() } else { "off".into() },
-            if p.noise_suppression { "on".into() } else { "off".into() },
+            if p.noise_suppression {
+                "on".into()
+            } else {
+                "off".into()
+            },
             format!("{:.1}", p.input_gain),
             format!("{:.1}", p.output_volume),
         ];
@@ -407,12 +471,11 @@ pub fn draw_voice(f: &mut Frame, s: &VoiceUiState, area: Rect) {
         ls.select(Some(s.settings_sel));
         f.render_stateful_widget(
             List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Voice settings (Enter toggle · +/- gain · Esc) "),
-                )
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                .style(Theme::popup())
+                .block(Theme::popup_block(Line::from(
+                    " Voice settings (Enter toggle · +/- gain · Esc) ",
+                )))
+                .highlight_style(Theme::selected()),
             r,
             &mut ls,
         );
@@ -439,12 +502,18 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     fn chan(id: &str, name: &str) -> VoiceChannelRow {
-        VoiceChannelRow { id: id.into(), name: name.into() }
+        VoiceChannelRow {
+            id: id.into(),
+            name: name.into(),
+        }
     }
 
     fn status_in(name: &str, peers: Vec<VoicePeer>) -> VoiceStatus {
         VoiceStatus {
-            channel: Some(VoiceChannelInfo { id: "vc-1".into(), name: name.into() }),
+            channel: Some(VoiceChannelInfo {
+                id: "vc-1".into(),
+                name: name.into(),
+            }),
             muted: false,
             peers,
         }
@@ -452,9 +521,18 @@ mod tests {
 
     #[test]
     fn nav_and_join_emit_cmds() {
-        let mut s = VoiceUiState { connected: true, ..Default::default() };
-        apply_event(&mut s, VoiceUiEvent::Channels(vec![chan("vc-1", "standup"), chan("vc-2", "pairing")]));
-        assert_eq!(handle_key(&mut s, KeyCode::Char('j'), KeyModifiers::NONE), None);
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Channels(vec![chan("vc-1", "standup"), chan("vc-2", "pairing")]),
+        );
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('j'), KeyModifiers::NONE),
+            None
+        );
         assert_eq!(s.sel, 1);
         assert_eq!(
             handle_key(&mut s, KeyCode::Enter, KeyModifiers::NONE),
@@ -462,28 +540,55 @@ mod tests {
         );
         // not connected → Enter connects instead of joining
         let mut s2 = VoiceUiState::default();
-        assert_eq!(handle_key(&mut s2, KeyCode::Enter, KeyModifiers::NONE), Some(VoiceCmd::Connect));
+        assert_eq!(
+            handle_key(&mut s2, KeyCode::Enter, KeyModifiers::NONE),
+            Some(VoiceCmd::Connect)
+        );
     }
 
     #[test]
     fn talk_mute_leave_require_channel() {
-        let mut s = VoiceUiState { connected: true, ..Default::default() };
-        assert_eq!(handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE), None);
-        assert_eq!(handle_key(&mut s, KeyCode::Char('m'), KeyModifiers::NONE), None);
-        apply_event(&mut s, VoiceUiEvent::Stream(VoiceEvent::Status(status_in("standup", vec![]))));
-        assert_eq!(handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE), Some(VoiceCmd::MicOn));
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE),
+            None
+        );
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('m'), KeyModifiers::NONE),
+            None
+        );
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Stream(VoiceEvent::Status(status_in("standup", vec![]))),
+        );
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE),
+            Some(VoiceCmd::MicOn)
+        );
         apply_event(&mut s, VoiceUiEvent::MicState(true));
-        assert_eq!(handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE), Some(VoiceCmd::MicOff));
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('v'), KeyModifiers::NONE),
+            Some(VoiceCmd::MicOff)
+        );
         assert_eq!(
             handle_key(&mut s, KeyCode::Char('m'), KeyModifiers::NONE),
             Some(VoiceCmd::SetMuted(true))
         );
-        assert_eq!(handle_key(&mut s, KeyCode::Char('l'), KeyModifiers::NONE), Some(VoiceCmd::Leave));
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('l'), KeyModifiers::NONE),
+            Some(VoiceCmd::Leave)
+        );
     }
 
     #[test]
     fn composer_collects_name() {
-        let mut s = VoiceUiState { connected: true, ..Default::default() };
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
         handle_key(&mut s, KeyCode::Char('n'), KeyModifiers::NONE);
         assert!(s.composing);
         for c in "crit".chars() {
@@ -498,8 +603,14 @@ mod tests {
 
     #[test]
     fn settings_overlay_toggles_and_patches() {
-        let mut s = VoiceUiState { connected: true, ..Default::default() };
-        assert_eq!(handle_key(&mut s, KeyCode::Char('s'), KeyModifiers::NONE), Some(VoiceCmd::PrefsGet));
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Char('s'), KeyModifiers::NONE),
+            Some(VoiceCmd::PrefsGet)
+        );
         assert!(s.settings_open);
         apply_event(
             &mut s,
@@ -515,7 +626,10 @@ mod tests {
         // toggle input mode ptt → open-mic
         assert_eq!(
             handle_key(&mut s, KeyCode::Enter, KeyModifiers::NONE),
-            Some(VoiceCmd::PrefsSet("voiceInputMode", serde_json::json!("open-mic")))
+            Some(VoiceCmd::PrefsSet(
+                "voiceInputMode",
+                serde_json::json!("open-mic")
+            ))
         );
         // gain bump on row 4
         for _ in 0..4 {
@@ -531,15 +645,31 @@ mod tests {
 
     #[test]
     fn renders_channel_peers_and_overlays() {
-        let mut s = VoiceUiState { connected: true, ..Default::default() };
-        apply_event(&mut s, VoiceUiEvent::Channels(vec![chan("vc-1", "standup")]));
+        let mut s = VoiceUiState {
+            connected: true,
+            ..Default::default()
+        };
+        apply_event(
+            &mut s,
+            VoiceUiEvent::Channels(vec![chan("vc-1", "standup")]),
+        );
         apply_event(
             &mut s,
             VoiceUiEvent::Stream(VoiceEvent::Status(status_in(
                 "standup",
                 vec![
-                    VoicePeer { id: "b".into(), label: "bob@laptop".into(), muted: false, speaking: true },
-                    VoicePeer { id: "c".into(), label: "carol@nyc".into(), muted: true, speaking: false },
+                    VoicePeer {
+                        id: "b".into(),
+                        label: "bob@laptop".into(),
+                        muted: false,
+                        speaking: true,
+                    },
+                    VoicePeer {
+                        id: "c".into(),
+                        label: "carol@nyc".into(),
+                        muted: true,
+                        speaking: false,
+                    },
                 ],
             ))),
         );

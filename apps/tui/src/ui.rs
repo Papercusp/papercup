@@ -166,6 +166,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let tabs = Tabs::new(titles)
+        .style(Theme::tab_bar())
         .select(app.tab.index())
         .highlight_style(Theme::selected());
     f.render_widget(tabs, area);
@@ -531,11 +532,7 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     // the full per-tier counts live in the section headers below. The plans-
     // filter badge (D-009) stays visible. Kept compact so it never truncates the
     // badge in a narrowed (rail-open) pane.
-    let mut title = format!(
-        " Inbox {}{} ",
-        crate::glyph::status::NEEDS_HUMAN,
-        counts[0]
-    );
+    let mut title = format!(" Inbox {}{} ", crate::glyph::status::NEEDS_HUMAN, counts[0]);
     if !app.plan_filter.is_empty() {
         title.push_str(&format!("· F:plans({}) ", app.plan_filter.len()));
     }
@@ -604,7 +601,9 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from("[m] message owner".to_string()));
             lines
         }
-        None => vec![Line::from("Inbox empty — nothing needs attention.".to_string())],
+        None => vec![Line::from(
+            "Inbox empty — nothing needs attention.".to_string(),
+        )],
     };
     let para = Paragraph::new(preview)
         .wrap(Wrap { trim: false })
@@ -2176,7 +2175,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         ),
     };
-    f.render_widget(Paragraph::new(Line::from(text)).style(style), area);
+    f.render_widget(
+        Paragraph::new(Line::from(text)).style(Theme::status_text(style)),
+        area,
+    );
     // The right edge carries one of two right-aligned indicators (each in its
     // own sub-rect so it never clobbers the left status text):
     //   • the companion workbench indicator (P-004) when the zellij plugin is
@@ -2200,7 +2202,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         width: w,
         height: area.height,
     };
-    f.render_widget(Paragraph::new(Line::from(right)).style(Theme::dim()), sub);
+    f.render_widget(
+        Paragraph::new(Line::from(right)).style(Theme::status_bar()),
+        sub,
+    );
 }
 
 fn draw_help(f: &mut Frame) {
@@ -2208,7 +2213,9 @@ fn draw_help(f: &mut Frame) {
     let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Brew mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Brew)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Brew) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
+        Paragraph::new(text)
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(" Help "))),
         area,
     );
 }
@@ -2230,15 +2237,11 @@ fn draw_toast(f: &mut Frame, n: &Notif) {
         Paragraph::new(n.message.clone())
             .wrap(Wrap { trim: false })
             .style(Theme::notify())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(
-                        " {} {} · Esc ",
-                        crate::glyph::header::BELL,
-                        trunc(&n.level, 12)
-                    )),
-            ),
+            .block(Theme::popup_block(Line::from(format!(
+                " {} {} · Esc ",
+                crate::glyph::header::BELL,
+                trunc(&n.level, 12)
+            )))),
         area,
     );
 }
@@ -2270,14 +2273,12 @@ fn draw_notifs(f: &mut Frame, app: &App) {
     };
     f.render_widget(Clear, area);
     f.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Line::from(format!(
-                    " Notifications ({}) · any key to close ",
-                    app.notifs.len()
-                ))),
-        ),
+        List::new(items)
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(format!(
+                " Notifications ({}) · any key to close ",
+                app.notifs.len()
+            )))),
         area,
     );
 }
@@ -2326,11 +2327,8 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
     f.render_widget(
         Paragraph::new(format!("{body}{footer}"))
             .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {title} ")),
-            ),
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(format!(" {title} ")))),
         area,
     );
 }
@@ -2357,11 +2355,10 @@ fn draw_pot_picker(f: &mut Frame, app: &App) {
     let mut state = ListState::default();
     state.select(Some(app.pot_picker_sel.min(app.harnesses.len())));
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Pot — Enter select · Esc close "),
-        )
+        .style(Theme::popup())
+        .block(Theme::popup_block(Line::from(
+            " Pot — Enter select · Esc close ",
+        )))
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
     f.render_widget(Clear, area);
@@ -2372,11 +2369,9 @@ fn draw_palette(f: &mut Frame, app: &App) {
     let area = centered_rect(60, 18, f.area());
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(format!("> {}", app.palette_input)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Command — tutorial · layouts · crews · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] (Esc closes) "),
-        ),
+        Paragraph::new(format!("> {}", app.palette_input))
+            .style(Theme::input())
+            .block(Theme::popup_block(Line::from(" Command — tutorial · layouts · crews · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] (Esc closes) "))),
         area,
     );
 }
@@ -2580,7 +2575,10 @@ mod tests {
         // + the LIVE alert-tier count.
         assert!(text.contains("usage"), "topbar usage slot missing");
         assert!(text.contains("agents"), "topbar agents slot missing");
-        assert!(text.contains("connecting"), "pre-fetch topbar state missing");
+        assert!(
+            text.contains("connecting"),
+            "pre-fetch topbar state missing"
+        );
         assert!(text.contains("1 alerts"), "alert count missing");
         // Plans tile: shipped plans excluded; progress off item_counts (2 done
         // of 4 active — dropped/unknown excluded from the denominator).
@@ -2714,7 +2712,10 @@ mod tests {
         assert!(text.contains("● voice"), "live badge missing");
         assert!(text.contains("V stops"), "stop hint missing");
         app.convai_phase = ConvAiPhase::Connecting;
-        assert!(render(&app, 100, 16).contains("◐ voice…"), "connecting badge missing");
+        assert!(
+            render(&app, 100, 16).contains("◐ voice…"),
+            "connecting badge missing"
+        );
     }
 
     #[test]
