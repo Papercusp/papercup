@@ -68,6 +68,16 @@ const listCupboardListings = defineTool({
         });
       }
       if (!res.ok) {
+        // Transitional: a worker predating a kind (e.g. 'pack' before its
+        // migration 006) rejects the kind filter with invalid_field:kind. To
+        // the browser that's "no listings of this kind yet", not an error —
+        // same degradation fetchCupboardUnits applies for the pack catalog.
+        if (res.status === 400 && url.searchParams.get('kind')) {
+          const err = (await res.json().catch(() => null)) as { error?: string; field?: string } | null;
+          if (err?.error === 'invalid_field' && err.field === 'kind') {
+            return Response.json({ listings: [] });
+          }
+        }
         return Response.json(
           { error: `cupboard: HTTP ${res.status}` },
           { status: res.status },

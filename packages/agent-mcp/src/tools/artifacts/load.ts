@@ -14,8 +14,8 @@
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
+import { SLUG_RE, slugRequires } from './_slug-requires';
 
-const SLUG_RE = /^[a-z0-9._-]+$/i;
 const ALL_ROLES = [
   'scoper',
   'architect',
@@ -48,14 +48,12 @@ export default defineTool({
     slug: z.string().min(1).regex(SLUG_RE).optional(),
     rel_path: z.string().min(1),
   }),
+  // Declarative preconditions (adopt-event-rules-engines requires:-half):
+  // the former in-handler slug guards, lifted — see ./_slug-requires.
+  requires: slugRequires('artifacts:load'),
   async handler(args, ctx) {
-    const slug = args.slug ?? ctx.harnessSlug;
-    if (!slug) {
-      throw new Error('artifacts:load — `slug` required (no harnessSlug in spawn context)');
-    }
-    if (!SLUG_RE.test(slug)) {
-      throw new Error(`artifacts:load — invalid slug ${JSON.stringify(slug)}`);
-    }
+    // Present + SLUG_RE-valid by the preconditions above.
+    const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
     const { sql } = getOrgPg();
     const rows = await sql<{ content: string; updated_at: string }[]>`

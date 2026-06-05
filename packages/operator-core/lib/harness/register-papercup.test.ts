@@ -95,9 +95,10 @@ describe('detectPapercupRoot', () => {
       await mkdir(bogus, { recursive: true });
       process.env[ENV_KEY] = bogus;
       const found = detectPapercupRoot();
-      // cwd walk from inside apps/operator still finds the real repo.
+      // cwd walk from inside apps/operator still finds a marked repo root
+      // (basename varies by checkout — papercup / -checkpoint / -release).
       expect(found).not.toBe(null);
-      expect(found).toMatch(/papercup$/);
+      expect(existsSync(join(found!, 'apps', 'operator', 'package.json'))).toBe(true);
     });
 
     it('an explicit start ignores PAPERCUSP_INTEGRATION_ROOT', async () => {

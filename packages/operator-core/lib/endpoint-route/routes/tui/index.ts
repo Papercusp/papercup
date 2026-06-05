@@ -25,6 +25,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import intentsStream from './intents-stream';
 import intentResult from './intent-result';
 import planItemStates from './plan-item-states';
+import planItemConvert from './plan-item-convert';
 import {
   getViewState,
   putViewState,
@@ -199,4 +200,5 @@ export default [
   intentsStream,
   intentResult,
   planItemStates,
+  planItemConvert,
 ];

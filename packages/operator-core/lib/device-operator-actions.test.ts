@@ -1,99 +1,78 @@
 /**
- * Tests for device-operator-actions. Mocks the upstream readers so we can
- * exercise the dispatch/dismiss/list resolution logic in isolation.
+ * Tests for device-operator-actions — the PG-backed pause/resume sentinel
+ * driven from the mobile WS bridge.
+ *
+ * (The operator-CARD verbs this file previously tested —
+ * listPendingCards / dispatchCard / dismissCard / describeCard — were
+ * retired with the scanner card stream: unify-agent-launches-as-blueprints
+ * D-005. The pause/resume surface is what remains.)
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-vi.mock('./operator-last-scan', () => ({
-  readLastScan: vi.fn(),
+vi.mock('./operator-state-pg', () => ({
+  readOperatorState: vi.fn(),
+  writeOperatorState: vi.fn(),
 }));
-vi.mock('./operator-card-reconstruction', () => ({
-  reconstructCards: vi.fn(),
-}));
-vi.mock('./operator-dismissed-cache', () => ({
-  recordDismissed: vi.fn(),
+vi.mock('./sync-sse', () => ({
+  notifySyncInvalidate: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { readLastScan } from './operator-last-scan';
-import { reconstructCards } from './operator-card-reconstruction';
-import { recordDismissed } from './operator-dismissed-cache';
-import { listPendingCards, dismissCard, describeCard } from './device-operator-actions';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
+import { notifySyncInvalidate } from './sync-sse';
+import { setPaused, setResumed, isPaused, getPauseInfo } from './device-operator-actions';
 
 beforeEach(() => {
-  vi.resetAllMocks();
+  vi.clearAllMocks();
 });
 
-describe('listPendingCards', () => {
-  it('prefers reconstructed cards (post-audit)', async () => {
-    (reconstructCards as any).mockResolvedValue([
-      { status: 'pending', payload: { id: 'c1', action: 'send_directive', target_harness: 'foo', directive_subject: 'do x', reason: 'why' } },
-      { status: 'shown',   payload: { id: 'c2', action: 'navigate' } },
-      { status: 'dismissed', payload: { id: 'c3', action: 'inform' } },
-    ]);
-
-    const cards = await listPendingCards();
-    expect(cards).toHaveLength(2);
-    expect(cards[0].id).toBe('c1');
-    expect(cards[0].action).toBe('send_directive');
-    expect(cards[0].target_harness).toBe('foo');
-    expect(cards[1].id).toBe('c2');
-    expect(readLastScan).not.toHaveBeenCalled();
-  });
-
-  it('falls back to last-scan when reconstruction is empty', async () => {
-    (reconstructCards as any).mockResolvedValue([]);
-    (readLastScan as any).mockResolvedValue({
-      cards: [
-        { id: 'd1', action: 'send_directive', target_harness: 'bar', reason: 'r1' },
-        { id: 'd2', action: 'inform' },
-        { /* no id */ action: 'inform' },
-      ],
-    });
-
-    const cards = await listPendingCards();
-    expect(cards.map((c) => c.id)).toEqual(['d1', 'd2']);
-    expect(cards[0].target_harness).toBe('bar');
-  });
-
-  it('returns [] when both readers are empty', async () => {
-    (reconstructCards as any).mockResolvedValue([]);
-    (readLastScan as any).mockResolvedValue(null);
-    expect(await listPendingCards()).toEqual([]);
-  });
-
-  it('drops cards with missing/invalid id', async () => {
-    (reconstructCards as any).mockResolvedValue([
-      { status: 'pending', payload: { action: 'send_directive' } }, // no id
-      { status: 'pending', payload: { id: 42, action: 'inform' } }, // numeric id
-      { status: 'pending', payload: { id: 'good', action: 'inform' } },
-    ]);
-    const cards = await listPendingCards();
-    expect(cards.map((c) => c.id)).toEqual(['good']);
+describe('setPaused', () => {
+  it('writes a paused row with who + when and invalidates the flag', async () => {
+    await setPaused('mobile:device-1');
+    expect(writeOperatorState).toHaveBeenCalledTimes(1);
+    const [key, state] = (writeOperatorState as any).mock.calls[0];
+    expect(key).toBe('operator_paused');
+    expect(state.paused).toBe(true);
+    expect(state.by).toBe('mobile:device-1');
+    expect(typeof state.at).toBe('string');
+    expect(() => new Date(state.at).toISOString()).not.toThrow();
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('operatorPauseFlag');
   });
 });
 
-describe('describeCard', () => {
-  it('prefers directive_subject', () => {
-    expect(describeCard({
-      id: 'x', action: 'send_directive', status: 'pending',
-      directive_subject: 'Subject line', target_harness: 'foo',
-    })).toBe('Subject line');
-  });
-  it('falls back to action+harness', () => {
-    expect(describeCard({
-      id: 'x', action: 'navigate', status: 'pending', target_harness: 'foo',
-    })).toBe('navigate → foo');
-  });
-  it('falls back to bare action', () => {
-    expect(describeCard({ id: 'x', action: 'inform', status: 'pending' })).toBe('inform');
+describe('setResumed', () => {
+  it('writes paused:false (keeps the row as audit trail) and invalidates', async () => {
+    await setResumed();
+    expect(writeOperatorState).toHaveBeenCalledWith('operator_paused', { paused: false });
+    expect(notifySyncInvalidate).toHaveBeenCalledWith('operatorPauseFlag');
   });
 });
 
-describe('dismissCard', () => {
-  it('records the id in the dismissed-cache', async () => {
-    const card = { id: 'c1', action: 'inform', status: 'pending' };
-    const msg = await dismissCard(card);
-    expect(recordDismissed).toHaveBeenCalledWith('c1');
-    expect(msg).toContain('Dismissed');
+describe('isPaused', () => {
+  it('true only when the row says paused', async () => {
+    (readOperatorState as any).mockResolvedValue({ paused: true, by: 'x' });
+    await expect(isPaused()).resolves.toBe(true);
+  });
+  it('false when row is paused:false', async () => {
+    (readOperatorState as any).mockResolvedValue({ paused: false });
+    await expect(isPaused()).resolves.toBe(false);
+  });
+  it('false when no row exists', async () => {
+    (readOperatorState as any).mockResolvedValue(null);
+    await expect(isPaused()).resolves.toBe(false);
+  });
+});
+
+describe('getPauseInfo', () => {
+  it('returns who/when while paused', async () => {
+    (readOperatorState as any).mockResolvedValue({ paused: true, by: 'ops', at: '2026-06-05T08:00:00.000Z' });
+    await expect(getPauseInfo()).resolves.toEqual({ paused: true, by: 'ops', at: '2026-06-05T08:00:00.000Z' });
+  });
+  it('ignores stale by/at once resumed', async () => {
+    (readOperatorState as any).mockResolvedValue({ paused: false, by: 'ops', at: '2026-06-05T08:00:00.000Z' });
+    await expect(getPauseInfo()).resolves.toEqual({ paused: false });
+  });
+  it('handles a missing row', async () => {
+    (readOperatorState as any).mockResolvedValue(null);
+    await expect(getPauseInfo()).resolves.toEqual({ paused: false });
   });
 });

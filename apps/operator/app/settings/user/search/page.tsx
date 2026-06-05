@@ -4,9 +4,12 @@ import { useState, useCallback, FormEvent } from 'react';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
 
+// Neutral memory entry from /api/user/search (generalize-memory-backend-
+// swappable D-003) — backend-agnostic shape, `text` not a mem0 row.
 interface MemoryHit {
   id: string;
-  memory: string;
+  text: string;
+  kind?: string;
   score?: number;
   scope: 'user' | 'workspace';
   metadata?: Record<string, unknown>;
@@ -54,7 +57,7 @@ export default function SearchPage() {
       <header>
         <h1>Search workspace</h1>
         <p className="pc-settings-intro">
-          Searches your personal memories (mem0) and the workspace prose
+          Searches your personal memories and the workspace prose
           (operator turns, escalations, brainstorm notes) in one place.
           Memories use semantic similarity; prose uses keyword match (BM25).
         </p>
@@ -107,7 +110,7 @@ export default function SearchPage() {
                     <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>score {m.score.toFixed(2)}</span>
                   )}
                 </div>
-                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.memory}</div>
+                <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.text}</div>
               </li>
             ))}
           </ul>

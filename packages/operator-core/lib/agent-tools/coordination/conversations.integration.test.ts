@@ -42,7 +42,8 @@ import {
   type CaptureFn,
   type ConversationDeps,
 } from './conversations-core';
-import { runKnowledgeTier, type KnowledgeMem0Client } from './ask-knowledge-tier';
+import { runKnowledgeTier } from './ask-knowledge-tier';
+import { scopesOf, type MemoryBackend } from '../../memory/backend';
 
 const WS = 'default';
 
@@ -296,22 +297,30 @@ describe('promote → engineer issue (D-005, real PG re-parent)', () => {
   });
 });
 
-describe('knowledge tier (injected stub mem0)', () => {
-  function stubMem0(byKey: Record<string, Array<{ id: string; memory: string; score: number }>>): KnowledgeMem0Client {
+describe('knowledge tier (injected stub memory backend)', () => {
+  // Neutral MemoryBackend stub (generalize-memory-backend-swappable D-003):
+  // a different result set per fanned scope key.
+  function stubBackend(byKey: Record<string, Array<{ id: string; text: string; score: number }>>): MemoryBackend {
     return {
-      async search(_q, opts) {
-        return { results: byKey[opts.filters.user_id] ?? [] };
-      },
+      name: 'stub',
+      available: async () => ({ ok: true }),
+      search: async (_q, opts) =>
+        scopesOf(opts.scope).flatMap((k) => (byKey[k] ?? []).map((m) => ({ ...m, scope: k }))),
+      list: async () => [],
+      get: async () => null,
+      remember: async () => ({ ids: [] }),
+      forget: async () => {},
+      update: async () => {},
     };
   }
 
   it('returns a mem0 candidate with a cited source on a hit', async () => {
-    const client = stubMem0({
-      'workspace:default': [{ id: 'm1', memory: 'Q: why freeze? A: zero-cache down', score: 0.9 }],
+    const backend = stubBackend({
+      'workspace:default': [{ id: 'm1', text: 'Q: why freeze? A: zero-cache down', score: 0.9 }],
     });
     const res = await runKnowledgeTier(
       { query: 'why does the shop freeze', workspaceId: WS, asker_id: 'agA' },
-      { sql, getMemoryClient: async () => client },
+      { sql, backend },
     );
     expect(res.searched).toContain('mem0');
     const mem = res.candidates.find((c) => c.source === 'mem0');
@@ -319,19 +328,19 @@ describe('knowledge tier (injected stub mem0)', () => {
     expect(mem?.excerpt).toContain('zero-cache down');
   });
 
-  it('returns no candidates on a miss (degrades cleanly with absent search tables + empty mem0)', async () => {
+  it('returns no candidates on a miss (degrades cleanly with absent search tables + empty store)', async () => {
     const res = await runKnowledgeTier(
       { query: 'nothing matches this', workspaceId: WS, asker_id: 'agA' },
-      { sql, getMemoryClient: async () => stubMem0({}) },
+      { sql, backend: stubBackend({}) },
     );
     expect(res.candidates).toHaveLength(0);
   });
 
-  it('reads the harness mem0 scope when a harness is given', async () => {
-    const client = stubMem0({ 'harness:papercup': [{ id: 'h1', memory: 'harness fact', score: 0.8 }] });
+  it('reads the harness memory scope when a harness is given', async () => {
+    const backend = stubBackend({ 'harness:papercup': [{ id: 'h1', text: 'harness fact', score: 0.8 }] });
     const res = await runKnowledgeTier(
       { query: 'q', workspaceId: WS, asker_id: 'agA', harness_slug: 'papercup' },
-      { sql, getMemoryClient: async () => client },
+      { sql, backend },
     );
     expect(res.candidates.some((c) => c.excerpt === 'harness fact')).toBe(true);
   });

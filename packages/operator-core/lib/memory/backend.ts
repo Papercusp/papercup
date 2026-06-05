@@ -21,6 +21,7 @@ export {
   registerMemoryBackend,
   registeredMemoryBackends,
   MemoryUnavailableError,
+  scopesOf,
   type ListOptions,
   type MemoryAvailability,
   type MemoryBackend,

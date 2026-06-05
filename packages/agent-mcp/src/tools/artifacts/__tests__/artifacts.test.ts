@@ -113,7 +113,10 @@ describe('artifacts:load', () => {
     expect(payload.slug).toBe('fallback-slug');
   });
 
-  it('rejects when neither arg slug nor ctx.harnessSlug is set', async () => {
+  it('rejects precondition_failed when neither arg slug nor ctx.harnessSlug is set (declarative requires:)', async () => {
+    // The former in-handler `if (!slug) throw` (→ handler_error) is lifted into
+    // a `requires:` precondition — the DISPATCHER rejects before the handler
+    // runs (adopt-event-rules-engines, the requires:-half).
     const tool = lookupByMcpName('artifacts:load')!;
     const r = await dispatchProjectedTool(
       tool,
@@ -123,8 +126,24 @@ describe('artifacts:load', () => {
       {},
     );
     expect(r.ok).toBe(false);
-    expect(r.error?.code).toBe('handler_error');
+    expect(r.error?.code).toBe('precondition_failed');
     expect(r.error?.message).toMatch(/required/i);
+  });
+
+  it('rejects precondition_failed on an invalid ctx.harnessSlug (the valid-ctx-slug spec)', async () => {
+    // An arg slug is zod-validated; a CTX slug is only guarded by the
+    // `valid-ctx-slug` precondition — the lifted `SLUG_RE.test` guard.
+    const tool = lookupByMcpName('artifacts:load')!;
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:load',
+      { rel_path: 'memory/raw.md' },
+      MAKE_CTX({ harnessSlug: 'bad slug/with spaces' }),
+      {},
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('precondition_failed');
+    expect(r.error?.message).toMatch(/invalid harnessSlug/i);
   });
 });
 

@@ -3,27 +3,43 @@
  *
  * The capture is stubbed in every OTHER test (the conversations integration test
  * injects a fake CaptureFn), so the REAL captureResolvedAnswer + captureMem0Key
- * have no direct coverage. This file unit-tests them against a MOCKED mem0 client:
+ * have no direct coverage. This file unit-tests them against a MOCKED neutral
+ * MemoryBackend (generalize-memory-backend-swappable D-003):
  *  • captureMem0Key — the pseudo-user-key mapping (harness:<slug> vs
  *    workspace:<id> vs workspace:default) that must mirror memory:remember's
- *    scoping so coord:ask's mem0 read finds a captured answer.
- *  • captureResolvedAnswer — target:'none' (skip, no client touched);
- *    getMemoryClient→null (mem0_unavailable); client.add throwing (mem0_error);
- *    and the happy path's `Q:…\nA:…` content written under the right userId.
+ *    scoping so coord:ask's memory read finds a captured answer.
+ *  • captureResolvedAnswer — target:'none' (skip, no backend touched);
+ *    available() not-ok / throwing (mem0_unavailable); remember throwing
+ *    (mem0_error); and the happy path's `Q:…\nA:…` content written under the
+ *    right scope key.
  *
  * The whole posture is best-effort: a capture failure reports {ok:false} but is
- * NEVER thrown (the resolve must not fail on a mem0 outage).
+ * NEVER thrown (the resolve must not fail on a store outage).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// answer-capture imports getMemoryClient from '../../memory/mem0-client'; mock it.
-const getMemoryClient = vi.fn();
-vi.mock('../../memory/mem0-client', () => ({
-  getMemoryClient: () => getMemoryClient(),
+// answer-capture resolves the store via getMemoryBackend from '../../memory/backend'; mock it.
+const getMemoryBackend = vi.fn();
+vi.mock('../../memory/backend', () => ({
+  getMemoryBackend: () => getMemoryBackend(),
 }));
 
 import { captureMem0Key, captureResolvedAnswer, type CaptureInput } from './answer-capture';
+
+type FakeBackend = {
+  name: string;
+  available: ReturnType<typeof vi.fn>;
+  remember: ReturnType<typeof vi.fn>;
+};
+
+function fakeBackend(): FakeBackend {
+  return {
+    name: 'fake',
+    available: vi.fn(async () => ({ ok: true })),
+    remember: vi.fn(async () => ({ ids: ['id-1'] })),
+  };
+}
 
 function baseInput(over: Partial<CaptureInput> = {}): CaptureInput {
   return {
@@ -66,53 +82,59 @@ describe('captureMem0Key — pseudo-user-key mapping', () => {
 
 describe('captureResolvedAnswer', () => {
   beforeEach(() => {
-    getMemoryClient.mockReset();
+    getMemoryBackend.mockReset();
   });
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('target:none → skipped, ok, and the memory client is never resolved', async () => {
+  it('target:none → skipped, ok, and the backend is never resolved', async () => {
     const res = await captureResolvedAnswer(baseInput({ target: 'none' }));
     expect(res).toEqual({ target: 'none', ok: true, detail: 'capture skipped by resolver' });
-    expect(getMemoryClient).not.toHaveBeenCalled();
+    expect(getMemoryBackend).not.toHaveBeenCalled();
   });
 
-  it('getMemoryClient → null → mem0_unavailable (ok:false), never throws', async () => {
-    getMemoryClient.mockResolvedValue(null);
+  it('available() not-ok → mem0_unavailable (ok:false), never throws', async () => {
+    const b = fakeBackend();
+    b.available.mockResolvedValue({ ok: false, reason: 'mem0_unavailable' });
+    getMemoryBackend.mockReturnValue(b);
+    const res = await captureResolvedAnswer(baseInput());
+    expect(res.ok).toBe(false);
+    expect(res.target).toBe('mem0_unavailable');
+    expect(b.remember).not.toHaveBeenCalled();
+  });
+
+  it('available() itself throwing → mem0_unavailable (caught → unavailable)', async () => {
+    const b = fakeBackend();
+    b.available.mockRejectedValue(new Error('boom resolving client'));
+    getMemoryBackend.mockReturnValue(b);
     const res = await captureResolvedAnswer(baseInput());
     expect(res.ok).toBe(false);
     expect(res.target).toBe('mem0_unavailable');
   });
 
-  it('getMemoryClient itself throwing → mem0_unavailable (client caught → null)', async () => {
-    getMemoryClient.mockRejectedValue(new Error('boom resolving client'));
-    const res = await captureResolvedAnswer(baseInput());
-    expect(res.ok).toBe(false);
-    expect(res.target).toBe('mem0_unavailable');
-  });
-
-  it('client.add throwing → mem0_error (ok:false) carrying the error message', async () => {
-    const add = vi.fn().mockRejectedValue(new Error('mem0 add failed'));
-    getMemoryClient.mockResolvedValue({ add });
+  it('remember throwing → mem0_error (ok:false) carrying the error message', async () => {
+    const b = fakeBackend();
+    b.remember.mockRejectedValue(new Error('store add failed'));
+    getMemoryBackend.mockReturnValue(b);
     const res = await captureResolvedAnswer(baseInput());
     expect(res.ok).toBe(false);
     expect(res.target).toBe('mem0_error');
-    expect(res.detail).toBe('mem0 add failed');
+    expect(res.detail).toBe('store add failed');
   });
 
-  it('happy path (operator) → writes Q:…\\nA:… under workspace:<id>, returns mem0:<userId>', async () => {
-    const add = vi.fn().mockResolvedValue(undefined);
-    getMemoryClient.mockResolvedValue({ add });
+  it('happy path (operator) → writes Q:…\\nA:… under workspace:<id>, returns mem0:<scopeKey>', async () => {
+    const b = fakeBackend();
+    getMemoryBackend.mockReturnValue(b);
     const res = await captureResolvedAnswer(baseInput({ workspace_id: 'ws-7' }));
 
     expect(res).toEqual({ target: 'mem0:workspace:ws-7', ok: true });
-    expect(add).toHaveBeenCalledTimes(1);
-    const [content, opts] = add.mock.calls[0];
+    expect(b.remember).toHaveBeenCalledTimes(1);
+    const [content, opts] = b.remember.mock.calls[0];
     expect(content).toBe('Q: why does the shop freeze?\nA: zero-cache was down (orphaned replicator lock)');
-    expect(opts.userId).toBe('workspace:ws-7');
+    expect(opts.scope).toBe('workspace:ws-7');
+    expect(opts.kind).toBe('project');
     expect(opts.metadata).toMatchObject({
-      kind: 'project',
       scope: 'workspace',
       source: 'conversation',
       conversation_id: 'conv-1',
@@ -124,22 +146,22 @@ describe('captureResolvedAnswer', () => {
   });
 
   it('happy path (harness) → writes under harness:<slug> with the harness metadata', async () => {
-    const add = vi.fn().mockResolvedValue(undefined);
-    getMemoryClient.mockResolvedValue({ add });
+    const b = fakeBackend();
+    getMemoryBackend.mockReturnValue(b);
     const res = await captureResolvedAnswer(
       baseInput({ scope: 'harness', harness_slug: 'papercup', workspace_id: 'ws-7' }),
     );
 
     expect(res).toEqual({ target: 'mem0:harness:papercup', ok: true });
-    const [, opts] = add.mock.calls[0];
-    expect(opts.userId).toBe('harness:papercup');
+    const [, opts] = b.remember.mock.calls[0];
+    expect(opts.scope).toBe('harness:papercup');
     expect(opts.metadata).toMatchObject({ scope: 'harness', harness_slug: 'papercup' });
   });
 
   it('trims the question + answer before the Q/A content', async () => {
-    const add = vi.fn().mockResolvedValue(undefined);
-    getMemoryClient.mockResolvedValue({ add });
+    const b = fakeBackend();
+    getMemoryBackend.mockReturnValue(b);
     await captureResolvedAnswer(baseInput({ question: '  spaced q  ', answer: '\tspaced a\n' }));
-    expect(add.mock.calls[0][0]).toBe('Q: spaced q\nA: spaced a');
+    expect(b.remember.mock.calls[0][0]).toBe('Q: spaced q\nA: spaced a');
   });
 });

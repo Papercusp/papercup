@@ -10,8 +10,8 @@
 import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
+import { SLUG_RE, slugRequires } from './_slug-requires';
 
-const SLUG_RE = /^[a-z0-9._-]+$/i;
 const WRITE_ROLES = [
   'scoper',
   'architect',
@@ -49,14 +49,12 @@ export default defineTool({
     rel_path: z.string().min(1),
     suffix: z.string().min(1),
   }),
+  // Declarative preconditions (adopt-event-rules-engines requires:-half):
+  // the former in-handler slug guards, lifted — see ./_slug-requires.
+  requires: slugRequires('artifacts:append'),
   async handler(args, ctx) {
-    const slug = args.slug ?? ctx.harnessSlug;
-    if (!slug) {
-      throw new Error('artifacts:append — `slug` required (no harnessSlug in spawn context)');
-    }
-    if (!SLUG_RE.test(slug)) {
-      throw new Error(`artifacts:append — invalid slug ${JSON.stringify(slug)}`);
-    }
+    // Present + SLUG_RE-valid by the preconditions above.
+    const slug = (args.slug ?? ctx.harnessSlug)!;
     const key = normalizeRelPath(args.rel_path);
     const { sql } = getOrgPg();
     const now = Date.now();

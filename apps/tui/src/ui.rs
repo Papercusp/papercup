@@ -65,6 +65,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Plugins => draw_plugins(f, app, body),
         Tab::Settings => draw_settings(f, app, body),
         Tab::Memory => draw_memory(f, app, body),
+        Tab::Cupboard => draw_cupboard(f, app, body),
     }
     if let Some(area) = rail {
         draw_plan_filter(f, app, area);
@@ -1038,6 +1039,141 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// The Cupboard tab (D-011): the marketplace listings under the active kind
+/// filter + search, with a detail pane and per-kind action dispatch
+/// (harness→join · blueprint→fork · snapshot→fork · plugin→install). The kind
+/// filter row renders above the list; the armed confirm shows in the detail
+/// title (Enter arms, `y` fires).
+fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(area);
+
+    // Kind-filter row + search status in the list title.
+    let kinds = crate::app::CUPBOARD_KINDS
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            if i == app.cupboard_kind {
+                format!("[{k}]")
+            } else {
+                k.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let title = if app.cupboard_query.is_empty() {
+        format!(" Cupboard · {kinds} · f:kind /:search ")
+    } else {
+        format!(
+            " Cupboard · {kinds} · \"{}\" ({}) ",
+            trunc(&app.cupboard_query, 18),
+            app.cupboard.len()
+        )
+    };
+
+    let items: Vec<ListItem> = app
+        .cupboard
+        .iter()
+        .map(|l| {
+            ListItem::new(Line::from(format!(
+                "{:<10} {:<28} {}",
+                trunc(&l.listing_kind, 10),
+                trunc(l.display_name(), 28),
+                trunc(l.description.as_deref().unwrap_or(""), 40),
+            )))
+        })
+        .collect();
+    let body = if items.is_empty() {
+        let hint = if app.cupboard_loading {
+            "(loading the Cupboard…)"
+        } else if !app.cupboard_query.is_empty() {
+            "(no listings match — /: edit the search, f: change kind)"
+        } else {
+            "(no listings — r refetches)"
+        };
+        vec![ListItem::new(Line::from(Span::styled(hint, Theme::dim())))]
+    } else {
+        items
+    };
+    let mut state = ListState::default();
+    if !app.cupboard.is_empty() {
+        state.select(Some(app.cupboard_sel.min(app.cupboard.len() - 1)));
+    }
+    let body_area = block_with_header(
+        f,
+        cols[0],
+        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        &format!("  {:<11}{:<29}{}", "kind", "name", "description"),
+    );
+    let list = List::new(body)
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body_area, &mut state);
+
+    // Detail (right): the selected listing + its per-kind action.
+    let sel = app.cupboard.get(app.cupboard_sel.min(app.cupboard.len().saturating_sub(1)));
+    let (detail, action_label) = match sel {
+        Some(l) => {
+            let action = match l.listing_kind.as_str() {
+                "harness" => "join",
+                "blueprint" => "fork (install)",
+                "snapshot" => "fork",
+                "plugin" => "install",
+                _ => "—",
+            };
+            let gh = l.github_url.as_deref().unwrap_or("—");
+            let by = l.publisher_github_login.as_deref().unwrap_or("—");
+            let claim = l.claim_status.as_deref().unwrap_or("—");
+            let pot = l.project_ref.as_deref().unwrap_or("—");
+            (
+                format!(
+                    "{}\n\n{}\n\nkind: {}\npot: {}\ngithub: {}\npublisher: {}\nclaim: {}\n\nEnter: arm {} · y: confirm",
+                    l.display_name(),
+                    l.description.as_deref().unwrap_or("(no description)"),
+                    l.listing_kind,
+                    pot,
+                    gh,
+                    by,
+                    claim,
+                    action,
+                ),
+                action,
+            )
+        }
+        None => ("No listing selected.".to_string(), "—"),
+    };
+    let armed = sel
+        .map(|l| app.cupboard_confirm.as_deref() == Some(l.id.as_str()))
+        .unwrap_or(false);
+    let detail_title = if armed {
+        format!(" Detail — press y to {action_label} ")
+    } else {
+        " Detail ".to_string()
+    };
+    f.render_widget(
+        Paragraph::new(detail)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(detail_title)),
+        cols[1],
+    );
+
+    // The `/` search composer floats over the tab while open (Memory's pattern).
+    if app.cupboard_search_open {
+        let overlay = centered_rect(60, 18, f.area());
+        f.render_widget(Clear, overlay);
+        f.render_widget(
+            Paragraph::new(format!("> {}", app.cupboard_search_input)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Search the Cupboard (Enter run · Esc cancel) "),
+            ),
+            overlay,
+        );
+    }
+}
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let (text, style) = match &app.last_error {
         Some(e) => (format!("⚠ {e}"), Theme::warn()),
@@ -1066,7 +1202,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m    switch tab (1 Operator · 4 Brew · 5 Pots · m Memory)\n  /           search memory (on Memory)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  F           plans filter rail (Inbox / Brew)\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Brew · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (on Operator) · Esc cancels\n  < / >       cycle tabs\n  Tab         Brew: curated / mirror  ·  Pots: switch column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot\n  P           pot selector (All Pots / one pot)\n  F           plans filter rail (Inbox / Brew)\n  f           Cupboard: cycle kind filter\n  Enter, y    Cupboard: arm + confirm join/fork/install\n  PgUp/PgDn   scroll (Docs / Operator)\n  n           launch agent pane (Brew)\n  Enter       launch plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited agent pane · Cupboard: refetch\n  p           toggle presence sidebar\n  N           notifications history\n  Esc         dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create <slug> <path|gh-url> · :share <slug> [public])\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" Help ")),
@@ -1225,7 +1361,7 @@ fn draw_palette(f: &mut Frame, app: &App) {
         Paragraph::new(format!("> {}", app.palette_input)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Command — tutorial · layouts · crews · save/restore-crew|layout (Esc closes) "),
+                .title(" Command — tutorial · layouts · crews · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] (Esc closes) "),
         ),
         area,
     );
@@ -1755,6 +1891,40 @@ mod tests {
         let hits = render(&app, 110, 18);
         assert!(hits.contains("\"rust\" (0)"));
         assert!(hits.contains("no hits"));
+    }
+
+    #[test]
+    fn cupboard_tab_renders_listings_filter_row_and_detail() {
+        use crate::models::CupboardListing;
+        let mut app = App::new();
+        app.tab = Tab::Cupboard;
+        // Empty state first (not loading → the refetch hint).
+        let empty = render(&app, 110, 16);
+        assert!(empty.contains("Cupboard"));
+        assert!(empty.contains("no listings"));
+        // A plugin listing renders in the list + detail, with the kind row.
+        app.cupboard = vec![CupboardListing {
+            id: "11111111-1111-1111-1111-111111111111".into(),
+            listing_kind: "plugin".into(),
+            title: Some("Papercusp Worker".into()),
+            description: Some("Cross-CLI activity bridge".into()),
+            publisher_github_login: Some("papercupai".into()),
+            ..Default::default()
+        }];
+        let text = render(&app, 110, 18);
+        assert!(text.contains("[all]")); // active kind filter marker
+        assert!(text.contains("Papercusp Worker"));
+        assert!(text.contains("install")); // the plugin action label in detail
+        assert!(text.contains("papercupai"));
+        // Arming the confirm flips the detail title.
+        app.cupboard_confirm = Some("11111111-1111-1111-1111-111111111111".into());
+        let armed = render(&app, 110, 18);
+        assert!(armed.contains("press y to install"));
+        // The search composer floats while open.
+        app.cupboard_search_open = true;
+        app.cupboard_search_input = "worker".into();
+        let search = render(&app, 110, 18);
+        assert!(search.contains("Search the Cupboard"));
     }
 
     #[test]

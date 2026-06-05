@@ -371,14 +371,18 @@ export default defineTool({
     if (sessionUser) {
       void (async () => {
         try {
-          const { getMemoryClient } = await import('../../memory/mem0-client');
-          const client = await getMemoryClient();
-          if (!client) return;
+          // Conversation-window fact extraction is an OPTIONAL backend
+          // capability (generalize-memory-backend-swappable D-003) —
+          // mem0 has it; plain stores skip the post-turn capture.
+          const { getMemoryBackend } = await import('../../memory/backend');
+          const backend = getMemoryBackend();
+          if (!backend.rememberConversation) return;
+          if (!(await backend.available()).ok) return;
           const recentWindow = input.messages
             ? [...input.messages.slice(-5), { role: 'assistant' as const, content: assembled }]
             : [{ role: 'assistant' as const, content: assembled }];
-          await client.add(recentWindow, {
-            userId: sessionUser.id,
+          await backend.rememberConversation(recentWindow, {
+            scope: sessionUser.id,
             metadata: {
               workspace_id: workspaceId,
               display_name: sessionUser.display_name,
@@ -386,7 +390,7 @@ export default defineTool({
             },
           });
         } catch (err) {
-          console.warn('[operator-converse] post-turn mem0.add failed:', (err as Error).message);
+          console.warn('[operator-converse] post-turn memory capture failed:', (err as Error).message);
         }
       })();
     }

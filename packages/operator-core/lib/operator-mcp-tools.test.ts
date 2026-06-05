@@ -22,11 +22,15 @@ describe('ALL_AGENT_MCP_TOOLS', () => {
     expect(seen.size).toBe(ALL_AGENT_MCP_TOOLS.length);
   });
 
-  it('contains the four orchestrator-spawn tools (Phase 9)', () => {
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__orchestrator_spawn');
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__orchestrator_poll');
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__orchestrator_list_active');
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__orchestrator_cancel');
+  it('contains the fleet spawn primitives (Brief 4 — replaced the dead orchestrator_* plugin tools)', () => {
+    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:spawn');
+    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:tree');
+    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:cancel');
+    // The plugin-era names must NOT come back — they were dead on this
+    // surface (the plugin loader never ran on standalone agent-mcp).
+    for (const t of ALL_AGENT_MCP_TOOLS) {
+      expect(t).not.toMatch(/orchestrator_(spawn|poll|list_active|cancel)/);
+    }
   });
 
   it('uses underscore between server and tool (claude-code convention)', () => {

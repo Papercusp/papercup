@@ -17,9 +17,13 @@ interface AuditFields {
   broken_anchors: BrokenAnchor[];
 }
 
+// The neutral memory entry shape served by /api/user/memory
+// (generalize-memory-backend-swappable D-003) — backend-agnostic:
+// text/kind at the top level, never a mem0 row.
 interface MemoryRow {
   id: string;
-  memory: string;
+  text: string;
+  kind?: string;
   metadata?: Record<string, unknown>;
   scope: 'user' | 'harness' | 'workspace';
   harness_slug?: string;
@@ -59,6 +63,7 @@ export default function MemoryPage() {
   const [loading, setLoading] = useState(true);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
+  const [backendName, setBackendName] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [flaggedOnly, setFlaggedOnly] = useState<boolean>(false);
   const [auditBusy, setAuditBusy] = useState<boolean>(false);
@@ -74,6 +79,7 @@ export default function MemoryPage() {
       const j = await r.json();
       setRows(j.results ?? []);
       setReason(j.reason ?? null);
+      setBackendName(j.backend ?? null);
       if (fs.ok) setStats(await fs.json());
     } finally {
       setLoading(false);
@@ -89,11 +95,11 @@ export default function MemoryPage() {
     const r = await fetch('/api/user/memory', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, memory: editingDraft }),
+      body: JSON.stringify({ id, text: editingDraft }),
     });
     if (r.ok) {
       toast.success('Updated');
-      setRows((rs) => rs.map((x) => (x.id === id ? { ...x, memory: editingDraft } : x)));
+      setRows((rs) => rs.map((x) => (x.id === id ? { ...x, text: editingDraft } : x)));
       setEditingId(null);
     } else {
       toast.error('Update failed');
@@ -197,7 +203,7 @@ export default function MemoryPage() {
 
   const filteredByKind = filter === 'all'
     ? rows
-    : rows.filter((r) => (r.metadata as Record<string, unknown>)?.kind === filter);
+    : rows.filter((r) => r.kind === filter);
   const filtered = flaggedOnly
     ? filteredByKind.filter(isFlagged)
     : filteredByKind;
@@ -205,7 +211,7 @@ export default function MemoryPage() {
 
   const renderRow = useCallback((row: MemoryRow): ReactElement => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
-    const kind = (meta.kind as string) ?? 'unknown';
+    const kind = row.kind ?? 'unknown';
     const color = KIND_COLORS[kind] ?? '#6b7280';
     const state = row.audit?.state ?? 'active';
     const stateBadge = STATE_BADGES[state];
@@ -272,7 +278,7 @@ export default function MemoryPage() {
               </div>
             </div>
           ) : (
-            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.memory}</div>
+            <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.text}</div>
           )}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
@@ -280,7 +286,7 @@ export default function MemoryPage() {
             type="button"
             onClick={() => {
               setEditingId(row.id);
-              setEditingDraft(row.memory);
+              setEditingDraft(row.text);
             }}
             disabled={editingId !== null && editingId !== row.id}
             style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
@@ -333,16 +339,21 @@ export default function MemoryPage() {
 
       {reason && (
         <div style={{ padding: 12, border: '1px solid #f59e0b', borderRadius: 6, background: '#fffbeb' }}>
-          Memory backend unavailable: <code>{reason}</code>.
+          Memory backend{backendName ? <> (<code>{backendName}</code>)</> : null} unavailable: <code>{reason}</code>.
           {reason === 'mem0_unavailable' && (
             <> Run <code>npm install</code> in <code>apps/operator</code> to enable.</>
+          )}
+          {reason === 'memory_backend_disabled' && (
+            <> The store is deliberately off (<code>PAPERCUSP_MEMORY_BACKEND=noop</code>); flip the env var to re-enable.</>
           )}
         </div>
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {['all', 'identity', 'preference', 'project', 'correction', 'ephemeral'].map((f) => (
+          {/* `ephemeral` retired (docs-and-memory-as-projections D-006); legacy
+              rows still render via the KIND_COLORS fallback but get no chip. */}
+          {['all', 'identity', 'preference', 'project', 'correction'].map((f) => (
             <button
               key={f}
               type="button"
@@ -355,7 +366,7 @@ export default function MemoryPage() {
                 fontWeight: filter === f ? 600 : 400,
               }}
             >
-              {f} {f !== 'all' && `(${rows.filter((r) => (r.metadata as Record<string, unknown>)?.kind === f).length})`}
+              {f} {f !== 'all' && `(${rows.filter((r) => r.kind === f).length})`}
             </button>
           ))}
           <button

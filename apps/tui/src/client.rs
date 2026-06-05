@@ -357,6 +357,27 @@ impl OperatorClient {
         serde_json::from_value::<PlanItemStates>(v).context("decode plan-item states")
     }
 
+    /// Convert-at-pickup (project-centric-harness-rethink D-015): pick up a plan
+    /// item by converting it to a claimed work_item — the WRITE half of the
+    /// plan-item surface (`plan_item_states` is the read half). POSTs
+    /// /api/tui/plan-item-convert, which dispatches the `plan_items:convert`
+    /// tool (lease + mint/resume + claim + back-link; emits fire server-side).
+    /// Returns the tool's JSON payload: `{ ok, status, workItem, claim, … }` on
+    /// success, `{ ok:false, status:'refused'|'conflict', … }` otherwise.
+    pub async fn plan_item_convert(
+        &self,
+        owner: &str,
+        harness: &str,
+        plan: &str,
+        item: &str,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/tui/plan-item-convert",
+            serde_json::json!({ "owner": owner, "harness": harness, "plan": plan, "item": item }),
+        )
+        .await
+    }
+
     /// Read-only operator-config overview (P10b): the AI backend + per-role models
     /// (`/api/agent-config`) and which speech providers are connected
     /// (`operator:credentials_status` — booleans, never secret values). Assembled

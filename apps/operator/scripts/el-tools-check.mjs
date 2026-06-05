@@ -51,11 +51,13 @@ for (const m of toolsArrayMatch[1].matchAll(/name:\s*'([\w_]+)',\s*type:\s*'(\w+
 }
 const syncClientNames = new Set(syncTools.filter((t) => t.type === 'client').map((t) => t.name));
 
-// 2. Parse all CommandDef / QueryDef blocks from lib/commands/defs/*.ts.
-//    We split each file by `const NAME: CommandDef<...>` boundaries and
-//    pull id/agents/browser/kind out of each block. Crude but stable
-//    enough for our hand-authored defs.
-const defsDir = path.join(operatorRoot, 'lib/commands/defs');
+// 2. Parse all CommandDef / QueryDef blocks from the registry defs dir.
+//    The defs moved to operator-core in the SP1 extraction
+//    (operator-core-headless-serve-2026-06-04); apps/operator/lib/commands/defs
+//    is now an empty .gitkeep stub. We split each file by
+//    `const NAME: CommandDef<...>` boundaries and pull id/agents/browser/kind
+//    out of each block. Crude but stable enough for our hand-authored defs.
+const defsDir = path.resolve(operatorRoot, '../../packages/operator-core/lib/commands/defs');
 const defFiles = fs
   .readdirSync(defsDir)
   .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'index.ts');

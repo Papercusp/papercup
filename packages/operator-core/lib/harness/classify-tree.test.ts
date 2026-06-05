@@ -238,7 +238,14 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   // if either of those numbers changes — at which point the plan doc +
   // this test both need a synced update.
   const papercupRoot = resolve(__dirname, '../../../..'); // apps/operator/lib/harness/../../../.. → papercup root
-  const isPapercupCheckout = existsSync(join(papercupRoot, '.gitmodules'));
+  // "Real" checkout = .gitmodules AND materialized submodules (a .git gitdir
+  // pointer inside one). The release-gate checkpoint/release trees carry
+  // .gitmodules but extract submodule SOURCE via `git archive` (no .git), so
+  // walkHarnessTree correctly sees plain dirs there — skip these
+  // integration-against-the-real-tree assertions in such trees.
+  const isPapercupCheckout =
+    existsSync(join(papercupRoot, '.gitmodules')) &&
+    existsSync(join(papercupRoot, 'libs', 'papercusp', '.git'));
 
   it.skipIf(!isPapercupCheckout)(
     'matches the libs/ layout: 7 submodules + 7 plain (borrowable submodules regrouped under libs/generic/)',

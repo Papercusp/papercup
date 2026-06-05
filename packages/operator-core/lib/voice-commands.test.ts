@@ -8,30 +8,11 @@ describe('parseVoiceCommand', () => {
     expect(parseVoiceCommand(' cancel ')).toEqual({ kind: 'cancel' });
   });
 
-  it('parses "dispatch" (no ordinal)', () => {
-    expect(parseVoiceCommand('dispatch')).toEqual({ kind: 'dispatch', ordinal: undefined });
-  });
-
-  it('parses "dispatch <ordinal>" with words', () => {
-    expect(parseVoiceCommand('dispatch first')).toEqual({ kind: 'dispatch', ordinal: 1 });
-    expect(parseVoiceCommand('dispatch third')).toEqual({ kind: 'dispatch', ordinal: 3 });
-    expect(parseVoiceCommand('dispatch tenth')).toEqual({ kind: 'dispatch', ordinal: 10 });
-  });
-
-  it('parses "dispatch <ordinal>" with digits', () => {
-    expect(parseVoiceCommand('dispatch 1')).toEqual({ kind: 'dispatch', ordinal: 1 });
-    expect(parseVoiceCommand('dispatch 7')).toEqual({ kind: 'dispatch', ordinal: 7 });
-  });
-
-  it('handles "dispatch the third one" filler', () => {
-    expect(parseVoiceCommand('dispatch the third one')).toEqual({ kind: 'dispatch', ordinal: 3 });
-    expect(parseVoiceCommand('dispatch the second')).toEqual({ kind: 'dispatch', ordinal: 2 });
-  });
-
-  it('parses "dismiss" with and without ordinals', () => {
-    expect(parseVoiceCommand('dismiss')).toEqual({ kind: 'dismiss', ordinal: undefined });
-    expect(parseVoiceCommand('dismiss third')).toEqual({ kind: 'dismiss', ordinal: 3 });
-    expect(parseVoiceCommand('dismiss the fifth one')).toEqual({ kind: 'dismiss', ordinal: 5 });
+  it('treats retired operator-card verbs as freeform (dispatch/dismiss removed with the card stream, unify-agent-launches D-005)', () => {
+    expect(parseVoiceCommand('dispatch')).toEqual({ kind: 'freeform', text: 'dispatch' });
+    expect(parseVoiceCommand('dispatch the third one')).toEqual({ kind: 'freeform', text: 'dispatch the third one' });
+    expect(parseVoiceCommand('dismiss')).toEqual({ kind: 'freeform', text: 'dismiss' });
+    expect(parseVoiceCommand('dismiss third')).toEqual({ kind: 'freeform', text: 'dismiss third' });
   });
 
   it('parses pause / resume / unpause', () => {

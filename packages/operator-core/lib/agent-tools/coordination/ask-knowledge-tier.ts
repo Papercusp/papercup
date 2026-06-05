@@ -67,7 +67,7 @@ export async function runKnowledgeTier(
 ): Promise<KnowledgeTierResult> {
   const limit = input.limit ?? 5;
   const sql = deps.sql ?? getOrgPg().sql;
-  const memoryClient = deps.getMemoryClient ?? getMemoryClient;
+  const backend = deps.backend ?? getMemoryBackend();
   const candidates: KnowledgeCandidate[] = [];
   const searched: string[] = [];
   let embedderAvailable = false;
@@ -99,34 +99,29 @@ export async function runKnowledgeTier(
     /* search surface degraded — proceed with whatever mem0 returns */
   }
 
-  // 2. mem0 — fan over the same keys answer-capture writes under.
+  // 2. the persistent memory store — fan over the same scope keys
+  // answer-capture writes under. (The `mem0` source label is a stable
+  // wire literal; the store behind it is the swappable MemoryBackend.)
   try {
-    const client = await memoryClient();
-    if (client) {
+    if ((await backend.available()).ok) {
       searched.push('mem0');
       const keys = new Set<string>();
       if (input.asker_id) keys.add(input.asker_id);
       keys.add(`workspace:${input.workspaceId ?? 'default'}`);
       if (input.harness_slug) keys.add(`harness:${input.harness_slug}`);
-      const pulls = await Promise.all(
-        [...keys].map((k) =>
-          client.search(input.query, { filters: { user_id: k }, limit }).catch(() => ({ results: [] })),
-        ),
-      );
-      for (const r of pulls) {
-        for (const m of (r.results ?? []) as Array<{ id: string; memory?: string; text?: string; score?: number }>) {
-          candidates.push({
-            source: 'mem0',
-            ref: `mem0:${m.id}`,
-            label: 'mem0',
-            excerpt: (m.memory ?? m.text ?? '').slice(0, 240),
-            score: m.score ?? 0,
-          });
-        }
+      const hits = await backend.search(input.query, { scope: [...keys], limit });
+      for (const m of hits) {
+        candidates.push({
+          source: 'mem0',
+          ref: `mem0:${m.id}`,
+          label: 'mem0',
+          excerpt: m.text.slice(0, 240),
+          score: m.score ?? 0,
+        });
       }
     }
   } catch {
-    /* mem0 unavailable — proceed with search:semantic candidates */
+    /* memory store unavailable — proceed with search:semantic candidates */
   }
 
   // Dedupe by ref, keep highest score, top-N.

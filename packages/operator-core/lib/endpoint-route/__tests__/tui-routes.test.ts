@@ -504,3 +504,42 @@ describe('GET /tui/intents/stream (intentsStream) — loopback gate + validation
     expect(await jsonOf(res)).toEqual({ error: 'client_id_required' });
   });
 });
+
+// ── plan-item-convert (loopback-gated via isLoopbackRequest) ──────────────────
+// This route mints a wildcard-capability principal (+ capability/quota
+// gateBypass) from a body-supplied `owner`, so the explicit loopback gate is
+// load-bearing, not convention — pin it like the intent-result/intents-stream
+// gates above.
+describe('POST /tui/plan-item-convert (planItemConvert) — loopback gate + validation', () => {
+  const def = () => routeByPath('POST', '/tui/plan-item-convert');
+
+  it('403 loopback_required from a non-loopback host (before body parse / dispatch)', async () => {
+    const res = await def().handler(
+      req('POST', `${BASE}/tui/plan-item-convert`, {
+        host: 'evil.com:3070',
+        json: { owner: 'attacker', plan: 'p', item: 'P-001' },
+      }),
+      ctx(),
+    );
+    expect(res.status).toBe(403);
+    expect(await jsonOf(res)).toEqual({ error: 'loopback_required' });
+  });
+
+  it('403 when no host header is present (not provably loopback)', async () => {
+    const res = await def().handler(
+      req('POST', `${BASE}/tui/plan-item-convert`, { json: { owner: 'x', plan: 'p', item: 'P-001' } }),
+      ctx(),
+    );
+    expect(res.status).toBe(403);
+    expect(await jsonOf(res)).toEqual({ error: 'loopback_required' });
+  });
+
+  it('passes the gate from a loopback host → 400 owner_required when owner is absent', async () => {
+    const res = await def().handler(
+      req('POST', `${BASE}/tui/plan-item-convert`, { host: 'localhost', json: { plan: 'p', item: 'P-001' } }),
+      ctx(),
+    );
+    expect(res.status).toBe(400);
+    expect(await jsonOf(res)).toEqual({ error: 'owner_required: pass body.owner (the pui owner id)' });
+  });
+});

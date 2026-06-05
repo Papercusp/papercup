@@ -529,6 +529,51 @@ async fn execute_workbench_command(
                 let _ = tx.send(Event::Error(format!("restore-crew: {e}")));
             }
         },
+        // `:pickup [<plan>] <item>` — convert-at-pickup (D-015): the plan item
+        // becomes a claimed work_item (lease + mint/resume + back-link) via
+        // POST /api/tui/plan-item-convert; the server-side emits broadcast the
+        // claim + flip the item todo→wip. Refetch the item states right after
+        // so the pane reflects the new holder without waiting for the poller.
+        P::PickupPlanItem { harness, plan, item } => {
+            let harness = harness.unwrap_or_else(|| "all".to_string());
+            let Some(plan) = plan else {
+                let _ = tx.send(Event::Error("pickup: no plan selected".to_string()));
+                return;
+            };
+            match client.plan_item_convert(&owner, &harness, &plan, &item).await {
+                Ok(v) => {
+                    let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+                    if ok {
+                        let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("converted");
+                        let wi = v
+                            .pointer("/workItem/id")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("?");
+                        let _ = tx.send(toast(format!("pickup {item}: {status} → {wi} (claimed)")));
+                    } else {
+                        let why = v
+                            .get("reason")
+                            .and_then(|s| s.as_str())
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                v.pointer("/conflict/ownerLabel")
+                                    .or_else(|| v.pointer("/conflict/owner"))
+                                    .and_then(|s| s.as_str())
+                                    .map(|holder| format!("held by {holder}"))
+                            })
+                            .or_else(|| v.get("error").and_then(|s| s.as_str()).map(|s| s.to_string()))
+                            .unwrap_or_else(|| "refused".to_string());
+                        let _ = tx.send(Event::Error(format!("pickup {item}: {why}")));
+                    }
+                    if let Ok(s) = client.plan_item_states(&harness, &plan).await {
+                        let _ = tx.send(Event::PlanItemStates(s));
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::Error(format!("pickup: {e}")));
+                }
+            }
+        }
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {

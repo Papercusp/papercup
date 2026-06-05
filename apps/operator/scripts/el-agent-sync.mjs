@@ -239,7 +239,9 @@ console.log('[3/4] composing patch');
 // Helper makes the per-property shape explicit so we can't forget.
 const prop = (type, description, extra = {}) => ({ type, description, ...extra });
 
-const PANEL_PARAM = prop('string', 'Which panel: operator or oracle.', { enum: ['operator', 'oracle'] });
+// (panel_* + operator_across_workspaces tools were retired with the
+// operator-card panel — unify-agent-launches D-005. Don't re-add them
+// without re-registering browser:'required' defs first.)
 
 // IMPORTANT: every entry below with type:'client' MUST correspond to a
 // registry CommandDef registered with `agents: ['operator', ...]` AND
@@ -266,23 +268,8 @@ const TOOLS = [
     },
   },
   {
-    name: 'panel_toggle', type: 'client', expects_response: true,
-    description: 'Toggle the operator panel open/closed.',
-    parameters: { type: 'object', properties: { panel: PANEL_PARAM }, required: [], description: 'Optional panel target.' },
-  },
-  {
-    name: 'panel_open', type: 'client', expects_response: true,
-    description: 'Open the operator panel.',
-    parameters: { type: 'object', properties: { panel: PANEL_PARAM }, required: [], description: 'Optional panel target.' },
-  },
-  {
-    name: 'panel_close', type: 'client', expects_response: true,
-    description: 'Close the operator panel.',
-    parameters: { type: 'object', properties: { panel: PANEL_PARAM }, required: [], description: 'Optional panel target.' },
-  },
-  {
     name: 'operator_scan', type: 'client', expects_response: true,
-    description: 'Open the operator panel and trigger a scan with an optional query.',
+    description: 'Fire a workspace scan (the `scan` launch blueprint) with an optional query. Findings land as work_items in the self-improvement backlog.',
     parameters: {
       type: 'object',
       properties: { query: prop('string', 'Optional natural-language query to seed the scan.') },
@@ -302,11 +289,6 @@ const TOOLS = [
       required: ['slug'],
       description: 'Approval target.',
     },
-  },
-  {
-    name: 'operator_across_workspaces', type: 'client', expects_response: true,
-    description: 'Read out a summary of pending suggestions across all workspaces.',
-    parameters: { type: 'object', properties: {}, required: [], description: 'No parameters.' },
   },
   {
     name: 'navigate', type: 'client', expects_response: true,
@@ -694,49 +676,6 @@ const TOOLS = [
       },
       required: ['task'],
       description: 'Delegation request.',
-    },
-  },
-  {
-    name: 'panel_state', type: 'client', expects_response: true,
-    description:
-      'Read the current open/closed state of known panels (operator, oracle). Use to verify UI state ' +
-      'before answering questions like "is the panel open?" — your conversation memory is NOT the source ' +
-      'of truth (the user can manually close panels without telling you).',
-    parameters: { type: 'object', properties: {}, required: [], description: 'No parameters.' },
-  },
-  {
-    name: 'panel_cards', type: 'client', expects_response: true,
-    description:
-      'List the suggestion cards currently visible in the operator panel feed. Use to answer ' +
-      "'what's on my panel' or to find a card id before dispatching/dismissing.",
-    parameters: {
-      type: 'object',
-      properties: {
-        status: prop('string', 'Filter: pending (default) or all.', { enum: ['pending', 'all'] }),
-        tier: prop('string', 'Filter by tier: low, medium, high, or any (default).', { enum: ['low', 'medium', 'high', 'any'] }),
-      },
-      required: [],
-      description: 'Card listing filters.',
-    },
-  },
-  {
-    name: 'panel_dispatch_card', type: 'client', expects_response: true,
-    description: 'Dispatch (run) a suggestion card by id. Same effect as the user clicking the primary button on the card.',
-    parameters: {
-      type: 'object',
-      properties: { id: prop('string', 'Card id from panel_cards.') },
-      required: ['id'],
-      description: 'Card to dispatch.',
-    },
-  },
-  {
-    name: 'panel_dismiss_card', type: 'client', expects_response: true,
-    description: 'Dismiss a suggestion card by id. Hides it from the feed; same effect as the dismiss button.',
-    parameters: {
-      type: 'object',
-      properties: { id: prop('string', 'Card id from panel_cards.') },
-      required: ['id'],
-      description: 'Card to dismiss.',
     },
   },
   {

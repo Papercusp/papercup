@@ -7,9 +7,9 @@ use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, CuratedSignal,
-    DocsResponse, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef, Notif, OperatorConfig,
-    PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
-    WorkItem,
+    DocsResponse, EffectiveClaudeSettings, FlagsResponse, HarnessFeature, HarnessIssue,
+    HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
+    TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -66,6 +66,25 @@ pub enum Action {
     /// Semantic memory search (D-006 Step 2) — the run loop calls the
     /// `memory:search` tool; hits return as `Event::MemoryHits`.
     SearchMemory { query: String, harness: String },
+    /// One `:set <key.path> <value>` / `:unset <key.path>` Config-tab edit
+    /// (D-013) — the run loop fetches the current file, edits the dotted path
+    /// (`value: Some` sets, `None` removes), PUTs it back, and refetches the
+    /// effective view (returns as `Event::Config`).
+    ConfigEdit {
+        harness: String,
+        key: String,
+        value: Option<String>,
+    },
+    /// Fetch Cupboard listings for the active (kind, query) filter (D-011) —
+    /// the run loop GETs `/api/cupboard/listings` and the result returns as
+    /// `Event::CupboardListings` (stale-guarded by kind+query).
+    FetchCupboard { kind: String, query: String },
+    /// Execute the CONFIRMED per-kind Cupboard action (D-011): harness→join,
+    /// blueprint→fork (install), snapshot→fork, plugin→install. The reducer
+    /// only returns this after the Enter-arm + `y`-confirm two-step.
+    CupboardAct {
+        listing: crate::models::CupboardListing,
+    },
 }
 
 /// A command-palette workbench command (P12b / D-002). Parsed from the palette
@@ -78,6 +97,27 @@ pub enum PaletteCommand {
     SaveLayout(String),
     RestoreCrew(String),
     RestoreLayout(String),
+    /// `:pickup <item>` / `:pickup <plan> <item>` — convert-at-pickup (D-015):
+    /// convert a plan item to a claimed work_item via POST /api/tui/plan-item-convert.
+    /// `plan`/`harness` are None at parse; the palette Enter handler resolves them
+    /// from the selected plan before dispatch (the parser stays pure).
+    PickupPlanItem {
+        harness: Option<String>,
+        plan: Option<String>,
+        item: String,
+    },
+    /// `:create <slug> <path-or-github-url>` (D-010) — register a new pot via
+    /// `POST /api/harness/projects` (local dir or GitHub clone).
+    CreatePot { slug: String, source: String },
+    /// `:share <slug> [github-remote] [public]` (D-010) — the share sequence:
+    /// resolve binding → finalize shared.json/swarm → (public only) Cupboard
+    /// publish. With no remote given the run loop reads the pot repo's
+    /// `origin` remote.
+    SharePot {
+        slug: String,
+        remote: Option<String>,
+        public: bool,
+    },
 }
 
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
@@ -94,6 +134,15 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
         "save-layout" if !arg.is_empty() => Some(PaletteCommand::SaveLayout(arg)),
         "restore-crew" if !arg.is_empty() => Some(PaletteCommand::RestoreCrew(arg)),
         "restore-layout" if !arg.is_empty() => Some(PaletteCommand::RestoreLayout(arg)),
+        "pickup" if !arg.is_empty() => {
+            // `:pickup P-012` (selected plan) or `:pickup <plan-slug> P-012`.
+            let mut parts = arg.split_whitespace().map(|s| s.to_string());
+            let first = parts.next().unwrap_or_default();
+            match parts.next() {
+                Some(item) => Some(PaletteCommand::PickupPlanItem { harness: None, plan: Some(first), item }),
+                None => Some(PaletteCommand::PickupPlanItem { harness: None, plan: None, item: first }),
+            }
+        }
         _ => None,
     }
 }
@@ -1764,6 +1813,39 @@ impl App {
                         return Action::Render;
                     }
                     match cmd {
+                        // `:pickup` resolves its plan/harness from the SELECTED
+                        // plan when not given explicitly (the parser is pure and
+                        // can't see app state). No plan in scope → an error
+                        // notif, not a half-scoped dispatch.
+                        Some(PaletteCommand::PickupPlanItem { harness, plan, item }) => {
+                            let plan = plan.or_else(|| self.selected_plan().map(|p| p.slug.clone()));
+                            match plan {
+                                Some(plan) => {
+                                    let harness = harness
+                                        .or_else(|| {
+                                            self.selected_plan()
+                                                .filter(|p| p.slug == plan)
+                                                .and_then(|p| p.harness.clone())
+                                        })
+                                        .unwrap_or_else(|| "all".to_string());
+                                    Action::Workbench(PaletteCommand::PickupPlanItem {
+                                        harness: Some(harness),
+                                        plan: Some(plan),
+                                        item,
+                                    })
+                                }
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: "pickup: no plan selected — use :pickup <plan> <item>"
+                                            .to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
                         Some(c) => Action::Workbench(c),
                         None => Action::Render,
                     }
