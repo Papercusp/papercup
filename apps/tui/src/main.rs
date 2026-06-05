@@ -260,6 +260,18 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 tokio::spawn(config_edit(harness, key, value, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::LoadPluginConfig { harness, plugin } => {
+                // Plugin-settings load (D-014): fetch the selected plugin's saved
+                // per-harness config; returns as Event::PluginConfig.
+                tokio::spawn(load_plugin_config(harness, plugin, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::PluginConfigEdit { harness, plugin, key, value } => {
+                // Plugin-settings edit (D-014): read→edit-path→PUT→refetch off
+                // the UI thread; the refreshed config returns as Event::PluginConfig.
+                tokio::spawn(plugin_config_edit(harness, plugin, key, value, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchCupboard { kind, query } => {
                 // Cupboard browse (D-011): GET the listings for the active
                 // (kind, query) filter off the UI thread.
@@ -376,6 +388,66 @@ async fn config_edit(
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("config refetch: {e}")));
+        }
+    }
+}
+
+/// Load one plugin's saved per-harness config (D-014) → `Event::PluginConfig`.
+async fn load_plugin_config(harness: String, plugin: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("plugin config: {e}")));
+            return;
+        }
+    };
+    match client.plugin_config(&harness, &plugin).await {
+        Ok(config) => {
+            let _ = tx.send(Event::PluginConfig { plugin, config });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("plugin config: {e}")));
+        }
+    }
+}
+
+/// Apply one `:pset`/`:punset` plugin-settings edit (D-014): fetch the current
+/// config, edit the dotted path, PUT it back, then refetch so the settings view
+/// re-renders from what the backend persisted (it validates against the
+/// manifest's configSchema + prunes defaults, so the round-trip is the truth).
+async fn plugin_config_edit(
+    harness: String,
+    plugin: String,
+    key: String,
+    value: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("plugin edit: {e}")));
+            return;
+        }
+    };
+    let apply = async {
+        let mut root = client.plugin_config(&harness, &plugin).await?;
+        if !root.is_object() {
+            root = serde_json::json!({});
+        }
+        app::edit_json_path(&mut root, &key, value.as_deref().map(app::parse_config_value))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        client.put_plugin_config(&harness, &plugin, &root).await?;
+        anyhow::Ok(())
+    };
+    if let Err(e) = apply.await {
+        let _ = tx.send(Event::Error(format!("plugin edit: {e}")));
+    }
+    match client.plugin_config(&harness, &plugin).await {
+        Ok(config) => {
+            let _ = tx.send(Event::PluginConfig { plugin, config });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("plugin refetch: {e}")));
         }
     }
 }
@@ -574,9 +646,10 @@ async fn execute_workbench_command(
                 }
             }
         }
-        // Config-tab commands (D-013) are routed to Action::ConfigEdit in the
-        // reducer and never reach the workbench executor — defensive no-op.
-        P::ConfigSet { .. } | P::ConfigUnset { .. } => {}
+        // Config-tab (D-013) + plugin-settings (D-014) commands are routed to
+        // their own Actions in the reducer and never reach the workbench
+        // executor — defensive no-op.
+        P::ConfigSet { .. } | P::ConfigUnset { .. } | P::PluginSet { .. } | P::PluginUnset { .. } => {}
         // `:create <slug> <path-or-github-url>` (D-010) — register a new pot,
         // then refresh the pot list so it appears in the selector immediately.
         P::CreatePot { slug, source } => match client.create_harness(&slug, &source).await {
@@ -1536,6 +1609,16 @@ async fn refetch_all(
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("tui_panes: {e}")));
+        }
+    }
+    // Installed plugin manifests for the Plugins tab (D-007/D-014). Global, not
+    // per-harness, but refetched with the rest on each invalidate.
+    match client.plugins_global().await {
+        Ok(p) => {
+            let _ = tx.send(Event::Plugins(p));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("plugins: {e}")));
         }
     }
     // Operator feature flags for the read-only Settings tab (P10). Global — not

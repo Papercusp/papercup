@@ -79,6 +79,18 @@ pub enum Action {
         key: String,
         value: Option<String>,
     },
+    /// Load the selected plugin's saved per-harness config (D-014) — the run
+    /// loop GETs `/api/plugins/config` and returns `Event::PluginConfig`.
+    LoadPluginConfig { harness: String, plugin: String },
+    /// One `:pset <key.path> <value>` / `:punset <key.path>` plugin-settings
+    /// edit on the selected plugin (D-014) — fetch→edit-path→PUT→refetch, result
+    /// returns as `Event::PluginConfig`. `value: None` removes the key.
+    PluginConfigEdit {
+        harness: String,
+        plugin: String,
+        key: String,
+        value: Option<String>,
+    },
     /// Fetch Cupboard listings for the active (kind, query) filter (D-011) —
     /// the run loop GETs `/api/cupboard/listings` and the result returns as
     /// `Event::CupboardListings` (stale-guarded by kind+query).
@@ -127,6 +139,11 @@ pub enum PaletteCommand {
     ConfigSet { key: String, value: String },
     /// `:unset <key.path>` — remove a key from the settings file (D-013).
     ConfigUnset { key: String },
+    /// `:pset <key.path> <value>` — edit the SELECTED plugin's config (D-014).
+    /// The plugin is resolved from `plugin_sel` in the palette-Enter handler.
+    PluginSet { key: String, value: String },
+    /// `:punset <key.path>` — remove a key from the selected plugin's config.
+    PluginUnset { key: String },
 }
 
 /// Parse a command-palette line into a `PaletteCommand` (None = unknown). A
@@ -196,6 +213,20 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
             }
         }
         "unset" if !arg.is_empty() => Some(PaletteCommand::ConfigUnset { key: arg }),
+        // Plugin-settings editor (D-014): `:pset <key.path> <value>` /
+        // `:punset <key.path>` — operate on the SELECTED plugin (resolved at
+        // dispatch, so the parser stays pure).
+        "pset" if !arg.is_empty() => {
+            let mut kv = arg.splitn(2, char::is_whitespace);
+            let key = kv.next().unwrap_or("").to_string();
+            let value = kv.next().unwrap_or("").trim().to_string();
+            if key.is_empty() || value.is_empty() {
+                None
+            } else {
+                Some(PaletteCommand::PluginSet { key, value })
+            }
+        }
+        "punset" if !arg.is_empty() => Some(PaletteCommand::PluginUnset { key: arg }),
         _ => None,
     }
 }
@@ -1786,6 +1817,16 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Plugins(p) => {
+                self.set_plugins(p);
+                self.last_error = None;
+                Action::Render
+            }
+            Event::PluginConfig { plugin, config } => {
+                self.plugin_config = Some((plugin, config));
+                self.last_error = None;
+                Action::Render
+            }
             Event::Notify(n) => {
                 self.push_notif(n);
                 self.last_error = None;
@@ -2045,6 +2086,46 @@ impl App {
                             key,
                             value: None,
                         },
+                        // Plugin-settings edits (D-014) resolve the plugin from
+                        // the selected row; no plugin selected → an error notif.
+                        Some(PaletteCommand::PluginSet { key, value }) => {
+                            match self.selected_plugin().map(|p| p.name.clone()) {
+                                Some(plugin) => Action::PluginConfigEdit {
+                                    harness: self.harness.clone(),
+                                    plugin,
+                                    key,
+                                    value: Some(value),
+                                },
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: "pset: no plugin selected (Plugins tab)".to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
+                        Some(PaletteCommand::PluginUnset { key }) => {
+                            match self.selected_plugin().map(|p| p.name.clone()) {
+                                Some(plugin) => Action::PluginConfigEdit {
+                                    harness: self.harness.clone(),
+                                    plugin,
+                                    key,
+                                    value: None,
+                                },
+                                None => {
+                                    self.push_notif(crate::models::Notif {
+                                        level: "error".to_string(),
+                                        message: "punset: no plugin selected (Plugins tab)".to_string(),
+                                        harness: None,
+                                        ts: None,
+                                    });
+                                    Action::Render
+                                }
+                            }
+                        }
                         Some(c) => Action::Workbench(c),
                         None => Action::Render,
                     }
@@ -2221,9 +2302,22 @@ impl App {
             // Launch a native agent pane from the Brew tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
-            KeyCode::Enter if self.tab == Tab::Plugins => match self.plugin_launch_spec() {
-                Some(spec) => Action::Launch(spec),
-                None => Action::None,
+            // Plugins tab (D-007/D-014): in Panes focus, Enter launches the
+            // selected pane (original D-002 behavior); in List focus, Enter
+            // loads the selected plugin's per-harness config for the settings
+            // view (no-op when the plugin has no configSchema).
+            KeyCode::Enter if self.tab == Tab::Plugins => match self.plugins_focus {
+                PluginsFocus::Panes => match self.plugin_launch_spec() {
+                    Some(spec) => Action::Launch(spec),
+                    None => Action::None,
+                },
+                PluginsFocus::List => match self.selected_plugin() {
+                    Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
+                        harness: self.harness.clone(),
+                        plugin: p.name.clone(),
+                    },
+                    _ => Action::None,
+                },
             },
             // Enter on the operator pane (outside compose) focuses the composer.
             KeyCode::Enter if self.tab == Tab::Operator => {
@@ -2287,6 +2381,15 @@ impl App {
                 self.testing_focus = match self.testing_focus {
                     TestingFocus::Domains => TestingFocus::Files,
                     TestingFocus::Files => TestingFocus::Domains,
+                };
+                Action::Render
+            }
+            // Plugins sub-view focus (D-007/D-014): Tab hops the installed-plugin
+            // list (contributions + settings) ↔ the launchable tui-panes.
+            KeyCode::Tab if self.tab == Tab::Plugins => {
+                self.plugins_focus = match self.plugins_focus {
+                    PluginsFocus::List => PluginsFocus::Panes,
+                    PluginsFocus::Panes => PluginsFocus::List,
                 };
                 Action::Render
             }
@@ -2409,7 +2512,10 @@ impl App {
                 TestingFocus::Domains => self.testing.len(),
                 TestingFocus::Files => self.testing_files.len(),
             },
-            Tab::Plugins => self.panes.len(),
+            Tab::Plugins => match self.plugins_focus {
+                PluginsFocus::List => self.plugins.len(),
+                PluginsFocus::Panes => self.panes.len(),
+            },
             Tab::Settings => self.flags.len(),
             Tab::Fleet => self.visible_roster().len(),
             Tab::Memory => self.visible_memories().len(),
@@ -2432,7 +2538,10 @@ impl App {
                 TestingFocus::Domains => &mut self.testing_sel,
                 TestingFocus::Files => &mut self.testing_file_sel,
             },
-            Tab::Plugins => &mut self.pane_sel,
+            Tab::Plugins => match self.plugins_focus {
+                PluginsFocus::List => &mut self.plugin_sel,
+                PluginsFocus::Panes => &mut self.pane_sel,
+            },
             Tab::Settings => &mut self.flag_sel,
             Tab::Fleet => &mut self.fleet.agent_sel,
             Tab::Memory => &mut self.memory_sel,

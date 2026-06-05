@@ -1,8 +1,8 @@
 //! Rendering — a pure function of `&App`. No state mutation, so every view is
 //! snapshot-testable against a ratatui `TestBackend`.
 
-use crate::app::{App, HarnessFocus, Tab, TestingFocus};
-use crate::models::Notif;
+use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
+use crate::models::{contribution_count, contribution_names, Notif};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -699,8 +699,157 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_plugins(f: &mut Frame, app: &App, area: Rect) {
-    // Plugin-contributed TUI panes (D-002). Each row shows the icon (if any),
-    // label, owning plugin, and the command that Enter launches.
+    // Two sub-views, Tab toggles (D-007/D-014): the installed-plugin list
+    // (contributions + settings) and the launchable tui-panes (D-002).
+    match app.plugins_focus {
+        PluginsFocus::List => draw_plugins_list(f, app, area),
+        PluginsFocus::Panes => draw_plugin_panes(f, app, area),
+    }
+}
+
+/// The installed-plugin list + a detail pane surfacing each plugin's frontend
+/// vs backend contributions (D-007) and its schema-driven settings (D-014).
+fn draw_plugins_list(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .split(area);
+
+    // Left: plugin list — name vX, FE/BE contribution counts, ⚙ if configurable.
+    let items: Vec<ListItem> = app
+        .plugins
+        .iter()
+        .map(|p| {
+            let gear = if p.config_schema.is_some() { "⚙" } else { " " };
+            ListItem::new(Line::from(format!(
+                "{:<24} {:>6} FE:{:<2} BE:{:<2} {}",
+                trunc(&p.name, 24),
+                trunc(&p.version, 6),
+                p.frontend_count(),
+                p.backend_count(),
+                gear,
+            )))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !app.plugins.is_empty() {
+        state.select(Some(app.plugin_sel));
+    }
+    let left_body = block_with_header(
+        f,
+        cols[0],
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " plugins ({}) — Tab→panes ",
+            app.plugins.len()
+        ))),
+        &format!("  {:<24} {:>6} {:<6}{:<6}{}", "name", "ver", "front", "back", "cfg"),
+    );
+    f.render_stateful_widget(
+        List::new(items).highlight_style(Theme::selected()).highlight_symbol("> "),
+        left_body,
+        &mut state,
+    );
+
+    // Right: detail for the selected plugin.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(" detail "));
+    let detail: Vec<Line> = match app.selected_plugin() {
+        None => vec![Line::from(Span::styled(
+            "(no plugins installed)",
+            Theme::dim(),
+        ))],
+        Some(p) => {
+            let mut lines = vec![
+                Line::from(Span::styled(p.name.clone(), Theme::header())),
+                Line::from(format!("v{}", p.version)),
+            ];
+            if let Some(d) = &p.description {
+                lines.push(Line::from(""));
+                lines.push(Line::from(d.clone()));
+            }
+            // Frontend contributions (D-007).
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("frontend", Theme::header())));
+            push_contrib(&mut lines, "ui", &p.ui);
+            push_contrib(&mut lines, "dashboardTabs", &p.dashboard_tabs);
+            push_contrib(&mut lines, "sidebarItems", &p.sidebar_items);
+            if p.frontend_count() == 0 {
+                lines.push(Line::from(Span::styled("  (none)", Theme::dim())));
+            }
+            // Backend contributions (D-007).
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("backend", Theme::header())));
+            push_contrib(&mut lines, "tools", &p.tools);
+            push_contrib(&mut lines, "actions", &p.actions);
+            push_contrib(&mut lines, "apiRoutes", &p.api_routes);
+            push_contrib(&mut lines, "routines", &p.routines);
+            if p.backend_count() == 0 {
+                lines.push(Line::from(Span::styled("  (none)", Theme::dim())));
+            }
+            // Settings (D-014).
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("settings", Theme::header())));
+            if p.config_schema.is_none() {
+                lines.push(Line::from(Span::styled(
+                    "  (this plugin declares no configSchema)",
+                    Theme::dim(),
+                )));
+            } else {
+                match app.selected_plugin_config() {
+                    None => lines.push(Line::from(Span::styled(
+                        "  press Enter to load this pot's config",
+                        Theme::dim(),
+                    ))),
+                    Some(cfg) => {
+                        let rendered = serde_json::to_string_pretty(cfg)
+                            .unwrap_or_else(|_| "(unrenderable)".into());
+                        if rendered == "{}" {
+                            lines.push(Line::from(Span::styled(
+                                "  (no config set — defaults apply)",
+                                Theme::dim(),
+                            )));
+                        } else {
+                            for l in rendered.lines() {
+                                lines.push(Line::from(format!("  {l}")));
+                            }
+                        }
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(Span::styled(
+                            "  :pset <key.path> <value> · :punset <key.path>",
+                            Theme::dim(),
+                        )));
+                    }
+                }
+            }
+            lines
+        }
+    };
+    f.render_widget(
+        Paragraph::new(detail).wrap(Wrap { trim: false }).block(block),
+        cols[1],
+    );
+}
+
+/// Append a `  <field>: name, name (+N)` line for a contribution field, or
+/// nothing when the field is empty (D-007).
+fn push_contrib(lines: &mut Vec<Line>, field: &str, v: &serde_json::Value) {
+    let n = contribution_count(v);
+    if n == 0 {
+        return;
+    }
+    let mut names = contribution_names(v);
+    let extra = names.len().saturating_sub(4);
+    names.truncate(4);
+    let mut s = format!("  {field}: {}", names.join(", "));
+    if extra > 0 {
+        s.push_str(&format!(" (+{extra})"));
+    }
+    lines.push(Line::from(s));
+}
+
+/// The launchable plugin-contributed TUI panes (the original D-002 view).
+fn draw_plugin_panes(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .panes
         .iter()
@@ -723,7 +872,7 @@ fn draw_plugins(f: &mut Frame, app: &App, area: Rect) {
         f,
         area,
         Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} · plugin panes ({}) — Enter to launch ",
+            " {} · plugin panes ({}) — Enter to launch · Tab→list ",
             app.harness,
             app.panes.len()
         ))),

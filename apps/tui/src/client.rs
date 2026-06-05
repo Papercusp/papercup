@@ -822,6 +822,57 @@ impl OperatorClient {
             .items)
     }
 
+    // ─── Voice mode (voice-mode-tui-port-2026-06-05 P1) ───
+    // The TUI can't reach this box's localhost voicemode/kokoro services
+    // directly (remote-HTTP deployment) and its IPC `sys:http` bridge is
+    // binary-unsafe, so audio crosses as base64 JSON through two operator
+    // proxy routes (D-006). Engine/voice defaults come from the operator's
+    // voice prefs server-side — the TUI just sends audio + text.
+
+    /// Transcribe a 16 kHz mono PCM16 WAV via the operator STT proxy
+    /// (`POST /api/agent-mcp/operator-stt` → voicemode Whisper). Returns the
+    /// recognized text (empty string when Whisper heard nothing).
+    pub async fn stt_transcribe(&self, wav: &[u8]) -> Result<String> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(wav);
+        let v = self
+            .post_json(
+                "/api/agent-mcp/operator-stt",
+                serde_json::json!({ "audioBase64": b64, "format": "wav" }),
+            )
+            .await?;
+        if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
+            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("stt failed");
+            return Err(anyhow!("{err}"));
+        }
+        Ok(v.get("text").and_then(|x| x.as_str()).unwrap_or("").trim().to_string())
+    }
+
+    /// Synthesize `text` to speech via the operator TTS proxy
+    /// (`POST /api/agent-mcp/operator-tts`). Engine + voice resolve from the
+    /// operator's voice prefs server-side. Returns the decoded audio bytes
+    /// (wav from kokoro, mp3 from the cloud engines) for `rodio` playback.
+    pub async fn tts_speak(&self, text: &str) -> Result<Vec<u8>> {
+        use base64::Engine as _;
+        let v = self
+            .post_json(
+                "/api/agent-mcp/operator-tts",
+                serde_json::json!({ "text": text }),
+            )
+            .await?;
+        if v.get("ok").and_then(|x| x.as_bool()) != Some(true) {
+            let err = v.get("error").and_then(|x| x.as_str()).unwrap_or("tts failed");
+            return Err(anyhow!("{err}"));
+        }
+        let b64 = v
+            .get("audioBase64")
+            .and_then(|x| x.as_str())
+            .context("operator-tts: missing audioBase64")?;
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("operator-tts: bad base64 audio")
+    }
+
     /// Recent toast-log entries → notification history (P8).
     pub async fn recent_toasts(&self, limit: u32) -> Result<Vec<Notif>> {
         let v = self.get_json(&format!("/api/toast-log?limit={limit}")).await?;
