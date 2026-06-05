@@ -32,9 +32,16 @@ afterEach(() => {
 });
 
 // The status/control tools read harness_shared.routines via getOrgPg().sql —
-// stub the tagged-template client to return no schedule routines.
+// stub the tagged-template client to return no schedule routines. PARTIAL mock:
+// preserve the real module (esp. `generated`, which the full tool registry pulls
+// in transitively via harness/get.ts when these tests load lookupByMcpName /
+// dispatchProjectedTool) and override ONLY getOrgPg. A whole-module replacement
+// dropped `generated` and crashed registry load.
 const mockDbOrgSql = (rows: unknown[] = []) =>
-  vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: vi.fn(async () => rows) }) }));
+  vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    getOrgPg: () => ({ sql: vi.fn(async () => rows) }),
+  }));
 
 function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);

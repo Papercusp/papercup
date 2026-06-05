@@ -647,20 +647,29 @@ mod tests {
     /// Full loop: play a tone while recording — requires the loopback routing
     /// (play→null sink, capture→its monitor) the verification shell sets up.
     /// Asserts the captured audio contains the played tone.
+    ///
+    /// The tone (2.5s) is deliberately LONGER than the capture window (~1.6s) so
+    /// the whole recording is steady-state tone — and we estimate the frequency
+    /// over the middle 60% only, skipping the stream-startup onset. (A naive
+    /// estimate over a buffer with trailing silence reads low: 440·tone/window.)
     #[test]
     #[ignore]
     fn smoke_loopback_tone_roundtrip() {
         let player = Player::spawn();
         let session = start_capture().expect("start capture");
-        let tone = sine(440.0, 1.2, WHISPER_RATE, 0.6);
+        let tone = sine(440.0, 2.5, WHISPER_RATE, 0.6);
         player.play(encode_wav_pcm16(&tone, WHISPER_RATE));
-        std::thread::sleep(Duration::from_millis(1800));
+        std::thread::sleep(Duration::from_millis(1600));
         let res = session.finish().expect("finish capture");
         let (_, samples) = decode_wav(&res.wav);
         let f32s: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
         let level = rms(&f32s);
         assert!(level > 0.01, "loopback capture is silent (rms {level})");
-        let f = zero_cross_freq(&f32s, WHISPER_RATE);
+        // Middle 60% — past the onset, before finish() trims, all tone.
+        let lo = f32s.len() * 2 / 10;
+        let hi = f32s.len() * 8 / 10;
+        let mid = &f32s[lo..hi];
+        let f = zero_cross_freq(mid, WHISPER_RATE);
         assert!(
             (f - 440.0).abs() < 40.0,
             "expected ~440Hz in the loopback capture, got {f}"
