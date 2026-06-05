@@ -1,21 +1,21 @@
 /**
  * read-items.ts — the SINGLE repointable seam between the self-improvement loop
- * and the work-unit storage (papercusp-self-improvement-loop-2026-06-04).
+ * and the work-unit storage (papercusp-self-improvement-loop-2026-06-04 +
+ * close-the-self-improvement-loop-2026-06-05 D-002).
  *
- * Today the capture unit is an `engineer_issue` (issues:*). After
- * unify-work-items-2026-06-04 lands, it becomes a `work_item[kind=bug|change]`.
- * EVERYTHING in the loop reads candidates through `readImprovementItems` so the
- * migration is a ONE-FUNCTION repoint here — swap `listIssues({topic})` for
- * `work_items:list({topic, kind})` and read the native `kind` column instead of
- * the title-prefix derivation below. (Coordinated with su-0cbc6, the
- * unify-work-items owner: topic tags survive the migration on the capability
- * layer, and the read stays topic-scoped.)
+ * The capture unit is an `engineer_issue` = work_item[kind ∈ bug|change]
+ * (unify-work-items migration 142/152). The loop reads candidates through
+ * `readImprovementItems`, so any future storage move stays a one-function repoint.
  *
- * `kind` derivation TODAY: engineer_issues has no `kind` column (it's
- * severity/source/state). The capture convention prefixes the title with
- * `[bug]` / `[change]` / `[feature]`; we parse that, defaulting to `change` (the
- * "a desired improvement" kind — human-tier, the safe default). When the real
- * `kind` column exists, delete `deriveKind` and read the column.
+ * `kind` is the REAL `engineer_issues.kind` column now (close-loop D-002) — the
+ * old `[kind]` title-prefix convention + its `deriveKind` parser are RETIRED
+ * (legacy prefixed rows were backfilled + stripped by the close-loop migration).
+ * Two payload refinements ride `engineer_issues.payload`:
+ *   - `improvementKind: 'feature'` — a net-new capture (display refinement of
+ *     kind='change'; the feature *family* lives in the features base table).
+ *   - `paths: string[]` — candidate implementation paths (the protected-path gate).
+ *   - `implementAttempts` / `needsHuman` — the auto-implement loop's lifecycle
+ *     (anti-re-dispatch counter + the explicit human-routing flag, D-001).
  */
 
 import { listIssues, type EngineerIssue, type ListIssuesFilter } from '../../issues-engineer';
@@ -24,30 +24,38 @@ import type { ImprovementCandidate, WorkItemKind } from './policy';
 /** The built-in capture/triage lens topic (D-003). */
 export const IMPROVEMENT_TOPIC = 'papercusp-improvement';
 
-const KIND_PREFIX = /^\s*\[(bug|change|feature|research-task)\]\s*/i;
+/** Typed view over the kind-specific payload the improvement loop writes. */
+interface ImprovementPayload {
+  improvementKind?: string;
+  paths?: unknown;
+  implementAttempts?: unknown;
+  needsHuman?: unknown;
+}
 
-/** Parse a `[kind]` title prefix → { kind, cleanTitle }. Default kind = change. */
-export function deriveKind(title: string): { kind: WorkItemKind; cleanTitle: string } {
-  const m = title.match(KIND_PREFIX);
-  if (m) {
-    return { kind: m[1].toLowerCase() as WorkItemKind, cleanTitle: title.replace(KIND_PREFIX, '').trim() };
-  }
-  return { kind: 'change', cleanTitle: title.trim() };
+function payloadOf(issue: EngineerIssue): ImprovementPayload {
+  return issue.payload && typeof issue.payload === 'object' ? (issue.payload as ImprovementPayload) : {};
 }
 
 /** Map an engineer_issue → the storage-agnostic ImprovementCandidate. */
 export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
-  const { kind, cleanTitle } = deriveKind(issue.title);
+  const p = payloadOf(issue);
+  const kind: WorkItemKind = p.improvementKind === 'feature' ? 'feature' : (issue.kind as WorkItemKind);
+  const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === 'string') : undefined;
+  const attempts = typeof p.implementAttempts === 'number' ? p.implementAttempts : undefined;
   return {
     id: issue.id,
     kind,
     scope: issue.scope,
-    title: cleanTitle,
+    title: issue.title,
     body: issue.body,
     severity: issue.severity,
     state: issue.state,
     assignee: issue.assignee,
+    assignedAt: issue.assignedAt,
     createdAt: issue.createdAt,
+    ...(paths?.length ? { paths } : {}),
+    ...(attempts !== undefined ? { attempts } : {}),
+    ...(p.needsHuman === true ? { needsHuman: true } : {}),
   };
 }
 
@@ -66,7 +74,7 @@ const defaultDeps: ReadImprovementDeps = { listIssues };
 
 /**
  * Read every captured improvement (tagged the `papercusp-improvement` topic) as
- * storage-agnostic candidates. THE repoint point for unify-work-items.
+ * storage-agnostic candidates. THE repoint point for any future storage move.
  */
 export async function readImprovementItems(
   opts: ReadImprovementOpts = {},

@@ -221,11 +221,14 @@ import './coordination/tools/conversations-list';
 import './coordination/tools/conversations-get';
 import './coordination/tools/conversations-promote';
 
-// Self-improvement loop — capture + triage of papercusp improvements
-// (papercusp-self-improvement-loop-2026-06-04, Phase 1 + 2). Captured items are
-// engineer issues tagged `papercusp-improvement`; the digest triages them.
+// Self-improvement loop — capture + triage + the resolve back-edge
+// (papercusp-self-improvement-loop-2026-06-04 Phase 1 + 2;
+// close-the-self-improvement-loop-2026-06-05 D-001). Captured items are
+// engineer issues tagged `papercusp-improvement`; the digest triages them;
+// resolve closes the loop (a verified fix leaves the queue).
 import './improvements/capture';
 import './improvements/digest';
+import './improvements/resolve';
 
 // Engineer issues — the agent-facing issue surface on the coordination substrate
 // (engineer-issues-2026-06-03 D-003). Subscribable/Taggable/Threadable/Claimable/Lifecycle.

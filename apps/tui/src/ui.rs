@@ -1,11 +1,12 @@
 //! Rendering — a pure function of `&App`. No state mutation, so every view is
 //! snapshot-testable against a ratatui `TestBackend`.
 
-use crate::app::{App, HarnessFocus, Tab};
+use crate::app::{App, HarnessFocus, Tab, TestingFocus};
 use crate::models::Notif;
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
@@ -114,15 +115,18 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
     if !app.plans.is_empty() {
         state.select(Some(app.plan_sel));
     }
+    let body_area = block_with_header(
+        f,
+        cols[0],
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(" Plans ({}) ", app.plans.len()))),
+        &format!("  {:<9}{}", "status", "slug"),
+    );
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Line::from(format!(" Plans ({}) ", app.plans.len()))),
-        )
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
-    f.render_stateful_widget(list, cols[0], &mut state);
+    f.render_stateful_widget(list, body_area, &mut state);
 
     // Right column: plan meta (top) + per-item assignment/claim/liveness (bottom, P-005a).
     let right = Layout::default()
@@ -177,9 +181,13 @@ fn draw_plan_item_states(f: &mut Frame, app: &App, area: Rect) {
         }
         None => (" Items ".to_string(), Vec::new()),
     };
-    let list =
-        List::new(items).block(Block::default().borders(Borders::ALL).title(Line::from(title)));
-    f.render_widget(list, area);
+    let body_area = block_with_header(
+        f,
+        area,
+        Block::default().borders(Borders::ALL).title(Line::from(title)),
+        &format!("{:<2}{:<8}{:<10}{:<15}{:<7}{}", "", "item", "state", "who", "live", "intent"),
+    );
+    f.render_widget(List::new(items), body_area);
 }
 
 /// One plan-item row: `<glyph> <id> <disposition> <who> <liveness> <intent>` (P-005a).
@@ -288,15 +296,18 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     if !app.inbox.is_empty() {
         state.select(Some(app.inbox_sel));
     }
+    let body_area = block_with_header(
+        f,
+        cols[0],
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Line::from(format!(" Inbox ({}) ", app.inbox.len()))),
+        &format!("   {:<12}{:<27}{}", "status", "plan/ref", "title"),
+    );
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Line::from(format!(" Inbox ({}) ", app.inbox.len()))),
-        )
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
-    f.render_stateful_widget(list, cols[0], &mut state);
+    f.render_stateful_widget(list, body_area, &mut state);
 
     let preview = match app.selected_inbox() {
         Some(it) => format!(
@@ -347,18 +358,23 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     if !app.features.is_empty() {
         fstate.select(Some(app.feat_sel));
     }
-    let flist = List::new(fitems)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+    let fbody = block_with_header(
+        f,
+        cols[0],
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
             " {}{} ({}/{}) [/] · features ({}) ",
             if feat_focused { "▸ " } else { "" },
             app.harness,
             app.harness_sel + 1,
             app.harnesses.len().max(1),
             app.features.len()
-        ))))
+        ))),
+        &format!("  {:<11}{:<9}{}", "id", "status", "title"),
+    );
+    let flist = List::new(fitems)
         .highlight_style(focus_hl(feat_focused))
         .highlight_symbol("> ");
-    f.render_stateful_widget(flist, cols[0], &mut fstate);
+    f.render_stateful_widget(flist, fbody, &mut fstate);
 
     // Issues (right) — selectable when focused (Tab toggles focus).
     let ititle = Line::from(format!(
@@ -389,11 +405,16 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
             .collect();
         let mut istate = ListState::default();
         istate.select(Some(app.issue_sel));
+        let ibody = block_with_header(
+            f,
+            cols[1],
+            Block::default().borders(Borders::ALL).title(ititle),
+            &format!("  {:<9}{:<12}{}", "severity", "status", "title"),
+        );
         let ilist = List::new(iitems)
-            .block(Block::default().borders(Borders::ALL).title(ititle))
             .highlight_style(focus_hl(!feat_focused))
             .highlight_symbol("> ");
-        f.render_stateful_widget(ilist, cols[1], &mut istate);
+        f.render_stateful_widget(ilist, ibody, &mut istate);
     }
 
     // Detail (bottom) — follows the focused column.
@@ -479,15 +500,38 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
+    // Run-on-click (D-004a): domains (left) ▸ the selected domain's runnable
+    // files (right, fetched on Enter), with a run-result pane below once a run
+    // has started. Tab hops the column focus; Enter/r runs the selected file.
+    let rows = if app.test_run.is_some() {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Percentage(45)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1)])
+            .split(area)
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
+        .split(rows[0]);
+
+    let dom_focused = app.testing_focus == TestingFocus::Domains;
+    let focus_hl = |on: bool| if on { Theme::selected() } else { Theme::dim() };
+
+    // Domains (left).
     let items: Vec<ListItem> = app
         .testing
         .iter()
         .map(|d| {
             ListItem::new(Line::from(format!(
-                "{:<10} {:<22} {}",
+                "{:<10} {:<20} {}",
                 trunc(&d.tier, 10),
-                trunc(&d.label, 22),
-                trunc(&d.description, 50),
+                trunc(&d.label, 20),
+                trunc(&d.description, 28),
             )))
         })
         .collect();
@@ -495,15 +539,83 @@ fn draw_testing(f: &mut Frame, app: &App, area: Rect) {
     if !app.testing.is_empty() {
         state.select(Some(app.testing_sel));
     }
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " {} · test domains ({}) ",
+    let dbody = block_with_header(
+        f,
+        cols[0],
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " {}{} · domains ({}) ",
+            if dom_focused { "▸ " } else { "" },
             app.harness,
             app.testing.len()
-        ))))
-        .highlight_style(Theme::selected())
+        ))),
+        &format!("  {:<11}{:<21}{}", "tier", "domain", "description"),
+    );
+    let list = List::new(items)
+        .highlight_style(focus_hl(dom_focused))
         .highlight_symbol("> ");
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, dbody, &mut state);
+
+    // Files of the selected domain (right).
+    let ftitle = Line::from(format!(
+        " {}files ({}) — Enter/r: run ",
+        if !dom_focused { "▸ " } else { "" },
+        app.testing_files.len()
+    ));
+    if app.testing_files.is_empty() {
+        let hint = if app.testing_files_loading {
+            "loading files…"
+        } else {
+            "(Enter on a domain loads its runnable files)"
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(hint, Theme::dim())))
+                .block(Block::default().borders(Borders::ALL).title(ftitle)),
+            cols[1],
+        );
+    } else {
+        let fitems: Vec<ListItem> = app
+            .testing_files
+            .iter()
+            .map(|p| ListItem::new(Line::from(trunc(p, 64))))
+            .collect();
+        let mut fstate = ListState::default();
+        fstate.select(Some(app.testing_file_sel.min(app.testing_files.len() - 1)));
+        let flist = List::new(fitems)
+            .block(Block::default().borders(Borders::ALL).title(ftitle))
+            .highlight_style(focus_hl(!dom_focused))
+            .highlight_symbol("> ");
+        f.render_stateful_widget(flist, cols[1], &mut fstate);
+    }
+
+    // Run result (bottom) — present from the moment a run starts.
+    if let Some(run) = &app.test_run {
+        let (status_label, style) = if run.running {
+            ("running…".to_string(), Theme::dim())
+        } else {
+            let s = run.status.clone();
+            let style = match s.as_str() {
+                "pass" => Theme::notify(),
+                _ => Theme::warn(),
+            };
+            (s, style)
+        };
+        // Tail the output so the verdict + failures are visible without scroll.
+        let tail: Vec<&str> = run.output.lines().rev().take(40).collect();
+        let body: String = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+        let para = Paragraph::new(if run.running && body.is_empty() {
+            "vitest is running in the harness worktree — output lands here.".to_string()
+        } else {
+            body
+        })
+        .wrap(Wrap { trim: false })
+        .style(if run.running { Theme::dim() } else { Style::default() })
+        .block(Block::default().borders(Borders::ALL).title(Line::from(vec![
+            Span::raw(format!(" ▶ {} · ", trunc(&run.file, 48))),
+            Span::styled(status_label, style),
+            Span::raw(" "),
+        ])));
+        f.render_widget(para, rows[1]);
+    }
 }
 
 fn draw_plugins(f: &mut Frame, app: &App, area: Rect) {
@@ -527,15 +639,20 @@ fn draw_plugins(f: &mut Frame, app: &App, area: Rect) {
     if !app.panes.is_empty() {
         state.select(Some(app.pane_sel));
     }
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+    let body_area = block_with_header(
+        f,
+        area,
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
             " {} · plugin panes ({}) — Enter to launch ",
             app.harness,
             app.panes.len()
-        ))))
+        ))),
+        &format!("  {:<3}{:<23}{:<19}{}", "", "pane", "plugin", "command"),
+    );
+    let list = List::new(items)
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, body_area, &mut state);
 }
 
 fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
@@ -894,6 +1011,29 @@ fn draw_palette(f: &mut Frame, app: &App) {
         ),
         area,
     );
+}
+
+/// Render `block` over `area`, paint a styled column-header line at the top of
+/// its inner area (D-005 — the PUI's lists bake column labels into row format
+/// strings, so the header is an explicit extra line), and return the remaining
+/// rect for the list body. Callers render their `List` WITHOUT a block into
+/// the returned rect. Headers start with two spaces to stay aligned with the
+/// "> " highlight-symbol indent of stateful lists.
+pub(crate) fn block_with_header(f: &mut Frame, area: Rect, block: Block, header: &str) -> Rect {
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 {
+        return inner;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(header.to_string(), Theme::header()))),
+        rows[0],
+    );
+    rows[1]
 }
 
 /// A centered rect `pct_w` × `pct_h` percent of `area`.
@@ -1339,10 +1479,14 @@ mod tests {
             description: "fast vitest".into(),
             tier: "universal".into(),
         }]);
+        app.show_presence = false; // full width for the two-column testing layout
         let t = render(&app, 100, 8);
-        assert!(t.contains("test domains (1)"));
+        assert!(t.contains("domains (1)"));
         assert!(t.contains("Unit tests"));
         assert!(t.contains("universal"));
+
+        // The empty file pane hints at the Enter-to-load affordance (D-004a).
+        assert!(t.contains("Enter on a domain loads"));
 
         app.tab = Tab::Config;
         app.set_config("permissions: allow".into());
@@ -1353,6 +1497,70 @@ mod tests {
         app.set_config(String::new());
         let empty = render(&app, 100, 8);
         assert!(empty.contains("no .claude/settings.json"));
+    }
+
+    #[test]
+    fn lists_render_column_headers() {
+        // D-005: explicit styled header rows above the column lists (the PUI
+        // bakes column labels into row format strings, so headers are added
+        // lines). Brew (agents) leads; Plans/Inbox follow the same helper.
+        let mut app = App::new();
+        app.show_presence = false;
+        app.tab = Tab::Fleet;
+        app.set_roster(vec![presence_entry("claude", "working")]);
+        let brew = render(&app, 120, 24);
+        assert!(brew.contains("doing now")); // agents header
+        app.tab = Tab::Plans;
+        app.set_plans(vec![plan("alpha-2026", "todo")]);
+        let plans = render(&app, 100, 14);
+        assert!(plans.contains("status"));
+        assert!(plans.contains("slug"));
+        app.tab = Tab::Inbox;
+        let inbox = render(&app, 100, 14);
+        assert!(inbox.contains("plan/ref")); // inbox header
+        // Mirror firehose header.
+        app.tab = Tab::Fleet;
+        app.fleet.mode = crate::fleet::FleetMode::Mirror;
+        let mirror = render(&app, 120, 16);
+        assert!(mirror.contains("time"));
+        assert!(mirror.contains("summary"));
+    }
+
+    #[test]
+    fn testing_run_pane_renders_files_and_result() {
+        use crate::app::{TestRunState, TestingFocus};
+        use crate::models::TestingDomain;
+        let mut app = App::new();
+        app.tab = Tab::Testing;
+        app.show_presence = false;
+        app.set_testing(vec![TestingDomain {
+            id: "unit".into(),
+            label: "Unit".into(),
+            description: "d".into(),
+            tier: "universal".into(),
+        }]);
+        app.testing_files = vec!["lib/a.test.ts".into()];
+        app.testing_focus = TestingFocus::Files;
+        app.test_run = Some(TestRunState {
+            running: false,
+            file: "lib/a.test.ts".into(),
+            status: "pass".into(),
+            output: "✓ 3 tests passed".into(),
+        });
+        let text = render(&app, 110, 24);
+        assert!(text.contains("files (1)"));
+        assert!(text.contains("lib/a.test.ts"));
+        assert!(text.contains("pass"));
+        assert!(text.contains("3 tests passed"));
+        // The in-flight state labels the pane as running.
+        app.test_run = Some(TestRunState {
+            running: true,
+            file: "lib/a.test.ts".into(),
+            status: String::new(),
+            output: String::new(),
+        });
+        let running = render(&app, 110, 24);
+        assert!(running.contains("running…"));
     }
 
     #[test]

@@ -1040,6 +1040,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_testing_domain_detail_and_run_result() {
+        // domain-detail (D-004a): only the per-section file paths are kept.
+        let j = r#"{"id":"unit","label":"Unit","tier":"universal","totalFiles":2,"sections":[
+            {"id":"s1","label":"S1","files":[{"path":"a.test.ts","sizeBytes":10,"mtimeMs":1}],"runners":[]},
+            {"id":"s2","label":"S2","files":[{"path":"b.test.ts"}],"runners":[]}
+        ]}"#;
+        let d: TestingDomainDetail = serde_json::from_str(j).unwrap();
+        let files: Vec<String> = d.sections.into_iter().flat_map(|s| s.files).map(|f| f.path).collect();
+        assert_eq!(files, vec!["a.test.ts", "b.test.ts"]);
+
+        // run result (camelCase wire).
+        let r: TestRunResult = serde_json::from_str(
+            r#"{"runId":"h-1","status":"fail","exitCode":1,"output":"1 failed","finishedAt":2}"#,
+        )
+        .unwrap();
+        assert_eq!(r.run_id, "h-1");
+        assert_eq!(r.status, "fail");
+        assert_eq!(r.exit_code, 1);
+        assert_eq!(r.output, "1 failed");
+        // Empty body decodes to defaults (defensive).
+        let e: TestRunResult = serde_json::from_str("{}").unwrap();
+        assert!(e.status.is_empty());
+    }
+
+    #[test]
     fn parses_claude_settings_shape() {
         let r: ClaudeSettings = serde_json::from_str(r#"{"content":"x=1"}"#).unwrap();
         assert_eq!(r.content, "x=1");

@@ -22,6 +22,29 @@ async function resolveProjectPath(slug: string): Promise<string | null> {
   return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
+/**
+ * Resolve the harness's docs root. A harness can re-point it via its own
+ * contract surface `.papercusp/docs.json` (`{ "root": "<repo-relative dir>" }`)
+ * — e.g. papercup points at its real Starlight corpus
+ * (`apps/operator-docs/src/content/docs`) instead of the stray top-level
+ * `docs/` (D-004c, pui-completion-and-polish-2026-06-05). The declared root
+ * must resolve INSIDE the project (traversal-guarded) and exist; a missing or
+ * invalid declaration falls back to `<project>/docs`.
+ */
+export async function resolveDocsRoot(projectPath: string): Promise<string> {
+  try {
+    const raw = await fs.readFile(join(projectPath, '.papercusp', 'docs.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { root?: unknown };
+    if (typeof parsed.root === 'string' && parsed.root.trim()) {
+      const declared = safeJoinUnderRoot(projectPath, parsed.root.trim());
+      if (declared && existsSync(declared)) return declared;
+    }
+  } catch {
+    /* absent/malformed → default */
+  }
+  return join(projectPath, 'docs');
+}
+
 /** Recursively collect every .md/.mdx file under docsRoot, relative + sorted. */
 async function listDocs(docsRoot: string): Promise<string[]> {
   const out: string[] = [];
@@ -73,7 +96,7 @@ const getProjectDocs = defineTool({
       return Response.json({ ok: false, reason: 'unknown_harness', files: [], activePath: null, content: null });
     }
 
-    const docsRoot = join(projectPath, 'docs');
+    const docsRoot = await resolveDocsRoot(projectPath);
     if (!existsSync(docsRoot)) {
       return Response.json({ ok: true, reason: 'no_docs_dir', projectPath, files: [], activePath: null, content: null });
     }

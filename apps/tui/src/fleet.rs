@@ -439,11 +439,11 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
                 .fleet
                 .agent_todos
                 .get(&r.owner_id)
-                .map(|t| format!(" ⇄{}/{}", t.done, t.count))
+                .map(|t| format!("⇄{}/{}", t.done, t.count))
                 .unwrap_or_default();
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{dot} {:<6} ", trunc(&agent, 6))),
-                Span::raw(trunc(&act, 30)),
+                Span::raw(format!("{:<30} ", trunc(&act, 30))),
                 Span::styled(todo, Theme::dim()),
             ]))
         })
@@ -460,14 +460,20 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect) {
     } else {
         items
     };
-    let list = List::new(body)
-        .block(Block::default().borders(Borders::ALL).title(Line::from(format!(
-            " Agents ({}) · what they're doing · n: launch ",
+    // Styled column header above the roster (D-005).
+    let body_area = crate::ui::block_with_header(
+        f,
+        area,
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
+            " Agents ({}) · n: launch ",
             app.roster.len()
-        ))))
+        ))),
+        &format!("    {:<7}{:<31}{}", "agent", "doing now", "todos"),
+    );
+    let list = List::new(body)
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, body_area, &mut state);
 }
 
 /// Detail for the selected agent: presence + last activity + its mirrored todos.
@@ -603,13 +609,18 @@ fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
     } else {
         items
     };
-    f.render_widget(
-        List::new(body).block(Block::default().borders(Borders::ALL).title(Line::from(format!(
+    // Styled column header above the firehose (D-005). No highlight symbol on
+    // this list, so the header has no selection indent.
+    let body_area = crate::ui::block_with_header(
+        f,
+        area,
+        Block::default().borders(Borders::ALL).title(Line::from(format!(
             " Activity mirror ({}) — every tool call, newest first ",
             app.fleet.activity.len()
-        )))),
-        area,
+        ))),
+        &format!("{:<9}{:<7}{:<13}{}", "time", "agent", "pot", "summary"),
     );
+    f.render_widget(List::new(body), body_area);
 }
 
 #[cfg(test)]

@@ -37,6 +37,10 @@ export interface ScoredItem {
   severity?: ImprovementSeverity;
   state?: string;
   assignee?: string | null;
+  /** When the assignee claimed it — the dispatch loop's in-flight signal. */
+  assignedAt?: string | null;
+  /** Auto-implement dispatch attempts so far (anti-re-dispatch counter). */
+  attempts?: number;
   tier: Tier;
   /** Priority score (higher = triage sooner). */
   score: number;
@@ -199,6 +203,8 @@ export function buildDigest(
       severity: c.severity,
       state: c.state,
       assignee: c.assignee ?? null,
+      assignedAt: c.assignedAt ?? null,
+      attempts: c.attempts ?? 0,
       tier: decision.tier,
       score: scoreOf(c, decision.tier, ageDays),
       ageDays: Math.round(ageDays * 10) / 10,

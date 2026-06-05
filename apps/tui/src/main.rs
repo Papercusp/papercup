@@ -236,11 +236,72 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::FetchTestingFiles { harness, domain_id } => {
+                // Testing run-on-click (D-004a): resolve the selected domain's
+                // runnable files off the UI thread.
+                tokio::spawn(fetch_testing_files(harness, domain_id, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::RunTest { harness, file } => {
+                // The backend run is synchronous (up to ~120s); awaiting it in a
+                // task keeps the UI live while the run pane shows "running…".
+                tokio::spawn(run_test_file(harness, file, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::Quit => break,
             Action::None => {}
         }
     }
     Ok(())
+}
+
+/// Fetch the selected testing domain's runnable files (D-004a) and emit
+/// `Event::TestingFiles` (stale-guarded in the reducer by domain id). On error
+/// an empty file list still ships so the loading state resolves; the error
+/// itself lands in the status bar.
+async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("testing files: {e}")));
+            let _ = tx.send(Event::TestingFiles { domain_id, files: Vec::new() });
+            return;
+        }
+    };
+    match client.testing_domain_files(&harness, &domain_id).await {
+        Ok(files) => {
+            let _ = tx.send(Event::TestingFiles { domain_id, files });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("testing files: {e}")));
+            let _ = tx.send(Event::TestingFiles { domain_id, files: Vec::new() });
+        }
+    }
+}
+
+/// Run one test file (D-004a) and emit `Event::TestRunDone`. A transport error
+/// becomes a `status:"error"` result so the run pane always resolves.
+async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>) {
+    let fail = |msg: String| models::TestRunResult {
+        status: "error".to_string(),
+        output: msg,
+        ..Default::default()
+    };
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::TestRunDone { file, result: fail(format!("{e}")) });
+            return;
+        }
+    };
+    match client.testing_run(&harness, &file).await {
+        Ok(result) => {
+            let _ = tx.send(Event::TestRunDone { file, result });
+        }
+        Err(e) => {
+            let _ = tx.send(Event::TestRunDone { file, result: fail(format!("{e}")) });
+        }
+    }
 }
 
 /// Execute a command-palette workbench command (P12b / D-002): list/save/restore

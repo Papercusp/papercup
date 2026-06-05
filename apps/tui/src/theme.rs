@@ -25,4 +25,8 @@ impl Theme {
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
     }
+    /// Column-header row above a list (D-005, pui-completion-and-polish).
+    pub fn header() -> Style {
+        Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    }
 }

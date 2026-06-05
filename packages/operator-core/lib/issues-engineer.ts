@@ -370,6 +370,22 @@ export async function setIssueState(id: string, state: IssueState, by?: string):
   return issue;
 }
 
+/**
+ * Shallow-merge keys into the issue's kind-specific `payload` jsonb (NULL payload
+ * treated as `{}`). Silent — no fan-out (payload is loop bookkeeping, e.g. the
+ * self-improvement `implementAttempts` / `needsHuman` / `paths` keys, not a
+ * subscriber-visible mutation). Set a key to null to store an explicit null.
+ */
+export async function mergeIssuePayload(id: string, patch: Record<string, unknown>): Promise<EngineerIssue | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<IssueRowDb[]>`
+    UPDATE harness_shared.engineer_issues
+       SET payload = COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND issue_id = ${id}
+    RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+  return rows[0] ? toIssue(rows[0]) : null;
+}
+
 /** Threadable.addPost — comment on the issue (creates the thread on first post). */
 export async function commentIssue(id: string, body: string, authorId?: string): Promise<ThreadPostRow | null> {
   const issue = await getIssue(id);

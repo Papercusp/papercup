@@ -1523,6 +1523,15 @@ impl App {
                 self.chat_composing = true;
                 Action::Render
             }
+            // Testing run-on-click (D-004a): Enter drills into a domain's files /
+            // runs the selected file; `r` is the run alias on the file column
+            // (placed BEFORE the global relaunch `r` so it wins on this tab).
+            KeyCode::Enter if self.tab == Tab::Testing => self.testing_activate(),
+            KeyCode::Char('r')
+                if self.tab == Tab::Testing && self.testing_focus == TestingFocus::Files =>
+            {
+                self.testing_activate()
+            }
             KeyCode::Char('g') => Action::Launch(self.git_spec()),
             // Relaunch the last-exited agent/command pane (P-004), when armed.
             KeyCode::Char('r') if self.relaunch_command.is_some() => {
@@ -1566,6 +1575,14 @@ impl App {
                 self.fleet.toggle_mode();
                 Action::Render
             }
+            // Testing column focus (D-004a): Tab hops domains ↔ files.
+            KeyCode::Tab if self.tab == Tab::Testing => {
+                self.testing_focus = match self.testing_focus {
+                    TestingFocus::Domains => TestingFocus::Files,
+                    TestingFocus::Files => TestingFocus::Domains,
+                };
+                Action::Render
+            }
             KeyCode::PageDown if self.tab == Tab::Docs => {
                 self.doc_scroll = self.doc_scroll.saturating_add(10);
                 Action::Render
@@ -1598,11 +1615,13 @@ impl App {
                     self.chat_scroll = self.chat_scroll.saturating_sub(1); // toward latest
                     return Action::Render;
                 }
+                let prev_domain = self.testing_sel;
                 self.move_sel(1);
                 if self.tab == Tab::Docs {
                     self.doc_scroll = 0; // reset scroll when the selected doc changes
                     self.publish_active_doc();
                 }
+                self.testing_domain_changed(prev_domain);
                 Action::Render
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -1610,11 +1629,13 @@ impl App {
                     self.chat_scroll = self.chat_scroll.saturating_add(1); // into history
                     return Action::Render;
                 }
+                let prev_domain = self.testing_sel;
                 self.move_sel(-1);
                 if self.tab == Tab::Docs {
                     self.doc_scroll = 0;
                     self.publish_active_doc();
                 }
+                self.testing_domain_changed(prev_domain);
                 Action::Render
             }
             // Tab switching — the SINGLE keymap (g1): a char that maps to a tab's
@@ -1628,6 +1649,20 @@ impl App {
                 None => Action::None,
             },
             _ => Action::None,
+        }
+    }
+
+    /// After a j/k move on the Testing domain column (D-004a): a domain change
+    /// invalidates the fetched file list (it belongs to the previous domain) —
+    /// Enter refetches for the new one.
+    fn testing_domain_changed(&mut self, prev_domain_sel: usize) {
+        if self.tab == Tab::Testing
+            && self.testing_focus == TestingFocus::Domains
+            && self.testing_sel != prev_domain_sel
+        {
+            self.testing_files.clear();
+            self.testing_file_sel = 0;
+            self.testing_files_loading = false;
         }
     }
 
@@ -1661,7 +1696,10 @@ impl App {
                 HarnessFocus::Issues => (self.issues.len(), &mut self.issue_sel),
             },
             Tab::Docs => (self.docs_files.len(), &mut self.doc_sel),
-            Tab::Testing => (self.testing.len(), &mut self.testing_sel),
+            Tab::Testing => match self.testing_focus {
+                TestingFocus::Domains => (self.testing.len(), &mut self.testing_sel),
+                TestingFocus::Files => (self.testing_files.len(), &mut self.testing_file_sel),
+            },
             Tab::Plugins => (self.panes.len(), &mut self.pane_sel),
             Tab::Settings => (self.flags.len(), &mut self.flag_sel),
             Tab::Fleet => (self.roster.len(), &mut self.fleet.agent_sel),
@@ -2956,5 +2994,116 @@ mod tests {
             }
             other => panic!("expected IntentResult error, got {other:?}"),
         }
+    }
+
+    // --- Testing run-on-click (D-004a, pui-completion-and-polish-2026-06-05) ---
+
+    fn test_domain(id: &str) -> TestingDomain {
+        TestingDomain {
+            id: id.into(),
+            label: id.into(),
+            description: "d".into(),
+            tier: "universal".into(),
+        }
+    }
+
+    #[test]
+    fn testing_enter_fetches_domain_files_then_runs() {
+        let mut a = App::new();
+        a.update(key('7', KeyModifiers::NONE)); // Testing
+        a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
+        // Enter on the domain column fetches the selected domain's files.
+        match a.update(ev(KeyCode::Enter)) {
+            Action::FetchTestingFiles { harness, domain_id } => {
+                assert_eq!(harness, "papercup");
+                assert_eq!(domain_id, "unit");
+            }
+            other => panic!("expected FetchTestingFiles, got {other:?}"),
+        }
+        assert!(a.testing_files_loading);
+        // Files for the selected domain land + focus hops to the file column.
+        a.update(Event::TestingFiles {
+            domain_id: "unit".into(),
+            files: vec!["a.test.ts".into(), "b.test.ts".into()],
+        });
+        assert!(!a.testing_files_loading);
+        assert_eq!(a.testing_focus, TestingFocus::Files);
+        assert_eq!(a.testing_files.len(), 2);
+        // j moves the FILE cursor while the file column is focused.
+        a.update(key('j', KeyModifiers::NONE));
+        assert_eq!(a.testing_file_sel, 1);
+        // Enter runs the selected file (marks the run in flight).
+        match a.update(ev(KeyCode::Enter)) {
+            Action::RunTest { harness, file } => {
+                assert_eq!(harness, "papercup");
+                assert_eq!(file, "b.test.ts");
+            }
+            other => panic!("expected RunTest, got {other:?}"),
+        }
+        assert!(a.test_run.as_ref().unwrap().running);
+        // A second Enter while running is inert (one run at a time).
+        assert_eq!(a.update(ev(KeyCode::Enter)), Action::Render);
+        // The result finalizes the run pane.
+        a.update(Event::TestRunDone {
+            file: "b.test.ts".into(),
+            result: crate::models::TestRunResult {
+                status: "pass".into(),
+                output: "1 passed".into(),
+                ..Default::default()
+            },
+        });
+        let run = a.test_run.as_ref().unwrap();
+        assert!(!run.running);
+        assert_eq!(run.status, "pass");
+        assert_eq!(run.output, "1 passed");
+    }
+
+    #[test]
+    fn testing_files_stale_guard_and_domain_change_clears() {
+        let mut a = App::new();
+        a.update(key('7', KeyModifiers::NONE));
+        a.set_testing(vec![test_domain("unit"), test_domain("e2e")]);
+        // A stale fetch for a NON-selected domain is dropped.
+        a.update(key('j', KeyModifiers::NONE)); // select e2e
+        a.update(Event::TestingFiles { domain_id: "unit".into(), files: vec!["a.test.ts".into()] });
+        assert!(a.testing_files.is_empty());
+        assert_eq!(a.testing_focus, TestingFocus::Domains);
+        // A matching fetch applies + focuses the file column.
+        a.update(Event::TestingFiles { domain_id: "e2e".into(), files: vec!["x.spec.ts".into()] });
+        assert_eq!(a.testing_files.len(), 1);
+        assert_eq!(a.testing_focus, TestingFocus::Files);
+        // Tab hops back to the domain column; changing the domain clears the
+        // (now stale) file list.
+        a.update(ev(KeyCode::Tab));
+        assert_eq!(a.testing_focus, TestingFocus::Domains);
+        a.update(key('k', KeyModifiers::NONE)); // back to unit
+        assert!(a.testing_files.is_empty());
+    }
+
+    #[test]
+    fn testing_r_runs_only_on_file_column() {
+        let mut a = App::new();
+        a.update(key('7', KeyModifiers::NONE));
+        a.set_testing(vec![test_domain("unit")]);
+        // On the domain column `r` is not a run key (and no relaunch armed).
+        assert_eq!(a.update(key('r', KeyModifiers::NONE)), Action::None);
+        a.update(Event::TestingFiles { domain_id: "unit".into(), files: vec!["a.test.ts".into()] });
+        match a.update(key('r', KeyModifiers::NONE)) {
+            Action::RunTest { file, .. } => assert_eq!(file, "a.test.ts"),
+            other => panic!("expected RunTest, got {other:?}"),
+        }
+        // An error result still resolves the pane (status from exit fallback).
+        a.update(Event::TestRunDone {
+            file: "a.test.ts".into(),
+            result: crate::models::TestRunResult {
+                status: String::new(),
+                exit_code: 1,
+                output: "boom".into(),
+                ..Default::default()
+            },
+        });
+        let run = a.test_run.as_ref().unwrap();
+        assert_eq!(run.status, "exit 1");
+        assert!(!run.running);
     }
 }

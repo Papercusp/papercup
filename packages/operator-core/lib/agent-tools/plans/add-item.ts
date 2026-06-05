@@ -39,6 +39,10 @@ export const argsSchema = z.object({
   phase: z
     .string()
     .min(1)
+    .regex(
+      /^Phase\b/i,
+      'Phase heading must start with "Phase" (e.g. "Phase 1 — Tooling") — the plan parser only recognizes /^Phase\\b/i headings as phase sections, so anything else lint-warns as unphased.',
+    )
     .describe('Phase heading text without the ## prefix and without numbering, e.g. "Phase 1 — Tooling".'),
   text: z.string().min(1).max(800),
   blockedBy: z
@@ -115,10 +119,17 @@ export function appendItemToBody(
   phase: string,
   itemLine: string,
 ): { newBody: string; createdPhase: boolean } {
+  const trimmedPhase = phase.trim();
+  // The `\b` guards "Phase 1" from matching "Phase 10" — but a word boundary
+  // only exists next to a word char, so after a phase ending in `)` / `.` / `"`
+  // it can NEVER match and every add silently duplicated the section.
+  // Apply the boundary only when the phase ends in a word char.
+  const boundary = /\w$/.test(trimmedPhase) ? String.raw`\b` : '';
   const phaseRe = new RegExp(
     String.raw`^##\s+(?:\d+(?:\.\d+)?\.\s+)?` +
-      phase.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
-      String.raw`\b[^\n]*$`,
+      trimmedPhase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+      boundary +
+      String.raw`[^\n]*$`,
     'm',
   );
 
