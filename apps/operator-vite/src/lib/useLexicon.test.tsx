@@ -2,16 +2,11 @@
 //
 // useLexicon flag-gated resolution + reactivity (the-hive-lexicon P-003).
 
-import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 
-import { FLAGS } from '@papercusp/flags';
-import {
-  type FlagPayload,
-  resolveWithDefaults,
-  setFlagPayload,
-} from '@papercusp/flags/client';
+import { FLAGS, type FlagPayload, resolveWithDefaults } from '@papercusp/flags';
+import { setFlagPayload } from '@papercusp/flags/client';
 
 import { useLexicon, useLexiconPackId } from './useLexicon';
 

@@ -65,24 +65,12 @@ async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promise<void>
   );
 }
 
-// Idempotent registration (see orchestrator-workflow.ts for the full rationale):
-// the workflow + queue are PROCESS-GLOBAL DBOS registrations that throw on a duplicate
-// name, so a vi.resetModules() re-import would crash. Cache the handles on a globalThis
-// symbol (resetModules doesn't clear it); a no-op in production (loads once).
-const _dbosRegistryCache = globalThis as unknown as Record<symbol, unknown>;
-function _registerDurableSpawnFire() {
-  return DBOS.registerWorkflow(durableSpawnFireImpl, {
-    name: 'durableSpawnFire',
-    maxRecoveryAttempts: 5,
-  });
-}
-export const durableSpawnFireWorkflow = (_dbosRegistryCache[
-  Symbol.for('papercusp.dbos.durableSpawnFireWorkflow')
-] ??= _registerDurableSpawnFire()) as ReturnType<typeof _registerDurableSpawnFire>;
+export const durableSpawnFireWorkflow = DBOS.registerWorkflow(durableSpawnFireImpl, {
+  name: 'durableSpawnFire',
+  maxRecoveryAttempts: 5,
+});
 
-export const durableSpawnQueue = (_dbosRegistryCache[
-  Symbol.for('papercusp.dbos.durable-spawn-fire-queue')
-] ??= new WorkflowQueue('durable-spawn-fire', { concurrency: 8 })) as WorkflowQueue;
+export const durableSpawnQueue = new WorkflowQueue('durable-spawn-fire', { concurrency: 8 });
 
 /**
  * Durably fire an autonomous agent launch. Returns `true` when the durable workflow

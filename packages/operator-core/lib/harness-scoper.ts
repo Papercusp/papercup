@@ -13,7 +13,6 @@
  * shell-out onto the TS orchestrator's `invoke-once.ts` (run.sh retirement).
  */
 import { mkdirSync } from 'node:fs';
-import { readFileSync } from 'node:fs';
 import { spawnInvokeOnceBackground } from './governed-background-spawn';
 import { loadHarnessKnobs } from '@papercusp/orchestrator';
 import { join } from 'node:path';
@@ -23,19 +22,12 @@ import { harnessPackageDir } from './harness-paths';
 import { buildInvokeOnce } from './harness-invoke-once';
 
 /**
- * Resolve scoper.outputMode: config.json `scoper.outputMode` (instance override)
- * wins, else the blueprint knob `scoper.outputMode` (cloud-deployment-layer P-006
- * — the scoper config moved to a first-class knob), else 'proposal'.
+ * Resolve scoper.outputMode from the blueprint knob `scoper.outputMode`
+ * (`deprecate-harness-config-json-2026-06-06`: scoper is a SHAPE knob → it lives in
+ * the blueprint, not per-install config.json; the old config.json instance-override
+ * read is removed). Defaults to 'proposal'.
  */
 function readScoperOutputMode(stateDir: string): 'proposal' | 'plan' {
-  try {
-    const raw = readFileSync(join(stateDir, 'config.json'), 'utf8');
-    const cfg = JSON.parse(raw) as Record<string, unknown>;
-    const scoper = cfg.scoper as Record<string, unknown> | undefined;
-    if (scoper?.outputMode === 'plan' || scoper?.outputMode === 'proposal') return scoper.outputMode;
-  } catch {
-    /* no config.json (or unreadable) — fall through to the blueprint knob */
-  }
   try {
     const knobScoper = loadHarnessKnobs(stateDir)?.scoper as { outputMode?: string } | undefined;
     return knobScoper?.outputMode === 'plan' ? 'plan' : 'proposal';

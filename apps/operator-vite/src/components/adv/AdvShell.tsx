@@ -25,6 +25,7 @@ import { ShareWizard } from '@/app/harness/ShareWizard';
 import AdvNowRunning from './AdvNowRunning';
 import DiscordBadge from './DiscordBadge';
 import { ALL_HARNESSES_OPTION, resolveAdvHarnessSelection } from './adv-harness-selection';
+import { useLexicon } from '../../lib/useLexicon';
 
 const ADV_TAB_IDS = ['overview', 'harnesses', 'brainstorm', 'prs', 'insights', 'conversations', 'config', 'settings', 'docs', 'git', 'testing', 'plans'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
@@ -96,6 +97,8 @@ export default function AdvShell({
   title?: string;
   children: React.ReactNode;
 }) {
+  // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
+  const t = useLexicon();
   const [activeTab, setActiveTab] = useQueryState(
     'tab',
     // Overview is the default landing surface (Brief 23 /
@@ -231,7 +234,7 @@ export default function AdvShell({
           </div>
           {/* Pot label + selector + sub-pot toggle + New + Share — all inline */}
           <div className="pc-advshell__selector">
-            <span className="pc-advshell__selector-label">Pot</span>
+            <span className="pc-advshell__selector-label">{t('pot')}</span>
             <Select
               value={allMode ? ALL_HARNESSES_OPTION : (activeSlug ?? '')}
               onChange={async (next) => {
@@ -263,9 +266,9 @@ export default function AdvShell({
                 }
               }}
               disabled={projects.length === 0}
-              ariaLabel="Select Pot"
-              placeholder={projectLoadError ? 'Failed to load Pots' : 'Select Pot'}
-              options={buildHarnessSelectOptions(projects, projectLoadError)}
+              ariaLabel={`Select ${t('pot')}`}
+              placeholder={projectLoadError ? `Failed to load ${t('pot', { plural: true })}` : `Select ${t('pot')}`}
+              options={buildHarnessSelectOptions(projects, projectLoadError, t('pot', { plural: true }))}
               triggerClassName="pc-advshell__select-trigger"
             />
             {/* Sub-harness union is meaningless under "all" (everything is
@@ -735,6 +738,10 @@ export default function AdvShell({
 export function buildHarnessSelectOptions(
   projects: HarnessProjectLite[],
   projectLoadError: string | null,
+  // The plural label for the top-level grouping ("Pots" | "Hives"), resolved
+  // by the active brand pack. Defaults to the classic label so callers/tests
+  // that don't thread the lexicon stay unchanged.
+  potPlural = 'Pots',
 ): Array<{ value: string; label: string; disabled?: boolean }> {
   if (projects.length === 0) {
     return [{
@@ -775,7 +782,7 @@ export function buildHarnessSelectOptions(
   // "All harnesses" always leads the list (when there's anything to span).
   // Selecting it flips ?scope=all rather than ?slug= — see AdvShell.onChange.
   const out: Array<{ value: string; label: string; disabled?: boolean }> = [
-    { value: ALL_HARNESSES_OPTION, label: 'All Pots' },
+    { value: ALL_HARNESSES_OPTION, label: `All ${potPlural}` },
   ];
   const visited = new Set<string>();
   function emit(node: HarnessProjectLite, depth: number): void {

@@ -89,6 +89,7 @@ describe('scenario registry', () => {
       'su-S06-shared-tree-git',
       'su-S07-positional-write',
       'su-S08-compact-read',
+      'su-S09-coord-injection-read',
     ].sort());
   });
 

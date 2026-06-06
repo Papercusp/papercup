@@ -11,7 +11,6 @@
  *   - apps/operator/lib/harness-fs-watcher.ts — the FS watcher mirrors all
  *     three phased worktrees into harness_shared.* with a `phase` column.
  */
-import { join } from 'node:path';
 import { type Phase, ALL_PHASES } from './harness-phases-const';
 
 // Phase + ALL_PHASES live in the client-safe const module so client
@@ -19,36 +18,28 @@ import { type Phase, ALL_PHASES } from './harness-phases-const';
 // bundle. Re-exported here for back-compat with server callers.
 export { type Phase, ALL_PHASES };
 
-// `node:fs` is lazy-required inside the one function that needs it
-// (phasePath). The static `import { readFileSync } from 'node:fs'` form
-// at the top of the module had Turbopack incorrectly pulling this file
-// into client bundles via PhaseTabs → HarnessDashboard → page (the
-// trace was wrong but the bundling failed regardless). Lazy-require
-// keeps the static-import surface client-safe.
-
 interface ProjectLike {
   slug?: string;
   path: string;
+  /** Per-phase instance config (port/dbPath/path/publicUrl) from the workspace-PG
+   *  registry ProjectEntry. Carried on the resolved project; no config.json read. */
+  phases?: Record<string, Record<string, unknown>>;
 }
 
 /**
  * Resolve a (project, phase) pair to a filesystem path.
  *   staging      → project.path
- *   testing/prod → sibling `<path>--<phase>` OR explicit config override
+ *   testing/prod → sibling `<path>--<phase>` OR explicit per-phase `path` override
+ *
+ * The per-phase `path` override now lives in the workspace-PG registry ProjectEntry
+ * (`deprecate-harness-config-json-2026-06-06`) — carried on the resolved project's
+ * `phases` blob, NOT read from `.papercusp/config.json`. This keeps the module
+ * pure (no `node:fs`), so it's also client-bundle safe by construction.
  */
 export function phasePath(project: ProjectLike, phase: Phase): string {
   if (phase === 'staging') return project.path;
-  try {
-    // Lazy-require so Turbopack doesn't see a top-level `node:fs` import.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { readFileSync } = require('node:fs') as typeof import('node:fs');
-    const raw = readFileSync(join(project.path, '.papercusp', 'config.json'), 'utf8');
-    const cfg = JSON.parse(raw);
-    const override = cfg?.phases?.[phase]?.path;
-    if (typeof override === 'string' && override.length > 0) return override;
-  } catch {
-    /* no config / unreadable / not JSON — fall through to convention */
-  }
+  const override = project.phases?.[phase]?.path;
+  if (typeof override === 'string' && override.length > 0) return override;
   return `${project.path}--${phase}`;
 }
 

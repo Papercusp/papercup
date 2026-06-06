@@ -82,16 +82,14 @@ async function computePhaseInfo(
 
   let port: number | null = null;
   let publicUrl: string | null = null;
-  try {
-    const raw = safeRead(join(project.path, '.papercusp', 'config.json'));
-    if (raw) {
-      const cfg = JSON.parse(raw);
-      const p = cfg?.phases?.[phase]?.port;
-      if (typeof p === 'number') port = p;
-      const u = cfg?.phases?.[phase]?.publicUrl;
-      if (typeof u === 'string' && u.length > 0) publicUrl = u;
-    }
-  } catch {}
+  // Per-phase port/publicUrl now live in the workspace-PG registry ProjectEntry
+  // (deprecate-harness-config-json-2026-06-06), carried on the resolved project's
+  // `phases` blob — no config.json read.
+  const phaseCfg = project.phases?.[phase];
+  if (phaseCfg) {
+    if (typeof phaseCfg.port === 'number') port = phaseCfg.port;
+    if (typeof phaseCfg.publicUrl === 'string' && phaseCfg.publicUrl.length > 0) publicUrl = phaseCfg.publicUrl;
+  }
 
   if (!exists) {
     return { phase, path, branch, port, publicUrl, exists: false, alive: false, passed: 0, total: 0, cost: 0, iteration: 0, promotionInFlight: null };

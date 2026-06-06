@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getLegacyClient, getOrgPg } from '@papercusp/db-org';
 import { resolveProject, resolvePhasedProject, harnessDir, rowToFeature } from '../../../harness-core';
+import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { emitFeatureAuthored, emitFeatureQueued } from '../../../harness/usage-emitters';
 import { activeWorkspaceId } from '../../../workspace-registry';
@@ -201,8 +202,9 @@ const resetFeature = defineTool({
     const wtPath = join(hd, 'worktrees', id);
     let worktreeRemoved = false;
     try {
-      const cfg = JSON.parse(readFileSync(join(hd, 'config.json'), 'utf8'));
-      const useWorktrees = cfg?.branchIsolation?.useWorktrees === true && cfg?.branchIsolation?.enabled === true;
+      const cfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
+      const bi = cfg?.branchIsolation as { useWorktrees?: boolean; enabled?: boolean } | undefined;
+      const useWorktrees = bi?.useWorktrees === true && bi?.enabled === true;
       if (useWorktrees && existsSync(wtPath)) {
         const { spawnSync } = await import('node:child_process');
         spawnSync('git', ['worktree', 'remove', '--force', wtPath], { cwd: project.path });

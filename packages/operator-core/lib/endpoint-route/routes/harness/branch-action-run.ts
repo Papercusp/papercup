@@ -8,26 +8,12 @@
  * Ported from app/api/harness/[slug]/branch/[branch]/action-run/route.ts.
  * `auth: 'public'`.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { loadHarnessRegistry } from '../../../harness-registry';
+import { phasePath } from '../../../harness-phases';
 import { papercuspPath } from '../../../papercusp-root';
 import { isBranch, runAction, MissingEnvError } from '../../../branch-actions';
 import { recordUserAction, updateUserAction } from '../../../user-actions';
 import { defineTool } from '@papercusp/agent-mcp';
-
-function resolvePhasePath(stagingPath: string, branch: 'staging' | 'testing' | 'production'): string {
-  if (branch === 'staging') return stagingPath;
-  try {
-    const cfgPath = join(stagingPath, '.papercusp', 'config.json');
-    if (existsSync(cfgPath)) {
-      const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
-      const o = cfg?.phases?.[branch]?.path;
-      if (typeof o === 'string' && o.length > 0) return o;
-    }
-  } catch { /* fall through */ }
-  return `${stagingPath}--${branch}`;
-}
 
 export default defineTool({
   method: 'POST',
@@ -47,7 +33,7 @@ export default defineTool({
     const project = reg.projects.find((p) => p.slug === slug);
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
 
-    const phasePath = resolvePhasePath(project.path, branch);
+    const phasePathDir = phasePath(project, branch);
     const harnessConfigsDir = papercuspPath('harnesses', slug);
     const globalPluginsDir = papercuspPath('global-plugins');
 
@@ -55,7 +41,7 @@ export default defineTool({
     try {
       handle = await runAction({
         stagingPath: project.path,
-        phasePath,
+        phasePath: phasePathDir,
         harness: slug,
         branch,
         name,

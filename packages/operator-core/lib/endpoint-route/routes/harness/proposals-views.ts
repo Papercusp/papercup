@@ -16,6 +16,8 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveProject, harnessDir, safeRead } from '../../../harness-core';
 import type { ProjectEntry } from '../../../harness-registry';
+import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
 interface ProposalListEntry {
@@ -93,11 +95,9 @@ const getProposals = defineTool({
 
     let replanOnAccept = true;
     try {
-      const cfgRaw = safeRead(join(harnessDir(project), 'config.json'));
-      if (cfgRaw) {
-        const cfg = JSON.parse(cfgRaw);
-        if (cfg?.reviewer?.replanOnAccept === false) replanOnAccept = false;
-      }
+      const cfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
+      const reviewer = cfg?.reviewer as { replanOnAccept?: boolean } | undefined;
+      if (reviewer?.replanOnAccept === false) replanOnAccept = false;
     } catch {}
 
     return Response.json({ proposals: items, replanOnAccept });

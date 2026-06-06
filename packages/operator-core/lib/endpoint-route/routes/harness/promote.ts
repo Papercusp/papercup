@@ -26,6 +26,7 @@ import {
 import { getLegacyClient } from '@papercusp/db-org';
 import { papercuspPath } from '../../../papercusp-root';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -61,14 +62,15 @@ const promote = defineTool({
       allFeaturesPassed: true,
       noOpenReviews: true,
     };
+    // Promotion-gate knobs come from the blueprint (⊕ PG instance overrides), not
+    // config.json (deprecate-harness-config-json-2026-06-06). Resolved once here and
+    // reused for the Layer-3 smoke-build gate below.
+    let promotionKnob: Record<string, any> | undefined;
     try {
-      const cfgRaw = safeRead(join(project.path, '.papercusp', 'config.json'));
-      if (cfgRaw) {
-        const cfg = JSON.parse(cfgRaw);
-        const key = `${from}_to_${to}`;
-        const override = cfg?.promotion?.[key]?.criteria;
-        if (override && typeof override === 'object') criteria = override;
-      }
+      const effCfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
+      promotionKnob = effCfg?.promotion as Record<string, any> | undefined;
+      const override = promotionKnob?.[`${from}_to_${to}`]?.criteria;
+      if (override && typeof override === 'object') criteria = override;
     } catch { /* ignore */ }
 
     const item = {
@@ -172,9 +174,7 @@ const confirmPromotion = defineTool({
     // file a fix-the-build feature, reject the promotion.
     let smokeEnabled = false;
     try {
-      const cfgRaw = safeRead(join(project.path, '.papercusp', 'config.json'));
-      const cfg = cfgRaw ? JSON.parse(cfgRaw) : null;
-      const explicit = cfg?.promotion?.smokeBuild?.enabled;
+      const explicit = promotionKnob?.smokeBuild?.enabled;
       if (typeof explicit === 'boolean') smokeEnabled = explicit;
       else smokeEnabled = existsSync(join(project.path, '.papercusp', 'infra-contract.json'));
     } catch { /* fall through with smokeEnabled=false */ }

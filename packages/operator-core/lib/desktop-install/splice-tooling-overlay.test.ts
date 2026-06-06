@@ -4,6 +4,7 @@ import {
   spliceAtMarker,
   CLIENT_TOOLING_OVERLAY_MARKER,
   WIRE_SCHEMAS_MARKER,
+  COORD_LEGEND_MARKER,
 } from './splice-tooling-overlay';
 
 describe('spliceAtMarker — generated-section splice contract', () => {
@@ -28,11 +29,17 @@ describe('spliceAtMarker — generated-section splice contract', () => {
     expect(spliceAtMarker('# Doc', WIRE_SCHEMAS_MARKER, '')).toBe('# Doc');
   });
 
-  it('the two markers are distinct + the wire-schemas splice does not disturb the tooling overlay', () => {
-    expect(WIRE_SCHEMAS_MARKER).not.toBe(CLIENT_TOOLING_OVERLAY_MARKER);
-    const base = `${CLIENT_TOOLING_OVERLAY_MARKER}\n\n${WIRE_SCHEMAS_MARKER}`;
-    const step1 = spliceToolingOverlay(base, 'OVERLAY');
-    const step2 = spliceAtMarker(step1, WIRE_SCHEMAS_MARKER, 'LEGEND');
-    expect(step2).toBe('OVERLAY\n\nLEGEND');
+  it('the three markers are distinct + the generated-section splices compose independently', () => {
+    expect(new Set([CLIENT_TOOLING_OVERLAY_MARKER, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER]).size).toBe(3);
+    const base = `${CLIENT_TOOLING_OVERLAY_MARKER}\n\n${WIRE_SCHEMAS_MARKER}\n\n${COORD_LEGEND_MARKER}`;
+    let out = spliceToolingOverlay(base, 'OVERLAY');
+    out = spliceAtMarker(out, WIRE_SCHEMAS_MARKER, 'WIRE');
+    out = spliceAtMarker(out, COORD_LEGEND_MARKER, 'COORD');
+    expect(out).toBe('OVERLAY\n\nWIRE\n\nCOORD');
+  });
+
+  it('an empty coord legend removes its marker (never ships the literal comment)', () => {
+    const base = `# Doc\n\n${COORD_LEGEND_MARKER}\n\n## Next`;
+    expect(spliceAtMarker(base, COORD_LEGEND_MARKER, '')).not.toContain(COORD_LEGEND_MARKER);
   });
 });

@@ -51,6 +51,8 @@ import type {
 } from '@papercusp/testing-shell/llm';
 
 import { buildCatalog, type BuiltCatalog } from './su-catalog';
+import { renderCoordLegend } from '../../coord-schema';
+import { COORD_LEGEND_MARKER } from '../../desktop-install/splice-tooling-overlay';
 
 const BEHAVIORS = [
   'harness-scope',
@@ -112,11 +114,17 @@ function loadPlaybook(): string {
   if (_playbookCache !== undefined) return _playbookCache;
   // The raw source carries generated-section MARKERS (spliced by
   // renderSuPlaybook at launch). This hermetic target reads the file directly,
-  // so strip any unspliced marker comment rather than leak it into the prompt.
-  // The pre-prompt column schemas the P-013 scenarios test are carried by the
-  // catalog tool schemas themselves (the `{row}` description / CSV-documented
-  // read tool), which is the faithful prompt-declared-columns surface here.
-  const body = readFileSync(resolvePlaybookPath(), 'utf8').replace(/<!-- PAPERCUSP-SU:[A-Z-]+ -->\n*/g, '');
+  // so splice the ones that are pure/hermetic, then strip any remainder rather
+  // than leak a literal marker comment into the prompt:
+  //   - COORD-LEGEND: renderCoordLegend() is static (from COORD_LEGEND), so the
+  //     coord-read scenario (SU-S09) sees the SAME legend the real psu prompt
+  //     carries (token-efficient-coord-injection P-011).
+  //   - WIRE-SCHEMAS: needs the live registry + tool projections (not booted in
+  //     this hermetic target), so it stays stripped — the P-013 scenarios carry
+  //     the column schema in the catalog tool schemas instead.
+  const body = readFileSync(resolvePlaybookPath(), 'utf8')
+    .replace(COORD_LEGEND_MARKER, renderCoordLegend())
+    .replace(/<!-- PAPERCUSP-SU:[A-Z-]+ -->\n*/g, '');
   // A thin framing line so the model treats the playbook as ITS operating
   // system prompt (not a doc handed to it by the user). The playbook content
   // itself carries every behavioral rule under test.

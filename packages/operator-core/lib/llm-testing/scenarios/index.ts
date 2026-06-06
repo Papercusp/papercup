@@ -80,6 +80,8 @@ import { SU_S06_SHARED_TREE_GIT } from './su/S06-shared-tree-git';
 // SU-S07/S08: token-efficient-agent-io P-013 — positional write emit + compact read gates
 import { SU_S07_POSITIONAL_WRITE } from './su/S07-positional-write';
 import { SU_S08_COMPACT_READ } from './su/S08-compact-read';
+// SU-S09: token-efficient-coord-injection P-011 — positional [coord+N] read gate
+import { SU_S09_COORD_INJECTION_READ } from './su/S09-coord-injection-read';
 
 export const SCENARIOS: ReadonlyArray<Scenario> = [
   // operator (S01–S12)
@@ -149,6 +151,7 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S06_SHARED_TREE_GIT,
   SU_S07_POSITIONAL_WRITE,
   SU_S08_COMPACT_READ,
+  SU_S09_COORD_INJECTION_READ,
 ];
 
 export function getScenario(id: string): Scenario {

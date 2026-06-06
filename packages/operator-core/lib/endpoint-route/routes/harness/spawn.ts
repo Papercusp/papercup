@@ -30,7 +30,6 @@ import {
 } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { SUPERUSER_TOKEN_PATH } from '../../../superuser-token';
-import { spawnInvokeOnce } from '../../../dbos/orchestrator-runner';
 import { launchRun } from '../../../harness-launch';
 import { firePluginLifecycle, firePluginEvent } from '../../../plugin-host-runtime';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -237,6 +236,14 @@ const invoke = defineTool({
     // buildInvokeOnce + raw child_process.spawn (unify-agent-spawn-chokepoint P-008).
     // The per-request timeoutMs is threaded through; the route keeps its
     // actions-dispatch + structured response, now on the chokepoint's output.
+    //
+    // LAZY import on purpose: orchestrator-runner transitively pulls in the whole DBOS
+    // workflow graph (orchestrator-loop/-workflow register process-global workflows at
+    // module load). Importing it eagerly would drag those registrations into the route
+    // graph, so any test that re-imports the routes under vi.resetModules() would hit a
+    // duplicate-registration crash. Loading it on first /invoke (cached thereafter)
+    // keeps route registration side-effect-free; the cost is a one-time async import.
+    const { spawnInvokeOnce } = await import('../../../dbos/orchestrator-runner');
     const r = await spawnInvokeOnce(
       project.path,
       role,

@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { HARNESS_SCOPE_MODES, type HarnessScopeMode } from '@papercusp/operator-core/lib/harness/scope';
 import type { AdvTabId } from './AdvShell';
+import { useLexicon } from '../../lib/useLexicon';
 import AdvGitWorkspace from '@/app/adv/harnesses/AdvGitWorkspace';
 import { BrainstormFull } from '@/app/harness/brainstorm/BrainstormFull';
 import PrsTab from '@/app/harness/PrsTab';
@@ -106,6 +107,7 @@ const PANEL_FILL_CSS = `
 `;
 
 export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel }) {
+  const t = useLexicon();
   const [activeSlug] = useQueryState('slug', parseAsString);
   const [scopeMode] = useQueryState(
     'scope',
@@ -121,7 +123,7 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
     return (
       <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
         <div className="pc-adv-harness-panel__empty">
-          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-pot view — pick a single Pot above.
+          {ADV_HARNESS_PANEL_LABELS[panel]} is a per-{t('pot', { lower: true })} view — pick a single {t('pot')} above.
         </div>
         <style>{PANEL_FILL_CSS}</style>
       </section>
@@ -140,7 +142,7 @@ export default function AdvHarnessPanelPage({ panel }: { panel: AdvHarnessPanel 
   if (direct) {
     return (
       <section className="pc-adv-harness-panel" aria-label={`ADV ${ADV_HARNESS_PANEL_LABELS[panel]} workspace`}>
-        {activeSlug ? direct(activeSlug) : <div className="pc-adv-harness-panel__empty">Select a Pot.</div>}
+        {activeSlug ? direct(activeSlug) : <div className="pc-adv-harness-panel__empty">Select a {t('pot')}.</div>}
         <style>{PANEL_FILL_CSS}</style>
       </section>
     );
