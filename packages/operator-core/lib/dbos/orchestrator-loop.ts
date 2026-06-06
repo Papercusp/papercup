@@ -59,9 +59,9 @@ import { isLocalDeployment } from '@papercusp/deployment-driver';
 // `{target:'latitude'}` harness is REMOTE (skipped here — its frame's own loop owns it).
 import '../deployment/configure';
 import type { ProjectEntry } from '../harness-registry';
+import { readEffectiveHarnessConfig } from '../harness-effective-config';
 import {
   durableOwnedFeatureIdsPg,
-  readConfig,
   configGet,
   evaluateCostCap,
   parallelMaxWorkers,
@@ -412,7 +412,9 @@ async function resolveHarnessDispatchGate(
     if (!project) return { cap: 1, overCostCap: false, readiness: NEEDS_WORK };
     const stateDir = join(project.path, '.papercusp');
     const logDir = join(stateDir, 'logs');
-    const cfg = readConfig(stateDir);
+    // Effective config from the blueprint (⊕ workspace-PG instance overrides), not
+    // config.json (deprecate-harness-config-json-2026-06-06).
+    const cfg = await readEffectiveHarnessConfig(slug, workspaceId, project.path);
     const dispatch = await getEffectiveBlueprint(pg as never, {
       workspaceId,
       harnessSlug: slug,

@@ -27,6 +27,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { usePathname } from '@/lib/router-compat/navigation';
+import { useLexicon } from '@/lib/useLexicon';
 import {
   Flag,
   Terminal,
@@ -96,6 +97,7 @@ function readStoredWidth(): number {
 }
 
 export default function DevAdminRail() {
+  const t = useLexicon();
   const [open, setOpen] = useQueryState('devRail', parseAsBoolean.withDefault(false));
   const [section, setSection] = useQueryState(
     'devSec',
@@ -242,7 +244,7 @@ export default function DevAdminRail() {
                         <span className="pcdar__sec-icon">
                           <Icon size={15} aria-hidden="true" />
                         </span>
-                        <span className="pcdar__sec-label">{s.label}</span>
+                        <span className="pcdar__sec-label">{s.id === 'fleet' ? `${t('fleet')} / coord` : s.label}</span>
                         <span className="pcdar__sec-chevron">
                           <ChevronRight size={15} aria-hidden="true" />
                         </span>

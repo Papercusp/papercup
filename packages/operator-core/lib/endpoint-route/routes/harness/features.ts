@@ -203,7 +203,7 @@ const resetFeature = defineTool({
     let worktreeRemoved = false;
     try {
       const cfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
-      const bi = cfg?.branchIsolation as { useWorktrees?: boolean; enabled?: boolean } | undefined;
+      const bi = cfg?.branchIsolation as Record<string, unknown> | undefined;
       const useWorktrees = bi?.useWorktrees === true && bi?.enabled === true;
       if (useWorktrees && existsSync(wtPath)) {
         const { spawnSync } = await import('node:child_process');

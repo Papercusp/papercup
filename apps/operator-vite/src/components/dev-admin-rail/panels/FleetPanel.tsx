@@ -6,6 +6,7 @@
  */
 import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useLexicon } from '@/lib/useLexicon';
 import { PanelBar, PanelState, formatRelative } from '../panel-kit';
 
 interface PresenceRecord {
@@ -29,6 +30,7 @@ function hbMs(v: string | number | null | undefined): number | null {
 }
 
 export default function FleetPanel({ active }: { active: boolean }) {
+  const t = useLexicon();
   const presence = useSyncQuery<PresenceRecord>({
     queryName: 'dev.coordPresence',
     enabled: active,
@@ -54,7 +56,7 @@ export default function FleetPanel({ active }: { active: boolean }) {
 
   return (
     <div className="pcdar-panel">
-      <PanelBar label="Fleet / coord" fetching={presence.fetching || gov.fetching} onRefresh={refresh} />
+      <PanelBar label={`${t('fleet')} / coord`} fetching={presence.fetching || gov.fetching} onRefresh={refresh} />
       {fleet && (
         <div className="pcdar-kv">
           <span className="pcdar-kv__k">in-flight / cap</span>

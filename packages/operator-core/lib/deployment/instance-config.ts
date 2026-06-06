@@ -9,9 +9,27 @@
  * The split + assemble are PURE (unit-tested); the async fns wire them to the
  * registry with a `config.json` fallback for un-migrated harnesses.
  */
-import { readConfig } from '@papercusp/orchestrator/config';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ProjectEntry } from '../harness-registry';
+
+/**
+ * Read a legacy `<stateDir>/config.json` (the deprecated instance-config file).
+ * Used ONLY by the one-time migrator below — the live read path never touches the
+ * file (`deprecate-harness-config-json-2026-06-06`). Returns {} when absent/bad.
+ */
+function readLegacyConfigJson(stateDir: string): Record<string, unknown> {
+  const path = join(stateDir, 'config.json');
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 /** The pure instance-field subset stored on a ProjectEntry. */
 export interface InstanceConfigFields {
@@ -21,8 +39,16 @@ export interface InstanceConfigFields {
   configOverrides?: Record<string, unknown>;
 }
 
-/** Fields that are NOT per-instance overrides (handled elsewhere / shape-only). */
-const NON_OVERRIDE_KEYS = new Set(['phase', 'phases', 'dept', 'harness_kind']);
+/**
+ * Keys that are NOT per-instance knob overrides: the typed instance fields
+ * (phase/phases/dept), harness_kind (shape), and the scaffold-time CONTRACT
+ * artifacts that stay in config.json by design (harness_token/parent_slug/slug —
+ * `deprecate-harness-config-json-2026-06-06` D-005). None land in `configOverrides`.
+ */
+const NON_OVERRIDE_KEYS = new Set([
+  'phase', 'phases', 'dept', 'harness_kind',
+  'harness_token', 'parent_slug', 'slug',
+]);
 
 /**
  * Split a `config.json` object into the instance fields (phase/phases/dept) + the
@@ -63,16 +89,18 @@ export function instanceEntryToConfig(entry: InstanceConfigFields): Record<strin
 }
 
 /**
- * Assemble the per-install instance config for a harness: from the registry
- * (workspace PG) when migrated, else from `.papercusp/config.json` (back-compat).
+ * Assemble the per-install instance config for a harness from the workspace-PG
+ * registry ProjectEntry. `.papercusp/config.json` is no longer consulted
+ * (`deprecate-harness-config-json-2026-06-06`); an un-migrated harness with no
+ * instance fields in PG resolves to `{}` (the blueprint supplies every default).
+ * Run `migrateConfigJsonToInstance` once to lift any legacy file content into PG.
  */
 export async function assembleInstanceConfig(slug: string, workspaceId: string): Promise<Record<string, unknown>> {
   const { loadHarnessRegistry } = await import('../harness-registry');
   const reg = await loadHarnessRegistry(workspaceId);
   const p = reg.projects.find((x) => x.slug === slug);
   if (!p) return {};
-  if (hasInstanceConfig(p)) return instanceEntryToConfig(p);
-  return readConfig(join(p.path, '.papercusp')) as Record<string, unknown>;
+  return instanceEntryToConfig(p);
 }
 
 /** The `HARNESS_CONFIG_JSON` env-transport pair for a harness (empty if no config). */

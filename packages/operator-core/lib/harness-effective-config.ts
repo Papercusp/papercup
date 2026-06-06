@@ -12,7 +12,7 @@
  * harnesses until the one-time migrator runs (P-008) and the fallback is cut (P-009).
  */
 import { join } from 'node:path';
-import { loadHarnessKnobs, deepMergeConfig } from '@papercusp/orchestrator';
+import { loadHarnessKnobs, deepMergeConfig, type HarnessConfig } from '@papercusp/orchestrator';
 import { assembleInstanceConfig } from './deployment/instance-config';
 
 /**
@@ -24,9 +24,9 @@ export async function readEffectiveHarnessConfig(
   slug: string,
   workspaceId: string,
   projectPath: string,
-): Promise<Record<string, unknown>> {
+): Promise<HarnessConfig> {
   const instance = await assembleInstanceConfig(slug, workspaceId);
   const knobs = (loadHarnessKnobs(join(projectPath, '.papercusp')) ?? {}) as Record<string, unknown>;
-  if (Object.keys(knobs).length === 0) return instance;
-  return deepMergeConfig(knobs, instance);
+  const merged = Object.keys(knobs).length === 0 ? instance : deepMergeConfig(knobs, instance);
+  return merged as HarnessConfig;
 }

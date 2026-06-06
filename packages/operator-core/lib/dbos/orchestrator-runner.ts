@@ -21,7 +21,6 @@ import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import postgres from 'postgres';
 import {
-  readConfig,
   configGet,
   resolvePhase,
   runHook,
@@ -31,6 +30,7 @@ import {
   captureDebuggerOutput,
   materializeFeatureDebugNote,
 } from '@papercusp/orchestrator';
+import { readEffectiveHarnessConfig } from '../harness-effective-config';
 import { loadBlueprintFromFile, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { resolveProject } from '../harness-core';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -442,7 +442,10 @@ const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, 
   if (!project) return { fired: false };
   const projectDir = project.path;
   const stateDir = join(projectDir, '.papercusp');
-  const cfg = readConfig(stateDir);
+  const ws = workspaceId ?? activeWorkspaceId();
+  // Effective config from the blueprint (⊕ workspace-PG instance overrides), not
+  // config.json (deprecate-harness-config-json-2026-06-06).
+  const cfg = await readEffectiveHarnessConfig(harnessSlug, ws, projectDir);
   if (configGet<boolean>(cfg, 'debugger.enabled', true) !== true) return { fired: false };
   // P-004: the debugger threshold is a blueprint knob (knobs.debuggerThreshold);
   // instance config OVERRIDES it when explicitly set. Precedence:
@@ -450,7 +453,6 @@ const realDebuggerHook: PipelineDebuggerHook = async ({ harnessSlug, featureId, 
   // before; unset → the blueprint's coding default 3 = the old hardcoded 3).
   const cfgThreshold = configGet<number | undefined>(cfg, 'debugger.threshold', undefined);
   const threshold = Number(cfgThreshold ?? harnessBlueprintKnobs(projectDir)?.debuggerThreshold ?? 3);
-  const ws = workspaceId ?? activeWorkspaceId();
 
   const pg = postgres(getHarnessAdminUrl(), {
     max: 1,
@@ -528,7 +530,9 @@ const realFinalizer: PipelineFinalizer = async ({ harnessSlug, featureId, worksp
   const projectDir = project.path;
   const stateDir = join(projectDir, '.papercusp');
   const logDir = join(stateDir, 'logs');
-  const cfg = readConfig(stateDir);
+  // Effective config from the blueprint (⊕ workspace-PG instance overrides), not
+  // config.json (deprecate-harness-config-json-2026-06-06).
+  const cfg = await readEffectiveHarnessConfig(harnessSlug, workspaceId ?? activeWorkspaceId(), projectDir);
   // Curator/documenter run with the registry slug too (correct schema) + the
   // pipeline's workspace; no idempotency key (they run once at finalization).
   const extraEnv = buildPipelineExtraEnv({ harnessSlug, workspaceId });
