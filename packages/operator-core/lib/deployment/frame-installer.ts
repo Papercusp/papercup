@@ -90,6 +90,15 @@ export async function installFrame(
   // The API saying "ready" ≠ sshd accepting — wait before any scp/script.
   await waitForSsh(exec, log, deps.sshWait);
 
+  // Staging lives in /tmp (the login user may be non-root and can't write /root).
+  // Pre-clean the exact paths AS ROOT so a pre-planted file/symlink at a
+  // predictable name can never capture or redirect a staged credential.
+  if (boot.credentialsLocalPath || boot.oauthTokenLocalPath || boot.runtimeTarballLocalPath) {
+    await exec.runScript(
+      `rm -rf ${REMOTE_CRED_PATH} ${REMOTE_TOKEN_PATH} ${REMOTE_RUNTIME_TARBALL_PATH}`,
+    );
+  }
+
   // P-011: stage the per-frame Claude subscription (its own rate limits) first —
   // either a credentials bundle, a long-lived OAuth token, or both.
   if (boot.credentialsLocalPath) {

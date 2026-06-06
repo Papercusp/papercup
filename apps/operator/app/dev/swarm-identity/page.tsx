@@ -131,13 +131,9 @@ export default function SwarmIdentityPage() {
             ))}
           </div>
           <div className={styles.introSwarm} aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
-            <span />
+            {Array.from({ length: 12 }, (_, index) => (
+              <span key={index} />
+            ))}
           </div>
         </section>
       ) : null}
@@ -145,7 +141,7 @@ export default function SwarmIdentityPage() {
       {introPhase === 'swarm' ? (
         <section className={styles.swarmTakeover} aria-label="The swarm gathers">
           <div className={styles.swarmVortex} aria-hidden="true">
-            {Array.from({ length: 26 }, (_, index) => (
+            {Array.from({ length: 32 }, (_, index) => (
               <span key={index} style={{ '--bee-index': index } as CSSProperties} />
             ))}
           </div>
@@ -340,7 +336,15 @@ function HeroLogo({ direction, compact = false }: { direction: DirectionId; comp
   return (
     <div className={compact ? styles.logoStageCompact : styles.logoStage} aria-label={`${direction} logo preview`}>
       <LogoGlyph direction={direction} />
-      {!compact ? <div className={styles.orbit}><span /><span /><span /><span /><span /></div> : null}
+      {!compact ? (
+        <div className={styles.orbit}>
+          <span />
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -359,7 +363,7 @@ function SwarmVortexGlyph() {
       <SwarmBee x={54} y={122} scale={0.66} rotate={238} />
       <SwarmBee x={39} y={84} scale={0.7} rotate={288} hot />
       <SwarmBee x={62} y={50} scale={0.54} rotate={326} />
-      <circle className={styles.swarmCore} cx="90" cy="90" r="17" />
+      <SwarmBee x={90} y={90} scale={1.18} rotate={0} hot />
     </svg>
   );
 }

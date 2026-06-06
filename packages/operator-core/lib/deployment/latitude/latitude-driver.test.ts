@@ -409,8 +409,9 @@ describe('LatitudeDriver.install (P-010/P-011)', () => {
     });
     // P-011: credential staged before the script ran.
     expect(exec.copies).toEqual([['/local/claude-creds.json', '/tmp/papercusp-claude-credentials.json']]);
-    expect(exec.scripts).toHaveLength(2); // ssh-readiness probe + bootstrap
+    expect(exec.scripts).toHaveLength(3); // ssh probe + staging pre-clean + bootstrap
     expect(exec.scripts[0]).toBe('true');
+    expect(exec.scripts[1]).toContain('rm -rf'); // root-owned pre-clean of staging paths
     const script = exec.scripts.at(-1)!;
     expect(script).toContain('Frame for harness: papercup');
     expect(script).toContain('npm ci'); // env-install

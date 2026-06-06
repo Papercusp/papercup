@@ -148,7 +148,11 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
             '# private — an anonymous clone can never work; no git credential shipped).',
             `mkdir -p ${shq(`${root}/runtime`)}`,
             `tar xzf ${shq(opts.runtimeTarballRemotePath)} -C ${shq(`${root}/runtime`)}`,
-            `cd ${shq(`${root}/runtime`)} && (npm ci --no-audit --no-fund || npm install --no-audit --no-fund)`,
+            `rm -f ${shq(opts.runtimeTarballRemotePath)} # free ~200MB once extracted`,
+            // --legacy-peer-deps on the fallback: a fast-moving monorepo's lockfile can
+            // carry transient peer skew (hit live 2026-06-06: vitest 4.1.8 vs
+            // coverage-v8@4.1.7 peer-pinned to 4.1.7) — a frame install must survive it.
+            `cd ${shq(`${root}/runtime`)} && (npm ci --no-audit --no-fund || npm install --no-audit --no-fund --legacy-peer-deps)`,
           ]
         : [
             '# Default runtime delivery: clone + install the operator runtime. Prod may',
@@ -180,6 +184,7 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
         'mkdir -p "$HOME/.claude" && chmod 700 "$HOME/.claude"',
         `if [ -f ${shq(credPath)} ]; then`,
         `  install -m 0600 ${shq(credPath)} "$HOME/.claude/.credentials.json"`,
+        `  rm -f ${shq(credPath)} # staged copy removed once installed`,
         'else',
         `  echo "WARN: Claude credentials not staged at ${credPath} — agent runs will fail to auth" >&2`,
         'fi',
@@ -191,6 +196,7 @@ export function buildFrameBootstrap(opts: FrameBootstrapOpts): FrameBootstrapRes
       lines.push(
         `if [ -f ${shq(tokenPath)} ]; then`,
         `  mkdir -p "$HOME/.papercusp" && install -m 0600 ${shq(tokenPath)} "$HOME/.papercusp/claude-token"`,
+        `  rm -f ${shq(tokenPath)} # staged copy removed once installed`,
         '  export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME/.papercusp/claude-token")"',
         'else',
         `  echo "WARN: Claude OAuth token not staged at ${tokenPath} — agent runs will fail to auth" >&2`,

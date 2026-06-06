@@ -18,6 +18,7 @@ import { serve } from '@hono/node-server';
 import { runBootstrap } from './host-bootstrap';
 import { handler } from './host-handler';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
+import { startEventLoopLagMonitor } from '../lib/event-loop-lag-monitor';
 
 // Resilience guard: when an MCP/SSE client disconnects mid-stream, the
 // `mcp-handler` dependency's response adapter enqueues onto an already-closed
@@ -69,6 +70,12 @@ const hostname =
 // the :3055 dev default — post-Vite-migration :3055 is the frontend
 // SPA, not this API host, so self-fetches would hit the wrong server.
 process.env.PORT = String(port);
+
+// EI-79 observability: a standing event-loop-lag gauge. Silent on a healthy
+// host; logs a single structured warning when p95 loop delay over a 10s window
+// crosses 100ms — the signal that the main thread is CPU-bound (the exact shape
+// that degraded agent-mcp routes to 12-30s while /api/health stayed fast).
+startEventLoopLagMonitor();
 
 serve({ fetch: handler, port, hostname }, (info) => {
   console.log(`[hono-host] listening on http://${hostname}:${info.port}`);

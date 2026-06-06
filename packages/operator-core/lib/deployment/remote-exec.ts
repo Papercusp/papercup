@@ -96,7 +96,13 @@ export function createSshRemoteExec(target: SshTarget, deps: { spawn?: SpawnLike
       child.on('close', (code) => {
         const exitCode = code ?? 0;
         if (exitCode !== 0) {
-          reject(new Error(`${cmd} exited ${exitCode}: ${stderr.slice(-800) || stdout.slice(-800)}`));
+          // Keep BOTH stream tails — long bootstraps interleave them, and a
+          // stderr-only slice once reduced an npm failure to a 24-char fragment.
+          const parts = [
+            stderr && `stderr: …${stderr.slice(-800)}`,
+            stdout && `stdout: …${stdout.slice(-800)}`,
+          ].filter(Boolean);
+          reject(new Error(`${cmd} exited ${exitCode}: ${parts.join(' ║ ') || '(no output)'}`));
         } else {
           resolve({ stdout, stderr, exitCode });
         }
@@ -116,7 +122,8 @@ export function createSshRemoteExec(target: SshTarget, deps: { spawn?: SpawnLike
       return run('ssh', [...sshBaseArgs(target), hostSpec(target), shell], script);
     },
     async copyFile(localPath, remotePath) {
-      await run('scp', [...sshBaseArgs(target), localPath, `${hostSpec(target)}:${remotePath}`]);
+      // -p preserves the source mode explicitly (a 0600 credential stays 0600).
+      await run('scp', [...sshBaseArgs(target), '-p', localPath, `${hostSpec(target)}:${remotePath}`]);
     },
   };
 }

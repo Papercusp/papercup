@@ -690,6 +690,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let stopped = false;
   // Teardown hooks (Stage 5 outbox drain stopper, etc.) run once on close().
   const closeHooks = new Set<() => void | Promise<void>>();
+  // EI-79 steady-state skip: a snapshot of `keyHex → length` across all admitted
+  // logs as of the last COMPLETED full merge. The poll fires `mergeNow` every
+  // MERGE_POLL_MS, and `mergeAdmittedLogs` re-reads + re-DECODES every op from
+  // index 0 in every admitted log on each pass — an O(total-history) CPU burn
+  // (profiled as the dominant on-loop consumer: compact-encoding `decode` ~16%,
+  // `mergeAdmittedLogs`/`readOpBounded` ~6%). The full re-fold is only NECESSARY
+  // when some log GREW (the LWW fold needs the whole history to pick the global
+  // winner, and the per-table writers are not yet PG-level ts-guarded — see
+  // EI-79 follow-up). When no admitted log's length changed since the last
+  // completed pass, the merge would re-decode + re-apply the identical winners,
+  // so we skip the decode/fold/apply entirely. We still `update()` every remote
+  // each tick (cheap, I/O-bound) so growth is detected promptly, and the
+  // revocation-refresh + channel-2 reverify hooks still run on their cadence.
+  // The snapshot keys off the lengths read AFTER update(), so a remote that
+  // grew mid-tick is caught on the next tick at the latest.
+  let lastMergedLengths = new Map<string, number>();
   async function mergeNow(): Promise<number> {
     if (merging || stopped) return 0;
     merging = true;
@@ -720,6 +736,32 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
         logs.push(versionGatedLog(slug, log));
       }
+
+      // EI-79 steady-state skip: if no admitted log grew (or shrank, or
+      // appeared/disappeared) since the last completed full merge, the LWW fold
+      // would produce the identical winners — skip the O(history) decode + apply.
+      // Built from the post-update lengths so we react to growth detected this
+      // tick. The own log is included (its appends are local writes that must be
+      // projected). Compared by size + per-key equality.
+      const currentLengths = new Map<string, number>();
+      for (const log of logs) currentLengths.set(log.keyHex, log.length);
+      let changed = currentLengths.size !== lastMergedLengths.size;
+      if (!changed) {
+        for (const [k, len] of currentLengths) {
+          if (lastMergedLengths.get(k) !== len) {
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (!changed) {
+        // No structural growth — still run the cadenced refresh/reverify hooks
+        // (they're independent of log content) then return without merging.
+        await applyRevocationRefresh();
+        await maybeReverifyAdmitted();
+        return 0;
+      }
+
       const applied = await mergeAdmittedLogs(logs, {
         // D-021: route through THIS harness's scoped projection apply, not the
         // global registry (which the last-booted harness would own).
@@ -739,6 +781,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           }
         },
       });
+
+      // EI-79: record the post-update lengths we just folded so the next tick
+      // can skip an identical re-merge. Recorded BEFORE the refresh hooks below
+      // (which may drop revoked peers from `admitted`): if a peer is dropped, the
+      // next tick's log set differs from this snapshot → a fresh full merge runs,
+      // which is the correct behaviour (a drop changes the materialized winners).
+      lastMergedLengths = currentLengths;
 
       // ── Merge-refresh (D-002): ALWAYS run inside the serialized merge block
       // (merging=true) so it cannot race a concurrent merge pass. This collapses
