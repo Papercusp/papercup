@@ -102,7 +102,10 @@ export async function startDbos(): Promise<void> {
   if (dbosOrchestratorActive()) {
     // Phase 3 / P-009: the agent pipeline as a durable workflow is now the DEFAULT
     // orchestrator (on unless PAPERCUSP_DBOS_ORCHESTRATOR=0). The legacy main loop
-    // is retired (already out of the live path); set =0 for the instant revert.
+    // is RETIRED — archived to libs/papercusp/_retired/orchestrator-run-loop/ on
+    // 2026-06-06 (archive-legacy-orchestrator-deadcode). Setting =0 does NOT revert
+    // to it (there is no legacy loop left to revert to); it just leaves no DBOS
+    // orchestrator registered at all.
     // Register the workflow + wire the real invoke runner (spawns invoke-once with
     // IDEMPOTENCY_KEY).
     await import('./orchestrator-workflow');

@@ -251,17 +251,16 @@ export function safeRead(path: string): string | null {
 /**
  * Single source of truth for "is this cmdline a harness driver process?".
  *
- * Matches:
- *   - Legacy bash driver: `autonomous-harness/run.sh` or `/harness/run.sh`
- *   - TS orchestrator (canonical since PAPERCUSP_USE_TS_ORCHESTRATOR
- *     became default): cmdline contains `orchestrator/bin/run.ts` when
- *     launched via `npx tsx .../orchestrator/bin/run.ts`.
+ * Matches the legacy bash driver: `autonomous-harness/run.sh` or
+ * `/harness/run.sh`. (The TS-orchestrator `orchestrator/bin/run.ts` cmdline
+ * match was removed 2026-06-06 — that entrypoint was archived with the legacy
+ * run-loop; the live pipeline is the DBOS orchestrator, which runs in-process
+ * and is not a separate driver process.)
  */
 export function isHarnessDriverCmdline(cmdline: string): boolean {
   return (
     cmdline.includes('autonomous-harness/run.sh') ||
-    cmdline.includes('/harness/run.sh') ||
-    cmdline.includes('orchestrator/bin/run.ts')
+    cmdline.includes('/harness/run.sh')
   );
 }
 

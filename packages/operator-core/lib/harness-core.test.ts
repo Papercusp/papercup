@@ -9,10 +9,15 @@ import { describe, expect, it } from 'vitest';
 import { isHarnessDriverCmdline, harnessDir, rowToFeature } from './harness-core';
 
 describe('isHarnessDriverCmdline', () => {
-  it('matches the legacy bash drivers and the TS orchestrator bin', () => {
+  it('matches the legacy bash drivers', () => {
     expect(isHarnessDriverCmdline('/home/u/autonomous-harness/run.sh foo')).toBe(true);
     expect(isHarnessDriverCmdline('bash /pkg/harness/run.sh')).toBe(true);
-    expect(isHarnessDriverCmdline('node npx tsx /pkg/orchestrator/bin/run.ts')).toBe(true);
+  });
+  it('no longer matches the archived TS orchestrator bin/run.ts', () => {
+    // orchestrator/bin/run.ts was archived 2026-06-06 (the legacy run-loop is
+    // retired; the live pipeline is the in-process DBOS orchestrator, not a
+    // separate driver process).
+    expect(isHarnessDriverCmdline('node npx tsx /pkg/orchestrator/bin/run.ts')).toBe(false);
   });
   it('does not match unrelated cmdlines', () => {
     expect(isHarnessDriverCmdline('vim run.ts')).toBe(false);

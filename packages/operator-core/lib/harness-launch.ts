@@ -1,13 +1,18 @@
 /**
- * launchRun — spawn the TS orchestrator entry for a project, detached.
+ * launchRun — spawn the legacy TS orchestrator whole-loop entry
+ * (`orchestrator/bin/run.ts`) for a project, detached.
  *
- * The canonical and only path. The bash `run.sh` has been retired
- * entirely (deleted 2026-05-30): its iteration-driver role ended
- * 2026-05-08 when the TS orchestrator became the sole loop, and its
- * remaining function-library call sites (`invokeScoperBackground`,
- * `/harness/:slug/invoke`) were ported onto the
- * orchestrator's `invoke-once.ts`. `PAPERCUSP_USE_TS_ORCHESTRATOR=0` is
- * no longer honored — there is no bash fallback to roll back to.
+ * ⚠ LEGACY / SUPERSEDED. The live orchestrator is the in-process DBOS
+ * durable pipeline (`dbos/orchestrator-workflow.ts`) + one-shot
+ * invoke-once, NOT this whole-loop subprocess. `orchestrator/bin/run.ts`
+ * was archived 2026-06-06 (archive-legacy-orchestrator-deadcode) to
+ * `libs/papercusp/_retired/orchestrator-run-loop/`, so `orchestratorRunBin()`
+ * now resolves to a missing file and `launchRun` returns
+ * `{ ok: false, error: 'orchestrator bin missing' }`. The launch / resume /
+ * replan routes that still call this are the raw-spawn bypass slated for
+ * re-routing to the governed DBOS chokepoint by
+ * `unify-agent-spawn-chokepoint-2026-06-06` (P-008). The bash `run.sh` was
+ * deleted 2026-05-30.
  *
  * Relocated from `_hono/harness.ts` (endpoint-hono-elimination-2026-05-21
  * A4 batch 40 — Na carve-out unblocks the spawn cluster).

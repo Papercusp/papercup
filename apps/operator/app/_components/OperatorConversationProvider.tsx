@@ -1322,34 +1322,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           writeSleepUntilMs(sleepTagToEpochMs(parsed.sleep));
         }
 
-        // Spawn requests — fire-and-forget POSTs to the orchestrator
-        // plugin endpoint. Sidesteps the omp MCP tool-surface gap: the
-        // brain emits <spawn role="..."> tags as part of its turn
-        // output, the runtime intercepts them and dispatches the spawn
-        // via the existing HTTP API (which always works regardless of
-        // whether the model has the MCP tool registered). The spawnId
-        // and result land in the user-actions log + Intel panel.
-        for (const sp of parsed.spawns) {
-          const params = new URLSearchParams({
-            workspace: workspaceId,
-            harness: 'system',
-            role: 'operator',
-            run: `op-converse-${Date.now()}`,
-            spawn: `op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-          });
-          const body: Record<string, unknown> = { role: sp.role };
-          if (sp.featureId) body.featureId = sp.featureId;
-          if (sp.chunkId) body.chunkId = sp.chunkId;
-          if (sp.extras.length > 0) body.extras = sp.extras;
-          void fetch(`/api/plugins/orchestrator/spawn?${params.toString()}`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
-          }).catch((err) => {
-            // eslint-disable-next-line no-console
-            console.warn('[operator-converse] spawn failed', err);
-          });
-        }
+        // <spawn role="..."> tags are dispatched SERVER-SIDE: the
+        // /api/agent-mcp/operator-converse handler (agent-tools/operator/
+        // converse.ts) parses this same turn and fires spawnAgentInHarness
+        // (fleet:spawn) directly. The old client-side fire-and-forget POST to
+        // /api/plugins/orchestrator/spawn was removed 2026-06-06
+        // (archive-legacy-orchestrator-deadcode P-010): that endpoint 404'd
+        // (the @papercupai/orchestrator-spawn plugin is not installed) AND
+        // firing it here would double-spawn against the server path.
 
         // Server-side disengagement enforcement: if the user's last
         // turn (the one that triggered this generation) explicitly
