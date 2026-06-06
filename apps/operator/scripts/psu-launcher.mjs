@@ -302,6 +302,22 @@ export function findUntrackedSession(id, { home = homedir(), cwd = process.cwd()
   return { agent: 'omp', ompThreadId: id, cwd, untracked: true };
 }
 
+/**
+ * Does claude's OWN store hold a transcript for this session id? A tracked
+ * adv row alone doesn't prove resumability: a launch that died before its
+ * first persisted turn leaves the adv row (and the brain pin) behind with NO
+ * `~/.claude/projects/<dir>/<id>.jsonl`, and `claude --resume <id>` then
+ * fails "No conversation found". Pure-ish (reads FS); exported for tests.
+ */
+export function claudeStoreHasSession(id, { home = homedir() } = {}) {
+  if (!id) return false;
+  const claudeProjects = join(home, '.claude', 'projects');
+  for (const d of safeReaddir(claudeProjects)) {
+    if (d.isDirectory() && existsSync(join(claudeProjects, d.name, `${id}.jsonl`))) return true;
+  }
+  return false;
+}
+
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked) {
   return picked === NO_PLAN || picked == null || picked === '' ? null : picked;
@@ -719,17 +735,31 @@ async function brainFlow(args = {}) {
     const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
     // The pin is the recorded NATIVE session id of a psu-tracked launch.
     const tracked = sessions.find((s) => s.sessionId && s.sessionId === pin);
-    if (tracked) { launchResume(tracked); return; }
-    // Tracked row gone but the agent's own store still has the transcript
-    // (e.g. the adv row was pruned): it IS the brain psu launched — resume it
-    // without the untracked-confirm (the dock pane can't drive a prompt).
-    const untracked = findUntrackedSession(pin);
-    if (untracked) {
-      console.error(`psu: brain ${pin} lost its tracked row — resuming from the ${untracked.agent} session store.`);
-      launchResume(untracked);
+    // A tracked adv row alone doesn't prove the session is RESUMABLE: a brain
+    // launch that died before its first persisted turn leaves the pin + adv
+    // row behind with no claude transcript, and `claude --resume` then fails
+    // "No conversation found" on EVERY dock open — a permanent wedge, since
+    // the pane is non-interactive (observed 2026-06-06). Verify claude's own
+    // store first; a transcript-less session has zero turns, so falling
+    // through to the fresh+re-pin path loses nothing.
+    if (tracked && (tracked.agent !== 'claude' || claudeStoreHasSession(pin))) {
+      launchResume(tracked);
       return;
     }
-    console.error(`psu: pinned brain ${pin} no longer resolves anywhere — launching a fresh brain (re-pinning).`);
+    if (tracked) {
+      console.error(`psu: pinned brain ${pin} is adv-tracked but claude has no transcript for it — launching a fresh brain (re-pinning).`);
+    } else {
+      // Tracked row gone but the agent's own store still has the transcript
+      // (e.g. the adv row was pruned): it IS the brain psu launched — resume it
+      // without the untracked-confirm (the dock pane can't drive a prompt).
+      const untracked = findUntrackedSession(pin);
+      if (untracked) {
+        console.error(`psu: brain ${pin} lost its tracked row — resuming from the ${untracked.agent} session store.`);
+        launchResume(untracked);
+        return;
+      }
+      console.error(`psu: pinned brain ${pin} no longer resolves anywhere — launching a fresh brain (re-pinning).`);
+    }
   }
   // Fresh brain: claude (the pin needs claude's forceable --session-id),
   // server-default workspace unless overridden, no plan. The server records

@@ -11,7 +11,12 @@ import type {
   DeploymentDriver,
   Frame,
 } from '@papercusp/deployment-driver';
-import { createHetznerApiClient, type HetznerApiClient, type HetznerServerAttributes } from './hetzner-api';
+import {
+  createHetznerApiClient,
+  HetznerApiError,
+  type HetznerApiClient,
+  type HetznerServerAttributes,
+} from './hetzner-api';
 import { installFrame, joinFrame } from '../frame-installer';
 
 const READY_STATUSES = new Set(['running', 'on', 'active']);
@@ -24,6 +29,8 @@ export interface HetznerDriverDeps {
   baseUrl?: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
+  /** How long teardown keeps re-issuing DELETE + confirming before giving up (default 5 min). */
+  teardownTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   makeRemoteExec?: import('../frame-installer').FrameInstallerDeps['makeRemoteExec'];
   onJoin?: import('../frame-installer').FrameInstallerDeps['onJoin'];
@@ -63,6 +70,7 @@ export function makeHetznerDriver(deps: HetznerDriverDeps = {}): DeploymentDrive
   const resolveApiToken = deps.resolveApiToken ?? defaultResolveApiToken;
   const pollIntervalMs = deps.pollIntervalMs ?? 5_000;
   const pollTimeoutMs = deps.pollTimeoutMs ?? 10 * 60_000;
+  const teardownTimeoutMs = deps.teardownTimeoutMs ?? 5 * 60_000;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const installerDeps = { makeRemoteExec: deps.makeRemoteExec, onJoin: deps.onJoin };
 
@@ -118,8 +126,47 @@ export function makeHetznerDriver(deps: HetznerDriverDeps = {}): DeploymentDrive
     async teardown(frame, config, ctx): Promise<void> {
       const client = clientFor(config);
       log(ctx, 'info', `destroying server ${frame.id} (teardown = DESTROY → ends billing)`);
-      await client.deleteServer(frame.id);
-      log(ctx, 'info', `server ${frame.id} destroyed`);
+
+      // Same destroy-not-stuck class LatitudeDriver hit live (2026-06-06): a 2xx
+      // DELETE is an *accepted action*, not a confirmed destroy. A destroy that
+      // doesn't stick bills indefinitely — confirm the server is actually GONE
+      // (getServer 404), re-issuing DELETE per round until the teardown deadline.
+      // Hetzner nuance: delete is async (status 'deleting'), and a re-DELETE while
+      // the action runs can 423-lock / 409-conflict — both mean "in progress".
+      const isGone = async (): Promise<boolean> => {
+        try {
+          await client.getServer(frame.id);
+          return false;
+        } catch (e) {
+          if (e instanceof HetznerApiError && (e.status === 404 || e.status === 410)) return true;
+          throw e;
+        }
+      };
+
+      const deadline = Date.now() + teardownTimeoutMs;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await client.deleteServer(frame.id);
+        } catch (e) {
+          if (e instanceof HetznerApiError && (e.status === 404 || e.status === 410)) {
+            // already gone — success
+          } else if (e instanceof HetznerApiError && (e.status === 423 || e.status === 409)) {
+            // locked/conflict — an action (likely the delete itself) is running; keep confirming
+          } else {
+            throw e;
+          }
+        }
+        if (await isGone()) break;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `HetznerDriver.teardown: server ${frame.id} still exists after ${attempt} DELETE attempt(s) ` +
+              `over ${Math.round(teardownTimeoutMs / 1000)}s — it may still be BILLING; destroy it manually.`,
+          );
+        }
+        log(ctx, 'warn', `server ${frame.id} still present after DELETE (attempt ${attempt}); re-confirming`);
+        await sleep(pollIntervalMs);
+      }
+      log(ctx, 'info', `server ${frame.id} destroyed (confirmed gone)`);
     },
   };
 }

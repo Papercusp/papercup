@@ -15,14 +15,15 @@ use ratatui::{
 };
 
 pub fn draw(f: &mut Frame, app: &App) {
-    // Chat-only dock mode (native-terminal-desktop P-013 / D-011): the
-    // desktop-docked native terminal's operator pane renders JUST the operator
-    // chat — no tab strip, no HUD, no work area. The full operator-chat state +
-    // data wiring are unchanged; only the rendering is reduced to draw_chat
-    // full-screen (the tab is pinned to Operator in main.rs, so it shows the FULL
-    // chat with no dock-focus marker). Help + the latest toast still overlay.
-    if app.chat_only {
-        draw_chat(f, app, f.area());
+    // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
+    // desktop-docked native terminal's panes render JUST one tab's body — no
+    // tab strip, no HUD, no work area (operator chat via `pui chat-pane`, the
+    // voice channels via `pui voice-pane`). The tab's state + data wiring are
+    // unchanged; only the rendering is reduced to that body full-screen (the
+    // tab is re-pinned in main.rs, so chat shows the FULL chat with no
+    // dock-focus marker). Help + the latest toast still overlay.
+    if let Some(pinned) = app.pinned {
+        draw_tab_body(f, app, pinned, f.area());
         if app.show_help {
             draw_help(f);
         } else if let Some(t) = &app.toast {
@@ -93,24 +94,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             (None, body)
         };
 
-    match app.tab {
-        Tab::Overview => draw_overview(f, app, body),
-        Tab::Operator => draw_chat(f, app, body),
-        Tab::Inbox => draw_inbox(f, app, body),
-        Tab::Plans => draw_plans(f, app, body),
-        // Fleet — the fleet view, which absorbed the old Sessions launcher (D-002b).
-        Tab::Fleet => crate::fleet::draw_fleet(f, app, body),
-        Tab::Harnesses => draw_harnesses(f, app, body),
-        Tab::Docs => draw_docs(f, app, body),
-        Tab::Testing => draw_testing(f, app, body),
-        Tab::Config => draw_config(f, app, body),
-        Tab::Plugins => draw_plugins(f, app, body),
-        Tab::Settings => draw_settings(f, app, body),
-        Tab::Memory => draw_memory(f, app, body),
-        Tab::Cupboard => draw_cupboard(f, app, body),
-        Tab::Conversations => draw_conversations(f, app, body),
-        Tab::Voice => crate::voice_ui::draw_voice(f, &app.voice_ui, body),
-    }
+    draw_tab_body(f, app, app.tab, body);
     if let Some(area) = rail {
         draw_plan_filter(f, app, area);
     }
@@ -151,6 +135,30 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_pot_picker(f, app);
     } else if let Some(menu) = &app.fleet_action_menu {
         draw_fleet_menu(f, menu);
+    }
+}
+
+/// One tab's body. The single dispatch shared by the full workbench layout and
+/// the pinned single-pane dock modes (P-013 / D-011), so a pinned pane renders
+/// exactly what the tab renders in the workbench — just full-screen.
+fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
+    match tab {
+        Tab::Overview => draw_overview(f, app, body),
+        Tab::Operator => draw_chat(f, app, body),
+        Tab::Inbox => draw_inbox(f, app, body),
+        Tab::Plans => draw_plans(f, app, body),
+        // Fleet — the fleet view, which absorbed the old Sessions launcher (D-002b).
+        Tab::Fleet => crate::fleet::draw_fleet(f, app, body),
+        Tab::Harnesses => draw_harnesses(f, app, body),
+        Tab::Docs => draw_docs(f, app, body),
+        Tab::Testing => draw_testing(f, app, body),
+        Tab::Config => draw_config(f, app, body),
+        Tab::Plugins => draw_plugins(f, app, body),
+        Tab::Settings => draw_settings(f, app, body),
+        Tab::Memory => draw_memory(f, app, body),
+        Tab::Cupboard => draw_cupboard(f, app, body),
+        Tab::Conversations => draw_conversations(f, app, body),
+        Tab::Voice => crate::voice_ui::draw_voice(f, &app.voice_ui, body),
     }
 }
 

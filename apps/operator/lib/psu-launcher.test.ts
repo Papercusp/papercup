@@ -9,6 +9,7 @@ import {
   presetsFromArgs,
   resumeArgsFor,
   findUntrackedSession,
+  claudeStoreHasSession,
   roleLaunchArgs,
   suLaunchArgs,
   agentInvalidForRole,
@@ -398,5 +399,74 @@ describe('findUntrackedSession (resume a non-psu session by searching the agent 
 
   it('returns null for an unknown UUID with no matching file', () => {
     expect(findUntrackedSession(UUID, { home })).toBeNull();
+  });
+});
+
+describe('claudeStoreHasSession (check if claude can resume a specific session)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-stores-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('returns true when Claude store has the session file', () => {
+    const projDir = join(home, '.claude', 'projects', '-some-dir');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    expect(claudeStoreHasSession(UUID, { home })).toBe(true);
+  });
+
+  it('returns true even if the session file is empty', () => {
+    const projDir = join(home, '.claude', 'projects', 'my-proj');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), '');
+    expect(claudeStoreHasSession(UUID, { home })).toBe(true);
+  });
+
+  it('searches across multiple project directories', () => {
+    // Create session in a different project dir
+    const projDir = join(home, '.claude', 'projects', '-other-proj');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    expect(claudeStoreHasSession(UUID, { home })).toBe(true);
+  });
+
+  it('returns false when the session file does not exist', () => {
+    mkdirSync(join(home, '.claude', 'projects', 'my-proj'), { recursive: true });
+    expect(claudeStoreHasSession(UUID, { home })).toBe(false);
+  });
+
+  it('returns false for null or undefined ids', () => {
+    mkdirSync(join(home, '.claude', 'projects', 'my-proj'), { recursive: true });
+    expect(claudeStoreHasSession(null, { home })).toBe(false);
+    expect(claudeStoreHasSession(undefined, { home })).toBe(false);
+    expect(claudeStoreHasSession('', { home })).toBe(false);
+  });
+
+  it('returns false when .claude/projects does not exist', () => {
+    expect(claudeStoreHasSession(UUID, { home })).toBe(false);
+  });
+});
+
+describe('claudeStoreHasSession (a tracked adv row alone does not prove resumability)', () => {
+  const UUID = '0c0f59c1-1706-4244-aefc-3d6f0aee2361';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-brain-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  it('true when the transcript exists in any project dir', () => {
+    const projDir = join(home, '.claude', 'projects', '-some-dir');
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"/x"}\n`);
+    expect(claudeStoreHasSession(UUID, { home })).toBe(true);
+  });
+
+  it('false when no transcript exists — the brain-pane wedge case: a pinned + adv-tracked session whose launch died before its first turn', () => {
+    mkdirSync(join(home, '.claude', 'projects', '-some-dir'), { recursive: true });
+    expect(claudeStoreHasSession(UUID, { home })).toBe(false);
+  });
+
+  it('false for a missing store dir or empty id', () => {
+    expect(claudeStoreHasSession(UUID, { home })).toBe(false);
+    expect(claudeStoreHasSession('', { home })).toBe(false);
   });
 });

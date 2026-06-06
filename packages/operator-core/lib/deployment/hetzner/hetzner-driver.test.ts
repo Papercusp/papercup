@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DeploymentConfig, DeploymentContext } from '@papercusp/deployment-driver';
 import { makeHetznerDriver, toHetznerAttributes, HetznerDriver } from './hetzner-driver';
-import { createHetznerApiClient } from './hetzner-api';
+import { createHetznerApiClient, HetznerApiError } from './hetzner-api';
 import type { HetznerApiClient, HetznerServer } from './hetzner-api';
 
 const ctx: DeploymentContext = { harnessSlug: 'papercup', workspaceId: 'ws' };
@@ -52,11 +52,71 @@ describe('HetznerDriver provision/teardown', () => {
     const frame = await driver.provision(cfg, ctx);
     expect(frame).toMatchObject({ id: '101', target: 'hetzner', placement: 'remote', host: '5.5.5.5', kind: 'vm', region: 'nbg1' });
   });
-  it('teardown DESTROYS', async () => {
-    const client = fakeClient([]);
-    await makeHetznerDriver({ client }).teardown({ id: '101', target: 'hetzner', placement: 'remote' }, cfg, ctx);
+  const gone404 = () => new HetznerApiError('getServer', 404, null);
+  const frame101 = { id: '101', target: 'hetzner', placement: 'remote' as const };
+
+  /** Scripted teardown client: each getServer pops the next entry — a server, or an
+   *  Error to throw (404 = gone). deleteServer errs scriptable (423 = action lock). */
+  function teardownClient(
+    gets: Array<HetznerServer | Error>,
+    deleteErrs: Array<Error | undefined> = [],
+  ): HetznerApiClient & { deleted: string[] } {
+    const deleted: string[] = [];
+    let g = 0;
+    let d = 0;
+    return {
+      deleted,
+      async createServer(): Promise<HetznerServer> {
+        throw new Error('unused in teardown tests');
+      },
+      async getServer() {
+        const next = gets[Math.min(g++, gets.length - 1)];
+        if (next instanceof Error) throw next;
+        return next;
+      },
+      async deleteServer(id: string) {
+        deleted.push(id);
+        const err = deleteErrs[d++];
+        if (err) throw err;
+      },
+    };
+  }
+
+  it('teardown DESTROYS and confirms the server is gone (getServer 404)', async () => {
+    const client = teardownClient([gone404()]);
+    await makeHetznerDriver({ client, sleep, pollIntervalMs: 1 }).teardown(frame101, cfg, ctx);
     expect(client.deleted).toEqual(['101']);
   });
+
+  it("teardown re-issues DELETE when the destroy doesn't stick (same class Latitude hit live)", async () => {
+    const client = teardownClient([srv({ status: 'running' }), gone404()]);
+    await makeHetznerDriver({ client, sleep, pollIntervalMs: 1 }).teardown(frame101, cfg, ctx);
+    expect(client.deleted).toEqual(['101', '101']);
+  });
+
+  it("teardown tolerates 423-locked re-DELETE while the async delete runs ('deleting')", async () => {
+    const client = teardownClient(
+      [srv({ status: 'deleting' }), gone404()],
+      [undefined, new HetznerApiError('deleteServer', 423, 'locked')],
+    );
+    await makeHetznerDriver({ client, sleep, pollIntervalMs: 1 }).teardown(frame101, cfg, ctx);
+    expect(client.deleted).toEqual(['101', '101']);
+  });
+
+  it('teardown throws loudly (naming billing) when the server never disappears', async () => {
+    const client = teardownClient([srv({ status: 'running' })]);
+    await expect(
+      makeHetznerDriver({ client, sleep, pollIntervalMs: 1, teardownTimeoutMs: 0 }).teardown(frame101, cfg, ctx),
+    ).rejects.toThrow(/BILLING/);
+  });
+
+  it('teardown propagates non-404 getServer errors', async () => {
+    const client = teardownClient([new HetznerApiError('getServer', 500, 'boom')]);
+    await expect(
+      makeHetznerDriver({ client, sleep, pollIntervalMs: 1 }).teardown(frame101, cfg, ctx),
+    ).rejects.toThrow(/500/);
+  });
+
   it('install delegates to the shared installer (same bootstrap as Latitude)', async () => {
     const scripts: string[] = [];
     const exec = {

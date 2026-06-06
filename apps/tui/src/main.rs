@@ -68,15 +68,20 @@ async fn main() -> Result<()> {
         // its own 2-pane layout and hands off to zellij.
         Some("chat") => return run_chat_dock(),
         Some("hud") => {}
-        // The operator-chat-only pane the chat dock's LEFT pane runs (P-013) —
-        // falls through to the normal run loop with chat_only set below.
-        Some("chat-pane") => {}
+        // Single-pane dock modes (P-013 / D-011) — fall through to the normal
+        // run loop with the tab pinned below: `chat-pane` is the dock's
+        // operator chat, `voice-pane` the dock's voice channels.
+        Some("chat-pane") | Some("voice-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
-    // `pui chat-pane` renders JUST the operator chat (no tab strip / HUD / work
-    // area); the full chat data wiring in run() is unchanged.
-    let chat_only = subcommand.as_deref() == Some("chat-pane");
+    // Pinned single-tab dock panes: render JUST that tab's body (no tab strip /
+    // HUD / work area); the full data wiring in run() is unchanged.
+    let pinned = match subcommand.as_deref() {
+        Some("chat-pane") => Some(app::Tab::Operator),
+        Some("voice-pane") => Some(app::Tab::Voice),
+        _ => None,
+    };
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -97,7 +102,7 @@ async fn main() -> Result<()> {
     }
     let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
 
-    let result = run(&mut terminal, chat_only).await;
+    let result = run(&mut terminal, pinned).await;
 
     // Always restore the terminal, even on error.
     if kbd_enhanced {
@@ -138,15 +143,15 @@ fn run_chat_dock() -> Result<()> {
     std::process::exit(status.code().unwrap_or(0));
 }
 
-async fn run<B: Backend>(terminal: &mut Terminal<B>, chat_only: bool) -> Result<()> {
+async fn run<B: Backend>(terminal: &mut Terminal<B>, pinned: Option<app::Tab>) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
-    // Chat-only dock pane (P-013): render JUST the operator chat and pin the tab
-    // to Operator — the renderer short-circuits to the chat, and the run loop
-    // re-pins on each event (below) so a stray nav key can't strand the composer.
-    app.chat_only = chat_only;
-    if chat_only {
-        app.tab = app::Tab::Operator;
+    // Pinned single-tab dock pane (P-013 / D-011): render JUST that tab's body —
+    // the renderer short-circuits to it, and the run loop re-pins on each event
+    // (below) so a stray nav key can't switch to an unrendered tab.
+    app.pinned = pinned;
+    if let Some(p) = pinned {
+        app.tab = p;
     }
     // pui's own zellij pane id = the HUD pane (dockview-workbench D-008). zellij
     // sets `$ZELLIJ_PANE_ID` for every pane it owns; the bare `:float`/`:dock`
@@ -186,7 +191,7 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>, chat_only: bool) -> Result<
     // arrive on `tx` like any other. NOT spawned in chat-only mode (the chat
     // dock, P-013): there is no work area to orchestrate there, and loading
     // the plugin surfaces an empty floating pane over the dock.
-    let companion = if chat_only { None } else { Companion::spawn(tx.clone()) };
+    let companion = if pinned.is_some() { None } else { Companion::spawn(tx.clone()) };
 
     // Voice mode (voice-mode-tui-port-2026-06-05 P2): the run loop owns the
     // audio handles — the long-lived playback `Player` and the in-flight mic
@@ -230,11 +235,13 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>, chat_only: bool) -> Result<
         );
         let action = app.update(ev);
 
-        // Chat-only dock pane (P-013): never leave the operator chat — re-pin the
-        // tab so a stray nav key can't switch to an unrendered HUD tab (which
-        // would also strand the composer, since `i` only composes on Operator).
-        if app.chat_only && app.tab != app::Tab::Operator {
-            app.tab = app::Tab::Operator;
+        // Pinned dock pane (P-013 / D-011): never leave the pinned tab — re-pin
+        // so a stray nav key can't switch to an unrendered tab (which on the
+        // chat pane would also strand the composer: `i` composes on Operator).
+        if let Some(p) = app.pinned {
+            if app.tab != p {
+                app.tab = p;
+            }
         }
 
         if voice_dropped {

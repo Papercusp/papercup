@@ -157,12 +157,13 @@ pub fn launch_argv(layout_path: &str) -> Vec<String> {
 }
 
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011):
-/// the surface the desktop-docked native terminal runs. Two panes side-by-side —
-/// the **operator chat** (a chat-only `pui chat-pane`) and the **brain** (a `psu`
-/// engineer-collaborator session) — and NOTHING else: no workbench HUD, no
-/// work-area agent panes, no swap presets. `brain_argv` is the brain pane's
-/// command (e.g. `["psu", "--brain"]`); its first element is the command, the
-/// rest are quoted args. Pure (no I/O) so it is unit-tested.
+/// the surface the desktop-docked native terminal runs. Three panes
+/// side-by-side — the **voice** channels (`pui voice-pane`), the **operator
+/// chat** (`pui chat-pane`) and the **brain** (a `psu` engineer-collaborator
+/// session) — and NOTHING else: no workbench HUD, no work-area agent panes, no
+/// swap presets. `brain_argv` is the brain pane's command (e.g.
+/// `["psu", "--brain"]`); its first element is the command, the rest are
+/// quoted args. Pure (no I/O) so it is unit-tested.
 pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
     let (brain_cmd, brain_args) = brain_argv
         .split_first()
@@ -179,21 +180,26 @@ pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
         format!("\n            args {quoted}")
     };
     format!(
-        r#"// Papercusp chat dock — operator chat | brain (native-terminal-desktop
-// P-013 / D-011). The desktop-docked native terminal surface: TWO panes only,
-// NO workbench HUD and NO work-area agent panes. Left = the operator (ElevenLabs
-// voice) chat as a chat-only pui pane; right = the brain (a psu engineer
-// session, resumed at launch).
+        r#"// Papercusp chat dock — voice | operator chat | brain (native-terminal-desktop
+// P-013 / D-011). The desktop-docked native terminal surface: THREE panes only,
+// NO workbench HUD and NO work-area agent panes. Left = the P2P voice channels
+// as a voice-only pui pane; middle = the operator (ElevenLabs voice) chat as a
+// chat-only pui pane; right = the brain (a psu engineer session, resumed at
+// launch via the D-013 brain pin).
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
     pane split_direction="vertical" {{
-        pane name="operator" focus=true size="50%" {{
+        pane name="voice" size="24%" {{
+            command "pui"
+            args "voice-pane"
+        }}
+        pane name="operator" focus=true size="38%" {{
             command "pui"
             args "chat-pane"
         }}
-        pane name="brain" size="50%" {{
+        pane name="brain" size="38%" {{
             command "{brain_cmd}"{args_line}
         }}
     }}
@@ -357,23 +363,30 @@ mod tests {
     // ── P-013 chat dock ──────────────────────────────────────────────────────
 
     #[test]
-    fn chat_dock_has_just_operator_and_brain_panes() {
+    fn chat_dock_has_voice_operator_and_brain_panes() {
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()]);
-        // The two panes: operator chat (chat-only pui) | brain (psu --resume).
+        // The three panes: voice | operator chat | brain (psu --resume).
+        assert!(kdl.contains("name=\"voice\""));
         assert!(kdl.contains("name=\"operator\""));
         assert!(kdl.contains("name=\"brain\""));
-        assert!(kdl.contains("command \"pui\""));
+        assert!(kdl.contains("args \"voice-pane\""));
         assert!(kdl.contains("args \"chat-pane\""));
         assert!(kdl.contains("command \"psu\""));
         assert!(kdl.contains("args \"--resume\""));
-        // Side-by-side.
+        // Side-by-side, voice LEFT of operator LEFT of brain.
         assert!(kdl.contains("split_direction=\"vertical\""));
+        let (v, o, b) = (
+            kdl.find("name=\"voice\"").unwrap(),
+            kdl.find("name=\"operator\"").unwrap(),
+            kdl.find("name=\"brain\"").unwrap(),
+        );
+        assert!(v < o && o < b, "pane order must be voice | operator | brain");
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\""));
         assert!(!kdl.contains("swap_tiled_layout"));
-        // Exactly one pui + one psu command (the two panes).
-        assert_eq!(kdl.matches("command \"pui\"").count(), 1);
+        // Exactly two pui panes (voice + chat) + one psu (the brain).
+        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
         assert_eq!(kdl.matches("command \"psu\"").count(), 1);
     }
 
