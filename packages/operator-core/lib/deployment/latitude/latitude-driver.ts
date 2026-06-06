@@ -22,6 +22,7 @@ import type {
 import {
   createLatitudeApiClient,
   LatitudeApiError,
+  pickInStockSite,
   type LatitudeApiClient,
   type LatitudeServerAttributes,
 } from './latitude-api';
@@ -126,9 +127,29 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
 
     async provision(config, ctx): Promise<Frame> {
       const client = clientFor(config);
-      const attrs = toLatitudeAttributes(config, ctx);
+      let attrs = toLatitudeAttributes(config, ctx);
       log(ctx, 'info', `creating server (plan=${attrs.plan}, site=${attrs.site}, os=${attrs.operating_system})`);
-      const created = await client.createServer(attrs);
+
+      let created;
+      try {
+        created = await client.createServer(attrs);
+      } catch (e) {
+        // Latitude stock is VOLATILE per site (observed live 2026-06-06: a smoke
+        // run consumed a site's last unit and the next create 422'd). The config
+        // region is a *preference*, not a pin — on SERVERS_OUT_OF_STOCK re-pick an
+        // in-stock site for the plan and retry once. Pin with provider.strictRegion.
+        const provider = (config.provider ?? {}) as Record<string, unknown>;
+        const outOfStock =
+          e instanceof LatitudeApiError &&
+          e.status === 422 &&
+          JSON.stringify(e.body ?? '').includes('SERVERS_OUT_OF_STOCK');
+        if (!outOfStock || provider.strictRegion === true) throw e;
+        const site = pickInStockSite(await client.listPlans(), attrs.plan, [attrs.site]);
+        if (!site || site === attrs.site) throw e;
+        log(ctx, 'warn', `site ${attrs.site} out of stock for ${attrs.plan}; retrying at in-stock site ${site}`);
+        attrs = { ...attrs, site };
+        created = await client.createServer(attrs);
+      }
       log(ctx, 'info', `server ${created.id} created (status=${created.status}); waiting for it to come up`);
 
       // Poll until ready (IP assigned + status ready), or fail/timeout.
@@ -156,7 +177,8 @@ export function makeLatitudeDriver(deps: LatitudeDriverDeps = {}): DeploymentDri
         placement: 'remote',
         host: server.primary_ipv4,
         kind: config.kind === 'metal' ? 'metal' : 'vm',
-        region: config.region,
+        // The ACTUAL site (may differ from config.region after a stock fallback).
+        region: attrs.site,
         meta: { planSlug: server.planSlug, ipv6: server.primary_ipv6, hostname: server.hostname },
       };
     },

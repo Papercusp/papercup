@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { DeploymentConfig, DeploymentContext } from '@papercusp/deployment-driver';
 import { makeLatitudeDriver, toLatitudeAttributes, LatitudeDriver } from './latitude-driver';
-import { LatitudeApiError, type LatitudeApiClient, type LatitudeServer } from './latitude-api';
+import {
+  LatitudeApiError,
+  type LatitudeApiClient,
+  type LatitudeServer,
+  type LatitudeServerAttributes,
+} from './latitude-api';
 
 const ctx: DeploymentContext = { harnessSlug: 'papercup', workspaceId: 'ws' };
 const cfg: DeploymentConfig = { target: 'latitude', region: 'NYC', size: 'c2-small-x86', provider: { project: 'proj_1' } };
@@ -107,6 +112,81 @@ describe('LatitudeDriver.provision', () => {
     const client = fakeClient([srv({ status: 'deploying' })]);
     const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1, pollTimeoutMs: 0 });
     await expect(driver.provision(cfg, ctx)).rejects.toThrow(/not ready/);
+  });
+});
+
+describe('LatitudeDriver.provision stock fallback', () => {
+  const sleep = vi.fn(async () => {});
+  const outOfStock = () =>
+    new LatitudeApiError('createServer', 422, {
+      errors: [{ code: 'SERVERS_OUT_OF_STOCK', title: 'No stock availability' }],
+    });
+
+  /** createServer fails once with `failFirst`, then succeeds; listPlans returns `stock`. */
+  function fallbackClient(opts: {
+    failFirst: Error;
+    stock: Array<{ slug: string; inStock: string[] }>;
+  }): LatitudeApiClient & { created: LatitudeServerAttributes[] } {
+    const created: LatitudeServerAttributes[] = [];
+    let call = 0;
+    return {
+      created,
+      async createServer(attrs) {
+        created.push(attrs);
+        if (call++ === 0) throw opts.failFirst;
+        return srv({ status: 'on', primary_ipv4: '1.1.1.1' });
+      },
+      async getServer() {
+        return srv({ status: 'on', primary_ipv4: '1.1.1.1' });
+      },
+      async deleteServer() {},
+      async listPlans() {
+        return opts.stock;
+      },
+    };
+  }
+
+  it('falls back to an in-stock site on SERVERS_OUT_OF_STOCK (region = ACTUAL site)', async () => {
+    const client = fallbackClient({
+      failFirst: outOfStock(),
+      stock: [{ slug: 'c2-small-x86', inStock: ['DAL', 'CHI'] }],
+    });
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    const frame = await driver.provision(cfg, ctx); // cfg pins NYC
+    expect(client.created.map((a) => a.site)).toEqual(['NYC', 'DAL']);
+    expect(frame.region).toBe('DAL');
+  });
+
+  it('provider.strictRegion pins the site — no retry', async () => {
+    const client = fallbackClient({
+      failFirst: outOfStock(),
+      stock: [{ slug: 'c2-small-x86', inStock: ['DAL'] }],
+    });
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await expect(
+      driver.provision({ ...cfg, provider: { ...cfg.provider, strictRegion: true } }, ctx),
+    ).rejects.toThrow(/SERVERS_OUT_OF_STOCK/);
+    expect(client.created).toHaveLength(1);
+  });
+
+  it('non-stock create errors are not retried', async () => {
+    const client = fallbackClient({
+      failFirst: new LatitudeApiError('createServer', 422, { errors: [{ code: 'BAD_PLAN' }] }),
+      stock: [{ slug: 'c2-small-x86', inStock: ['DAL'] }],
+    });
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await expect(driver.provision(cfg, ctx)).rejects.toThrow(/BAD_PLAN/);
+    expect(client.created).toHaveLength(1);
+  });
+
+  it('throws the original error when no alternative site has stock', async () => {
+    const client = fallbackClient({
+      failFirst: outOfStock(),
+      stock: [{ slug: 'c2-small-x86', inStock: [] }],
+    });
+    const driver = makeLatitudeDriver({ client, sleep, pollIntervalMs: 1 });
+    await expect(driver.provision(cfg, ctx)).rejects.toThrow(/SERVERS_OUT_OF_STOCK/);
+    expect(client.created).toHaveLength(1);
   });
 });
 

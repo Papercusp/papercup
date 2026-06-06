@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from 'react';
 import { useEffect, useState } from 'react';
-import { parseAsStringEnum, useQueryState } from 'nuqs';
+import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import styles from './swarm-identity.module.css';
 
 type DirectionId = 'crown' | 'signal' | 'blackcomb' | 'sentinel' | 'eclipse';
@@ -80,7 +80,7 @@ const DIRECTIONS: Direction[] = [
 
 export default function SwarmIdentityPage() {
   const [showIntro, setShowIntro] = useState(true);
-  const [introReplay] = useQueryState('intro');
+  const [introReplay] = useQueryState('intro', parseAsString.withDefault(''));
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });

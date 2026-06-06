@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 
 import { configureCoordLog, resetCoordLog } from '../log';
-import { appendAck, readInbox, readThread, sendMessage } from '../messages';
+import { appendAck, readInbox, readOutbox, readThread, sendMessage } from '../messages';
 import type { AgentIdentity } from '../identity';
 
 function fakeIdentity(ownerId: string): AgentIdentity {
@@ -81,6 +81,33 @@ describe('sendMessage / readInbox', () => {
 
   it('missing messages dir → empty inbox', async () => {
     expect(await readInbox('B')).toEqual([]);
+  });
+});
+
+describe('readOutbox (bee-dossier pane)', () => {
+  it('returns everything an owner SENT, regardless of recipient', async () => {
+    const A = fakeIdentity('A');
+    const B = fakeIdentity('B');
+    await sendMessage(A, { to: ['B'], summary: 'a→b' });
+    await sendMessage(A, { to: ['*'], summary: 'a→all' });
+    await sendMessage(B, { to: ['A'], summary: 'b→a' }); // not A's outbox
+
+    const outboxA = await readOutbox('A');
+    expect(outboxA.map((m) => m.summary)).toEqual(['a→b', 'a→all']);
+    expect(outboxA.every((m) => m.from === 'A')).toBe(true);
+  });
+
+  it('since_ts filters the outbox strictly later than the cutoff', async () => {
+    const A = fakeIdentity('A');
+    const first = await sendMessage(A, { to: ['B'], summary: 'old' });
+    await new Promise((r) => setTimeout(r, 5));
+    await sendMessage(A, { to: ['B'], summary: 'new' });
+    const after = await readOutbox('A', { since_ts: first.ts });
+    expect(after.map((m) => m.summary)).toEqual(['new']);
+  });
+
+  it('no sent messages → empty outbox', async () => {
+    expect(await readOutbox('nobody')).toEqual([]);
   });
 });
 

@@ -30,6 +30,9 @@ import { createLatitudeApiClient, pickInStockSite } from './latitude-api';
 
 const haveCreds = !!process.env.LATITUDE_API_KEY && !!process.env.LATITUDE_E2E_PROJECT;
 const TWENTY_MIN = 20 * 60_000;
+/** The full lifecycle includes the on-frame install (apt + node + 198MB tarball scp +
+ *  monorepo npm ci) — far heavier than the provision smoke. */
+const FORTY_FIVE_MIN = 45 * 60_000;
 
 const ctx: DeploymentContext = {
   harnessSlug: 'e2e-smoke',
@@ -104,6 +107,6 @@ describe.skipIf(!haveFull)('Full deploy lifecycle E2E (also needs LATITUDE_E2E_H
         console.log(`[latitude-e2e] ${slug} teardown destroyed=${r.destroyed}`);
       }
     },
-    TWENTY_MIN,
+    FORTY_FIVE_MIN,
   );
 });

@@ -11,11 +11,12 @@ use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models;
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
-    ConvDetail, ConvListResponse, ConvSummary, ConversationLoad, CoordInboxResponse, CoordMsg,
-    CrewMember, CrewRow, CrewSummary, CrewsResponse, CuratedSignal, CurationFeedPayload,
-    DocsResponse, FeaturesPayload, FlagsResponse, HarnessFeature, HarnessIssue, HarnessRef,
-    IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, Notif, OperatorConfig,
-    PlanItemStates, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
+    BeeAssignment, BeeMailPayload, ConvDetail, ConvListResponse, ConvSummary, ConversationLoad,
+    CoordInboxResponse, CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, CuratedSignal,
+    CurationFeedPayload, DocsResponse, FeaturesPayload, FleetAssignmentsPayload, FlagsResponse,
+    HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow, LayoutSummary,
+    LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary,
+    PlansResponse, ProjectsResponse, RosterEntry, RosterResponse, SelectedBee, SelectedBeePayload,
     TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload, TurnsPage, ViewState,
     ViewStateResponse, WorkItem, WorkItemsPayload,
 };
@@ -834,6 +835,102 @@ impl OperatorClient {
         Ok(serde_json::from_str::<CurationFeedPayload>(text)
             .context("parse curation feed payload")?
             .signals)
+    }
+
+    // ─── Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ───
+    // The bee pane (`pui bee-pane`) renders the swarm-selected bee's dossier:
+    // its ranked work-list (fleet:assignments) + coord inbox/outbox
+    // (fleet:bee_mail). The swarm pane publishes the cursor's bee via
+    // fleet:selected_bee; the bee pane polls it (DB is NOT the transport — the
+    // relay is an in-memory operator endpoint, see fleet/selected-bee.ts).
+
+    /// The selected bee's ordered work-list via `fleet:assignments { agent }`
+    /// (MCP envelope unwrapped). Returns the matching `AgentAssignment` (or None
+    /// when the bee holds nothing / isn't present).
+    pub async fn bee_assignment(&self, owner_id: &str) -> Result<Option<BeeAssignment>> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/fleet/assignments",
+                serde_json::json!({ "agent": owner_id, "include_stale": true }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("fleet:assignments: missing content[0].text")?;
+        let payload: FleetAssignmentsPayload =
+            serde_json::from_str(text).context("parse fleet assignments payload")?;
+        // The `agent` filter returns just this bee, but match defensively on id/name.
+        Ok(payload.agents.into_iter().find(|a| {
+            a.agent_id == owner_id || a.name.as_deref() == Some(owner_id)
+        }))
+    }
+
+    /// The selected bee's coord inbox + outbox via `fleet:bee_mail { owner_id }`
+    /// (MCP envelope unwrapped).
+    pub async fn bee_mail(&self, owner_id: &str, limit: u32) -> Result<BeeMailPayload> {
+        let env = self
+            .post_json(
+                "/api/agent-tools/fleet/bee_mail",
+                serde_json::json!({ "owner_id": owner_id, "limit": limit }),
+            )
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("fleet:bee_mail: missing content[0].text")?;
+        serde_json::from_str::<BeeMailPayload>(text).context("parse bee_mail payload")
+    }
+
+    /// Read the ephemeral selected bee (the bee pane polls this; the swarm pane
+    /// sets it). `fleet:selected_bee {}` (MCP envelope unwrapped). `None` = unset.
+    pub async fn selected_bee_get(&self) -> Result<Option<SelectedBee>> {
+        let env = self
+            .post_json("/api/agent-tools/fleet/selected_bee", serde_json::json!({}))
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("fleet:selected_bee: missing content[0].text")?;
+        Ok(serde_json::from_str::<SelectedBeePayload>(text)
+            .context("parse selected_bee payload")?
+            .selected
+            .filter(|s| s.owner_id.is_some()))
+    }
+
+    /// Publish the swarm-pane selection. `fleet:selected_bee { select }`. An
+    /// empty `owner_id` clears it. Best-effort — the result envelope is ignored.
+    pub async fn selected_bee_set(&self, owner_id: Option<&str>, name: Option<&str>) -> Result<()> {
+        self.post_json(
+            "/api/agent-tools/fleet/selected_bee",
+            serde_json::json!({
+                "select": { "owner_id": owner_id, "name": name }
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The active brand pack's term→label map via `lexicon:active_pack`
+    /// (pui-hive-lexicon-2026-06-06; MCP envelope unwrapped). Fetched once at
+    /// startup; the pui falls back to its built-in classic labels on any error.
+    pub async fn lexicon_active_pack(&self) -> Result<LexiconPackPayload> {
+        let env = self
+            .post_json("/api/agent-tools/lexicon/active_pack", serde_json::json!({}))
+            .await?;
+        let text = env
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .context("lexicon:active_pack: missing content[0].text")?;
+        serde_json::from_str::<LexiconPackPayload>(text).context("parse lexicon pack payload")
     }
 
     // --- Workbench persistence (P12 / D-002): /api/tui/* ---

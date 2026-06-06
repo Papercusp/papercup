@@ -149,6 +149,24 @@ export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>
 }
 
 /**
+ * Read everything `ownerId` SENT — every envelope whose `from === ownerId`,
+ * across the whole message log. The outbox half of the per-bee mail view
+ * (pui-bee-dossier-pane-2026-06-06). Sorted by ts ascending; `since_ts` filters
+ * strictly later than the given ISO timestamp.
+ */
+export async function readOutbox(
+  ownerId: string,
+  opts: { since_ts?: string } = {},
+): Promise<CoordEnvelope[]> {
+  const lines = await coordLog.readLines('messages');
+  const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : 0;
+  return lines
+    .filter((l) => l.from === ownerId)
+    .filter((l) => !sinceMs || new Date(l.ts).getTime() > sinceMs)
+    .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+}
+
+/**
  * Reconstruct a thread rooted at `rootMsgId` by walking the
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */

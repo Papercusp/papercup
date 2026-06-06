@@ -1546,6 +1546,142 @@ impl FleetRateStatus {
     }
 }
 
+// ─── Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06) ─────────────────
+
+/// One item on a bee's ordered work-list — a `queued`/`doing` entry from the
+/// `fleet:assignments` view (the externalized per-bee TodoWrite the Queen reads).
+/// Wire is camelCase (`itemKind`, `rankWriter`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BeeWorkItem {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub item_kind: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Position in the holder's ordered work-list (rank ASC; NULL = unranked, last).
+    #[serde(default)]
+    pub rank: Option<i64>,
+    /// Who placed it — "bee" (self) | "queen" (overlay) | null (unranked).
+    #[serde(default)]
+    pub rank_writer: Option<String>,
+}
+
+/// One agent's assignment from `fleet:assignments` (`agents[]`) — the dossier's
+/// top region. Only the fields the bee pane renders are kept.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BeeAssignment {
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub alive: bool,
+    #[serde(default)]
+    pub intent: String,
+    /// The bee's work-items in rank order (head-of-line first; unranked last).
+    #[serde(default)]
+    pub queued: Vec<BeeWorkItem>,
+    /// Work-item count — the load signal.
+    #[serde(default)]
+    pub load: i64,
+}
+
+/// Inner JSON of the `fleet:assignments` envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FleetAssignmentsPayload {
+    #[serde(default)]
+    pub agents: Vec<BeeAssignment>,
+}
+
+/// One coord-mail entry on the bee-dossier pane (a `fleet:bee_mail` envelope
+/// inbox/outbox line). The wire is the raw coord envelope (snake_case).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct BeeMailEntry {
+    #[serde(default)]
+    pub ts: String,
+    #[serde(default)]
+    pub msg_id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Recipients (["*"] = broadcast, ["human"] = surfaced to the user).
+    #[serde(default)]
+    pub to: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// One side (inbox/outbox) of `fleet:bee_mail`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BeeMailSide {
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub entries: Vec<BeeMailEntry>,
+}
+
+/// Inner JSON of the `fleet:bee_mail` envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BeeMailPayload {
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default)]
+    pub inbox: BeeMailSide,
+    #[serde(default)]
+    pub outbox: BeeMailSide,
+}
+
+/// The ephemeral selected-bee relay value (`fleet:selected_bee` → `selected`).
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct SelectedBee {
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub ts: i64,
+}
+
+/// Inner JSON of the `fleet:selected_bee` envelope (`content[0].text`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct SelectedBeePayload {
+    #[serde(default)]
+    pub selected: Option<SelectedBee>,
+}
+
+// ─── Hive lexicon (pui-hive-lexicon-2026-06-06) ──────────────────────────────
+
+/// Singular/plural display forms for one lexicon term.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct TermForms {
+    #[serde(default)]
+    pub one: String,
+    #[serde(default)]
+    pub other: String,
+}
+
+/// Inner JSON of the `lexicon:active_pack` envelope (`content[0].text`): the
+/// active brand pack id + the full term → forms map (presentation only).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct LexiconPackPayload {
+    #[serde(default, rename = "packId")]
+    pub pack_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub terms: std::collections::HashMap<String, TermForms>,
+}
+
 #[cfg(test)]
 mod fleet_rate_tests {
     use super::*;

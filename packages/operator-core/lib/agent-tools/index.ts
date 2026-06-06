@@ -328,6 +328,11 @@ import './fleet/assignments';
 // fleet:drain — graceful wind-down signal for bee eviction (local-hive P-051).
 // Distinct from fleet:cancel's hard kill; the bee cooperates to release locks/claims.
 import './fleet/drain';
+// Bee-dossier dock pane (pui-bee-dossier-pane-2026-06-06): fleet:bee_mail reads
+// one bee's coord inbox+outbox by ownerId; fleet:selected_bee is the ephemeral
+// in-memory swarm-pane→bee-pane selection relay (NOT PG — DB is not a transport).
+import './fleet/bee_mail';
+import './fleet/selected_bee';
 
 // Coordination ops as blueprint primitives — the dual-surface decision tools
 // (coordination-ops-as-blueprint-primitives-2026-06-04 D-001). coord:vote /
@@ -459,6 +464,11 @@ import '../coord-lifecycle/register-emit-rules';
 import './rationale/feed';
 import './rationale/reproject';
 import '../rationale/rules';
+
+// lexicon:active_pack (pui-hive-lexicon-2026-06-06) — expose the active brand
+// pack's term→label map over HTTP so the Rust pui resolves user-facing labels
+// from the ONE server-twin source instead of duplicating the packs.
+import './lexicon/active_pack';
 
 // autoloop-pot-operator-rebuild-2026-06-05 P0 — re-project the Pot's persisted
 // event-wake subscriptions (harness_shared.pot_wake) into live reaction rules.
