@@ -23,26 +23,21 @@
  *
  * Both are best-effort: any failure returns null / logs + continues.
  */
-import { join } from 'node:path';
 import { parseAuditorOutput } from '@papercusp/orchestrator';
 import type { AuditorSpawnFn, CreateEscalationFn } from '@papercusp/orchestrator';
 import { resolveLaunchRole } from '../blueprint/launch-blueprint';
 import { resolveProject } from '../harness-core';
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { activeWorkspaceId } from '../workspace-registry';
-import { harnessPackageDir } from '../harness-paths';
-import { buildInvokeOnce } from '../harness-invoke-once';
-import { spawn } from 'node:child_process';
+import { spawnInvokeOnce } from './orchestrator-runner';
 import { setAuditorLaneFns } from './orchestrator-loop';
 import { buildPipelineExtraEnv } from './orchestrator-spawn-env';
 
 /**
- * Spawn the `auditor` role for one feature. Reuses `spawnInvokeOnce`
- * (same pattern as debugger/finalizer). Parses the agent's JSON output.
- * Returns null on failure — the lane treats null as fail-safe reject.
+ * Spawn the `auditor` role for one feature through the ONE spawn chokepoint
+ * (`spawnInvokeOnce` — the same governed + paced helper the debugger/finalizer
+ * use). Parses the agent's JSON output. Returns null on failure — the lane treats
+ * null as fail-safe reject.
  */
-const AUDITOR_INVOKE_TIMEOUT_MS = 120_000; // auditor is read-only + cheap
-
 async function spawnAuditorInvokeOnce(
   projectDir: string,
   harnessSlug: string,
@@ -67,45 +62,25 @@ async function spawnAuditorInvokeOnce(
   } catch (err) {
     console.warn(`[auditor-spawn] audit blueprint role resolve failed, using 'auditor': ${(err as Error).message}`);
   }
-  const { command, args, env } = buildInvokeOnce({
-    projectDir,
-    stateDir: join(projectDir, '.papercusp'),
-    harnessDir: harnessPackageDir(),
-    role,
-    extras,
-    extraEnv: buildPipelineExtraEnv({ harnessSlug, workspaceId }),
-  });
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd: projectDir, env });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch { /* ignore */ }
-    }, AUDITOR_INVOKE_TIMEOUT_MS);
-    child.stdout?.on('data', (d) => { stdout += String(d); });
-    child.stderr?.on('data', (d) => { stderr += String(d); });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      const exitCode = code ?? 1;
-      if (exitCode !== 0 && stderr.trim()) {
-        console.error(
-          `[auditor-spawn] ${harnessSlug}/${featureId} exit ${exitCode} — stderr:\n${stderr.trim().slice(0, 2000)}`,
-        );
-      }
-      // Strip orchestrator timestamp lines, keep agent output.
-      const output = stdout
-        .split('\n')
-        .filter((l) => !/^\[20\d\d-\d\d-\d\dT/.test(l))
-        .join('\n')
-        .trim();
-      resolve({ output, exitCode });
-    });
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      console.error(`[auditor-spawn] ${harnessSlug}/${featureId} spawn error: ${err.message}`);
-      resolve({ output: '', exitCode: 1 });
-    });
-  });
+  // P-008: route through `spawnInvokeOnce` (the single governed chokepoint) instead
+  // of a private `buildInvokeOnce` + raw `child_process.spawn` — the prior inlined
+  // spawn matched this module's doc-comment claim ("Uses spawnInvokeOnce") but not
+  // its code, and bypassed the governor's pacing. Behavior is preserved (synchronous
+  // verdict; fail-safe reject on non-zero/empty); the per-auditor 120s timeout
+  // optimization defers to invoke-once's own timeout (a safe upper bound).
+  const r = await spawnInvokeOnce(projectDir, role, extras, buildPipelineExtraEnv({ harnessSlug, workspaceId }));
+  if (r.exitCode !== 0 && r.stderr?.trim()) {
+    console.error(
+      `[auditor-spawn] ${harnessSlug}/${featureId} exit ${r.exitCode} — stderr:\n${r.stderr.trim().slice(0, 2000)}`,
+    );
+  }
+  // Strip orchestrator timestamp lines, keep agent output.
+  const output = r.output
+    .split('\n')
+    .filter((l) => !/^\[20\d\d-\d\d-\d\dT/.test(l))
+    .join('\n')
+    .trim();
+  return { output, exitCode: r.exitCode };
 }
 
 export const realAuditorSpawn: AuditorSpawnFn = async (

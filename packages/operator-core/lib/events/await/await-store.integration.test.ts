@@ -230,6 +230,18 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
 
   // ── unify-watch-primitive: cardinality + floor + coalesce (P-005/P-007) ──
 
+  it('fair grant-to-next: a targeted key fires ONLY its one waiter, never a broadcast (P-008/D-005)', async () => {
+    // The lock-grant-bridge pattern: a freed lock grants ONE next waiter and emits that
+    // waiter's targeted `lock:grant:<ticket>` key. Two waiters on two distinct tickets must
+    // not thunder-herd — firing ticket A wakes only A's watch, leaving B's armed.
+    await store.registerAwait({ subscriberId: 'su-waiterA', eventKey: 'lock:grant:ticketA' });
+    await store.registerAwait({ subscriberId: 'su-waiterB', eventKey: 'lock:grant:ticketB' });
+    const firedA = await store.fireAwaitsForKey({ eventKey: 'lock:grant:ticketA' });
+    expect(firedA.map((a) => a.subscriberId)).toEqual(['su-waiterA']);
+    // B is untouched — still active, not woken.
+    expect((await store.listActiveAwaits('su-waiterB')).map((a) => a.eventKey)).toEqual(['lock:grant:ticketB']);
+  });
+
   it('standing watches (once:false) fire on EVERY emit; a one-shot peer fires once (cardinality, D-001)', async () => {
     await store.registerAwait({ subscriberId: 'su-standing', eventKey: 'card:k', once: false, minSleepSec: 30 });
     await store.registerAwait({ subscriberId: 'su-oneshot', eventKey: 'card:k', once: true });

@@ -27,6 +27,7 @@
  */
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { loopbackFetch } from '../loopback-fetch';
+import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 
 const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
 
@@ -166,7 +167,7 @@ export function setLaunchBlueprintFire(fn: LaunchFireFn | null): void {
   _fire = fn;
 }
 
-const defaultFire: LaunchFireFn = ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs }) => {
+const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, kickoff, extra, timeoutMs }) => {
   const body: Record<string, unknown> = {};
   if (kickoff) body.kickoff = kickoff;
   // `BLUEPRINT_ID=<id>` scopes the role's prompt resolution to
@@ -176,10 +177,33 @@ const defaultFire: LaunchFireFn = ({ url, role, installSlug, blueprintId, kickof
   // the others inherit their global persona unchanged.
   body.extra = [`BLUEPRINT_ID=${blueprintId}`, ...(extra ?? [])];
   if (timeoutMs) body.timeoutMs = timeoutMs;
-  // Fire-and-forget: the invoke route runs the agent to completion (up to its
-  // timeout); a launch must NOT block the caller (a routine's durable step, an
-  // event reaction) on the whole agent lifetime. Mirrors the bespoke callers this
-  // replaces (the git-sync merge-resolver dispatch, the release/improvement fires).
+
+  // DURABLE when DBOS is on (unify-agent-spawn-chokepoint P-010): the launch runs
+  // inside a registered, step-retried DBOS workflow that survives a host crash +
+  // re-fires once, instead of the historical `void loopbackFetch` that LOST the
+  // agent on crash. Gated on the flag so durable-spawn.ts (it registers a DBOS
+  // workflow at import) is only loaded under DBOS; `durableSpawnFire` returns false
+  // when it can't durably enqueue here (e.g. called from inside another step) so we
+  // fall through to fire-and-forget.
+  if (dbosOrchestratorActive()) {
+    try {
+      const { durableSpawnFire } = await import('../dbos/durable-spawn');
+      const idempotencyKey = `launch:${installSlug}:${blueprintId}:${role}:${Date.now()}`;
+      if (await durableSpawnFire({ url, body, idempotencyKey, label: `${installSlug}/${role}` })) {
+        return;
+      }
+    } catch (e) {
+      console.warn(
+        `[launch-blueprint] durable fire unavailable (${installSlug}/${role}); falling back: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+
+  // Fire-and-forget fallback (DBOS off, or a durable start isn't possible here):
+  // the invoke route runs the agent to completion (up to its timeout); a launch
+  // must NOT block the caller (a routine's durable step, an event reaction) on the
+  // whole agent lifetime. Mirrors the bespoke callers this replaces (the git-sync
+  // merge-resolver dispatch, the release/improvement fires).
   void loopbackFetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

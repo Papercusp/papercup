@@ -122,6 +122,10 @@ export async function startDbos(): Promise<void> {
     await import('./coord-program-workflow');
     const { wireCoordSpawnRunner } = await import('./coord-spawn-runner');
     wireCoordSpawnRunner();
+    // unify-agent-spawn-chokepoint P-010: register the reusable durable-spawn
+    // wrapper (autonomous launch-blueprint fires survive a host crash + re-run
+    // once) BEFORE launch, alongside the feature-pipeline + coord-program workflows.
+    await import('./durable-spawn');
   }
   if (dbosProvisionActive()) {
     // dbos-flows P-001/P-002 (default-on; disable with PAPERCUSP_DBOS_PROVISION=0):
