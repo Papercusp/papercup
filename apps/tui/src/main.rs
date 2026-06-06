@@ -166,6 +166,9 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     // and the in-flight mic-capture handle (dropping it stops transmitting).
     let mut voice_chan: Option<std::sync::Arc<voice_stream::VoiceStream>> = None;
     let mut voice_mic: Option<voice_stream::MicHandle> = None;
+    // Open-mic (P-010): auto-start the mic once per channel join when
+    // input_mode=open-mic, so it isn't restarted after a manual MicOff.
+    let mut open_mic_started = false;
 
     terminal.draw(|f| ui::draw(f, &app))?;
 
@@ -196,6 +199,45 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
             // what actually re-enables reconnection (Connect gates on is_none()).
             voice_chan = None;
             voice_mic = None;
+            open_mic_started = false;
+        }
+
+        // Open-mic (P-010): once we're in a channel with input_mode=open-mic,
+        // auto-start the mic (no PTT) with the VAD transmit-gate on. Fires once
+        // per join (open_mic_started) so a manual MicOff isn't fought.
+        if !open_mic_started && voice_mic.is_none() {
+            let open_mic = app
+                .voice_ui
+                .prefs
+                .as_ref()
+                .map(|p| p.input_mode == "open-mic")
+                .unwrap_or(false);
+            let in_channel = app
+                .voice_ui
+                .status
+                .as_ref()
+                .map(|st| st.channel.is_some())
+                .unwrap_or(false);
+            if open_mic && in_channel {
+                if let Some(vs) = &voice_chan {
+                    match voice_stream::start_mic(vs.clone()) {
+                        Ok(h) => {
+                            vs.set_tx_gate(true);
+                            voice_mic = Some(h);
+                            open_mic_started = true;
+                            let _ = tx.send(Event::VoiceUi(
+                                crate::voice_ui::VoiceUiEvent::MicState(true),
+                            ));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Event::VoiceUi(crate::voice_ui::VoiceUiEvent::Error(
+                                format!("open-mic: {e}"),
+                            )));
+                            open_mic_started = true; // don't retry-spam on failure
+                        }
+                    }
+                }
+            }
         }
 
         // Pump the live mic meter while recording: read the capture level on each
@@ -416,8 +458,10 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                         } else if let Some(vs) = &voice_chan {
                             let _ = vs.request_status();
                         }
-                        // (Re)fetch the channel registry over HTTP (not realtime).
+                        // (Re)fetch the channel registry + voice prefs over HTTP
+                        // (prefs drive the open-mic auto-start; P-010).
                         tokio::spawn(voice_channels_fetch(tx.clone()));
+                        tokio::spawn(voice_prefs_get(tx.clone()));
                         terminal.draw(|f| ui::draw(f, &app))?;
                     }
                     VC::Join(id) => {
@@ -430,6 +474,7 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                             let _ = vs.leave();
                         }
                         voice_mic = None;
+                        open_mic_started = false; // re-arm open-mic for the next join
                         let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
                     }
                     VC::SetMuted(m) => {
@@ -440,6 +485,15 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                     VC::MicOn => match &voice_chan {
                         Some(vs) => match voice_stream::start_mic(vs.clone()) {
                             Ok(h) => {
+                                // PTT → gate off (the held key IS the gate);
+                                // open-mic manual restart → VAD gate on (P-010).
+                                let open_mic = app
+                                    .voice_ui
+                                    .prefs
+                                    .as_ref()
+                                    .map(|p| p.input_mode == "open-mic")
+                                    .unwrap_or(false);
+                                vs.set_tx_gate(open_mic);
                                 voice_mic = Some(h);
                                 let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
                             }
@@ -449,6 +503,7 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                         },
                         None => {}
                     },
+
                     VC::MicOff => {
                         voice_mic = None;
                         let _ = tx.send(Event::VoiceUi(VE::MicState(false)));

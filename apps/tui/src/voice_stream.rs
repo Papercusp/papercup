@@ -149,6 +149,38 @@ pub struct VoiceStream {
     writer: Arc<Mutex<UnixStream>>,
     mic_level_bits: Arc<AtomicU32>,
     mic_acc: Mutex<Vec<f32>>,
+    tx_gate: Mutex<TxGate>,
+}
+
+/// Open-mic VAD transmit gate (P-010). When enabled, near-silent frames are
+/// dropped — with a hangover so speech tails aren't clipped — so background
+/// noise during silence isn't sent. A basic noise gate; PTT mode leaves it
+/// disabled (the held key is the gate). Spectral noise-suppression + AEC are a
+/// separate, operator-side DSP slice (D-013) whose efficacy needs real audio.
+struct TxGate {
+    enabled: bool,
+    hangover: u32,
+}
+
+/// RMS threshold (0..1) a frame must exceed to open the gate — just above a
+/// typical idle-mic noise floor.
+const TX_GATE_THRESHOLD: f32 = 0.012;
+/// Frames to keep transmitting after the last loud frame (20ms each → ~400ms)
+/// so the natural tail of speech isn't clipped.
+const TX_HANGOVER_FRAMES: u32 = 20;
+
+/// The pure gate decision (extracted for unit tests): should this frame, with
+/// the given RMS, be transmitted? Mutates the hangover counter.
+fn tx_gate_decision(g: &mut TxGate, rms: f32) -> bool {
+    if !g.enabled {
+        return true;
+    }
+    if rms >= TX_GATE_THRESHOLD {
+        g.hangover = TX_HANGOVER_FRAMES;
+    } else if g.hangover > 0 {
+        g.hangover -= 1;
+    }
+    g.hangover > 0
 }
 
 impl VoiceStream {
@@ -173,6 +205,10 @@ impl VoiceStream {
                 writer,
                 mic_level_bits: Arc::new(AtomicU32::new(0)),
                 mic_acc: Mutex::new(Vec::new()),
+                tx_gate: Mutex::new(TxGate {
+                    enabled: false,
+                    hangover: 0,
+                }),
             },
             ev_rx,
             mix_rx,
@@ -209,6 +245,17 @@ impl VoiceStream {
         f32::from_bits(self.mic_level_bits.load(Ordering::Relaxed))
     }
 
+    /// Enable/disable the open-mic VAD transmit gate (P-010). Open-mic → on
+    /// (drop near-silent frames); PTT → off (the held key is already the gate).
+    pub fn set_tx_gate(&self, enabled: bool) {
+        if let Ok(mut g) = self.tx_gate.lock() {
+            g.enabled = enabled;
+            if !enabled {
+                g.hangover = 0;
+            }
+        }
+    }
+
     /// The testable mic seam: push interleaved f32 PCM at any rate/channels.
     /// Mixes to mono, resamples to 48k, accumulates exact 20ms frames, and
     /// ships each as one MIC frame. `start_mic()` feeds this from cpal.
@@ -224,6 +271,15 @@ impl VoiceStream {
         acc.extend_from_slice(&at48k);
         while acc.len() >= FRAME_SAMPLES {
             let frame: Vec<f32> = acc.drain(..FRAME_SAMPLES).collect();
+            // Open-mic VAD gate (P-010): drop near-silent frames (with hangover)
+            // so silence / background noise isn't transmitted. Disabled for PTT.
+            let transmit = {
+                let mut g = self.tx_gate.lock().map_err(|_| anyhow!("tx_gate poisoned"))?;
+                tx_gate_decision(&mut g, crate::voice::rms(&frame))
+            };
+            if !transmit {
+                continue;
+            }
             let mut bytes = Vec::with_capacity(FRAME_SAMPLES * 2);
             for s in frame {
                 bytes.extend_from_slice(&f32_to_i16(s).to_le_bytes());
@@ -423,6 +479,26 @@ mod tests {
         );
         // monotone ramp stays monotone under linear interp
         assert!(up.windows(2).all(|w| w[1] >= w[0] - f32::EPSILON));
+    }
+
+    #[test]
+    fn tx_gate_decision_gates_silence_with_hangover() {
+        // Disabled gate (PTT): every frame transmits.
+        let mut g = TxGate { enabled: false, hangover: 0 };
+        assert!(tx_gate_decision(&mut g, 0.0));
+        assert!(tx_gate_decision(&mut g, 0.5));
+        // Enabled gate (open-mic): silence with no hangover is dropped.
+        let mut g = TxGate { enabled: true, hangover: 0 };
+        assert!(!tx_gate_decision(&mut g, 0.0));
+        // A loud frame transmits and arms the hangover.
+        assert!(tx_gate_decision(&mut g, 0.5));
+        // The tail right after speech still transmits (hangover keeps it open).
+        assert!(tx_gate_decision(&mut g, 0.0));
+        // Sustained silence eventually gates transmit off.
+        for _ in 0..TX_HANGOVER_FRAMES {
+            tx_gate_decision(&mut g, 0.0);
+        }
+        assert!(!tx_gate_decision(&mut g, 0.0));
     }
 
     #[test]
