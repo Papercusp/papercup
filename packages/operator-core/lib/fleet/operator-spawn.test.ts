@@ -232,14 +232,29 @@ describe('spawnAgentInHarness — role + cap validation', () => {
     expect(role).toBe('bee');
   });
 
-  it('passes the Queen brief through as `extras` for a placed bee', async () => {
+  it('threads the Queen brief into the child env as QUEEN_BRIEF (P-060 — the real delivery channel, not `extras`)', async () => {
+    // P-060: the brief reaches the bee via extraEnv.QUEEN_BRIEF (which buildInvokeOnce
+    // sets on the child env, and invoke-once's buildPrompt renders as `## Queen brief`),
+    // NOT as a generic `extras` positional. Assert the real channel.
+    const brief = 'watch for the migration race; this connects to bee-2; priority: unblock CI';
     const res = await spawnAgentInHarness({
-      workspaceId: 'ws-1', harness: 'demo', role: 'bee',
-      extras: ['BRIEF=watch for the migration race; this connects to bee-2'],
+      workspaceId: 'ws-1', harness: 'demo', role: 'bee', brief,
     });
     expect(res.ok).toBe(true);
-    const [, , extras] = vi.mocked(spawnInvokeOnce).mock.calls[0];
-    expect(extras).toContain('BRIEF=watch for the migration race; this connects to bee-2');
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.QUEEN_BRIEF).toBe(brief);
+  });
+
+  it('threads the operator `s-…` spawnId into the child env as PAPERCUSP_SPAWN_ID (THE UMBILICAL — bee coord identity)', async () => {
+    // The voice-gap fix: the durable s-… spawnId is the child's stable coord owner.
+    // It rides extraEnv.PAPERCUSP_SPAWN_ID so invoke()/spawn-mcp bakes it as the signed
+    // MCP URL's client= param → resolveAgentIdentity attributes the bee's coord writes
+    // to it instead of throwing "no attributable identity".
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: 'bee' });
+    expect(res.ok).toBe(true);
+    const [, , , env] = vi.mocked(spawnInvokeOnce).mock.calls[0];
+    expect(env.PAPERCUSP_SPAWN_ID).toBe(res.spawnId);
+    expect(env.PAPERCUSP_SPAWN_ID).toMatch(/^s-\d+-/);
   });
 
   it('rejects when the workspace is at the running-spawn ceiling', async () => {

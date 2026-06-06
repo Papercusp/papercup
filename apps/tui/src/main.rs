@@ -70,8 +70,10 @@ async fn main() -> Result<()> {
         Some("hud") => {}
         // Single-pane dock modes (P-013 / D-011) — fall through to the normal
         // run loop with the tab pinned below: `chat-pane` is the dock's
-        // operator chat, `voice-pane` the dock's voice channels.
-        Some("chat-pane") | Some("voice-pane") => {}
+        // operator chat, `voice-pane` the dock's voice channels, `apiary-pane`
+        // the hive browser (the Cupboard's browse/join surface) and
+        // `swarm-pane` the fleet/swarm activity view.
+        Some("chat-pane") | Some("voice-pane") | Some("apiary-pane") | Some("swarm-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
         _ => {}
     }
@@ -80,6 +82,11 @@ async fn main() -> Result<()> {
     let pinned = match subcommand.as_deref() {
         Some("chat-pane") => Some(app::Tab::Operator),
         Some("voice-pane") => Some(app::Tab::Voice),
+        // The hive browser (the-hive lexicon: an APIARY is a yard of hives) —
+        // pins the Cupboard tab: browse/search the listings + per-kind join.
+        Some("apiary-pane") => Some(app::Tab::Cupboard),
+        // The swarm (fleet) activity view — pins the Fleet tab.
+        Some("swarm-pane") => Some(app::Tab::Fleet),
         _ => None,
     };
 

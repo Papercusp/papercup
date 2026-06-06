@@ -157,11 +157,13 @@ pub fn launch_argv(layout_path: &str) -> Vec<String> {
 }
 
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011):
-/// the surface the desktop-docked native terminal runs. Three panes
-/// side-by-side — the **voice** channels (`pui voice-pane`), the **operator
-/// chat** (`pui chat-pane`) and the **brain** (a `psu` engineer-collaborator
-/// session) — and NOTHING else: no workbench HUD, no work-area agent panes, no
-/// swap presets. `brain_argv` is the brain pane's command (e.g.
+/// the surface the desktop-docked native terminal runs. Five panes
+/// side-by-side — the **apiary** (the hive browser: the Cupboard's browse/join
+/// surface, `pui apiary-pane`), the **voice** channels (`pui voice-pane`), the
+/// **operator chat** (`pui chat-pane`), the **brain** (a `psu`
+/// engineer-collaborator session) and the **swarm** (fleet activity,
+/// `pui swarm-pane`) — and NOTHING else: no workbench HUD, no work-area agent
+/// panes, no swap presets. `brain_argv` is the brain pane's command (e.g.
 /// `["psu", "--brain"]`); its first element is the command, the rest are
 /// quoted args. Pure (no I/O) so it is unit-tested.
 pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
@@ -180,27 +182,36 @@ pub fn chat_dock_kdl(brain_argv: &[String]) -> String {
         format!("\n            args {quoted}")
     };
     format!(
-        r#"// Papercusp chat dock — voice | operator chat | brain (native-terminal-desktop
-// P-013 / D-011). The desktop-docked native terminal surface: THREE panes only,
-// NO workbench HUD and NO work-area agent panes. Left = the P2P voice channels
-// as a voice-only pui pane; middle = the operator (ElevenLabs voice) chat as a
-// chat-only pui pane; right = the brain (a psu engineer session, resumed at
-// launch via the D-013 brain pin).
+        r#"// Papercusp chat dock — apiary | voice | operator chat | brain | swarm
+// (native-terminal-desktop P-013 / D-011). The desktop-docked native terminal
+// surface: FIVE panes only, NO workbench HUD and NO work-area agent panes.
+// Left→right: the apiary (the hive browser — the Cupboard's browse/join
+// surface), the P2P voice channels, the operator (ElevenLabs voice) chat, the
+// brain (a psu engineer session, resumed at launch via the D-013 brain pin)
+// and the swarm (fleet activity).
 layout {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
     pane split_direction="vertical" {{
-        pane name="voice" size="24%" {{
+        pane name="apiary" size="15%" {{
+            command "pui"
+            args "apiary-pane"
+        }}
+        pane name="voice" size="18%" {{
             command "pui"
             args "voice-pane"
         }}
-        pane name="operator" focus=true size="38%" {{
+        pane name="operator" focus=true size="26%" {{
             command "pui"
             args "chat-pane"
         }}
-        pane name="brain" size="38%" {{
+        pane name="brain" size="26%" {{
             command "{brain_cmd}"{args_line}
+        }}
+        pane name="swarm" size="15%" {{
+            command "pui"
+            args "swarm-pane"
         }}
     }}
     pane size=2 borderless=true {{
@@ -363,30 +374,40 @@ mod tests {
     // ── P-013 chat dock ──────────────────────────────────────────────────────
 
     #[test]
-    fn chat_dock_has_voice_operator_and_brain_panes() {
+    fn chat_dock_has_apiary_voice_operator_brain_and_swarm_panes() {
         let kdl = chat_dock_kdl(&["psu".to_string(), "--resume".to_string()]);
-        // The three panes: voice | operator chat | brain (psu --resume).
+        // The five panes: apiary | voice | operator chat | brain | swarm.
+        assert!(kdl.contains("name=\"apiary\""));
         assert!(kdl.contains("name=\"voice\""));
         assert!(kdl.contains("name=\"operator\""));
         assert!(kdl.contains("name=\"brain\""));
+        assert!(kdl.contains("name=\"swarm\""));
+        assert!(kdl.contains("args \"apiary-pane\""));
         assert!(kdl.contains("args \"voice-pane\""));
         assert!(kdl.contains("args \"chat-pane\""));
+        assert!(kdl.contains("args \"swarm-pane\""));
         assert!(kdl.contains("command \"psu\""));
         assert!(kdl.contains("args \"--resume\""));
-        // Side-by-side, voice LEFT of operator LEFT of brain.
+        // Side-by-side, apiary LEFT of voice LEFT of operator LEFT of brain
+        // LEFT of swarm.
         assert!(kdl.contains("split_direction=\"vertical\""));
-        let (v, o, b) = (
+        let (a, v, o, b, s) = (
+            kdl.find("name=\"apiary\"").unwrap(),
             kdl.find("name=\"voice\"").unwrap(),
             kdl.find("name=\"operator\"").unwrap(),
             kdl.find("name=\"brain\"").unwrap(),
+            kdl.find("name=\"swarm\"").unwrap(),
         );
-        assert!(v < o && o < b, "pane order must be voice | operator | brain");
+        assert!(
+            a < v && v < o && o < b && b < s,
+            "pane order must be apiary | voice | operator | brain | swarm"
+        );
         // And NOTHING of the workbench: no HUD, no work area, no swap presets.
         assert!(!kdl.contains("args \"hud\""));
         assert!(!kdl.contains("name=\"work\""));
         assert!(!kdl.contains("swap_tiled_layout"));
-        // Exactly two pui panes (voice + chat) + one psu (the brain).
-        assert_eq!(kdl.matches("command \"pui\"").count(), 2);
+        // Exactly four pui panes (apiary + voice + chat + swarm) + one psu (the brain).
+        assert_eq!(kdl.matches("command \"pui\"").count(), 4);
         assert_eq!(kdl.matches("command \"psu\"").count(), 1);
     }
 

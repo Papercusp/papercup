@@ -29,6 +29,13 @@ const SU_ROLES = [
   'operator',
   'documenter',
   'curator',
+  // THE UMBILICAL (local-hive): a fleet:spawn bee flips the status of the plan
+  // item it's working (todo→wip→done) as part of its umbilical back to the Queen.
+  // plans:set-status only mutates ONE item's status line (not plan-level launch/
+  // pause/edit — those stay SU-only), so admitting the bee here is the right, narrow
+  // grant. Paired with the resolveAgentIdentity fleet-spawn branch (identity.ts) so
+  // the bee both passes this role gate AND resolves a coord owner for the write.
+  'bee',
 ] as const;
 
 const argsSchema = z.object({
