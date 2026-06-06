@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// Number of guided steps (kept in sync with `ui::draw_tutorial`).
-pub const STEPS: usize = 3;
+pub const STEPS: usize = 4;
 
 fn base_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".papercusp"))

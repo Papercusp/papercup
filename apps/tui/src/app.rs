@@ -5029,6 +5029,9 @@ mod tests {
         a.update(key(' ', KeyModifiers::NONE));
         assert_eq!(a.tutorial_step, 2);
         assert!(a.show_tutorial);
+        a.update(key(' ', KeyModifiers::NONE)); // → step 3 (the zellij-layer step)
+        assert_eq!(a.tutorial_step, 3);
+        assert!(a.show_tutorial);
         a.update(key('x', KeyModifiers::NONE)); // advance past last → close
         assert!(!a.show_tutorial);
         // Keys behave normally again.

@@ -59,7 +59,6 @@ import { verifyAccessToken } from '../../../power-user-token';
 import {
   parseToolsAllowlist,
   filterListingsByAllowlist,
-  ALWAYS_LOAD_META,
 } from './tool-allowlist';
 // Side-effect: register every operator-side first-party tool into the
 // projected-tool registry. Required on dev (next dev compiles routes
@@ -631,11 +630,12 @@ const handler = createMcpHandler(
         });
         // Opt-in `?tools=a:b,c:d` allowlist (voice-persona P-009). When a
         // caller (operator:converse) names a small working set, serve ONLY
-        // those tools and mark each always-load so Claude Code loads them
-        // directly instead of deferring the whole surface behind ToolSearch.
-        // Absent/empty `?tools=` → no filtering; worker/scoper/probe spawns
-        // keep their full role surface. Listing hint only — tools/call is
-        // unaffected. See tool-allowlist.ts.
+        // those tools — shrinking the operator's ~300-tool surface to ~50 so
+        // the spawn's `ENABLE_TOOL_SEARCH=false` (disableToolSearch) can load
+        // them DIRECTLY without flooding the prompt. Absent/empty `?tools=` →
+        // no filtering; worker/scoper/probe spawns keep their full role
+        // surface. Listing hint only — tools/call is unaffected. See
+        // tool-allowlist.ts.
         const allow = parseToolsAllowlist(
           urlFromExtra(extra)?.searchParams.get('tools'),
         );
@@ -647,10 +647,9 @@ const handler = createMcpHandler(
         return {
           tools: filtered.map((t) => {
             const tt = t as { inputSchema?: unknown };
-            const base = tt.inputSchema
+            return tt.inputSchema
               ? { ...t, inputSchema: sanitizeToolSchema(tt.inputSchema) }
               : { ...t };
-            return allow ? { ...base, _meta: { ...ALWAYS_LOAD_META } } : base;
           }),
         };
       },

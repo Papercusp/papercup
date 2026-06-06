@@ -330,6 +330,12 @@ export default defineTool({
           // "comments", ToolSearch-ing already-loaded tools, occasional
           // 600s loops). Deny them all. See voice-persona-production-readiness.
           disallowBuiltins: true,
+          // Load the ~50-tool `?tools=`-filtered surface DIRECTLY (no ToolSearch
+          // deferral). Empirically the proven non-deferral lever on claude-code
+          // 2.1.x — per-tool `_meta.alwaysLoad` is not honored over HTTP MCP.
+          // Safe only because the mcpUrl above pins `&tools=` to the small set.
+          // (voice-persona-production-readiness P-009.)
+          disableToolSearch: true,
           signal: ctx.signal,
         })) {
           if (ctx.signal.aborted) break;

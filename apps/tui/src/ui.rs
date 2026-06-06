@@ -2289,7 +2289,7 @@ fn draw_notifs(f: &mut Frame, app: &App) {
 
 /// The guided multi-step tutorial (P9). `step` is clamped to the last page.
 fn draw_tutorial(f: &mut Frame, step: usize) {
-    const STEPS: [(&str, &str); 3] = [
+    const STEPS: [(&str, &str); 4] = [
         (
             "Welcome to pui — the Papercusp workbench",
             "pui is your terminal HUD over the operator. Everything here is live —\n\
@@ -2307,6 +2307,17 @@ fn draw_tutorial(f: &mut Frame, step: usize) {
              Open git for the active harness:     g   (lazygit)\n\n\
              Agents run at full fidelity in their own zellij panes — pui never\n\
              wraps or reimplements them.",
+        ),
+        (
+            "Your workbench is zellij",
+            "pui is one pane — the HUD. Your agents live in the WORK AREA beside\n\
+             it, and that whole window is a zellij session. These keys drive the\n\
+             layer pui doesn't:\n\n\
+             Move focus:   Alt + ← ↓ ↑ →   (or Alt + h j k l)\n\
+             Layouts:      Alt + [  /  Alt + ]   (stacked · split · grid)\n\
+             Back to HUD:  Alt-move toward the pui pane\n\n\
+             Command bar ( : ):  :stack · :float · :dock <side> · :layout next|prev\n\
+             New agents ( n ) stack tab-like; when one exits,  r  relaunches it.",
         ),
         (
             "Staying in the loop",
@@ -3742,18 +3753,32 @@ mod tests {
         app.show_help = true; // tutorial should win
         let text = render(&app, 90, 26);
         assert!(text.contains("Welcome to pui"));
-        assert!(text.contains("step 1/3"));
+        assert!(text.contains("step 1/4"));
         assert!(!text.contains("pui — keys")); // help overlay suppressed
+    }
+
+    #[test]
+    fn tutorial_zellij_layer_step_renders() {
+        // D-003: the zellij-layer step teaches the window-manager layer pui runs
+        // in (HUD vs work area, layout cycling, the dock verbs).
+        let mut app = App::new();
+        app.show_tutorial = true;
+        app.tutorial_step = 2; // the new third step
+        let text = render(&app, 90, 28);
+        assert!(text.contains("Your workbench is zellij")); // block title
+        assert!(text.contains("step 3/4"));
+        assert!(text.contains("Alt")); // the zellij keybinds
+        assert!(text.contains("relaunches")); // r-to-relaunch teaching
     }
 
     #[test]
     fn tutorial_last_step_renders() {
         let mut app = App::new();
         app.show_tutorial = true;
-        app.tutorial_step = 2;
+        app.tutorial_step = 3; // "Staying in the loop" is now the 4th/last step
         let text = render(&app, 90, 26);
         assert!(text.contains("Staying in the loop"));
-        assert!(text.contains("step 3/3"));
+        assert!(text.contains("step 4/4"));
     }
 
     #[test]

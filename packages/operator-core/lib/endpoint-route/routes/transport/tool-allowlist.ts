@@ -2,7 +2,7 @@
  * Opt-in tool-allowlist for the agent-mcp HTTP transport's `tools/list`.
  *
  * The shared `/api/mcp` endpoint exposes the FULL projected catalog — for a
- * role-`operator` (or superuser) caller that's ~226 tools, because most tools
+ * role-`operator` (or superuser) caller that's ~300 tools, because most tools
  * declare no `agentRoles` restriction and are therefore visible to every role.
  * Claude Code DEFERS a surface that large (every tool must be `ToolSearch`-
  * activated before it can be called), which makes a persona brain — the
@@ -12,12 +12,15 @@
  *
  * The fix is an OPT-IN `?tools=a:b,c:d` query param. A caller that knows its
  * small working set (operator:converse passes the ~50 `ALL_AGENT_MCP_TOOLS`)
- * gets ONLY those tools in `tools/list`, each marked always-load (see
- * {@link ALWAYS_LOAD_META}) so Claude Code loads them DIRECTLY instead of
- * deferring them. Absent / empty `?tools=` → no filtering at all, so every
- * other spawn (worker / scoper / validator / a bare probe) keeps its full role
- * surface unchanged.
+ * gets ONLY those tools in `tools/list`. Shrinking the surface is half the fix;
+ * the other half is the spawn-side `ENABLE_TOOL_SEARCH=false` lever
+ * (`RunAgentChatOptions.disableToolSearch`) that loads the now-small set
+ * DIRECTLY instead of deferring it. (The per-tool MCP `_meta.anthropic/
+ * alwaysLoad` marker was tried and is NOT honored over the HTTP transport on
+ * claude-code 2.1.x — verified — so the env lever does the non-deferral.)
  *
+ * Absent / empty `?tools=` → no filtering at all, so every other spawn
+ * (worker / scoper / validator / a bare probe) keeps its full role surface.
  * Names are matched against the MCP catalog name (the colon form the registry
  * exposes, e.g. `harness:status`); unknown names in the param are simply
  * ignored (a stale name never hides the rest of the set). This is a LISTING
@@ -26,13 +29,6 @@
  * to shrink the deferred surface, so a tool omitted from `?tools=` that gets
  * called anyway still dispatches normally.
  */
-
-/**
- * MCP `_meta` flag that tells Claude Code (≥ 2.1.121) to load a tool DIRECTLY
- * rather than defer it behind `ToolSearch`. Stamped on every tool returned for
- * an explicit `?tools=` request so the small operator surface is non-deferred.
- */
-export const ALWAYS_LOAD_META = { 'anthropic/alwaysLoad': true } as const;
 
 /**
  * Parse the `?tools=` query value into a name set, or `null` when absent/empty
