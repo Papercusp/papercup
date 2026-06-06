@@ -183,8 +183,10 @@ async fn run<B: Backend>(terminal: &mut Terminal<B>, chat_only: bool) -> Result<
     // zellij over a long-lived `zellij pipe` child. `None` when not running
     // inside zellij / without the plugin — orchestration then falls back to
     // fire-and-forget `zellij action` (below). Its events (topology, pane-exit)
-    // arrive on `tx` like any other.
-    let companion = Companion::spawn(tx.clone());
+    // arrive on `tx` like any other. NOT spawned in chat-only mode (the chat
+    // dock, P-013): there is no work area to orchestrate there, and loading
+    // the plugin surfaces an empty floating pane over the dock.
+    let companion = if chat_only { None } else { Companion::spawn(tx.clone()) };
 
     // Voice mode (voice-mode-tui-port-2026-06-05 P2): the run loop owns the
     // audio handles — the long-lived playback `Player` and the in-flight mic

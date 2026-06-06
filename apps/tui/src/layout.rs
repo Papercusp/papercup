@@ -140,12 +140,19 @@ layout {
 /// `:dock`/`:layout` (D-008). The first entry is the default arrangement.
 pub const SWAP_PRESETS: &[&str] = &["stacked", "stacked-left", "split", "grid"];
 
-/// Argv to start a zellij session with the workbench layout.
+/// Argv to start a zellij session with the workbench layout. The `options`
+/// subcommand layers per-session config overrides WITHOUT replacing the
+/// user's config: startup tips are suppressed — these are app-managed
+/// sessions (the workbench / the desktop chat dock), and the tips pane
+/// floats over the app's panes blocking everything until dismissed.
 pub fn launch_argv(layout_path: &str) -> Vec<String> {
     vec![
         "zellij".to_string(),
         "--layout".to_string(),
         layout_path.to_string(),
+        "options".to_string(),
+        "--show-startup-tips".to_string(),
+        "false".to_string(),
     ]
 }
 
@@ -322,9 +329,19 @@ mod tests {
 
     #[test]
     fn launch_argv_shape() {
+        // `options --show-startup-tips false` layers a per-session override
+        // (no user-config replacement): the tips pane floats over the
+        // app-managed session blocking the panes until dismissed.
         assert_eq!(
             launch_argv("/home/u/.papercusp/pui-workbench.kdl"),
-            vec!["zellij", "--layout", "/home/u/.papercusp/pui-workbench.kdl"]
+            vec![
+                "zellij",
+                "--layout",
+                "/home/u/.papercusp/pui-workbench.kdl",
+                "options",
+                "--show-startup-tips",
+                "false"
+            ]
         );
     }
 
