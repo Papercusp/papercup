@@ -1314,20 +1314,18 @@ async function reconcileAll(state: WatcherState): Promise<void> {
   const reg = await loadHarnessRegistry();
   const newProjects = reg.projects ?? [];
 
-  // If the project list shifted, re-add watch paths.
-  const oldPaths = new Set(state.projects.flatMap(watchedPaths));
+  // If the project list (or path existence) shifted, re-add watch paths.
+  // Diff against the *recorded* subscription sets, not a re-derivation —
+  // see the watchedPathSet doc comment.
   const newPaths = new Set(newProjects.flatMap(watchedPaths));
-  for (const p of newPaths) if (!oldPaths.has(p)) state.watcher.add(p);
-  for (const p of oldPaths) if (!newPaths.has(p)) state.watcher.unwatch(p);
+  for (const p of newPaths) if (!state.watchedPathSet.has(p)) state.watcher.add(p);
+  for (const p of state.watchedPathSet) if (!newPaths.has(p)) state.watcher.unwatch(p);
+  state.watchedPathSet = newPaths;
   // Same housekeeping for the top-level (checkpoint-pattern) watcher.
-  const oldTopPaths = new Set(
-    state.projects.flatMap((p) => harnessDirsForProject(p).map(({ harnessDir }) => harnessDir)),
-  );
-  const newTopPaths = new Set(
-    newProjects.flatMap((p) => harnessDirsForProject(p).map(({ harnessDir }) => harnessDir)),
-  );
-  for (const p of newTopPaths) if (!oldTopPaths.has(p)) state.topWatcher.add(p);
-  for (const p of oldTopPaths) if (!newTopPaths.has(p)) state.topWatcher.unwatch(p);
+  const newTopPaths = new Set(newProjects.flatMap(topWatchPaths));
+  for (const p of newTopPaths) if (!state.topWatchedPathSet.has(p)) state.topWatcher.add(p);
+  for (const p of state.topWatchedPathSet) if (!newTopPaths.has(p)) state.topWatcher.unwatch(p);
+  state.topWatchedPathSet = newTopPaths;
   state.projects = newProjects;
 
   // Phases: re-mirror once per project (covers all 3 phases internally).
@@ -1547,9 +1545,7 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
   const reg = await loadHarnessRegistry();
   const projects = reg.projects ?? [];
   const allPaths = projects.flatMap(watchedPaths);
-  const topPaths = projects.flatMap((p) =>
-    harnessDirsForProject(p).map(({ harnessDir }) => harnessDir),
-  );
+  const topPaths = projects.flatMap(topWatchPaths);
 
   const watcher = chokidar.watch(allPaths, {
     persistent: true,
@@ -1596,6 +1592,8 @@ export async function ensureHarnessFsWatcher(): Promise<WatcherState> {
     topWatcher,
     enabledPluginsWatcher,
     projects,
+    watchedPathSet: new Set(allPaths),
+    topWatchedPathSet: new Set(topPaths),
     reconcileTimer: setInterval(() => {
       reconcileAll(state).catch((e) =>
         console.warn('[harness-fs-watcher] reconcile failed:', e?.message ?? e),

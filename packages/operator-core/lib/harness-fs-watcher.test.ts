@@ -227,3 +227,58 @@ describe('harness-fs-watcher: phased fixture (Item 2)', () => {
     expect(classify('/foo/bar/other-project/.papercusp/summary.md')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Existence-anchored watch paths (the /tmp ancestor-watch incident, 2026-06-06)
+//
+// chokidar watches the nearest EXISTING ancestor of a missing subscription
+// path. A registry entry pointing at a deleted /tmp project therefore made
+// both standing operators watch /tmp itself (11k entries, constant churn) —
+// a full lstat-per-entry rescan per event, ~1.6 cores each, event loop
+// saturated, every API call 10-20s. watchedPaths()/topWatchPaths() must
+// return nothing whose anchor dir doesn't exist inside the project.
+// ---------------------------------------------------------------------------
+import { watchedPaths, topWatchPaths } from './harness-fs-watcher';
+
+describe('harness-fs-watcher: existence-anchored watch paths', () => {
+  it('returns NO paths for a project whose root does not exist', () => {
+    const dead = { slug: 'dead', path: join(tmpdir(), 'does-not-exist-anymore-xyz') };
+    expect(watchedPaths(dead)).toEqual([]);
+    expect(topWatchPaths(dead)).toEqual([]);
+  });
+
+  it('skips phases whose harnessDir does not exist, keeps ones that do', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fsw-anchor-'));
+    try {
+      // staging .papercusp exists; testing/production worktrees don't.
+      mkdirSync(join(root, '.papercusp'), { recursive: true });
+      const p = { slug: 'live', path: root };
+      const paths = watchedPaths(p);
+      expect(paths.length).toBeGreaterThan(0);
+      for (const wp of paths) {
+        expect(wp.startsWith(join(root, '.papercusp'))).toBe(true);
+      }
+      expect(topWatchPaths(p)).toEqual([join(root, '.papercusp')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('org-root files are only watched when the project root exists', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fsw-org-'));
+    try {
+      const org = { slug: 'org', path: root, harness_kind: 'org' };
+      // No .papercusp dirs — only the org-root files should appear.
+      const paths = watchedPaths(org);
+      expect(paths).toEqual([
+        join(root, 'charter.md'),
+        join(root, 'departments.json'),
+        join(root, 'projects.json'),
+      ]);
+      const deadOrg = { slug: 'org2', path: join(root, 'nope'), harness_kind: 'org' };
+      expect(watchedPaths(deadOrg)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
