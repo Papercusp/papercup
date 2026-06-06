@@ -25,7 +25,7 @@
  * fire+observe loop, while the simple fire-and-forget callers use
  * `fireLaunchBlueprint`.
  */
-import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { loadBuiltinBlueprint, assertNotNestedHive, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { loopbackFetch } from '../loopback-fetch';
 import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 
@@ -37,7 +37,7 @@ const operatorBase = (): string => process.env.PAPERCUSP_OPERATOR_BASE ?? 'http:
  * a trigger (`triggers.schedule` for cadence launches, `triggers.event` for
  * event-driven ones). Firing one invokes that role once via the invoke route.
  */
-export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'audit', 'pot'] as const;
+export const BUILTIN_LAUNCH_BLUEPRINTS = ['deploy', 'scan', 'implement', 'merge-resolution', 'audit', 'pot', 'bee'] as const;
 export type LaunchBlueprintId = (typeof BUILTIN_LAUNCH_BLUEPRINTS)[number];
 
 /**
@@ -154,6 +154,15 @@ export interface FireLaunchInput {
   extra?: string[];
   /** Per-launch timeout for the invoke route (defaults to the route's own). */
   timeoutMs?: number;
+  /**
+   * The parent/initiator context, when this launch is fired BY something with a
+   * parent (a spawning agent, a recursion parent). Presence of a parent triggers
+   * the no-nest guard (local-hive D-009 / swarm D-018): a `kind:'hive'` blueprint
+   * fired with a parent is REJECTED — hives launch only as roots. The pot's own
+   * launch (the parentless `system:blueprint-run` routine) omits this and is
+   * allowed. Carries `spawnId`/`role` for lineage; either being set marks a parent.
+   */
+  parent?: { spawnId?: string | null; role?: string | null } | null;
 }
 
 /**
@@ -221,6 +230,16 @@ const defaultFire: LaunchFireFn = async ({ url, role, installSlug, blueprintId, 
  * target so the caller can log/record what it fired.
  */
 export async function fireLaunchBlueprint(blueprintId: string, input: FireLaunchInput): Promise<LaunchTarget> {
+  // No-nest guard (local-hive D-009 / swarm D-018 enforcement A): a kind:'hive'
+  // blueprint fired WITH a parent context is rejected — hives are peers, launchable
+  // only as a root. A root launch (the pot's parentless system:blueprint-run) omits
+  // `parent` and passes. Resolve the full blueprint only when a parent is present so
+  // root launches keep their cheap role-only resolution.
+  const hasParent = Boolean(input.parent && (input.parent.spawnId || input.parent.role));
+  if (hasParent) {
+    const bp = await _resolver(blueprintId);
+    assertNotNestedHive(bp, true);
+  }
   const target = await resolveLaunchTarget(blueprintId, input);
   const fire = _fire ?? defaultFire;
   await fire({ ...input, ...target });

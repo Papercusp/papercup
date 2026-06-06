@@ -31,7 +31,7 @@ import {
 } from './judge-scoring';
 import { regressionsFromTests, plantedBugCaught, type TestResult } from './signals';
 import type { PlantedBug } from './probe-generator';
-import { resolveChildBlueprint } from '@papercusp/orchestrator/blueprint';
+import { resolveChildBlueprint, assertNotNestedHive } from '@papercusp/orchestrator/blueprint';
 
 // ───────────────────────────── signal registry ─────────────────────────────
 
@@ -192,12 +192,25 @@ export function rubricFromBlueprintGym(gym: { rubric?: GymRubricInput } | undefi
  * the declared replacement for the former undeclared runtime override of
  * "self". Fail-closed: a gym blueprint whose `$target` can't bind throws
  * rather than silently running the gym against itself.
+ *
+ * The NO-NEST GUARD rides this recursion-resolution path (local-hive D-009 /
+ * swarm D-018 enforcement A): when the resolved child is supplied (`childKind`),
+ * a `kind:'hive'` child is REJECTED — a hive can never be a recursion child, only
+ * a root. The gym only ever optimizes `kind:'harness'` targets, so the guard is a
+ * structural backstop that fails loud if a hive id is ever bound as `$target`.
+ * `childKind` is optional so the pure id-binding contract (used where the child's
+ * kind isn't loaded) is unchanged.
  */
 export function resolveGymChildBlueprint(
   gymBp: { id: string; recursion?: { childBlueprint?: string } },
   targetBlueprintId: string,
+  childKind?: 'hive' | 'harness',
 ): string {
-  return resolveChildBlueprint(gymBp, { target: targetBlueprintId });
+  const childId = resolveChildBlueprint(gymBp, { target: targetBlueprintId });
+  // A bound recursion child IS a child (the gym is its parent) — guard it when
+  // the caller knows the resolved child's kind.
+  if (childKind !== undefined) assertNotNestedHive({ id: childId, kind: childKind }, true);
+  return childId;
 }
 
 // ───────────────────────────── re-exports ─────────────────────────────

@@ -31,6 +31,8 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       audit: 'auditor',
       // autoloop-pot-operator-rebuild P0: the pot's decider IS the operator (D-001).
       pot: 'operator',
+      // local-hive P-010/P-011: the bee launch blueprint's decider IS the bee role.
+      bee: 'bee',
     };
     for (const id of BUILTIN_LAUNCH_BLUEPRINTS) {
       const target = await resolveLaunchTarget(id, opts);
@@ -103,6 +105,42 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(fired).toHaveLength(0);
     expect(warn).toHaveBeenCalledOnce();
     warn.mockRestore();
+  });
+
+  it('the no-nest guard REJECTS a parented kind:hive launch (pot under a parent)', async () => {
+    const fired: unknown[] = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    // pot is kind:'hive' — firing it WITH a parent context must throw + never fire.
+    await expect(
+      fireLaunchBlueprint('pot', { ...opts, parent: { spawnId: 's-parent-1', role: 'bee' } }),
+    ).rejects.toThrow(/cannot be nested|hives are peers/i);
+    expect(fired).toHaveLength(0);
+  });
+
+  it('a ROOT kind:hive launch (no parent) still fires — the pot bootstraps as a root', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    // No `parent` → root launch → the guard does not trip; the pot fires normally.
+    const target = await fireLaunchBlueprint('pot', { ...opts, kickoff: 'wake' });
+    expect(target.role).toBe('operator');
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ blueprintId: 'pot', role: 'operator' });
+  });
+
+  it('a parented kind:harness launch (a bee placed by the Queen) is ALLOWED', async () => {
+    const fired: Array<Parameters<LaunchFireFn>[0]> = [];
+    setLaunchBlueprintFire((input) => {
+      fired.push(input);
+    });
+    // bee is kind:'harness' — a parent (the Queen) placing it is fine; only hives nest-guard.
+    const target = await fireLaunchBlueprint('bee', { ...opts, parent: { spawnId: 's-queen-1', role: 'operator' } });
+    expect(target.role).toBe('bee');
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toMatchObject({ blueprintId: 'bee', role: 'bee' });
   });
 
   it('honors an overridden blueprint resolver (forked / PG-cache launch blueprint)', async () => {

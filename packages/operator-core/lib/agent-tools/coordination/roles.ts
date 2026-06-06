@@ -14,4 +14,9 @@ export const COORD_ROLES = [
   'operator',
   'documenter',
   'curator',
+  // The generic Hive worker (local-hive-orchestration D-003 / P-011). The bee
+  // coordinates via coord:* (declare-intent, send, await-inbox) and maintains its
+  // ordered work-list via work_items:* — both gated on this list — so it MUST be a
+  // coord role. Same gate the pipeline worker passes, minus the chunk coupling.
+  'bee',
 ] as const;

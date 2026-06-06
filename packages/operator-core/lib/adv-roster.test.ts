@@ -161,6 +161,8 @@ describe('mergeRosterEntries', () => {
             expiresTs: iso(NOW + 60_000),
             active: true,
             orphaned: false,
+            rank: null,
+            rankWriter: null,
           },
         ],
       ],

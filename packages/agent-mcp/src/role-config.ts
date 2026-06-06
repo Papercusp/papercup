@@ -34,6 +34,14 @@ export const AGENT_ROLES = [
   // Chat-surface roles.
   'operator',
   'oracle',
+  // The generic operator-world worker — the Hive's bee (local-hive-orchestration
+  // D-003 / P-011). The plain "do this task" role the Queen places ranked work +
+  // a brief onto. DECOUPLED from the pipeline guards: unlike `worker` (which
+  // operator-spawn rejects without a `chunkId`), a `bee` carries NO pipeline spine
+  // and NO chunk requirement. Pipeline roles (scoper/worker/validator/…) apply
+  // ONLY when a bee explicitly spins up a coding harness (kind:'harness'); the bee
+  // itself is the generic agent of the kind:'hive' blueprint.
+  'bee',
   // Coordinator + cross-cutting roles (built-in, fire on plan events).
   'orchestrator',
   // Promotes a plan's `## Promote` policy into the harness, all waves up front

@@ -42,6 +42,37 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'plans:read',
     'routines:write',
   ],
+  // The generic Hive worker (local-hive-orchestration D-003 / P-011): a plain
+  // implementation agent the Queen places ranked work + a brief onto. A BROAD
+  // but deliberately NON-operator cap set — broader than a pipeline role
+  // (it owns its sequencing + can spin up a structured subharness for harder
+  // work, D-017) yet WITHOUT the Queen-only privileges:
+  //   - work_items read/write  → maintain + publish its ordered work-list (P-020/P-021)
+  //   - coord read/write       → declare-intent, send, and coord:await-inbox at idle (P-041)
+  //   - harness read/write     → blueprint:catalog/validate + harness:create a kind:'harness'
+  //                              subharness for structured work (a bee may, a hive may not nest)
+  //   - plans/docs/search read → ground its work against plans + docs + the index
+  //   - memory read/write      → durable cross-turn learnings
+  //   - tasks read/write       → its own task scaffolding
+  // Deliberately NOT granted: routines:write (self-wake scheduling is the Queen's
+  // placement axis), curation:* / activity:report / operator:* / autoloop:* (brain-
+  // only judgment surfaces). Least-privilege, workspace-agnostic; unions with any
+  // provisioned row.
+  bee: [
+    'harness:read',
+    'harness:write',
+    'work_items:read',
+    'work_items:write',
+    'coord:read',
+    'coord:write',
+    'plans:read',
+    'docs:read',
+    'search:read',
+    'memory:read',
+    'memory:write',
+    'tasks:read',
+    'tasks:write',
+  ],
 };
 
 /**
