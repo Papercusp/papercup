@@ -40,7 +40,8 @@ const { buildMergedDocs } = await import('./merged-read');
 const { sweepHarnessDocs } = await import('./freshness-sweep');
 const { anchorManualDoc, verifyManualDoc } = await import('./manual-anchor');
 const { requestRegeneration } = await import('./regenerate');
-const { setDocOverlay, getDocRecord } = await import('./doc-record');
+const { setDocOverlay, getDocRecord, deleteDocRecord } = await import('./doc-record');
+const { ingestHarnessDocs } = await import('./migrate-fs-docs');
 const { runGit } = await import('./git-runner');
 
 let db: FreshPgDb;
@@ -183,5 +184,21 @@ describe('harness-docs full flow', () => {
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.verifiedSha).toBe(head);
     expect((await getDocRecord('demo', 'guides/setup.md'))!.status).toBe('fresh');
+  });
+
+  it('ingest (P-010) anchors docs with a declarable subject, leaves the rest record-less', async () => {
+    // Drop existing records so ingest starts clean; orphan.md stays unanchored.
+    await deleteDocRecord('demo', 'features/F-1.md');
+    await deleteDocRecord('demo', 'guides/setup.md');
+    const res = await ingestHarnessDocs('demo');
+    expect(res.ok).toBe(true);
+    // guides/setup.md declares `documents: src/setup.ts` → anchored.
+    expect(res.anchored).toContain('guides/setup.md');
+    // orphan.md has no subject → left record-less (skipped), still visible as untracked.
+    expect(res.skipped).toContain('orphan.md');
+    expect(await getDocRecord('demo', 'orphan.md')).toBeNull();
+    const merged = await buildMergedDocs('demo');
+    expect(merged.entries.find((e) => e.docId === 'guides/setup.md')!.tracked).toBe(true);
+    expect(merged.entries.find((e) => e.docId === 'orphan.md')!.status).toBe('untracked');
   });
 });

@@ -917,16 +917,46 @@ fn draw_harnesses(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Source tag + style for a doc badge (harness-docs-integration P-009).
+fn doc_source_tag(source: &str) -> (&'static str, Style) {
+    match source {
+        "generated" => ("G ", Theme::info()),
+        "augmented" => ("A ", Theme::notify()),
+        _ => ("M ", Theme::dim()),
+    }
+}
+/// Freshness marker + style: ⚠ stale/review · ○ not-drift-tracked · blank fresh.
+fn doc_status_marker(status: &str) -> (&'static str, Style) {
+    match status {
+        "stale" | "review" => ("⚠ ", Theme::warn()),
+        "untracked" => ("○ ", Theme::dim()),
+        "unknown" => ("? ", Theme::dim()),
+        _ => ("  ", Theme::dim()),
+    }
+}
+
 fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
         .split(area);
 
+    // Merged model (P-009): each row carries a source tag (G/M/A) + a freshness
+    // marker (⚠ / ○), so generated vs human and stale vs fresh are visible at a glance.
     let items: Vec<ListItem> = app
         .docs_files
         .iter()
-        .map(|p| ListItem::new(Line::from(trunc(p, 34))))
+        .map(|p| {
+            let entry = app.doc_entries.iter().find(|e| &e.doc_id == p);
+            let (src_tag, src_style) = doc_source_tag(entry.map(|e| e.source.as_str()).unwrap_or("manual"));
+            let (mark, mark_style) =
+                doc_status_marker(entry.map(|e| e.status.as_str()).unwrap_or("untracked"));
+            ListItem::new(Line::from(vec![
+                Span::styled(mark, mark_style),
+                Span::styled(src_tag, src_style),
+                Span::raw(trunc(p, 26)),
+            ]))
+        })
         .collect();
     let mut state = ListState::default();
     if !app.docs_files.is_empty() {
@@ -937,7 +967,7 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(Line::from(format!(
-                    " {} · docs ({}) ",
+                    " {} · docs ({}) · R:regen V:verify ",
                     app.harness,
                     app.docs_files.len()
                 ))),
@@ -947,16 +977,38 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, cols[0], &mut state);
 
     let title = app.docs_files.get(app.doc_sel).cloned().unwrap_or_default();
-    let body = if app.doc_content.is_empty() {
+    // The active doc's source · status, appended to the reader title.
+    let meta = app
+        .doc_active
+        .as_ref()
+        .map(|a| {
+            let st = if a.status.is_empty() || a.status == "fresh" {
+                String::new()
+            } else {
+                format!(" · {}", a.status)
+            };
+            let src = if a.source.is_empty() { String::new() } else { format!(" · {}", a.source) };
+            format!("{src}{st}")
+        })
+        .unwrap_or_default();
+    let reader_title = if title.is_empty() {
+        " reader ".to_string()
+    } else {
+        format!(" {}{} ", trunc(&title, 46), meta)
+    };
+
+    // The augmented human overlay (the "why") rides above the generated body.
+    let mut body = if app.doc_content.is_empty() {
         "(no docs — select a file)".to_string()
     } else {
         app.doc_content.clone()
     };
-    let reader_title = if title.is_empty() {
-        " reader ".to_string()
-    } else {
-        format!(" {} ", trunc(&title, 60))
-    };
+    if let Some(ov) = app.doc_active.as_ref().and_then(|a| a.overlay.as_ref()) {
+        if !ov.trim().is_empty() {
+            let quoted = ov.replace('\n', "\n┃ ");
+            body = format!("┃ Human note (augmented · survives regeneration)\n┃ {quoted}\n\n{body}");
+        }
+    }
     let para = Paragraph::new(body)
         .wrap(Wrap { trim: false })
         .scroll((app.doc_scroll, 0))

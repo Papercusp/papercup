@@ -49,13 +49,13 @@ export default function NotificationsPanel({ active }: { active: boolean }) {
   };
 
   return (
-    <div className="pc-dev-panel">
+    <div className="pcdar-panel">
       <PanelBar label="Notifications" fetching={sync.fetching} onRefresh={sync.invalidate}>
-        {errorCount > 0 && <span className="pc-dev-pill is-bad">{errorCount} err</span>}
+        {errorCount > 0 && <span className="pcdar-pill is-bad">{errorCount} err</span>}
         {(sync.data?.length ?? 0) > 0 && (
           <button
             type="button"
-            className="pc-dev-panel__refresh"
+            className="pcdar-panel__refresh"
             onClick={clearAll}
             aria-label="Clear all notifications"
             title="Clear all notification history"
@@ -71,28 +71,28 @@ export default function NotificationsPanel({ active }: { active: boolean }) {
         emptyHint="No notifications yet."
       />
       {rows.map((t) => (
-        <div key={t.id} className="pc-dev-row">
+        <div key={t.id} className="pcdar-row">
           <span
-            className={`pc-dev-dot ${t.level === 'error' ? 'is-down' : t.level === 'warning' ? '' : 'is-up'}`}
+            className={`pcdar-dot ${t.level === 'error' ? 'is-down' : t.level === 'warning' ? '' : 'is-up'}`}
             aria-hidden="true"
           />
-          <div className="pc-dev-row__main">
-            <div className="pc-dev-row__title" title={t.message}>
+          <div className="pcdar-row__main">
+            <div className="pcdar-row__title" title={t.message}>
               {t.message}
             </div>
-            <div className="pc-dev-row__sub">
+            <div className="pcdar-row__sub">
               {t.level}
               {t.harnessSlug ? ` · ${t.harnessSlug}` : ''} · {formatRelative(t.createdAt)}
             </div>
             {t.description && (
-              <div className="pc-dev-row__sub" title={t.description}>
+              <div className="pcdar-row__sub" title={t.description}>
                 {t.description}
               </div>
             )}
           </div>
           <button
             type="button"
-            className="pc-dev-rail__iconbtn"
+            className="pcdar__iconbtn"
             onClick={() => dismiss(t.id)}
             aria-label="Dismiss"
             style={{ width: 22, height: 22 }}

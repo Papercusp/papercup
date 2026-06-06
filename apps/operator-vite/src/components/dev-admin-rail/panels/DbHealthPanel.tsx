@@ -49,7 +49,7 @@ export default function DbHealthPanel({ active }: { active: boolean }) {
   };
 
   return (
-    <div className="pc-dev-panel">
+    <div className="pcdar-panel">
       <PanelBar
         label="DB health"
         fetching={health.fetching || queries.fetching}
@@ -57,45 +57,45 @@ export default function DbHealthPanel({ active }: { active: boolean }) {
       />
       <PanelState loading={health.loading && !h} error={health.error ?? queries.error} />
       {h && (
-        <div className="pc-dev-kv">
-          <span className="pc-dev-kv__k">connections</span>
-          <span className="pc-dev-kv__v">
+        <div className="pcdar-kv">
+          <span className="pcdar-kv__k">connections</span>
+          <span className="pcdar-kv__v">
             {h.totalConnections} total · {h.activeConnections} active · {h.idleConnections} idle
           </span>
-          <span className="pc-dev-kv__k">version</span>
-          <span className="pc-dev-kv__v" title={h.version}>
+          <span className="pcdar-kv__k">version</span>
+          <span className="pcdar-kv__v" title={h.version}>
             {h.version.replace(/^PostgreSQL ([\d.]+).*$/, '$1') || h.version}
           </span>
         </div>
       )}
-      <div className="pc-dev-panel__bar" style={{ marginTop: 4 }}>
-        <span className="pc-dev-panel__bar-label">Active queries ({rows.length})</span>
+      <div className="pcdar-panel__bar" style={{ marginTop: 4 }}>
+        <span className="pcdar-panel__bar-label">Active queries ({rows.length})</span>
       </div>
       {rows.length === 0 ? (
-        <div className="pc-dev-panel__empty">No active queries.</div>
+        <div className="pcdar-panel__empty">No active queries.</div>
       ) : (
         rows.map((q) => {
           const idleInTx = q.state === 'idle in transaction';
           const slow = q.duration_seconds > 5;
           return (
-            <div key={q.pid} className="pc-dev-row">
+            <div key={q.pid} className="pcdar-row">
               <span
-                className={`pc-dev-dot ${idleInTx ? 'is-down' : slow ? '' : 'is-up'}`}
+                className={`pcdar-dot ${idleInTx ? 'is-down' : slow ? '' : 'is-up'}`}
                 aria-hidden="true"
               />
-              <div className="pc-dev-row__main">
-                <div className="pc-dev-row__sub" title={q.query}>
+              <div className="pcdar-row__main">
+                <div className="pcdar-row__sub" title={q.query}>
                   {q.query.replace(/\s+/g, ' ').slice(0, 80)}
                 </div>
-                <div className="pc-dev-row__sub" style={{ fontFamily: 'inherit' }}>
+                <div className="pcdar-row__sub" style={{ fontFamily: 'inherit' }}>
                   pid {q.pid} · {q.state ?? '?'} · {fmtDur(q.duration_seconds)}
                   {q.application_name ? ` · ${q.application_name}` : ''}
                 </div>
               </div>
               {idleInTx ? (
-                <span className="pc-dev-pill is-bad">idle-in-tx</span>
+                <span className="pcdar-pill is-bad">idle-in-tx</span>
               ) : slow ? (
-                <span className="pc-dev-pill is-warn">slow</span>
+                <span className="pcdar-pill is-warn">slow</span>
               ) : null}
             </div>
           );

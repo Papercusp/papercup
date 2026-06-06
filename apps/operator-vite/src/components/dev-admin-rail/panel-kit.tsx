@@ -32,14 +32,14 @@ export function PanelBar({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="pc-dev-panel__bar">
-      <span className="pc-dev-panel__bar-label">{label}</span>
-      <span className="pc-dev-panel__bar-spacer" />
+    <div className="pcdar-panel__bar">
+      <span className="pcdar-panel__bar-label">{label}</span>
+      <span className="pcdar-panel__bar-spacer" />
       {children}
       {onRefresh && (
         <button
           type="button"
-          className={`pc-dev-panel__refresh${fetching ? ' is-spinning' : ''}`}
+          className={`pcdar-panel__refresh${fetching ? ' is-spinning' : ''}`}
           onClick={onRefresh}
           disabled={fetching}
           aria-label={`Refresh ${label}`}
@@ -65,13 +65,13 @@ export function PanelState({
   emptyHint?: string;
 }) {
   if (error) {
-    return <div className="pc-dev-panel__error">Failed to load: {error.message}</div>;
+    return <div className="pcdar-panel__error">Failed to load: {error.message}</div>;
   }
   if (loading) {
-    return <div className="pc-dev-panel__empty">Loading…</div>;
+    return <div className="pcdar-panel__empty">Loading…</div>;
   }
   if (empty) {
-    return <div className="pc-dev-panel__empty">{emptyHint ?? 'Nothing to show.'}</div>;
+    return <div className="pcdar-panel__empty">{emptyHint ?? 'Nothing to show.'}</div>;
   }
   return null;
 }

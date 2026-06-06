@@ -996,12 +996,22 @@ impl OperatorClient {
     }
 
     pub async fn docs_for(&self, slug: &str, path: Option<&str>) -> Result<DocsResponse> {
+        // Merged docs tree (harness-docs-integration-2026-06-05): generated · manual ·
+        // augmented with per-doc source + drift status + the active overlay. Supersedes
+        // the FS-only /project-docs read. Cached status (the git-sync sweep keeps it
+        // fresh) — no per-fetch recompute, so the poller stays cheap.
         let p = match path {
-            Some(rel) => format!("/api/harness/{slug}/project-docs?path={}", urlencode(rel)),
-            None => format!("/api/harness/{slug}/project-docs"),
+            Some(rel) => format!("/api/harness/{slug}/docs?path={}", urlencode(rel)),
+            None => format!("/api/harness/{slug}/docs"),
         };
         let v = self.get_json(&p).await?;
         serde_json::from_value::<DocsResponse>(v).context("decode docs")
+    }
+
+    /// POST a docs action (regenerate | verify) for one doc (P-009 actions).
+    pub async fn docs_action(&self, slug: &str, action: &str, doc_id: &str) -> Result<serde_json::Value> {
+        let path = format!("/api/harness/{slug}/docs/{action}");
+        self.post_json(&path, serde_json::json!({ "docId": doc_id })).await
     }
 
     pub async fn testing_domains(&self, slug: &str) -> Result<Vec<TestingDomain>> {

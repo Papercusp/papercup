@@ -533,7 +533,42 @@ pub struct EffectiveClaudeSettings {
     pub parse_error: Option<String>,
 }
 
-/// `/api/harness/:slug/project-docs[?path=]` → docs file list + the active doc.
+/// One row of the merged docs tree (`/api/harness/:slug/docs`, harness-docs-
+/// integration-2026-06-05 P-009): per-doc source + drift status for the badges.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DocEntry {
+    #[serde(default)]
+    pub doc_id: String,
+    /// generated | manual | augmented
+    #[serde(default)]
+    pub source: String,
+    /// fresh | stale | review | untracked | unknown
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub subject_label: String,
+}
+
+/// The active doc's full entry — adds the human augmented overlay.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveDocEntry {
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub status_detail: Option<String>,
+    #[serde(default)]
+    pub subject_label: String,
+    #[serde(default)]
+    pub overlay: Option<String>,
+}
+
+/// `/api/harness/:slug/docs[?path=]` → the MERGED docs tree (generated · manual ·
+/// augmented) with per-doc source + freshness + the active doc's overlay.
+/// (Superset of the legacy project-docs shape, so old fields still deserialise.)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocsResponse {
@@ -543,6 +578,10 @@ pub struct DocsResponse {
     pub active_path: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<DocEntry>,
+    #[serde(default)]
+    pub active_entry: Option<ActiveDocEntry>,
 }
 
 /// One row of `/api/toast-log` → `{ toasts: [...] }` (notification history, P8).

@@ -31,9 +31,9 @@ interface DeployState {
 }
 
 function behindPill(n: number | null) {
-  if (n == null) return <span className="pc-dev-pill">—</span>;
-  if (n === 0) return <span className="pc-dev-pill is-good">caught up</span>;
-  return <span className="pc-dev-pill is-warn">{n} behind</span>;
+  if (n == null) return <span className="pcdar-pill">—</span>;
+  if (n === 0) return <span className="pcdar-pill is-good">caught up</span>;
+  return <span className="pcdar-pill is-warn">{n} behind</span>;
 }
 
 export default function DeployStatePanel({ active }: { active: boolean }) {
@@ -45,23 +45,23 @@ export default function DeployStatePanel({ active }: { active: boolean }) {
   const st = sync.data?.[0];
 
   return (
-    <div className="pc-dev-panel">
+    <div className="pcdar-panel">
       <PanelBar label="Deploy / release gate" fetching={sync.fetching} onRefresh={sync.invalidate} />
       <PanelState loading={sync.loading && !st} error={sync.error} empty={!st} emptyHint="No deploy state." />
       {st && (
         <>
-          <div className="pc-dev-row">
+          <div className="pcdar-row">
             <span
-              className={`pc-dev-dot ${st.deployedBehindMain === 0 ? 'is-up' : 'is-absent'}`}
+              className={`pcdar-dot ${st.deployedBehindMain === 0 ? 'is-up' : 'is-absent'}`}
               aria-hidden="true"
             />
-            <div className="pc-dev-row__main">
-              <div className="pc-dev-row__title">
+            <div className="pcdar-row__main">
+              <div className="pcdar-row__title">
                 {st.deployedBehindMain === 0
                   ? `:3070 is current with ${st.integrationBranch}`
                   : `:3070 is ${st.deployedBehindMain ?? '?'} commits behind ${st.integrationBranch}`}
               </div>
-              <div className="pc-dev-row__sub">
+              <div className="pcdar-row__sub">
                 {st.deployedBehindMain && st.deployedBehindMain > 0
                   ? 'a missing edit here is NOT-YET-DEPLOYED, not reverted'
                   : 'the live host matches main'}
@@ -69,51 +69,51 @@ export default function DeployStatePanel({ active }: { active: boolean }) {
             </div>
           </div>
 
-          <div className="pc-dev-kv">
-            <span className="pc-dev-kv__k">deployed (:3070)</span>
-            <span className="pc-dev-kv__v" title={st.deployed?.sha}>
+          <div className="pcdar-kv">
+            <span className="pcdar-kv__k">deployed (:3070)</span>
+            <span className="pcdar-kv__v" title={st.deployed?.sha}>
               {st.deployed ? st.deployed.shortSha : '—'}
             </span>
-            <span className="pc-dev-kv__k">deployed at</span>
-            <span className="pc-dev-kv__v">{formatRelative(st.deployedAtMs)}</span>
-            <span className="pc-dev-kv__k">deployed commit</span>
-            <span className="pc-dev-kv__v">{formatRelative(st.deployed?.committedAtMs)}</span>
+            <span className="pcdar-kv__k">deployed at</span>
+            <span className="pcdar-kv__v">{formatRelative(st.deployedAtMs)}</span>
+            <span className="pcdar-kv__k">deployed commit</span>
+            <span className="pcdar-kv__v">{formatRelative(st.deployed?.committedAtMs)}</span>
 
-            <span className="pc-dev-kv__k">{st.releaseRef} (green pin)</span>
-            <span className="pc-dev-kv__v" title={st.ready?.sha}>
+            <span className="pcdar-kv__k">{st.releaseRef} (green pin)</span>
+            <span className="pcdar-kv__v" title={st.ready?.sha}>
               {st.ready ? st.ready.shortSha : '— unset'}
             </span>
-            <span className="pc-dev-kv__k">{st.integrationBranch} HEAD</span>
-            <span className="pc-dev-kv__v" title={st.mainHead?.sha}>
+            <span className="pcdar-kv__k">{st.integrationBranch} HEAD</span>
+            <span className="pcdar-kv__v" title={st.mainHead?.sha}>
               {st.mainHead ? st.mainHead.shortSha : '—'}
             </span>
           </div>
 
-          <div className="pc-dev-row">
-            <div className="pc-dev-row__main">
-              <div className="pc-dev-row__sub" style={{ fontFamily: 'inherit' }}>
+          <div className="pcdar-row">
+            <div className="pcdar-row__main">
+              <div className="pcdar-row__sub" style={{ fontFamily: 'inherit' }}>
                 green pin vs {st.integrationBranch}
               </div>
             </div>
             {behindPill(st.readyBehindMain)}
           </div>
-          <div className="pc-dev-row">
-            <div className="pc-dev-row__main">
-              <div className="pc-dev-row__sub" style={{ fontFamily: 'inherit' }}>
+          <div className="pcdar-row">
+            <div className="pcdar-row__main">
+              <div className="pcdar-row__sub" style={{ fontFamily: 'inherit' }}>
                 deployable but undeployed ({st.releaseRef} ahead of :3070)
               </div>
             </div>
             {st.deployedBehindReady == null ? (
-              <span className="pc-dev-pill">—</span>
+              <span className="pcdar-pill">—</span>
             ) : st.deployedBehindReady === 0 ? (
-              <span className="pc-dev-pill is-good">none</span>
+              <span className="pcdar-pill is-good">none</span>
             ) : (
-              <span className="pc-dev-pill is-warn">{st.deployedBehindReady}</span>
+              <span className="pcdar-pill is-warn">{st.deployedBehindReady}</span>
             )}
           </div>
 
           {st.errors.length > 0 && (
-            <div className="pc-dev-panel__error">{st.errors.join(' · ')}</div>
+            <div className="pcdar-panel__error">{st.errors.join(' · ')}</div>
           )}
         </>
       )}

@@ -53,17 +53,17 @@ export default function FleetPanel({ active }: { active: boolean }) {
   };
 
   return (
-    <div className="pc-dev-panel">
+    <div className="pcdar-panel">
       <PanelBar label="Fleet / coord" fetching={presence.fetching || gov.fetching} onRefresh={refresh} />
       {fleet && (
-        <div className="pc-dev-kv">
-          <span className="pc-dev-kv__k">in-flight / cap</span>
-          <span className="pc-dev-kv__v">
+        <div className="pcdar-kv">
+          <span className="pcdar-kv__k">in-flight / cap</span>
+          <span className="pcdar-kv__v">
             {fleet.inFlight} / {fleet.cap}
             {fleet.effective < fleet.cap ? ` · eff ${fleet.effective}` : ''}
           </span>
-          <span className="pc-dev-kv__k">live agents</span>
-          <span className="pc-dev-kv__v">
+          <span className="pcdar-kv__k">live agents</span>
+          <span className="pcdar-kv__v">
             {activeAgents.length}
             {staleCount ? ` · ${staleCount} stale` : ''}
           </span>
@@ -76,16 +76,16 @@ export default function FleetPanel({ active }: { active: boolean }) {
         emptyHint="No agents active right now."
       />
       {activeAgents.map((r) => (
-        <div key={r.ownerId} className="pc-dev-row">
-          <span className="pc-dev-dot is-up" aria-hidden="true" />
-          <div className="pc-dev-row__main">
-            <div className="pc-dev-row__title" title={r.ownerId}>
+        <div key={r.ownerId} className="pcdar-row">
+          <span className="pcdar-dot is-up" aria-hidden="true" />
+          <div className="pcdar-row__main">
+            <div className="pcdar-row__title" title={r.ownerId}>
               {r.ownerLabel || r.ownerId}
             </div>
-            <div className="pc-dev-row__sub" style={{ fontFamily: 'inherit' }} title={r.intent ?? undefined}>
+            <div className="pcdar-row__sub" style={{ fontFamily: 'inherit' }} title={r.intent ?? undefined}>
               {r.intent || 'no declared intent'}
             </div>
-            <div className="pc-dev-row__sub">
+            <div className="pcdar-row__sub">
               {r.currentPlanSlug ? `${r.currentPlanSlug} · ` : ''}
               {formatRelative(hbMs(r.heartbeatAt))}
               {r.currentFiles && r.currentFiles.length > 0 ? ` · ${r.currentFiles.length} file(s)` : ''}

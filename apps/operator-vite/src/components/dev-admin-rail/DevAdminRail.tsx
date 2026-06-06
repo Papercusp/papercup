@@ -3,10 +3,12 @@
  * right rail that re-presents the URL-only /admin surfaces + SU dev glances as one
  * always-at-hand cockpit while working.
  *
- * Gating: this component is mounted only behind `import.meta.env.DEV` (in
- * __root.tsx, via a dev-gated lazy import) so it is ABSENT from production / user
- * builds — it never ships to users (D-001). Don't add an unconditional import of
- * it anywhere.
+ * Gating: this component is mounted only behind `import.meta.env.MODE !==
+ * 'production'` (in __root.tsx, via a dev-gated lazy import) so it is ABSENT from
+ * production / user builds — it never ships to users (D-001). MODE (not DEV) is
+ * the gate because Vite ties DEV/PROD to the command, and the desktop dev shell
+ * runs `vite build --mode development` (a build, so DEV===false) — see __root.tsx.
+ * Don't add an unconditional import of it anywhere.
  *
  * State (D-005, per the nuqs-default): open/collapsed + the active accordion
  * section live in the URL (`?devRail=1&devSec=flags`), so the rail is deep-linkable
@@ -28,7 +30,7 @@ import {
   ChevronRight,
   FlaskConical,
 } from 'lucide-react';
-import './dev-admin-rail.css';
+import { RAIL_CSS } from './dev-admin-rail.styles';
 
 // Heavy panels are lazy so opening the rail (not loading the app) pays for them.
 const FlagsPanel = lazy(() => import('./panels/FlagsPanel'));
@@ -62,31 +64,36 @@ export default function DevAdminRail() {
   // Collapsed: render only the edge handle (nothing else mounted → no queries).
   if (!open) {
     return (
-      <button
-        type="button"
-        className="pc-dev-rail__handle"
-        data-testid="dev-admin-rail-handle"
-        onClick={() => setOpen(true)}
-        aria-label="Open dev admin rail"
-      >
-        <span className="pc-dev-rail__handle-dot" aria-hidden="true" />
-        Dev
-      </button>
+      <>
+        <style>{RAIL_CSS}</style>
+        <button
+          type="button"
+          className="pcdar__handle"
+          data-testid="dev-admin-rail-handle"
+          onClick={() => setOpen(true)}
+          aria-label="Open dev admin rail"
+        >
+          <span className="pcdar__handle-dot" aria-hidden="true" />
+          Dev
+        </button>
+      </>
     );
   }
 
   return (
-    <aside className="pc-dev-rail" data-testid="dev-admin-rail" aria-label="Dev admin rail">
-      <div className="pc-dev-rail__header">
-        <span className="pc-dev-rail__title">
+    <>
+    <style>{RAIL_CSS}</style>
+    <aside className="pcdar" data-testid="dev-admin-rail" aria-label="Dev admin rail">
+      <div className="pcdar__header">
+        <span className="pcdar__title">
           <FlaskConical size={14} aria-hidden="true" />
           Dev admin
-          <span className="pc-dev-rail__title-badge">DEV</span>
+          <span className="pcdar__title-badge">DEV</span>
         </span>
-        <span className="pc-dev-rail__spacer" />
+        <span className="pcdar__spacer" />
         <button
           type="button"
-          className="pc-dev-rail__iconbtn"
+          className="pcdar__iconbtn"
           onClick={() => setOpen(false)}
           aria-label="Close dev admin rail"
         >
@@ -94,30 +101,30 @@ export default function DevAdminRail() {
         </button>
       </div>
 
-      <div className="pc-dev-rail__acc">
+      <div className="pcdar__acc">
         {SECTIONS.map((s) => {
           const isActive = s.id === section;
           const Icon = s.icon;
           return (
-            <div key={s.id} className={`pc-dev-rail__sec${isActive ? ' is-active' : ''}`}>
+            <div key={s.id} className={`pcdar__sec${isActive ? ' is-active' : ''}`}>
               <button
                 type="button"
-                className="pc-dev-rail__sec-head"
+                className="pcdar__sec-head"
                 data-testid={`dev-rail-sec-${s.id}`}
                 aria-expanded={isActive}
                 onClick={() => setSection(s.id)}
               >
-                <span className="pc-dev-rail__sec-icon">
+                <span className="pcdar__sec-icon">
                   <Icon size={15} aria-hidden="true" />
                 </span>
-                <span className="pc-dev-rail__sec-label">{s.label}</span>
-                <span className="pc-dev-rail__sec-chevron">
+                <span className="pcdar__sec-label">{s.label}</span>
+                <span className="pcdar__sec-chevron">
                   <ChevronRight size={15} aria-hidden="true" />
                 </span>
               </button>
               {isActive && (
-                <div className="pc-dev-rail__sec-body">
-                  <Suspense fallback={<div className="pc-dev-panel__empty">Loading…</div>}>
+                <div className="pcdar__sec-body">
+                  <Suspense fallback={<div className="pcdar-panel__empty">Loading…</div>}>
                     {s.render(true)}
                   </Suspense>
                 </div>
@@ -127,5 +134,6 @@ export default function DevAdminRail() {
         })}
       </div>
     </aside>
+    </>
   );
 }

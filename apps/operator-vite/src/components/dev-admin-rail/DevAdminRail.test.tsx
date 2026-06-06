@@ -1,0 +1,92 @@
+// @vitest-environment jsdom
+//
+// Dev admin rail shell — P-001 (collapsible, nuqs-backed open + active-section)
+// and P-009 (open/section state round-trips via the URL). The 7 lazily-imported
+// section panels are stubbed so this test covers the SHELL: the collapsed handle,
+// open/close, the single-open accordion, and that every interaction writes the
+// nuqs URL params (?devRail / ?devSec). Panel data behavior is tested separately
+// at the resolver level (dev-glances.test.ts) — here we only assert the right
+// panel MOUNTS for the active section.
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+
+// Stub the 7 lazy panels with trivial markers so we don't pull in FeaturesAdmin /
+// AdminOps / useSyncQuery (their own surfaces are tested elsewhere).
+vi.mock('./panels/FlagsPanel', () => ({ default: () => <div data-testid="panel-flags" /> }));
+vi.mock('./panels/RunPanel', () => ({ default: () => <div data-testid="panel-run" /> }));
+vi.mock('./panels/NotificationsPanel', () => ({ default: () => <div data-testid="panel-notifications" /> }));
+vi.mock('./panels/ServiceHealthPanel', () => ({ default: () => <div data-testid="panel-health" /> }));
+vi.mock('./panels/DeployStatePanel', () => ({ default: () => <div data-testid="panel-deploy" /> }));
+vi.mock('./panels/DbHealthPanel', () => ({ default: () => <div data-testid="panel-db" /> }));
+vi.mock('./panels/FleetPanel', () => ({ default: () => <div data-testid="panel-fleet" /> }));
+
+import DevAdminRail from './DevAdminRail';
+
+afterEach(cleanup);
+
+function renderRail(searchParams = '') {
+  const onUrlUpdate = vi.fn();
+  render(<DevAdminRail />, {
+    wrapper: ({ children }) => (
+      <NuqsTestingAdapter searchParams={searchParams} onUrlUpdate={onUrlUpdate}>
+        {children}
+      </NuqsTestingAdapter>
+    ),
+  });
+  // Latest query string nuqs wrote, or '' if nothing written yet.
+  const lastQuery = () =>
+    onUrlUpdate.mock.calls.length
+      ? onUrlUpdate.mock.calls[onUrlUpdate.mock.calls.length - 1][0].queryString
+      : '';
+  return { onUrlUpdate, lastQuery };
+}
+
+describe('DevAdminRail shell', () => {
+  it('renders only the collapsed handle by default (rail closed)', () => {
+    renderRail();
+    expect(screen.getByTestId('dev-admin-rail-handle')).toBeTruthy();
+    expect(screen.queryByTestId('dev-admin-rail')).toBeNull();
+  });
+
+  it('clicking the handle opens the rail — writes ?devRail=true to the URL', () => {
+    const { lastQuery } = renderRail();
+    fireEvent.click(screen.getByTestId('dev-admin-rail-handle'));
+    expect(lastQuery()).toContain('devRail=true');
+  });
+
+  it('when open (?devRail=true) it shows the rail with all 7 section headers, flags active by default', async () => {
+    renderRail('?devRail=true');
+    expect(screen.getByTestId('dev-admin-rail')).toBeTruthy();
+    for (const sec of ['flags', 'run', 'notifications', 'health', 'deploy', 'db', 'fleet']) {
+      expect(screen.getByTestId(`dev-rail-sec-${sec}`)).toBeTruthy();
+    }
+    // Default active section = flags → only its panel body is mounted (lazy).
+    expect(await screen.findByTestId('panel-flags')).toBeTruthy();
+    expect(screen.queryByTestId('panel-deploy')).toBeNull();
+  });
+
+  it('deep-links the active section: ?devRail=true&devSec=deploy mounts the deploy panel', async () => {
+    renderRail('?devRail=true&devSec=deploy');
+    expect(await screen.findByTestId('panel-deploy')).toBeTruthy();
+    expect(screen.queryByTestId('panel-flags')).toBeNull();
+  });
+
+  it('clicking a section header switches the active section — writes ?devSec to the URL', async () => {
+    const { lastQuery } = renderRail('?devRail=true');
+    await screen.findByTestId('panel-flags');
+    fireEvent.click(screen.getByTestId('dev-rail-sec-fleet'));
+    expect(lastQuery()).toContain('devSec=fleet');
+    expect(await screen.findByTestId('panel-fleet')).toBeTruthy();
+    // Single-open accordion: the previously-active flags panel unmounts.
+    await waitFor(() => expect(screen.queryByTestId('panel-flags')).toBeNull());
+  });
+
+  it('clicking close collapses the rail — writes devRail back off', () => {
+    const { lastQuery } = renderRail('?devRail=true');
+    fireEvent.click(screen.getByLabelText('Close dev admin rail'));
+    // parseAsBoolean.withDefault(false): setting false clears the param → no devRail=true.
+    expect(lastQuery()).not.toContain('devRail=true');
+  });
+});

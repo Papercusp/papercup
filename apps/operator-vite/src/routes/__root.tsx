@@ -85,14 +85,22 @@ import '@/app/harness/harness.css';
  *     otherwise component-scoped and absent pre-paint.
  */
 // Dev-only admin rail (plan dev-admin-sidebar-2026-06-05). Gated on
-// `import.meta.env.DEV` HERE so the whole rail — and its lazily-imported panels —
-// is statically dead code in a production build: the ternary resolves to `null`,
-// the `lazy(() => import(...))` call is never emitted, and Rollup drops the chunk.
-// Result: the rail is ABSENT from user builds (D-001). The desktop dev shell runs
-// `vite build --mode development`, where DEV === true, so it shows there.
-const DevAdminRail = import.meta.env.DEV
-  ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
-  : null;
+// `import.meta.env.MODE !== 'production'` HERE so the whole rail — and its
+// lazily-imported panels — is statically dead code in a production build: the
+// ternary resolves to `null`, the `lazy(() => import(...))` call is never
+// emitted, and Rollup drops the chunk (verified: 0 `pcdar`/rail strings in a
+// production `vite build`). Result: the rail is ABSENT from user builds (D-001).
+//
+// Why MODE, not `import.meta.env.DEV` (which the plan named): Vite ties DEV/PROD
+// to the COMMAND (`vite` serve vs `vite build`), NOT to `--mode`. The desktop dev
+// shell runs `vite build --watch --mode development` — a *build*, so DEV===false
+// there, and a DEV gate would make the rail never appear in the desktop. MODE is
+// the real discriminator: it's 'development' in BOTH dev shells (nohmr build +
+// :3055 HMR serve) and 'production' only in the shipped `vite build`.
+const DevAdminRail =
+  import.meta.env.MODE !== 'production'
+    ? lazy(() => import('../components/dev-admin-rail/DevAdminRail'))
+    : null;
 
 export const Route = createRootRoute({
   component: RootComponent,

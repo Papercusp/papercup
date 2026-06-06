@@ -3,7 +3,7 @@
  *
  * Why a string and not `import './x.css'`: Vite eagerly collects CSS imported by
  * a module into the output stylesheet EVEN when that module is a dead
- * dynamically-imported chunk (the rail is gated `import.meta.env.DEV`). A `.css`
+ * dynamically-imported chunk (the rail is dev-gated in __root.tsx). A `.css`
  * import therefore leaks the rail's class names into production builds. Carrying
  * the CSS as a string that the component injects via `<style>` keeps it inside
  * the JS module, so it tree-shakes away with the rest of the rail in prod —
@@ -15,10 +15,10 @@ export const RAIL_CSS = `/*
  * A collapsible, dev-only right rail. Overlay (does NOT shift app layout) so it
  * can sit over any route without fighting the left op-chat sidebar. Tokens mirror
  * the proven FeaturesAdmin palette (var(--bg-*), var(--accent-*)) so it reads as
- * part of the app's dark glassy theme. Everything is prefixed `pc-dev-rail`.
+ * part of the app's dark glassy theme. Everything is prefixed pcdar.
  */
 
-.pc-dev-rail {
+.pcdar {
   position: fixed;
   top: 0;
   right: 0;
@@ -38,13 +38,13 @@ export const RAIL_CSS = `/*
   transform: translateX(0);
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
-.pc-dev-rail.is-closed {
+.pcdar.is-closed {
   transform: translateX(100%);
   box-shadow: none;
 }
 
 /* Collapsed handle — a thin tab clinging to the right edge that re-opens it. */
-.pc-dev-rail__handle {
+.pcdar__handle {
   position: fixed;
   top: 50%;
   right: 0;
@@ -68,12 +68,12 @@ export const RAIL_CSS = `/*
   box-shadow: -8px 0 22px rgba(0, 0, 0, 0.3);
   transition: background 120ms, border-color 120ms, color 120ms;
 }
-.pc-dev-rail__handle:hover {
+.pcdar__handle:hover {
   background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 0%);
   border-color: rgba(103, 232, 249, 0.5);
   color: #eff8ff;
 }
-.pc-dev-rail__handle-dot {
+.pcdar__handle-dot {
   writing-mode: horizontal-tb;
   width: 7px;
   height: 7px;
@@ -83,7 +83,7 @@ export const RAIL_CSS = `/*
 }
 
 /* Header */
-.pc-dev-rail__header {
+.pcdar__header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -92,7 +92,7 @@ export const RAIL_CSS = `/*
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 84%);
   background: color-mix(in srgb, var(--bg-deep, #060d18), transparent 6%);
 }
-.pc-dev-rail__title {
+.pcdar__title {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -102,7 +102,7 @@ export const RAIL_CSS = `/*
   text-transform: uppercase;
   color: rgba(203, 238, 255, 0.82);
 }
-.pc-dev-rail__title-badge {
+.pcdar__title-badge {
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(56, 189, 248, 0.16);
@@ -110,10 +110,10 @@ export const RAIL_CSS = `/*
   font-size: 9px;
   letter-spacing: 0.12em;
 }
-.pc-dev-rail__spacer {
+.pcdar__spacer {
   flex: 1;
 }
-.pc-dev-rail__iconbtn {
+.pcdar__iconbtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -126,31 +126,31 @@ export const RAIL_CSS = `/*
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
-.pc-dev-rail__iconbtn:hover {
+.pcdar__iconbtn:hover {
   background: rgba(12, 24, 38, 0.96);
   border-color: rgba(103, 232, 249, 0.4);
   color: #eff8ff;
 }
 
 /* Accordion */
-.pc-dev-rail__acc {
+.pcdar__acc {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-.pc-dev-rail__sec {
+.pcdar__sec {
   display: flex;
   flex-direction: column;
   min-height: 0;
   border-bottom: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 88%);
 }
-.pc-dev-rail__sec.is-active {
+.pcdar__sec.is-active {
   flex: 1;
   min-height: 0;
 }
-.pc-dev-rail__sec-head {
+.pcdar__sec-head {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -167,23 +167,23 @@ export const RAIL_CSS = `/*
   cursor: pointer;
   transition: background 120ms, color 120ms;
 }
-.pc-dev-rail__sec-head:hover {
+.pcdar__sec-head:hover {
   background: color-mix(in srgb, var(--bg-1, #0a1422), transparent 2%);
   color: #eff8ff;
 }
-.pc-dev-rail__sec.is-active > .pc-dev-rail__sec-head {
+.pcdar__sec.is-active > .pcdar__sec-head {
   color: #f7fdff;
   background: color-mix(in srgb, var(--bg-raised, #0e1c30), transparent 2%);
 }
-.pc-dev-rail__sec-icon {
+.pcdar__sec-icon {
   display: inline-flex;
   color: var(--accent, #57d7ff);
   opacity: 0.85;
 }
-.pc-dev-rail__sec-label {
+.pcdar__sec-label {
   flex: 1;
 }
-.pc-dev-rail__sec-count {
+.pcdar__sec-count {
   padding: 0 7px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.18);
@@ -191,23 +191,23 @@ export const RAIL_CSS = `/*
   font-size: 10px;
   font-weight: 700;
 }
-.pc-dev-rail__sec-count.is-bad {
+.pcdar__sec-count.is-bad {
   background: rgba(248, 113, 113, 0.2);
   color: #fca5a5;
 }
-.pc-dev-rail__sec-count.is-good {
+.pcdar__sec-count.is-good {
   background: rgba(34, 197, 94, 0.18);
   color: #86efac;
 }
-.pc-dev-rail__sec-chevron {
+.pcdar__sec-chevron {
   display: inline-flex;
   color: rgba(148, 163, 184, 0.7);
   transition: transform 140ms;
 }
-.pc-dev-rail__sec.is-active .pc-dev-rail__sec-chevron {
+.pcdar__sec.is-active .pcdar__sec-chevron {
   transform: rotate(90deg);
 }
-.pc-dev-rail__sec-body {
+.pcdar__sec-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -215,29 +215,29 @@ export const RAIL_CSS = `/*
 }
 
 /* Shared panel primitives (glance panels P-004..P-008) */
-.pc-dev-panel {
+.pcdar-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 8px 12px 14px;
 }
-.pc-dev-panel__bar {
+.pcdar-panel__bar {
   display: flex;
   align-items: center;
   gap: 8px;
   min-height: 24px;
 }
-.pc-dev-panel__bar-label {
+.pcdar-panel__bar-label {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: rgba(148, 163, 184, 0.78);
 }
-.pc-dev-panel__bar-spacer {
+.pcdar-panel__bar-spacer {
   flex: 1;
 }
-.pc-dev-panel__refresh {
+.pcdar-panel__refresh {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -250,29 +250,29 @@ export const RAIL_CSS = `/*
   cursor: pointer;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
-.pc-dev-panel__refresh:hover:not(:disabled) {
+.pcdar-panel__refresh:hover:not(:disabled) {
   border-color: rgba(103, 232, 249, 0.4);
   color: #eff8ff;
 }
-.pc-dev-panel__refresh:disabled {
+.pcdar-panel__refresh:disabled {
   opacity: 0.55;
   cursor: progress;
 }
-.pc-dev-panel__refresh.is-spinning svg {
-  animation: pc-dev-spin 0.8s linear infinite;
+.pcdar-panel__refresh.is-spinning svg {
+  animation: pcdar-spin 0.8s linear infinite;
 }
-@keyframes pc-dev-spin {
+@keyframes pcdar-spin {
   to {
     transform: rotate(360deg);
   }
 }
-.pc-dev-panel__empty {
+.pcdar-panel__empty {
   padding: 14px 4px;
   color: rgba(148, 163, 184, 0.74);
   font-size: 12px;
   text-align: center;
 }
-.pc-dev-panel__error {
+.pcdar-panel__error {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid rgba(248, 113, 113, 0.32);
@@ -283,7 +283,7 @@ export const RAIL_CSS = `/*
 }
 
 /* Rows / cards inside glance panels */
-.pc-dev-row {
+.pcdar-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -292,14 +292,14 @@ export const RAIL_CSS = `/*
   border: 1px solid color-mix(in srgb, var(--accent-strong, #38bdf8), transparent 88%);
   background: color-mix(in srgb, var(--bg-deep, #060d18), transparent 12%);
 }
-.pc-dev-row + .pc-dev-row {
+.pcdar-row + .pcdar-row {
   margin-top: 6px;
 }
-.pc-dev-row__main {
+.pcdar-row__main {
   flex: 1;
   min-width: 0;
 }
-.pc-dev-row__title {
+.pcdar-row__title {
   font-size: 13px;
   font-weight: 600;
   color: #eff8ff;
@@ -307,7 +307,7 @@ export const RAIL_CSS = `/*
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pc-dev-row__sub {
+.pcdar-row__sub {
   margin-top: 2px;
   font-size: 11px;
   color: rgba(205, 226, 240, 0.7);
@@ -316,25 +316,25 @@ export const RAIL_CSS = `/*
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pc-dev-dot {
+.pcdar-dot {
   flex: 0 0 auto;
   width: 9px;
   height: 9px;
   border-radius: 50%;
   background: rgba(148, 163, 184, 0.6);
 }
-.pc-dev-dot.is-up {
+.pcdar-dot.is-up {
   background: #4ade80;
   box-shadow: 0 0 7px rgba(74, 222, 128, 0.7);
 }
-.pc-dev-dot.is-down {
+.pcdar-dot.is-down {
   background: #f87171;
   box-shadow: 0 0 7px rgba(248, 113, 113, 0.7);
 }
-.pc-dev-dot.is-absent {
+.pcdar-dot.is-absent {
   background: rgba(148, 163, 184, 0.5);
 }
-.pc-dev-pill {
+.pcdar-pill {
   flex: 0 0 auto;
   padding: 2px 8px;
   border-radius: 999px;
@@ -344,31 +344,31 @@ export const RAIL_CSS = `/*
   background: rgba(148, 163, 184, 0.18);
   color: rgba(214, 236, 248, 0.82);
 }
-.pc-dev-pill.is-good {
+.pcdar-pill.is-good {
   background: rgba(34, 197, 94, 0.18);
   color: #86efac;
 }
-.pc-dev-pill.is-bad {
+.pcdar-pill.is-bad {
   background: rgba(248, 113, 113, 0.2);
   color: #fca5a5;
 }
-.pc-dev-pill.is-warn {
+.pcdar-pill.is-warn {
   background: rgba(251, 191, 36, 0.18);
   color: #fcd34d;
 }
 
 /* Key/value grid used by deploy + db panels */
-.pc-dev-kv {
+.pcdar-kv {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 4px 12px;
   font-size: 12px;
   padding: 2px 2px 4px;
 }
-.pc-dev-kv__k {
+.pcdar-kv__k {
   color: rgba(148, 163, 184, 0.78);
 }
-.pc-dev-kv__v {
+.pcdar-kv__v {
   color: #eff8ff;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   text-align: right;
@@ -379,19 +379,19 @@ export const RAIL_CSS = `/*
 
 /* The reused full-page panels (Flags/Run) get a scroll container so their own
    max-width:auto layout fits the narrow rail. */
-.pc-dev-embed {
+.pcdar-embed {
   /* Override the embedded surfaces' page paddings so they fit the 384px rail. */
 }
-.pc-dev-embed .fa-shell,
-.pc-dev-embed .pc-ops-shell {
+.pcdar-embed .fa-shell,
+.pcdar-embed .pc-ops-shell {
   max-width: 100%;
   padding: 8px 12px 16px;
   margin: 0;
 }
-.pc-dev-embed .fa-presets {
+.pcdar-embed .fa-presets {
   grid-template-columns: 1fr;
 }
-.pc-dev-embed .pc-ops-grid {
+.pcdar-embed .pc-ops-grid {
   grid-template-columns: 1fr;
 }
 `;

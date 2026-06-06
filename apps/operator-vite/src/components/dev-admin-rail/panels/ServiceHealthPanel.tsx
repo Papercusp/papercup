@@ -28,7 +28,7 @@ export default function ServiceHealthPanel({ active }: { active: boolean }) {
   const services = sync.data?.[0]?.services ?? [];
 
   return (
-    <div className="pc-dev-panel">
+    <div className="pcdar-panel">
       <PanelBar label="Service health" fetching={sync.fetching} onRefresh={sync.invalidate} />
       <PanelState
         loading={sync.loading}
@@ -43,15 +43,15 @@ export default function ServiceHealthPanel({ active }: { active: boolean }) {
           ? (s.note ?? 'not running')
           : `${s.status ?? '—'} · ${s.latencyMs}ms${s.recentErrors ? ` · ${s.recentErrors} err` : ''}`;
         return (
-          <div key={s.name} className="pc-dev-row">
-            <span className={`pc-dev-dot ${dotClass}`} aria-hidden="true" />
-            <div className="pc-dev-row__main">
-              <div className="pc-dev-row__title">{s.name}</div>
-              <div className="pc-dev-row__sub" title={s.note ?? undefined}>
+          <div key={s.name} className="pcdar-row">
+            <span className={`pcdar-dot ${dotClass}`} aria-hidden="true" />
+            <div className="pcdar-row__main">
+              <div className="pcdar-row__title">{s.name}</div>
+              <div className="pcdar-row__sub" title={s.note ?? undefined}>
                 {sub}
               </div>
             </div>
-            <span className={`pc-dev-pill ${absent ? '' : s.up ? 'is-good' : 'is-bad'}`}>
+            <span className={`pcdar-pill ${absent ? '' : s.up ? 'is-good' : 'is-bad'}`}>
               {absent ? 'absent' : s.up ? 'up' : 'down'}
             </span>
           </div>
