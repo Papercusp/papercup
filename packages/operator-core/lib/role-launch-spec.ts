@@ -54,6 +54,8 @@ export interface BuildRoleLaunchSpecInput {
   featureId?: string | null;
   /** Optional plan context already fetched by the caller (operator has PG access). */
   planContext?: string;
+  /** Queen-authored brief: the situational overlay the bee is MISSING. P-060: passed at placement time. */
+  brief?: string;
   /** Extra runtime-context bullets, e.g. ['MODE=replan']. */
   extras?: readonly string[];
   /** Signed-URL TTL; defaults to the signer's 24h. */
@@ -124,6 +126,7 @@ export async function buildRoleLaunchSpec(
     featureId: featureId ?? undefined,
     extras: input.extras,
     planContext: input.planContext,
+    brief: input.brief,
     promptOverrideText,
   });
   const runId = assembled.meta.runId;

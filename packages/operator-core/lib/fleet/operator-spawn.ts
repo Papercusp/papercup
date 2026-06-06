@@ -128,6 +128,8 @@ export interface OperatorSpawnInput {
   role: string;
   featureId?: string | null;
   chunkId?: string | null;
+  /** Queen-authored brief: the situational overlay the bee is MISSING. P-060. */
+  brief?: string | null;
   /** Extra KEY=value positional args for the child invoke. */
   extras?: string[];
   /** Lineage: the spawning turn/agent. Recorded as parent_spawn_id. */

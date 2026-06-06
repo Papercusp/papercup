@@ -35,6 +35,8 @@ export default defineTool({
       .describe('Child agent role (e.g. validator, scoper, worker, reviewer).'),
     feature: z.string().max(120).optional().describe('Feature id the child should pick up.'),
     chunk: z.string().max(120).optional().describe('Chunk id. Required when role="worker".'),
+    brief: z.string().max(2000).optional()
+      .describe('Queen brief: situational overlay the bee is missing (cross-bee context, watch-fors, why-this-priority). P-060.'),
     extras: z.array(z.string().max(500)).max(16).optional()
       .describe('Extra KEY=value args passed to the child invoke.'),
     workspace: z.string().max(120).optional(),
@@ -62,6 +64,7 @@ export default defineTool({
       role: args.role,
       featureId: args.feature ?? null,
       chunkId: args.chunk ?? null,
+      brief: args.brief ?? null,
       extras: args.extras,
       parentSpawnId,
       parentRole: ctx.role ?? 'operator',
