@@ -221,6 +221,22 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       });
     },
 
+    async recordEvent(ev): Promise<void> {
+      // The /admin/git deploy history (mig 177). Recorded by the DEPLOY process
+      // (which survives the :3070 restart it performs) — the release-trigger
+      // routine's host does not (deployer-dies-with-deployed, 2026-06-06).
+      const { appendPipelineEvent } = await import(
+        '@papercusp/operator-core/lib/harness/git-sync/pipeline-events'
+      );
+      await appendPipelineEvent({
+        workspaceId: safeWorkspaceId() ?? '*',
+        installSlug: process.env.RELEASE_ROUTINE_SLUG ?? 'papercup',
+        kind: 'deploy',
+        status: ev.status,
+        detail: ev.detail,
+      });
+    },
+
     log,
   };
 }

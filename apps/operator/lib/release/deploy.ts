@@ -96,6 +96,13 @@ export interface DeployDeps {
   restoreSnapshot(snap: SnapshotInfo): Promise<void>;
   /** coord:send broadcast. */
   broadcast(summary: string, body?: string): Promise<void>;
+  /** Append a `deploy` row to harness_shared.pipeline_events (the /admin/git
+   *  history). Lives HERE (not in the release-trigger routine) because the
+   *  routine's host dies at this deploy's own restart step — only the deploy
+   *  process itself survives to record the outcome (2026-06-06 10:31: the
+   *  first auto-deploy's health/rollback/broadcast/event were all lost that
+   *  way). Optional: stub tests omit it. */
+  recordEvent?(ev: { status: 'ok' | 'rolled-back' | 'failed'; detail: Record<string, unknown> }): Promise<void>;
   log(s: string): void;
 }
 
@@ -268,6 +275,16 @@ export async function executeDeploy(
           }),
         )
         .catch(() => {});
+      // AWAITED (not void): deploy-cli process.exit()s right after main()
+      // resolves — a dangling append would be killed before the row lands.
+      if (deps.recordEvent) {
+        await deps
+          .recordEvent({
+            status: 'ok',
+            detail: { targetSha: plan.targetSha.slice(0, 12), commits: plan.commits.length, migrations: plan.migrations.length },
+          })
+          .catch(() => {});
+      }
       return { ok: true, plan, steps, snapshot, migrations, rolledBack: false };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
@@ -307,6 +324,14 @@ export async function executeDeploy(
           }),
         )
         .catch(() => {});
+      if (deps.recordEvent) {
+        await deps
+          .recordEvent({
+            status: rolledBack ? 'rolled-back' : 'failed',
+            detail: { targetSha: plan.targetSha.slice(0, 12), commits: plan.commits.length, migrations: plan.migrations.length, error: error.slice(0, 300) },
+          })
+          .catch(() => {});
+      }
       return { ok: false, plan, steps, snapshot, migrations, rolledBack, error };
     }
   });

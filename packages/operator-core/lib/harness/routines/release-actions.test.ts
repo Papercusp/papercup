@@ -75,12 +75,7 @@ describe('register-system-actions — registry population', () => {
   });
 });
 
-/** deploy-cli --execute stdout: the plan JSON then the result JSON (both top-level). */
-function executeStdout(result: Record<string, unknown>): string {
-  return `${planJson(false)}\n${JSON.stringify(result, null, 2)}`;
-}
-
-describe('release-trigger — noop gating + scripted auto-deploy', () => {
+describe('release-trigger — noop gating + detached auto-deploy', () => {
   it('does NOT deploy when the deploy plan is noop:true', async () => {
     spawnMock.mockImplementation(() => fakeSpawn(planJson(true), 0));
     const action = getSystemAction('release-trigger')!;
@@ -106,54 +101,45 @@ describe('release-trigger — noop gating + scripted auto-deploy', () => {
     warn.mockRestore();
   });
 
-  it('runs deploy-cli --execute when the plan is noop:false and logs an ok deploy event', async () => {
+  it('launches the deploy as a DETACHED systemd-run unit when the plan is noop:false', async () => {
     spawnMock
-      .mockImplementationOnce(() => fakeSpawn(planJson(false), 0)) // plan gather
-      .mockImplementationOnce(() => fakeSpawn(executeStdout({ ok: true, rolledBack: false, steps: [] }), 0));
+      .mockImplementationOnce(() => fakeSpawn(planJson(false), 0)) // plan gather (tsx)
+      .mockImplementationOnce(() => fakeSpawn('', 0)); // systemd-run launch
     const action = getSystemAction('release-trigger')!;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await action(ctx);
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
-    // the second spawn is the scripted deploy: tsx deploy-cli.ts --execute
-    const execArgs = (spawnMock.mock.calls[1] as unknown[])[1] as string[];
-    expect(execArgs.some((a) => a.endsWith('deploy-cli.ts'))).toBe(true);
-    expect(execArgs).toContain('--execute');
+    // The second spawn must be the DETACHED transient unit (the deploy restarts
+    // this host — a child deploy-cli dies at its own restart step), not a
+    // direct tsx child.
+    const [cmd, args] = spawnMock.mock.calls[1] as [string, string[]];
+    expect(cmd).toBe('systemd-run');
+    expect(args).toContain('--user');
+    expect(args).toContain('--unit=papercup-auto-deploy');
+    const sh = args[args.length - 1];
+    expect(sh).toContain('deploy-cli.ts --execute');
+    expect(sh).toContain('PAPERCUSP_ALLOW_DEV_RESTART=1');
 
-    expect(appendPipelineEvent).toHaveBeenCalledTimes(1);
-    expect(appendPipelineEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'deploy',
-        status: 'ok',
-        installSlug: 'my-harness',
-        workspaceId: 'ws-42',
-        detail: expect.objectContaining({ targetSha: 'deadbeef', exitCode: 0 }),
-      }),
-    );
+    // The deploy outcome event is recorded by deploy.ts (the surviving
+    // process), never by this routine.
+    expect(appendPipelineEvent).not.toHaveBeenCalled();
     log.mockRestore();
   });
 
-  it('logs a rolled-back deploy event when --execute fails and rolls back', async () => {
+  it('warns (does not throw) when the detached unit cannot launch — e.g. a deploy already running', async () => {
     spawnMock
       .mockImplementationOnce(() => fakeSpawn(planJson(false), 0))
-      .mockImplementationOnce(() =>
-        fakeSpawn(executeStdout({ ok: false, rolledBack: true, error: 'health probe failed', steps: [] }), 1),
-      );
+      .mockImplementationOnce(() => fakeSpawn('', 1)); // systemd-run refuses (unit exists)
     const action = getSystemAction('release-trigger')!;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await action(ctx);
 
-    expect(appendPipelineEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'deploy',
-        status: 'rolled-back',
-        detail: expect.objectContaining({ exitCode: 1, error: expect.stringContaining('health probe failed') }),
-      }),
-    );
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('auto-deploy rolled-back'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deploy already running'));
+    expect(appendPipelineEvent).not.toHaveBeenCalled();
     warn.mockRestore();
     log.mockRestore();
   });

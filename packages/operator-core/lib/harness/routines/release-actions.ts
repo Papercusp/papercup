@@ -117,30 +117,26 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   });
 });
 
-/** The LAST top-level JSON object printed to stdout (deploy-cli prints the plan
- *  first, then — under --execute — the result; both start a line with `{`). */
-function lastJsonObject(stdout: string): Record<string, unknown> | null {
-  for (let i = stdout.lastIndexOf('\n{'); i >= 0; i = stdout.lastIndexOf('\n{', i - 1)) {
-    try {
-      return JSON.parse(stdout.slice(i + 1, stdout.lastIndexOf('}') + 1)) as Record<string, unknown>;
-    } catch {
-      /* not a complete object from here — keep scanning back */
-    }
-  }
-  try {
-    return JSON.parse(stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
+/** The fixed transient-unit name for the detached auto-deploy — fixed on
+ *  purpose: systemd-run refuses a second unit with the same name while one is
+ *  active, which is exactly the dedup we want across trigger ticks. */
+export const AUTO_DEPLOY_UNIT = 'papercup-auto-deploy';
 
 /**
  * system:release-trigger — AUTO-SERVE (staging-branch-pipeline-2026-06-06 D-002):
- * when green `main` is ahead of what the operator runs, run the SCRIPTED deploy
- * directly. The green gate is the go/no-go; deploy-cli's mechanics carry drain +
- * snapshot + migrate + health-check + auto-rollback. No agent in the loop.
+ * when green `main` is ahead of what the operator runs, launch the SCRIPTED
+ * deploy. The green gate is the go/no-go; deploy-cli's mechanics carry drain +
+ * snapshot + migrate + restart + health-check + auto-rollback, and deploy.ts
+ * records the `deploy` pipeline event itself.
+ *
+ * The deploy is launched as a DETACHED transient systemd unit, NOT a child of
+ * this host: the deploy restarts the very host this routine runs in, so a child
+ * deploy-cli dies at its own restart step — the 2026-06-06 10:31 auto-deploy
+ * lost its health probe, AUTO-ROLLBACK, broadcast and event exactly that way
+ * (swap+migrate land before restart, which is why it half-worked). A transient
+ * unit survives the restart and completes the whole lifecycle.
  */
-registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
+registerSystemAction('release-trigger', async (_ctx: SystemActionCtx) => {
   const root = integrationRoot();
   // Cheap, side-effect-free: is there anything green to deploy?
   const plan = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', [], 60_000);
@@ -158,41 +154,37 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
   }
   if (noop) return; // release checkout already at green main
 
-  const targetSha = typeof planObj?.targetSha === 'string' ? planObj.targetSha.slice(0, 12) : undefined;
-  const commits = Array.isArray(planObj?.commits) ? planObj.commits.length : undefined;
-  const migrations = Array.isArray(planObj?.migrations) ? (planObj.migrations as string[]) : [];
-  console.log(`[release-trigger] green main is ahead — auto-deploying ${targetSha ?? '?'} (${commits ?? '?'} commit(s), ${migrations.length} migration(s))`);
+  const targetSha = typeof planObj?.targetSha === 'string' ? planObj.targetSha.slice(0, 12) : '?';
+  const commits = Array.isArray(planObj?.commits) ? planObj.commits.length : '?';
+  console.log(`[release-trigger] green main is ahead — launching detached auto-deploy of ${targetSha} (${commits} commit(s)) as ${AUTO_DEPLOY_UNIT}`);
 
-  // Deploy can take minutes (drain + node_modules sync + migrate + restart +
-  // health probe). The routine engine's per-routine dedup stops a second trigger
-  // racing this one; executeDeploy's own broadcast announces the outcome.
   // PAPERCUSP_ALLOW_DEV_RESTART=1: the restart step is env-gated against ad-hoc
   // runs restarting the shared host — this routine IS the owner-authorized
-  // auto-serve path (D-002), so it self-authorizes; without it every auto-deploy
-  // would fail post-swap and rollback-loop each tick.
-  const r = await runScript(root, 'apps/operator/lib/release/deploy-cli.ts', ['--execute'], 20 * 60_000, {
-    PAPERCUSP_ALLOW_DEV_RESTART: '1',
-  });
-  const result = lastJsonObject(r.stdout);
-  const ok = r.code === 0 && result?.ok === true;
-  const rolledBack = result?.rolledBack === true;
-  const status = ok ? 'ok' : rolledBack ? 'rolled-back' : r.code === 2 ? 'refused' : 'failed';
-  if (!ok) {
-    console.warn(`[release-trigger] auto-deploy ${status} (exit ${r.code}): ${(typeof result?.error === 'string' && result.error) || (r.stderr || r.stdout).slice(-400)}`);
-  }
-
-  // Pipeline history (mig 177): one `deploy` row per ATTEMPT for the Git tab.
-  await appendPipelineEvent({
-    workspaceId: ctx.workspaceId,
-    installSlug: ctx.installSlug,
-    kind: 'deploy',
-    status,
-    detail: {
-      targetSha,
-      commits,
-      migrations: migrations.length,
-      exitCode: r.code,
-      ...(typeof result?.error === 'string' && result.error ? { error: result.error.slice(0, 300) } : {}),
-    },
+  // auto-serve path (D-002), so it self-authorizes. Fire-and-forget: the
+  // outcome is reported by deploy.ts (broadcast + pipeline event + awaitable
+  // release:deployed/deploy-failed), not by this (about-to-be-restarted) host.
+  await new Promise<void>((resolve) => {
+    const child = spawn('systemd-run', [
+      '--user',
+      '--collect',
+      `--unit=${AUTO_DEPLOY_UNIT}`,
+      `--working-directory=${root}`,
+      'bash',
+      '-lc',
+      `PAPERCUSP_ALLOW_DEV_RESTART=1 PAPERCUSP_INTEGRATION_ROOT='${root}' npx tsx apps/operator/lib/release/deploy-cli.ts --execute >> /tmp/${AUTO_DEPLOY_UNIT}.log 2>&1`,
+    ]);
+    let stderr = '';
+    child.stderr?.on('data', (d) => (stderr += String(d)));
+    child.on('error', (e) => {
+      console.warn(`[release-trigger] failed to launch ${AUTO_DEPLOY_UNIT}: ${e instanceof Error ? e.message : e}`);
+      resolve();
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        // Most common cause: the unit already exists = a deploy is in flight.
+        console.warn(`[release-trigger] systemd-run exited ${code} (deploy already running?): ${stderr.trim().slice(0, 200)}`);
+      }
+      resolve();
+    });
   });
 });

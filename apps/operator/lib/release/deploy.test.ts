@@ -40,6 +40,13 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
       calls.push(`broadcast:${s.includes('✅') ? 'ok' : s.includes('❌') ? 'fail' : 'other'}`);
       return Promise.resolve();
     },
+    // The deploy records its own pipeline event (deployer-dies-with-deployed,
+    // 2026-06-06: the routine's host dies at the deploy's restart step, so only
+    // the deploy process can report the outcome).
+    recordEvent: (ev) => {
+      calls.push(`recordEvent:${ev.status}`);
+      return Promise.resolve();
+    },
     log: () => {},
     ...stripFail(over),
   };
@@ -81,6 +88,7 @@ describe('executeDeploy — happy path', () => {
     expect(calls.indexOf('migrate')).toBeLessThan(calls.indexOf('restart'));
     expect(calls.indexOf('restart')).toBeLessThan(calls.indexOf('health'));
     expect(calls).toContain('broadcast:ok');
+    expect(calls).toContain('recordEvent:ok'); // the deploy reports its own outcome
     expect(calls[calls.length - 1]).toBe('drain:release');
   });
 });
@@ -106,6 +114,7 @@ describe('executeDeploy — rollback on failure', () => {
     expect(calls).toContain('runSetup:1111');
     expect(calls).toContain('restoreSnapshot');
     expect(calls).toContain('broadcast:fail');
+    expect(calls).toContain('recordEvent:rolled-back');
     expect(calls[calls.length - 1]).toBe('drain:release');
   });
 
