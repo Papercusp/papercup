@@ -120,6 +120,11 @@ export interface FrameBootstrapInput {
    *  alternative to a `.credentials.json` bundle (no refresh-rotation races,
    *  ~1-year validity, one interactive mint instead of per-expiry logins). */
   oauthTokenLocalPath?: string;
+  /** Local path to an operator-packed runtime tarball to stage on the frame. When
+   *  set, the frame untars this instead of `git clone`-ing the runtime — required
+   *  when the runtime repo is private (an anonymous clone can never work) and
+   *  avoids shipping any git credential to the frame. */
+  runtimeTarballLocalPath?: string;
   /** The harness's per-install INSTANCE config as JSON — delivered to the frame's
    *  runtime via the `HARNESS_CONFIG_JSON` env-transport (the frame has no local
    *  config.json file). Host-assembled from workspace PG. */

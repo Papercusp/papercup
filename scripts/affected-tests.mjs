@@ -207,15 +207,31 @@ for (const t of tasks) console.log(`  - ${t.ws.name} :: ${t.script}`);
 
 if (dry) process.exit(0);
 
+// AFFECTED_RETRY_FAILED=1 (the green-checkpoint sets it): re-run a FAILED
+// workspace once before counting it. On the shared dev box the gate runs
+// while the fleet is at load 70-95, and single-test timeout flakes were
+// holding green `main` back for HOURS (2026-06-06 afternoon: consecutive
+// not-greens whose identification re-run passed 8867/8867). A real
+// regression fails both runs; a load flake almost never fails twice in a
+// row. Default OFF so interactive `test:affected` keeps fail-fast feedback.
+const retryFailed = process.env.AFFECTED_RETRY_FAILED === '1';
+
 let failed = 0;
 let quarantinedFailed = 0;
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   console.log(`\n>>> ${t.ws.name} :: npm run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
-  const r = spawnSync('npm', ['run', t.script, '--workspace', t.ws.dir], {
-    cwd: ROOT,
-    stdio: 'inherit',
-  });
+  const run = () =>
+    spawnSync('npm', ['run', t.script, '--workspace', t.ws.dir], {
+      cwd: ROOT,
+      stdio: 'inherit',
+    });
+  let r = run();
+  if (r.status !== 0 && retryFailed && !isQuarantined) {
+    console.warn(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
+    r = run();
+    if (r.status === 0) console.warn(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
+  }
   if (r.status !== 0) {
     if (isQuarantined) {
       quarantinedFailed++;

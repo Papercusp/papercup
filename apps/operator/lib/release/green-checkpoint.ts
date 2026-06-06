@@ -145,8 +145,23 @@ export function realCheckpointDeps(cfg: ReleaseConfig): CheckpointDeps {
       // isolated means slower-but-stable is the right trade.
       env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? '8';
       env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? '8';
+      // …and absorb the flakes the cap can't prevent: re-run a failed workspace
+      // once before calling the candidate red (affected-tests.mjs). At fleet
+      // load 70-95 single-timeout flakes held `main` for ~6h (2026-06-06
+      // afternoon) while the identification re-runs passed 100%. A real
+      // regression fails twice; a flake almost never does.
+      env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
       const r = await runCmd(cmd, args, { cwd: treeDir, env, allowNonZero: true });
-      return { green: r.code === 0, summary: (r.stdout + r.stderr).slice(-2000) };
+      // Strip npm's error boilerplate before truncating — it's ~10 lines of
+      // noise per failed workspace and repeatedly pushed the actual FAIL test
+      // names out of the 2000-char tail (cost two diagnosis round-trips on
+      // 2026-06-06). Keep the signal: FAIL lines, timeouts, assertion output.
+      const summary = (r.stdout + r.stderr)
+        .split('\n')
+        .filter((l) => !/^npm error/.test(l))
+        .join('\n')
+        .slice(-2000);
+      return { green: r.code === 0, summary };
     },
     advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
