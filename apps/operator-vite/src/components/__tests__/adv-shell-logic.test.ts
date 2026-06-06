@@ -85,6 +85,13 @@ describe('buildHarnessSelectOptions', () => {
     expect(opts[0].label).toBe('All Pots');
   });
 
+  it('routes the leading-option label through the brand lexicon (the-hive)', () => {
+    // The component threads t('pot', { plural: true }); classic = "Pots" (the
+    // default above), the-hive = "Hives" (P-005 / the-hive-lexicon).
+    const opts = buildHarnessSelectOptions([{ slug: 'sheets' }], null, 'Hives');
+    expect(opts[0].label).toBe('All Hives');
+  });
+
   it('flat list: root harnesses appear after "All harnesses", sorted', () => {
     const opts = buildHarnessSelectOptions(
       [{ slug: 'zebra' }, { slug: 'alpha' }, { slug: 'mango' }],

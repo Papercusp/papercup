@@ -31,6 +31,21 @@ describe('splitConfigJson', () => {
   it('empty config → empty', () => {
     expect(splitConfigJson({})).toEqual({});
   });
+
+  it('contract artifacts (harness_token/parent_slug/slug) are NOT swept into configOverrides (D-005)', () => {
+    expect(
+      splitConfigJson({
+        phase: 'staging',
+        harness_token: 'secret',
+        parent_slug: 'root',
+        slug: 'child',
+        maxCostUsd: 7,
+      }),
+    ).toEqual({
+      phase: 'staging',
+      configOverrides: { maxCostUsd: 7 },
+    });
+  });
 });
 
 describe('hasInstanceConfig', () => {

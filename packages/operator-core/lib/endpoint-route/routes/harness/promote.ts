@@ -174,7 +174,8 @@ const confirmPromotion = defineTool({
     // file a fix-the-build feature, reject the promotion.
     let smokeEnabled = false;
     try {
-      const explicit = promotionKnob?.smokeBuild?.enabled;
+      const effCfg = await readEffectiveHarnessConfig(project.slug, activeWorkspaceId(), project.path);
+      const explicit = (effCfg?.promotion as Record<string, any> | undefined)?.smokeBuild?.enabled;
       if (typeof explicit === 'boolean') smokeEnabled = explicit;
       else smokeEnabled = existsSync(join(project.path, '.papercusp', 'infra-contract.json'));
     } catch { /* fall through with smokeEnabled=false */ }

@@ -123,10 +123,33 @@ export async function migrateConfigJsonToInstance(
   const reg = await loadHarnessRegistry(workspaceId);
   const p = reg.projects.find((x) => x.slug === slug);
   if (!p || hasInstanceConfig(p)) return { migrated: false, fields: [] };
-  const cfg = readConfig(join(p.path, '.papercusp')) as Record<string, unknown>;
-  if (Object.keys(cfg).length === 0) return { migrated: false, fields: [] };
+  const cfg = readLegacyConfigJson(join(p.path, '.papercusp'));
   const split = splitConfigJson(cfg);
+  // Nothing instance-shaped to lift (e.g. a config.json holding only contract
+  // artifacts, or no file at all) — leave the entry untouched.
+  if (!hasInstanceConfig(split)) return { migrated: false, fields: [] };
   Object.assign(p as ProjectEntry, split);
   await saveHarnessRegistry(reg, workspaceId);
   return { migrated: true, fields: Object.keys(split) };
+}
+
+/**
+ * One-time sweep: migrate every harness's legacy `.papercusp/config.json` instance
+ * content into the workspace-PG registry, across one workspace (or the active one).
+ * Idempotent — already-migrated / file-less harnesses are skipped. Returns the
+ * per-harness results so a maintenance tool can report what moved.
+ */
+export async function migrateAllConfigJson(
+  workspaceId?: string,
+): Promise<{ slug: string; migrated: boolean; fields: string[] }[]> {
+  const { loadHarnessRegistry } = await import('../harness-registry');
+  const { activeWorkspaceId } = await import('../workspace-registry');
+  const ws = workspaceId ?? activeWorkspaceId();
+  const reg = await loadHarnessRegistry(ws);
+  const out: { slug: string; migrated: boolean; fields: string[] }[] = [];
+  for (const p of reg.projects) {
+    const r = await migrateConfigJsonToInstance(p.slug, ws);
+    out.push({ slug: p.slug, ...r });
+  }
+  return out;
 }

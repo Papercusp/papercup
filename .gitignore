@@ -41,3 +41,11 @@ packages/tooldef-mcp/dist/
 # hole. `.papercusp.bak` is the backup console-launch makes of a pre-existing one.
 .mcp.json
 .mcp.json.papercusp.bak
+
+# Rendered plan markdown — plans are PG-canonical; these .md are a DERIVED,
+# read-only projection (rendered by `plans:export` for human reading), never the
+# source of truth. Tracking them is the PG-mirror anti-pattern + constant churn
+# (293 plans × many agents editing = a .md diff on every plan edit). Edits go via
+# the plans tools, not these files. (2026-06-06: a full `plans:export --toDir`
+# materialized all 293; this keeps them local-and-readable but out of git.)
+apps/operator/docs/plans/**/*.md
