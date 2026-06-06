@@ -26,6 +26,7 @@ const stdio_js_1 = require("@modelcontextprotocol/sdk/server/stdio.js");
 const types_js_1 = require("@modelcontextprotocol/sdk/types.js");
 const zod_1 = require("zod");
 const db_org_1 = require("@papercusp/db-org");
+const result_encoding_1 = require("@papercusp/result-encoding");
 const auth_1 = require("./auth");
 const tool_schema_sanitize_1 = require("./tool-schema-sanitize");
 const tooldef_1 = require("@papercusp/tooldef");
@@ -268,9 +269,11 @@ async function startServer(opts = {}) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const inputSchema = zod_1.z.toJSONSchema(t.args);
             delete inputSchema.$schema;
+            // Registry write-positional tools advertise a single `row` string (P-008).
+            const advertised = (0, result_encoding_1.advertisedArgsSchema)(t.name, inputSchema);
             // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
             // consumers (Ollama) can parse the tool surface. See tool-schema-sanitize.ts.
-            return { name: t.name, description: t.description, inputSchema: (0, tool_schema_sanitize_1.sanitizeToolSchema)(inputSchema) };
+            return { name: t.name, description: t.description, inputSchema: (0, tool_schema_sanitize_1.sanitizeToolSchema)(advertised) };
         });
         // Pin to the tool manifest (if configured) for cache-stable parity with
         // the HTTP transport. No-op when no manifest is present. See tool-manifest.ts.

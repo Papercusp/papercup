@@ -27,6 +27,16 @@ exports.default = (0, tooldef_1.defineTool)({
         targetRole: zod_1.z.string().optional(),
         limit: zod_1.z.number().int().positive().max(200).default(50),
     }),
+    // Output schema (token-efficient-tool-result-formats P-013) — flat scalar
+    // array → unlocks CSV + outputSchema advertisement.
+    result: zod_1.z.array(zod_1.z.object({
+        id: zod_1.z.string(),
+        kind: zod_1.z.string(),
+        targetRole: zod_1.z.string().nullable(),
+        dueAt: zod_1.z.union([zod_1.z.string(), zod_1.z.number()]).nullable(),
+        createdAt: zod_1.z.union([zod_1.z.string(), zod_1.z.number()]).nullable(),
+        consumed: zod_1.z.boolean(),
+    })),
     async handler(args, ctx) {
         const txDb = (0, postgres_js_1.drizzle)(ctx.tx);
         const preds = [

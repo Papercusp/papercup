@@ -4,20 +4,31 @@ import { createSshRemoteExec, type SpawnLike } from './remote-exec';
 /** A fake child process + spawn that records calls and lets the test drive exit. */
 function fakeSpawn(exitCode = 0, stderr = '') {
   const calls: Array<{ cmd: string; args: string[]; stdin: string }> = [];
-  const spawn: SpawnLike = (cmd, args) => {
+  // Cast through unknown: SpawnLike's `on` is an overloaded method, which a single
+  // arrow can't structurally satisfy even though this fake is behaviorally correct.
+  const spawn = ((cmd: string, args: string[]) => {
     const rec = { cmd, args, stdin: '' };
     calls.push(rec);
     const handlers: Record<string, ((arg: unknown) => void)[]> = {};
     return {
-      stdin: { write: (s: string) => (rec.stdin += s), end: () => {} },
+      stdin: {
+        write: (s: string) => {
+          rec.stdin += s;
+        },
+        end: () => {},
+      },
       stdout: { on: () => {} },
-      stderr: { on: (_ev: 'data', cb: (d: Buffer) => void) => stderr && cb(Buffer.from(stderr)) },
+      stderr: {
+        on: (_ev: 'data', cb: (d: Buffer) => void) => {
+          if (stderr) cb(Buffer.from(stderr));
+        },
+      },
       on: (ev: string, cb: (arg: unknown) => void) => {
         (handlers[ev] ??= []).push(cb);
         if (ev === 'close') queueMicrotask(() => cb(exitCode));
       },
     };
-  };
+  }) as unknown as SpawnLike;
   return { spawn, calls };
 }
 

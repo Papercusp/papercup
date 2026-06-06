@@ -23,6 +23,9 @@ const mockTools: Array<{
   // projection); the modality-filter tests below push it, so the mock type
   // must carry it or tsc rejects the literals (vitest/esbuild hid it).
   modality?: ('text' | 'voice')[];
+  // Wire-schemas (token-efficient-agent-io P-003) projects columns from these.
+  inputSchema?: Record<string, unknown>;
+  outputJsonSchema?: Record<string, unknown>;
   guidance?: {
     when?: string;
     notWhen?: string;
@@ -226,5 +229,58 @@ describe('PAPERCUSP_RELOAD_PROMPTS env flag', () => {
     // populating it. If caching weren't bypassed, the second test in
     // the file would see leaked guidance from the first.
     expect(process.env.PAPERCUSP_RELOAD_PROMPTS).toBe('1');
+  });
+});
+
+describe('renderWireSchemasSection — the "## Wire schemas" legend (P-003)', () => {
+  const flatArrayOut = {
+    type: 'array',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'state'],
+      properties: { id: { type: 'string' }, state: { enum: ['todo', 'done'] } },
+    },
+  };
+  const setStateArgs = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'state'],
+    properties: { id: { type: 'string' }, state: { type: 'string' }, harness: { type: 'string' } },
+  };
+
+  it('renders read + write column lines for the configured registry tools', async () => {
+    const { configurePrePromptRegistry, clearPrePromptRegistry } = await import('@papercusp/result-encoding');
+    mockTools.push({
+      expose: { mcp: { name: 'audit:list' } },
+      description: 'audit',
+      capabilities: [],
+      outputJsonSchema: flatArrayOut,
+    });
+    mockTools.push({
+      expose: { mcp: { name: 'work_items:set_state' } },
+      description: 'set state',
+      capabilities: [],
+      inputSchema: setStateArgs,
+    });
+    configurePrePromptRegistry([
+      { name: 'audit:list', read: 'csv' },
+      { name: 'work_items:set_state', write: 'positional' },
+    ]);
+    const { renderWireSchemasSection } = await import('./prompt-assembly');
+    const out = renderWireSchemasSection();
+    expect(out).toContain('## Wire schemas');
+    expect(out).toContain('`audit:list`');
+    expect(out).toContain('read → id:id, state:todo|done');
+    expect(out).toContain('`work_items:set_state`');
+    expect(out).toContain('write ← id:id, state:str, harness:str?');
+    clearPrePromptRegistry();
+  });
+
+  it('returns empty string when the registry is empty', async () => {
+    const { clearPrePromptRegistry } = await import('@papercusp/result-encoding');
+    clearPrePromptRegistry();
+    const { renderWireSchemasSection } = await import('./prompt-assembly');
+    expect(renderWireSchemasSection()).toBe('');
   });
 });

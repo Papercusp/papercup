@@ -27,6 +27,9 @@ exports.default = (0, tooldef_1.defineTool)({
         detail: zod_1.z.enum(['summary', 'full']).default('summary'),
         limit: zod_1.z.number().int().positive().max(200).default(50),
     }),
+    // Output schema (token-efficient-tool-result-formats P-013) — flat scalar
+    // array (default `summary` shape) → unlocks CSV + outputSchema advertisement.
+    result: zod_1.z.array(zod_1.z.object({ id: zod_1.z.string(), title: zod_1.z.string() })),
     async handler(args, ctx) {
         const txDb = (0, postgres_js_1.drizzle)(ctx.tx);
         const rows = (await txDb

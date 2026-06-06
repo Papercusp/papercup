@@ -82,7 +82,15 @@ describe('HetznerDriver provision/teardown', () => {
 
 describe('createHetznerApiClient (different envelope from Latitude)', () => {
   function fetchMock(status: number, body: unknown) {
-    return vi.fn(async () => ({ status, async json() { return body; }, async text() { return JSON.stringify(body); } }));
+    return vi.fn(async (_url: string, _init?: { method?: string; headers?: Record<string, string>; body?: string }) => ({
+      status,
+      async json() {
+        return body;
+      },
+      async text() {
+        return JSON.stringify(body);
+      },
+    }));
   }
   it('createServer parses {server:{public_net:{ipv4:{ip}}}}', async () => {
     const fetchImpl = fetchMock(201, { server: { id: 7, status: 'running', public_net: { ipv4: { ip: '9.9.9.9' } } } });
@@ -91,6 +99,6 @@ describe('createHetznerApiClient (different envelope from Latitude)', () => {
     expect(s).toMatchObject({ id: '7', status: 'running', ipv4: '9.9.9.9' });
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toBe('https://api.hetzner.cloud/v1/servers');
-    expect((init as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer T');
+    expect(init?.headers?.Authorization).toBe('Bearer T');
   });
 });
