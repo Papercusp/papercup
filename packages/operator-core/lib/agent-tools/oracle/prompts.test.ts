@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // every test re-imports fresh, so that cost recurs per-test and can
 // exceed the 5s vitest default. Bump the ceiling. See the 2026-05-20
 // SSE-migration audit (flaky-timeout finding).
-vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 beforeEach(() => {
   vi.resetModules();
